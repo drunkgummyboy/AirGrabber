@@ -17,6 +17,14 @@ from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
+# VERSION & UPDATE CONFIG
+# ==========================================
+CURRENT_VERSION = "1.0.0"                  # bump this when releasing a new version
+REPO_OWNER = "drunkgummyboy"
+REPO_NAME = "AirGrabber"
+SCRIPT_FILENAME = os.path.basename(__file__)
+
+# ==========================================
 # AUTO-INSTALL DEPENDENCIES
 # ==========================================
 def ensure_dependencies():
@@ -146,11 +154,11 @@ class LRUImageCache:
 # ==========================================
 # MAIN APPLICATION
 # ==========================================
-class MediaForgeApp(ctk.CTk):
+class TorGrabberApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("MediaForge - Automated Media Desktop Frontend")
+        self.title("TorGrabber - Automated Media Desktop Frontend")
         self.configure(fg_color=BG_BASE)
 
         window_width = 1650
@@ -171,6 +179,7 @@ class MediaForgeApp(ctk.CTk):
         self.unfollowed_cache = {}
         self.calendar_day_frames = {}
         self.calendar_generation = 0
+        self._cache_dirty = False  # Initialize cache dirty flag
 
         self.ui_queue = queue.Queue()
 
@@ -187,13 +196,15 @@ class MediaForgeApp(ctk.CTk):
         self.top_bar.grid_columnconfigure(1, weight=0)
         self.top_bar.grid_columnconfigure(2, weight=1, uniform="nav")
 
-        self.logo_lbl = ctk.CTkLabel(self.top_bar, text="MediaForge", font=ctk.CTkFont(size=24, weight="bold"), text_color=ACCENT_COLOR)
-        self.logo_lbl.grid(row=0, column=0, sticky="w")
+        # Logo label with padding to the right and increased scale
+        self.logo_lbl = ctk.CTkLabel(self.top_bar, text="TorGrabber", font=ctk.CTkFont(size=24, weight="bold"), text_color=ACCENT_COLOR)
+        self.logo_lbl.grid(row=0, column=0, sticky="w", padx=(10, 0))  # Move right
 
         self.global_media_var = ctk.StringVar(value="TV Shows")
         self.toggle_frame = ctk.CTkFrame(self.top_bar, fg_color=GLASS_CARD, corner_radius=15, border_width=1, border_color=GLASS_EDGE)
         self.toggle_frame.grid(row=0, column=1)
 
+        # Initialize with text="" to bypass CustomTkinter's phantom margin bug
         self.btn_tv = ctk.CTkButton(self.toggle_frame, text="", width=160, height=100, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, corner_radius=12, border_width=0, font=ctk.CTkFont(weight="bold", size=16), command=lambda: self.set_global_mode("TV Shows"))
         self.btn_tv.grid(row=0, column=0, padx=4, pady=4)
 
@@ -231,38 +242,80 @@ class MediaForgeApp(ctk.CTk):
         self.current_movie_buckets = None
 
         self.set_global_mode("TV Shows")
+        # Start auto-update check after UI is ready
+        self.check_for_updates()
 
         self.background_executor.submit(self.load_app_icons)
         self.start_background_library_sync()
-        
-        # Trigger silent auto-update check on launch
-        self.check_for_updates()
 
+    # ==========================================
+    # AUTO-UPDATE METHODS
+    # ==========================================
     def check_for_updates(self):
-        def _updater_task():
-            # Update URL mapping to raw file payload
-            update_url = "https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/refs/heads/main/mediaforge.py"
+        """Check GitHub for a newer version and update if available."""
+        def _check():
             try:
-                res = http_session.get(update_url, timeout=10)
-                res.raise_for_status()
-                remote_code = res.text
-                
-                with open(__file__, "r", encoding="utf-8") as f:
-                    current_code = f.read()
-                
-                if remote_code != current_code:
-                    logger.info("New update detected. Downloading and restarting...")
-                    with open(__file__, "w", encoding="utf-8") as f:
-                        f.write(remote_code)
-                    
-                    self.save_caches()
-                    self.save_data()
-                    
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                version_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/version.txt"
+                resp = requests.get(version_url, timeout=5)
+                if resp.status_code != 200:
+                    return
+                remote_version = resp.text.strip()
+                if remote_version == CURRENT_VERSION:
+                    return
+                logger.info(f"New version {remote_version} available. Updating...")
+                script_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/{SCRIPT_FILENAME}"
+                script_resp = requests.get(script_url, timeout=10)
+                if script_resp.status_code != 200:
+                    logger.error("Failed to download new script")
+                    return
+                self.apply_update(script_resp.text)
             except Exception as e:
-                logger.debug("Silent update check failed or URL unreachable: %s", e)
+                logger.error("Update check failed: %s", e)
 
-        self.background_executor.submit(_updater_task)
+        self.background_executor.submit(_check)
+
+    def apply_update(self, new_content):
+        """Spawn a separate process to overwrite this script and restart."""
+        script_path = os.path.abspath(__file__)
+        import json, tempfile
+
+        # Escape the new content so it can be safely embedded in the updater script
+        escaped_content = json.dumps(new_content)
+
+        updater_code = f'''import os, sys, time, subprocess, json
+time.sleep(1)
+script_path = r"{script_path}"
+new_content = json.loads(r"""{escaped_content}""")
+try:
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    subprocess.Popen([sys.executable, script_path])
+except Exception as e:
+    with open(r"{script_path}.update_error.log", "w") as f:
+        f.write(str(e))
+'''
+        # Write updater to a temporary file
+        temp_dir = tempfile.gettempdir()
+        updater_path = os.path.join(temp_dir, f"airgrabber_updater_{int(time.time())}.py")
+        with open(updater_path, "w", encoding="utf-8") as f:
+            f.write(updater_code)
+
+        # Launch the updater and exit the current process
+        try:
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW
+            else:
+                creationflags = 0
+            subprocess.Popen([sys.executable, updater_path],
+                             creationflags=creationflags,
+                             close_fds=True)
+        except Exception as e:
+            logger.error("Failed to launch updater: %s", e)
+            return
+
+        # Shut down the application
+        self.quit()
+        sys.exit(0)
 
     def do_global_manual_search(self):
         q = self.global_search_entry.get().strip()
@@ -282,7 +335,7 @@ class MediaForgeApp(ctk.CTk):
         for t in ["Calendar", "Releases", "Tracked"]:
             try:
                 self.tabview.delete(t)
-            except ValueError:
+            except (ValueError, AttributeError):
                 pass
 
         if mode == "TV Shows":
@@ -304,8 +357,10 @@ class MediaForgeApp(ctk.CTk):
         logo = self.fetch_pil_image("https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/refs/heads/main/logo.png")
         tv_ico = self.fetch_pil_image("https://github.com/drunkgummyboy/AirGrabber/blob/main/tv.png?raw=true")
         mov_ico = self.fetch_pil_image("https://github.com/drunkgummyboy/AirGrabber/blob/main/movie.png?raw=true")
+        
         if not mov_ico:
             mov_ico = self.fetch_pil_image("https://github.com/drunkgummyboy/AirGrabber/blob/main/movies.png?raw=true")
+            
         settings_ico = self.fetch_pil_image("https://raw.githubusercontent.com/google/material-design-icons/master/png/action/settings/materialicons/48dp/2x/baseline_settings_white_48dp.png")
 
         def apply():
@@ -315,21 +370,21 @@ class MediaForgeApp(ctk.CTk):
                 except:
                     pass
                 w, h = logo.size
-                new_h = 80
+                new_h = 100  # Increased from 80
                 new_w = int(new_h * (w / h))
                 self.logo_lbl.configure(image=ctk.CTkImage(light_image=logo, dark_image=logo, size=(new_w, new_h)), text="")
 
             if hasattr(self, 'btn_tv') and self.btn_tv.winfo_exists():
                 if tv_ico:
                     self.tv_ico_img = ctk.CTkImage(light_image=tv_ico, dark_image=tv_ico, size=(80, 80))
-                    self.btn_tv.configure(image=self.tv_ico_img, text="", image_spacing=0)
+                    self.btn_tv.configure(image=self.tv_ico_img, text="")
                 else:
                     self.btn_tv.configure(text="TV Shows")
 
             if hasattr(self, 'btn_movie') and self.btn_movie.winfo_exists():
                 if mov_ico:
                     self.mov_ico_img = ctk.CTkImage(light_image=mov_ico, dark_image=mov_ico, size=(80, 80))
-                    self.btn_movie.configure(image=self.mov_ico_img, text="", image_spacing=0)
+                    self.btn_movie.configure(image=self.mov_ico_img, text="")
                 else:
                     self.btn_movie.configure(text="Movies")
 
@@ -391,9 +446,6 @@ class MediaForgeApp(ctk.CTk):
                     return {}
             return {}
 
-    def __init_cache_dirty_flags(self):
-        self._cache_dirty = False
-
     def save_caches(self):
         with self.data_lock:
             with open(EPISODES_FILE, "w") as f:
@@ -404,14 +456,14 @@ class MediaForgeApp(ctk.CTk):
         self._cache_dirty = True
 
     def maybe_save_caches(self):
-        if getattr(self, '_cache_dirty', False):
+        if self._cache_dirty:
             self.save_caches()
 
     def load_settings(self):
         default_settings = {
             "first_day": "Monday", "quality": "1080p",
             "download_dir": TORRENTS_DIR, "weeks_to_show": 3,
-            "prev_weeks_to_show": 0, "create_mediaforge_json": True, "tmdb_api_key": ""
+            "prev_weeks_to_show": 0, "create_torgrabber_json": True, "tmdb_api_key": ""
         }
         if os.path.exists(SETTINGS_FILE):
             try:
@@ -499,6 +551,12 @@ class MediaForgeApp(ctk.CTk):
     # ==========================================
     # SEARCH ENGINE
     # ==========================================
+    def _safe_int(self, value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
     def search_best_torrent(self, show_name, episode_code, show_id=None):
         quality_pref = self.settings.get("quality", "1080p")
         if quality_pref == "2160p (4K)":
@@ -528,17 +586,17 @@ class MediaForgeApp(ctk.CTk):
                     res.raise_for_status()
                 data = res.json()
                 if isinstance(data, list) and len(data) > 0 and data[0].get('id') != '0':
-                    valid = [r for r in data if int(r.get('seeders', 0)) > 0]
+                    valid = [r for r in data if self._safe_int(r.get('seeders', 0)) > 0]
                     filtered = self.apply_quality_filter(valid)
                     if filtered:
-                        filtered.sort(key=lambda x: int(x['seeders']), reverse=True)
+                        filtered.sort(key=lambda x: self._safe_int(x['seeders']), reverse=True)
                         return {
                             "source": "apibay",
                             "name": filtered[0]['name'],
                             "info_hash": filtered[0]['info_hash'],
                             "magnet": "",
-                            "size": int(filtered[0].get('size', 0)),
-                            "seeders": int(filtered[0].get('seeders', 0))
+                            "size": self._safe_int(filtered[0].get('size', 0)),
+                            "seeders": self._safe_int(filtered[0].get('seeders', 0))
                         }
             except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
                 logger.debug("APIBay search error for '%s': %s", q, e)
@@ -588,7 +646,7 @@ class MediaForgeApp(ctk.CTk):
                 res.raise_for_status()
             valid_solid = []
             for r in res.json().get('results', []):
-                seeders = int(r.get('swarm', {}).get('seeders', 0))
+                seeders = self._safe_int(r.get('swarm', {}).get('seeders', 0))
                 if seeders > 0:
                     magnet = r.get('magnet', '')
                     hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
@@ -597,7 +655,7 @@ class MediaForgeApp(ctk.CTk):
                         'name': r.get('title', ''),
                         'magnet': magnet,
                         'info_hash': hash_match.group(1) if hash_match else "",
-                        'size': int(r.get('size', 0)),
+                        'size': self._safe_int(r.get('size', 0)),
                         'seeders': seeders
                     })
             if valid_solid:
@@ -663,14 +721,35 @@ class MediaForgeApp(ctk.CTk):
     def download_torrent_file(self, data, best, f_size=None):
         dl_dir = self.settings.get("download_dir", TORRENTS_DIR)
         os.makedirs(dl_dir, exist_ok=True)
-        safe = "".join(c for c in re.sub(r'[<>:"/\\|?*\[\]()]+', '_', best['name']) if c.isalnum() or c in " ._-").strip()[:120]
+        # Sanitize filename more robustly
+        raw_name = best.get('name', 'torrent')
+        safe = re.sub(r'[<>:"/\\|?*\[\]()]+', '_', raw_name)
+        safe = "".join(c for c in safe if c.isalnum() or c in " ._-").strip()
+        if not safe:
+            safe = "torrent"
+        safe = safe[:120]
 
         def dl():
             success = False
-            if best.get('info_hash'):
+            info_hash = best.get('info_hash')
+            magnet = best.get('magnet')
+
+            # Prefer magnet link if present, as it's more reliable for Torrentio
+            if magnet:
+                try:
+                    magnet_path = os.path.join(dl_dir, f"{safe}.magnet")
+                    with open(magnet_path, "w", encoding="utf-8") as f:
+                        f.write(magnet)
+                    success = True
+                    logger.info(f"Saved magnet link to {magnet_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save magnet file: {e}")
+            elif info_hash:
+                # Fallback to .torrent download only if no magnet
                 t_path = os.path.join(dl_dir, f"{safe}.torrent")
                 part = t_path + ".part"
-                for base in [f"https://itorrents.org/torrent/{best['info_hash']}.torrent", f"https://btcache.me/torrent/{best['info_hash']}"]:
+                for base in [f"https://itorrents.org/torrent/{info_hash}.torrent",
+                             f"https://btcache.me/torrent/{info_hash}"]:
                     try:
                         r = scraper_session.get(base, timeout=10)
                         if r.status_code == 200 and (b'd8:announce' in r.content or b'd4:info' in r.content):
@@ -678,35 +757,42 @@ class MediaForgeApp(ctk.CTk):
                                 f.write(r.content)
                             os.replace(part, t_path)
                             success = True
+                            logger.info(f"Downloaded .torrent file to {t_path}")
                             break
-                    except:
-                        pass
-            if not success and best.get('magnet'):
-                try:
-                    with open(os.path.join(dl_dir, f"{safe}.magnet"), "w", encoding="utf-8") as f:
-                        f.write(best['magnet'])
-                    success = True
-                except:
-                    pass
+                        else:
+                            logger.debug(f"Torrent download failed from {base}: status {r.status_code}")
+                    except Exception as e:
+                        logger.warning(f"Error downloading torrent from {base}: {e}")
+
             if success:
-                if self.settings.get("create_mediaforge_json", True):
+                # Save TorGrabber metadata JSON
+                if self.settings.get("create_torgrabber_json", True):
                     try:
-                        with open(os.path.join(dl_dir, f"{safe}_mediaforge.json"), 'w') as mf:
+                        media_type = "movie" if self.global_media_var.get() == "Movies" else "tv"
+                        json_path = os.path.join(dl_dir, f"{safe}_torgrabber.json")
+                        with open(json_path, 'w') as mf:
                             json.dump({
-                                "media_type": "tv",
+                                "media_type": media_type,
                                 "show_name": data.get('show', 'Unknown'),
                                 "episode_code": data.get('episode', ''),
-                                "title": data.get('title',''),
-                                "tvmaze_id": data.get('media_id','0')
+                                "title": data.get('title', ''),
+                                "tvmaze_id": data.get('media_id', '0')
                             }, mf, indent=4)
-                    except:
-                        pass
+                        logger.info(f"Saved metadata to {json_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to save metadata JSON: {e}")
+
+                # Update history
                 if data.get('media_id') and data.get('episode'):
                     hk = f"{data['media_id']}_{data['episode']}"
                     with self.data_lock:
                         if hk not in self.history:
                             self.history.append(hk)
                             self.save_history()
+                            logger.debug(f"Added to history: {hk}")
+            else:
+                logger.error(f"Download failed for {best.get('name', 'Unknown')}: no info_hash or magnet available")
+
         self.background_executor.submit(dl)
 
     def start_background_library_sync(self):
@@ -740,6 +826,8 @@ class MediaForgeApp(ctk.CTk):
                 self.maybe_save_caches()
             finally:
                 self._sync_running = False
+                # Schedule next automatic sync in 6 hours
+                self.ui_queue.put(lambda: self.after(6*60*60*1000, self._run_library_sync))
         self.background_executor.submit(sync)
 
     # ==========================================
@@ -1243,6 +1331,12 @@ class MediaForgeApp(ctk.CTk):
         score_text = f"★ {data.get('score', 'N/A')} | {data.get('rating', 'NR')}"
         ctk.CTkLabel(inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6").pack(anchor="w", pady=2)
 
+        # IMDb link (search page)
+        imdb_search_url = f"https://www.imdb.com/find?q={urllib.parse.quote(data['title'])}"
+        imdb_lbl = ctk.CTkLabel(inf, text="IMDb", text_color="#5D8AA8", font=ctk.CTkFont(size=9, underline=True), cursor="hand2")
+        imdb_lbl.pack(anchor="w", pady=(0, 2))
+        imdb_lbl.bind("<Button-1>", lambda e, url=imdb_search_url: webbrowser.open(url))
+
         # Build search query including year
         release_year = data['date'].year if data.get('date') else ""
         if release_year:
@@ -1269,7 +1363,7 @@ class MediaForgeApp(ctk.CTk):
         self.open_manual_search({'show': query, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''})
 
     # ==========================================
-    # LIBRARY TAB (TRACKED ITEMS & SHOW SEARCH)
+    # LIBRARY TAB (TRACKED ITEMS)
     # ==========================================
     def setup_library_tab(self):
         self.tab_library.grid_columnconfigure(0, weight=1)
@@ -1277,76 +1371,133 @@ class MediaForgeApp(ctk.CTk):
 
         hdr = ctk.CTkFrame(self.tab_library, fg_color="transparent")
         hdr.grid(row=0, column=0, padx=15, pady=5, sticky="ew")
-        hdr.grid_columnconfigure(0, weight=1)
-        hdr.grid_columnconfigure(1, weight=0)
 
         self.lbl_lib_count = ctk.CTkLabel(hdr, text="Tracked Library", font=ctk.CTkFont(size=18, weight="bold"), text_color="white")
-        self.lbl_lib_count.grid(row=0, column=0, sticky="w")
+        self.lbl_lib_count.pack(side="left")
 
-        search_f = ctk.CTkFrame(hdr, fg_color="transparent")
-        search_f.grid(row=0, column=1, sticky="e")
+        # Import button now opens a text paste dialog
+        self.btn_import = ctk.CTkButton(hdr, text="Import Shows", width=120, height=30, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, command=self.import_shows_dialog)
+        self.btn_import.pack(side="left", padx=(20, 10))
 
-        self.lib_search_entry = ctk.CTkEntry(search_f, placeholder_text="Search TV Shows to track...", placeholder_text_color="#A4B2C6", height=30, width=240, fg_color=BG_BASE, border_color=GLASS_EDGE)
-        self.lib_search_entry.pack(side="left", padx=(0, 6))
-        self.lib_search_entry.bind("<Return>", lambda e: self.search_tv_shows())
-
-        self.lib_search_btn = ctk.CTkButton(search_f, text="Find Show", width=80, height=30, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, command=self.search_tv_shows)
-        self.lib_search_btn.pack(side="left", padx=(0, 6))
-
-        self.lib_reset_btn = ctk.CTkButton(search_f, text="View Tracked", width=95, height=30, fg_color=GLASS_CARD, hover_color="#2A2130", border_width=1, border_color=GLASS_EDGE, command=self.reset_library_view)
-        self.lib_reset_btn.pack(side="left")
+        self.btn_cleanup = ctk.CTkButton(hdr, text="Cleanup Ended", width=120, height=30, fg_color="#C0392B", hover_color="#922B21", command=self.cleanup_ended_shows)
+        self.btn_cleanup.pack(side="left")
 
         self.library_scroll = ctk.CTkScrollableFrame(self.tab_library, fg_color="transparent")
         self.library_scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
 
-    def reset_library_view(self):
-        self.is_searching_shows = False
-        self.lib_search_entry.delete(0, 'end')
-        self.refresh_library_list()
+    def import_shows_dialog(self):
+        """Open a dialog with a textbox to paste show names, one per line."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Import Shows")
+        dialog.geometry("500x400")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(fg_color=BG_BASE)
 
-    def search_tv_shows(self):
-        query = self.lib_search_entry.get().strip()
-        if not query:
-            self.reset_library_view()
-            return
-        
-        self.is_searching_shows = True
-        for w in self.library_scroll.winfo_children():
-            w.destroy()
-        self.lbl_lib_count.configure(text=f"Searching for '{query}'...")
-        loader = self.show_loading(self.library_scroll)
+        lbl = ctk.CTkLabel(dialog, text="Paste show names (one per line):", font=ctk.CTkFont(size=12))
+        lbl.pack(pady=(20, 5))
 
-        def run():
-            try:
-                res = http_session.get(f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(query)}", timeout=8)
-                items = []
-                if res.status_code == 200:
-                    for entry in res.json():
-                        show = entry.get('show')
-                        if show:
-                            items.append(show)
-                self.ui_queue.put(lambda: self._display_show_search_results(items, query, loader))
-            except Exception as e:
-                logger.error("TV show search error: %s", e)
-                self.ui_queue.put(lambda: self._display_show_search_results([], query, loader))
+        textbox = ctk.CTkTextbox(dialog, width=460, height=250, fg_color=GLASS_CARD, border_color=GLASS_EDGE, border_width=1)
+        textbox.pack(pady=10)
 
-        self.background_executor.submit(run)
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=10)
 
-    def _display_show_search_results(self, shows, query, loader):
-        self.hide_loading(loader)
-        for w in self.library_scroll.winfo_children():
-            w.destroy()
+        def do_import():
+            content = textbox.get("1.0", "end-1c").strip()
+            if not content:
+                self._show_message("Import", "No show names entered.")
+                dialog.destroy()
+                return
+            shows = [line.strip() for line in content.split('\n') if line.strip()]
+            dialog.destroy()
+            self._import_show_list(shows)
 
-        self.lbl_lib_count.configure(text=f"Search Results for '{query}' ({len(shows)})")
-        if not shows:
-            ctk.CTkLabel(self.library_scroll, text=f"No shows found matching '{query}'.", text_color="gray50", font=ctk.CTkFont(size=13)).pack(pady=80)
-            return
+        ctk.CTkButton(btn_frame, text="Import", width=100, height=30, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, command=do_import).pack(side="right", padx=10)
+        ctk.CTkButton(btn_frame, text="Cancel", width=100, height=30, fg_color="transparent", hover_color=GLASS_CARD, command=dialog.destroy).pack(side="right")
 
-        self.render_show_grid(self.library_scroll, shows, is_library=False)
+    def _import_show_list(self, shows):
+        def import_task():
+            added = 0
+            failed = 0
+            for show in shows:
+                if show.isdigit():
+                    sid = show
+                    name = None
+                    try:
+                        res = http_session.get(f"https://api.tvmaze.com/shows/{sid}", timeout=5)
+                        if res.status_code == 200:
+                            data = res.json()
+                            name = data.get('name')
+                    except:
+                        pass
+                    if not name:
+                        failed += 1
+                        continue
+                else:
+                    try:
+                        res = http_session.get(f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(show)}", timeout=5)
+                        if res.status_code == 200 and res.json():
+                            data = res.json()[0]
+                            sid = str(data['show']['id'])
+                            name = data['show']['name']
+                        else:
+                            failed += 1
+                            continue
+                    except:
+                        failed += 1
+                        continue
+
+                with self.data_lock:
+                    if sid not in self.followed_shows:
+                        self.followed_shows[sid] = {"name": name, "metadata": None}
+                        added += 1
+                    # if already followed, ignore
+                time.sleep(0.2)
+
+            self.save_data()
+            self.mark_caches_dirty()
+            self.maybe_save_caches()
+            self.start_background_library_sync()
+            self.ui_queue.put(self.refresh_library_list)
+            self.ui_queue.put(self.refresh_calendar_data)
+            self.ui_queue.put(lambda: self._show_message("Import Complete", f"Added {added} shows. Failed: {failed}"))
+
+        self.background_executor.submit(import_task)
+
+    def cleanup_ended_shows(self):
+        def cleanup_task():
+            with self.data_lock:
+                to_remove = []
+                for sid, data in self.followed_shows.items():
+                    meta = data.get('metadata')
+                    if meta and meta.get('status') == 'Ended':
+                        to_remove.append(sid)
+                for sid in to_remove:
+                    del self.followed_shows[sid]
+                    if sid in self.episodes_cache:
+                        del self.episodes_cache[sid]
+                removed = len(to_remove)
+            self.save_data()
+            self.mark_caches_dirty()
+            self.maybe_save_caches()
+            self.ui_queue.put(self.refresh_library_list)
+            self.ui_queue.put(self.refresh_calendar_data)
+            self.ui_queue.put(lambda: self._show_message("Cleanup Complete", f"Removed {removed} ended shows."))
+
+        self.background_executor.submit(cleanup_task)
+
+    def _show_message(self, title, message):
+        popup = ctk.CTkToplevel(self)
+        popup.title(title)
+        popup.geometry("400x150")
+        popup.transient(self)
+        popup.grab_set()
+        popup.configure(fg_color=BG_BASE)
+        ctk.CTkLabel(popup, text=message, wraplength=350).pack(pady=30)
+        ctk.CTkButton(popup, text="OK", command=popup.destroy).pack()
 
     def refresh_library_list(self):
-        if getattr(self, 'is_searching_shows', False):
-            return
         with self.data_lock:
             shows = dict(self.followed_shows)
         self.lbl_lib_count.configure(text=f"Tracked TV Shows ({len(shows)})")
@@ -1395,13 +1546,12 @@ class MediaForgeApp(ctk.CTk):
 
             sid = str(item.get('id', ''))
             if is_library:
-                ubtn = ctk.CTkButton(btm, text="Drop", width=50, height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#C0392B", hover_color="#922B21", border_width=0, command=lambda s=sid, n=item.get('name'): self.toggle_follow(s, n, False, None))
+                ubtn = ctk.CTkButton(btm, text="Drop", width=50, height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#C0392B", border_width=0, command=lambda s=sid, n=item.get('name'): self.toggle_follow(s, n, False, None))
                 ubtn.pack(side="right")
             else:
                 with self.data_lock:
                     tracked = sid in self.followed_shows
-                tbtn = ctk.CTkButton(btm, text="Tracking" if tracked else "+ Track", height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="transparent" if tracked else ACCENT_COLOR, state="disabled" if tracked else "normal", border_width=0)
-                tbtn.configure(command=lambda s=sid, n=item.get('name'), b=tbtn: self.toggle_follow(s, n, True, b))
+                tbtn = ctk.CTkButton(btm, text="Tracking" if tracked else "+ Track", height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="transparent" if tracked else ACCENT_COLOR, state="disabled" if tracked else "normal", border_width=0, command=lambda s=sid, n=item.get('name'): self.toggle_follow(s, n, True, None))
                 tbtn.pack(fill="x")
 
             def load_grid_poster(url, target_lbl=lbl):
@@ -1435,11 +1585,7 @@ class MediaForgeApp(ctk.CTk):
             self.mark_caches_dirty()
             self.maybe_save_caches()
 
-            if btn and btn.winfo_exists():
-                self.ui_queue.put(lambda: btn.configure(text="Tracking", fg_color="transparent", state="disabled"))
-            else:
-                self.ui_queue.put(self.refresh_library_list)
-
+            self.ui_queue.put(self.refresh_library_list)
             self.ui_queue.put(self.refresh_calendar_data)
             self.start_background_library_sync()
 
@@ -1459,7 +1605,9 @@ class MediaForgeApp(ctk.CTk):
         popup.grab_set()
 
         popup.results_pool = []
-        popup.sort_col = 'seeders'
+        popup.results_lock = threading.Lock()
+        popup.searching = False
+        popup.sort_col = 'size'  # Default sort by size descending
         popup.sort_desc = True
 
         sf = ctk.CTkFrame(popup, fg_color=GLASS_CARD, border_width=1, border_color=GLASS_EDGE, corner_radius=8)
@@ -1483,7 +1631,18 @@ class MediaForgeApp(ctk.CTk):
         filter_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
         filter_frame.pack(side="right")
 
-        qual_var = ctk.StringVar(value="Any Quality")
+        # Initialize quality filter from settings
+        quality_setting = self.settings.get("quality", "1080p")
+        if quality_setting == "Any":
+            init_qual = "Any Quality"
+        elif quality_setting == "2160p (4K)":
+            init_qual = "2160p"
+        elif quality_setting == "x265/HEVC":
+            init_qual = "x265"
+        else:
+            init_qual = quality_setting  # 720p, 1080p
+
+        qual_var = ctk.StringVar(value=init_qual)
         size_var = ctk.StringVar(value="Any Size")
         src_var = ctk.StringVar(value="All Sources")
 
@@ -1595,7 +1754,10 @@ class MediaForgeApp(ctk.CTk):
             s_val = size_var.get()
             src_val = src_var.get().lower()
 
-            for r in popup.results_pool:
+            with popup.results_lock:
+                results_snapshot = list(popup.results_pool)
+
+            for r in results_snapshot:
                 if src_val != "all sources" and src_val not in r['source']:
                     continue
                 name_lower = r['name'].lower()
@@ -1642,6 +1804,10 @@ class MediaForgeApp(ctk.CTk):
                 dl_btn.pack(side="right")
 
         def execute_manual_search():
+            if popup.searching:
+                return
+            popup.searching = True
+            inp.configure(state="disabled")
             popup.results_pool.clear()
             render_results()
             query = search_v.get().strip()
@@ -1661,11 +1827,12 @@ class MediaForgeApp(ctk.CTk):
                         count = 0
                         if isinstance(data, list) and len(data) > 0 and data[0].get('id') != '0':
                             for r in data:
-                                if int(r.get('seeders', 0)) > 0:
-                                    popup.results_pool.append({
-                                        'source': 'apibay', 'name': r.get('name', 'Unknown'), 'info_hash': r.get('info_hash', ''),
-                                        'magnet': '', 'size': int(r.get('size', 0)), 'seeders': int(r.get('seeders', 0)), 'leechers': int(r.get('leechers', 0))
-                                    })
+                                if self._safe_int(r.get('seeders', 0)) > 0:
+                                    with popup.results_lock:
+                                        popup.results_pool.append({
+                                            'source': 'apibay', 'name': r.get('name', 'Unknown'), 'info_hash': r.get('info_hash', ''),
+                                            'magnet': '', 'size': self._safe_int(r.get('size', 0)), 'seeders': self._safe_int(r.get('seeders', 0)), 'leechers': self._safe_int(r.get('leechers', 0))
+                                        })
                                     count += 1
                         self.ui_queue.put(lambda: apibay_lbl.configure(text=f"✅ APIBay ({count})", text_color="#2FA572"))
                     else:
@@ -1733,11 +1900,12 @@ class MediaForgeApp(ctk.CTk):
                                         elif unit == 'KB':
                                             size_bytes = val * 1024
 
-                                    popup.results_pool.append({
-                                        'source': 'torrentio', 'name': s.get('title', '').split('\n')[0],
-                                        'info_hash': hash_match.group(1) if hash_match else "", 'magnet': magnet,
-                                        'size': size_bytes, 'seeders': seeders, 'leechers': 0
-                                    })
+                                    with popup.results_lock:
+                                        popup.results_pool.append({
+                                            'source': 'torrentio', 'name': s.get('title', '').split('\n')[0],
+                                            'info_hash': hash_match.group(1) if hash_match else "", 'magnet': magnet,
+                                            'size': size_bytes, 'seeders': seeders, 'leechers': 0
+                                        })
                                     count += 1
                             self.ui_queue.put(lambda: tor_lbl.configure(text=f"✅ Torrentio ({count})", text_color="#2FA572"))
                         else:
@@ -1789,13 +1957,14 @@ class MediaForgeApp(ctk.CTk):
                             count = 0
                             for t in res.json().get('torrents', []):
                                 if str(t.get('season')) == str(season_num) and str(t.get('episode')) == str(episode_num):
-                                    seeders = int(t.get('seeds', 0))
+                                    seeders = self._safe_int(t.get('seeds', 0))
                                     if seeders > 0:
-                                        popup.results_pool.append({
-                                            'source': 'eztv', 'name': t.get('title', ''), 'info_hash': t.get('hash', ''),
-                                            'magnet': t.get('magnet_url', ''), 'size': int(t.get('size_bytes', 0)),
-                                            'seeders': seeders, 'leechers': int(t.get('peers', 0)) - seeders if t.get('peers') else 0
-                                        })
+                                        with popup.results_lock:
+                                            popup.results_pool.append({
+                                                'source': 'eztv', 'name': t.get('title', ''), 'info_hash': t.get('hash', ''),
+                                                'magnet': t.get('magnet_url', ''), 'size': self._safe_int(t.get('size_bytes', 0)),
+                                                'seeders': seeders, 'leechers': self._safe_int(t.get('peers', 0)) - seeders if t.get('peers') else 0
+                                            })
                                         count += 1
                             self.ui_queue.put(lambda: eztv_lbl.configure(text=f"✅ EZTV ({count})", text_color="#2FA572"))
                         else:
@@ -1813,17 +1982,18 @@ class MediaForgeApp(ctk.CTk):
                         data = res.json()
                         count = 0
                         for r in data.get('results', []):
-                            seeders = int(r.get('swarm', {}).get('seeders', 0))
+                            seeders = self._safe_int(r.get('swarm', {}).get('seeders', 0))
                             if seeders > 0:
                                 magnet = r.get('magnet', '')
                                 info_hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
                                 info_hash = info_hash_match.group(1) if info_hash_match else ""
 
-                                popup.results_pool.append({
-                                    'source': 'solidtorrents', 'name': r.get('title', 'Unknown'), 'info_hash': info_hash,
-                                    'magnet': magnet, 'size': int(r.get('size', 0)), 'seeders': seeders,
-                                    'leechers': int(r.get('swarm', {}).get('leechers', 0))
-                                })
+                                with popup.results_lock:
+                                    popup.results_pool.append({
+                                        'source': 'solidtorrents', 'name': r.get('title', 'Unknown'), 'info_hash': info_hash,
+                                        'magnet': magnet, 'size': self._safe_int(r.get('size', 0)), 'seeders': seeders,
+                                        'leechers': self._safe_int(r.get('swarm', {}).get('leechers', 0))
+                                    })
                                 count += 1
                         self.ui_queue.put(lambda: sol_lbl.configure(text=f"✅ Solid ({count})", text_color="#2FA572"))
                     else:
@@ -1842,6 +2012,8 @@ class MediaForgeApp(ctk.CTk):
                     t.start()
                 for t in threads:
                     t.join()
+                popup.searching = False
+                self.ui_queue.put(lambda: inp.configure(state="normal"))
                 self.ui_queue.put(render_results)
 
             self.background_executor.submit(run_all_searches)
@@ -1886,6 +2058,7 @@ class MediaForgeApp(ctk.CTk):
         self.tmdb_key_var = ctk.StringVar(value=self.settings.get("tmdb_api_key", ""))
         ctk.CTkEntry(f4, textvariable=self.tmdb_key_var, width=220, fg_color=GLASS_CARD, border_color=GLASS_EDGE).pack(side="left", padx=10, expand=True, fill="x")
 
+        # Added Link specific for TMDB settings
         link_f = ctk.CTkFrame(c, fg_color="transparent")
         link_f.pack(fill="x", pady=(0, 8))
         link_lbl = ctk.CTkLabel(link_f, text="Get an API key here: https://www.themoviedb.org/settings/api", text_color="#5D8AA8", cursor="hand2", font=ctk.CTkFont(size=10, underline=True))
@@ -1894,8 +2067,8 @@ class MediaForgeApp(ctk.CTk):
 
         f5 = ctk.CTkFrame(c, fg_color="transparent")
         f5.pack(fill="x", pady=12)
-        self.mf_json_var = ctk.BooleanVar(value=self.settings.get("create_mediaforge_json", True))
-        ctk.CTkSwitch(f5, text="Compile MediaForge context schema (.json descriptor meta)", variable=self.mf_json_var, progress_color=ACCENT_COLOR).pack(side="left")
+        self.tg_json_var = ctk.BooleanVar(value=self.settings.get("create_torgrabber_json", True))
+        ctk.CTkSwitch(f5, text="Compile TorGrabber context schema (.json descriptor meta)", variable=self.tg_json_var, progress_color=ACCENT_COLOR).pack(side="left")
 
         msg = ctk.CTkLabel(c, text="", text_color="#2FA572", font=ctk.CTkFont(size=12))
         msg.pack(side="bottom", pady=5)
@@ -1904,7 +2077,7 @@ class MediaForgeApp(ctk.CTk):
             self.settings["quality"] = self.quality_var.get()
             self.settings["download_dir"] = self.dl_dir_var.get()
             self.settings["tmdb_api_key"] = self.tmdb_key_var.get().strip()
-            self.settings["create_mediaforge_json"] = self.mf_json_var.get()
+            self.settings["create_torgrabber_json"] = self.tg_json_var.get()
             self.save_settings()
             msg.configure(text="Local preferences synced to disk successfully.")
             self.after(2000, win.destroy)
@@ -1917,5 +2090,5 @@ class MediaForgeApp(ctk.CTk):
             self.dl_dir_var.set(d)
 
 if __name__ == "__main__":
-    app = MediaForgeApp()
+    app = TorGrabberApp()
     app.mainloop()
