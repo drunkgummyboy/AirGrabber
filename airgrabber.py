@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 CURRENT_VERSION = "1.0.0"                  # bump this when releasing a new version
 REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
-SCRIPT_FILENAME = os.path.basename(__file__)
+SCRIPT_FILENAME = "airgrabber.py"          # always the repo filename
 
 # ==========================================
 # AUTO-INSTALL DEPENDENCIES
@@ -258,28 +258,39 @@ class TorGrabberApp(ctk.CTk):
                 version_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/version.txt"
                 resp = requests.get(version_url, timeout=5)
                 if resp.status_code != 200:
+                    logger.debug(f"Version check failed: HTTP {resp.status_code}")
                     return
                 remote_version = resp.text.strip()
                 if remote_version == CURRENT_VERSION:
                     return
                 logger.info(f"New version {remote_version} available. Updating...")
-                script_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/{SCRIPT_FILENAME}"
-                script_resp = requests.get(script_url, timeout=10)
-                if script_resp.status_code != 200:
-                    logger.error("Failed to download new script")
-                    return
-                self.apply_update(script_resp.text)
+
+                # Retry downloading the script up to 3 times
+                for attempt in range(3):
+                    try:
+                        script_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/{SCRIPT_FILENAME}"
+                        script_resp = requests.get(script_url, timeout=10)
+                        if script_resp.status_code == 200:
+                            self.apply_update(script_resp.text)
+                            return
+                        else:
+                            logger.error(f"Script download failed (attempt {attempt+1}): HTTP {script_resp.status_code}")
+                            time.sleep(2 ** attempt)  # exponential backoff
+                    except Exception as e:
+                        logger.error(f"Script download error (attempt {attempt+1}): {e}")
+                        time.sleep(2 ** attempt)
+                logger.error("Failed to download new script after 3 attempts.")
             except Exception as e:
                 logger.error("Update check failed: %s", e)
 
         self.background_executor.submit(_check)
 
     def apply_update(self, new_content):
-        """Spawn a separate process to overwrite this script and restart."""
-        script_path = os.path.abspath(__file__)
+        """Spawn a separate process to overwrite the original script and restart."""
+        # Target the actual script file in the script's directory
+        script_path = os.path.join(SCRIPT_DIR, SCRIPT_FILENAME)
         import json, tempfile
 
-        # Escape the new content so it can be safely embedded in the updater script
         escaped_content = json.dumps(new_content)
 
         updater_code = f'''import os, sys, time, subprocess, json
@@ -294,13 +305,11 @@ except Exception as e:
     with open(r"{script_path}.update_error.log", "w") as f:
         f.write(str(e))
 '''
-        # Write updater to a temporary file
         temp_dir = tempfile.gettempdir()
         updater_path = os.path.join(temp_dir, f"airgrabber_updater_{int(time.time())}.py")
         with open(updater_path, "w", encoding="utf-8") as f:
             f.write(updater_code)
 
-        # Launch the updater and exit the current process
         try:
             if sys.platform == "win32":
                 creationflags = subprocess.CREATE_NO_WINDOW
@@ -313,7 +322,6 @@ except Exception as e:
             logger.error("Failed to launch updater: %s", e)
             return
 
-        # Shut down the application
         self.quit()
         sys.exit(0)
 
