@@ -43,7 +43,7 @@ logger.info("=== TorGrabber startup ===")
 # ==========================================
 # VERSION & UPDATE CONFIG
 # ==========================================
-CURRENT_VERSION = "1.0.1"
+CURRENT_VERSION = "1.0.2"
 REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
 SCRIPT_FILENAME = "airgrabber.py"
