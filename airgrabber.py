@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "airgrabber.log")
+UPDATE_CACHE_FILE = os.path.join(SCRIPT_DIR, "update_cache.json")
 
 if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 5 * 1024 * 1024:
     try:
@@ -43,7 +44,7 @@ logger.info("=== TorGrabber startup ===")
 # ==========================================
 # VERSION & UPDATE CONFIG
 # ==========================================
-CURRENT_VERSION = "1.0.2"
+CURRENT_VERSION = "1.0.4"
 REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
 SCRIPT_FILENAME = "airgrabber.py"
@@ -293,23 +294,56 @@ class TorGrabberApp(ctk.CTk):
         self.start_background_library_sync()
 
     # ==========================================
-    # AUTO-UPDATE METHODS (improved with UI feedback)
+    # AUTO-UPDATE METHODS (with cache)
     # ==========================================
     def check_for_updates(self):
         def _check():
             try:
+                # Read cache
+                cache = {}
+                if os.path.exists(UPDATE_CACHE_FILE):
+                    try:
+                        with open(UPDATE_CACHE_FILE, 'r') as f:
+                            cache = json.load(f)
+                    except:
+                        pass
+                last_checked = cache.get("last_checked_version", "")
+
                 version_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/version.txt"
                 resp = requests.get(version_url, timeout=5)
                 if resp.status_code != 200:
                     logger.debug(f"Version check failed: HTTP {resp.status_code}")
                     return
                 remote_version = resp.text.strip()
+
+                # Update cache with current check time (even if no update)
+                cache["last_check_time"] = datetime.now().isoformat()
+                with open(UPDATE_CACHE_FILE, 'w') as f:
+                    json.dump(cache, f)
+
                 if remote_version == CURRENT_VERSION:
+                    # Already up-to-date; store this version in cache to avoid future checks
+                    if last_checked != remote_version:
+                        cache["last_checked_version"] = remote_version
+                        with open(UPDATE_CACHE_FILE, 'w') as f:
+                            json.dump(cache, f)
                     return
+
+                # New version available
+                if remote_version == last_checked:
+                    # We already attempted this update; skip to avoid loop
+                    logger.info(f"Update to {remote_version} already attempted. Skipping.")
+                    return
+
                 logger.info(f"New version {remote_version} available. Updating...")
                 self.ui_queue.put(lambda: self.status_label.configure(
                     text=f"⬆ Updating to version {remote_version}... Restarting soon."
                 ))
+
+                # Store the remote version in cache before attempting download
+                cache["last_checked_version"] = remote_version
+                with open(UPDATE_CACHE_FILE, 'w') as f:
+                    json.dump(cache, f)
 
                 for attempt in range(3):
                     try:
@@ -338,7 +372,6 @@ class TorGrabberApp(ctk.CTk):
 
         escaped_content = json.dumps(new_content)
 
-        # Create a more robust updater that retries and logs errors
         updater_code = f'''import os, sys, time, subprocess, json, shutil
 
 def log_error(msg):
@@ -419,7 +452,7 @@ except Exception as e:
     def do_global_manual_search(self):
         q = self.global_search_entry.get().strip()
         if q:
-            self.open_generic_manual_search_with_query(q)
+            self.open_manual_search({'show': q, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''})
             self.global_search_entry.delete(0, 'end')
 
     def set_global_mode(self, mode):
@@ -1425,7 +1458,7 @@ except Exception as e:
             search_query = data['title']
 
         btn = ctk.CTkButton(inf, text="Search Film", height=22, font=ctk.CTkFont(size=10, weight="bold"), fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, border_width=0, corner_radius=4)
-        btn.configure(command=lambda q=search_query: self.open_generic_manual_search_with_query(q))
+        btn.configure(command=lambda q=search_query: self.open_manual_search({'show': q, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''}))
         btn.pack(side="bottom", fill="x")
 
         if data.get('poster_url'):
@@ -1439,11 +1472,8 @@ except Exception as e:
                     ))
             self.background_executor.submit(load_img)
 
-    def open_generic_manual_search_with_query(self, query):
-        self.open_manual_search({'show': query, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''})
-
     # ==========================================
-    # LIBRARY TAB
+    # LIBRARY TAB – now with "Search & Add Shows"
     # ==========================================
     def setup_library_tab(self):
         self.tab_library.grid_columnconfigure(0, weight=1)
@@ -1455,14 +1485,79 @@ except Exception as e:
         self.lbl_lib_count = ctk.CTkLabel(hdr, text="Tracked Library", font=ctk.CTkFont(size=18, weight="bold"), text_color="white")
         self.lbl_lib_count.pack(side="left")
 
+        # New "Search Shows" button
+        self.btn_search_shows = ctk.CTkButton(hdr, text="🔍 Search Shows", width=120, height=30, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, command=self.open_show_search_dialog)
+        self.btn_search_shows.pack(side="left", padx=(10, 5))
+
         self.btn_import = ctk.CTkButton(hdr, text="Import Shows", width=120, height=30, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, command=self.import_shows_dialog)
-        self.btn_import.pack(side="left", padx=(20, 10))
+        self.btn_import.pack(side="left", padx=(5, 5))
 
         self.btn_cleanup = ctk.CTkButton(hdr, text="Cleanup Ended", width=120, height=30, fg_color="#C0392B", hover_color="#922B21", command=self.cleanup_ended_shows)
         self.btn_cleanup.pack(side="left")
 
         self.library_scroll = ctk.CTkScrollableFrame(self.tab_library, fg_color="transparent")
         self.library_scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
+
+    def open_show_search_dialog(self):
+        """Popup to search for shows on TVMaze and add them to library."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Search & Add Shows")
+        dialog.geometry("600x500")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(fg_color=BG_BASE)
+
+        search_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        search_frame.pack(fill="x", padx=20, pady=20)
+
+        entry = ctk.CTkEntry(search_frame, placeholder_text="Enter show name...", width=400, height=40, fg_color=GLASS_CARD, border_color=GLASS_EDGE)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        results_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+        results_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        def do_search():
+            for w in results_frame.winfo_children():
+                w.destroy()
+            q = entry.get().strip()
+            if not q:
+                return
+            try:
+                resp = http_session.get(f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q)}", timeout=5)
+                resp.raise_for_status()
+                data = resp.json()
+                if not data:
+                    ctk.CTkLabel(results_frame, text="No shows found.", text_color="gray50").pack(pady=20)
+                    return
+                for item in data:
+                    show = item.get('show', {})
+                    sid = str(show.get('id'))
+                    name = show.get('name', 'Unknown')
+                    status = show.get('status', 'Unknown')
+                    with self.data_lock:
+                        tracked = sid in self.followed_shows
+
+                    card = ctk.CTkFrame(results_frame, fg_color=GLASS_CARD, border_color=GLASS_EDGE, border_width=1, corner_radius=8)
+                    card.pack(fill="x", pady=5)
+                    card.grid_columnconfigure(0, weight=1)
+
+                    info = ctk.CTkFrame(card, fg_color="transparent")
+                    info.grid(row=0, column=0, padx=10, pady=8, sticky="w")
+                    ctk.CTkLabel(info, text=name, font=ctk.CTkFont(size=14, weight="bold"), text_color="white").pack(anchor="w")
+                    ctk.CTkLabel(info, text=f"Status: {status}", font=ctk.CTkFont(size=11), text_color="gray60").pack(anchor="w")
+
+                    btn = ctk.CTkButton(card, text="Tracking" if tracked else "+ Track", width=80, height=28,
+                                        fg_color="transparent" if tracked else ACCENT_COLOR,
+                                        state="disabled" if tracked else "normal",
+                                        command=lambda s=sid, n=name: self.toggle_follow(s, n, True, None))
+                    btn.grid(row=0, column=1, padx=10, pady=8, sticky="e")
+
+            except Exception as e:
+                ctk.CTkLabel(results_frame, text=f"Search failed: {e}", text_color="#C0392B").pack(pady=20)
+
+        search_btn = ctk.CTkButton(search_frame, text="Search", width=80, height=40, fg_color=ACCENT_COLOR, command=do_search)
+        search_btn.pack(side="right")
+        entry.bind("<Return>", lambda e: do_search())
 
     def import_shows_dialog(self):
         dialog = ctk.CTkToplevel(self)
@@ -1669,7 +1764,7 @@ except Exception as e:
         self.background_executor.submit(_task)
 
     # ==========================================
-    # ADVANCED MANUAL DIALOGUE
+    # ADVANCED MANUAL DIALOGUE – stays open
     # ==========================================
     def open_manual_search(self, ep_data):
         popup = ctk.CTkToplevel(self)
@@ -1801,11 +1896,18 @@ except Exception as e:
                         'magnet': row_r.get('magnet', ''),
                         'name': row_r.get('name', 'Unknown')
                     }, row_s)
+                    # Update calendar button if exists
                     cal_btn = ep_data.get('button_ref')
                     if cal_btn and cal_btn.winfo_exists():
                         cal_btn.configure(text="✅ Downloaded", fg_color="#2FA572", hover_color="#2FA572")
-                    popup.after(400, popup.destroy)
+                    # DO NOT close popup
+                    btn_ref.configure(text="✅ Done! (keep searching)", fg_color="#2FA572")
             animate()
+
+        # Close button
+        close_btn = ctk.CTkButton(res_box, text="Close", height=30, width=80, fg_color="#C0392B", hover_color="#922B21",
+                                  command=popup.destroy)
+        close_btn.place(relx=0.5, rely=0.98, anchor="s")
 
         def render_results():
             for w in scroll.winfo_children():
