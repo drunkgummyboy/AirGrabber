@@ -11,18 +11,42 @@ import urllib.parse
 import hashlib
 import logging
 import webbrowser
+import traceback
 from datetime import datetime, timedelta, date
 from functools import wraps
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
+# SETUP FILE LOGGING EARLY
+# ==========================================
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(SCRIPT_DIR, "airgrabber.log")
+
+if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 5 * 1024 * 1024:
+    try:
+        os.remove(LOG_FILE)
+    except:
+        pass
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+logger.info("=== TorGrabber startup ===")
+
+# ==========================================
 # VERSION & UPDATE CONFIG
 # ==========================================
-CURRENT_VERSION = "1.0.0"                  # bump this when releasing a new version
+CURRENT_VERSION = "1.0.0"
 REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
-SCRIPT_FILENAME = "airgrabber.py"          # always the repo filename
+SCRIPT_FILENAME = "airgrabber.py"
 
 # ==========================================
 # AUTO-INSTALL DEPENDENCIES
@@ -37,16 +61,44 @@ def ensure_dependencies():
     for import_name, pip_name in required_packages.items():
         try:
             __import__(import_name)
+            logger.debug(f"Dependency '{import_name}' already installed.")
         except ImportError:
-            print(f"Missing dependency '{pip_name}'. Installing now...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+            logger.info(f"Missing dependency '{pip_name}'. Installing now...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info(f"Successfully installed '{pip_name}'.")
+            except Exception as e:
+                logger.error(f"Failed to install '{pip_name}': {e}")
 
-ensure_dependencies()
-import customtkinter as ctk
-import requests
-import cloudscraper
-from PIL import Image, ImageOps, ImageTk
-import tkinter.filedialog as filedialog
+try:
+    ensure_dependencies()
+except Exception as e:
+    logger.error(f"Dependency installation failed: {e}")
+
+# ==========================================
+# IMPORTS
+# ==========================================
+try:
+    import customtkinter as ctk
+    import requests
+    import cloudscraper
+    from PIL import Image, ImageOps, ImageTk
+    import tkinter.filedialog as filedialog
+    import tkinter.messagebox as messagebox
+except ImportError as e:
+    logger.critical(f"Critical import error: {e}")
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        tk.messagebox.showerror("Missing Dependencies",
+                                f"Required module not found: {e}\n\n"
+                                "Please run the script from a terminal to see the full error.")
+        root.destroy()
+    except:
+        pass
+    sys.exit(1)
 
 # ==========================================
 # GLOBAL HTTP SESSIONS
@@ -57,13 +109,17 @@ http_session.headers.update({
     'Accept': 'application/json, text/plain, */*'
 })
 
-scraper_session = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+try:
+    scraper_session = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+except Exception as e:
+    logger.error(f"Cloudscraper init failed: {e}")
+    scraper_session = requests.Session()
+
 api_semaphore = threading.Semaphore(4)
 
 # ==========================================
 # CONFIGURATION & THEME
 # ==========================================
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(SCRIPT_DIR, "followed_shows.json")
 SETTINGS_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "history.json")
@@ -74,13 +130,6 @@ POSTERS_DIR = os.path.join(SCRIPT_DIR, "posters_cache")
 
 os.makedirs(POSTERS_DIR, exist_ok=True)
 os.makedirs(TORRENTS_DIR, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
 
 BG_BASE = "#0F0D14"
 GLASS_CARD = "#1A1726"
@@ -179,10 +228,9 @@ class TorGrabberApp(ctk.CTk):
         self.unfollowed_cache = {}
         self.calendar_day_frames = {}
         self.calendar_generation = 0
-        self._cache_dirty = False  # Initialize cache dirty flag
+        self._cache_dirty = False
 
         self.ui_queue = queue.Queue()
-
         self.poll_ui_queue()
 
         self.grid_columnconfigure(0, weight=1)
@@ -191,37 +239,30 @@ class TorGrabberApp(ctk.CTk):
         # TOP NAVIGATION BAR
         self.top_bar = ctk.CTkFrame(self, fg_color="transparent")
         self.top_bar.grid(row=0, column=0, padx=15, pady=(15, 5), sticky="ew")
-        
         self.top_bar.grid_columnconfigure(0, weight=1, uniform="nav")
         self.top_bar.grid_columnconfigure(1, weight=0)
         self.top_bar.grid_columnconfigure(2, weight=1, uniform="nav")
 
-        # Logo label with padding to the right and increased scale
         self.logo_lbl = ctk.CTkLabel(self.top_bar, text="TorGrabber", font=ctk.CTkFont(size=24, weight="bold"), text_color=ACCENT_COLOR)
-        self.logo_lbl.grid(row=0, column=0, sticky="w", padx=(10, 0))  # Move right
+        self.logo_lbl.grid(row=0, column=0, sticky="w", padx=(10, 0))
 
         self.global_media_var = ctk.StringVar(value="TV Shows")
         self.toggle_frame = ctk.CTkFrame(self.top_bar, fg_color=GLASS_CARD, corner_radius=15, border_width=1, border_color=GLASS_EDGE)
         self.toggle_frame.grid(row=0, column=1)
 
-        # Initialize with text="" to bypass CustomTkinter's phantom margin bug
         self.btn_tv = ctk.CTkButton(self.toggle_frame, text="", width=160, height=100, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, corner_radius=12, border_width=0, font=ctk.CTkFont(weight="bold", size=16), command=lambda: self.set_global_mode("TV Shows"))
         self.btn_tv.grid(row=0, column=0, padx=4, pady=4)
 
         self.btn_movie = ctk.CTkButton(self.toggle_frame, text="", width=160, height=100, fg_color="transparent", hover_color="#2A2130", corner_radius=12, border_width=0, font=ctk.CTkFont(weight="bold", size=16), command=lambda: self.set_global_mode("Movies"))
         self.btn_movie.grid(row=0, column=1, padx=4, pady=4)
 
-        # Right Nav (Search & Settings)
         self.right_nav_frame = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.right_nav_frame.grid(row=0, column=2, sticky="e")
-        
         self.global_search_entry = ctk.CTkEntry(self.right_nav_frame, placeholder_text="Type to search...", placeholder_text_color="#A4B2C6", height=40, width=200, fg_color=GLASS_CARD, border_color=GLASS_EDGE)
         self.global_search_entry.pack(side="left", padx=(0, 5))
         self.global_search_entry.bind("<Return>", lambda e: self.do_global_manual_search())
-        
         self.global_search_btn = ctk.CTkButton(self.right_nav_frame, text="🔍", width=40, height=40, fg_color=GLASS_CARD, hover_color=ACCENT_HOVER, border_width=1, border_color=GLASS_EDGE, corner_radius=10, font=ctk.CTkFont(size=18), command=self.do_global_manual_search)
         self.global_search_btn.pack(side="left", padx=(0, 15))
-
         self.settings_btn = ctk.CTkButton(self.right_nav_frame, text="⚙", font=ctk.CTkFont(size=28), width=40, height=40, fg_color="transparent", hover_color=GLASS_CARD, border_width=0, corner_radius=10, command=self.open_settings_window)
         self.settings_btn.pack(side="left")
 
@@ -235,15 +276,12 @@ class TorGrabberApp(ctk.CTk):
         self.tabview._segmented_button.configure(font=ctk.CTkFont(size=16, weight="bold"))
 
         self.current_movie_month = date.today().replace(day=1)
-
         self._sync_timer = None
         self._sync_running = False
-
         self.current_movie_buckets = None
 
         self.set_global_mode("TV Shows")
-        # Start auto-update check after UI is ready
-        self.check_for_updates()
+        self.after(2000, self.check_for_updates)
 
         self.background_executor.submit(self.load_app_icons)
         self.start_background_library_sync()
@@ -252,7 +290,6 @@ class TorGrabberApp(ctk.CTk):
     # AUTO-UPDATE METHODS
     # ==========================================
     def check_for_updates(self):
-        """Check GitHub for a newer version and update if available."""
         def _check():
             try:
                 version_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/version.txt"
@@ -264,8 +301,6 @@ class TorGrabberApp(ctk.CTk):
                 if remote_version == CURRENT_VERSION:
                     return
                 logger.info(f"New version {remote_version} available. Updating...")
-
-                # Retry downloading the script up to 3 times
                 for attempt in range(3):
                     try:
                         script_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/{SCRIPT_FILENAME}"
@@ -275,7 +310,7 @@ class TorGrabberApp(ctk.CTk):
                             return
                         else:
                             logger.error(f"Script download failed (attempt {attempt+1}): HTTP {script_resp.status_code}")
-                            time.sleep(2 ** attempt)  # exponential backoff
+                            time.sleep(2 ** attempt)
                     except Exception as e:
                         logger.error(f"Script download error (attempt {attempt+1}): {e}")
                         time.sleep(2 ** attempt)
@@ -286,8 +321,6 @@ class TorGrabberApp(ctk.CTk):
         self.background_executor.submit(_check)
 
     def apply_update(self, new_content):
-        """Spawn a separate process to overwrite the original script and restart."""
-        # Target the actual script file in the script's directory
         script_path = os.path.join(SCRIPT_DIR, SCRIPT_FILENAME)
         import json, tempfile
 
@@ -325,6 +358,9 @@ except Exception as e:
         self.quit()
         sys.exit(0)
 
+    # ==========================================
+    # UI HELPERS
+    # ==========================================
     def do_global_manual_search(self):
         q = self.global_search_entry.get().strip()
         if q:
@@ -349,10 +385,8 @@ except Exception as e:
         if mode == "TV Shows":
             self.tab_calendar = self.tabview.add("Calendar")
             self.tab_library = self.tabview.add("Tracked")
-
             self.setup_calendar_tab()
             self.setup_library_tab()
-
             self.tabview.set("Calendar")
             self.refresh_calendar_data()
         else:
@@ -365,10 +399,8 @@ except Exception as e:
         logo = self.fetch_pil_image("https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/refs/heads/main/logo.png")
         tv_ico = self.fetch_pil_image("https://github.com/drunkgummyboy/AirGrabber/blob/main/tv.png?raw=true")
         mov_ico = self.fetch_pil_image("https://github.com/drunkgummyboy/AirGrabber/blob/main/movie.png?raw=true")
-        
         if not mov_ico:
             mov_ico = self.fetch_pil_image("https://github.com/drunkgummyboy/AirGrabber/blob/main/movies.png?raw=true")
-            
         settings_ico = self.fetch_pil_image("https://raw.githubusercontent.com/google/material-design-icons/master/png/action/settings/materialicons/48dp/2x/baseline_settings_white_48dp.png")
 
         def apply():
@@ -378,24 +410,21 @@ except Exception as e:
                 except:
                     pass
                 w, h = logo.size
-                new_h = 100  # Increased from 80
+                new_h = 100
                 new_w = int(new_h * (w / h))
                 self.logo_lbl.configure(image=ctk.CTkImage(light_image=logo, dark_image=logo, size=(new_w, new_h)), text="")
-
             if hasattr(self, 'btn_tv') and self.btn_tv.winfo_exists():
                 if tv_ico:
                     self.tv_ico_img = ctk.CTkImage(light_image=tv_ico, dark_image=tv_ico, size=(80, 80))
                     self.btn_tv.configure(image=self.tv_ico_img, text="")
                 else:
                     self.btn_tv.configure(text="TV Shows")
-
             if hasattr(self, 'btn_movie') and self.btn_movie.winfo_exists():
                 if mov_ico:
                     self.mov_ico_img = ctk.CTkImage(light_image=mov_ico, dark_image=mov_ico, size=(80, 80))
                     self.btn_movie.configure(image=self.mov_ico_img, text="")
                 else:
                     self.btn_movie.configure(text="Movies")
-
             if settings_ico and hasattr(self, 'settings_btn') and self.settings_btn.winfo_exists():
                 self.settings_img = ctk.CTkImage(light_image=settings_ico, dark_image=settings_ico, size=(32, 32))
                 self.settings_btn.configure(image=self.settings_img, text="")
@@ -510,7 +539,6 @@ except Exception as e:
         cached = self.image_cache.get(url)
         if cached:
             return cached
-            
         if os.path.exists(local_path):
             try:
                 pil_img = Image.open(local_path)
@@ -523,7 +551,6 @@ except Exception as e:
                     os.remove(local_path)
                 except:
                     pass
-
         try:
             resp = http_session.get(url, timeout=5)
             resp.raise_for_status()
@@ -671,7 +698,6 @@ except Exception as e:
                 return valid_solid[0]
         except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
             logger.debug("SolidTorrents search error for '%s': %s", query_variants[0], e)
-            
         return None
 
     def _parse_torrentio_streams(self, streams, quality_pref, q_str):
@@ -729,7 +755,6 @@ except Exception as e:
     def download_torrent_file(self, data, best, f_size=None):
         dl_dir = self.settings.get("download_dir", TORRENTS_DIR)
         os.makedirs(dl_dir, exist_ok=True)
-        # Sanitize filename more robustly
         raw_name = best.get('name', 'torrent')
         safe = re.sub(r'[<>:"/\\|?*\[\]()]+', '_', raw_name)
         safe = "".join(c for c in safe if c.isalnum() or c in " ._-").strip()
@@ -742,7 +767,6 @@ except Exception as e:
             info_hash = best.get('info_hash')
             magnet = best.get('magnet')
 
-            # Prefer magnet link if present, as it's more reliable for Torrentio
             if magnet:
                 try:
                     magnet_path = os.path.join(dl_dir, f"{safe}.magnet")
@@ -753,7 +777,6 @@ except Exception as e:
                 except Exception as e:
                     logger.error(f"Failed to save magnet file: {e}")
             elif info_hash:
-                # Fallback to .torrent download only if no magnet
                 t_path = os.path.join(dl_dir, f"{safe}.torrent")
                 part = t_path + ".part"
                 for base in [f"https://itorrents.org/torrent/{info_hash}.torrent",
@@ -773,7 +796,6 @@ except Exception as e:
                         logger.warning(f"Error downloading torrent from {base}: {e}")
 
             if success:
-                # Save TorGrabber metadata JSON
                 if self.settings.get("create_torgrabber_json", True):
                     try:
                         media_type = "movie" if self.global_media_var.get() == "Movies" else "tv"
@@ -789,8 +811,6 @@ except Exception as e:
                         logger.info(f"Saved metadata to {json_path}")
                     except Exception as e:
                         logger.error(f"Failed to save metadata JSON: {e}")
-
-                # Update history
                 if data.get('media_id') and data.get('episode'):
                     hk = f"{data['media_id']}_{data['episode']}"
                     with self.data_lock:
@@ -834,7 +854,6 @@ except Exception as e:
                 self.maybe_save_caches()
             finally:
                 self._sync_running = False
-                # Schedule next automatic sync in 6 hours
                 self.ui_queue.put(lambda: self.after(6*60*60*1000, self._run_library_sync))
         self.background_executor.submit(sync)
 
@@ -1038,7 +1057,7 @@ except Exception as e:
                 btn.configure(state="disabled", hover_color="gray25")
             btn.pack(side="bottom", fill="x")
             data['button_ref'] = btn
-            
+
             dots = ctk.CTkLabel(card, text="⋮", width=20, height=30, font=ctk.CTkFont(size=18, weight="bold"), text_color="#A4B2C6", cursor="hand2")
             dots.place(relx=1.0, x=-5, y=5, anchor="ne")
             dots.bind("<Button-1>", lambda e, d=data: self.open_manual_search(d))
@@ -1077,7 +1096,7 @@ except Exception as e:
             data['button_ref'] = None
 
     # ==========================================
-    # MOVIE RELEASES TAB (TMDB API DIGITAL RELEASES)
+    # MOVIE RELEASES TAB
     # ==========================================
     def get_relative_time_text(self, target_date):
         today = datetime.now().date()
@@ -1281,7 +1300,7 @@ except Exception as e:
             max_movies = 12
             n = min(max_movies, len(week_movies))
             if n % 2 != 0:
-                n -= 1  # make even
+                n -= 1
             if n <= 0:
                 continue
             movies_limited = week_movies[:n]
@@ -1339,13 +1358,11 @@ except Exception as e:
         score_text = f"★ {data.get('score', 'N/A')} | {data.get('rating', 'NR')}"
         ctk.CTkLabel(inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6").pack(anchor="w", pady=2)
 
-        # IMDb link (search page)
         imdb_search_url = f"https://www.imdb.com/find?q={urllib.parse.quote(data['title'])}"
         imdb_lbl = ctk.CTkLabel(inf, text="IMDb", text_color="#5D8AA8", font=ctk.CTkFont(size=9, underline=True), cursor="hand2")
         imdb_lbl.pack(anchor="w", pady=(0, 2))
         imdb_lbl.bind("<Button-1>", lambda e, url=imdb_search_url: webbrowser.open(url))
 
-        # Build search query including year
         release_year = data['date'].year if data.get('date') else ""
         if release_year:
             search_query = f"{data['title']} {release_year}"
@@ -1371,7 +1388,7 @@ except Exception as e:
         self.open_manual_search({'show': query, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''})
 
     # ==========================================
-    # LIBRARY TAB (TRACKED ITEMS)
+    # LIBRARY TAB
     # ==========================================
     def setup_library_tab(self):
         self.tab_library.grid_columnconfigure(0, weight=1)
@@ -1383,7 +1400,6 @@ except Exception as e:
         self.lbl_lib_count = ctk.CTkLabel(hdr, text="Tracked Library", font=ctk.CTkFont(size=18, weight="bold"), text_color="white")
         self.lbl_lib_count.pack(side="left")
 
-        # Import button now opens a text paste dialog
         self.btn_import = ctk.CTkButton(hdr, text="Import Shows", width=120, height=30, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, command=self.import_shows_dialog)
         self.btn_import.pack(side="left", padx=(20, 10))
 
@@ -1394,7 +1410,6 @@ except Exception as e:
         self.library_scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
 
     def import_shows_dialog(self):
-        """Open a dialog with a textbox to paste show names, one per line."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Import Shows")
         dialog.geometry("500x400")
@@ -1460,7 +1475,6 @@ except Exception as e:
                     if sid not in self.followed_shows:
                         self.followed_shows[sid] = {"name": name, "metadata": None}
                         added += 1
-                    # if already followed, ignore
                 time.sleep(0.2)
 
             self.save_data()
@@ -1600,7 +1614,7 @@ except Exception as e:
         self.background_executor.submit(_task)
 
     # ==========================================
-    # ADVANCED MANUAL DIALOGUE UI
+    # ADVANCED MANUAL DIALOGUE
     # ==========================================
     def open_manual_search(self, ep_data):
         popup = ctk.CTkToplevel(self)
@@ -1615,7 +1629,7 @@ except Exception as e:
         popup.results_pool = []
         popup.results_lock = threading.Lock()
         popup.searching = False
-        popup.sort_col = 'size'  # Default sort by size descending
+        popup.sort_col = 'size'
         popup.sort_desc = True
 
         sf = ctk.CTkFrame(popup, fg_color=GLASS_CARD, border_width=1, border_color=GLASS_EDGE, corner_radius=8)
@@ -1639,7 +1653,6 @@ except Exception as e:
         filter_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
         filter_frame.pack(side="right")
 
-        # Initialize quality filter from settings
         quality_setting = self.settings.get("quality", "1080p")
         if quality_setting == "Any":
             init_qual = "Any Quality"
@@ -1648,7 +1661,7 @@ except Exception as e:
         elif quality_setting == "x265/HEVC":
             init_qual = "x265"
         else:
-            init_qual = quality_setting  # 720p, 1080p
+            init_qual = quality_setting
 
         qual_var = ctk.StringVar(value=init_qual)
         size_var = ctk.StringVar(value="Any Size")
@@ -1681,7 +1694,7 @@ except Exception as e:
 
         res_title = ctk.CTkLabel(res_box, text="Results", text_color=ACCENT_COLOR, font=("Consolas", 11, "bold"))
         res_title.place(x=10, y=-10)
-        
+
         def set_grid_cols(frame):
             frame.grid_columnconfigure(0, weight=1)
             frame.grid_columnconfigure(1, weight=0, minsize=100)
@@ -1690,7 +1703,7 @@ except Exception as e:
             frame.grid_columnconfigure(4, weight=0, minsize=80)
 
         header_frame = ctk.CTkFrame(res_box, fg_color="transparent", height=28)
-        header_frame.pack(fill="x", padx=(10, 26), pady=(15, 0)) 
+        header_frame.pack(fill="x", padx=(10, 26), pady=(15, 0))
         set_grid_cols(header_frame)
 
         def set_sort(col):
@@ -1717,31 +1730,26 @@ except Exception as e:
 
         def on_dl(btn_ref, row_r, row_s):
             btn_ref.configure(state="disabled")
-            
             anim_colors = ["#2ECC71", "#27AE60", "#1E8449", "#145A32"]
             anim_texts = ["Grabbing", "Grabbing.", "Grabbing..", "Grabbing..."]
-            
             def animate(step=0):
                 if step < 10:
                     btn_ref.configure(
-                        text=anim_texts[step % len(anim_texts)], 
+                        text=anim_texts[step % len(anim_texts)],
                         fg_color=anim_colors[step % len(anim_colors)]
                     )
                     popup.after(100, animate, step+1)
                 else:
                     btn_ref.configure(text="✅ Done!", fg_color="#2FA572")
                     self.download_torrent_file(ep_data, {
-                        'info_hash': row_r.get('info_hash', ''), 
-                        'magnet': row_r.get('magnet', ''), 
+                        'info_hash': row_r.get('info_hash', ''),
+                        'magnet': row_r.get('magnet', ''),
                         'name': row_r.get('name', 'Unknown')
                     }, row_s)
-                    
                     cal_btn = ep_data.get('button_ref')
                     if cal_btn and cal_btn.winfo_exists():
                         cal_btn.configure(text="✅ Downloaded", fg_color="#2FA572", hover_color="#2FA572")
-                    
                     popup.after(400, popup.destroy)
-                    
             animate()
 
         def render_results():
@@ -1771,7 +1779,6 @@ except Exception as e:
                 name_lower = r['name'].lower()
                 if q_val != "any quality" and q_val not in name_lower:
                     continue
-
                 gb_size = r['size'] / (1024**3) if r['size'] else 0
                 if s_val == "Under 1GB" and gb_size > 1.0:
                     continue
@@ -1779,7 +1786,6 @@ except Exception as e:
                     continue
                 if s_val == "Over 3GB" and gb_size < 3.0:
                     continue
-
                 filtered.append(r)
 
             filtered.sort(key=lambda x: x[popup.sort_col], reverse=popup.sort_desc)
@@ -1804,7 +1810,6 @@ except Exception as e:
                 ctk.CTkLabel(row_frame, text=size_str, width=100, font=("Consolas", 12), text_color="#A4B2C6", anchor="e").grid(row=0, column=1, sticky="e", padx=2)
                 ctk.CTkLabel(row_frame, text=f"{seed}:{leech}", width=110, font=("Consolas", 12), text_color="#A4B2C6", anchor="center").grid(row=0, column=2, sticky="ew", padx=2)
                 ctk.CTkLabel(row_frame, text=src_label, width=60, font=("Consolas", 12), text_color="#A4B2C6", anchor="center").grid(row=0, column=3, sticky="ew", padx=2)
-                
                 btn_frame = ctk.CTkFrame(row_frame, fg_color="transparent", width=80)
                 btn_frame.grid(row=0, column=4, sticky="e", padx=2)
                 dl_btn = ctk.CTkButton(btn_frame, text="Grab", width=65, height=24, fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, font=ctk.CTkFont(size=10, weight="bold"), corner_radius=4)
@@ -2030,7 +2035,7 @@ except Exception as e:
         execute_manual_search()
 
     # ==========================================
-    # SETTINGS MODAL POPUP
+    # SETTINGS MODAL
     # ==========================================
     def open_settings_window(self):
         win = ctk.CTkToplevel(self)
@@ -2066,7 +2071,6 @@ except Exception as e:
         self.tmdb_key_var = ctk.StringVar(value=self.settings.get("tmdb_api_key", ""))
         ctk.CTkEntry(f4, textvariable=self.tmdb_key_var, width=220, fg_color=GLASS_CARD, border_color=GLASS_EDGE).pack(side="left", padx=10, expand=True, fill="x")
 
-        # Added Link specific for TMDB settings
         link_f = ctk.CTkFrame(c, fg_color="transparent")
         link_f.pack(fill="x", pady=(0, 8))
         link_lbl = ctk.CTkLabel(link_f, text="Get an API key here: https://www.themoviedb.org/settings/api", text_color="#5D8AA8", cursor="hand2", font=ctk.CTkFont(size=10, underline=True))
@@ -2097,6 +2101,22 @@ except Exception as e:
         if d:
             self.dl_dir_var.set(d)
 
+# ==========================================
+# MAIN ENTRY POINT
+# ==========================================
 if __name__ == "__main__":
-    app = TorGrabberApp()
-    app.mainloop()
+    try:
+        app = TorGrabberApp()
+        app.mainloop()
+    except Exception as e:
+        error_msg = traceback.format_exc()
+        logger.critical(f"Unhandled exception:\n{error_msg}")
+        try:
+            import tkinter.messagebox as msg
+            msg.showerror("TorGrabber Fatal Error",
+                          f"The application crashed.\n\nPlease check the log file:\n{LOG_FILE}\n\nError:\n{str(e)}")
+        except:
+            pass
+        print(f"Fatal error. See log: {LOG_FILE}")
+        time.sleep(3)
+        sys.exit(1)
