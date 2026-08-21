@@ -22,7 +22,6 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "airgrabber.log")
-UPDATE_CACHE_FILE = os.path.join(SCRIPT_DIR, "update_cache.json")
 
 if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 5 * 1024 * 1024:
     try:
@@ -44,7 +43,7 @@ logger.info("=== TorGrabber startup ===")
 # ==========================================
 # VERSION & UPDATE CONFIG
 # ==========================================
-CURRENT_VERSION = "1.0.4"
+CURRENT_VERSION = "1.0.8"
 REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
 SCRIPT_FILENAME = "airgrabber.py"
@@ -262,6 +261,13 @@ class TorGrabberApp(ctk.CTk):
         self.global_search_entry = ctk.CTkEntry(self.right_nav_frame, placeholder_text="Type to search...", placeholder_text_color="#A4B2C6", height=40, width=200, fg_color=GLASS_CARD, border_color=GLASS_EDGE)
         self.global_search_entry.pack(side="left", padx=(0, 5))
         self.global_search_entry.bind("<Return>", lambda e: self.do_global_manual_search())
+        self.global_search_entry.bind("<KeyRelease>", self.on_global_search_key)
+        self.global_search_entry.bind("<FocusOut>", lambda e: self.after(200, self.hide_global_suggestions))
+
+        self._global_search_job = None
+        self._global_latest_query = ""
+        self.global_suggestion_window = None
+
         self.global_search_btn = ctk.CTkButton(self.right_nav_frame, text="🔍", width=40, height=40, fg_color=GLASS_CARD, hover_color=ACCENT_HOVER, border_width=1, border_color=GLASS_EDGE, corner_radius=10, font=ctk.CTkFont(size=18), command=self.do_global_manual_search)
         self.global_search_btn.pack(side="left", padx=(0, 15))
         self.settings_btn = ctk.CTkButton(self.right_nav_frame, text="⚙", font=ctk.CTkFont(size=28), width=40, height=40, fg_color="transparent", hover_color=GLASS_CARD, border_width=0, corner_radius=10, command=self.open_settings_window)
@@ -294,45 +300,19 @@ class TorGrabberApp(ctk.CTk):
         self.start_background_library_sync()
 
     # ==========================================
-    # AUTO-UPDATE METHODS (with cache)
+    # AUTO-UPDATE METHODS
     # ==========================================
     def check_for_updates(self):
         def _check():
             try:
-                # Read cache
-                cache = {}
-                if os.path.exists(UPDATE_CACHE_FILE):
-                    try:
-                        with open(UPDATE_CACHE_FILE, 'r') as f:
-                            cache = json.load(f)
-                    except:
-                        pass
-                last_checked = cache.get("last_checked_version", "")
-
                 version_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/version.txt"
                 resp = requests.get(version_url, timeout=5)
                 if resp.status_code != 200:
                     logger.debug(f"Version check failed: HTTP {resp.status_code}")
                     return
+                
                 remote_version = resp.text.strip()
-
-                # Update cache with current check time (even if no update)
-                cache["last_check_time"] = datetime.now().isoformat()
-                with open(UPDATE_CACHE_FILE, 'w') as f:
-                    json.dump(cache, f)
-
                 if remote_version == CURRENT_VERSION:
-                    # Already up-to-date; store this version in cache to avoid future checks
-                    if last_checked != remote_version:
-                        cache["last_checked_version"] = remote_version
-                        with open(UPDATE_CACHE_FILE, 'w') as f:
-                            json.dump(cache, f)
-                    return
-
-                # New version available
-                if remote_version == last_checked:
-                    # We already attempted this update; skip to avoid loop
-                    logger.info(f"Update to {remote_version} already attempted. Skipping.")
                     return
 
                 logger.info(f"New version {remote_version} available. Updating...")
@@ -340,111 +320,48 @@ class TorGrabberApp(ctk.CTk):
                     text=f"⬆ Updating to version {remote_version}... Restarting soon."
                 ))
 
-                # Store the remote version in cache before attempting download
-                cache["last_checked_version"] = remote_version
-                with open(UPDATE_CACHE_FILE, 'w') as f:
-                    json.dump(cache, f)
-
-                for attempt in range(3):
-                    try:
-                        script_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/{SCRIPT_FILENAME}"
-                        script_resp = requests.get(script_url, timeout=10)
-                        if script_resp.status_code == 200:
-                            self.apply_update(script_resp.text, remote_version)
-                            return
-                        else:
-                            logger.error(f"Script download failed (attempt {attempt+1}): HTTP {script_resp.status_code}")
-                            time.sleep(2 ** attempt)
-                    except Exception as e:
-                        logger.error(f"Script download error (attempt {attempt+1}): {e}")
-                        time.sleep(2 ** attempt)
-                logger.error("Failed to download new script after 3 attempts.")
-                self.ui_queue.put(lambda: self.status_label.configure(text="❌ Update failed. Check log."))
+                script_url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/{SCRIPT_FILENAME}"
+                script_resp = requests.get(script_url, timeout=10)
+                
+                if script_resp.status_code == 200:
+                    new_content = script_resp.text
+                    
+                    # Anti-loop check: ensure the downloaded file actually contains the new version
+                    match = re.search(r'CURRENT_VERSION\s*=\s*["\']([^"\']+)["\']', new_content)
+                    if match and match.group(1) == CURRENT_VERSION:
+                        logger.warning("Downloaded script still contains the old version (CDN cache). Aborting.")
+                        self.ui_queue.put(lambda: self.status_label.configure(text=""))
+                        return
+                        
+                    self.apply_update(new_content, remote_version)
+                else:
+                    logger.error(f"Script download failed: HTTP {script_resp.status_code}")
+                    self.ui_queue.put(lambda: self.status_label.configure(text="❌ Update failed. Check log."))
+                    
             except Exception as e:
                 logger.error("Update check failed: %s", e)
 
         self.background_executor.submit(_check)
 
     def apply_update(self, new_content, new_version):
-        """Spawn a robust updater that overwrites the script and restarts."""
-        script_path = os.path.join(SCRIPT_DIR, SCRIPT_FILENAME)
-        import json, tempfile
-
-        escaped_content = json.dumps(new_content)
-
-        updater_code = f'''import os, sys, time, subprocess, json, shutil
-
-def log_error(msg):
-    try:
-        with open(r"{script_path}.update_error.log", "a") as f:
-            f.write(f"{{time.ctime()}}: {{msg}}\\n")
-    except:
-        pass
-
-time.sleep(2)  # extra delay
-
-script_path = r"{script_path}"
-new_content = json.loads(r"""{escaped_content}""")
-
-# Try to write the new file, retry up to 5 times
-for attempt in range(5):
-    try:
-        # Write to a temporary file first
-        temp_path = script_path + ".tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        # Replace the original
-        if os.path.exists(script_path):
-            # On Windows, file may be locked; try renaming first
-            try:
-                os.replace(temp_path, script_path)
-            except PermissionError:
-                # If replace fails, try to remove first
-                os.remove(script_path)
-                os.rename(temp_path, script_path)
-        else:
-            os.rename(temp_path, script_path)
-        # Success
-        break
-    except Exception as e:
-        log_error(f"Write attempt {{attempt+1}} failed: {{e}}")
-        time.sleep(0.5)
-else:
-    log_error("All write attempts failed. Update aborted.")
-    sys.exit(1)
-
-# Launch the new version
-try:
-    subprocess.Popen([sys.executable, script_path], creationflags=0 if sys.platform != "win32" else subprocess.CREATE_NO_WINDOW)
-except Exception as e:
-    log_error(f"Failed to restart: {{e}}")
-'''
-        temp_dir = tempfile.gettempdir()
-        updater_path = os.path.join(temp_dir, f"airgrabber_updater_{int(time.time())}.py")
-        with open(updater_path, "w", encoding="utf-8") as f:
-            f.write(updater_code)
-
-        # Launch the updater and exit after a short delay to show status
         try:
-            if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NO_WINDOW
-            else:
-                creationflags = 0
-            subprocess.Popen([sys.executable, updater_path],
-                             creationflags=creationflags,
-                             close_fds=True)
+            script_path = os.path.join(SCRIPT_DIR, SCRIPT_FILENAME)
+            
+            # Python allows overwriting the currently running .py file directly
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+                
+            self.ui_queue.put(lambda: self.status_label.configure(text=f"✅ Updated to {new_version}. Restarting..."))
+            time.sleep(1.5)
+            
+            # Launch the new version and exit the current process
+            subprocess.Popen([sys.executable, script_path])
+            self.quit()
+            sys.exit(0)
+            
         except Exception as e:
-            logger.error("Failed to launch updater: %s", e)
-            self.status_label.configure(text="❌ Update error. See log.")
-            return
-
-        # Show a final message and wait a bit before quitting
-        self.status_label.configure(text=f"✅ Updated to {new_version}. Restarting...")
-        self.update()  # force UI redraw
-        time.sleep(1.5)  # let user see the message
-
-        self.quit()
-        sys.exit(0)
+            logger.error("Failed to apply update: %s", e)
+            self.ui_queue.put(lambda: self.status_label.configure(text="❌ Update overwrite failed."))
 
     # ==========================================
     # UI HELPERS
@@ -452,8 +369,120 @@ except Exception as e:
     def do_global_manual_search(self):
         q = self.global_search_entry.get().strip()
         if q:
-            self.open_manual_search({'show': q, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''})
+            self.hide_global_suggestions()
+            self.open_manual_search({'show': q, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': '', 'is_movie': self.global_media_var.get() == "Movies"})
             self.global_search_entry.delete(0, 'end')
+
+    def on_global_search_key(self, event):
+        if event.keysym in ['Return', 'Up', 'Down', 'Left', 'Right', 'Tab', 'Escape']:
+            return
+        if self._global_search_job:
+            self.after_cancel(self._global_search_job)
+        self._global_search_job = self.after(300, self.do_global_suggestions)
+
+    def do_global_suggestions(self):
+        q = self.global_search_entry.get().strip()
+        self._global_latest_query = q
+        if len(q) < 3:
+            self.hide_global_suggestions()
+            return
+
+        mode = self.global_media_var.get()
+
+        def _fetch():
+            try:
+                if mode == "TV Shows":
+                    res = http_session.get(f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q)}", timeout=3)
+                    if res.status_code == 200:
+                        data = res.json()[:6]
+                        if self._global_latest_query == q:
+                            self.ui_queue.put(lambda: self.show_global_suggestions(data, q, mode))
+                else:
+                    api_key = self.settings.get("tmdb_api_key", "").strip()
+                    if not api_key:
+                        if self._global_latest_query == q:
+                            self.ui_queue.put(lambda: self.show_global_suggestions([{"error": "TMDB API Key missing. Add in Settings."}], q, mode))
+                        return
+                    
+                    res = http_session.get(f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(q)}", timeout=3)
+                    if res.status_code == 200:
+                        results = res.json().get('results', [])[:6]
+                        if self._global_latest_query == q:
+                            self.ui_queue.put(lambda: self.show_global_suggestions(results, q, mode))
+            except:
+                pass
+        self.background_executor.submit(_fetch)
+
+    def hide_global_suggestions(self):
+        if hasattr(self, 'global_suggestion_window') and self.global_suggestion_window and self.global_suggestion_window.winfo_exists():
+            self.global_suggestion_window.destroy()
+        self.global_suggestion_window = None
+
+    def show_global_suggestions(self, data, query, mode):
+        if self._global_latest_query != query: return
+        self.hide_global_suggestions()
+        if not data: return
+
+        x = self.global_search_entry.winfo_rootx()
+        y = self.global_search_entry.winfo_rooty() + self.global_search_entry.winfo_height() + 2
+        w = self.global_search_entry.winfo_width()
+
+        self.global_suggestion_window = ctk.CTkToplevel(self)
+        self.global_suggestion_window.wm_overrideredirect(True)
+        self.global_suggestion_window.geometry(f"{w}x{len(data)*35+2}+{x}+{y}")
+        self.global_suggestion_window.configure(fg_color=GLASS_CARD)
+        self.global_suggestion_window.attributes("-topmost", True)
+
+        container = ctk.CTkFrame(self.global_suggestion_window, fg_color=GLASS_CARD, border_width=1, border_color=GLASS_EDGE, corner_radius=4)
+        container.pack(fill="both", expand=True)
+
+        if mode == "Movies" and "error" in data[0]:
+            lbl = ctk.CTkLabel(container, text=data[0]["error"], text_color="#C0392B", font=ctk.CTkFont(size=11, weight="bold"))
+            lbl.pack(fill="x", pady=8)
+            return
+
+        for item in data:
+            if mode == "TV Shows":
+                show = item.get('show', {})
+                name = show.get('name', 'Unknown')
+                year = show.get('premiered', '')[:4] if show.get('premiered') else ''
+                label_text = f"{name} ({year})" if year else name
+                
+                btn = ctk.CTkButton(container, text=label_text, fg_color="transparent", hover_color=ACCENT_HOVER, anchor="w", corner_radius=0, height=35)
+                btn.pack(fill="x")
+                
+                def on_click(s=show):
+                    self.hide_global_suggestions()
+                    self.global_search_entry.delete(0, 'end')
+                    self.open_manual_search({
+                        'show': s.get('name'), 
+                        'episode': 'S01E01', 
+                        'media_id': str(s.get('id')), 
+                        'show_id': str(s.get('id')),
+                        'title': 'Manual Action'
+                    })
+                btn.configure(command=on_click)
+            else:
+                name = item.get('title', 'Unknown')
+                year = item.get('release_date', '')[:4] if item.get('release_date') else ''
+                label_text = f"{name} ({year})" if year else name
+                
+                btn = ctk.CTkButton(container, text=label_text, fg_color="transparent", hover_color=ACCENT_HOVER, anchor="w", corner_radius=0, height=35)
+                btn.pack(fill="x")
+                
+                def on_click(m=item):
+                    self.hide_global_suggestions()
+                    self.global_search_entry.delete(0, 'end')
+                    search_str = f"{m.get('title')} {m.get('release_date', '')[:4]}".strip()
+                    self.open_manual_search({
+                        'show': search_str, 
+                        'episode': '', 
+                        'title': 'Manual Action', 
+                        'show_id': None, 
+                        'qual_str': '',
+                        'is_movie': True
+                    })
+                btn.configure(command=on_click)
 
     def set_global_mode(self, mode):
         self.global_media_var.set(mode)
@@ -543,8 +572,10 @@ except Exception as e:
 
     def save_data(self):
         with self.data_lock:
-            with open(DATA_FILE, "w") as f:
+            temp_file = DATA_FILE + ".tmp"
+            with open(temp_file, "w") as f:
                 json.dump(self.followed_shows, f)
+            os.replace(temp_file, DATA_FILE)
 
     def load_history(self):
         with self.data_lock:
@@ -558,8 +589,10 @@ except Exception as e:
 
     def save_history(self):
         with self.data_lock:
-            with open(HISTORY_FILE, "w") as f:
+            temp_file = HISTORY_FILE + ".tmp"
+            with open(temp_file, "w") as f:
                 json.dump(self.history, f)
+            os.replace(temp_file, HISTORY_FILE)
 
     def load_json_dict(self, filepath):
         with self.data_lock:
@@ -573,8 +606,10 @@ except Exception as e:
 
     def save_caches(self):
         with self.data_lock:
-            with open(EPISODES_FILE, "w") as f:
+            temp_file = EPISODES_FILE + ".tmp"
+            with open(temp_file, "w") as f:
                 json.dump(self.episodes_cache, f)
+            os.replace(temp_file, EPISODES_FILE)
             self._cache_dirty = False
 
     def mark_caches_dirty(self):
@@ -600,8 +635,10 @@ except Exception as e:
 
     def save_settings(self):
         with self.data_lock:
-            with open(SETTINGS_FILE, "w") as f:
+            temp_file = SETTINGS_FILE + ".tmp"
+            with open(temp_file, "w") as f:
                 json.dump(self.settings, f)
+            os.replace(temp_file, SETTINGS_FILE)
 
     def format_size(self, size_bytes):
         if not size_bytes:
@@ -680,66 +717,22 @@ except Exception as e:
         except (TypeError, ValueError):
             return 0
 
-    def search_best_torrent(self, show_name, episode_code, show_id=None):
-        quality_pref = self.settings.get("quality", "1080p")
-        if quality_pref == "2160p (4K)":
-            q_str = "2160p"
-            quality_token = "2160p"
-        elif quality_pref == "x265/HEVC":
-            q_str = "x265"
-            quality_token = "x265"
-        else:
-            q_str = "" if quality_pref == "Any" else quality_pref
-            quality_token = q_str
-
-        clean = re.sub(r"[^\w\s]", " ", show_name)
-        clean = " ".join(clean.split())
-
-        query_variants = [
-            f"{clean} {episode_code} {q_str}".strip(),
-            f"{clean} {episode_code}".strip(),
-            f"{show_name} {episode_code} {q_str}".strip(),
-            f"{show_name} {episode_code}".strip()
-        ]
-
-        for q in query_variants:
-            try:
-                with api_semaphore:
-                    res = http_session.get(f"https://apibay.org/q.php?q={urllib.parse.quote(q)}", timeout=5)
-                    res.raise_for_status()
-                data = res.json()
-                if isinstance(data, list) and len(data) > 0 and data[0].get('id') != '0':
-                    valid = [r for r in data if self._safe_int(r.get('seeders', 0)) > 0]
-                    filtered = self.apply_quality_filter(valid)
-                    if filtered:
-                        filtered.sort(key=lambda x: self._safe_int(x['seeders']), reverse=True)
-                        return {
-                            "source": "apibay",
-                            "name": filtered[0]['name'],
-                            "info_hash": filtered[0]['info_hash'],
-                            "magnet": "",
-                            "size": self._safe_int(filtered[0].get('size', 0)),
-                            "seeders": self._safe_int(filtered[0].get('seeders', 0))
-                        }
-            except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
-                logger.debug("APIBay search error for '%s': %s", q, e)
-
-        match = re.search(r'S(\d+)E(\d+)', episode_code, re.IGNORECASE)
-        s_num, e_num = (int(match.group(1)), int(match.group(2))) if match else (1, 1)
+    def _get_or_fetch_imdb_id(self, show_id):
+        if not show_id:
+            return None
+            
         imdb_id = None
-        if show_id:
-            with self.data_lock:
-                show_data = self.followed_shows.get(str(show_id), {})
-                meta = show_data.get('metadata')
-                if meta and meta.get('externals'):
-                    imdb_id = meta['externals'].get('imdb')
-            if not imdb_id:
-                try:
-                    with api_semaphore:
-                        res = http_session.get(f"https://api.tvmaze.com/shows/{show_id}?embed[]=externals", timeout=5)
-                        res.raise_for_status()
-                    data = res.json()
-                    imdb_id = data.get('externals', {}).get('imdb')
+        with self.data_lock:
+            show_data = self.followed_shows.get(str(show_id), {})
+            meta = show_data.get('metadata')
+            if meta and meta.get('externals'):
+                imdb_id = meta['externals'].get('imdb')
+                
+        if not imdb_id:
+            try:
+                res_meta = http_session.get(f"https://api.tvmaze.com/shows/{show_id}?embed[]=externals", timeout=5)
+                if res_meta.status_code == 200:
+                    imdb_id = res_meta.json().get('externals', {}).get('imdb')
                     if imdb_id:
                         with self.data_lock:
                             if str(show_id) in self.followed_shows:
@@ -747,79 +740,10 @@ except Exception as e:
                                     self.followed_shows[str(show_id)]['metadata'] = {}
                                 self.followed_shows[str(show_id)]['metadata']['externals'] = {'imdb': imdb_id}
                                 self.mark_caches_dirty()
-                except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                    logger.debug("TVMaze metadata fetch error for show %s: %s", show_id, e)
-
-        if imdb_id:
-            if not imdb_id.startswith('tt'):
-                imdb_id = f"tt{imdb_id}"
-            try:
-                with api_semaphore:
-                    res = http_session.get(f"https://torrentio.strem.fun/stream/series/{imdb_id}:{s_num}:{e_num}.json", timeout=6)
-                    res.raise_for_status()
-                streams = self._parse_torrentio_streams(res.json().get('streams', []), quality_pref, q_str)
-                if streams:
-                    return streams[0]
-            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                logger.debug("Torrentio search error for %s: %s", imdb_id, e)
-
-        try:
-            with api_semaphore:
-                res = http_session.get(f"https://solidtorrents.to/api/v1/search?q={urllib.parse.quote(query_variants[0])}&category=Video", timeout=6)
-                res.raise_for_status()
-            valid_solid = []
-            for r in res.json().get('results', []):
-                seeders = self._safe_int(r.get('swarm', {}).get('seeders', 0))
-                if seeders > 0:
-                    magnet = r.get('magnet', '')
-                    hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
-                    valid_solid.append({
-                        'source': 'solidtorrents',
-                        'name': r.get('title', ''),
-                        'magnet': magnet,
-                        'info_hash': hash_match.group(1) if hash_match else "",
-                        'size': self._safe_int(r.get('size', 0)),
-                        'seeders': seeders
-                    })
-            if valid_solid:
-                valid_solid.sort(key=lambda x: x['seeders'], reverse=True)
-                return valid_solid[0]
-        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-            logger.debug("SolidTorrents search error for '%s': %s", query_variants[0], e)
-        return None
-
-    def _parse_torrentio_streams(self, streams, quality_pref, q_str):
-        valid = []
-        if quality_pref == "2160p (4K)":
-            quality_token = "2160p"
-        elif quality_pref == "x265/HEVC":
-            quality_token = "x265"
-        else:
-            quality_token = q_str
-
-        for s in streams:
-            title = s.get('title', '').lower()
-            seed_match = re.search(r'👤\s*(\d+)', s.get('title', ''))
-            seeders = int(seed_match.group(1)) if seed_match else 0
-            if seeders > 0:
-                if quality_pref == "Any" or (quality_token.lower() in title):
-                    magnet = s.get('url', '')
-                    hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
-                    sz_match = re.search(r'💾\s*([\d.]+)\s*([A-Za-z]+)', s.get('title', ''))
-                    sz_bytes = 0
-                    if sz_match:
-                        val, unit = float(sz_match.group(1)), sz_match.group(2).upper()
-                        sz_bytes = val * (1024**3 if unit == 'GB' else 1024**2 if unit == 'MB' else 1024)
-                    valid.append({
-                        'source': 'torrentio',
-                        'name': s.get('title', '').split('\n')[0],
-                        'magnet': magnet,
-                        'info_hash': hash_match.group(1) if hash_match else "",
-                        'size': sz_bytes,
-                        'seeders': seeders
-                    })
-        valid.sort(key=lambda x: x['seeders'], reverse=True)
-        return valid
+            except Exception as e:
+                logger.debug(f"TVMaze metadata fetch error for show {show_id}: {e}")
+                
+        return imdb_id
 
     def apply_quality_filter(self, results):
         pref = self.settings.get("quality", "1080p")
@@ -1126,6 +1050,11 @@ except Exception as e:
         qual = self.settings.get("quality", "1080p")
         data['qual_str'] = qual
 
+        # IMDb Info ID check
+        with self.data_lock:
+            meta = self.followed_shows.get(str(data['media_id']), {}).get('metadata', {})
+        imdb_id = meta.get('externals', {}).get('imdb')
+
         if show_poster:
             pf = ctk.CTkFrame(card, width=68, height=100, fg_color="gray20", corner_radius=5)
             pf.pack(side="left", padx=10, pady=10)
@@ -1136,26 +1065,22 @@ except Exception as e:
 
             inf = ctk.CTkFrame(card, fg_color="transparent")
             inf.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=10)
-            ctk.CTkLabel(inf, text=data['show'], font=ctk.CTkFont(size=12, weight="bold"), text_color="white", wraplength=120, justify="left").pack(anchor="w")
-            ctk.CTkLabel(inf, text=data['episode'], font=ctk.CTkFont(size=9), text_color="#A4B2C6").pack(anchor="w")
-
+            
+            # Pack bottom button FIRST so it permanently reserves space and never gets crushed
             btn = ctk.CTkButton(inf, text=btn_text, height=22, font=ctk.CTkFont(size=10, weight="bold"), fg_color=btn_color, hover_color=ACCENT_HOVER, corner_radius=4, border_width=0)
             btn.configure(command=lambda d=data: self.open_manual_search(d))
             if future:
                 btn.configure(state="disabled", hover_color="gray25")
             btn.pack(side="bottom", fill="x")
             data['button_ref'] = btn
-
-            dots = ctk.CTkLabel(card, text="⋮", width=20, height=30, font=ctk.CTkFont(size=18, weight="bold"), text_color="#A4B2C6", cursor="hand2")
-            dots.place(relx=1.0, x=-5, y=5, anchor="ne")
-            dots.bind("<Button-1>", lambda e, d=data: self.open_manual_search(d))
-            dots.bind("<Enter>", lambda e, w=dots: w.configure(text_color="white"))
-            dots.bind("<Leave>", lambda e, w=dots: w.configure(text_color="#A4B2C6"))
-            dots.lift()
+            
+            # Title & Episode Text container (padded right so it avoids the info icon)
+            text_f = ctk.CTkFrame(inf, fg_color="transparent")
+            text_f.pack(side="top", fill="both", expand=True, padx=(0, 25))
+            ctk.CTkLabel(text_f, text=data['show'], font=ctk.CTkFont(size=12, weight="bold"), text_color="white", wraplength=100, justify="left").pack(anchor="nw")
+            ctk.CTkLabel(text_f, text=data['episode'], font=ctk.CTkFont(size=9), text_color="#A4B2C6").pack(anchor="nw", pady=(2, 0))
 
             def load():
-                with self.data_lock:
-                    meta = self.followed_shows.get(data.get('media_id'), {}).get('metadata', {})
                 url = meta.get('image', {}).get('medium') if meta else None
                 if url:
                     img = self.fetch_pil_image(url)
@@ -1166,22 +1091,31 @@ except Exception as e:
                         ))
             self.background_executor.submit(load)
         else:
+            # Compact view (past weeks)
             inf = ctk.CTkFrame(card, fg_color="transparent")
-            inf.pack(fill="both", expand=True, padx=(10, 30), pady=8)
+            inf.pack(fill="both", expand=True, padx=(10, 35), pady=8)
 
             title_str = f"{data['show']} - {data['episode']}"
-            if len(title_str) > 35:
-                title_str = title_str[:32] + "..."
+            if len(title_str) > 22:
+                title_str = title_str[:19] + "..."
+            
+            btn = ctk.CTkButton(inf, text="Search" if not future else "Not Aired", height=22, width=40, font=ctk.CTkFont(size=10, weight="bold"), fg_color=btn_color, hover_color=ACCENT_HOVER, corner_radius=4, border_width=0)
+            btn.configure(command=lambda d=data: self.open_manual_search(d))
+            if future:
+                btn.configure(state="disabled", hover_color="gray25")
+            btn.pack(side="right", padx=(5, 0))
+            data['button_ref'] = btn
+
             ctk.CTkLabel(inf, text=title_str, font=ctk.CTkFont(size=12, weight="bold"), text_color="white", justify="left").pack(side="left", anchor="w")
 
-            dots = ctk.CTkLabel(card, text="⋮", width=20, height=30, font=ctk.CTkFont(size=18, weight="bold"), text_color="#A4B2C6", cursor="hand2")
-            dots.place(relx=1.0, x=-10, rely=0.5, anchor="e")
-            dots.bind("<Button-1>", lambda e, d=data: self.open_manual_search(d))
-            dots.bind("<Enter>", lambda e, w=dots: w.configure(text_color="white"))
-            dots.bind("<Leave>", lambda e, w=dots: w.configure(text_color="#A4B2C6"))
-            dots.lift()
-
-            data['button_ref'] = None
+        # Place the Info icon LAST so it forces itself onto the very top layer
+        if imdb_id:
+            safe_imdb = f"tt{imdb_id}" if not str(imdb_id).startswith("tt") else str(imdb_id)
+            info_icon = ctk.CTkLabel(card, text="ⓘ", width=24, height=24, font=ctk.CTkFont(size=16), text_color="#A4B2C6", cursor="hand2")
+            info_icon.place(relx=1.0, x=-8, y=8, anchor="ne")
+            info_icon.bind("<Button-1>", lambda e, i=safe_imdb: webbrowser.open(f"https://www.imdb.com/title/{i}/"))
+            info_icon.bind("<Enter>", lambda e, w=info_icon: w.configure(text_color="white"))
+            info_icon.bind("<Leave>", lambda e, w=info_icon: w.configure(text_color="#A4B2C6"))
 
     # ==========================================
     # MOVIE RELEASES TAB
@@ -1413,7 +1347,11 @@ except Exception as e:
             ctk.CTkLabel(f, text=hdr_text, font=ctk.CTkFont(size=16, weight="bold"), text_color=text_color).pack(anchor="w", padx=10, pady=(0, 10))
 
             grid = ctk.CTkFrame(f, fg_color="transparent")
-            grid.pack(anchor="center")
+            grid.pack(anchor="w", fill="x") # Changed from center to fill="x"
+            
+            # Force 6 columns to maintain consistent card widths even if there are fewer than 6 movies in a row
+            for i in range(6):
+                grid.grid_columnconfigure(i, weight=1, uniform="movie_col")
 
             for idx, movie in enumerate(movies_limited):
                 row = idx // 6
@@ -1424,7 +1362,7 @@ except Exception as e:
             ctk.CTkLabel(self.releases_scroll, text="No releases match your search.", text_color="gray50", font=ctk.CTkFont(size=13)).pack(pady=80)
 
     def create_movie_horizontal_card(self, parent, data, row, col):
-        card = ctk.CTkFrame(parent, fg_color=GLASS_CARD, border_color=GLASS_EDGE, border_width=1, corner_radius=8, height=120)
+        card = ctk.CTkFrame(parent, fg_color=GLASS_CARD, border_color=GLASS_EDGE, border_width=1, corner_radius=8, height=130) # Increased height slightly to give buttons breathing room
         card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
         card.grid_propagate(False)
         card.pack_propagate(False)
@@ -1441,10 +1379,10 @@ except Exception as e:
         title = data['title']
         if len(title) > 25:
             title = title[:22] + "..."
-        ctk.CTkLabel(inf, text=title, font=ctk.CTkFont(size=12, weight="bold"), text_color="white", wraplength=120, justify="left").pack(anchor="w")
+        ctk.CTkLabel(inf, text=title, font=ctk.CTkFont(size=12, weight="bold"), text_color="white", wraplength=120, justify="left").pack(anchor="nw")
 
         score_text = f"★ {data.get('score', 'N/A')} | {data.get('rating', 'NR')}"
-        ctk.CTkLabel(inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6").pack(anchor="w", pady=2)
+        ctk.CTkLabel(inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6").pack(anchor="w", pady=(2, 0))
 
         imdb_search_url = f"https://www.imdb.com/find?q={urllib.parse.quote(data['title'])}"
         imdb_lbl = ctk.CTkLabel(inf, text="IMDb", text_color="#5D8AA8", font=ctk.CTkFont(size=9, underline=True), cursor="hand2")
@@ -1458,7 +1396,7 @@ except Exception as e:
             search_query = data['title']
 
         btn = ctk.CTkButton(inf, text="Search Film", height=22, font=ctk.CTkFont(size=10, weight="bold"), fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER, border_width=0, corner_radius=4)
-        btn.configure(command=lambda q=search_query: self.open_manual_search({'show': q, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': ''}))
+        btn.configure(command=lambda q=search_query: self.open_manual_search({'show': q, 'episode': '', 'title': 'Manual Action', 'show_id': None, 'qual_str': '', 'is_movie': True}))
         btn.pack(side="bottom", fill="x")
 
         if data.get('poster_url'):
@@ -1473,7 +1411,7 @@ except Exception as e:
             self.background_executor.submit(load_img)
 
     # ==========================================
-    # LIBRARY TAB – now with "Search & Add Shows"
+    # LIBRARY TAB
     # ==========================================
     def setup_library_tab(self):
         self.tab_library.grid_columnconfigure(0, weight=1)
@@ -1510,54 +1448,91 @@ except Exception as e:
         search_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         search_frame.pack(fill="x", padx=20, pady=20)
 
-        entry = ctk.CTkEntry(search_frame, placeholder_text="Enter show name...", width=400, height=40, fg_color=GLASS_CARD, border_color=GLASS_EDGE)
+        entry = ctk.CTkEntry(search_frame, placeholder_text="Start typing to search shows...", width=400, height=40, fg_color=GLASS_CARD, border_color=GLASS_EDGE)
         entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        loader = ctk.CTkProgressBar(search_frame, mode="indeterminate", width=80, height=4, progress_color=ACCENT_COLOR, fg_color="transparent")
 
         results_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
         results_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        def do_search():
+        dialog._search_job = None
+        dialog._latest_query = ""
+
+        def render_results(data, query):
+            if dialog._latest_query != query:
+                return
+            loader.pack_forget()
+            loader.stop()
+            
             for w in results_frame.winfo_children():
                 w.destroy()
-            q = entry.get().strip()
-            if not q:
+                
+            if not data:
+                ctk.CTkLabel(results_frame, text="No shows found.", text_color="gray50").pack(pady=20)
                 return
-            try:
-                resp = http_session.get(f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q)}", timeout=5)
-                resp.raise_for_status()
-                data = resp.json()
-                if not data:
-                    ctk.CTkLabel(results_frame, text="No shows found.", text_color="gray50").pack(pady=20)
-                    return
-                for item in data:
-                    show = item.get('show', {})
-                    sid = str(show.get('id'))
-                    name = show.get('name', 'Unknown')
-                    status = show.get('status', 'Unknown')
-                    with self.data_lock:
-                        tracked = sid in self.followed_shows
+                
+            for item in data:
+                show = item.get('show', {})
+                sid = str(show.get('id'))
+                name = show.get('name', 'Unknown')
+                status = show.get('status', 'Unknown')
+                prem = show.get('premiered', '')[:4] if show.get('premiered') else '?'
+                
+                with self.data_lock:
+                    tracked = sid in self.followed_shows
 
-                    card = ctk.CTkFrame(results_frame, fg_color=GLASS_CARD, border_color=GLASS_EDGE, border_width=1, corner_radius=8)
-                    card.pack(fill="x", pady=5)
-                    card.grid_columnconfigure(0, weight=1)
+                card = ctk.CTkFrame(results_frame, fg_color=GLASS_CARD, border_color=GLASS_EDGE, border_width=1, corner_radius=8)
+                card.pack(fill="x", pady=5)
+                card.grid_columnconfigure(0, weight=1)
 
-                    info = ctk.CTkFrame(card, fg_color="transparent")
-                    info.grid(row=0, column=0, padx=10, pady=8, sticky="w")
-                    ctk.CTkLabel(info, text=name, font=ctk.CTkFont(size=14, weight="bold"), text_color="white").pack(anchor="w")
-                    ctk.CTkLabel(info, text=f"Status: {status}", font=ctk.CTkFont(size=11), text_color="gray60").pack(anchor="w")
+                info = ctk.CTkFrame(card, fg_color="transparent")
+                info.grid(row=0, column=0, padx=10, pady=8, sticky="w")
+                ctk.CTkLabel(info, text=f"{name} ({prem})", font=ctk.CTkFont(size=14, weight="bold"), text_color="white").pack(anchor="w")
+                ctk.CTkLabel(info, text=f"Status: {status}", font=ctk.CTkFont(size=11), text_color="gray60").pack(anchor="w")
 
-                    btn = ctk.CTkButton(card, text="Tracking" if tracked else "+ Track", width=80, height=28,
-                                        fg_color="transparent" if tracked else ACCENT_COLOR,
-                                        state="disabled" if tracked else "normal",
-                                        command=lambda s=sid, n=name: self.toggle_follow(s, n, True, None))
-                    btn.grid(row=0, column=1, padx=10, pady=8, sticky="e")
+                btn = ctk.CTkButton(card, text="Tracking" if tracked else "+ Track", width=80, height=28,
+                                    fg_color="transparent" if tracked else ACCENT_COLOR,
+                                    state="disabled" if tracked else "normal")
+                btn.grid(row=0, column=1, padx=10, pady=8, sticky="e")
+                
+                def _track(s=sid, n=name, btn_ref=btn):
+                    self.toggle_follow(s, n, True, None)
+                    btn_ref.configure(text="Tracking", fg_color="transparent", state="disabled")
+                btn.configure(command=_track)
 
-            except Exception as e:
-                ctk.CTkLabel(results_frame, text=f"Search failed: {e}", text_color="#C0392B").pack(pady=20)
+        def do_search():
+            q = entry.get().strip()
+            dialog._latest_query = q
+            if not q:
+                loader.pack_forget()
+                loader.stop()
+                for w in results_frame.winfo_children(): w.destroy()
+                return
 
-        search_btn = ctk.CTkButton(search_frame, text="Search", width=80, height=40, fg_color=ACCENT_COLOR, command=do_search)
-        search_btn.pack(side="right")
-        entry.bind("<Return>", lambda e: do_search())
+            loader.pack(side="right", padx=10)
+            loader.start()
+
+            def _fetch():
+                try:
+                    resp = http_session.get(f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q)}", timeout=5)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    self.ui_queue.put(lambda: render_results(data, q))
+                except Exception as e:
+                    self.ui_queue.put(lambda: render_results([], q))
+
+            self.background_executor.submit(_fetch)
+
+        def on_key_release(event):
+            if event.keysym in ['Return', 'Up', 'Down', 'Left', 'Right', 'Tab', 'Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'Caps_Lock', 'Escape']:
+                return
+            if dialog._search_job:
+                dialog.after_cancel(dialog._search_job)
+            dialog._search_job = dialog.after(400, do_search)
+
+        entry.bind("<KeyRelease>", on_key_release)
+        entry.focus_set()
 
     def import_shows_dialog(self):
         dialog = ctk.CTkToplevel(self)
@@ -1717,9 +1692,16 @@ except Exception as e:
             btm.pack(side="bottom", fill="x")
 
             sid = str(item.get('id', ''))
+            imdb_id = item.get('externals', {}).get('imdb')
+
             if is_library:
-                ubtn = ctk.CTkButton(btm, text="Drop", width=50, height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#C0392B", border_width=0, command=lambda s=sid, n=item.get('name'): self.toggle_follow(s, n, False, None))
+                ubtn = ctk.CTkButton(btm, text="Drop", width=40, height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#C0392B", border_width=0, command=lambda s=sid, n=item.get('name'): self.toggle_follow(s, n, False, None))
                 ubtn.pack(side="right")
+                
+                if imdb_id:
+                    safe_imdb = f"tt{imdb_id}" if not str(imdb_id).startswith("tt") else str(imdb_id)
+                    ibtn = ctk.CTkButton(btm, text="IMDb", width=40, height=20, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#F5C518", text_color="black", hover_color="#D4A710", command=lambda i=safe_imdb: webbrowser.open(f"https://www.imdb.com/title/{i}/"))
+                    ibtn.pack(side="right", padx=(0, 5))
             else:
                 with self.data_lock:
                     tracked = sid in self.followed_shows
@@ -1769,7 +1751,7 @@ except Exception as e:
     def open_manual_search(self, ep_data):
         popup = ctk.CTkToplevel(self)
         popup.title("Advanced Indexer Interrogation")
-        w, h = 1000, 650
+        w, h = 1100, 750
         sw, sh = popup.winfo_screenwidth(), popup.winfo_screenheight()
         popup.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         popup.transient(self)
@@ -1782,68 +1764,249 @@ except Exception as e:
         popup.sort_col = 'size'
         popup.sort_desc = True
 
-        sf = ctk.CTkFrame(popup, fg_color=GLASS_CARD, border_width=1, border_color=GLASS_EDGE, corner_radius=8)
-        sf.pack(fill="x", padx=15, pady=15)
+        # Extract current target from ep_data
+        match = re.search(r'S(\d+)E(\d+)', ep_data.get('episode', ''), re.IGNORECASE)
+        popup.current_s = int(match.group(1)) if match else 1
+        popup.current_e = int(match.group(2)) if match else 1
+        popup.show_id = str(ep_data.get('show_id') or ep_data.get('media_id', ''))
+        popup.show_name = ep_data.get('show', 'Unknown')
+        popup.episodes_data = self.episodes_cache.get(popup.show_id, [])
+        popup.is_movie = ep_data.get('is_movie', False) or self.global_media_var.get() == "Movies"
 
-        controls_frame = ctk.CTkFrame(sf, fg_color="transparent")
-        controls_frame.pack(fill="x", padx=15, pady=(10, 0))
+        popup.imdb_id_cache = None
+        popup.tmdb_cached_id = None
 
-        status_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
-        status_frame.pack(side="left")
+        # ==========================================
+        # HEADER DASHBOARD (Mockup Style)
+        # ==========================================
+        dash_frame = ctk.CTkFrame(popup, fg_color=GLASS_CARD, border_width=1, border_color=GLASS_EDGE, corner_radius=8)
+        dash_frame.pack(fill="x", padx=15, pady=15)
 
-        apibay_lbl = ctk.CTkLabel(status_frame, text="⏳ APIBay", text_color="yellow", font=("Consolas", 12, "bold"))
-        apibay_lbl.pack(side="left", padx=(0, 15))
-        tor_lbl = ctk.CTkLabel(status_frame, text="⏳ Torrentio", text_color="yellow", font=("Consolas", 12, "bold"))
-        tor_lbl.pack(side="left", padx=(0, 15))
-        eztv_lbl = ctk.CTkLabel(status_frame, text="⏳ EZTV", text_color="yellow", font=("Consolas", 12, "bold"))
-        eztv_lbl.pack(side="left", padx=(0, 15))
-        sol_lbl = ctk.CTkLabel(status_frame, text="⏳ Solid", text_color="yellow", font=("Consolas", 12, "bold"))
-        sol_lbl.pack(side="left", padx=(0, 15))
+        # Left: Poster
+        poster_frame = ctk.CTkFrame(dash_frame, width=150, height=225, fg_color="gray20", corner_radius=8)
+        poster_frame.pack(side="left", padx=15, pady=15)
+        poster_frame.pack_propagate(False)
+        poster_lbl = ctk.CTkLabel(poster_frame, text="")
+        poster_lbl.place(relx=0.5, rely=0.5, anchor="center")
 
-        filter_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
-        filter_frame.pack(side="right")
+        # Right: Info & Selectors
+        info_frame = ctk.CTkFrame(dash_frame, fg_color="transparent")
+        info_frame.pack(side="left", fill="both", expand=True, pady=15, padx=(0, 15))
 
-        quality_setting = self.settings.get("quality", "1080p")
-        if quality_setting == "Any":
-            init_qual = "Any Quality"
-        elif quality_setting == "2160p (4K)":
-            init_qual = "2160p"
-        elif quality_setting == "x265/HEVC":
-            init_qual = "x265"
+        title_row = ctk.CTkFrame(info_frame, fg_color="transparent")
+        title_row.pack(fill="x")
+        
+        if popup.is_movie:
+            popup.lbl_title = ctk.CTkLabel(title_row, text=popup.show_name, font=ctk.CTkFont(size=24, weight="bold"), text_color="white")
         else:
-            init_qual = quality_setting
+            popup.lbl_title = ctk.CTkLabel(title_row, text=f"{popup.show_name}: S{popup.current_s}E{popup.current_e}", font=ctk.CTkFont(size=24, weight="bold"), text_color="white")
+        popup.lbl_title.pack(side="left")
 
-        qual_var = ctk.StringVar(value=init_qual)
-        size_var = ctk.StringVar(value="Any Size")
-        src_var = ctk.StringVar(value="All Sources")
+        # Fix Match Button (TV Only)
+        def fix_match():
+            dialog = ctk.CTkInputDialog(text="Enter the correct TVMaze ID for this show:", title="Fix Mismatch")
+            new_id = dialog.get_input()
+            if new_id and new_id.isdigit():
+                popup.show_id = new_id
+                def fetch_and_refresh():
+                    try:
+                        res = http_session.get(f"https://api.tvmaze.com/shows/{new_id}?embed[]=episodes", timeout=5)
+                        if res.status_code == 200:
+                            data = res.json()
+                            with self.data_lock:
+                                self.followed_shows[new_id] = {"name": data.get('name'), "metadata": data}
+                                self.episodes_cache[new_id] = data.get('_embedded', {}).get('episodes', [])
+                            self.save_data()
+                            self.save_caches()
+                            self.ui_queue.put(lambda: popup.destroy())
+                            self.ui_queue.put(lambda: self.open_manual_search({'show': data.get('name'), 'episode': f"S{popup.current_s:02d}E{popup.current_e:02d}", 'show_id': new_id}))
+                    except Exception as e:
+                        logger.error(f"Failed to fix match: {e}")
+                self.background_executor.submit(fetch_and_refresh)
 
-        def on_filter_change(*args):
-            render_results()
+        if not popup.is_movie:
+            ctk.CTkButton(title_row, text="✎ Fix Match", width=60, height=20, fg_color="transparent", hover_color="#2A2438", font=ctk.CTkFont(size=10), command=fix_match).pack(side="left", padx=10)
 
-        def clear_filters():
-            qual_var.set("Any Quality")
-            size_var.set("Any Size")
-            src_var.set("All Sources")
-            render_results()
+        popup.lbl_meta = ctk.CTkLabel(info_frame, text="Loading metadata...", font=ctk.CTkFont(size=12), text_color="gray60")
+        popup.lbl_meta.pack(anchor="w", pady=(2, 10))
 
-        ctk.CTkOptionMenu(filter_frame, values=["Any Quality", "720p", "1080p", "2160p", "x265", "HEVC"], variable=qual_var, command=on_filter_change, width=110, height=28, fg_color=BG_BASE, button_color=GLASS_EDGE).pack(side="left", padx=(0, 10))
-        ctk.CTkOptionMenu(filter_frame, values=["Any Size", "Under 1GB", "1GB - 3GB", "Over 3GB"], variable=size_var, command=on_filter_change, width=110, height=28, fg_color=BG_BASE, button_color=GLASS_EDGE).pack(side="left", padx=(0, 10))
-        ctk.CTkOptionMenu(filter_frame, values=["All Sources", "APIBay", "Torrentio", "EZTV", "SolidTorrents"], variable=src_var, command=on_filter_change, width=110, height=28, fg_color=BG_BASE, button_color=GLASS_EDGE).pack(side="left")
-        ctk.CTkButton(filter_frame, text="Clear", width=60, height=28, fg_color="#C0392B", hover_color="#922B21", font=ctk.CTkFont(weight="bold"), command=clear_filters).pack(side="left", padx=(10, 0))
+        # Selectors Helpers
+        def create_scroll_selector(parent, label_text):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=5)
+            ctk.CTkLabel(row, text=label_text, width=70, anchor="w", font=ctk.CTkFont(size=12, weight="bold"), text_color="gray60").pack(side="left")
+            scroll = ctk.CTkScrollableFrame(row, orientation="horizontal", height=35, fg_color="transparent")
+            scroll.pack(side="left", fill="x", expand=True)
+            return scroll
 
-        entry_f = ctk.CTkFrame(sf, fg_color="transparent")
-        entry_f.pack(fill="x", padx=15, pady=15)
+        if not popup.is_movie:
+            popup.season_scroll = create_scroll_selector(info_frame, "SEASON")
+            popup.episode_scroll = create_scroll_selector(info_frame, "EPISODE")
+        
+        # Qualities
+        qual_scroll = create_scroll_selector(info_frame, "VERSION")
 
-        ctk.CTkLabel(entry_f, text="> ", font=("Consolas", 14, "bold")).pack(side="left")
-        search_v = ctk.StringVar(value=f"{ep_data['show']} {ep_data['episode']}".strip())
-        inp = ctk.CTkEntry(entry_f, textvariable=search_v, font=("Consolas", 14), fg_color=BG_BASE, border_width=1, border_color=GLASS_EDGE)
-        inp.pack(side="left", fill="x", expand=True)
+        popup.qual_var = ctk.StringVar(value=self.settings.get("quality", "1080p"))
+        
+        def render_quality_buttons():
+            for w in qual_scroll.winfo_children(): w.destroy()
+            qualities = [("4K", "2160p"), ("1080P", "1080p"), ("720P", "720p"), ("480P", "480p"), ("ANY", "any")]
+            current_qual = popup.qual_var.get().lower()
+            if current_qual == "2160p (4k)": current_qual = "2160p"
+            
+            for text_lbl, val in qualities:
+                is_sel = (val == current_qual)
+                if current_qual == "any" and text_lbl == "ANY": is_sel = True
+                
+                btn = ctk.CTkButton(qual_scroll, text=text_lbl, width=50, height=25,
+                                    fg_color=ACCENT_COLOR if is_sel else "gray15",
+                                    hover_color=ACCENT_HOVER if is_sel else "gray25",
+                                    command=lambda v=val: on_quality_change(v))
+                btn.pack(side="left", padx=3)
 
+        def on_quality_change(val):
+            popup.qual_var.set(val)
+            render_quality_buttons()
+            execute_manual_search()
+
+        render_quality_buttons()
+
+        # Build Selectors dynamically (TV Only)
+        def render_selectors():
+            if popup.is_movie: return
+            for w in popup.season_scroll.winfo_children(): w.destroy()
+            for w in popup.episode_scroll.winfo_children(): w.destroy()
+
+            seasons = sorted(list(set(ep.get('season', 1) for ep in popup.episodes_data)))
+            if not seasons: seasons = [1]
+            if popup.current_s not in seasons: popup.current_s = seasons[0]
+
+            # Populate Seasons
+            for s in seasons:
+                is_sel = (s == popup.current_s)
+                btn = ctk.CTkButton(popup.season_scroll, text=str(s), width=35, height=25, 
+                                    fg_color=ACCENT_COLOR if is_sel else "gray15",
+                                    hover_color=ACCENT_HOVER if is_sel else "gray25",
+                                    command=lambda season=s: on_season_change(season))
+                btn.pack(side="left", padx=3)
+
+            # Populate Episodes
+            episodes = [ep for ep in popup.episodes_data if ep.get('season') == popup.current_s]
+            max_ep = max([ep.get('number', 1) for ep in episodes]) if episodes else popup.current_e
+            
+            for e in range(1, max_ep + 1):
+                is_sel = (e == popup.current_e)
+                btn = ctk.CTkButton(popup.episode_scroll, text=str(e), width=35, height=25, 
+                                    fg_color=ACCENT_COLOR if is_sel else "gray15",
+                                    hover_color=ACCENT_HOVER if is_sel else "gray25",
+                                    command=lambda ep=e: on_episode_change(ep))
+                btn.pack(side="left", padx=3)
+
+        def on_season_change(s):
+            popup.current_s = s
+            popup.current_e = 1
+            render_selectors()
+            execute_manual_search()
+
+        def on_episode_change(e):
+            popup.current_e = e
+            render_selectors()
+            execute_manual_search()
+
+        # Load Metadata and Poster intelligently
+        def load_meta_and_poster():
+            meta = {}
+            if not popup.is_movie:
+                # TVMaze Logic
+                with self.data_lock:
+                    if popup.show_id in self.followed_shows:
+                        meta = self.followed_shows[popup.show_id].get('metadata', {})
+                
+                if (not meta or not popup.episodes_data) and popup.show_id:
+                    try:
+                        res = http_session.get(f"https://api.tvmaze.com/shows/{popup.show_id}?embed[]=episodes", timeout=5)
+                        if res.status_code == 200:
+                            data = res.json()
+                            meta = data
+                            popup.episodes_data = data.get('_embedded', {}).get('episodes', [])
+                            self.ui_queue.put(render_selectors)
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch missing metadata: {e}")
+                
+                genres = ", ".join(meta.get('genres', [])) if meta else "Unknown Genre"
+                status = meta.get('status', 'Unknown').upper() if meta else "UNKNOWN"
+                prem = meta.get('premiered', '')[:4] if meta and meta.get('premiered') else '?'
+                
+                self.ui_queue.put(lambda: popup.lbl_meta.configure(text=f"{prem} • {genres} • {status}"))
+                self.ui_queue.put(lambda: popup.lbl_title.configure(text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"))
+                url = meta.get('image', {}).get('original') or meta.get('image', {}).get('medium') if meta else None
+
+            else:
+                # Movie Logic via TMDB
+                api_key = self.settings.get("tmdb_api_key", "").strip()
+                url = None
+                prem = "?"
+                genres = "Movie"
+                
+                if api_key:
+                    try:
+                        match = re.search(r'(.+?)\s+(\d{4})$', popup.show_name)
+                        if match:
+                            query_title, year = match.group(1), match.group(2)
+                            search_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(query_title)}&year={year}"
+                        else:
+                            search_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(popup.show_name)}"
+                        
+                        res = http_session.get(search_url, timeout=5)
+                        if res.status_code == 200 and res.json().get('results'):
+                            first = res.json()['results'][0]
+                            prem = first.get('release_date', '')[:4]
+                            genres = f"Score: {first.get('vote_average', 'N/A')}"
+                            if first.get('poster_path'):
+                                url = f"https://image.tmdb.org/t/p/w342{first['poster_path']}"
+                            popup.tmdb_cached_id = first.get('id')
+                    except Exception as e:
+                        logger.debug(f"Movie meta fetch failed: {e}")
+
+                self.ui_queue.put(lambda: popup.lbl_meta.configure(text=f"{prem} • {genres}"))
+                title_text = f"{popup.show_name} ({prem})" if prem != '?' else popup.show_name
+                self.ui_queue.put(lambda: popup.lbl_title.configure(text=title_text))
+
+            if url:
+                img = self.fetch_pil_image(url)
+                if img:
+                    self.ui_queue.put(lambda: poster_lbl.winfo_exists() and poster_lbl.configure(
+                        image=ctk.CTkImage(light_image=ImageOps.fit(img, (150,225)), dark_image=ImageOps.fit(img, (150,225)), size=(150,225)), text=""
+                    ))
+        
+        self.background_executor.submit(load_meta_and_poster)
+        render_selectors()
+
+        # ==========================================
+        # RESULTS SECTION
+        # ==========================================
         res_box = ctk.CTkFrame(popup, fg_color=GLASS_CARD, border_width=1, border_color=GLASS_EDGE, corner_radius=8)
         res_box.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
-        res_title = ctk.CTkLabel(res_box, text="Results", text_color=ACCENT_COLOR, font=("Consolas", 11, "bold"))
-        res_title.place(x=10, y=-10)
+        top_bar = ctk.CTkFrame(res_box, fg_color="transparent")
+        top_bar.pack(fill="x", padx=10, pady=10)
+        
+        res_title = ctk.CTkLabel(top_bar, text="Torrents", text_color="white", font=ctk.CTkFont(size=16, weight="bold"))
+        res_title.pack(side="left")
+
+        # API Status Row
+        status_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
+        status_frame.pack(side="right")
+        apibay_lbl = ctk.CTkLabel(status_frame, text="⏳ APIBay", text_color="yellow", font=("Consolas", 11, "bold"))
+        apibay_lbl.pack(side="left", padx=(0, 10))
+        tor_lbl = ctk.CTkLabel(status_frame, text="⏳ Torrentio", text_color="yellow", font=("Consolas", 11, "bold"))
+        tor_lbl.pack(side="left", padx=(0, 10))
+        eztv_lbl = ctk.CTkLabel(status_frame, text="⏳ EZTV", text_color="yellow", font=("Consolas", 11, "bold"))
+        eztv_lbl.pack(side="left", padx=(0, 10))
+        sol_lbl = ctk.CTkLabel(status_frame, text="⏳ Solid", text_color="yellow", font=("Consolas", 11, "bold"))
+        sol_lbl.pack(side="left", padx=(0, 10))
+        yts_lbl = ctk.CTkLabel(status_frame, text="⏳ YTS", text_color="yellow", font=("Consolas", 11, "bold"))
+        yts_lbl.pack(side="left")
 
         def set_grid_cols(frame):
             frame.grid_columnconfigure(0, weight=1)
@@ -1853,7 +2016,7 @@ except Exception as e:
             frame.grid_columnconfigure(4, weight=0, minsize=80)
 
         header_frame = ctk.CTkFrame(res_box, fg_color="transparent", height=28)
-        header_frame.pack(fill="x", padx=(10, 26), pady=(15, 0))
+        header_frame.pack(fill="x", padx=(10, 26), pady=(5, 0))
         set_grid_cols(header_frame)
 
         def set_sort(col):
@@ -1891,23 +2054,23 @@ except Exception as e:
                     popup.after(100, animate, step+1)
                 else:
                     btn_ref.configure(text="✅ Done!", fg_color="#2FA572")
-                    self.download_torrent_file(ep_data, {
+                    ep_data_patched = dict(ep_data)
+                    if not popup.is_movie:
+                        ep_data_patched['episode'] = f"S{popup.current_s:02d}E{popup.current_e:02d}"
+                        if not ep_data_patched.get('media_id'):
+                            ep_data_patched['media_id'] = popup.show_id
+                            
+                    self.download_torrent_file(ep_data_patched, {
                         'info_hash': row_r.get('info_hash', ''),
                         'magnet': row_r.get('magnet', ''),
                         'name': row_r.get('name', 'Unknown')
                     }, row_s)
-                    # Update calendar button if exists
+                    
                     cal_btn = ep_data.get('button_ref')
                     if cal_btn and cal_btn.winfo_exists():
                         cal_btn.configure(text="✅ Downloaded", fg_color="#2FA572", hover_color="#2FA572")
-                    # DO NOT close popup
                     btn_ref.configure(text="✅ Done! (keep searching)", fg_color="#2FA572")
             animate()
-
-        # Close button
-        close_btn = ctk.CTkButton(res_box, text="Close", height=30, width=80, fg_color="#C0392B", hover_color="#922B21",
-                                  command=popup.destroy)
-        close_btn.place(relx=0.5, rely=0.98, anchor="s")
 
         def render_results():
             for w in scroll.winfo_children():
@@ -1923,33 +2086,30 @@ except Exception as e:
             update_hdr_text(hdr_src, "Src", "source")
 
             filtered = []
-            q_val = qual_var.get().lower()
-            s_val = size_var.get()
-            src_val = src_var.get().lower()
+            q_val = popup.qual_var.get().lower()
 
             with popup.results_lock:
                 results_snapshot = list(popup.results_pool)
 
             for r in results_snapshot:
-                if src_val != "all sources" and src_val not in r['source']:
-                    continue
                 name_lower = r['name'].lower()
-                if q_val != "any quality" and q_val not in name_lower:
-                    continue
-                gb_size = r['size'] / (1024**3) if r['size'] else 0
-                if s_val == "Under 1GB" and gb_size > 1.0:
-                    continue
-                if s_val == "1GB - 3GB" and (gb_size < 1.0 or gb_size > 3.0):
-                    continue
-                if s_val == "Over 3GB" and gb_size < 3.0:
-                    continue
+                if q_val != "any" and q_val not in name_lower:
+                    if q_val == "4k" and "2160p" not in name_lower:
+                        continue
+                    elif q_val != "4k":
+                        continue
                 filtered.append(r)
 
             filtered.sort(key=lambda x: x[popup.sort_col], reverse=popup.sort_desc)
-            res_title.configure(text=f"Results ({len(filtered)})")
+            
+            # Show live searching status
+            if popup.searching:
+                res_title.configure(text=f"Searching... Found {len(filtered)}")
+            else:
+                res_title.configure(text=f"Torrents ({len(filtered)})")
 
             if not filtered:
-                ctk.CTkLabel(scroll, text="No matching torrents found.", text_color="gray50", font=("Consolas", 12)).pack(anchor="w", pady=10)
+                ctk.CTkLabel(scroll, text="No matching torrents found yet.", text_color="gray50", font=("Consolas", 12)).pack(anchor="w", pady=10)
                 return
 
             for idx, r in enumerate(filtered):
@@ -1977,218 +2137,250 @@ except Exception as e:
             if popup.searching:
                 return
             popup.searching = True
-            inp.configure(state="disabled")
             popup.results_pool.clear()
             render_results()
-            query = search_v.get().strip()
+            
+            if popup.is_movie:
+                query = f"{popup.show_name}"
+            else:
+                query = f"{popup.show_name} S{popup.current_s:02d}E{popup.current_e:02d}"
 
-            res_title.configure(text=f"Searching APIs concurrently...")
             apibay_lbl.configure(text="⏳ APIBay", text_color="yellow")
             tor_lbl.configure(text="⏳ Torrentio", text_color="yellow")
-            eztv_lbl.configure(text="⏳ EZTV", text_color="yellow")
             sol_lbl.configure(text="⏳ Solid", text_color="yellow")
+            
+            if popup.is_movie:
+                eztv_lbl.configure(text="➖ EZTV (TV)", text_color="gray50")
+                yts_lbl.configure(text="⏳ YTS", text_color="yellow")
+            else:
+                eztv_lbl.configure(text="⏳ EZTV", text_color="yellow")
+                yts_lbl.configure(text="➖ YTS (Movie)", text_color="gray50")
 
-            def fetch_apibay():
-                try:
-                    url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
-                    res = http_session.get(url, timeout=10)
-                    if res.status_code == 200:
-                        data = res.json()
-                        count = 0
-                        if isinstance(data, list) and len(data) > 0 and data[0].get('id') != '0':
-                            for r in data:
-                                if self._safe_int(r.get('seeders', 0)) > 0:
-                                    with popup.results_lock:
-                                        popup.results_pool.append({
-                                            'source': 'apibay', 'name': r.get('name', 'Unknown'), 'info_hash': r.get('info_hash', ''),
-                                            'magnet': '', 'size': self._safe_int(r.get('size', 0)), 'seeders': self._safe_int(r.get('seeders', 0)), 'leechers': self._safe_int(r.get('leechers', 0))
-                                        })
-                                    count += 1
-                        self.ui_queue.put(lambda: apibay_lbl.configure(text=f"✅ APIBay ({count})", text_color="#2FA572"))
+            popup.active_threads = 0
+            popup.thread_lock = threading.Lock()
+
+            def thread_wrapper(target_func):
+                def wrapper():
+                    try:
+                        target_func()
+                    finally:
+                        with popup.thread_lock:
+                            popup.active_threads -= 1
+                            if popup.active_threads <= 0:
+                                popup.searching = False
+                        self.ui_queue.put(render_results)
+                return wrapper
+
+            def run_searches_async():
+                # Block 1: Guarantee IMDb ID Resolution without freezing UI
+                if popup.imdb_id_cache is None:
+                    if not popup.is_movie:
+                        popup.imdb_id_cache = self._get_or_fetch_imdb_id(popup.show_id)
                     else:
-                        self.ui_queue.put(lambda: apibay_lbl.configure(text="❌ APIBay", text_color="#C0392B"))
-                except Exception:
-                    self.ui_queue.put(lambda: apibay_lbl.configure(text="❌ APIBay", text_color="#C0392B"))
-
-            def fetch_torrentio():
-                try:
-                    match = re.search(r'S(\d+)E(\d+)', query, re.IGNORECASE)
-                    if match:
-                        season_num = int(match.group(1))
-                        episode_num = int(match.group(2))
-                    else:
-                        match_ep = re.search(r'S(\d+)E(\d+)', ep_data.get('episode', ''), re.IGNORECASE)
-                        season_num = int(match_ep.group(1)) if match_ep else 1
-                        episode_num = int(match_ep.group(2)) if match_ep else 1
-
-                    show_id = ep_data.get('show_id') or ep_data.get('media_id')
-                    imdb_id = None
-                    if show_id:
-                        with self.data_lock:
-                            show_data = self.followed_shows.get(str(show_id), {})
-                            meta = show_data.get('metadata')
-                            if meta and meta.get('externals'):
-                                imdb_id = meta['externals'].get('imdb')
-                        if not imdb_id:
+                        api_key = self.settings.get("tmdb_api_key", "").strip()
+                        tmdb_id = getattr(popup, 'tmdb_cached_id', None)
+                        if api_key and tmdb_id:
                             try:
-                                res_meta = http_session.get(f"https://api.tvmaze.com/shows/{show_id}?embed[]=externals", timeout=5)
-                                if res_meta.status_code == 200:
-                                    imdb_id = res_meta.json().get('externals', {}).get('imdb')
-                                    if imdb_id:
-                                        with self.data_lock:
-                                            if str(show_id) in self.followed_shows:
-                                                if 'metadata' not in self.followed_shows[str(show_id)] or not self.followed_shows[str(show_id)]['metadata']:
-                                                    self.followed_shows[str(show_id)]['metadata'] = {}
-                                                self.followed_shows[str(show_id)]['metadata']['externals'] = {'imdb': imdb_id}
-                                                self.mark_caches_dirty()
-                            except:
-                                pass
+                                res_id = http_session.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}/external_ids?api_key={api_key}", timeout=5)
+                                if res_id.status_code == 200:
+                                    popup.imdb_id_cache = res_id.json().get('imdb_id')
+                            except: pass
+                        elif api_key:
+                            try:
+                                match = re.search(r'(.+?)\s+(\d{4})$', popup.show_name)
+                                if match:
+                                    q_title, year = match.group(1), match.group(2)
+                                    s_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(q_title)}&year={year}"
+                                else:
+                                    s_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(popup.show_name)}"
+                                res = http_session.get(s_url, timeout=5)
+                                if res.status_code == 200 and res.json().get('results'):
+                                    tmdb_id = res.json()['results'][0].get('id')
+                                    res_id = http_session.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}/external_ids?api_key={api_key}", timeout=5)
+                                    if res_id.status_code == 200:
+                                        popup.imdb_id_cache = res_id.json().get('imdb_id')
+                            except: pass
 
-                    if imdb_id:
-                        if not imdb_id.startswith('tt'):
-                            imdb_id = f"tt{imdb_id}"
-                        url = f"https://torrentio.strem.fun/stream/series/{imdb_id}:{season_num}:{episode_num}.json"
+                def fetch_apibay():
+                    try:
+                        url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
                         res = http_session.get(url, timeout=10)
                         if res.status_code == 200:
+                            data = res.json()
                             count = 0
-                            for s in res.json().get('streams', []):
-                                title = s.get('title', '')
-                                seed_match = re.search(r'👤\s*(\d+)', title)
-                                seeders = int(seed_match.group(1)) if seed_match else 0
-                                if seeders > 0:
-                                    magnet = s.get('url', '')
-                                    hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
-                                    size_match = re.search(r'💾\s*([\d.]+)\s*([A-Za-z]+)', title)
-                                    size_bytes = 0
-                                    if size_match:
-                                        val = float(size_match.group(1))
-                                        unit = size_match.group(2).upper()
-                                        if unit == 'GB':
-                                            size_bytes = val * 1024**3
-                                        elif unit == 'MB':
-                                            size_bytes = val * 1024**2
-                                        elif unit == 'KB':
-                                            size_bytes = val * 1024
-
-                                    with popup.results_lock:
-                                        popup.results_pool.append({
-                                            'source': 'torrentio', 'name': s.get('title', '').split('\n')[0],
-                                            'info_hash': hash_match.group(1) if hash_match else "", 'magnet': magnet,
-                                            'size': size_bytes, 'seeders': seeders, 'leechers': 0
-                                        })
-                                    count += 1
-                            self.ui_queue.put(lambda: tor_lbl.configure(text=f"✅ Torrentio ({count})", text_color="#2FA572"))
-                        else:
-                            self.ui_queue.put(lambda: tor_lbl.configure(text="❌ Torrentio", text_color="#C0392B"))
-                    else:
-                        self.ui_queue.put(lambda: tor_lbl.configure(text="❌ No IMDB", text_color="#C0392B"))
-                except Exception:
-                    self.ui_queue.put(lambda: tor_lbl.configure(text="❌ Torrentio", text_color="#C0392B"))
-
-            def fetch_eztv():
-                try:
-                    match = re.search(r'S(\d+)E(\d+)', query, re.IGNORECASE)
-                    if match:
-                        season_num = int(match.group(1))
-                        episode_num = int(match.group(2))
-                    else:
-                        match_ep = re.search(r'S(\d+)E(\d+)', ep_data.get('episode', ''), re.IGNORECASE)
-                        season_num = int(match_ep.group(1)) if match_ep else 1
-                        episode_num = int(match_ep.group(2)) if match_ep else 1
-
-                    show_id = ep_data.get('show_id') or ep_data.get('media_id')
-                    imdb_id = None
-                    if show_id:
-                        with self.data_lock:
-                            show_data = self.followed_shows.get(str(show_id), {})
-                            meta = show_data.get('metadata')
-                            if meta and meta.get('externals'):
-                                imdb_id = meta['externals'].get('imdb')
-                        if not imdb_id:
-                            try:
-                                res_meta = http_session.get(f"https://api.tvmaze.com/shows/{show_id}?embed[]=externals", timeout=5)
-                                if res_meta.status_code == 200:
-                                    imdb_id = res_meta.json().get('externals', {}).get('imdb')
-                                    if imdb_id:
-                                        with self.data_lock:
-                                            if str(show_id) in self.followed_shows:
-                                                if 'metadata' not in self.followed_shows[str(show_id)] or not self.followed_shows[str(show_id)]['metadata']:
-                                                    self.followed_shows[str(show_id)]['metadata'] = {}
-                                                self.followed_shows[str(show_id)]['metadata']['externals'] = {'imdb': imdb_id}
-                                                self.mark_caches_dirty()
-                            except:
-                                pass
-
-                    if imdb_id:
-                        eztv_imdb = imdb_id.replace('tt', '')
-                        url = f"https://eztv.re/api/get-torrents?imdb_id={eztv_imdb}"
-                        res = http_session.get(url, timeout=10)
-                        if res.status_code == 200:
-                            count = 0
-                            for t in res.json().get('torrents', []):
-                                if str(t.get('season')) == str(season_num) and str(t.get('episode')) == str(episode_num):
-                                    seeders = self._safe_int(t.get('seeds', 0))
-                                    if seeders > 0:
+                            if isinstance(data, list) and len(data) > 0 and data[0].get('id') != '0':
+                                for r in data:
+                                    if self._safe_int(r.get('seeders', 0)) > 0:
                                         with popup.results_lock:
                                             popup.results_pool.append({
-                                                'source': 'eztv', 'name': t.get('title', ''), 'info_hash': t.get('hash', ''),
-                                                'magnet': t.get('magnet_url', ''), 'size': self._safe_int(t.get('size_bytes', 0)),
-                                                'seeders': seeders, 'leechers': self._safe_int(t.get('peers', 0)) - seeders if t.get('peers') else 0
+                                                'source': 'apibay', 'name': r.get('name', 'Unknown'), 'info_hash': r.get('info_hash', ''),
+                                                'magnet': '', 'size': self._safe_int(r.get('size', 0)), 'seeders': self._safe_int(r.get('seeders', 0)), 'leechers': self._safe_int(r.get('leechers', 0))
                                             })
                                         count += 1
-                            self.ui_queue.put(lambda: eztv_lbl.configure(text=f"✅ EZTV ({count})", text_color="#2FA572"))
+                                self.ui_queue.put(lambda: apibay_lbl.configure(text=f"✅ APIBay ({count})", text_color="#2FA572"))
+                            else:
+                                self.ui_queue.put(lambda: apibay_lbl.configure(text="❌ APIBay", text_color="#C0392B"))
+                    except Exception:
+                        self.ui_queue.put(lambda: apibay_lbl.configure(text="❌ APIBay", text_color="#C0392B"))
+
+                def fetch_torrentio():
+                    try:
+                        imdb_id = popup.imdb_id_cache
+                        if imdb_id:
+                            if not imdb_id.startswith('tt'):
+                                imdb_id = f"tt{imdb_id}"
+                            
+                            if popup.is_movie:
+                                url = f"https://torrentio.strem.fun/stream/movie/{imdb_id}.json"
+                            else:
+                                url = f"https://torrentio.strem.fun/stream/series/{imdb_id}:{popup.current_s}:{popup.current_e}.json"
+                                
+                            res = http_session.get(url, timeout=10)
+                            if res.status_code == 200:
+                                count = 0
+                                for s in res.json().get('streams', []):
+                                    title = s.get('title', '')
+                                    seed_match = re.search(r'👤\s*(\d+)', title)
+                                    seeders = int(seed_match.group(1)) if seed_match else 0
+                                    if seeders > 0:
+                                        magnet = s.get('url', '')
+                                        hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
+                                        size_match = re.search(r'💾\s*([\d.]+)\s*([A-Za-z]+)', title)
+                                        size_bytes = 0
+                                        if size_match:
+                                            val = float(size_match.group(1))
+                                            unit = size_match.group(2).upper()
+                                            if unit == 'GB': size_bytes = val * 1024**3
+                                            elif unit == 'MB': size_bytes = val * 1024**2
+                                            elif unit == 'KB': size_bytes = val * 1024
+
+                                        with popup.results_lock:
+                                            popup.results_pool.append({
+                                                'source': 'torrentio', 'name': s.get('title', '').split('\n')[0],
+                                                'info_hash': hash_match.group(1) if hash_match else "", 'magnet': magnet,
+                                                'size': size_bytes, 'seeders': seeders, 'leechers': 0
+                                            })
+                                        count += 1
+                                self.ui_queue.put(lambda: tor_lbl.configure(text=f"✅ Torrentio ({count})", text_color="#2FA572"))
+                            else:
+                                self.ui_queue.put(lambda: tor_lbl.configure(text="❌ Torrentio", text_color="#C0392B"))
                         else:
-                            self.ui_queue.put(lambda: eztv_lbl.configure(text="❌ EZTV", text_color="#C0392B"))
-                    else:
-                        self.ui_queue.put(lambda: eztv_lbl.configure(text="❌ No IMDB", text_color="#C0392B"))
-                except Exception:
-                    self.ui_queue.put(lambda: eztv_lbl.configure(text="❌ EZTV", text_color="#C0392B"))
+                            self.ui_queue.put(lambda: tor_lbl.configure(text="❌ No IMDB", text_color="#C0392B"))
+                    except Exception:
+                        self.ui_queue.put(lambda: tor_lbl.configure(text="❌ Torrentio", text_color="#C0392B"))
 
-            def fetch_solidtorrents():
-                try:
-                    url = f"https://solidtorrents.to/api/v1/search?q={urllib.parse.quote(query)}&category=Video"
-                    res = http_session.get(url, timeout=10)
-                    if res.status_code == 200:
-                        data = res.json()
-                        count = 0
-                        for r in data.get('results', []):
-                            seeders = self._safe_int(r.get('swarm', {}).get('seeders', 0))
-                            if seeders > 0:
-                                magnet = r.get('magnet', '')
-                                info_hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
-                                info_hash = info_hash_match.group(1) if info_hash_match else ""
+                def fetch_eztv():
+                    if popup.is_movie: return
+                    try:
+                        imdb_id = popup.imdb_id_cache
+                        if imdb_id:
+                            eztv_imdb = imdb_id.replace('tt', '')
+                            url = f"https://eztv.re/api/get-torrents?imdb_id={eztv_imdb}"
+                            res = http_session.get(url, timeout=10)
+                            if res.status_code == 200:
+                                count = 0
+                                for t in res.json().get('torrents', []):
+                                    if str(t.get('season')) == str(popup.current_s) and str(t.get('episode')) == str(popup.current_e):
+                                        seeders = self._safe_int(t.get('seeds', 0))
+                                        if seeders > 0:
+                                            with popup.results_lock:
+                                                popup.results_pool.append({
+                                                    'source': 'eztv', 'name': t.get('title', ''), 'info_hash': t.get('hash', ''),
+                                                    'magnet': t.get('magnet_url', ''), 'size': self._safe_int(t.get('size_bytes', 0)),
+                                                    'seeders': seeders, 'leechers': self._safe_int(t.get('peers', 0)) - seeders if t.get('peers') else 0
+                                                })
+                                            count += 1
+                                self.ui_queue.put(lambda: eztv_lbl.configure(text=f"✅ EZTV ({count})", text_color="#2FA572"))
+                            else:
+                                self.ui_queue.put(lambda: eztv_lbl.configure(text="❌ EZTV", text_color="#C0392B"))
+                        else:
+                            self.ui_queue.put(lambda: eztv_lbl.configure(text="❌ No IMDB", text_color="#C0392B"))
+                    except Exception:
+                        self.ui_queue.put(lambda: eztv_lbl.configure(text="❌ EZTV", text_color="#C0392B"))
 
-                                with popup.results_lock:
-                                    popup.results_pool.append({
-                                        'source': 'solidtorrents', 'name': r.get('title', 'Unknown'), 'info_hash': info_hash,
-                                        'magnet': magnet, 'size': self._safe_int(r.get('size', 0)), 'seeders': seeders,
-                                        'leechers': self._safe_int(r.get('swarm', {}).get('leechers', 0))
-                                    })
-                                count += 1
-                        self.ui_queue.put(lambda: sol_lbl.configure(text=f"✅ Solid ({count})", text_color="#2FA572"))
-                    else:
+                def fetch_solidtorrents():
+                    try:
+                        url = f"https://solidtorrents.to/api/v1/search?q={urllib.parse.quote(query)}&category=Video"
+                        res = http_session.get(url, timeout=10)
+                        if res.status_code == 200:
+                            data = res.json()
+                            count = 0
+                            for r in data.get('results', []):
+                                seeders = self._safe_int(r.get('swarm', {}).get('seeders', 0))
+                                if seeders > 0:
+                                    magnet = r.get('magnet', '')
+                                    info_hash_match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet, re.IGNORECASE)
+                                    info_hash = info_hash_match.group(1) if info_hash_match else ""
+
+                                    with popup.results_lock:
+                                        popup.results_pool.append({
+                                            'source': 'solidtorrents', 'name': r.get('title', 'Unknown'), 'info_hash': info_hash,
+                                            'magnet': magnet, 'size': self._safe_int(r.get('size', 0)), 'seeders': seeders,
+                                            'leechers': self._safe_int(r.get('swarm', {}).get('leechers', 0))
+                                        })
+                                    count += 1
+                            self.ui_queue.put(lambda: sol_lbl.configure(text=f"✅ Solid ({count})", text_color="#2FA572"))
+                        else:
+                            self.ui_queue.put(lambda: sol_lbl.configure(text="❌ Solid", text_color="#C0392B"))
+                    except Exception:
                         self.ui_queue.put(lambda: sol_lbl.configure(text="❌ Solid", text_color="#C0392B"))
-                except Exception:
-                    self.ui_queue.put(lambda: sol_lbl.configure(text="❌ Solid", text_color="#C0392B"))
+                        
+                def fetch_yts():
+                    if not popup.is_movie: return
+                    try:
+                        imdb_id = popup.imdb_id_cache
+                        if imdb_id:
+                            yts_imdb = imdb_id if imdb_id.startswith('tt') else f"tt{imdb_id}"
+                            url = f"https://yts.mx/api/v2/list_movies.json?query_term={yts_imdb}"
+                            res = http_session.get(url, timeout=10)
+                            if res.status_code == 200:
+                                data = res.json()
+                                count = 0
+                                if data.get('status') == 'ok' and data.get('data', {}).get('movies'):
+                                    movie = data['data']['movies'][0]
+                                    title = movie.get('title_long', movie.get('title', 'Unknown'))
+                                    for t in movie.get('torrents', []):
+                                        seeders = t.get('seeds', 0)
+                                        if seeders > 0:
+                                            hash_str = t.get('hash', '')
+                                            magnet = f"magnet:?xt=urn:btih:{hash_str}&dn={urllib.parse.quote(title)}"
+                                            qual = t.get('quality', '')
+                                            rtype = t.get('type', '')
+                                            full_name = f"YTS {title} [{qual}] [{rtype}]"
+                                            
+                                            with popup.results_lock:
+                                                popup.results_pool.append({
+                                                    'source': 'yts', 'name': full_name, 'info_hash': hash_str,
+                                                    'magnet': magnet, 'size': t.get('size_bytes', 0),
+                                                    'seeders': seeders, 'leechers': t.get('peers', 0)
+                                                })
+                                            count += 1
+                                self.ui_queue.put(lambda: yts_lbl.configure(text=f"✅ YTS ({count})", text_color="#2FA572"))
+                            else:
+                                self.ui_queue.put(lambda: yts_lbl.configure(text="❌ YTS", text_color="#C0392B"))
+                        else:
+                            self.ui_queue.put(lambda: yts_lbl.configure(text="❌ No IMDB", text_color="#C0392B"))
+                    except Exception:
+                        self.ui_queue.put(lambda: yts_lbl.configure(text="❌ YTS", text_color="#C0392B"))
 
-            def run_all_searches():
                 threads = [
-                    threading.Thread(target=fetch_apibay),
-                    threading.Thread(target=fetch_torrentio),
-                    threading.Thread(target=fetch_eztv),
-                    threading.Thread(target=fetch_solidtorrents)
+                    threading.Thread(target=thread_wrapper(fetch_apibay)),
+                    threading.Thread(target=thread_wrapper(fetch_torrentio)),
+                    threading.Thread(target=thread_wrapper(fetch_eztv)),
+                    threading.Thread(target=thread_wrapper(fetch_solidtorrents)),
+                    threading.Thread(target=thread_wrapper(fetch_yts))
                 ]
+                
+                with popup.thread_lock:
+                    popup.active_threads = len(threads)
+                    
                 for t in threads:
                     t.start()
-                for t in threads:
-                    t.join()
-                popup.searching = False
-                self.ui_queue.put(lambda: inp.configure(state="normal"))
-                self.ui_queue.put(render_results)
 
-            self.background_executor.submit(run_all_searches)
+            # Execute the setup in a manager thread so it doesn't freeze the UI while grabbing IMDb ID
+            threading.Thread(target=run_searches_async).start()
 
-        inp.bind("<Return>", lambda e: execute_manual_search())
+        # Trigger initial search on load
         execute_manual_search()
 
     # ==========================================
