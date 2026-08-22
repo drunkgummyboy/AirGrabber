@@ -48,7 +48,6 @@ REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
 SCRIPT_FILENAME = "AirGrabber.py"
 
-
 # ==========================================
 # AUTO-INSTALL DEPENDENCIES
 # ==========================================
@@ -74,7 +73,6 @@ def ensure_dependencies():
                 logger.info(f"Successfully installed '{pip_name}'.")
             except Exception as e:
                 logger.error(f"Failed to install '{pip_name}': {e}")
-
 
 try:
     ensure_dependencies()
@@ -136,7 +134,6 @@ DATA_FILE = os.path.join(SCRIPT_DIR, "followed_shows.json")
 SETTINGS_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "history.json")
 EPISODES_FILE = os.path.join(SCRIPT_DIR, "episodes_cache.json")
-SIZE_CACHE_FILE = os.path.join(SCRIPT_DIR, "size_cache.json")
 TORRENTS_DIR = os.path.join(SCRIPT_DIR, "torrents")
 POSTERS_DIR = os.path.join(SCRIPT_DIR, "posters_cache")
 
@@ -152,50 +149,10 @@ TAB_BG = "#13111C"
 
 ctk.set_appearance_mode("Dark")
 
-
 def strip_html_tags(text):
     if not text:
         return "No summary available."
     return re.sub(re.compile("<.*?>"), "", text)
-
-
-# ==========================================
-# RETRY DECORATOR
-# ==========================================
-def retry(max_attempts=3, delay=1, backoff=2, exceptions=(Exception,)):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            _delay = delay
-            for attempt in range(max_attempts):
-                try:
-                    return func(*args, **kwargs)
-                except requests.exceptions.HTTPError as e:
-                    if e.response.status_code == 429:
-                        try:
-                            retry_after = int(
-                                e.response.headers.get("Retry-After", _delay * 2)
-                            )
-                        except ValueError:
-                            retry_after = _delay * 2
-                        time.sleep(retry_after)
-                        _delay = retry_after
-                    else:
-                        if attempt == max_attempts - 1:
-                            raise
-                        time.sleep(_delay)
-                        _delay *= backoff
-                except exceptions:
-                    if attempt == max_attempts - 1:
-                        raise
-                    time.sleep(_delay)
-                    _delay *= backoff
-            return None
-
-        return wrapper
-
-    return decorator
-
 
 # ==========================================
 # LRU IMAGE CACHE
@@ -222,7 +179,6 @@ class LRUImageCache:
                 self._cache.pop(next(iter(self._cache)))
             self._cache[key] = value
 
-
 # ==========================================
 # MAIN APPLICATION
 # ==========================================
@@ -242,7 +198,8 @@ class AirGrabber(ctk.CTk):
         )
 
         self.data_lock = threading.RLock()
-        self.background_executor = ThreadPoolExecutor(max_workers=4)
+        self.network_executor = ThreadPoolExecutor(max_workers=6)
+        self.io_executor = ThreadPoolExecutor(max_workers=4)
 
         self.settings = self.load_settings()
         self.followed_shows = self.load_data()
@@ -254,8 +211,7 @@ class AirGrabber(ctk.CTk):
         self.calendar_day_frames = {}
         self.calendar_generation = 0
         self._cache_dirty = False
-
-        self.anticipated_movies_cache = []  # Cache for the spotlight rail
+        self._sync_running = False
 
         self.ui_queue = queue.Queue()
         self.poll_ui_queue()
@@ -380,28 +336,22 @@ class AirGrabber(ctk.CTk):
             segmented_button_unselected_color=GLASS_CARD,
             command=self.on_tab_change,
         )
-        self.tabview.grid(row=1, column=0, padx=15, pady=5, sticky="nsew")
         self.tabview._segmented_button.configure(
             font=ctk.CTkFont(size=16, weight="bold")
         )
 
-        self.current_movie_month = date.today().replace(day=1)
-        self._sync_timer = None
-        self._sync_running = False
-        self.current_movie_buckets = None
+        self.movie_frame = ctk.CTkFrame(self, fg_color="transparent")
 
         self.set_global_mode("TV Shows")
 
-        # Status label for update notifications
         self.status_label = ctk.CTkLabel(
             self, text="", font=ctk.CTkFont(size=12), text_color="#A4B2C6"
         )
         self.status_label.place(relx=0.5, rely=0.99, anchor="s")
 
-        # Delayed update check
         self.after(2000, self.check_for_updates)
 
-        self.background_executor.submit(self.load_app_icons)
+        self.io_executor.submit(self.load_app_icons)
         self.start_background_library_sync()
 
     # ==========================================
@@ -433,7 +383,6 @@ class AirGrabber(ctk.CTk):
                 if script_resp.status_code == 200:
                     new_content = script_resp.text
 
-                    # Anti-loop check: ensure the downloaded file actually contains the new version
                     match = re.search(
                         r'CURRENT_VERSION\s*=\s*["\']([^"\']+)["\']', new_content
                     )
@@ -458,13 +407,11 @@ class AirGrabber(ctk.CTk):
             except Exception as e:
                 logger.error("Update check failed: %s", e)
 
-        self.background_executor.submit(_check)
+        self.network_executor.submit(_check)
 
     def apply_update(self, new_content, new_version):
         try:
             script_path = os.path.join(SCRIPT_DIR, SCRIPT_FILENAME)
-
-            # Python allows overwriting the currently running .py file directly
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
@@ -475,7 +422,6 @@ class AirGrabber(ctk.CTk):
             )
             time.sleep(1.5)
 
-            # Launch the new version and exit the current process
             subprocess.Popen([sys.executable, script_path])
             self.quit()
             sys.exit(0)
@@ -524,7 +470,7 @@ class AirGrabber(ctk.CTk):
         def _fetch():
             try:
                 if mode == "TV Shows":
-                    res = http_session.get(
+                    res = self.api_get(
                         f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q)}",
                         timeout=3,
                     )
@@ -551,7 +497,7 @@ class AirGrabber(ctk.CTk):
                             )
                         return
 
-                    res = http_session.get(
+                    res = self.api_get(
                         f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(q)}",
                         timeout=3,
                     )
@@ -561,10 +507,10 @@ class AirGrabber(ctk.CTk):
                             self.ui_queue.put(
                                 lambda: self.show_global_suggestions(results, q, mode)
                             )
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Global suggestion fetch error: %s", e)
 
-        self.background_executor.submit(_fetch)
+        self.network_executor.submit(_fetch)
 
     def hide_global_suggestions(self):
         if (
@@ -689,27 +635,37 @@ class AirGrabber(ctk.CTk):
         if mode == "TV Shows":
             self.btn_tv.configure(fg_color=ACCENT_COLOR)
             self.btn_movie.configure(fg_color="transparent")
-        else:
-            self.btn_tv.configure(fg_color="transparent")
-            self.btn_movie.configure(fg_color=ACCENT_COLOR)
+            
+            self.movie_frame.grid_remove()
+            self.tabview.grid(row=1, column=0, padx=15, pady=5, sticky="nsew")
 
-        for t in ["Calendar", "Releases", "Tracked"]:
             try:
-                self.tabview.delete(t)
-            except (ValueError, AttributeError):
-                pass
+                self.tabview.tab("Calendar")
+                tabs_exist = True
+            except ValueError:
+                tabs_exist = False
 
-        if mode == "TV Shows":
-            self.tab_calendar = self.tabview.add("Calendar")
-            self.tab_library = self.tabview.add("Tracked")
-            self.setup_calendar_tab()
-            self.setup_library_tab()
+            if not tabs_exist:
+                self.tab_calendar = self.tabview.add("Calendar")
+                self.tab_discover = self.tabview.add("Discover")
+                self.tab_library = self.tabview.add("Tracked")
+                
+                self.setup_calendar_tab()
+                self.setup_tv_discover_tab()
+                self.setup_library_tab()
+            
             self.tabview.set("Calendar")
             self.refresh_calendar_data()
         else:
-            self.tab_releases = self.tabview.add("Releases")
-            self.setup_releases_tab()
-            self.tabview.set("Releases")
+            self.btn_tv.configure(fg_color="transparent")
+            self.btn_movie.configure(fg_color=ACCENT_COLOR)
+            
+            self.tabview.grid_remove()
+            self.movie_frame.grid(row=1, column=0, padx=15, pady=5, sticky="nsew")
+            
+            if not self.movie_frame.winfo_children():
+                self.setup_releases_tab()
+                
             self.build_movie_releases_ui()
 
     def load_app_icons(self):
@@ -851,7 +807,6 @@ class AirGrabber(ctk.CTk):
             "download_dir": TORRENTS_DIR,
             "weeks_to_show": 3,
             "prev_weeks_to_show": 0,
-            "create_AirGrabber_json": True,
             "tmdb_api_key": "",
         }
         if os.path.exists(SETTINGS_FILE):
@@ -882,7 +837,6 @@ class AirGrabber(ctk.CTk):
         except ValueError:
             return ""
 
-    @retry(max_attempts=3, delay=1)
     def fetch_pil_image(self, url):
         if not url:
             return None
@@ -934,8 +888,8 @@ class AirGrabber(ctk.CTk):
         tab = self.tabview.get()
         if tab == "Calendar":
             self.refresh_calendar_data()
-        elif tab == "Releases":
-            self.build_movie_releases_ui()
+        elif tab == "Discover":
+            self.build_tv_discover_ui()
         elif tab == "Tracked":
             self.refresh_library_list()
 
@@ -947,6 +901,10 @@ class AirGrabber(ctk.CTk):
             return int(value)
         except (TypeError, ValueError):
             return 0
+
+    def api_get(self, url, **kwargs):
+        with api_semaphore:
+            return http_session.get(url, **kwargs)
 
     def _get_or_fetch_imdb_id(self, show_id):
         if not show_id:
@@ -961,7 +919,7 @@ class AirGrabber(ctk.CTk):
 
         if not imdb_id:
             try:
-                res_meta = http_session.get(
+                res_meta = self.api_get(
                     f"https://api.tvmaze.com/shows/{show_id}?embed[]=externals",
                     timeout=5,
                 )
@@ -979,31 +937,13 @@ class AirGrabber(ctk.CTk):
                                     "externals"
                                 ] = {"imdb": imdb_id}
                                 self.mark_caches_dirty()
+                                self.save_data()  # Ensure persistence
             except Exception as e:
-                logger.debug(f"TVMaze metadata fetch error for show {show_id}: {e}")
+                logger.warning(f"TVMaze metadata fetch error for show {show_id}: {e}")
 
         return imdb_id
 
-    def apply_quality_filter(self, results):
-        pref = self.settings.get("quality", "1080p")
-        if pref == "Any":
-            return results
-        if pref == "2160p (4K)":
-            q_str = "2160p"
-        elif pref == "x265/HEVC":
-            q_str = "x265"
-        else:
-            q_str = pref
-        valid = []
-        for r in results:
-            n = r.get("name", "").lower()
-            if pref == "x265/HEVC" and ("x265" in n or "hevc" in n):
-                valid.append(r)
-            elif q_str.lower() in n:
-                valid.append(r)
-        return valid
-
-    def download_torrent_file(self, data, best, f_size=None):
+    def download_torrent_file(self, data, best, f_size=None, callback=None):
         dl_dir = self.settings.get("download_dir", TORRENTS_DIR)
         os.makedirs(dl_dir, exist_ok=True)
         raw_name = best.get("name", "torrent")
@@ -1017,22 +957,31 @@ class AirGrabber(ctk.CTk):
             success = False
             info_hash = best.get("info_hash")
             magnet = best.get("magnet")
+            torrent_url = best.get("torrent_url")
 
-            if magnet:
+            t_path = os.path.join(dl_dir, f"{safe}.torrent")
+
+            if torrent_url:
                 try:
-                    magnet_path = os.path.join(dl_dir, f"{safe}.magnet")
-                    with open(magnet_path, "w", encoding="utf-8") as f:
-                        f.write(magnet)
-                    success = True
-                    logger.info(f"Saved magnet link to {magnet_path}")
+                    r = scraper_session.get(torrent_url, timeout=10)
+                    if r.status_code == 200 and (
+                        b"d8:announce" in r.content or b"d4:info" in r.content
+                    ):
+                        with open(t_path, "wb") as f:
+                            f.write(r.content)
+                        success = True
+                        logger.info(f"Downloaded .torrent file directly from {torrent_url}")
+                    else:
+                        logger.debug(f"Direct torrent download failed: {r.status_code}")
                 except Exception as e:
-                    logger.error(f"Failed to save magnet file: {e}")
-            elif info_hash:
-                t_path = os.path.join(dl_dir, f"{safe}.torrent")
+                    logger.warning(f"Error downloading direct torrent: {e}")
+
+            if not success and info_hash:
                 part = t_path + ".part"
                 for base in [
                     f"https://itorrents.org/torrent/{info_hash}.torrent",
                     f"https://btcache.me/torrent/{info_hash}",
+                    f"https://torrage.info/torrent.php?h={info_hash}"
                 ]:
                     try:
                         r = scraper_session.get(base, timeout=10)
@@ -1052,28 +1001,17 @@ class AirGrabber(ctk.CTk):
                     except Exception as e:
                         logger.warning(f"Error downloading torrent from {base}: {e}")
 
+            if not success and magnet:
+                try:
+                    magnet_path = os.path.join(dl_dir, f"{safe}.magnet")
+                    with open(magnet_path, "w", encoding="utf-8") as f:
+                        f.write(magnet)
+                    success = True
+                    logger.info(f"Saved magnet link to {magnet_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save magnet file: {e}")
+
             if success:
-                if self.settings.get("create_AirGrabber_json", True):
-                    try:
-                        media_type = (
-                            "movie" if self.global_media_var.get() == "Movies" else "tv"
-                        )
-                        json_path = os.path.join(dl_dir, f"{safe}_AirGrabber.json")
-                        with open(json_path, "w") as mf:
-                            json.dump(
-                                {
-                                    "media_type": media_type,
-                                    "show_name": data.get("show", "Unknown"),
-                                    "episode_code": data.get("episode", ""),
-                                    "title": data.get("title", ""),
-                                    "tvmaze_id": data.get("media_id", "0"),
-                                },
-                                mf,
-                                indent=4,
-                            )
-                        logger.info(f"Saved metadata to {json_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to save metadata JSON: {e}")
                 if data.get("media_id") and data.get("episode"):
                     hk = f"{data['media_id']}_{data['episode']}"
                     with self.data_lock:
@@ -1083,13 +1021,22 @@ class AirGrabber(ctk.CTk):
                             logger.debug(f"Added to history: {hk}")
             else:
                 logger.error(
-                    f"Download failed for {best.get('name', 'Unknown')}: no info_hash or magnet available"
+                    f"Download failed for {best.get('name', 'Unknown')}: no URL, cache, or magnet available"
                 )
 
-        self.background_executor.submit(dl)
+            if callback:
+                try:
+                    callback(success)
+                except Exception as e:
+                    logger.error(f"Callback error: {e}")
+
+        self.io_executor.submit(dl)
 
     def start_background_library_sync(self):
-        self.after(5000, self._run_library_sync)
+        def safe_schedule():
+            if self.winfo_exists():
+                self.after(5000, self._run_library_sync)
+        self.after(0, safe_schedule)
 
     def _run_library_sync(self):
         if self._sync_running:
@@ -1103,7 +1050,7 @@ class AirGrabber(ctk.CTk):
                 for sid in ids:
                     try:
                         with api_semaphore:
-                            res = http_session.get(
+                            res = self.api_get(
                                 f"https://api.tvmaze.com/shows/{sid}?embed[]=episodes&embed[]=seasons",
                                 timeout=5,
                             )
@@ -1116,7 +1063,7 @@ class AirGrabber(ctk.CTk):
                             "episodes", []
                         )
                         if d.get("image", {}).get("medium"):
-                            self.background_executor.submit(
+                            self.io_executor.submit(
                                 self.fetch_pil_image, d["image"]["medium"]
                             )
                         time.sleep(0.4)
@@ -1136,7 +1083,7 @@ class AirGrabber(ctk.CTk):
                     lambda: self.after(6 * 60 * 60 * 1000, self._run_library_sync)
                 )
 
-        self.background_executor.submit(sync)
+        self.network_executor.submit(sync)
 
     # ==========================================
     # TV CALENDAR UI
@@ -1308,7 +1255,7 @@ class AirGrabber(ctk.CTk):
                         cell, data, curr, show_poster=not is_prev_week
                     )
 
-        self.background_executor.submit(
+        self.network_executor.submit(
             self._fetch_and_render_unfollowed,
             start,
             tw * 7,
@@ -1321,6 +1268,7 @@ class AirGrabber(ctk.CTk):
         self, start_date, total_days, schedule, max_daily_tracked, generation
     ):
         target = max(3, max_daily_tracked)
+        days_to_fetch = []
         for i in range(total_days):
             if generation != self.calendar_generation:
                 return
@@ -1330,35 +1278,54 @@ class AirGrabber(ctk.CTk):
             needed = target - tracked
             if needed <= 0:
                 continue
-
             if d_str not in self.unfollowed_cache:
-                try:
-                    r = http_session.get(
-                        f"https://api.tvmaze.com/schedule?date={d_str}", timeout=5
-                    )
-                    if r.status_code == 200:
-                        valid = [
-                            item
-                            for item in r.json()
-                            if item.get("show", {}).get("type")
-                            in ["Scripted", "Animation"]
-                            and item.get("show", {}).get("language") == "English"
-                            and item.get("show", {}).get("weight", 0) > 40
-                        ]
-                        valid.sort(
-                            key=lambda x: x["show"].get("weight", 0), reverse=True
-                        )
-                        self.unfollowed_cache[d_str] = valid[:15]
-                except:
-                    pass
+                days_to_fetch.append((d_str, needed))
 
-            items = self.unfollowed_cache.get(d_str, [])
-            if items:
-                self.ui_queue.put(
-                    lambda d=d_str, it=items, n=needed, g=generation: (
-                        self._render_unfollowed_cells(d, it, n, g)
-                    )
+        if not days_to_fetch:
+            return
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = []
+            for d_str, needed in days_to_fetch:
+                future = pool.submit(self._fetch_unfollowed_for_day, d_str, generation)
+                futures.append((future, d_str, needed))
+
+            for future, d_str, needed in futures:
+                try:
+                    items = future.result(timeout=15)
+                    if items and generation == self.calendar_generation:
+                        self.ui_queue.put(
+                            lambda d=d_str, it=items, n=needed, g=generation: (
+                                self._render_unfollowed_cells(d, it, n, g)
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch unfollowed for {d_str}: {e}")
+
+    def _fetch_unfollowed_for_day(self, d_str, generation):
+        if d_str in self.unfollowed_cache:
+            return self.unfollowed_cache[d_str]
+        try:
+            r = self.api_get(
+                f"https://api.tvmaze.com/schedule?date={d_str}", timeout=5
+            )
+            if r.status_code == 200:
+                valid = [
+                    item
+                    for item in r.json()
+                    if item.get("show", {}).get("type")
+                    in ["Scripted", "Animation"]
+                    and item.get("show", {}).get("language") == "English"
+                    and item.get("show", {}).get("weight", 0) > 40
+                ]
+                valid.sort(
+                    key=lambda x: x["show"].get("weight", 0), reverse=True
                 )
+                self.unfollowed_cache[d_str] = valid[:15]
+                return self.unfollowed_cache[d_str]
+        except Exception as e:
+            logger.warning(f"Error fetching unfollowed schedule for {d_str}: {e}")
+        return []
 
     def _render_unfollowed_cells(self, date_str, items, needed, generation):
         if generation != self.calendar_generation:
@@ -1420,8 +1387,8 @@ class AirGrabber(ctk.CTk):
                 hover_color="#2A2438",
             )
             btn.configure(
-                command=lambda sid=str(show["id"]), name=show.get("name", ""), b=btn: (
-                    self.toggle_follow(sid, name, True, b)
+                command=lambda sid=str(show["id"]), name=show.get("name", ""): (
+                    self.toggle_follow(sid, name, True)
                 )
             )
             btn.pack(side="right")
@@ -1445,7 +1412,6 @@ class AirGrabber(ctk.CTk):
         qual = self.settings.get("quality", "1080p")
         data["qual_str"] = qual
 
-        # IMDb Info ID check
         with self.data_lock:
             meta = self.followed_shows.get(str(data["media_id"]), {}).get(
                 "metadata", {}
@@ -1465,7 +1431,6 @@ class AirGrabber(ctk.CTk):
             inf = ctk.CTkFrame(card, fg_color="transparent")
             inf.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=10)
 
-            # Pack bottom button FIRST so it permanently reserves space and never gets crushed
             btn = ctk.CTkButton(
                 inf,
                 text=btn_text,
@@ -1482,7 +1447,6 @@ class AirGrabber(ctk.CTk):
             btn.pack(side="bottom", fill="x")
             data["button_ref"] = btn
 
-            # Title & Episode Text container (padded right so it avoids the info icon)
             text_f = ctk.CTkFrame(inf, fg_color="transparent")
             text_f.pack(side="top", fill="both", expand=True, padx=(0, 25))
             ctk.CTkLabel(
@@ -1519,9 +1483,8 @@ class AirGrabber(ctk.CTk):
                             )
                         )
 
-            self.background_executor.submit(load)
+            self.io_executor.submit(load)
         else:
-            # Compact view (past weeks)
             inf = ctk.CTkFrame(card, fg_color="transparent")
             inf.pack(fill="both", expand=True, padx=(10, 35), pady=8)
 
@@ -1554,7 +1517,6 @@ class AirGrabber(ctk.CTk):
                 justify="left",
             ).pack(side="left", anchor="w")
 
-        # Place the Info icon LAST so it forces itself onto the very top layer
         if imdb_id:
             safe_imdb = (
                 f"tt{imdb_id}" if not str(imdb_id).startswith("tt") else str(imdb_id)
@@ -1578,20 +1540,323 @@ class AirGrabber(ctk.CTk):
             info_icon.bind(
                 "<Enter>", lambda e, w=info_icon: w.configure(text_color="white")
             )
-            inf.bind(
+            card.bind(
                 "<Leave>", lambda e, w=info_icon: w.configure(text_color="#A4B2C6")
             )
+            info_icon.bind(
+                "<Leave>", lambda e, w=info_icon: w.configure(text_color="#A4B2C6")
+            )
+
+    # ==========================================
+    # TV DISCOVER UI
+    # ==========================================
+    def setup_tv_discover_tab(self):
+        self.tab_discover.grid_columnconfigure(0, weight=1)
+        self.tab_discover.grid_rowconfigure(0, weight=1)
+
+        self.tv_discover_scroll = ctk.CTkScrollableFrame(
+            self.tab_discover, fg_color="transparent"
+        )
+        self.tv_discover_scroll.grid(row=0, column=0, sticky="nsew", padx=15, pady=10)
+
+    def build_tv_discover_ui(self):
+        for w in self.tv_discover_scroll.winfo_children():
+            w.destroy()
+
+        loader = self.show_loading(self.tv_discover_scroll)
+
+        def fetch_data():
+            api_key = self.settings.get("tmdb_api_key", "").strip()
+            if not api_key:
+                self.ui_queue.put(
+                    lambda: self._render_tv_dashboard(
+                        None,
+                        loader,
+                        error_msg="TMDB API key is required for Discovery.\nPlease add it in Settings.",
+                    )
+                )
+                return
+
+            dashboard_data = {}
+            try:
+                # Trending
+                trend_params = {"api_key": api_key, "page": 1}
+                res_trend = self.api_get(
+                    "https://api.themoviedb.org/3/trending/tv/week",
+                    params=trend_params,
+                    timeout=10,
+                )
+                if res_trend.status_code == 200:
+                    dashboard_data["trending"] = {
+                        "title": "🔥 Trending This Week",
+                        "shows": self._parse_tmdb_tv(res_trend.json().get("results", [])[:12]),
+                        "url": "https://api.themoviedb.org/3/trending/tv/week",
+                        "params": trend_params,
+                    }
+
+                # On the Air (New Episodes)
+                air_params = {"api_key": api_key, "language": "en-US", "page": 1}
+                res_air = self.api_get(
+                    "https://api.themoviedb.org/3/tv/on_the_air",
+                    params=air_params,
+                    timeout=10,
+                )
+                if res_air.status_code == 200:
+                    dashboard_data["on_air"] = {
+                        "title": "📺 Currently Airing",
+                        "shows": self._parse_tmdb_tv(res_air.json().get("results", [])[:12]),
+                        "url": "https://api.themoviedb.org/3/tv/on_the_air",
+                        "params": air_params,
+                    }
+
+                self.ui_queue.put(
+                    lambda: self._render_tv_dashboard(dashboard_data, loader)
+                )
+
+            except Exception as e:
+                logger.error(f"TV Discover API error: {e}")
+                self.ui_queue.put(
+                    lambda: self._render_tv_dashboard(
+                        None, loader, error_msg=f"Loading failed: {str(e)}"
+                    )
+                )
+
+        self.network_executor.submit(fetch_data)
+
+    def _parse_tmdb_tv(self, raw_results):
+        parsed = []
+        for show in raw_results:
+            first_air_date = show.get("first_air_date", "")
+            date_obj = None
+            if first_air_date:
+                try:
+                    date_obj = datetime.strptime(first_air_date, "%Y-%m-%d").date()
+                except:
+                    pass
+            poster_url = None
+            if show.get("poster_path"):
+                poster_url = f"https://image.tmdb.org/t/p/w185{show.get('poster_path')}"
+
+            parsed.append(
+                {
+                    "tmdb_id": show.get("id"),
+                    "title": show.get("name", "Unknown"),
+                    "date": date_obj,
+                    "desc": show.get("overview", "")[:160],
+                    "score": show.get("vote_average", "N/A"),
+                    "poster_url": poster_url,
+                }
+            )
+        return parsed
+
+    def _render_tv_dashboard(self, dashboard_data, loader=None, error_msg=""):
+        if loader:
+            self.hide_loading(loader)
+        if error_msg:
+            ctk.CTkLabel(
+                self.tv_discover_scroll,
+                text=f"❌ Oops:\n{error_msg}",
+                text_color="#C0392B",
+                font=ctk.CTkFont(size=14, weight="bold"),
+            ).pack(pady=80)
+            return
+
+        for section_key, section_data in dashboard_data.items():
+            shows = section_data.get("shows", [])
+            if not shows:
+                continue
+
+            section_frame = ctk.CTkFrame(self.tv_discover_scroll, fg_color="transparent")
+            section_frame.pack(fill="x", pady=(0, 25))
+
+            title_color = "#F39C12" if section_key == "trending" else "#A4B2C6"
+            
+            title_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
+            title_frame.pack(fill="x", padx=10, pady=(0, 10))
+            
+            ctk.CTkLabel(
+                title_frame,
+                text=section_data["title"],
+                font=ctk.CTkFont(size=18, weight="bold"),
+                text_color=title_color,
+            ).pack(side="left")
+
+            btn_see_all = ctk.CTkButton(
+                title_frame, 
+                text="See All ➔", 
+                width=70, 
+                height=24, 
+                fg_color="transparent", 
+                hover_color="gray20", 
+                text_color="#A4B2C6", 
+                font=ctk.CTkFont(size=11, weight="bold")
+            )
+            btn_see_all.configure(command=lambda sd=section_data: self.open_expanded_category(
+                scroll_widget=self.tv_discover_scroll, 
+                title_text=sd["title"], 
+                url=sd["url"], 
+                base_params=sd["params"], 
+                parser_func=self._parse_tmdb_tv, 
+                card_func=self.create_tv_discover_card, 
+                page=1, 
+                back_command=self.build_tv_discover_ui
+            ))
+            btn_see_all.pack(side="right", padx=10)
+
+            grid = ctk.CTkFrame(section_frame, fg_color="transparent")
+            grid.pack(anchor="w", fill="x")
+
+            for i in range(6):
+                grid.grid_columnconfigure(i, weight=1, uniform="tv_col")
+
+            for idx, show in enumerate(shows):
+                row = idx // 6
+                col = idx % 6
+                self.create_tv_discover_card(grid, show, row, col)
+
+    def create_tv_discover_card(self, parent, data, row, col):
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=GLASS_CARD,
+            border_color=GLASS_EDGE,
+            border_width=1,
+            corner_radius=8,
+            height=135,
+        )
+        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+        card.grid_propagate(False)
+        card.pack_propagate(False)
+
+        pf = ctk.CTkFrame(card, width=68, height=100, fg_color="gray20", corner_radius=5)
+        pf.pack(side="left", padx=10, pady=10)
+        pf.pack_propagate(False)
+        poster_lbl = ctk.CTkLabel(pf, text="")
+        poster_lbl.place(relx=0.5, rely=0.5, anchor="center")
+
+        inf = ctk.CTkFrame(card, fg_color="transparent")
+        inf.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=10)
+
+        title = data["title"]
+        if len(title) > 23:
+            title = title[:20] + "..."
+        ctk.CTkLabel(
+            inf,
+            text=title,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="white",
+            wraplength=120,
+            justify="left",
+        ).pack(anchor="nw")
+
+        date_str = data["date"].strftime("%Y") if data.get("date") else "Unknown"
+        score_text = f"{date_str} | ★ {data.get('score', 'N/A')}"
+        ctk.CTkLabel(
+            inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6"
+        ).pack(anchor="w", pady=(2, 0))
+
+        details_lbl = ctk.CTkLabel(
+            inf, text="Loading details...", font=ctk.CTkFont(size=9), text_color="gray50"
+        )
+        details_lbl.pack(anchor="w", pady=(0, 2))
+
+        tmdb_id = data.get("tmdb_id")
+        api_key = self.settings.get("tmdb_api_key", "").strip()
+        
+        if tmdb_id and api_key:
+            def load_details():
+                try:
+                    res = self.api_get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}", timeout=5)
+                    if res.status_code == 200:
+                        det = res.json()
+                        status = det.get("status", "Unknown")
+                        seasons = det.get("number_of_seasons", "?")
+                        self.ui_queue.put(
+                            lambda: details_lbl.winfo_exists() and details_lbl.configure(text=f"{status} • {seasons} Seasons")
+                        )
+                    else:
+                        self.ui_queue.put(lambda: details_lbl.winfo_exists() and details_lbl.configure(text=""))
+                except:
+                    pass
+            self.network_executor.submit(load_details)
+        else:
+            details_lbl.configure(text="")
+
+        with self.data_lock:
+            is_tracked = any(sdata.get("name", "").lower() == data["title"].lower() for sdata in self.followed_shows.values())
+
+        btn = ctk.CTkButton(
+            inf,
+            text="Tracking" if is_tracked else "+ Track",
+            height=22,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="transparent" if is_tracked else ACCENT_COLOR,
+            state="disabled" if is_tracked else "normal",
+            hover_color=ACCENT_HOVER,
+            border_width=0,
+            corner_radius=4,
+        )
+        if not is_tracked:
+            btn.configure(
+                command=lambda t=data["title"], b=btn: self._track_from_discover(t, b)
+            )
+        btn.pack(side="bottom", fill="x")
+
+        if data.get("poster_url"):
+            def load_img():
+                pil_img = self.fetch_pil_image(data["poster_url"])
+                if pil_img:
+                    img = ImageOps.fit(pil_img, (68, 100), Image.Resampling.LANCZOS)
+                    self.ui_queue.put(
+                        lambda: (
+                            poster_lbl.winfo_exists()
+                            and poster_lbl.configure(
+                                image=ctk.CTkImage(
+                                    light_image=img, dark_image=img, size=(68, 100)
+                                ),
+                                text="",
+                            )
+                        )
+                    )
+            self.io_executor.submit(load_img)
+
+    def _track_from_discover(self, title, btn):
+        btn.configure(state="disabled", text="Searching...")
+        def _task():
+            try:
+                res = self.api_get(
+                    f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(title)}",
+                    timeout=5,
+                )
+                if res.status_code == 200 and res.json():
+                    data = res.json()[0]["show"]
+                    sid = str(data["id"])
+                    name = data["name"]
+                    
+                    with self.data_lock:
+                        already_tracked = sid in self.followed_shows
+                        
+                    if already_tracked:
+                        self.ui_queue.put(lambda: btn.configure(text="Tracking", fg_color="transparent", state="disabled"))
+                    else:
+                        self.toggle_follow(sid, name, True)
+                        self.ui_queue.put(lambda: btn.configure(text="Tracking", fg_color="transparent", state="disabled"))
+                else:
+                    self.ui_queue.put(lambda: btn.configure(text="Not Found", fg_color="#C0392B"))
+            except Exception as e:
+                logger.error(f"Failed to track from discover: {e}")
+                self.ui_queue.put(lambda: btn.configure(text="Error", fg_color="#C0392B"))
+
+        self.network_executor.submit(_task)
 
     # ==========================================
     # MOVIE RELEASES TAB
     # ==========================================
     def setup_releases_tab(self):
-        self.tab_releases.grid_columnconfigure(0, weight=1)
-        self.tab_releases.grid_rowconfigure(1, weight=1)
+        self.movie_frame.grid_columnconfigure(0, weight=1)
+        self.movie_frame.grid_rowconfigure(1, weight=1)
 
-        # 1. Hero Search Section
         search_frame = ctk.CTkFrame(
-            self.tab_releases,
+            self.movie_frame,
             fg_color=GLASS_CARD,
             border_color=GLASS_EDGE,
             border_width=1,
@@ -1655,11 +1920,10 @@ class AirGrabber(ctk.CTk):
             command=self.clear_movie_search,
         )
         self.btn_clear_search.grid(row=0, column=2, padx=(10, 0))
-        self.btn_clear_search.grid_remove()  # Hidden by default
+        self.btn_clear_search.grid_remove() 
 
-        # 2. Main Scrollable Area
         self.releases_scroll = ctk.CTkScrollableFrame(
-            self.tab_releases, fg_color="transparent"
+            self.movie_frame, fg_color="transparent"
         )
         self.releases_scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
 
@@ -1692,8 +1956,10 @@ class AirGrabber(ctk.CTk):
                 return
 
             try:
-                res = http_session.get(
-                    f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(query)}&language=en-US&page=1",
+                search_params = {"api_key": api_key, "query": query, "language": "en-US", "page": 1}
+                res = self.api_get(
+                    "https://api.themoviedb.org/3/search/movie",
+                    params=search_params,
                     timeout=10,
                 )
                 res.raise_for_status()
@@ -1704,7 +1970,9 @@ class AirGrabber(ctk.CTk):
                 dashboard_data = {
                     "search": {
                         "title": f"Search Results for '{query}'",
-                        "movies": parsed_results,
+                        "movies": parsed_results[:12],
+                        "url": "https://api.themoviedb.org/3/search/movie",
+                        "params": search_params,
                     }
                 }
                 self.ui_queue.put(
@@ -1719,7 +1987,7 @@ class AirGrabber(ctk.CTk):
                     )
                 )
 
-        self.background_executor.submit(fetch_search)
+        self.network_executor.submit(fetch_search)
 
     def _parse_tmdb_movies(self, raw_results):
         parsed = []
@@ -1789,7 +2057,7 @@ class AirGrabber(ctk.CTk):
                     "release_date.lte": today_str,
                     "page": 1,
                 }
-                res_dig = http_session.get(
+                res_dig = self.api_get(
                     "https://api.themoviedb.org/3/discover/movie",
                     params=digital_params,
                     timeout=10,
@@ -1800,6 +2068,8 @@ class AirGrabber(ctk.CTk):
                         "movies": self._parse_tmdb_movies(
                             res_dig.json().get("results", [])[:12]
                         ),
+                        "url": "https://api.themoviedb.org/3/discover/movie",
+                        "params": digital_params,
                     }
 
                 # 2. Trending in Theaters
@@ -1816,7 +2086,7 @@ class AirGrabber(ctk.CTk):
                     ).strftime("%Y-%m-%d"),
                     "page": 1,
                 }
-                res_theaters = http_session.get(
+                res_theaters = self.api_get(
                     "https://api.themoviedb.org/3/discover/movie",
                     params=theater_params,
                     timeout=10,
@@ -1827,6 +2097,8 @@ class AirGrabber(ctk.CTk):
                         "movies": self._parse_tmdb_movies(
                             res_theaters.json().get("results", [])[:12]
                         ),
+                        "url": "https://api.themoviedb.org/3/discover/movie",
+                        "params": theater_params,
                     }
 
                 self.ui_queue.put(
@@ -1841,7 +2113,7 @@ class AirGrabber(ctk.CTk):
                     )
                 )
 
-        self.background_executor.submit(fetch_dashboard_data)
+        self.network_executor.submit(fetch_dashboard_data)
 
     def _render_movie_dashboard(self, dashboard_data, loader=None, error_msg=""):
         if loader:
@@ -1868,7 +2140,6 @@ class AirGrabber(ctk.CTk):
         for w in self.releases_scroll.winfo_children():
             w.destroy()
 
-        # Iterate through our dashboard categories (search, digital, theaters)
         for section_key, section_data in dashboard_data.items():
             movies = section_data.get("movies", [])
             if not movies:
@@ -1882,12 +2153,38 @@ class AirGrabber(ctk.CTk):
                 if section_key == "search"
                 else ("#F39C12" if section_key == "digital" else "#A4B2C6")
             )
+            
+            title_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
+            title_frame.pack(fill="x", padx=10, pady=(0, 10))
+            
             ctk.CTkLabel(
-                section_frame,
+                title_frame,
                 text=section_data["title"],
                 font=ctk.CTkFont(size=18, weight="bold"),
                 text_color=title_color,
-            ).pack(anchor="w", padx=10, pady=(0, 10))
+            ).pack(side="left")
+
+            btn_see_all = ctk.CTkButton(
+                title_frame, 
+                text="See All ➔", 
+                width=70, 
+                height=24, 
+                fg_color="transparent", 
+                hover_color="gray20", 
+                text_color="#A4B2C6", 
+                font=ctk.CTkFont(size=11, weight="bold")
+            )
+            btn_see_all.configure(command=lambda sd=section_data, sk=section_key: self.open_expanded_category(
+                scroll_widget=self.releases_scroll, 
+                title_text=sd["title"], 
+                url=sd["url"], 
+                base_params=sd["params"], 
+                parser_func=self._parse_tmdb_movies, 
+                card_func=self.create_movie_horizontal_card, 
+                page=1, 
+                back_command=self.execute_movie_search if sk == "search" else self.build_movie_releases_ui
+            ))
+            btn_see_all.pack(side="right", padx=10)
 
             grid = ctk.CTkFrame(section_frame, fg_color="transparent")
             grid.pack(anchor="w", fill="x")
@@ -1899,6 +2196,124 @@ class AirGrabber(ctk.CTk):
                 row = idx // 6
                 col = idx % 6
                 self.create_movie_horizontal_card(grid, movie, row, col)
+
+    def open_expanded_category(
+        self,
+        scroll_widget,
+        title_text,
+        url,
+        base_params,
+        parser_func,
+        card_func,
+        page=1,
+        back_command=None,
+    ):
+        """Generic method to render a full paginated grid for a specific TMDB category or search result."""
+        for w in scroll_widget.winfo_children():
+            w.destroy()
+
+        hdr = ctk.CTkFrame(scroll_widget, fg_color="transparent")
+        hdr.pack(fill="x", pady=(0, 15))
+
+        if back_command:
+            btn_back = ctk.CTkButton(
+                hdr,
+                text="← Back",
+                width=60,
+                fg_color="gray25",
+                hover_color="gray35",
+                command=back_command,
+            )
+            btn_back.pack(side="left", padx=(10, 15))
+
+        ctk.CTkLabel(
+            hdr,
+            text=f"{title_text} - Page {page}",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="white",
+        ).pack(side="left")
+
+        loader = self.show_loading(scroll_widget)
+
+        def fetch():
+            params = dict(base_params)
+            params["page"] = page
+            try:
+                res = self.api_get(url, params=params, timeout=10)
+                res.raise_for_status()
+                data = res.json()
+                results = data.get("results", [])
+                total_pages = data.get("total_pages", 1)
+                parsed = parser_func(results)
+                self.ui_queue.put(lambda: render(parsed, total_pages))
+            except Exception as e:
+                logger.error(f"Expanded category error: {e}")
+                self.ui_queue.put(
+                    lambda: self._render_category_error(scroll_widget, str(e), loader)
+                )
+
+        def render(items, total_pages):
+            self.hide_loading(loader)
+            if not items:
+                ctk.CTkLabel(
+                    scroll_widget, text="No more items found.", text_color="gray50"
+                ).pack(pady=40)
+                return
+
+            grid = ctk.CTkFrame(scroll_widget, fg_color="transparent")
+            grid.pack(fill="x", anchor="w")
+            for i in range(6):
+                grid.grid_columnconfigure(i, weight=1, uniform="cat_col")
+
+            for idx, item in enumerate(items):
+                row = idx // 6
+                col = idx % 6
+                card_func(grid, item, row, col)
+
+            pg_frame = ctk.CTkFrame(scroll_widget, fg_color="transparent")
+            pg_frame.pack(fill="x", pady=25)
+
+            if page > 1:
+                ctk.CTkButton(
+                    pg_frame,
+                    text="← Previous Page",
+                    width=120,
+                    fg_color=ACCENT_COLOR,
+                    hover_color=ACCENT_HOVER,
+                    command=lambda: self.open_expanded_category(
+                        scroll_widget, title_text, url, base_params, parser_func, card_func, page - 1, back_command
+                    ),
+                ).pack(side="left", padx=10)
+
+            ctk.CTkLabel(
+                pg_frame,
+                text=f"Page {page} of {total_pages}",
+                text_color="gray60",
+                font=ctk.CTkFont(weight="bold"),
+            ).pack(side="left", expand=True)
+
+            if page < total_pages and page < 500: # TMDB typically limits to 500 pages
+                ctk.CTkButton(
+                    pg_frame,
+                    text="Next Page →",
+                    width=120,
+                    fg_color=ACCENT_COLOR,
+                    hover_color=ACCENT_HOVER,
+                    command=lambda: self.open_expanded_category(
+                        scroll_widget, title_text, url, base_params, parser_func, card_func, page + 1, back_command
+                    ),
+                ).pack(side="right", padx=10)
+
+        self.network_executor.submit(fetch)
+
+    def _render_category_error(self, scroll_widget, error_msg, loader):
+        self.hide_loading(loader)
+        ctk.CTkLabel(
+            scroll_widget,
+            text=f"❌ Failed to load category:\n{error_msg}",
+            text_color="#C0392B",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(pady=40)
 
     def create_movie_horizontal_card(self, parent, data, row, col):
         card = ctk.CTkFrame(
@@ -2000,7 +2415,7 @@ class AirGrabber(ctk.CTk):
                         )
                     )
 
-            self.background_executor.submit(load_img)
+            self.io_executor.submit(load_img)
 
     # ==========================================
     # LIBRARY TAB
@@ -2020,7 +2435,6 @@ class AirGrabber(ctk.CTk):
         )
         self.lbl_lib_count.pack(side="left")
 
-        # New "Search Shows" button
         self.btn_search_shows = ctk.CTkButton(
             hdr,
             text="🔍 Search Shows",
@@ -2060,7 +2474,6 @@ class AirGrabber(ctk.CTk):
         self.library_scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
 
     def open_show_search_dialog(self):
-        """Popup to search for shows on TVMaze and add them to library."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Search & Add Shows")
         dialog.geometry("600x500")
@@ -2157,7 +2570,7 @@ class AirGrabber(ctk.CTk):
                 btn.grid(row=0, column=1, padx=10, pady=8, sticky="e")
 
                 def _track(s=sid, n=name, btn_ref=btn):
-                    self.toggle_follow(s, n, True, None)
+                    self.toggle_follow(s, n, True)
                     btn_ref.configure(
                         text="Tracking", fg_color="transparent", state="disabled"
                     )
@@ -2179,7 +2592,7 @@ class AirGrabber(ctk.CTk):
 
             def _fetch():
                 try:
-                    resp = http_session.get(
+                    resp = self.api_get(
                         f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q)}",
                         timeout=5,
                     )
@@ -2187,9 +2600,10 @@ class AirGrabber(ctk.CTk):
                     data = resp.json()
                     self.ui_queue.put(lambda: render_results(data, q))
                 except Exception as e:
+                    logger.warning(f"Show search failed: {e}")
                     self.ui_queue.put(lambda: render_results([], q))
 
-            self.background_executor.submit(_fetch)
+            self.network_executor.submit(_fetch)
 
         def on_key_release(event):
             if event.keysym in [
@@ -2280,20 +2694,20 @@ class AirGrabber(ctk.CTk):
                     sid = show
                     name = None
                     try:
-                        res = http_session.get(
+                        res = self.api_get(
                             f"https://api.tvmaze.com/shows/{sid}", timeout=5
                         )
                         if res.status_code == 200:
                             data = res.json()
                             name = data.get("name")
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Import by ID failed for {show}: {e}")
                     if not name:
                         failed += 1
                         continue
                 else:
                     try:
-                        res = http_session.get(
+                        res = self.api_get(
                             f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(show)}",
                             timeout=5,
                         )
@@ -2304,7 +2718,8 @@ class AirGrabber(ctk.CTk):
                         else:
                             failed += 1
                             continue
-                    except:
+                    except Exception as e:
+                        logger.warning(f"Import search failed for {show}: {e}")
                         failed += 1
                         continue
 
@@ -2326,7 +2741,7 @@ class AirGrabber(ctk.CTk):
                 )
             )
 
-        self.background_executor.submit(import_task)
+        self.network_executor.submit(import_task)
 
     def cleanup_ended_shows(self):
         def cleanup_task():
@@ -2352,7 +2767,7 @@ class AirGrabber(ctk.CTk):
                 )
             )
 
-        self.background_executor.submit(cleanup_task)
+        self.network_executor.submit(cleanup_task)
 
     def _show_message(self, title, message):
         popup = ctk.CTkToplevel(self)
@@ -2430,7 +2845,6 @@ class AirGrabber(ctk.CTk):
             ).pack(anchor="w")
 
             if horizontal_rail and "date" in item:
-                # Movie Spotlight Format
                 date_val = item.get("date")
                 date_str = (
                     date_val.strftime("%b %d, %Y")
@@ -2438,7 +2852,6 @@ class AirGrabber(ctk.CTk):
                     else ""
                 )
                 if date_str:
-                    # Using "Date:" instead of "Drops:" because TMDB usually provides the original theatrical date here
                     ctk.CTkLabel(
                         inf,
                         text=f"Date: {date_str}",
@@ -2484,7 +2897,6 @@ class AirGrabber(ctk.CTk):
                 btn.pack(fill="x")
 
             else:
-                # TV Library Format
                 ctk.CTkLabel(
                     inf,
                     text=f"Status: {item.get('status', 'Unknown')}",
@@ -2508,7 +2920,7 @@ class AirGrabber(ctk.CTk):
                         fg_color="#C0392B",
                         border_width=0,
                         command=lambda s=sid, n=title: self.toggle_follow(
-                            s, n, False, None
+                            s, n, False
                         ),
                     )
                     ubtn.pack(side="right")
@@ -2545,7 +2957,7 @@ class AirGrabber(ctk.CTk):
                         state="disabled" if tracked else "normal",
                         border_width=0,
                         command=lambda s=sid, n=title: self.toggle_follow(
-                            s, n, True, None
+                            s, n, True
                         ),
                     )
                     tbtn.pack(fill="x")
@@ -2571,7 +2983,7 @@ class AirGrabber(ctk.CTk):
             img_url = item.get("poster_url") or (
                 item.get("image", {}).get("medium") if item.get("image") else None
             )
-            self.background_executor.submit(load_grid_poster, img_url)
+            self.io_executor.submit(load_grid_poster, img_url)
 
             if not horizontal_rail:
                 col += 1
@@ -2579,7 +2991,7 @@ class AirGrabber(ctk.CTk):
                     col = 0
                     row += 1
 
-    def toggle_follow(self, sid, name, follow, btn):
+    def toggle_follow(self, sid, name, follow):
         def _task():
             sid_str = str(sid)
             with self.data_lock:
@@ -2590,15 +3002,15 @@ class AirGrabber(ctk.CTk):
                         del self.followed_shows[sid_str]
                     if sid_str in self.episodes_cache:
                         del self.episodes_cache[sid_str]
-            self.save_data()
-            self.mark_caches_dirty()
-            self.maybe_save_caches()
+                self.save_data()
+                self.mark_caches_dirty()
+                self.maybe_save_caches()
 
             self.ui_queue.put(self.refresh_library_list)
             self.ui_queue.put(self.refresh_calendar_data)
             self.start_background_library_sync()
 
-        self.background_executor.submit(_task)
+        self.network_executor.submit(_task)
 
     # ==========================================
     # ADVANCED MANUAL DIALOGUE – stays open
@@ -2619,13 +3031,14 @@ class AirGrabber(ctk.CTk):
         popup.sort_col = "size"
         popup.sort_desc = True
 
-        # Extract current target from ep_data
         match = re.search(r"S(\d+)E(\d+)", ep_data.get("episode", ""), re.IGNORECASE)
         popup.current_s = int(match.group(1)) if match else 1
         popup.current_e = int(match.group(2)) if match else 1
         popup.show_id = str(ep_data.get("show_id") or ep_data.get("media_id", ""))
         popup.show_name = ep_data.get("show", "Unknown")
-        popup.episodes_data = self.episodes_cache.get(popup.show_id, [])
+        
+        with self.data_lock:
+            popup.episodes_data = list(self.episodes_cache.get(popup.show_id, []))
         popup.is_movie = (
             ep_data.get("is_movie", False) or self.global_media_var.get() == "Movies"
         )
@@ -2634,7 +3047,7 @@ class AirGrabber(ctk.CTk):
         popup.tmdb_cached_id = None
 
         # ==========================================
-        # HEADER DASHBOARD (Mockup Style)
+        # HEADER DASHBOARD
         # ==========================================
         dash_frame = ctk.CTkFrame(
             popup,
@@ -2645,7 +3058,6 @@ class AirGrabber(ctk.CTk):
         )
         dash_frame.pack(fill="x", padx=15, pady=15)
 
-        # Left: Poster
         poster_frame = ctk.CTkFrame(
             dash_frame, width=150, height=225, fg_color="gray20", corner_radius=8
         )
@@ -2654,7 +3066,6 @@ class AirGrabber(ctk.CTk):
         poster_lbl = ctk.CTkLabel(poster_frame, text="")
         poster_lbl.place(relx=0.5, rely=0.5, anchor="center")
 
-        # Right: Info & Selectors
         info_frame = ctk.CTkFrame(dash_frame, fg_color="transparent")
         info_frame.pack(side="left", fill="both", expand=True, pady=15, padx=(0, 15))
 
@@ -2677,7 +3088,6 @@ class AirGrabber(ctk.CTk):
             )
         popup.lbl_title.pack(side="left")
 
-        # Fix Match Button (TV Only)
         def fix_match():
             dialog = ctk.CTkInputDialog(
                 text="Enter the correct TVMaze ID for this show:", title="Fix Mismatch"
@@ -2688,7 +3098,7 @@ class AirGrabber(ctk.CTk):
 
                 def fetch_and_refresh():
                     try:
-                        res = http_session.get(
+                        res = self.api_get(
                             f"https://api.tvmaze.com/shows/{new_id}?embed[]=episodes",
                             timeout=5,
                         )
@@ -2717,7 +3127,7 @@ class AirGrabber(ctk.CTk):
                     except Exception as e:
                         logger.error(f"Failed to fix match: {e}")
 
-                self.background_executor.submit(fetch_and_refresh)
+                self.network_executor.submit(fetch_and_refresh)
 
         if not popup.is_movie:
             ctk.CTkButton(
@@ -2739,7 +3149,6 @@ class AirGrabber(ctk.CTk):
         )
         popup.lbl_meta.pack(anchor="w", pady=(2, 10))
 
-        # Selectors Helpers
         def create_scroll_selector(parent, label_text):
             row = ctk.CTkFrame(parent, fg_color="transparent")
             row.pack(fill="x", pady=5)
@@ -2761,7 +3170,6 @@ class AirGrabber(ctk.CTk):
             popup.season_scroll = create_scroll_selector(info_frame, "SEASON")
             popup.episode_scroll = create_scroll_selector(info_frame, "EPISODE")
 
-        # Qualities
         qual_scroll = create_scroll_selector(info_frame, "VERSION")
 
         popup.qual_var = ctk.StringVar(value=self.settings.get("quality", "1080p"))
@@ -2803,7 +3211,6 @@ class AirGrabber(ctk.CTk):
 
         render_quality_buttons()
 
-        # Build Selectors dynamically (TV Only)
         def render_selectors():
             if popup.is_movie:
                 return
@@ -2820,7 +3227,6 @@ class AirGrabber(ctk.CTk):
             if popup.current_s not in seasons:
                 popup.current_s = seasons[0]
 
-            # Populate Seasons
             for s in seasons:
                 is_sel = s == popup.current_s
                 btn = ctk.CTkButton(
@@ -2834,7 +3240,6 @@ class AirGrabber(ctk.CTk):
                 )
                 btn.pack(side="left", padx=3)
 
-            # Populate Episodes
             episodes = [
                 ep for ep in popup.episodes_data if ep.get("season") == popup.current_s
             ]
@@ -2868,18 +3273,16 @@ class AirGrabber(ctk.CTk):
             render_selectors()
             execute_manual_search()
 
-        # Load Metadata and Poster intelligently
         def load_meta_and_poster():
             meta = {}
             if not popup.is_movie:
-                # TVMaze Logic
                 with self.data_lock:
                     if popup.show_id in self.followed_shows:
                         meta = self.followed_shows[popup.show_id].get("metadata", {})
 
                 if (not meta or not popup.episodes_data) and popup.show_id:
                     try:
-                        res = http_session.get(
+                        res = self.api_get(
                             f"https://api.tvmaze.com/shows/{popup.show_id}?embed[]=episodes",
                             timeout=5,
                         )
@@ -2891,7 +3294,7 @@ class AirGrabber(ctk.CTk):
                             )
                             self.ui_queue.put(render_selectors)
                     except Exception as e:
-                        logger.debug(f"Failed to fetch missing metadata: {e}")
+                        logger.warning(f"Failed to fetch missing metadata: {e}")
 
                 genres = ", ".join(meta.get("genres", [])) if meta else "Unknown Genre"
                 status = meta.get("status", "Unknown").upper() if meta else "UNKNOWN"
@@ -2919,7 +3322,6 @@ class AirGrabber(ctk.CTk):
                 )
 
             else:
-                # Movie Logic via TMDB
                 api_key = self.settings.get("tmdb_api_key", "").strip()
                 url = None
                 prem = "?"
@@ -2934,7 +3336,7 @@ class AirGrabber(ctk.CTk):
                         else:
                             search_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(popup.show_name)}"
 
-                        res = http_session.get(search_url, timeout=5)
+                        res = self.api_get(search_url, timeout=5)
                         if res.status_code == 200 and res.json().get("results"):
                             first = res.json()["results"][0]
                             prem = first.get("release_date", "")[:4]
@@ -2943,7 +3345,7 @@ class AirGrabber(ctk.CTk):
                                 url = f"https://image.tmdb.org/t/p/w342{first['poster_path']}"
                             popup.tmdb_cached_id = first.get("id")
                     except Exception as e:
-                        logger.debug(f"Movie meta fetch failed: {e}")
+                        logger.warning(f"Movie meta fetch failed: {e}")
 
                 self.ui_queue.put(
                     lambda: popup.lbl_meta.configure(text=f"{prem} • {genres}")
@@ -2970,7 +3372,7 @@ class AirGrabber(ctk.CTk):
                         )
                     )
 
-        self.background_executor.submit(load_meta_and_poster)
+        self.network_executor.submit(load_meta_and_poster)
         render_selectors()
 
         # ==========================================
@@ -2996,7 +3398,6 @@ class AirGrabber(ctk.CTk):
         )
         res_title.pack(side="left")
 
-        # API Status Row
         status_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
         status_frame.pack(side="right")
         apibay_lbl = ctk.CTkLabel(
@@ -3006,13 +3407,6 @@ class AirGrabber(ctk.CTk):
             font=("Consolas", 11, "bold"),
         )
         apibay_lbl.pack(side="left", padx=(0, 10))
-        tor_lbl = ctk.CTkLabel(
-            status_frame,
-            text="⏳ Torrentio",
-            text_color="yellow",
-            font=("Consolas", 11, "bold"),
-        )
-        tor_lbl.pack(side="left", padx=(0, 10))
         eztv_lbl = ctk.CTkLabel(
             status_frame,
             text="⏳ EZTV",
@@ -3092,7 +3486,6 @@ class AirGrabber(ctk.CTk):
                     )
                     popup.after(100, animate, step + 1)
                 else:
-                    btn_ref.configure(text="✅ Done!", fg_color="#2FA572")
                     ep_data_patched = dict(ep_data)
                     if not popup.is_movie:
                         ep_data_patched["episode"] = (
@@ -3101,25 +3494,41 @@ class AirGrabber(ctk.CTk):
                         if not ep_data_patched.get("media_id"):
                             ep_data_patched["media_id"] = popup.show_id
 
+                    def download_callback(success):
+                        if success:
+                            btn_ref.configure(
+                                text="✅ Done! (keep searching)", fg_color="#2FA572"
+                            )
+                        else:
+                            btn_ref.configure(
+                                text="❌ Failed", fg_color="#C0392B"
+                            )
+
+                        cal_btn = ep_data.get("button_ref")
+                        if cal_btn and cal_btn.winfo_exists():
+                            if success:
+                                cal_btn.configure(
+                                    text="✅ Downloaded",
+                                    fg_color="#2FA572",
+                                    hover_color="#2FA572",
+                                )
+                            else:
+                                cal_btn.configure(
+                                    text="Failed",
+                                    fg_color="#C0392B",
+                                    hover_color="#C0392B",
+                                )
+
                     self.download_torrent_file(
                         ep_data_patched,
                         {
                             "info_hash": row_r.get("info_hash", ""),
                             "magnet": row_r.get("magnet", ""),
+                            "torrent_url": row_r.get("torrent_url", ""),
                             "name": row_r.get("name", "Unknown"),
                         },
                         row_s,
-                    )
-
-                    cal_btn = ep_data.get("button_ref")
-                    if cal_btn and cal_btn.winfo_exists():
-                        cal_btn.configure(
-                            text="✅ Downloaded",
-                            fg_color="#2FA572",
-                            hover_color="#2FA572",
-                        )
-                    btn_ref.configure(
-                        text="✅ Done! (keep searching)", fg_color="#2FA572"
+                        callback=download_callback,
                     )
 
             animate()
@@ -3160,7 +3569,6 @@ class AirGrabber(ctk.CTk):
 
             filtered.sort(key=lambda x: x[popup.sort_col], reverse=popup.sort_desc)
 
-            # Show live searching status
             if popup.searching:
                 res_title.configure(text=f"Searching... Found {len(filtered)}")
             else:
@@ -3249,7 +3657,6 @@ class AirGrabber(ctk.CTk):
                 )
 
             apibay_lbl.configure(text="⏳ APIBay", text_color="yellow")
-            tor_lbl.configure(text="⏳ Torrentio", text_color="yellow")
             sol_lbl.configure(text="⏳ Solid", text_color="yellow")
 
             if popup.is_movie:
@@ -3266,6 +3673,8 @@ class AirGrabber(ctk.CTk):
                 def wrapper():
                     try:
                         target_func()
+                    except Exception as e:
+                        logger.error("Search thread error: %s", e, exc_info=True)
                     finally:
                         with popup.thread_lock:
                             popup.active_threads -= 1
@@ -3276,7 +3685,6 @@ class AirGrabber(ctk.CTk):
                 return wrapper
 
             def run_searches_async():
-                # Block 1: Guarantee IMDb ID Resolution without freezing UI
                 if popup.imdb_id_cache is None:
                     if not popup.is_movie:
                         popup.imdb_id_cache = self._get_or_fetch_imdb_id(popup.show_id)
@@ -3285,14 +3693,14 @@ class AirGrabber(ctk.CTk):
                         tmdb_id = getattr(popup, "tmdb_cached_id", None)
                         if api_key and tmdb_id:
                             try:
-                                res_id = http_session.get(
+                                res_id = self.api_get(
                                     f"https://api.themoviedb.org/3/movie/{tmdb_id}/external_ids?api_key={api_key}",
                                     timeout=5,
                                 )
                                 if res_id.status_code == 200:
                                     popup.imdb_id_cache = res_id.json().get("imdb_id")
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.warning("TMDB external ID fetch failed: %s", e)
                         elif api_key:
                             try:
                                 match = re.search(r"(.+?)\s+(\d{4})$", popup.show_name)
@@ -3301,10 +3709,10 @@ class AirGrabber(ctk.CTk):
                                     s_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(q_title)}&year={year}"
                                 else:
                                     s_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={urllib.parse.quote(popup.show_name)}"
-                                res = http_session.get(s_url, timeout=5)
+                                res = self.api_get(s_url, timeout=5)
                                 if res.status_code == 200 and res.json().get("results"):
                                     tmdb_id = res.json()["results"][0].get("id")
-                                    res_id = http_session.get(
+                                    res_id = self.api_get(
                                         f"https://api.themoviedb.org/3/movie/{tmdb_id}/external_ids?api_key={api_key}",
                                         timeout=5,
                                     )
@@ -3312,13 +3720,13 @@ class AirGrabber(ctk.CTk):
                                         popup.imdb_id_cache = res_id.json().get(
                                             "imdb_id"
                                         )
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.warning("IMDb ID resolution failed: %s", e)
 
                 def fetch_apibay():
                     try:
                         url = f"https://apibay.org/q.php?q={urllib.parse.quote(query)}"
-                        res = http_session.get(url, timeout=10)
+                        res = self.api_get(url, timeout=10)
                         if res.status_code == 200:
                             data = res.json()
                             count = 0
@@ -3360,94 +3768,11 @@ class AirGrabber(ctk.CTk):
                                         text="❌ APIBay", text_color="#C0392B"
                                     )
                                 )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"APIBay search failed: {e}")
                         self.ui_queue.put(
                             lambda: apibay_lbl.configure(
                                 text="❌ APIBay", text_color="#C0392B"
-                            )
-                        )
-
-                def fetch_torrentio():
-                    try:
-                        imdb_id = popup.imdb_id_cache
-                        if imdb_id:
-                            if not imdb_id.startswith("tt"):
-                                imdb_id = f"tt{imdb_id}"
-
-                            if popup.is_movie:
-                                url = f"https://torrentio.strem.fun/stream/movie/{imdb_id}.json"
-                            else:
-                                url = f"https://torrentio.strem.fun/stream/series/{imdb_id}:{popup.current_s}:{popup.current_e}.json"
-
-                            res = http_session.get(url, timeout=10)
-                            if res.status_code == 200:
-                                count = 0
-                                for s in res.json().get("streams", []):
-                                    title = s.get("title", "")
-                                    seed_match = re.search(r"👤\s*(\d+)", title)
-                                    seeders = (
-                                        int(seed_match.group(1)) if seed_match else 0
-                                    )
-                                    if seeders > 0:
-                                        magnet = s.get("url", "")
-                                        hash_match = re.search(
-                                            r"xt=urn:btih:([a-zA-Z0-9]+)",
-                                            magnet,
-                                            re.IGNORECASE,
-                                        )
-                                        size_match = re.search(
-                                            r"💾\s*([\d.]+)\s*([A-Za-z]+)", title
-                                        )
-                                        size_bytes = 0
-                                        if size_match:
-                                            val = float(size_match.group(1))
-                                            unit = size_match.group(2).upper()
-                                            if unit == "GB":
-                                                size_bytes = val * 1024**3
-                                            elif unit == "MB":
-                                                size_bytes = val * 1024**2
-                                            elif unit == "KB":
-                                                size_bytes = val * 1024
-
-                                        with popup.results_lock:
-                                            popup.results_pool.append(
-                                                {
-                                                    "source": "torrentio",
-                                                    "name": s.get("title", "").split(
-                                                        "\n"
-                                                    )[0],
-                                                    "info_hash": hash_match.group(1)
-                                                    if hash_match
-                                                    else "",
-                                                    "magnet": magnet,
-                                                    "size": size_bytes,
-                                                    "seeders": seeders,
-                                                    "leechers": 0,
-                                                }
-                                            )
-                                        count += 1
-                                self.ui_queue.put(
-                                    lambda: tor_lbl.configure(
-                                        text=f"✅ Torrentio ({count})",
-                                        text_color="#2FA572",
-                                    )
-                                )
-                            else:
-                                self.ui_queue.put(
-                                    lambda: tor_lbl.configure(
-                                        text="❌ Torrentio", text_color="#C0392B"
-                                    )
-                                )
-                        else:
-                            self.ui_queue.put(
-                                lambda: tor_lbl.configure(
-                                    text="❌ No IMDB", text_color="#C0392B"
-                                )
-                            )
-                    except Exception:
-                        self.ui_queue.put(
-                            lambda: tor_lbl.configure(
-                                text="❌ Torrentio", text_color="#C0392B"
                             )
                         )
 
@@ -3461,7 +3786,7 @@ class AirGrabber(ctk.CTk):
                             url = (
                                 f"https://eztv.re/api/get-torrents?imdb_id={eztv_imdb}"
                             )
-                            res = http_session.get(url, timeout=10)
+                            res = self.api_get(url, timeout=10)
                             if res.status_code == 200:
                                 count = 0
                                 for t in res.json().get("torrents", []):
@@ -3479,6 +3804,7 @@ class AirGrabber(ctk.CTk):
                                                         "magnet": t.get(
                                                             "magnet_url", ""
                                                         ),
+                                                        "torrent_url": t.get("torrent_url", ""),
                                                         "size": self._safe_int(
                                                             t.get("size_bytes", 0)
                                                         ),
@@ -3509,7 +3835,8 @@ class AirGrabber(ctk.CTk):
                                     text="❌ No IMDB", text_color="#C0392B"
                                 )
                             )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"EZTV search failed: {e}")
                         self.ui_queue.put(
                             lambda: eztv_lbl.configure(
                                 text="❌ EZTV", text_color="#C0392B"
@@ -3519,7 +3846,7 @@ class AirGrabber(ctk.CTk):
                 def fetch_solidtorrents():
                     try:
                         url = f"https://solidtorrents.to/api/v1/search?q={urllib.parse.quote(query)}&category=Video"
-                        res = http_session.get(url, timeout=10)
+                        res = self.api_get(url, timeout=10)
                         if res.status_code == 200:
                             data = res.json()
                             count = 0
@@ -3570,7 +3897,8 @@ class AirGrabber(ctk.CTk):
                                     text="❌ Solid", text_color="#C0392B"
                                 )
                             )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"SolidTorrents search failed: {e}")
                         self.ui_queue.put(
                             lambda: sol_lbl.configure(
                                 text="❌ Solid", text_color="#C0392B"
@@ -3587,7 +3915,7 @@ class AirGrabber(ctk.CTk):
                                 imdb_id if imdb_id.startswith("tt") else f"tt{imdb_id}"
                             )
                             url = f"https://yts.mx/api/v2/list_movies.json?query_term={yts_imdb}"
-                            res = http_session.get(url, timeout=10)
+                            res = self.api_get(url, timeout=10)
                             if res.status_code == 200:
                                 data = res.json()
                                 count = 0
@@ -3603,6 +3931,7 @@ class AirGrabber(ctk.CTk):
                                         if seeders > 0:
                                             hash_str = t.get("hash", "")
                                             magnet = f"magnet:?xt=urn:btih:{hash_str}&dn={urllib.parse.quote(title)}"
+                                            torrent_url = t.get("url", "")
                                             qual = t.get("quality", "")
                                             rtype = t.get("type", "")
                                             full_name = (
@@ -3616,6 +3945,7 @@ class AirGrabber(ctk.CTk):
                                                         "name": full_name,
                                                         "info_hash": hash_str,
                                                         "magnet": magnet,
+                                                        "torrent_url": torrent_url,
                                                         "size": t.get("size_bytes", 0),
                                                         "seeders": seeders,
                                                         "leechers": t.get("peers", 0),
@@ -3639,7 +3969,8 @@ class AirGrabber(ctk.CTk):
                                     text="❌ No IMDB", text_color="#C0392B"
                                 )
                             )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"YTS search failed: {e}")
                         self.ui_queue.put(
                             lambda: yts_lbl.configure(
                                 text="❌ YTS", text_color="#C0392B"
@@ -3648,7 +3979,6 @@ class AirGrabber(ctk.CTk):
 
                 threads = [
                     threading.Thread(target=thread_wrapper(fetch_apibay)),
-                    threading.Thread(target=thread_wrapper(fetch_torrentio)),
                     threading.Thread(target=thread_wrapper(fetch_eztv)),
                     threading.Thread(target=thread_wrapper(fetch_solidtorrents)),
                     threading.Thread(target=thread_wrapper(fetch_yts)),
@@ -3660,10 +3990,8 @@ class AirGrabber(ctk.CTk):
                 for t in threads:
                     t.start()
 
-            # Execute the setup in a manager thread so it doesn't freeze the UI while grabbing IMDb ID
             threading.Thread(target=run_searches_async).start()
 
-        # Trigger initial search on load
         execute_manual_search()
 
     # ==========================================
@@ -3726,7 +4054,7 @@ class AirGrabber(ctk.CTk):
         f4 = ctk.CTkFrame(c, fg_color="transparent")
         f4.pack(fill="x", pady=(8, 0))
         ctk.CTkLabel(
-            f4, text="TMDB API Key (for Movie Releases):", text_color="#A4B2C6"
+            f4, text="TMDB API Key (for Movie Releases & TV Discovery):", text_color="#A4B2C6"
         ).pack(side="left")
         self.tmdb_key_var = ctk.StringVar(value=self.settings.get("tmdb_api_key", ""))
         ctk.CTkEntry(
@@ -3752,18 +4080,6 @@ class AirGrabber(ctk.CTk):
             lambda e: webbrowser.open("https://www.themoviedb.org/settings/api"),
         )
 
-        f5 = ctk.CTkFrame(c, fg_color="transparent")
-        f5.pack(fill="x", pady=12)
-        self.tg_json_var = ctk.BooleanVar(
-            value=self.settings.get("create_AirGrabber_json", True)
-        )
-        ctk.CTkSwitch(
-            f5,
-            text="Compile AirGrabber context schema (.json descriptor meta)",
-            variable=self.tg_json_var,
-            progress_color=ACCENT_COLOR,
-        ).pack(side="left")
-
         msg = ctk.CTkLabel(c, text="", text_color="#2FA572", font=ctk.CTkFont(size=12))
         msg.pack(side="bottom", pady=5)
 
@@ -3771,7 +4087,6 @@ class AirGrabber(ctk.CTk):
             self.settings["quality"] = self.quality_var.get()
             self.settings["download_dir"] = self.dl_dir_var.get()
             self.settings["tmdb_api_key"] = self.tmdb_key_var.get().strip()
-            self.settings["create_AirGrabber_json"] = self.tg_json_var.get()
             self.save_settings()
             msg.configure(text="Local preferences synced to disk successfully.")
             self.after(2000, win.destroy)
