@@ -48,6 +48,7 @@ REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
 SCRIPT_FILENAME = "AirGrabber.py"
 
+
 # ==========================================
 # AUTO-INSTALL DEPENDENCIES
 # ==========================================
@@ -73,6 +74,7 @@ def ensure_dependencies():
                 logger.info(f"Successfully installed '{pip_name}'.")
             except Exception as e:
                 logger.error(f"Failed to install '{pip_name}': {e}")
+
 
 try:
     ensure_dependencies()
@@ -149,10 +151,50 @@ TAB_BG = "#13111C"
 
 ctk.set_appearance_mode("Dark")
 
+
 def strip_html_tags(text):
     if not text:
         return "No summary available."
     return re.sub(re.compile("<.*?>"), "", text)
+
+
+# ==========================================
+# RETRY DECORATOR
+# ==========================================
+def retry(max_attempts=3, delay=1, backoff=2, exceptions=(Exception,)):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            _delay = delay
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 429:
+                        try:
+                            retry_after = int(
+                                e.response.headers.get("Retry-After", _delay * 2)
+                            )
+                        except ValueError:
+                            retry_after = _delay * 2
+                        time.sleep(retry_after)
+                        _delay = retry_after
+                    else:
+                        if attempt == max_attempts - 1:
+                            raise
+                        time.sleep(_delay)
+                        _delay *= backoff
+                except exceptions:
+                    if attempt == max_attempts - 1:
+                        raise
+                    time.sleep(_delay)
+                    _delay *= backoff
+            return None
+
+        return wrapper
+
+    return decorator
+
 
 # ==========================================
 # LRU IMAGE CACHE
@@ -178,6 +220,44 @@ class LRUImageCache:
             elif len(self._cache) >= self._maxsize:
                 self._cache.pop(next(iter(self._cache)))
             self._cache[key] = value
+
+# ==========================================
+# FLEXBOX GRID LAYOUT
+# ==========================================
+class FlexGrid(ctk.CTkFrame):
+    """A dynamic container that simulates CSS flex-wrap: wrap for Tkinter grids."""
+    def __init__(self, master, item_width=260, pad_x=6, pad_y=6, **kwargs):
+        super().__init__(master, **kwargs)
+        self.item_width = item_width
+        self.pad_x = pad_x
+        self.pad_y = pad_y
+        self._current_cols = 0
+        self.bind("<Configure>", self._on_resize)
+        
+    def _on_resize(self, event):
+        available_width = event.width
+        if available_width < 10:
+            return
+        cols = max(1, available_width // (self.item_width + (self.pad_x * 2)))
+        if cols == self._current_cols:
+            return
+        self._current_cols = cols
+        self._regrid(cols)
+        
+    def _regrid(self, cols):
+        for idx, child in enumerate(self.winfo_children()):
+            r = idx // cols
+            c = idx % cols
+            child.grid(row=r, column=c, padx=self.pad_x, pady=self.pad_y, sticky="nw")
+            
+    def update_layout(self):
+        self.update_idletasks()
+        w = self.winfo_width()
+        if w < 10:
+            w = self.master.winfo_width()
+        cols = max(1, w // (self.item_width + (self.pad_x * 2))) if w > 10 else 1
+        self._current_cols = cols
+        self._regrid(cols)
 
 # ==========================================
 # MAIN APPLICATION
@@ -340,6 +420,7 @@ class AirGrabber(ctk.CTk):
             font=ctk.CTkFont(size=16, weight="bold")
         )
 
+        # Container for Movies (Single View)
         self.movie_frame = ctk.CTkFrame(self, fg_color="transparent")
 
         self.set_global_mode("TV Shows")
@@ -937,7 +1018,7 @@ class AirGrabber(ctk.CTk):
                                     "externals"
                                 ] = {"imdb": imdb_id}
                                 self.mark_caches_dirty()
-                                self.save_data()  # Ensure persistence
+                                self.save_data()
             except Exception as e:
                 logger.warning(f"TVMaze metadata fetch error for show {show_id}: {e}")
 
@@ -1278,8 +1359,16 @@ class AirGrabber(ctk.CTk):
             needed = target - tracked
             if needed <= 0:
                 continue
+                
             if d_str not in self.unfollowed_cache:
                 days_to_fetch.append((d_str, needed))
+            else:
+                cached_items = self.unfollowed_cache[d_str]
+                self.ui_queue.put(
+                    lambda d=d_str, it=cached_items, n=needed, g=generation: (
+                        self._render_unfollowed_cells(d, it, n, g)
+                    )
+                )
 
         if not days_to_fetch:
             return
@@ -1579,7 +1668,6 @@ class AirGrabber(ctk.CTk):
 
             dashboard_data = {}
             try:
-                # Trending
                 trend_params = {"api_key": api_key, "page": 1}
                 res_trend = self.api_get(
                     "https://api.themoviedb.org/3/trending/tv/week",
@@ -1594,7 +1682,6 @@ class AirGrabber(ctk.CTk):
                         "params": trend_params,
                     }
 
-                # On the Air (New Episodes)
                 air_params = {"api_key": api_key, "language": "en-US", "page": 1}
                 res_air = self.api_get(
                     "https://api.themoviedb.org/3/tv/on_the_air",
@@ -1703,27 +1790,24 @@ class AirGrabber(ctk.CTk):
             ))
             btn_see_all.pack(side="right", padx=10)
 
-            grid = ctk.CTkFrame(section_frame, fg_color="transparent")
+            grid = FlexGrid(section_frame, item_width=260, fg_color="transparent")
             grid.pack(anchor="w", fill="x")
 
-            for i in range(6):
-                grid.grid_columnconfigure(i, weight=1, uniform="tv_col")
+            for show in shows:
+                self.create_tv_discover_card(grid, show)
+                
+            grid.update_layout()
 
-            for idx, show in enumerate(shows):
-                row = idx // 6
-                col = idx % 6
-                self.create_tv_discover_card(grid, show, row, col)
-
-    def create_tv_discover_card(self, parent, data, row, col):
+    def create_tv_discover_card(self, parent, data):
         card = ctk.CTkFrame(
             parent,
             fg_color=GLASS_CARD,
             border_color=GLASS_EDGE,
             border_width=1,
             corner_radius=8,
+            width=260,
             height=135,
         )
-        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
         card.grid_propagate(False)
         card.pack_propagate(False)
 
@@ -2010,6 +2094,7 @@ class AirGrabber(ctk.CTk):
 
             parsed.append(
                 {
+                    "tmdb_id": movie.get("id"),
                     "title": movie.get("title", "Unknown"),
                     "date": release_date,
                     "desc": movie.get("overview", "")[:160],
@@ -2042,19 +2127,19 @@ class AirGrabber(ctk.CTk):
 
             dashboard_data = {}
             today_str = date.today().strftime("%Y-%m-%d")
-            forty_five_days_ago = (date.today() - timedelta(days=45)).strftime(
-                "%Y-%m-%d"
-            )
+            
+            # Widen the gap to 120 days to capture far more digital drops properly tagged in TMDB
+            recent_days_ago = (date.today() - timedelta(days=120)).strftime("%Y-%m-%d")
 
             try:
-                # 1. Recent Digital Drops (VOD)
                 digital_params = {
                     "api_key": api_key,
                     "language": "en-US",
                     "sort_by": "popularity.desc",
-                    "with_release_type": "4|5",  # Digital or Physical
-                    "release_date.gte": forty_five_days_ago,
+                    "with_release_type": "4|5",
+                    "release_date.gte": recent_days_ago,
                     "release_date.lte": today_str,
+                    "region": "US",
                     "page": 1,
                 }
                 res_dig = self.api_get(
@@ -2072,18 +2157,18 @@ class AirGrabber(ctk.CTk):
                         "params": digital_params,
                     }
 
-                # 2. Trending in Theaters
                 theater_params = {
                     "api_key": api_key,
                     "language": "en-US",
                     "sort_by": "popularity.desc",
-                    "with_release_type": "3",  # Theatrical
+                    "with_release_type": "3",
                     "primary_release_date.gte": (
                         date.today() - timedelta(days=60)
                     ).strftime("%Y-%m-%d"),
                     "primary_release_date.lte": (
                         date.today() + timedelta(days=7)
                     ).strftime("%Y-%m-%d"),
+                    "region": "US",
                     "page": 1,
                 }
                 res_theaters = self.api_get(
@@ -2186,16 +2271,13 @@ class AirGrabber(ctk.CTk):
             ))
             btn_see_all.pack(side="right", padx=10)
 
-            grid = ctk.CTkFrame(section_frame, fg_color="transparent")
+            grid = FlexGrid(section_frame, item_width=260, fg_color="transparent")
             grid.pack(anchor="w", fill="x")
 
-            for i in range(6):
-                grid.grid_columnconfigure(i, weight=1, uniform="movie_col")
-
-            for idx, movie in enumerate(movies):
-                row = idx // 6
-                col = idx % 6
-                self.create_movie_horizontal_card(grid, movie, row, col)
+            for movie in movies:
+                self.create_movie_horizontal_card(grid, movie)
+                
+            grid.update_layout()
 
     def open_expanded_category(
         self,
@@ -2208,7 +2290,7 @@ class AirGrabber(ctk.CTk):
         page=1,
         back_command=None,
     ):
-        """Generic method to render a full paginated grid for a specific TMDB category or search result."""
+        """Generic method to render a full paginated flex-grid for a specific TMDB category."""
         for w in scroll_widget.winfo_children():
             w.destroy()
 
@@ -2260,15 +2342,13 @@ class AirGrabber(ctk.CTk):
                 ).pack(pady=40)
                 return
 
-            grid = ctk.CTkFrame(scroll_widget, fg_color="transparent")
+            grid = FlexGrid(scroll_widget, item_width=260, fg_color="transparent")
             grid.pack(fill="x", anchor="w")
-            for i in range(6):
-                grid.grid_columnconfigure(i, weight=1, uniform="cat_col")
 
-            for idx, item in enumerate(items):
-                row = idx // 6
-                col = idx % 6
-                card_func(grid, item, row, col)
+            for item in items:
+                card_func(grid, item)
+                
+            grid.update_layout()
 
             pg_frame = ctk.CTkFrame(scroll_widget, fg_color="transparent")
             pg_frame.pack(fill="x", pady=25)
@@ -2292,7 +2372,7 @@ class AirGrabber(ctk.CTk):
                 font=ctk.CTkFont(weight="bold"),
             ).pack(side="left", expand=True)
 
-            if page < total_pages and page < 500: # TMDB typically limits to 500 pages
+            if page < total_pages and page < 500:
                 ctk.CTkButton(
                     pg_frame,
                     text="Next Page →",
@@ -2315,16 +2395,16 @@ class AirGrabber(ctk.CTk):
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(pady=40)
 
-    def create_movie_horizontal_card(self, parent, data, row, col):
+    def create_movie_horizontal_card(self, parent, data):
         card = ctk.CTkFrame(
             parent,
             fg_color=GLASS_CARD,
             border_color=GLASS_EDGE,
             border_width=1,
             corner_radius=8,
+            width=260,
             height=135,
         )
-        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
         card.grid_propagate(False)
         card.pack_propagate(False)
 
@@ -2353,9 +2433,55 @@ class AirGrabber(ctk.CTk):
 
         date_str = data["date"].strftime("%Y") if data.get("date") else "Unknown"
         score_text = f"{date_str} | ★ {data.get('score', 'N/A')}"
-        ctk.CTkLabel(
+        
+        score_lbl = ctk.CTkLabel(
             inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6"
-        ).pack(anchor="w", pady=(2, 0))
+        )
+        score_lbl.pack(anchor="w", pady=(2, 0))
+
+        # Async fetch exact Digital Drop Date
+        tmdb_id = data.get("tmdb_id")
+        api_key = self.settings.get("tmdb_api_key", "").strip()
+        
+        if tmdb_id and api_key:
+            def load_exact_date():
+                try:
+                    res = self.api_get(f"https://api.themoviedb.org/3/movie/{tmdb_id}/release_dates?api_key={api_key}", timeout=5)
+                    if res.status_code == 200:
+                        rd_data = res.json().get("results", [])
+                        best_date = None
+                        
+                        # Prioritize US releases
+                        for country in rd_data:
+                            if country.get("iso_3166_1") == "US":
+                                for rd in country.get("release_dates", []):
+                                    if rd.get("type") in [4, 5]: # Digital or Physical
+                                        candidate = rd.get("release_date", "")[:10]
+                                        if not best_date or candidate < best_date:
+                                            best_date = candidate
+                        
+                        # Fallback to Global if no US digital date found
+                        if not best_date:
+                            for country in rd_data:
+                                for rd in country.get("release_dates", []):
+                                    if rd.get("type") in [4, 5]:
+                                        candidate = rd.get("release_date", "")[:10]
+                                        if not best_date or candidate < best_date:
+                                            best_date = candidate
+                        
+                        if best_date:
+                            dt = datetime.strptime(best_date, "%Y-%m-%d")
+                            formatted = dt.strftime("Dropped %b %d, %Y")
+                            self.ui_queue.put(
+                                lambda: score_lbl.winfo_exists() and score_lbl.configure(
+                                    text=f"{formatted} | ★ {data.get('score', 'N/A')}",
+                                    text_color="#F39C12"
+                                )
+                            )
+                except Exception:
+                    pass
+            self.network_executor.submit(load_exact_date)
+
 
         imdb_search_url = (
             f"https://www.imdb.com/find?q={urllib.parse.quote(data['title'])}"
@@ -2790,17 +2916,16 @@ class AirGrabber(ctk.CTk):
             s.get("metadata") if s.get("metadata") else {"id": k, "name": s["name"]}
             for k, s in shows.items()
         ]
-        self.render_show_grid(self.library_scroll, items, is_library=True)
+        
+        grid_container = FlexGrid(self.library_scroll, item_width=260, fg_color="transparent")
+        grid_container.pack(fill="x", expand=True)
+        self.render_show_grid(grid_container, items, is_library=True)
+        grid_container.update_layout()
 
     # ==========================================
     # SHARED GRID BUILDER
     # ==========================================
-    def render_show_grid(self, parent, data, is_library=False, horizontal_rail=False):
-        if not horizontal_rail:
-            for i in range(6):
-                parent.grid_columnconfigure(i, weight=1, uniform="g_col")
-
-        row, col = 0, 0
+    def render_show_grid(self, parent, data, is_library=False):
         for item in data:
             card = ctk.CTkFrame(
                 parent,
@@ -2808,19 +2933,13 @@ class AirGrabber(ctk.CTk):
                 border_color=GLASS_EDGE,
                 border_width=1,
                 corner_radius=8,
+                width=260,
                 height=120,
             )
+            card.grid_propagate(False)
+            card.pack_propagate(False)
 
             title = item.get("name") or item.get("title", "Unknown")
-
-            if horizontal_rail:
-                card.configure(width=260)
-                card.pack(side="left", padx=6, pady=4)
-                card.pack_propagate(False)
-            else:
-                card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
-                card.grid_propagate(False)
-                card.pack_propagate(False)
 
             pf = ctk.CTkFrame(
                 card, width=68, height=100, fg_color="gray20", corner_radius=5
@@ -2844,123 +2963,70 @@ class AirGrabber(ctk.CTk):
                 anchor="w",
             ).pack(anchor="w")
 
-            if horizontal_rail and "date" in item:
-                date_val = item.get("date")
-                date_str = (
-                    date_val.strftime("%b %d, %Y")
-                    if hasattr(date_val, "strftime")
-                    else ""
-                )
-                if date_str:
-                    ctk.CTkLabel(
-                        inf,
-                        text=f"Date: {date_str}",
-                        font=ctk.CTkFont(size=10, weight="bold"),
-                        text_color="#F39C12",
-                    ).pack(anchor="w", pady=(2, 0))
+            ctk.CTkLabel(
+                inf,
+                text=f"Status: {item.get('status', 'Unknown')}",
+                font=ctk.CTkFont(size=9),
+                text_color="gray50",
+            ).pack(anchor="w", pady=2)
 
-                score_text = (
-                    f"★ {item.get('score', 'N/A')} | {item.get('rating', 'NR')}"
-                )
-                ctk.CTkLabel(
-                    inf, text=score_text, font=ctk.CTkFont(size=9), text_color="#A4B2C6"
-                ).pack(anchor="w", pady=(0, 2))
+            btm = ctk.CTkFrame(inf, fg_color="transparent")
+            btm.pack(side="bottom", fill="x")
 
-                btm = ctk.CTkFrame(inf, fg_color="transparent")
-                btm.pack(side="bottom", fill="x")
+            sid = str(item.get("id", ""))
+            imdb_id = item.get("externals", {}).get("imdb")
 
-                release_year = item["date"].year if item.get("date") else ""
-                search_query = f"{title} {release_year}" if release_year else title
-
-                btn = ctk.CTkButton(
+            if is_library:
+                ubtn = ctk.CTkButton(
                     btm,
-                    text="Search Film",
+                    text="Drop",
+                    width=40,
                     height=20,
                     font=ctk.CTkFont(size=10, weight="bold"),
-                    fg_color=ACCENT_COLOR,
-                    hover_color=ACCENT_HOVER,
+                    fg_color="#C0392B",
                     border_width=0,
-                    corner_radius=4,
+                    command=lambda s=sid, n=title: self.toggle_follow(
+                        s, n, False
+                    ),
                 )
-                btn.configure(
-                    command=lambda q=search_query: self.open_manual_search(
-                        {
-                            "show": q,
-                            "episode": "",
-                            "title": "Manual Action",
-                            "show_id": None,
-                            "qual_str": "",
-                            "is_movie": True,
-                        }
+                ubtn.pack(side="right")
+
+                if imdb_id:
+                    safe_imdb = (
+                        f"tt{imdb_id}"
+                        if not str(imdb_id).startswith("tt")
+                        else str(imdb_id)
                     )
-                )
-                btn.pack(fill="x")
-
-            else:
-                ctk.CTkLabel(
-                    inf,
-                    text=f"Status: {item.get('status', 'Unknown')}",
-                    font=ctk.CTkFont(size=9),
-                    text_color="gray50",
-                ).pack(anchor="w", pady=2)
-
-                btm = ctk.CTkFrame(inf, fg_color="transparent")
-                btm.pack(side="bottom", fill="x")
-
-                sid = str(item.get("id", ""))
-                imdb_id = item.get("externals", {}).get("imdb")
-
-                if is_library:
-                    ubtn = ctk.CTkButton(
+                    ibtn = ctk.CTkButton(
                         btm,
-                        text="Drop",
+                        text="IMDb",
                         width=40,
                         height=20,
                         font=ctk.CTkFont(size=10, weight="bold"),
-                        fg_color="#C0392B",
-                        border_width=0,
-                        command=lambda s=sid, n=title: self.toggle_follow(
-                            s, n, False
+                        fg_color="#F5C518",
+                        text_color="black",
+                        hover_color="#D4A710",
+                        command=lambda i=safe_imdb: webbrowser.open(
+                            f"https://www.imdb.com/title/{i}/"
                         ),
                     )
-                    ubtn.pack(side="right")
-
-                    if imdb_id:
-                        safe_imdb = (
-                            f"tt{imdb_id}"
-                            if not str(imdb_id).startswith("tt")
-                            else str(imdb_id)
-                        )
-                        ibtn = ctk.CTkButton(
-                            btm,
-                            text="IMDb",
-                            width=40,
-                            height=20,
-                            font=ctk.CTkFont(size=10, weight="bold"),
-                            fg_color="#F5C518",
-                            text_color="black",
-                            hover_color="#D4A710",
-                            command=lambda i=safe_imdb: webbrowser.open(
-                                f"https://www.imdb.com/title/{i}/"
-                            ),
-                        )
-                        ibtn.pack(side="right", padx=(0, 5))
-                else:
-                    with self.data_lock:
-                        tracked = sid in self.followed_shows
-                    tbtn = ctk.CTkButton(
-                        btm,
-                        text="Tracking" if tracked else "+ Track",
-                        height=20,
-                        font=ctk.CTkFont(size=10, weight="bold"),
-                        fg_color="transparent" if tracked else ACCENT_COLOR,
-                        state="disabled" if tracked else "normal",
-                        border_width=0,
-                        command=lambda s=sid, n=title: self.toggle_follow(
-                            s, n, True
-                        ),
-                    )
-                    tbtn.pack(fill="x")
+                    ibtn.pack(side="right", padx=(0, 5))
+            else:
+                with self.data_lock:
+                    tracked = sid in self.followed_shows
+                tbtn = ctk.CTkButton(
+                    btm,
+                    text="Tracking" if tracked else "+ Track",
+                    height=20,
+                    font=ctk.CTkFont(size=10, weight="bold"),
+                    fg_color="transparent" if tracked else ACCENT_COLOR,
+                    state="disabled" if tracked else "normal",
+                    border_width=0,
+                    command=lambda s=sid, n=title: self.toggle_follow(
+                        s, n, True
+                    ),
+                )
+                tbtn.pack(fill="x")
 
             def load_grid_poster(url, target_lbl=lbl):
                 if url:
@@ -2984,12 +3050,6 @@ class AirGrabber(ctk.CTk):
                 item.get("image", {}).get("medium") if item.get("image") else None
             )
             self.io_executor.submit(load_grid_poster, img_url)
-
-            if not horizontal_rail:
-                col += 1
-                if col >= 6:
-                    col = 0
-                    row += 1
 
     def toggle_follow(self, sid, name, follow):
         def _task():
@@ -4054,7 +4114,7 @@ class AirGrabber(ctk.CTk):
         f4 = ctk.CTkFrame(c, fg_color="transparent")
         f4.pack(fill="x", pady=(8, 0))
         ctk.CTkLabel(
-            f4, text="TMDB API Key (for Movie Releases & TV Discovery):", text_color="#A4B2C6"
+            f4, text="TMDB API Key (for Movie Releases):", text_color="#A4B2C6"
         ).pack(side="left")
         self.tmdb_key_var = ctk.StringVar(value=self.settings.get("tmdb_api_key", ""))
         ctk.CTkEntry(
