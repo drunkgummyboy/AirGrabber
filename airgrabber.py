@@ -37,10 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== AirGrabber startup ===")
 
-CURRENT_VERSION = "1.1.8"
+CURRENT_VERSION = "1.1.9"
 REPO_OWNER = "drunkgummyboy"
 REPO_NAME = "AirGrabber"
-SCRIPT_FILENAME = "AirGrabber.py"
+SCRIPT_FILENAME = "airgrabber.py"
 
 def ensure_dependencies():
     required_packages = {
@@ -670,6 +670,7 @@ class AirGrabber(ctk.CTk):
             "weeks_to_show": 3,
             "prev_weeks_to_show": 0,
             "tmdb_api_key": "",
+            "disable_auto_update": True,
         }
         if os.path.exists(SETTINGS_FILE):
             try:
@@ -1535,7 +1536,6 @@ class AirGrabber(ctk.CTk):
             end_date = next_month - timedelta(days=1)
             
             try:
-                # Require the actual theatrical premiere to have happened within the last 1 year
                 min_primary_date = (start_date - timedelta(days=365)).strftime("%Y-%m-%d")
                 
                 params = {
