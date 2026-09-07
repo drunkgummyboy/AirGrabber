@@ -3013,6 +3013,13 @@ class AirGrabber(ctk.CTk):
         popup.configure(fg_color="#0D0D0D")
         popup.grab_set()
 
+        def on_close():
+            if hasattr(popup, "search_loader") and popup.search_loader.winfo_exists():
+                popup.search_loader.stop()
+            popup.destroy()
+
+        popup.protocol("WM_DELETE_WINDOW", on_close)
+
         popup.results_pool = []
         popup.results_lock = threading.Lock()
         popup.searching = False
@@ -3276,11 +3283,17 @@ class AirGrabber(ctk.CTk):
         def on_season_change(s):
             popup.current_s = s
             popup.current_e = 1
+            popup.lbl_title.configure(
+                text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
+            )
             render_selectors()
             execute_manual_search()
 
         def on_episode_change(e):
             popup.current_e = e
+            popup.lbl_title.configure(
+                text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
+            )
             render_selectors()
             execute_manual_search()
 
@@ -3387,8 +3400,17 @@ class AirGrabber(ctk.CTk):
             corner_radius=8,
         )
         res_box.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
         top_bar = ctk.CTkFrame(res_box, fg_color="transparent")
         top_bar.pack(fill="x", padx=10, pady=10)
+
+        # Loading progress bar for active searches
+        popup.search_loader = ctk.CTkProgressBar(
+            res_box,
+            mode="indeterminate",
+            height=3,
+            progress_color=ACCENT_COLOR,
+        )
 
         res_title = ctk.CTkLabel(
             top_bar,
@@ -3578,6 +3600,16 @@ class AirGrabber(ctk.CTk):
             for w in scroll.winfo_children():
                 w.destroy()
 
+            # Handle progress bar visibility
+            if popup.searching:
+                if not popup.search_loader.winfo_ismapped():
+                    popup.search_loader.pack(fill="x", padx=10, pady=(0, 4), before=header_frame)
+                    popup.search_loader.start()
+            else:
+                if popup.search_loader.winfo_ismapped():
+                    popup.search_loader.stop()
+                    popup.search_loader.pack_forget()
+
             def update_hdr_text(btn, base_text, col_key):
                 indicator = (
                     " ▼"
@@ -3613,11 +3645,19 @@ class AirGrabber(ctk.CTk):
                 res_title.configure(text=f"Torrents ({len(filtered)})")
 
             if not filtered:
+                empty_text = (
+                    f"Searching indexers for S{popup.current_s:02d}E{popup.current_e:02d}..."
+                    if not popup.is_movie and popup.searching
+                    else "Searching indexers..."
+                    if popup.searching
+                    else "No matching torrents found."
+                )
+                empty_color = ACCENT_COLOR if popup.searching else "gray50"
                 ctk.CTkLabel(
                     scroll,
-                    text="No matching torrents found yet.",
-                    text_color="gray50",
-                    font=("Consolas", 12),
+                    text=empty_text,
+                    text_color=empty_color,
+                    font=("Consolas", 12, "bold" if popup.searching else "normal"),
                 ).pack(anchor="w", pady=10)
                 return
 
