@@ -1141,7 +1141,7 @@ class AirGrabber(ctk.CTk):
 
     def download_torrent_file(self, data, best, f_size=None, callback=None):
         dl_dir = self.settings.get("download_dir", TORRENTS_DIR)
-        os.makedirs(dl_dir, exist_ok=True)
+
         raw_name = best.get("name", "torrent")
         safe = re.sub(r'[<>:"/\\|?*\[\]()]+', "_", raw_name)
         safe = "".join(c for c in safe if c.isalnum() or c in " ._-").strip()
@@ -1150,6 +1150,23 @@ class AirGrabber(ctk.CTk):
         safe = safe[:120]
 
         def dl():
+            try:
+                os.makedirs(dl_dir, exist_ok=True)
+            except Exception as e:
+                logger.error(f"Failed to create download directory {dl_dir}: {e}")
+
+                # Push a popup alert to the main UI thread
+                self.ui_queue.put(
+                    lambda: self._show_message(
+                        "Directory Error",
+                        f"Cannot access or create the download directory:\n{dl_dir}\n\nPlease update your path in Settings.",
+                    )
+                )
+
+                if callback:
+                    self.ui_queue.put(lambda: callback(False))
+                    return
+
             success = False
             info_hash = best.get("info_hash")
             torrent_url = best.get("torrent_url")
@@ -3400,7 +3417,7 @@ class AirGrabber(ctk.CTk):
             corner_radius=8,
         )
         res_box.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        
+
         top_bar = ctk.CTkFrame(res_box, fg_color="transparent")
         top_bar.pack(fill="x", padx=10, pady=10)
 
@@ -3597,13 +3614,17 @@ class AirGrabber(ctk.CTk):
             animate()
 
         def render_results():
+            if not scroll.winfo_exists():
+                return
             for w in scroll.winfo_children():
                 w.destroy()
 
             # Handle progress bar visibility
             if popup.searching:
                 if not popup.search_loader.winfo_ismapped():
-                    popup.search_loader.pack(fill="x", padx=10, pady=(0, 4), before=header_frame)
+                    popup.search_loader.pack(
+                        fill="x", padx=10, pady=(0, 4), before=header_frame
+                    )
                     popup.search_loader.start()
             else:
                 if popup.search_loader.winfo_ismapped():
@@ -3880,16 +3901,22 @@ class AirGrabber(ctk.CTk):
                                     if count > 0:
                                         break
                         self.ui_queue.put(
-                            lambda: apibay_lbl.configure(
-                                text=f"APIBay ({count})" if count > 0 else "APIBay",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                apibay_lbl.winfo_exists()
+                                and apibay_lbl.configure(
+                                    text=f"APIBay ({count})" if count > 0 else "APIBay",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"APIBay search failed: {e}")
                         self.ui_queue.put(
-                            lambda: apibay_lbl.configure(
-                                text="APIBay", text_color="#C0392B"
+                            lambda: (
+                                apibay_lbl.winfo_exists()
+                                and apibay_lbl.configure(
+                                    text="APIBay", text_color="#C0392B"
+                                )
                             )
                         )
 
@@ -3935,30 +3962,44 @@ class AirGrabber(ctk.CTk):
                                                 )
                                             count += 1
                                 self.ui_queue.put(
-                                    lambda: eztv_lbl.configure(
-                                        text=f"EZTV ({count})" if count > 0 else "EZTV",
-                                        text_color="#2FA572"
-                                        if count > 0
-                                        else "#C0392B",
+                                    lambda: (
+                                        eztv_lbl.winfo_exists()
+                                        and eztv_lbl.configure(
+                                            text=f"EZTV ({count})"
+                                            if count > 0
+                                            else "EZTV",
+                                            text_color="#2FA572"
+                                            if count > 0
+                                            else "#C0392B",
+                                        )
                                     )
                                 )
                             else:
                                 self.ui_queue.put(
-                                    lambda: eztv_lbl.configure(
-                                        text="EZTV", text_color="#C0392B"
+                                    lambda: (
+                                        eztv_lbl.winfo_exists()
+                                        and eztv_lbl.configure(
+                                            text="EZTV", text_color="#C0392B"
+                                        )
                                     )
                                 )
                         else:
                             self.ui_queue.put(
-                                lambda: eztv_lbl.configure(
-                                    text="No IMDB", text_color="#C0392B"
+                                lambda: (
+                                    eztv_lbl.winfo_exists()
+                                    and eztv_lbl.configure(
+                                        text="No IMDB", text_color="#C0392B"
+                                    )
                                 )
                             )
                     except Exception as e:
                         logger.warning(f"EZTV search failed: {e}")
                         self.ui_queue.put(
-                            lambda: eztv_lbl.configure(
-                                text="EZTV", text_color="#C0392B"
+                            lambda: (
+                                eztv_lbl.winfo_exists()
+                                and eztv_lbl.configure(
+                                    text="EZTV", text_color="#C0392B"
+                                )
                             )
                         )
 
@@ -4008,16 +4049,22 @@ class AirGrabber(ctk.CTk):
                                 if count > 0:
                                     break
                         self.ui_queue.put(
-                            lambda: sol_lbl.configure(
-                                text=f"Solid ({count})" if count > 0 else "Solid",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                sol_lbl.winfo_exists()
+                                and sol_lbl.configure(
+                                    text=f"Solid ({count})" if count > 0 else "Solid",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"SolidTorrents search failed: {e}")
                         self.ui_queue.put(
-                            lambda: sol_lbl.configure(
-                                text="Solid", text_color="#C0392B"
+                            lambda: (
+                                sol_lbl.winfo_exists()
+                                and sol_lbl.configure(
+                                    text="Solid", text_color="#C0392B"
+                                )
                             )
                         )
 
@@ -4060,29 +4107,43 @@ class AirGrabber(ctk.CTk):
                                                 )
                                             count += 1
                                 self.ui_queue.put(
-                                    lambda: yts_lbl.configure(
-                                        text=f"YTS ({count})" if count > 0 else "YTS",
-                                        text_color="#2FA572"
-                                        if count > 0
-                                        else "#C0392B",
+                                    lambda: (
+                                        yts_lbl.winfo_exists()
+                                        and yts_lbl.configure(
+                                            text=f"YTS ({count})"
+                                            if count > 0
+                                            else "YTS",
+                                            text_color="#2FA572"
+                                            if count > 0
+                                            else "#C0392B",
+                                        )
                                     )
                                 )
                             else:
                                 self.ui_queue.put(
-                                    lambda: yts_lbl.configure(
-                                        text="YTS", text_color="#C0392B"
+                                    lambda: (
+                                        yts_lbl.winfo_exists()
+                                        and yts_lbl.configure(
+                                            text="YTS", text_color="#C0392B"
+                                        )
                                     )
                                 )
                         else:
                             self.ui_queue.put(
-                                lambda: yts_lbl.configure(
-                                    text="No IMDB", text_color="#C0392B"
+                                lambda: (
+                                    yts_lbl.winfo_exists()
+                                    and yts_lbl.configure(
+                                        text="No IMDB", text_color="#C0392B"
+                                    )
                                 )
                             )
                     except Exception as e:
                         logger.warning(f"YTS search failed: {e}")
                         self.ui_queue.put(
-                            lambda: yts_lbl.configure(text="YTS", text_color="#C0392B")
+                            lambda: (
+                                yts_lbl.winfo_exists()
+                                and yts_lbl.configure(text="YTS", text_color="#C0392B")
+                            )
                         )
 
                 def fetch_1337x():
@@ -4209,16 +4270,22 @@ class AirGrabber(ctk.CTk):
                                 if count > 0:
                                     break
                         self.ui_queue.put(
-                            lambda: x1337_lbl.configure(
-                                text=f"1337x ({count})" if count > 0 else "1337x",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                x1337_lbl.winfo_exists()
+                                and x1337_lbl.configure(
+                                    text=f"1337x ({count})" if count > 0 else "1337x",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"1337x search failed: {e}")
                         self.ui_queue.put(
-                            lambda: x1337_lbl.configure(
-                                text="1337x", text_color="#C0392B"
+                            lambda: (
+                                x1337_lbl.winfo_exists()
+                                and x1337_lbl.configure(
+                                    text="1337x", text_color="#C0392B"
+                                )
                             )
                         )
 
@@ -4331,15 +4398,21 @@ class AirGrabber(ctk.CTk):
                                 else:
                                     break
                         self.ui_queue.put(
-                            lambda: tpb_lbl.configure(
-                                text=f"TPB ({count})" if count > 0 else "TPB",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                tpb_lbl.winfo_exists()
+                                and tpb_lbl.configure(
+                                    text=f"TPB ({count})" if count > 0 else "TPB",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"TPB search failed: {e}")
                         self.ui_queue.put(
-                            lambda: tpb_lbl.configure(text="TPB", text_color="#C0392B")
+                            lambda: (
+                                tpb_lbl.winfo_exists()
+                                and tpb_lbl.configure(text="TPB", text_color="#C0392B")
+                            )
                         )
 
                 def fetch_tgx():
@@ -4425,15 +4498,21 @@ class AirGrabber(ctk.CTk):
                                 else:
                                     break
                         self.ui_queue.put(
-                            lambda: tgx_lbl.configure(
-                                text=f"TGx ({count})" if count > 0 else "TGx",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                tgx_lbl.winfo_exists()
+                                and tgx_lbl.configure(
+                                    text=f"TGx ({count})" if count > 0 else "TGx",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"TGx search failed: {e}")
                         self.ui_queue.put(
-                            lambda: tgx_lbl.configure(text="TGx", text_color="#C0392B")
+                            lambda: (
+                                tgx_lbl.winfo_exists()
+                                and tgx_lbl.configure(text="TGx", text_color="#C0392B")
+                            )
                         )
 
                 def fetch_ext():
@@ -4498,15 +4577,21 @@ class AirGrabber(ctk.CTk):
                                 else:
                                     break
                         self.ui_queue.put(
-                            lambda: ext_lbl.configure(
-                                text=f"EXT ({count})" if count > 0 else "EXT",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                ext_lbl.winfo_exists()
+                                and ext_lbl.configure(
+                                    text=f"EXT ({count})" if count > 0 else "EXT",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"ext.to search failed: {e}")
                         self.ui_queue.put(
-                            lambda: ext_lbl.configure(text="EXT", text_color="#C0392B")
+                            lambda: (
+                                ext_lbl.winfo_exists()
+                                and ext_lbl.configure(text="EXT", text_color="#C0392B")
+                            )
                         )
 
                 def fetch_limetorrents():
@@ -4596,16 +4681,22 @@ class AirGrabber(ctk.CTk):
                                 else:
                                     break
                         self.ui_queue.put(
-                            lambda: lime_lbl.configure(
-                                text=f"Lime ({count})" if count > 0 else "Lime",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                lime_lbl.winfo_exists()
+                                and lime_lbl.configure(
+                                    text=f"Lime ({count})" if count > 0 else "Lime",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"LimeTorrents search failed: {e}")
                         self.ui_queue.put(
-                            lambda: lime_lbl.configure(
-                                text="Lime", text_color="#C0392B"
+                            lambda: (
+                                lime_lbl.winfo_exists()
+                                and lime_lbl.configure(
+                                    text="Lime", text_color="#C0392B"
+                                )
                             )
                         )
 
@@ -4731,16 +4822,22 @@ class AirGrabber(ctk.CTk):
                                 else:
                                     break
                         self.ui_queue.put(
-                            lambda: zooqle_lbl.configure(
-                                text=f"Zooqle ({count})" if count > 0 else "Zooqle",
-                                text_color="#2FA572" if count > 0 else "#C0392B",
+                            lambda: (
+                                zooqle_lbl.winfo_exists()
+                                and zooqle_lbl.configure(
+                                    text=f"Zooqle ({count})" if count > 0 else "Zooqle",
+                                    text_color="#2FA572" if count > 0 else "#C0392B",
+                                )
                             )
                         )
                     except Exception as e:
                         logger.warning(f"Zooqle search failed: {e}")
                         self.ui_queue.put(
-                            lambda: zooqle_lbl.configure(
-                                text="Zooqle", text_color="#C0392B"
+                            lambda: (
+                                zooqle_lbl.winfo_exists()
+                                and zooqle_lbl.configure(
+                                    text="Zooqle", text_color="#C0392B"
+                                )
                             )
                         )
 
