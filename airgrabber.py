@@ -3046,6 +3046,7 @@ class AirGrabber(ctk.CTk):
         match = re.search(r"S(\d+)E(\d+)", ep_data.get("episode", ""), re.IGNORECASE)
         popup.current_s = int(match.group(1)) if match else 1
         popup.current_e = int(match.group(2)) if match else 1
+        popup.is_season_pack = False
         popup.show_id = str(ep_data.get("show_id") or ep_data.get("media_id", ""))
         popup.show_name = ep_data.get("show", "Unknown")
 
@@ -3264,6 +3265,7 @@ class AirGrabber(ctk.CTk):
                 seasons = [1]
             if popup.current_s not in seasons:
                 popup.current_s = seasons[0]
+            
             for s in seasons:
                 is_sel = s == popup.current_s
                 btn = ctk.CTkButton(
@@ -3276,6 +3278,19 @@ class AirGrabber(ctk.CTk):
                     command=lambda season=s: on_season_change(season),
                 )
                 btn.pack(side="left", padx=3)
+            
+            pack_btn = ctk.CTkButton(
+                popup.episode_scroll,
+                text="Pack",
+                width=45,
+                height=25,
+                fg_color=ACCENT_COLOR if popup.is_season_pack else "gray15",
+                hover_color=ACCENT_HOVER if popup.is_season_pack else "gray25",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=on_pack_click,
+            )
+            pack_btn.pack(side="left", padx=(3, 8))
+
             episodes = [
                 ep for ep in popup.episodes_data if ep.get("season") == popup.current_s
             ]
@@ -3285,7 +3300,7 @@ class AirGrabber(ctk.CTk):
                 else popup.current_e
             )
             for e in range(1, max_ep + 1):
-                is_sel = e == popup.current_e
+                is_sel = (e == popup.current_e) and not popup.is_season_pack
                 btn = ctk.CTkButton(
                     popup.episode_scroll,
                     text=str(e),
@@ -3297,16 +3312,30 @@ class AirGrabber(ctk.CTk):
                 )
                 btn.pack(side="left", padx=3)
 
-        def on_season_change(s):
-            popup.current_s = s
-            popup.current_e = 1
+        def on_pack_click():
+            popup.is_season_pack = True
             popup.lbl_title.configure(
-                text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
+                text=f"{popup.show_name}: Season {popup.current_s:02d} (Pack)"
             )
             render_selectors()
             execute_manual_search()
 
+        def on_season_change(s):
+            popup.current_s = s
+            if not popup.is_season_pack:
+                popup.current_e = 1
+                popup.lbl_title.configure(
+                    text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
+                )
+            else:
+                popup.lbl_title.configure(
+                    text=f"{popup.show_name}: Season {popup.current_s:02d} (Pack)"
+                )
+            render_selectors()
+            execute_manual_search()
+
         def on_episode_change(e):
+            popup.is_season_pack = False
             popup.current_e = e
             popup.lbl_title.configure(
                 text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
@@ -3349,7 +3378,7 @@ class AirGrabber(ctk.CTk):
                 )
                 self.ui_queue.put(
                     lambda: popup.lbl_title.configure(
-                        text=f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
+                        text=f"{popup.show_name}: Season {popup.current_s:02d} (Pack)" if popup.is_season_pack else f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
                     )
                 )
                 url = (
@@ -3572,9 +3601,12 @@ class AirGrabber(ctk.CTk):
                 else:
                     ep_data_patched = dict(ep_data)
                     if not popup.is_movie:
-                        ep_data_patched["episode"] = (
-                            f"S{popup.current_s:02d}E{popup.current_e:02d}"
-                        )
+                        if popup.is_season_pack:
+                            ep_data_patched["episode"] = f"S{popup.current_s:02d}_PACK"
+                        else:
+                            ep_data_patched["episode"] = (
+                                f"S{popup.current_s:02d}E{popup.current_e:02d}"
+                            )
                         if not ep_data_patched.get("media_id"):
                             ep_data_patched["media_id"] = popup.show_id
 
@@ -3666,13 +3698,16 @@ class AirGrabber(ctk.CTk):
                 res_title.configure(text=f"Torrents ({len(filtered)})")
 
             if not filtered:
-                empty_text = (
-                    f"Searching indexers for S{popup.current_s:02d}E{popup.current_e:02d}..."
-                    if not popup.is_movie and popup.searching
-                    else "Searching indexers..."
-                    if popup.searching
-                    else "No matching torrents found."
-                )
+                if popup.searching:
+                    if popup.is_movie:
+                        empty_text = "Searching indexers..."
+                    elif popup.is_season_pack:
+                        empty_text = f"Searching indexers for Season {popup.current_s:02d} Pack..."
+                    else:
+                        empty_text = f"Searching indexers for S{popup.current_s:02d}E{popup.current_e:02d}..."
+                else:
+                    empty_text = "No matching torrents found."
+
                 empty_color = ACCENT_COLOR if popup.searching else "gray50"
                 ctk.CTkLabel(
                     scroll,
@@ -3776,6 +3811,20 @@ class AirGrabber(ctk.CTk):
                     queries.append(f"{clean_name} {popup.show_year}")
                 queries.append(popup.show_name)
                 queries.append(clean_name)
+            elif popup.is_season_pack:
+                s_pad = f"S{popup.current_s:02d}"
+                s_plain = f"Season {popup.current_s}"
+                s_plain_pad = f"Season {popup.current_s:02d}"
+                
+                queries.append(f"{popup.show_name} {s_pad}")
+                queries.append(f"{popup.show_name} {s_plain}")
+                queries.append(f"{popup.show_name} {s_pad} Complete")
+                if popup.show_year:
+                    queries.append(f"{popup.show_name} {popup.show_year} {s_pad}")
+                    queries.append(f"{popup.show_name} {popup.show_year} {s_plain}")
+                if clean_name != popup.show_name:
+                    queries.append(f"{clean_name} {s_pad}")
+                    queries.append(f"{clean_name} {s_plain}")
             else:
                 ep_str = f"S{popup.current_s:02d}E{popup.current_e:02d}"
                 queries.append(f"{popup.show_name} {ep_str}")
@@ -3934,9 +3983,14 @@ class AirGrabber(ctk.CTk):
                             if res.status_code == 200:
                                 count = 0
                                 for t in res.json().get("torrents", []):
-                                    if str(t.get("season")) == str(
-                                        popup.current_s
-                                    ) and str(t.get("episode")) == str(popup.current_e):
+                                    is_match = False
+                                    if str(t.get("season")) == str(popup.current_s):
+                                        if popup.is_season_pack:
+                                            is_match = str(t.get("episode")) in ["0", "", "None"] or "complete" in t.get("title", "").lower()
+                                        else:
+                                            is_match = str(t.get("episode")) == str(popup.current_e)
+                                    
+                                    if is_match:
                                         seeders = self._safe_int(t.get("seeds", 0))
                                         if seeders > 0:
                                             with popup.results_lock:
