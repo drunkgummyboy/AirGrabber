@@ -1155,7 +1155,6 @@ class AirGrabber(ctk.CTk):
             except Exception as e:
                 logger.error(f"Failed to create download directory {dl_dir}: {e}")
 
-                # Push a popup alert to the main UI thread
                 self.ui_queue.put(
                     lambda: self._show_message(
                         "Directory Error",
@@ -3042,6 +3041,7 @@ class AirGrabber(ctk.CTk):
         popup.searching = False
         popup.sort_col = "size"
         popup.sort_desc = True
+        popup.primary_query = ""
 
         match = re.search(r"S(\d+)E(\d+)", ep_data.get("episode", ""), re.IGNORECASE)
         popup.current_s = int(match.group(1)) if match else 1
@@ -3476,6 +3476,7 @@ class AirGrabber(ctk.CTk):
             text="APIBay",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         apibay_lbl.pack(side="left", padx=(0, 10))
         eztv_lbl = ctk.CTkLabel(
@@ -3483,6 +3484,7 @@ class AirGrabber(ctk.CTk):
             text="EZTV",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         eztv_lbl.pack(side="left", padx=(0, 10))
         sol_lbl = ctk.CTkLabel(
@@ -3490,6 +3492,7 @@ class AirGrabber(ctk.CTk):
             text="Solid",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         sol_lbl.pack(side="left", padx=(0, 10))
         yts_lbl = ctk.CTkLabel(
@@ -3497,6 +3500,7 @@ class AirGrabber(ctk.CTk):
             text="YTS",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         yts_lbl.pack(side="left", padx=(0, 10))
         x1337_lbl = ctk.CTkLabel(
@@ -3504,6 +3508,7 @@ class AirGrabber(ctk.CTk):
             text="1337x",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         x1337_lbl.pack(side="left", padx=(0, 10))
         tpb_lbl = ctk.CTkLabel(
@@ -3511,6 +3516,7 @@ class AirGrabber(ctk.CTk):
             text="TPB",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         tpb_lbl.pack(side="left", padx=(0, 10))
         tgx_lbl = ctk.CTkLabel(
@@ -3518,6 +3524,7 @@ class AirGrabber(ctk.CTk):
             text="TGx",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         tgx_lbl.pack(side="left", padx=(0, 10))
         ext_lbl = ctk.CTkLabel(
@@ -3525,22 +3532,9 @@ class AirGrabber(ctk.CTk):
             text="EXT",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
+            cursor="hand2"
         )
         ext_lbl.pack(side="left", padx=(0, 10))
-        lime_lbl = ctk.CTkLabel(
-            status_scroll,
-            text="Lime",
-            text_color="yellow",
-            font=("Consolas", 11, "bold"),
-        )
-        lime_lbl.pack(side="left", padx=(0, 10))
-        zooqle_lbl = ctk.CTkLabel(
-            status_scroll,
-            text="Zooqle",
-            text_color="yellow",
-            font=("Consolas", 11, "bold"),
-        )
-        zooqle_lbl.pack(side="left")
 
         def set_grid_cols(frame):
             frame.grid_columnconfigure(0, weight=1)
@@ -3835,6 +3829,17 @@ class AirGrabber(ctk.CTk):
 
             seen = set()
             queries = [x for x in queries if not (x in seen or seen.add(x))]
+            
+            popup.primary_query = urllib.parse.quote(queries[0]) if queries else ""
+            
+            apibay_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://apibay.org/q.php?q={popup.primary_query}"))
+            eztv_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://eztv.re/search/{popup.primary_query}"))
+            sol_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://solidtorrents.to/search?q={popup.primary_query}"))
+            yts_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://yts.mx/browse-movies/{popup.primary_query}/all/all/0/latest/0/all"))
+            x1337_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://1337x.to/search/{popup.primary_query}/1/"))
+            tpb_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://thepiratebay.org/search.php?q={popup.primary_query}"))
+            tgx_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://torrentgalaxy.to/torrents.php?search={popup.primary_query}"))
+            ext_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://ext.to/search/?q={popup.primary_query}"))
 
             apibay_lbl.configure(text="APIBay", text_color="yellow")
             sol_lbl.configure(text="Solid", text_color="yellow")
@@ -3842,8 +3847,6 @@ class AirGrabber(ctk.CTk):
             tpb_lbl.configure(text="TPB", text_color="yellow")
             tgx_lbl.configure(text="TGx", text_color="yellow")
             ext_lbl.configure(text="EXT", text_color="yellow")
-            lime_lbl.configure(text="Lime", text_color="yellow")
-            zooqle_lbl.configure(text="Zooqle", text_color="yellow")
 
             if popup.is_movie:
                 eztv_lbl.configure(text="EZTV (TV)", text_color="gray50")
@@ -4648,253 +4651,6 @@ class AirGrabber(ctk.CTk):
                             )
                         )
 
-                def fetch_limetorrents():
-                    proxies = [
-                        "https://www.limetorrents.lol",
-                        "https://limetorrents.info",
-                    ]
-                    count = 0
-                    try:
-                        for proxy in proxies:
-                            if count > 0:
-                                break
-                            for q in queries:
-                                url = f"{proxy}/search/all/{urllib.parse.quote(q)}/"
-                                res = scraper_session.get(url, timeout=12)
-                                if res.status_code == 200:
-                                    soup = BeautifulSoup(res.text, "html.parser")
-                                    if "Just a moment" in (
-                                        soup.title.string if soup.title else ""
-                                    ):
-                                        break
-                                    table = soup.select_one("table.table2")
-                                    if table:
-                                        rows = table.find_all("tr")[1:]
-                                        for row in rows[:15]:
-                                            cols = row.find_all("td")
-                                            if len(cols) >= 4:
-                                                name_td = cols[0]
-                                                links = name_td.find_all("a")
-                                                if len(links) >= 2:
-                                                    name = links[1].text.strip()
-                                                    dl_link = links[0].get("href", "")
-                                                    info_hash = ""
-                                                    if dl_link.startswith("magnet:"):
-                                                        hash_match = re.search(
-                                                            r"xt=urn:btih:([a-zA-Z0-9]+)",
-                                                            dl_link,
-                                                            re.IGNORECASE,
-                                                        )
-                                                        info_hash = (
-                                                            hash_match.group(1)
-                                                            if hash_match
-                                                            else ""
-                                                        )
-                                                    elif "itorrents.org" in dl_link:
-                                                        hash_match = re.search(
-                                                            r"torrent/([a-zA-Z0-9]+)\.torrent",
-                                                            dl_link,
-                                                            re.IGNORECASE,
-                                                        )
-                                                        info_hash = (
-                                                            hash_match.group(1)
-                                                            if hash_match
-                                                            else ""
-                                                        )
-                                                    size_str = cols[1].text.strip()
-                                                    seeders = self._safe_int(
-                                                        cols[3].text.strip()
-                                                    )
-                                                    leechers = self._safe_int(
-                                                        cols[4].text.strip()
-                                                    )
-                                                    if seeders > 0 and (
-                                                        info_hash or dl_link
-                                                    ):
-                                                        with popup.results_lock:
-                                                            popup.results_pool.append(
-                                                                {
-                                                                    "source": "Lime",
-                                                                    "name": name,
-                                                                    "info_hash": info_hash,
-                                                                    "torrent_url": dl_link
-                                                                    if not dl_link.startswith(
-                                                                        "magnet:"
-                                                                    )
-                                                                    else "",
-                                                                    "size": self.parse_size_to_bytes(
-                                                                        size_str
-                                                                    ),
-                                                                    "seeders": seeders,
-                                                                    "leechers": leechers,
-                                                                }
-                                                            )
-                                                        count += 1
-                                    if count > 0:
-                                        break
-                                else:
-                                    break
-                        self.ui_queue.put(
-                            lambda: (
-                                lime_lbl.winfo_exists()
-                                and lime_lbl.configure(
-                                    text=f"Lime ({count})" if count > 0 else "Lime",
-                                    text_color="#2FA572" if count > 0 else "#C0392B",
-                                )
-                            )
-                        )
-                    except Exception as e:
-                        logger.warning(f"LimeTorrents search failed: {e}")
-                        self.ui_queue.put(
-                            lambda: (
-                                lime_lbl.winfo_exists()
-                                and lime_lbl.configure(
-                                    text="Lime", text_color="#C0392B"
-                                )
-                            )
-                        )
-
-                def fetch_zooqle():
-                    proxies = [
-                        "https://zooqle.com",
-                        "https://zooqle.unblocked.win",
-                        "https://zooqle.nocensor.xyz",
-                    ]
-                    count = 0
-                    try:
-                        for proxy in proxies:
-                            if count > 0:
-                                break
-                            for q in queries:
-                                url = f"{proxy}/search?q={urllib.parse.quote(q)}"
-                                res = scraper_session.get(url, timeout=12)
-                                if res.status_code == 200:
-                                    soup = BeautifulSoup(res.text, "html.parser")
-                                    if "Just a moment" in (
-                                        soup.title.string if soup.title else ""
-                                    ):
-                                        break
-
-                                    table = soup.find(
-                                        "table",
-                                        class_=lambda c: c and "table-torrents" in c,
-                                    )
-                                    if not table:
-                                        table = soup.find("table")
-
-                                    if table:
-                                        rows = table.find_all("tr")
-                                        for row in rows[1:16]:
-                                            tds = row.find_all("td")
-                                            if len(tds) >= 3:
-                                                name_a = tds[1].find(
-                                                    "a", class_="small"
-                                                ) or tds[1].find("a")
-                                                if not name_a:
-                                                    continue
-
-                                                magnet_a = row.find(
-                                                    "a", title="Magnet link"
-                                                ) or row.find(
-                                                    "a",
-                                                    href=lambda h: (
-                                                        h and h.startswith("magnet:")
-                                                    ),
-                                                )
-                                                info_hash = ""
-                                                if magnet_a:
-                                                    hash_match = re.search(
-                                                        r"xt=urn:btih:([a-zA-Z0-9]+)",
-                                                        magnet_a["href"],
-                                                        re.IGNORECASE,
-                                                    )
-                                                    info_hash = (
-                                                        hash_match.group(1)
-                                                        if hash_match
-                                                        else ""
-                                                    )
-
-                                                size_text = tds[2].text.strip()
-                                                seeders, leechers = 0, 0
-
-                                                seed_div = row.find(
-                                                    "div", class_="prog-green"
-                                                )
-                                                leech_div = row.find(
-                                                    "div", class_="prog-yellow"
-                                                )
-                                                if seed_div:
-                                                    seeders = self._safe_int(
-                                                        seed_div.text
-                                                    )
-                                                if leech_div:
-                                                    leechers = self._safe_int(
-                                                        leech_div.text
-                                                    )
-
-                                                if seeders == 0:
-                                                    title_attr = row.find(
-                                                        "div",
-                                                        title=re.compile(r"Seeders:"),
-                                                    )
-                                                    if title_attr:
-                                                        s_match = re.search(
-                                                            r"Seeders:\s*(\d+)",
-                                                            title_attr["title"],
-                                                        )
-                                                        l_match = re.search(
-                                                            r"Leechers:\s*(\d+)",
-                                                            title_attr["title"],
-                                                        )
-                                                        if s_match:
-                                                            seeders = self._safe_int(
-                                                                s_match.group(1)
-                                                            )
-                                                        if l_match:
-                                                            leechers = self._safe_int(
-                                                                l_match.group(1)
-                                                            )
-
-                                                if seeders > 0 and info_hash:
-                                                    with popup.results_lock:
-                                                        popup.results_pool.append(
-                                                            {
-                                                                "source": "Zooqle",
-                                                                "name": name_a.text.strip(),
-                                                                "info_hash": info_hash,
-                                                                "torrent_url": "",
-                                                                "size": self.parse_size_to_bytes(
-                                                                    size_text
-                                                                ),
-                                                                "seeders": seeders,
-                                                                "leechers": leechers,
-                                                            }
-                                                        )
-                                                    count += 1
-                                        if count > 0:
-                                            break
-                                else:
-                                    break
-                        self.ui_queue.put(
-                            lambda: (
-                                zooqle_lbl.winfo_exists()
-                                and zooqle_lbl.configure(
-                                    text=f"Zooqle ({count})" if count > 0 else "Zooqle",
-                                    text_color="#2FA572" if count > 0 else "#C0392B",
-                                )
-                            )
-                        )
-                    except Exception as e:
-                        logger.warning(f"Zooqle search failed: {e}")
-                        self.ui_queue.put(
-                            lambda: (
-                                zooqle_lbl.winfo_exists()
-                                and zooqle_lbl.configure(
-                                    text="Zooqle", text_color="#C0392B"
-                                )
-                            )
-                        )
-
                 threads = [
                     threading.Thread(target=thread_wrapper(fetch_apibay)),
                     threading.Thread(target=thread_wrapper(fetch_eztv)),
@@ -4904,8 +4660,6 @@ class AirGrabber(ctk.CTk):
                     threading.Thread(target=thread_wrapper(fetch_tpb)),
                     threading.Thread(target=thread_wrapper(fetch_tgx)),
                     threading.Thread(target=thread_wrapper(fetch_ext)),
-                    threading.Thread(target=thread_wrapper(fetch_limetorrents)),
-                    threading.Thread(target=thread_wrapper(fetch_zooqle)),
                 ]
 
                 with popup.thread_lock:
@@ -4917,6 +4671,66 @@ class AirGrabber(ctk.CTk):
             threading.Thread(target=run_searches_async).start()
 
         execute_manual_search()
+
+    def export_data(self):
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            title="Export Shows and Settings"
+        )
+        if not file_path:
+            return
+
+        export_payload = {
+            "settings": self.settings,
+            "followed_shows": self.followed_shows,
+            "history": self.history
+        }
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(export_payload, f, indent=4)
+            self._show_message("Export Successful", f"Data exported to:\n{file_path}")
+        except Exception as e:
+            logger.error(f"Export failed: {e}")
+            self._show_message("Export Failed", f"Could not export data:\n{e}")
+
+    def import_data(self, window=None):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            title="Import Shows and Settings"
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                imported_payload = json.load(f)
+
+            if "settings" in imported_payload and "followed_shows" in imported_payload:
+                with self.data_lock:
+                    self.settings.update(imported_payload.get("settings", {}))
+                    self.followed_shows = imported_payload.get("followed_shows", {})
+                    self.history = imported_payload.get("history", [])
+                
+                self.save_settings()
+                self.save_data()
+                self.save_history()
+                self.mark_caches_dirty()
+                
+                self.ui_queue.put(self.refresh_library_list)
+                self.ui_queue.put(self.refresh_calendar_data)
+                self.start_background_library_sync()
+
+                if window and window.winfo_exists():
+                    window.destroy()
+
+                self._show_message("Import Successful", "Settings and tracked library have been restored.")
+            else:
+                self._show_message("Import Failed", "Invalid backup file format.")
+        except Exception as e:
+            logger.error(f"Import failed: {e}")
+            self._show_message("Import Failed", f"Could not import data:\n{e}")
 
     def open_settings_window(self):
         win = ctk.CTkToplevel(self)
@@ -5000,6 +4814,22 @@ class AirGrabber(ctk.CTk):
             fg_color=GLASS_CARD,
             border_color=GLASS_EDGE,
         ).pack(side="left", padx=10, expand=True, fill="x")
+
+        f_backup = ctk.CTkFrame(c, fg_color="transparent")
+        f_backup.pack(fill="x", pady=(15, 8))
+        ctk.CTkLabel(f_backup, text="Backup & Restore:", text_color="#A4B2C6").pack(side="left")
+        
+        btn_export = ctk.CTkButton(
+            f_backup, text="Export", width=80, fg_color="#F39C12", hover_color="#D68910",
+            command=self.export_data
+        )
+        btn_export.pack(side="right", padx=(5, 0))
+        
+        btn_import = ctk.CTkButton(
+            f_backup, text="Import", width=80, fg_color="#F39C12", hover_color="#D68910",
+            command=lambda: self.import_data(win)
+        )
+        btn_import.pack(side="right")
 
         link_f = ctk.CTkFrame(c, fg_color="transparent")
         link_f.pack(fill="x", pady=(0, 8))
