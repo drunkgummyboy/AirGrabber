@@ -128,12 +128,12 @@ POSTERS_DIR = os.path.join(SCRIPT_DIR, "posters_cache")
 os.makedirs(POSTERS_DIR, exist_ok=True)
 os.makedirs(TORRENTS_DIR, exist_ok=True)
 
-BG_BASE = "#0F0D14"
-GLASS_CARD = "#1A1726"
-GLASS_EDGE = "#5D4B8B"
-ACCENT_COLOR = "#4d4180"
-ACCENT_HOVER = "#3a3160"
-TAB_BG = "#13111C"
+BG_BASE = "#161616"  # Deep neutral dark background
+GLASS_CARD = "#242424"  # Lighter grey for the content cards
+GLASS_EDGE = "#4E6A85"  # Slate Blue from the left side of the TV screen
+ACCENT_COLOR = "#4E6A85"  # Slate Blue for primary buttons
+ACCENT_HOVER = "#427839"  # Darker green for button hover states
+TAB_BG = "#1C1C1C"  # Intermediate background for the tab view
 
 ctk.set_appearance_mode("Dark")
 
@@ -247,51 +247,48 @@ class AirGrabber(ctk.CTk):
         self.top_bar.grid_columnconfigure(1, weight=0)
         self.top_bar.grid_columnconfigure(2, weight=1, uniform="nav")
 
+        # Create a container for the centered navigation
+        self.center_nav = ctk.CTkFrame(self.top_bar, fg_color="transparent")
+        self.center_nav.grid(row=0, column=1)
+
+        self.global_media_var = ctk.StringVar(value="TV Shows")
+
+        # Series button (Left of logo)
+        self.btn_tv = ctk.CTkButton(
+            self.center_nav,
+            text="Series",
+            width=90,
+            height=30,
+            fg_color=ACCENT_COLOR,
+            hover_color=ACCENT_HOVER,
+            corner_radius=6,
+            font=ctk.CTkFont(weight="bold", size=14),
+            command=lambda: self.set_global_mode("TV Shows"),
+        )
+        self.btn_tv.grid(row=0, column=0, padx=15)
+
+        # Centered Logo
         self.logo_lbl = ctk.CTkLabel(
-            self.top_bar,
+            self.center_nav,
             text="AirGrabber",
             font=ctk.CTkFont(size=24, weight="bold"),
             text_color=ACCENT_COLOR,
         )
-        self.logo_lbl.grid(row=0, column=0, sticky="w", padx=(10, 0))
+        self.logo_lbl.grid(row=0, column=1, padx=15)
 
-        self.global_media_var = ctk.StringVar(value="TV Shows")
-        self.toggle_frame = ctk.CTkFrame(
-            self.top_bar,
-            fg_color=GLASS_CARD,
-            corner_radius=15,
-            border_width=1,
-            border_color=GLASS_EDGE,
-        )
-        self.toggle_frame.grid(row=0, column=1)
-
-        self.btn_tv = ctk.CTkButton(
-            self.toggle_frame,
-            text="",
-            width=160,
-            height=100,
-            fg_color=ACCENT_COLOR,
-            hover_color=ACCENT_HOVER,
-            corner_radius=12,
-            border_width=0,
-            font=ctk.CTkFont(weight="bold", size=16),
-            command=lambda: self.set_global_mode("TV Shows"),
-        )
-        self.btn_tv.grid(row=0, column=0, padx=4, pady=4)
-
+        # Movies button (Right of logo)
         self.btn_movie = ctk.CTkButton(
-            self.toggle_frame,
-            text="",
-            width=160,
-            height=100,
+            self.center_nav,
+            text="Movies",
+            width=90,
+            height=30,
             fg_color="transparent",
-            hover_color="#2A2130",
-            corner_radius=12,
-            border_width=0,
-            font=ctk.CTkFont(weight="bold", size=16),
+            hover_color=GLASS_CARD,
+            corner_radius=6,
+            font=ctk.CTkFont(weight="bold", size=14),
             command=lambda: self.set_global_mode("Movies"),
         )
-        self.btn_movie.grid(row=0, column=1, padx=4, pady=4)
+        self.btn_movie.grid(row=0, column=2, padx=15)
 
         self.right_nav_frame = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.right_nav_frame.grid(row=0, column=2, sticky="e")
@@ -375,7 +372,7 @@ class AirGrabber(ctk.CTk):
             self,
             text=f"v{CURRENT_VERSION}",
             font=ctk.CTkFont(size=11),
-            text_color="#5D4B8B",
+            text_color="#4E6A85",
         )
         self.version_label.place(relx=0.99, rely=0.99, anchor="se")
 
@@ -852,18 +849,8 @@ class AirGrabber(ctk.CTk):
 
     def load_app_icons(self):
         logo = self.fetch_pil_image(
-            "https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/refs/heads/main/logo.png"
+            "https://github.com/drunkgummyboy/AirGrabber/blob/main/logo.png?raw=true"
         )
-        tv_ico = self.fetch_pil_image(
-            "https://github.com/drunkgummyboy/AirGrabber/blob/main/tv.png?raw=true"
-        )
-        mov_ico = self.fetch_pil_image(
-            "https://github.com/drunkgummyboy/AirGrabber/blob/main/movie.png?raw=true"
-        )
-        if not mov_ico:
-            mov_ico = self.fetch_pil_image(
-                "https://github.com/drunkgummyboy/AirGrabber/blob/main/movies.png?raw=true"
-            )
         settings_ico = self.fetch_pil_image(
             "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/settings/materialicons/48dp/2x/baseline_settings_white_48dp.png"
         )
@@ -883,22 +870,6 @@ class AirGrabber(ctk.CTk):
                     ),
                     text="",
                 )
-            if hasattr(self, "btn_tv") and self.btn_tv.winfo_exists():
-                if tv_ico:
-                    self.tv_ico_img = ctk.CTkImage(
-                        light_image=tv_ico, dark_image=tv_ico, size=(80, 80)
-                    )
-                    self.btn_tv.configure(image=self.tv_ico_img, text="")
-                else:
-                    self.btn_tv.configure(text="TV Shows")
-            if hasattr(self, "btn_movie") and self.btn_movie.winfo_exists():
-                if mov_ico:
-                    self.mov_ico_img = ctk.CTkImage(
-                        light_image=mov_ico, dark_image=mov_ico, size=(80, 80)
-                    )
-                    self.btn_movie.configure(image=self.mov_ico_img, text="")
-                else:
-                    self.btn_movie.configure(text="Movies")
             if (
                 settings_ico
                 and hasattr(self, "settings_btn")
@@ -3229,15 +3200,41 @@ class AirGrabber(ctk.CTk):
             current_qual = popup.qual_var.get().lower()
             if current_qual == "2160p (4k)":
                 current_qual = "2160p"
+
+            # Count results matching each quality tag
+            with popup.results_lock:
+                snapshot = list(popup.results_pool)
+
+            counts = {}
+            for text_lbl, val in qualities:
+                if val == "any":
+                    counts[val] = len(snapshot)
+                else:
+                    c = 0
+                    for r in snapshot:
+                        nl = r["name"].lower()
+                        if val == "2160p":
+                            if "2160p" in nl or "4k" in nl:
+                                c += 1
+                        elif val in nl:
+                            c += 1
+                    counts[val] = c
+
             for text_lbl, val in qualities:
                 is_sel = val == current_qual
                 if current_qual == "any" and text_lbl == "ANY":
                     is_sel = True
+
+                count_val = counts.get(val, 0)
+                btn_label = f"{text_lbl} ({count_val})" if count_val > 0 else text_lbl
+
                 btn = ctk.CTkButton(
                     qual_scroll,
-                    text=text_lbl,
-                    width=50,
-                    height=25,
+                    text=btn_label,
+                    height=30,  # Reduced height
+                    width=80,  # Reduced base width
+                    font=ctk.CTkFont(size=11, weight="bold"),  # Smaller font
+                    corner_radius=4,  # Tighter corners
                     fg_color=ACCENT_COLOR if is_sel else "gray15",
                     hover_color=ACCENT_HOVER if is_sel else "gray25",
                     command=lambda v=val: on_quality_change(v),
@@ -3265,7 +3262,7 @@ class AirGrabber(ctk.CTk):
                 seasons = [1]
             if popup.current_s not in seasons:
                 popup.current_s = seasons[0]
-            
+
             for s in seasons:
                 is_sel = s == popup.current_s
                 btn = ctk.CTkButton(
@@ -3278,7 +3275,7 @@ class AirGrabber(ctk.CTk):
                     command=lambda season=s: on_season_change(season),
                 )
                 btn.pack(side="left", padx=3)
-            
+
             pack_btn = ctk.CTkButton(
                 popup.episode_scroll,
                 text="Pack",
@@ -3378,7 +3375,9 @@ class AirGrabber(ctk.CTk):
                 )
                 self.ui_queue.put(
                     lambda: popup.lbl_title.configure(
-                        text=f"{popup.show_name}: Season {popup.current_s:02d} (Pack)" if popup.is_season_pack else f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
+                        text=f"{popup.show_name}: Season {popup.current_s:02d} (Pack)"
+                        if popup.is_season_pack
+                        else f"{popup.show_name}: S{popup.current_s:02d}E{popup.current_e:02d}"
                     )
                 )
                 url = (
@@ -3476,7 +3475,7 @@ class AirGrabber(ctk.CTk):
             text="APIBay",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         apibay_lbl.pack(side="left", padx=(0, 10))
         eztv_lbl = ctk.CTkLabel(
@@ -3484,7 +3483,7 @@ class AirGrabber(ctk.CTk):
             text="EZTV",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         eztv_lbl.pack(side="left", padx=(0, 10))
         sol_lbl = ctk.CTkLabel(
@@ -3492,7 +3491,7 @@ class AirGrabber(ctk.CTk):
             text="Solid",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         sol_lbl.pack(side="left", padx=(0, 10))
         yts_lbl = ctk.CTkLabel(
@@ -3500,7 +3499,7 @@ class AirGrabber(ctk.CTk):
             text="YTS",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         yts_lbl.pack(side="left", padx=(0, 10))
         x1337_lbl = ctk.CTkLabel(
@@ -3508,7 +3507,7 @@ class AirGrabber(ctk.CTk):
             text="1337x",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         x1337_lbl.pack(side="left", padx=(0, 10))
         tpb_lbl = ctk.CTkLabel(
@@ -3516,7 +3515,7 @@ class AirGrabber(ctk.CTk):
             text="TPB",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         tpb_lbl.pack(side="left", padx=(0, 10))
         tgx_lbl = ctk.CTkLabel(
@@ -3524,7 +3523,7 @@ class AirGrabber(ctk.CTk):
             text="TGx",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         tgx_lbl.pack(side="left", padx=(0, 10))
         ext_lbl = ctk.CTkLabel(
@@ -3532,7 +3531,7 @@ class AirGrabber(ctk.CTk):
             text="EXT",
             text_color="yellow",
             font=("Consolas", 11, "bold"),
-            cursor="hand2"
+            cursor="hand2",
         )
         ext_lbl.pack(side="left", padx=(0, 10))
 
@@ -3644,6 +3643,8 @@ class AirGrabber(ctk.CTk):
                 return
             for w in scroll.winfo_children():
                 w.destroy()
+
+            render_quality_buttons()  # <--- Re-render quality buttons with updated counts
 
             # Handle progress bar visibility
             if popup.searching:
@@ -3809,7 +3810,7 @@ class AirGrabber(ctk.CTk):
                 s_pad = f"S{popup.current_s:02d}"
                 s_plain = f"Season {popup.current_s}"
                 s_plain_pad = f"Season {popup.current_s:02d}"
-                
+
                 queries.append(f"{popup.show_name} {s_pad}")
                 queries.append(f"{popup.show_name} {s_plain}")
                 queries.append(f"{popup.show_name} {s_pad} Complete")
@@ -3829,17 +3830,57 @@ class AirGrabber(ctk.CTk):
 
             seen = set()
             queries = [x for x in queries if not (x in seen or seen.add(x))]
-            
+
             popup.primary_query = urllib.parse.quote(queries[0]) if queries else ""
-            
-            apibay_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://apibay.org/q.php?q={popup.primary_query}"))
-            eztv_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://eztv.re/search/{popup.primary_query}"))
-            sol_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://solidtorrents.to/search?q={popup.primary_query}"))
-            yts_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://yts.mx/browse-movies/{popup.primary_query}/all/all/0/latest/0/all"))
-            x1337_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://1337x.to/search/{popup.primary_query}/1/"))
-            tpb_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://thepiratebay.org/search.php?q={popup.primary_query}"))
-            tgx_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://torrentgalaxy.to/torrents.php?search={popup.primary_query}"))
-            ext_lbl.bind("<Button-1>", lambda e: webbrowser.open(f"https://ext.to/search/?q={popup.primary_query}"))
+
+            apibay_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://apibay.org/q.php?q={popup.primary_query}"
+                ),
+            )
+            eztv_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://eztv.re/search/{popup.primary_query}"
+                ),
+            )
+            sol_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://solidtorrents.to/search?q={popup.primary_query}"
+                ),
+            )
+            yts_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://yts.mx/browse-movies/{popup.primary_query}/all/all/0/latest/0/all"
+                ),
+            )
+            x1337_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://1337x.to/search/{popup.primary_query}/1/"
+                ),
+            )
+            tpb_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://thepiratebay.org/search.php?q={popup.primary_query}"
+                ),
+            )
+            tgx_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://torrentgalaxy.to/torrents.php?search={popup.primary_query}"
+                ),
+            )
+            ext_lbl.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(
+                    f"https://ext.to/search/?q={popup.primary_query}"
+                ),
+            )
 
             apibay_lbl.configure(text="APIBay", text_color="yellow")
             sol_lbl.configure(text="Solid", text_color="yellow")
@@ -3989,10 +4030,17 @@ class AirGrabber(ctk.CTk):
                                     is_match = False
                                     if str(t.get("season")) == str(popup.current_s):
                                         if popup.is_season_pack:
-                                            is_match = str(t.get("episode")) in ["0", "", "None"] or "complete" in t.get("title", "").lower()
+                                            is_match = (
+                                                str(t.get("episode"))
+                                                in ["0", "", "None"]
+                                                or "complete"
+                                                in t.get("title", "").lower()
+                                            )
                                         else:
-                                            is_match = str(t.get("episode")) == str(popup.current_e)
-                                    
+                                            is_match = str(t.get("episode")) == str(
+                                                popup.current_e
+                                            )
+
                                     if is_match:
                                         seeders = self._safe_int(t.get("seeds", 0))
                                         if seeders > 0:
@@ -4676,7 +4724,7 @@ class AirGrabber(ctk.CTk):
         file_path = filedialog.asksaveasfilename(
             defaultextension=".json",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
-            title="Export Shows and Settings"
+            title="Export Shows and Settings",
         )
         if not file_path:
             return
@@ -4684,7 +4732,7 @@ class AirGrabber(ctk.CTk):
         export_payload = {
             "settings": self.settings,
             "followed_shows": self.followed_shows,
-            "history": self.history
+            "history": self.history,
         }
 
         try:
@@ -4698,7 +4746,7 @@ class AirGrabber(ctk.CTk):
     def import_data(self, window=None):
         file_path = filedialog.askopenfilename(
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
-            title="Import Shows and Settings"
+            title="Import Shows and Settings",
         )
         if not file_path:
             return
@@ -4712,12 +4760,12 @@ class AirGrabber(ctk.CTk):
                     self.settings.update(imported_payload.get("settings", {}))
                     self.followed_shows = imported_payload.get("followed_shows", {})
                     self.history = imported_payload.get("history", [])
-                
+
                 self.save_settings()
                 self.save_data()
                 self.save_history()
                 self.mark_caches_dirty()
-                
+
                 self.ui_queue.put(self.refresh_library_list)
                 self.ui_queue.put(self.refresh_calendar_data)
                 self.start_background_library_sync()
@@ -4725,7 +4773,10 @@ class AirGrabber(ctk.CTk):
                 if window and window.winfo_exists():
                     window.destroy()
 
-                self._show_message("Import Successful", "Settings and tracked library have been restored.")
+                self._show_message(
+                    "Import Successful",
+                    "Settings and tracked library have been restored.",
+                )
             else:
                 self._show_message("Import Failed", "Invalid backup file format.")
         except Exception as e:
@@ -4817,17 +4868,27 @@ class AirGrabber(ctk.CTk):
 
         f_backup = ctk.CTkFrame(c, fg_color="transparent")
         f_backup.pack(fill="x", pady=(15, 8))
-        ctk.CTkLabel(f_backup, text="Backup & Restore:", text_color="#A4B2C6").pack(side="left")
-        
+        ctk.CTkLabel(f_backup, text="Backup & Restore:", text_color="#A4B2C6").pack(
+            side="left"
+        )
+
         btn_export = ctk.CTkButton(
-            f_backup, text="Export", width=80, fg_color="#F39C12", hover_color="#D68910",
-            command=self.export_data
+            f_backup,
+            text="Export",
+            width=80,
+            fg_color="#F39C12",
+            hover_color="#D68910",
+            command=self.export_data,
         )
         btn_export.pack(side="right", padx=(5, 0))
-        
+
         btn_import = ctk.CTkButton(
-            f_backup, text="Import", width=80, fg_color="#F39C12", hover_color="#D68910",
-            command=lambda: self.import_data(win)
+            f_backup,
+            text="Import",
+            width=80,
+            fg_color="#F39C12",
+            hover_color="#D68910",
+            command=lambda: self.import_data(win),
         )
         btn_import.pack(side="right")
 
