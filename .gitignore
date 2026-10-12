@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.update/
+.mypy_cache/
+# 1.x data files that live next to the scripts (settings.json holds API keys)
+/settings.json
+/followed_shows.json
+/posters_cache/

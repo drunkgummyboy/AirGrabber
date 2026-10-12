@@ -1,0 +1,449 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "backdrop_path": "/v50p9hearMiu6BlYfp4O7FACmXl.jpg",
+   "genre_ids": [
+    10765,
+    18
+   ],
+   "id": 213375,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "VisionQuest",
+   "overview": "With a bounty on his head, Vision must confront his nature and resist Ultron's influence to survive.",
+   "popularity": 43.9101,
+   "poster_path": "/WGyAyBPncfuu8MZhLY9RtfZPM0.jpg",
+   "first_air_date": "2026-10-14",
+   "softcore": false,
+   "name": "VisionQuest",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/DCSa6Fd3NN075JOqcJqO3VU6fM.jpg",
+   "genre_ids": [
+    80,
+    9648
+   ],
+   "id": 292741,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Nocturne",
+   "overview": "When a victim of notorious serial killer Jurek Walter unexpectedly turns up alive, detective Jonah Lynn races against time to find the one person still missing, while his protégé Saga Bauer goes undercover to get answers from the killer himself.",
+   "popularity": 16.214,
+   "poster_path": "/nyvXVcPnHEwVmqCdzjjCsu1jqhm.jpg",
+   "first_air_date": "2026-10-29",
+   "softcore": false,
+   "name": "Nocturne",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/uOlIq21Rx0Sl7y39b1znTfQYGb7.jpg",
+   "genre_ids": [
+    10765
+   ],
+   "id": 171802,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Blade Runner 2099",
+   "overview": "Fifty years after the events of Blade Runner 2049, Los Angeles has been reborn, just not by humanity. Cora, a fugitive in a final bid to stop running, takes on one last identity: a Blade Runner. Forced to partner with Olwen, a Replicant days from dying, she hunts down a runaway hiding a truth that could collapse their fragile city.",
+   "popularity": 13.6791,
+   "poster_path": "/piXH0UI5m0m1d0CCC5ExDabWeDt.jpg",
+   "first_air_date": "2026-11-25",
+   "softcore": false,
+   "name": "Blade Runner 2099",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/owhTL4n2r9ryfxyYlhHKt97ogVk.jpg",
+   "genre_ids": [
+    18,
+    10765
+   ],
+   "id": 314360,
+   "origin_country": [
+    "CA"
+   ],
+   "original_language": "en",
+   "original_name": "YAGA",
+   "overview": "While a private investigator probes the disappearance of the young heir to a powerful fishery, he finds himself at odds with an apprehensive local detective, a charismatic university professor with a taste for younger men, and a labyrinth of enigmatic suspects, secret lives, and ancient magic.",
+   "popularity": 10.7677,
+   "poster_path": "/kp8xgZ8SrikHQrPn2lC3hb50KD5.jpg",
+   "first_air_date": "2026-10-23",
+   "softcore": false,
+   "name": "YAGA",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/3qbNgNqMFrEEhIl43UKD9oxCkOw.jpg",
+   "genre_ids": [
+    9648,
+    18
+   ],
+   "id": 213562,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Crystal Lake",
+   "overview": "Single mother Pam Voorhees has been unable to shake her grief after her young, sickly son Jason tragically drowned in the town lake almost a year before. When two strangers arrive at Pam's door digging into her past, a disturbing chain of events is set into motion, leaving the townspeople of Crystal Lake wondering: just who is Pam Voorhees?",
+   "popularity": 14.1373,
+   "poster_path": "/3ENhExiD2fcjk5FX0AcAXcvLu9N.jpg",
+   "first_air_date": "2026-10-15",
+   "softcore": false,
+   "name": "Crystal Lake",
+   "vote_average": 10.0,
+   "vote_count": 1
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/g0VmjKGMyipJSlPwlQvlLBvXTAQ.jpg",
+   "genre_ids": [
+    10765,
+    10759,
+    10751
+   ],
+   "id": 224377,
+   "origin_country": [
+    "GB",
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Harry Potter",
+   "overview": "There is nothing special about Harry Potter - at least that's what his Aunt Petunia always says. On his 11th birthday, a letter of admittance to Hogwarts School of Witchcraft and Wizardry opens up a hidden world for Harry: one of fun, friendship and magic. But with this new adventure comes great risk as Harry is forced to face a dangerous enemy from his past.",
+   "popularity": 12.4177,
+   "poster_path": "/SJCnXVBJZh7X7ePLt6XMp6TZAj.jpg",
+   "first_air_date": "2026-12-25",
+   "softcore": false,
+   "name": "Harry Potter",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "genre_ids": [
+    18,
+    80
+   ],
+   "id": 270596,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "The Murder of JonBenét Ramsey",
+   "overview": "The series centers on one of the most infamous unsolved murder cases in American history, and the devastating personal and public reckoning that followed the death of JonBenet Ramsey on Christmas night in 1996.",
+   "popularity": 6.8737,
+   "poster_path": null,
+   "first_air_date": "2026-12-10",
+   "softcore": false,
+   "name": "The Murder of JonBenét Ramsey",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/5Pta3QyeGKTMHjBFxJmzIWX4yoc.jpg",
+   "genre_ids": [
+    18
+   ],
+   "id": 308007,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "The Altruists",
+   "overview": "The story of Sam Bankman-Fried and Caroline Ellison, two hyper-smart, ambitious young idealists who tried to remake the global financial system in the blink of an eye - before they were accused of stealing $8 billion and became Gen Z's own Bonnie & Clyde.",
+   "popularity": 5.8159,
+   "poster_path": null,
+   "first_air_date": "2026-11-19",
+   "softcore": false,
+   "name": "The Altruists",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/hdp5nhOXYd2OmO62a2hZgADEfsK.jpg",
+   "genre_ids": [
+    99
+   ],
+   "id": 306179,
+   "origin_country": [
+    "GB"
+   ],
+   "original_language": "en",
+   "original_name": "Awkwafina: The Unlikely Cook",
+   "overview": "Hollywood actor and comedian Nora Lum (a.k.a. Awkwafina) is the descendant of restaurant royalty...but she can't cook. Join the star on an inspiring culinary road trip as she learns the craft and attempts to revive her family's beloved Chinese eatery.",
+   "popularity": 5.7462,
+   "poster_path": "/nToXQbpoLsotbo0bspL7mTnRmMx.jpg",
+   "first_air_date": "2026-11-06",
+   "softcore": false,
+   "name": "Awkwafina: The Unlikely Cook",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/vqfjeMy0QTwRLmw4mbMOfyk1WjK.jpg",
+   "genre_ids": [
+    18
+   ],
+   "id": 258989,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "The Greatest",
+   "overview": "An intimate exploration of the incomparable life of Muhammad Ali. The amazing victories and defeats that made Ali a legend, both in and out of the ring, have been well documented and while those landmark events will live in The Greatest, the heartbeat of the story is fueled by all the moments that took place outside of the spotlight. The world remembers an icon, but The Greatest is about a man, a husband, a father, a brother, and a son.",
+   "popularity": 4.5672,
+   "poster_path": "/y5pF7XCRpptZr3NMtCs5dAVdETQ.jpg",
+   "first_air_date": "2026-11-04",
+   "softcore": false,
+   "name": "The Greatest",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/eVyHdSC53TJhwPxhpG1P8mtsKqY.jpg",
+   "genre_ids": [
+    18
+   ],
+   "id": 288672,
+   "origin_country": [
+    "GB"
+   ],
+   "original_language": "en",
+   "original_name": "Pride and Prejudice",
+   "overview": "Elizabeth Bennet is an unmarried woman and the second of five daughters of Mr. and Mrs. Bennet from Hertfordshire, near London. The Bennet home can only be inherited by males in the family, so the pressure is on for the daughters to marry well or risk losing everything. While out in society, Elizabeth interacts with single men like Mr. Darcy, an outwardly curmudgeon who is misunderstood.",
+   "popularity": 5.4252,
+   "poster_path": "/z9OPgJORgUOPhjMfAT3OOVDKhmW.jpg",
+   "first_air_date": "2026-12-03",
+   "softcore": false,
+   "name": "Pride and Prejudice",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/2wjP481Z3G6NlXoUFutN5vcnqzC.jpg",
+   "genre_ids": [
+    35,
+    18,
+    10751
+   ],
+   "id": 286183,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Hollywood Arts",
+   "overview": "Struggling actress Trina Vega returns to her former high school, Hollywood Arts, as an unqualified substitute teacher, quickly finding herself both clashing with and unexpectedly inspiring a new generation of ambitious and talented students as they learn to find their true path at Hollywood's most elite performing arts school.",
+   "popularity": 4.9904,
+   "poster_path": "/pJsrA4On2ITOk1rBq9PiaRzU2Q0.jpg",
+   "first_air_date": "2026-10-15",
+   "softcore": false,
+   "name": "Hollywood Arts",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/AdFlgN6pKI6C481z2KshrQL204w.jpg",
+   "genre_ids": [
+    35,
+    18,
+    9648
+   ],
+   "id": 275139,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Phony",
+   "overview": "After waking up from a freak car accident, Sonny discovers that his mother has been replaced by an impostor.",
+   "popularity": 5.5416,
+   "poster_path": "/iCyQc8cSSHkxUHbkvzbC77owALt.jpg",
+   "first_air_date": "2026-10-20",
+   "softcore": false,
+   "name": "Phony",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/2L7YJPKTOdyNrY7sqOl6ouFKRGp.jpg",
+   "genre_ids": [
+    10759,
+    80,
+    18
+   ],
+   "id": 254630,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "12 12 12",
+   "overview": "A heist takes 12 months to plan, 12 hours to execute—and a thief not caught within 12 days won't be caught at all. Across three pulse-pounding timelines, an FBI agent and a career criminal face off in a deadly game of cat and mouse through Europe.",
+   "popularity": 5.3562,
+   "poster_path": "/bG4h6C6wRKmf3ryz8gdN6imXW4c.jpg",
+   "first_air_date": "2026-11-12",
+   "softcore": false,
+   "name": "12 12 12",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/2cCTiVmwziEEenFFm4nVEN0zKDi.jpg",
+   "genre_ids": [
+    18
+   ],
+   "id": 289729,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Unaccustomed Earth",
+   "overview": "When a health crisis forces a devoted mother and her family to return to the US, she confronts buried desires that upend her Indian American community.",
+   "popularity": 4.3279,
+   "poster_path": "/woKoBzADQDl6roxcCERAnGLgYf9.jpg",
+   "first_air_date": "2026-12-17",
+   "softcore": false,
+   "name": "Unaccustomed Earth",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/gpp6NcgfSrxKDivWskRxLp9UadU.jpg",
+   "genre_ids": [
+    16,
+    37,
+    10765
+   ],
+   "id": 314271,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Bass X Machina",
+   "overview": "In a lawless Steampunk West overrun by brutal outlaws, machines, and supernatural terrors, a father is forced to become judge, jury, and executioner—knowing that every act of justice meant to protect his family may ultimately cost him the very people he's fighting to save.",
+   "popularity": 3.9322,
+   "poster_path": "/y9c1AwrldWRsY9edSf21cOgbI0h.jpg",
+   "first_air_date": "2026-11-03",
+   "softcore": false,
+   "name": "Bass X Machina",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/dUrmhlX3Ol4TuigGcoeiudQBlJh.jpg",
+   "genre_ids": [
+    18,
+    9648
+   ],
+   "id": 249565,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "The Good Daughter",
+   "overview": "Sisters Charlotte and Samantha Quinn have spent the last twenty-eight years trying to piece together the lives that were fractured by a single night of violence. When another attack splinters the small town of Pikeville, Charlotte is the first witness on the scene. Now a lawyer like her father, she’s forced to confront her own demons as the case twists through one shocking revelation after another. In the end, both she and Samantha find themselves wondering if the price of being the good daughter was worth it after all.",
+   "popularity": 4.1829,
+   "poster_path": "/1LMcI1OV9GtWpszBkj4uFZQcSZ6.jpg",
+   "first_air_date": "2026-11-12",
+   "softcore": false,
+   "name": "The Good Daughter",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/sEPjJNBXbHVVYpLFfdyqnj1MjSr.jpg",
+   "genre_ids": [
+    10764,
+    10767,
+    10751,
+    35
+   ],
+   "id": 317945,
+   "origin_country": [
+    "TH"
+   ],
+   "original_language": "en",
+   "original_name": "Te tata'uraa himene no Eurovision no Asia",
+   "overview": "The world's most iconic music competition is coming to Asia, and it's about to get louder, bolder and bigger than ever.\n\nFrom national selection shows across Asia to a live Grand Final in Bangkok, packed with lights, sound and unstoppable energy — this is where the region comes together.",
+   "popularity": 5.0379,
+   "poster_path": "/hr3UFPjDSwJoq5yPJpUmiCRod15.jpg",
+   "first_air_date": "2026-11-14",
+   "softcore": false,
+   "name": "Eurovision Song Contest Asia",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/8onvZbxTmP3XpuzKfLsBSm3WXMg.jpg",
+   "genre_ids": [
+    35
+   ],
+   "id": 290826,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Dig",
+   "overview": "Follow four women who work at an archeological dig in Greece. When the team uncovers a long-buried secret with the potential to rewrite history, they find themselves at the center of a high-stakes international conspiracy.",
+   "popularity": 4.038,
+   "poster_path": "/okLAVH9jJhUxwmQ2Zn2x2BXf9r.jpg",
+   "first_air_date": "2026-11-23",
+   "softcore": false,
+   "name": "Dig",
+   "vote_average": 0.0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/grJW6zaL7QGFrZXciJH6xgJQFQE.jpg",
+   "genre_ids": [
+    18,
+    80,
+    10759
+   ],
+   "id": 303001,
+   "origin_country": [
+    "ZA"
+   ],
+   "original_language": "en",
+   "original_name": "Invisible",
+   "overview": "When London-based media and publicity consultant Emma le Roux receives a desperate call from her brother—who had vanished decades earlier—she returns to South Africa and is drawn into a deadly conspiracy involving poaching, political corruption, and the mysterious death of Mozambican presidential candidate Armando Catano. Together with bodyguard Martin Dekker and police detective Colonel Jack Phatudi, Emma begins to unravel a web of power, violence, and mystery in the Lowveld—secrets that have remained buried for more than twenty years.",
+   "popularity": 3.6272,
+   "poster_path": "/a6ysCyijHMaWBKH37uQFcUHy0LZ.jpg",
+   "first_air_date": "2026-10-14",
+   "softcore": false,
+   "name": "Invisible",
+   "vote_average": 0.0,
+   "vote_count": 0
+  }
+ ],
+ "total_pages": 6,
+ "total_results": 105
+}

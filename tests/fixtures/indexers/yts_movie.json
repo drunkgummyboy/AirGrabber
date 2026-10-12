@@ -1,0 +1,102 @@
+{
+ "status": "ok",
+ "status_message": "Query was successful. NOTICE: Base URL moving to https://movies-api.accel.li/api/v2/",
+ "data": {
+  "movie_count": 1,
+  "limit": 20,
+  "page_number": 1,
+  "movies": [
+   {
+    "id": 3709,
+    "url": "https://yts.gg/movies/the-shawshank-redemption-1994",
+    "imdb_code": "tt0111161",
+    "title": "The Shawshank Redemption",
+    "title_english": "The Shawshank Redemption",
+    "title_long": "The Shawshank Redemption (1994)",
+    "slug": "the-shawshank-redemption-1994",
+    "year": 1994,
+    "rating": 9.3,
+    "runtime": 142,
+    "genres": [
+     "Action",
+     "Crime",
+     "Drama"
+    ],
+    "summary": "After a banker is sentenced to life in Shawshank Prison, he forms an unlikely friendship with a seasoned inmate and clings to hope amid cruelty and corruption.",
+    "description_full": "After a banker is sentenced to life in Shawshank Prison, he forms an unlikely friendship with a seasoned inmate and clings to hope amid cruelty and corruption.",
+    "synopsis": "After a banker is sentenced to life in Shawshank Prison, he forms an unlikely friendship with a seasoned inmate and clings to hope amid cruelty and corruption.",
+    "yt_trailer_code": "PLl99DlL6b4",
+    "language": "en",
+    "mpa_rating": "TV-14",
+    "background_image": "https://yts.gg/assets/images/movies/The_Shawshank_Redemption_1994/background.jpg",
+    "background_image_original": "https://yts.gg/assets/images/movies/The_Shawshank_Redemption_1994/background.jpg",
+    "small_cover_image": "https://yts.gg/assets/images/movies/The_Shawshank_Redemption_1994/small-cover.jpg",
+    "medium_cover_image": "https://yts.gg/assets/images/movies/The_Shawshank_Redemption_1994/medium-cover.jpg",
+    "large_cover_image": "https://yts.gg/assets/images/movies/The_Shawshank_Redemption_1994/large-cover.jpg",
+    "state": "ok",
+    "torrents": [
+     {
+      "url": "https://yts.gg/torrent/download/AC418DB33FA5CEA4FAB11BC58008FE08F291C9BE",
+      "hash": "AC418DB33FA5CEA4FAB11BC58008FE08F291C9BE",
+      "quality": "720p",
+      "type": "bluray",
+      "is_repack": "0",
+      "video_codec": "x264",
+      "bit_depth": "8",
+      "audio_channels": "2.0",
+      "seeds": 100,
+      "peers": 43,
+      "size": "848.96 MB",
+      "size_bytes": 890199081,
+      "date_uploaded": "2015-11-01 03:20:23",
+      "date_uploaded_unix": 1446344423
+     },
+     {
+      "url": "https://yts.gg/torrent/download/E0D00667650ABA9EE05AACBBBD8B55EA8A51F534",
+      "hash": "E0D00667650ABA9EE05AACBBBD8B55EA8A51F534",
+      "quality": "1080p",
+      "type": "bluray",
+      "is_repack": "0",
+      "video_codec": "x264",
+      "bit_depth": "8",
+      "audio_channels": "2.0",
+      "seeds": 100,
+      "peers": 100,
+      "size": "1.60 GB",
+      "size_bytes": 1717986918,
+      "date_uploaded": "2015-11-01 03:20:25",
+      "date_uploaded_unix": 1446344425
+     },
+     {
+      "url": "https://yts.gg/torrent/download/C3DA9A3DC2CE14D0D4FC0E87D1B2023502F8DCD6",
+      "hash": "C3DA9A3DC2CE14D0D4FC0E87D1B2023502F8DCD6",
+      "quality": "2160p",
+      "type": "bluray",
+      "is_repack": "",
+      "video_codec": "x265",
+      "bit_depth": "10",
+      "audio_channels": "5.1",
+      "seeds": 100,
+      "peers": 100,
+      "size": "6.91 GB",
+      "size_bytes": 7419556004,
+      "date_uploaded": "2021-09-16 20:45:52",
+      "date_uploaded_unix": 1631817952
+     }
+    ],
+    "date_uploaded": "2015-11-01 03:20:23",
+    "date_uploaded_unix": 1446344423
+   }
+  ]
+ },
+ "@meta": {
+  "migration": {
+   "message": "API base is moving; update your client.",
+   "old_base": "https://yts.gg/api/v2/",
+   "new_base": "https://movies-api.accel.li/api/v2/",
+   "sunset": "2026-04-10T00:00:00Z"
+  },
+  "api_version": 2,
+  "execution_time": "0 ms"
+ }
+}

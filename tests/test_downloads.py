@@ -1,0 +1,391 @@
+"""DownloadService against a temp SQLite file, a temp watch folder and httpx.MockTransport."""
+
+from __future__ import annotations
+
+import asyncio
+import gzip
+import logging
+import tempfile
+import unittest
+from collections import Counter
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+import httpx
+from pydantic import ValidationError
+
+from app.config import AppPaths
+from app.database import Database
+from app.models import (
+    DownloadRecord,
+    GrabOutcome,
+    GrabTarget,
+    MediaType,
+    Settings,
+    TorrentRelease,
+)
+from app.services import Services
+from app.services.downloads import DownloadService, GrabError, safe_filename
+from app.services.settings import SettingsService
+from app.services.synology import DownloadStationClient, DownloadStationError
+
+HASH = "0123456789abcdef0123456789abcdef01234567"
+OTHER_HASH = "89abcdef0123456789abcdef0123456789abcdef"
+API_KEY = "PROWLARRKEY42"
+DIRECT_URL = f"https://prowlarr.local/api/v1/indexer/3/download?apikey={API_KEY}&file=x"
+ITORRENTS = f"https://itorrents.org/torrent/{HASH.upper()}.torrent"
+EPISODE = GrabTarget(media_type=MediaType.TV, media_id=42846, season=1, episode=2)
+
+
+def torrent_bytes(name: str = "Some.Show.S01E02") -> bytes:
+    encoded = name.encode()
+    return (
+        b"d8:announce30:udp://tracker.example.org:1337"
+        b"4:infod6:lengthi1048576e4:name" + str(len(encoded)).encode() + b":" + encoded
+        + b"12:piece lengthi262144e6:pieces20:" + b"\x01" * 20 + b"ee"
+    )
+
+
+TORRENT = torrent_bytes()
+CACHED = torrent_bytes("cached copy")
+
+
+def release(**changes: Any) -> TorrentRelease:
+    values: dict[str, Any] = {
+        "title": "Some.Show.S01E02.1080p.WEB.h264-GRP",
+        "source": "prowlarr",
+        "size_bytes": 1_500_000_000,
+        "info_hash": HASH,
+    }
+    values.update(changes)
+    return TorrentRelease(**values)
+
+
+class FakeWeb:
+    """Serves `routes` (URL → response factory); anything else is a 404. Counts requests."""
+
+    def __init__(self) -> None:
+        self.routes: dict[str, Any] = {}
+        self.requests: Counter[str] = Counter()
+        self.user_agents: list[str] = []
+        self.gate: asyncio.Event | None = None
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        self.requests[url] += 1
+        self.user_agents.append(request.headers.get("User-Agent", ""))
+        if self.gate is not None:
+            await self.gate.wait()
+        factory = self.routes.get(url)
+        if factory is None:
+            return httpx.Response(404, text="<html>Not found</html>")
+        response: httpx.Response = factory()
+        return response
+
+
+class DownloadTestCase(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.watch = root / "nas" / "watch"  # created on the first grab
+        self.db = await Database.open(root / "test.db")
+        self.addAsyncCleanup(self.db.close)
+        self.settings = SettingsService(self.db.settings, Settings(download_dir=self.watch))
+        self.web = FakeWeb()
+        self.http = httpx.AsyncClient(transport=httpx.MockTransport(self.web))
+        self.addAsyncCleanup(self.http.aclose)
+        self.station = mock.create_autospec(DownloadStationClient, instance=True)
+        self.station.configured = False
+        self.service = DownloadService(self.http, self.db.history, self.settings, self.station)
+        self.notifications = 0
+        self.service.subscribe(self.on_grab)
+
+    def on_grab(self) -> None:
+        self.notifications += 1
+
+    def serve(
+        self, url: str, content: bytes, status: int = 200, headers: dict[str, str] | None = None
+    ) -> None:
+        self.web.routes[url] = lambda: httpx.Response(status, content=content, headers=headers)
+
+    def watch_files(self) -> list[str]:
+        return sorted(path.name for path in self.watch.iterdir()) if self.watch.exists() else []
+
+    async def history(self) -> list[DownloadRecord]:
+        return await self.db.history.recent()
+
+
+class TorrentFileTests(DownloadTestCase):
+    async def test_direct_link_torrent_is_saved(self) -> None:
+        self.serve(DIRECT_URL, TORRENT)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+        expected = self.watch / "Some.Show.S01E02.1080p.WEB.h264-GRP.torrent"
+        self.assertEqual(result.path, str(expected))
+        self.assertEqual(expected.read_bytes(), TORRENT)
+        self.assertEqual(self.watch_files(), [expected.name])  # no temp file left behind
+        self.assertEqual(self.web.requests[ITORRENTS], 0)
+        self.assertIn("Mozilla/5.0", self.web.user_agents[0])
+        self.assertIn(expected.name, result.message)
+        self.station.add_magnet.assert_not_called()
+
+    async def test_html_instead_of_a_torrent_falls_back_to_itorrents(self) -> None:
+        self.serve(DIRECT_URL, b"<!DOCTYPE html><html>Login required</html>")
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+        self.assertEqual(Path(result.path or "").read_bytes(), CACHED)
+        self.assertEqual(self.web.requests[ITORRENTS], 1)
+
+    async def test_failing_direct_link_falls_back_to_itorrents(self) -> None:
+        self.serve(DIRECT_URL, b"", status=500)
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(Path(result.path or "").read_bytes(), CACHED)
+
+    async def test_itorrents_by_uppercase_hash(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+        self.assertEqual(list(self.web.requests), [ITORRENTS])
+
+    async def test_gzipped_cache_reply_is_unpacked(self) -> None:
+        self.serve(ITORRENTS, gzip.compress(CACHED))
+        result = await self.service.grab(release(), EPISODE)
+        self.assertEqual(Path(result.path or "").read_bytes(), CACHED)
+
+    async def test_oversized_reply_is_rejected(self) -> None:
+        self.serve(DIRECT_URL, TORRENT, headers={"Content-Length": str(11 * 1024 * 1024)})
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(Path(result.path or "").read_bytes(), CACHED)
+
+    async def test_redirect_to_a_magnet_supplies_the_hash(self) -> None:
+        magnet = f"magnet:?xt=urn:btih:{HASH}&dn=x"
+        self.web.routes[DIRECT_URL] = lambda: httpx.Response(302, headers={"Location": magnet})
+        self.serve(ITORRENTS, CACHED)
+        hashless = release(info_hash=None, download_url=DIRECT_URL)
+        result = await self.service.grab(hashless, EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+        self.assertEqual((await self.history())[0].info_hash, HASH)
+
+    async def test_http_redirects_are_followed(self) -> None:
+        mirror = "https://mirror.example/file.torrent"
+        self.web.routes[DIRECT_URL] = lambda: httpx.Response(301, headers={"Location": mirror})
+        self.serve(mirror, TORRENT)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(Path(result.path or "").read_bytes(), TORRENT)
+
+    async def test_the_direct_link_never_reaches_the_logs(self) -> None:
+        self.serve(DIRECT_URL, b"<html></html>")
+        with self.assertLogs(level=logging.DEBUG) as logs:
+            with self.assertRaises(GrabError) as caught:
+                await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        # httpx's own request log is kept at WARNING by app.config, as for the TMDB key.
+        own = "\n".join(line for line in logs.output if ":httpx:" not in line)
+        self.assertIn("No .torrent file from prowlarr", own)
+        self.assertNotIn(API_KEY, own)
+        self.assertNotIn("prowlarr.local", own)
+        self.assertNotIn(API_KEY, str(caught.exception))
+
+
+class DownloadStationFallbackTests(DownloadTestCase):
+    async def test_nothing_cached_sends_the_magnet(self) -> None:
+        self.station.configured = True
+        item = release()
+        result = await self.service.grab(item, EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SENT)
+        self.assertIsNone(result.path)
+        self.station.add_magnet.assert_awaited_once_with(item.magnet)
+        self.assertEqual(self.watch_files(), [])
+        record = (await self.history())[0]
+        self.assertEqual(record.saved_path, "Download Station")
+        self.assertEqual(self.notifications, 1)
+
+    async def test_release_magnet_uri_is_sent_as_is(self) -> None:
+        self.station.configured = True
+        magnet = f"magnet:?xt=urn:btih:{HASH}&dn=Original&tr=udp://tracker"
+        await self.service.grab(release(info_hash=None, magnet_uri=magnet), EPISODE)
+        self.station.add_magnet.assert_awaited_once_with(magnet)
+
+    async def test_nothing_cached_and_no_download_station(self) -> None:
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(), EPISODE)
+        self.assertEqual(
+            str(caught.exception),
+            "No .torrent file is available for this release and Download Station isn't set up "
+            "in Settings.",
+        )
+        self.assertEqual(await self.history(), [])
+        self.assertEqual(self.notifications, 0)
+        self.station.add_magnet.assert_not_called()
+
+    async def test_no_magnet_to_send(self) -> None:
+        self.station.configured = True
+        self.serve(DIRECT_URL, b"<html></html>")
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(info_hash=None, download_url=DIRECT_URL), EPISODE)
+        self.assertIn("no magnet link", str(caught.exception))
+        self.station.add_magnet.assert_not_called()
+
+    async def test_download_station_errors_propagate_and_record_nothing(self) -> None:
+        self.station.configured = True
+        self.station.add_magnet.side_effect = DownloadStationError("DSM rejected the password.")
+        with self.assertRaises(DownloadStationError):
+            await self.service.grab(release(), EPISODE)
+        self.assertEqual(await self.history(), [])
+        self.assertEqual(self.notifications, 0)
+
+    async def test_cancellation_propagates(self) -> None:
+        self.web.gate = asyncio.Event()
+        task = asyncio.create_task(self.service.grab(release(), EPISODE))
+        while not self.web.requests:
+            await asyncio.sleep(0.001)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(self.watch_files(), [])
+
+
+class FileNameTests(DownloadTestCase):
+    def test_safe_filename(self) -> None:
+        cases = {
+            'Bad: Name/With*Chars? "Quoted" <x>|y\\z': "Bad NameWithChars Quoted xyz",
+            "Tabs\tand\nnew\x00lines   collapse": "Tabs and new lines collapse",
+            "  ..Leading and trailing..  ": "Leading and trailing",
+            '<>:"/\\|?*': "torrent",
+            "": "torrent",
+            "CON": "_CON",
+            "nul.S01E01": "_nul.S01E01",
+            "Consortium.S01": "Consortium.S01",
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                self.assertEqual(safe_filename(title), expected)
+
+    def test_long_titles_are_cut_to_120_characters(self) -> None:
+        name = safe_filename("A" * 100 + " " + "B" * 100)
+        self.assertEqual(len(name), 120)
+        self.assertEqual(safe_filename("A" * 119 + " B"), "A" * 119)  # no trailing space
+
+    async def test_collisions_get_a_number(self) -> None:
+        self.watch.mkdir(parents=True)
+        (self.watch / "Same Title.torrent").write_bytes(b"existing")
+        other = f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent"
+        self.serve(ITORRENTS, CACHED)
+        self.serve(other, TORRENT)
+        first = await self.service.grab(release(title="Same Title"), EPISODE)
+        renamed = release(title="Same: Title", info_hash=OTHER_HASH)  # same name once cleaned
+        second = await self.service.grab(renamed, EPISODE)
+        self.assertEqual(Path(first.path or "").name, "Same Title (2).torrent")
+        self.assertEqual(Path(second.path or "").name, "Same Title (3).torrent")
+        self.assertEqual((self.watch / "Same Title.torrent").read_bytes(), b"existing")
+
+    async def test_unwritable_folder(self) -> None:
+        blocker = Path(self.tmp.name) / "not-a-folder"
+        blocker.write_text("a file where the folder should be")
+        await self.settings.update(download_dir=blocker)
+        self.serve(ITORRENTS, CACHED)
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(), EPISODE)
+        self.assertIn(f"Can't write to the download folder {blocker}", str(caught.exception))
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(await self.history(), [])
+        self.assertEqual(self.notifications, 0)
+
+
+class HistoryTests(DownloadTestCase):
+    async def test_episode_grab_is_recorded(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(), EPISODE)
+        [record] = await self.history()
+        self.assertEqual(
+            (record.media_type, record.media_id, record.season, record.episode),
+            (MediaType.TV, 42846, 1, 2),
+        )
+        self.assertEqual(record.release_title, "Some.Show.S01E02.1080p.WEB.h264-GRP")
+        self.assertEqual(record.info_hash, HASH)
+        self.assertEqual(record.source, "prowlarr")
+        self.assertEqual(record.size_bytes, 1_500_000_000)
+        self.assertEqual(record.saved_path, result.path)
+        self.assertEqual(self.notifications, 1)
+        self.assertTrue(await self.db.history.has_episode(42846, 1, 2))
+
+    async def test_season_pack_records_no_episode(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        pack = GrabTarget(media_type=MediaType.TV, media_id=42846, season=3)
+        await self.service.grab(release(title="Some.Show.S03.1080p"), pack)
+        [record] = await self.history()
+        self.assertEqual((record.season, record.episode), (3, None))
+        self.assertTrue(await self.db.history.has_episode(42846, 3, 7))
+        self.assertEqual(self.notifications, 1)
+
+    async def test_movie_grab(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        movie = GrabTarget(media_type=MediaType.MOVIE, media_id=557)
+        await self.service.grab(release(title="Spider-Man.2002.1080p", size_bytes=0), movie)
+        [record] = await self.history()
+        self.assertEqual(
+            (record.media_type, record.media_id, record.season), (MediaType.MOVIE, 557, None)
+        )
+        self.assertIsNone(record.size_bytes)  # 0 = unknown
+        self.assertTrue(await self.db.history.has_movie(557))
+
+    async def test_grabbed_hashes(self) -> None:
+        self.assertEqual(await self.service.grabbed_hashes(), frozenset())
+        self.serve(ITORRENTS, CACHED)
+        self.serve(f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent", TORRENT)
+        await self.service.grab(release(), EPISODE)
+        await self.service.grab(release(title="Other", info_hash=OTHER_HASH), EPISODE)
+        self.assertEqual(await self.service.grabbed_hashes(), {HASH, OTHER_HASH})
+
+    async def test_failing_listener_is_logged_and_unsubscribe_works(self) -> None:
+        def broken() -> None:
+            raise RuntimeError("boom")
+
+        unsubscribe = self.service.subscribe(broken)
+        self.serve(ITORRENTS, CACHED)
+        with self.assertLogs("app.services.downloads", "ERROR"):
+            await self.service.grab(release(), EPISODE)
+        self.assertEqual(self.notifications, 1)
+        unsubscribe()
+        unsubscribe()
+        await self.service.grab(release(title="Again"), EPISODE)
+        self.assertEqual(self.notifications, 2)
+
+    async def test_history_failure_does_not_fail_the_grab(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        with (
+            mock.patch.object(self.db.history, "add", side_effect=RuntimeError("disk full")),
+            self.assertLogs("app.services.downloads", "ERROR"),
+        ):
+            result = await self.service.grab(release(), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+
+    def test_tv_targets_need_a_season(self) -> None:
+        with self.assertRaises(ValidationError):
+            GrabTarget(media_type=MediaType.TV, media_id=1)
+        with self.assertRaises(ValidationError):
+            GrabTarget(media_type=MediaType.MOVIE, media_id=1, episode=3)
+
+
+class WiringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_services_expose_downloads_and_the_station(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        asyncio.get_running_loop().slow_callback_duration = 1.0  # real CA bundle load
+        services = await Services.create(AppPaths(Path(tmp.name)))
+        try:
+            self.assertIsInstance(services.downloads, DownloadService)
+            self.assertIsInstance(services.station, DownloadStationClient)
+            self.assertIs(services.downloads._station, services.station)
+            self.assertIs(services.downloads._http, services._http)
+            self.assertFalse(services.station.configured)
+        finally:
+            await services.aclose()
+
+
+if __name__ == "__main__":
+    unittest.main()

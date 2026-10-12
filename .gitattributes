@@ -1,0 +1,2 @@
+# Store text files with LF line endings; binaries (png, ico, exe) are detected and left alone.
+* text=auto

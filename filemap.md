@@ -1,0 +1,45 @@
+# File map
+
+- `main.py` — entry point: logging, package check, Services, MainWindow, async Tk loop, shutdown, restart after an update
+- `install.ps1` — one-command Windows installer (Python via winget/python.org, app into %LOCALAPPDATA%\Programs\AirGrabber, shortcuts)
+- `README.md` — GitHub front page: install / update / uninstall
+- `app/bootstrap.py` — launch-time requirements check: pip-installs missing/outdated packages with a plain-tkinter progress window (stdlib only)
+- `app/__init__.py` — APP_NAME, __version__
+- `app/config.py` — AppPaths (data dir, db, posters, logs), logging setup
+- `app/database.py` — schema + migrations (append-only), Database (locked shared connection), LibraryRepository, HistoryRepository, SettingsRepository; all SQL
+- `app/models/domain.py` — Show, Episode, LibraryEntry, LibraryStats, CalendarEntry, Movie, SearchKind, SearchRequest, TorrentRelease, DownloadRecord
+- `app/models/settings.py` — Settings model, QualityProfile, Weekday
+- `app/models/tvmaze.py` — TVMaze wire schemas → domain models
+- `app/models/tmdb.py` — TMDB wire schemas → domain models (release-date/certification extraction)
+- `app/models/types.py` — shared annotated field types, strip_html
+- `app/services/__init__.py` — Services composition root (create/aclose)
+- `app/services/library.py` — LibraryService: track/search/import, incremental + periodic sync, calendar suggestions (cached TVMaze schedule), change listeners; calendar_range()
+- `app/services/tvmaze.py` — TVMazeClient (async, rate-limit aware retries), TVMazeError/TVMazeNotFound
+- `app/services/images.py` — ImageCache: memory LRU of resized posters over a disk cache; deduped downloads
+- `app/services/tmdb.py` — TMDBClient (v3 key or v4 token, retries, key never in logs/errors), TMDB* errors
+- `app/services/discovery.py` — DiscoveryService: TV/movie dashboards (30 min cache), details (24 h), TMDB→TVMaze tracking
+- `app/services/settings.py` — SettingsService (in-memory current settings, validated updates, listeners)
+- `app/services/updates.py` — UpdateService: version check against GitHub, download + swap APP_ENTRIES with rollback; never in a dev copy
+- `app/services/downloads.py` — DownloadService.grab(): .torrent → watch folder (direct link, then itorrents), else magnet → Download Station; history + listeners
+- `app/services/search.py` — TorrentSearchService: request builders, concurrent indexer search streaming SearchUpdates (per-indexer status, timeout, cancellation); pure build_queries / is_relevant / passes_settings / is_preferred / merge / quality helpers
+- `app/services/synology.py` — DownloadStationClient (DSM Web API discovery, POST login, DS2/DS task create, logout), DownloadStationError
+- `app/indexers/` — torrent indexers (Strategy pattern): base (BaseIndexer contract, IndexerError, shared GET-JSON/retry helper, USER_AGENT), apibay, eztv (by IMDb id, paged), bitsearch, yts (MOVIE only, base-URL fallback), prowlarr (X-Api-Key, `test()`); `default_indexers()` builds all five
+- `app/ui/main_window.py` — root window: header (mode switch, logo, search, settings), pages, status bar (update badge), update + restart
+- `app/ui/settings_dialog.py` — preferences dialog (General / Indexers / Download Station; app version + update button)
+- `app/ui/tasks.py` — spawn / async_command / cancel_all
+- `app/ui/theme.py` — colours and fonts
+- `app/ui/branding.py` — bundled logo (`load_logo`) and window icon (`set_window_icon`, call in every window's __init__)
+- `app/assets/` — logo.png and multi-size airgrabber.ico (shipped with the app, so updates bring new artwork)
+- `app/ui/widgets.py` — reusable widgets: MessagePanel, FlexGrid (responsive grid), PosterImage (async poster), LoadingBar, show_info()
+- `app/ui/cards.py` — ShowCard (Tracked grid / search results)
+- `app/ui/calendar_cards.py` — calendar cards: EpisodeCard (poster), CompactEpisodeCard, SuggestionCard
+- `app/ui/search.py` — SearchSuggestions (header dropdown) and SearchResultsWindow
+- `app/ui/indexer_dialog.py` — IndexerDialog ("Advanced Indexer Interrogation"): torrent search for an episode / season pack / film, ttk results table, grabs; TvTarget / MovieTarget
+- `app/ui/media_cards.py` — MovieCard, DiscoverShowCard (lazy TMDB details), shared ⓘ IMDb icon
+- `app/ui/text_fit.py` — width-aware text fitting: elide_to_width, fit_to_lines, title_lines
+- `app/ui/import_dialog.py` — ImportShowsDialog (paste names / TVMaze ids)
+- `app/ui/views/` — one module per page: base (BaseView, StatusReporter), calendar (grid + layout helpers), tracked (grid, import, cleanup), shelves (ShelvesView base for TMDB pages), discover (TV shelves), movie (movie shelves)
+- `tools/import_legacy.py` — one-shot import of 1.x JSON files
+- `tools/sync_repo.py` — copy the publishable files into the git clone before a release
+- `tests/` — unittest suites; `tests/fixtures/` holds recorded API payloads
+- `airgrabber.py`, `*.json` at root — legacy 1.x app and its data (read-only reference)

@@ -1,0 +1,418 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "backdrop_path": "/4tjxYg2AbOzzG9G1YuiT2NzYhlH.jpg",
+   "genre_ids": [
+    878,
+    28,
+    12
+   ],
+   "id": 969681,
+   "title": "Spider-Man: Brand New Day",
+   "original_language": "en",
+   "original_title": "Spider-Man: Brand New Day",
+   "overview": "Fighting crime full-time as Spider-Man in a world that doesn't remember him—and the pressure of seeing his old friends move on without him—sparks a change in Peter Parker he may not have the power to control. But that transformation might also be the only thing that can stop a shocking new threat to the city and those he loves - a powerful villain no one can even see.",
+   "popularity": 1024.5071,
+   "poster_path": "/bjiS5ipwxb9JFy3XRRN4OAilSeX.jpg",
+   "release_date": "2026-10-06",
+   "softcore": false,
+   "video": false,
+   "vote_average": 8.431,
+   "vote_count": 5089
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/p40lmrdI4blcAPZQMTPaiy5v5Ym.jpg",
+   "genre_ids": [
+    27,
+    53
+   ],
+   "id": 1291595,
+   "title": "Insidious: Out of the Further",
+   "original_language": "en",
+   "original_title": "Insidious: Out of the Further",
+   "overview": "Gemma, a young mother raising her daughter in the house she grew up in, discovers she can travel into The Further, the purgatorial realm of lost souls at the heart of the Insidious universe. When something evil comes after her, Gemma discovers an ability that changes everything: she doesn't just enter The Further, she can bring what lives there back to the real world. Once the demons realize her power, our world becomes their playground.",
+   "popularity": 552.5952,
+   "poster_path": "/4tTrW9dXCByS5wt2pXVWb58zNjz.jpg",
+   "release_date": "2026-10-06",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.68,
+   "vote_count": 604
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/yBDxqDB29kpH9VojTytjGWBgmdJ.jpg",
+   "genre_ids": [
+    53
+   ],
+   "id": 1101412,
+   "title": "Fall 2: Deadpoint",
+   "original_language": "en",
+   "original_title": "Fall 2: Deadpoint",
+   "overview": "On a perilous climb across Thailand's Mount Kwan, two climbers become trapped thousands of feet above the ground, where vertigo-inducing heights, sheer exposure, and impossible odds turn every moment into a fight for survival.",
+   "popularity": 301.3891,
+   "poster_path": "/fgSm5ylwiXbIHn8UbUXDjk9RRu4.jpg",
+   "release_date": "2026-10-06",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.33,
+   "vote_count": 426
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/tzoarEu7TsG959upiELyYPm5kO9.jpg",
+   "genre_ids": [
+    53,
+    18
+   ],
+   "id": 1236045,
+   "title": "Animals",
+   "original_language": "en",
+   "original_title": "Animals",
+   "overview": "When the son of an L.A. mayoral candidate is kidnapped, he and his wife have a few hours to come up with the ransom payment. With most of their money spent on his political campaign, they have to get their hands dirty and expose a side of their lives they never intended to see the light of day.",
+   "popularity": 240.3403,
+   "poster_path": "/cyltXU1lAGhRFBuHQIMWBAPj8fI.jpg",
+   "release_date": "2026-10-09",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.429,
+   "vote_count": 212
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/viZqGq9TNvQ5uXSD4ahg2RpRONT.jpg",
+   "genre_ids": [
+    35,
+    12,
+    10751
+   ],
+   "id": 1204680,
+   "title": "Coyote vs. Acme",
+   "original_language": "en",
+   "original_title": "Coyote vs. Acme",
+   "overview": "After Acme products fail him one too many times in his dogged pursuit of the Roadrunner, Wile E. Coyote decides to hire a billboard lawyer to sue the Acme Corporation.",
+   "popularity": 179.1918,
+   "poster_path": "/kYDCl2y0VPvhT5eYWbMRInPoB03.jpg",
+   "release_date": "2026-09-29",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.497,
+   "vote_count": 727
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/4N2Ur9ald3D1rncUzmskcwe9PCK.jpg",
+   "genre_ids": [
+    28,
+    35,
+    12
+   ],
+   "id": 1148365,
+   "title": "Matchbox the Movie",
+   "original_language": "en",
+   "original_title": "Matchbox the Movie",
+   "overview": "When a group of former childhood friends reconnect, their reunion takes a wild turn as they stumble upon a dangerous international plot—and must save the world.",
+   "popularity": 354.5083,
+   "poster_path": "/lFKA4GMz36dImEy3DQPdPF7G4V9.jpg",
+   "release_date": "2026-10-08",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.905,
+   "vote_count": 205
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/xenXu6gt6iTJBNH80CNr7kg5q2z.jpg",
+   "genre_ids": [
+    27,
+    14,
+    9648
+   ],
+   "id": 1232569,
+   "title": "Pinocchio: Unstrung",
+   "original_language": "en",
+   "original_title": "Pinocchio: Unstrung",
+   "overview": "Influenced by a sinister Cricket and created by Geppetto, Pinocchio launches a violent crusade to carve himself into a real boy like his brother James, one piece at a time.",
+   "popularity": 154.5082,
+   "poster_path": "/eUJXk3bTvLBi5Zcb0BCedZU7lVL.jpg",
+   "release_date": "2026-08-25",
+   "softcore": false,
+   "video": false,
+   "vote_average": 6.5,
+   "vote_count": 129
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/pmPXXniQlb4EdYY0gVZO90rf54F.jpg",
+   "genre_ids": [
+    28,
+    27,
+    53
+   ],
+   "id": 1284046,
+   "title": "Onslaught",
+   "original_language": "en",
+   "original_title": "Onslaught",
+   "overview": "When a rogue squad of genetically engineered super soldiers break loose in the desert, a badass Army sniper must unleash hell to protect her young daughter.",
+   "popularity": 134.2607,
+   "poster_path": "/cOGtvhc6Ij9KvzM6jZsfQyg0B0O.jpg",
+   "release_date": "2026-10-06",
+   "softcore": false,
+   "video": false,
+   "vote_average": 5.8,
+   "vote_count": 91
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/y0reRTsewsPh0ePtgvDeLIsb5Wk.jpg",
+   "genre_ids": [
+    36,
+    18,
+    28
+   ],
+   "id": 977942,
+   "title": "The Uprising",
+   "original_language": "en",
+   "original_title": "The Uprising",
+   "overview": "As war and plague devastate 14th-century England, a humble peasant ignites a rebellion, uniting an army of commoners to defy the King’s might in a desperate fight for justice and survival.",
+   "popularity": 114.945,
+   "poster_path": "/7TUl15TOsIvndKlgMWTtLgtEzZP.jpg",
+   "release_date": "2026-09-29",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.967,
+   "vote_count": 285
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/1e0KDRYKRPHiVNj8yQKYuU2jVyQ.jpg",
+   "genre_ids": [
+    878,
+    53
+   ],
+   "id": 1275779,
+   "title": "Disclosure Day",
+   "original_language": "en",
+   "original_title": "Disclosure Day",
+   "overview": "A cybersecurity expert becomes a whistleblower after uncovering secrets about aliens, putting him on the run from a corporation. Meanwhile, a meteorologist experiencing strange phenomena joins forces with him to prove there's life beyond our understanding.",
+   "popularity": 90.1582,
+   "poster_path": "/AnJ8IQJI23hNpYXVNaythu061Ru.jpg",
+   "release_date": "2026-07-21",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.446,
+   "vote_count": 3633
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/6TSxLmwT7j1ugtKi8NyMmdzWAGj.jpg",
+   "genre_ids": [
+    16,
+    12,
+    10751,
+    14,
+    35
+   ],
+   "id": 1185806,
+   "title": "PAW Patrol: The Dino Movie",
+   "original_language": "en",
+   "original_title": "PAW Patrol: The Dino Movie",
+   "overview": "The Paw Patrol lands on a mysterious dinosaur island after a storm, where they meet Rex, a stranded pup. When Humdinger's reckless mining triggers a volcano, the team faces their biggest rescue mission yet to save the island.",
+   "popularity": 59.948,
+   "poster_path": "/qnin56Syy5rbG7KCaxWY7SPuy6p.jpg",
+   "release_date": "2026-09-29",
+   "softcore": false,
+   "video": false,
+   "vote_average": 8.2,
+   "vote_count": 177
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/1RgPyOhN4DRs225BGTlHJqCudII.jpg",
+   "genre_ids": [
+    16,
+    28,
+    14
+   ],
+   "id": 1311031,
+   "title": "Demon Slayer: Kimetsu no Yaiba Infinity Castle",
+   "original_language": "ja",
+   "original_title": "劇場版「鬼滅の刃」無限城編 第一章 猗窩座再来",
+   "overview": "The Demon Slayer Corps are drawn into the Infinity Castle, where Tanjiro, Nezuko, and the Hashira face terrifying Upper Rank demons in a desperate fight as the final battle against Muzan Kibutsuji begins.",
+   "popularity": 59.4823,
+   "poster_path": "/fWVSwgjpT2D78VUh6X8UBd2rorW.jpg",
+   "release_date": "2026-07-28",
+   "softcore": false,
+   "video": false,
+   "vote_average": 8.801,
+   "vote_count": 2269
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/nDScZ6YR2nfNCeK5bmJ1ujb355b.jpg",
+   "genre_ids": [
+    10749,
+    18
+   ],
+   "id": 1458857,
+   "title": "Doing Life",
+   "original_language": "en",
+   "original_title": "Doing Life",
+   "overview": "A single mother and an incarcerated man forge an unlikely bond through heartfelt letters, unlocking a door to redemption, hope and love against all odds.",
+   "popularity": 53.76,
+   "poster_path": "/5nZVjsCk5tWyyhLGt5U2TxsR85w.jpg",
+   "release_date": "2026-10-02",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.708,
+   "vote_count": 89
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/qkxk9URcK33HK54YSXFPQO8aqJH.jpg",
+   "genre_ids": [
+    27
+   ],
+   "id": 1610703,
+   "title": "Infirmary",
+   "original_language": "en",
+   "original_title": "Infirmary",
+   "overview": "A guard vanished on his first night at an old psych hospital in 2023. His bodycam footage shows unexplainable incidents that continue to baffle investigators.",
+   "popularity": 64.5898,
+   "poster_path": "/bHiAp8WWHgfUrJmRnoiw4URYGcq.jpg",
+   "release_date": "2026-10-02",
+   "softcore": false,
+   "video": false,
+   "vote_average": 5.571,
+   "vote_count": 14
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/o0jkkpcN81QqSl8DMLScBCXyUH9.jpg",
+   "genre_ids": [
+    27
+   ],
+   "id": 1212763,
+   "title": "Evil Dead Burn",
+   "original_language": "en",
+   "original_title": "Evil Dead Burn",
+   "overview": "After her husband's abrupt death, Alice seeks solace with his remaining family — descendants of a leading researcher on demonic possession. As her in-laws transform one by one into creatures that feed on fear, she comes to discover that the vows she took in life survive even in death.",
+   "popularity": 49.108,
+   "poster_path": "/uRxrNXQWkHoENm3nwVOZDYSCx2F.jpg",
+   "release_date": "2026-08-04",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.624,
+   "vote_count": 1704
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/bVSOgrxasVJF6V71T7v2KfBRSzu.jpg",
+   "genre_ids": [
+    27,
+    878
+   ],
+   "id": 933260,
+   "title": "The Substance",
+   "original_language": "en",
+   "original_title": "The Substance",
+   "overview": "A fading celebrity decides to use a black market drug, a cell-replicating substance that temporarily creates a younger, better version of herself.",
+   "popularity": 46.4444,
+   "poster_path": "/lqoMzCcZYEFK729d6qzt349fB4o.jpg",
+   "release_date": "2024-10-31",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.134,
+   "vote_count": 6588
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/d1n2ySWSanU34eEsluRjfrjRq52.jpg",
+   "genre_ids": [
+    35,
+    27,
+    10749
+   ],
+   "id": 1240889,
+   "title": "Teenage Sex and Death at Camp Miasma",
+   "original_language": "en",
+   "original_title": "Teenage Sex and Death at Camp Miasma",
+   "overview": "An ambitious director sets out to revive a faded slasher franchise, but her meeting with the film’s reclusive original star spirals into a terrifying maze of obsession, fear, and blood-soaked delusion.",
+   "popularity": 43.489,
+   "poster_path": "/6Q6Zo6GNXMLP600OJSh6MhW21um.jpg",
+   "release_date": "2026-09-18",
+   "softcore": false,
+   "video": false,
+   "vote_average": 6.179,
+   "vote_count": 288
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/zms3m4kVz7RXmobU1B0nhrvUEmP.jpg",
+   "genre_ids": [
+    10749,
+    35,
+    18
+   ],
+   "id": 1508168,
+   "title": "Bethlehem Kudumba Unit",
+   "original_language": "ml",
+   "original_title": "ബെത്‌ലഹേം കുടുംബ യൂണിറ്റ്",
+   "overview": "Ashley's homecoming from abroad takes an emotional turn when a wedding next door stirs memories of her first love, Justin.",
+   "popularity": 30.3349,
+   "poster_path": "/uaSZiH6yoGaVJcqzKtrfSkqDuHX.jpg",
+   "release_date": "2026-10-01",
+   "softcore": false,
+   "video": false,
+   "vote_average": 8.375,
+   "vote_count": 32
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/7t6f6VxA2ZXbbZSVctgt7bZG2DI.jpg",
+   "genre_ids": [
+    27,
+    878,
+    53
+   ],
+   "id": 1307118,
+   "title": "Soulm8te",
+   "original_language": "en",
+   "original_title": "Soulm8te",
+   "overview": "After a ruthless tech giant acquires a small robotics company, a grieving engineer is tasked with testing their new AI companion. But when he attempts to reprogram her to be a truly sentient soulmate, she develops needs of her own—unleashing a relentless spree of precision-engineered mayhem.",
+   "popularity": 33.2775,
+   "poster_path": "/nIkAHDzo9kbG3kDmDckqywo6CE9.jpg",
+   "release_date": "2026-08-01",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.509,
+   "vote_count": 476
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/a8uQvrplTkhGJQog6GZ6CqF8An6.jpg",
+   "genre_ids": [
+    35,
+    10751,
+    9648
+   ],
+   "id": 1301421,
+   "title": "The Sheep Detectives",
+   "original_language": "en",
+   "original_title": "The Sheep Detectives",
+   "overview": "George Hardy is a shepherd who reads detective novels to his beloved sheep every night, assuming they can't possibly understand. But when a mysterious incident disrupts life on the farm, the sheep realize they must become the detectives. As they follow the clues and investigate human suspects, they prove that even sheep can be brilliant crime-solvers.",
+   "popularity": 34.6414,
+   "poster_path": "/iKy5460GdsoknM8ppmGlJbKxAKa.jpg",
+   "release_date": "2026-06-24",
+   "softcore": false,
+   "video": false,
+   "vote_average": 7.925,
+   "vote_count": 1786
+  }
+ ],
+ "total_pages": 13,
+ "total_results": 248
+}

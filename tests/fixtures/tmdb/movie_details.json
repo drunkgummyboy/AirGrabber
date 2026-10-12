@@ -1,0 +1,1626 @@
+{
+ "adult": false,
+ "backdrop_path": "/4tjxYg2AbOzzG9G1YuiT2NzYhlH.jpg",
+ "belongs_to_collection": {
+  "id": 531241,
+  "name": "Spider-Man (MCU) Collection",
+  "poster_path": "/yeba3Y820OjApZO9aJevDsNeMEd.jpg",
+  "backdrop_path": "/AvnqpRwlEaYNVL6wzC4RN94EdSd.jpg"
+ },
+ "budget": 225000000,
+ "genres": [
+  {
+   "id": 878,
+   "name": "Science Fiction"
+  },
+  {
+   "id": 28,
+   "name": "Action"
+  },
+  {
+   "id": 12,
+   "name": "Adventure"
+  }
+ ],
+ "homepage": "https://spidermanbrandnewday.movie",
+ "id": 969681,
+ "imdb_id": "tt22084616",
+ "origin_country": [
+  "US"
+ ],
+ "original_language": "en",
+ "original_title": "Spider-Man: Brand New Day",
+ "overview": "Fighting crime full-time as Spider-Man in a world that doesn't remember him—and the pressure of seeing his old friends move on without him—sparks a change in Peter Parker he may not have the power to control. But that transformation might also be the only thing that can stop a shocking new threat to the city and those he loves - a powerful villain no one can even see.",
+ "popularity": 986.0191,
+ "poster_path": "/bjiS5ipwxb9JFy3XRRN4OAilSeX.jpg",
+ "production_companies": [
+  {
+   "id": 420,
+   "logo_path": "/hUzeosd33nzE5MCNsZxCGEKTXaQ.png",
+   "name": "Marvel Studios",
+   "origin_country": "US"
+  },
+  {
+   "id": 5,
+   "logo_path": "/71BqEFAF4V3qjjMPCpLuyJFB9A.png",
+   "name": "Columbia Pictures",
+   "origin_country": "US"
+  },
+  {
+   "id": 84041,
+   "logo_path": "/nw4kyc29QRpNtFbdsBHkRSFavvt.png",
+   "name": "Pascal Pictures",
+   "origin_country": "US"
+  },
+  {
+   "id": 22213,
+   "logo_path": "/qx9K6bFWJupwde0xQDwOvXkOaL8.png",
+   "name": "TSG Entertainment",
+   "origin_country": "US"
+  }
+ ],
+ "production_countries": [
+  {
+   "iso_3166_1": "US",
+   "name": "United States of America"
+  }
+ ],
+ "release_date": "2026-07-29",
+ "revenue": 2507246993,
+ "runtime": 145,
+ "softcore": false,
+ "spoken_languages": [
+  {
+   "english_name": "English",
+   "iso_639_1": "en",
+   "name": "English"
+  }
+ ],
+ "status": "Released",
+ "tagline": "A brand new day starts now.",
+ "title": "Spider-Man: Brand New Day",
+ "video": false,
+ "vote_average": 8.42,
+ "vote_count": 5013,
+ "release_dates": {
+  "results": [
+   {
+    "iso_3166_1": "AE",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AG",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AL",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AR",
+    "release_dates": [
+     {
+      "certification": "ATP",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AT",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AU",
+    "release_dates": [
+     {
+      "certification": "M",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AW",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "AZ",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-08-06T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BA",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BD",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BE",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BG",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-28T00:00:00.000Z",
+      "type": 1
+     },
+     {
+      "certification": "C",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BH",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BO",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "BR",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [
+       "Inappropriate Language",
+       "Sensitive Themes",
+       "Violence"
+      ],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CA",
+    "release_dates": [
+     {
+      "certification": "PG",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "PG",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     },
+     {
+      "certification": "PG",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "4K Ultra HD / Blu-ray / DVD",
+      "release_date": "2026-12-15T00:00:00.000Z",
+      "type": 5
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CH",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "German, French and Italian",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CL",
+    "release_dates": [
+     {
+      "certification": "TE+7",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CO",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CR",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "CZ",
+    "release_dates": [
+     {
+      "certification": "12+",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "DE",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [
+       "Violence",
+       "Threat",
+       "Injury"
+      ],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "DK",
+    "release_dates": [
+     {
+      "certification": "11",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "EC",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "EE",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "ES",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "FI",
+    "release_dates": [
+     {
+      "certification": "K-12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "FO",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "FR",
+    "release_dates": [
+     {
+      "certification": "TP",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "TP",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-11-26T00:00:00.000Z",
+      "type": 4
+     },
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-12-02T00:00:00.000Z",
+      "type": 5
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GB",
+    "release_dates": [
+     {
+      "certification": "12A",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     },
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "4K Ultra HD / Blu-ray / DVD",
+      "release_date": "2026-12-14T00:00:00.000Z",
+      "type": 5
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GE",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-08-06T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GH",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GP",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GR",
+    "release_dates": [
+     {
+      "certification": "K12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GT",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "GY",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "HK",
+    "release_dates": [
+     {
+      "certification": "IIA",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "HN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "HR",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "HU",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "ID",
+    "release_dates": [
+     {
+      "certification": "13+",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "IE",
+    "release_dates": [
+     {
+      "certification": "12A",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "IL",
+    "release_dates": [
+     {
+      "certification": "All",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "iTunes / Apple TV",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "IN",
+    "release_dates": [
+     {
+      "certification": "U/A 13+",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "IS",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "IT",
+    "release_dates": [
+     {
+      "certification": "T",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "JP",
+    "release_dates": [
+     {
+      "certification": "G",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "KH",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "KN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "KR",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "KW",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "KZ",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-08-06T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LA",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LB",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LC",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LK",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LT",
+    "release_dates": [
+     {
+      "certification": "N-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LU",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "LV",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-28T00:00:00.000Z",
+      "type": 1
+     },
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 2
+     },
+     {
+      "certification": "12+",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MA",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "ME",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MK",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MM",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MO",
+    "release_dates": [
+     {
+      "certification": "B",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MT",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MX",
+    "release_dates": [
+     {
+      "certification": "B",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "MY",
+    "release_dates": [
+     {
+      "certification": "P13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "NI",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "NL",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [
+       "Violence",
+       "Fear",
+       "Coarse Language"
+      ],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "NO",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "NP",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "NZ",
+    "release_dates": [
+     {
+      "certification": "M",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "OM",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "PA",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 1
+     },
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "PE",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "PH",
+    "release_dates": [
+     {
+      "certification": "PG",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "PK",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "PL",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "PR",
+    "release_dates": [
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "4K Ultra HD / Blu-ray / DVD",
+      "release_date": "2026-12-15T00:00:00.000Z",
+      "type": 5
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "QA",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "RO",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "TVOD",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "SA",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "SE",
+    "release_dates": [
+     {
+      "certification": "11",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "SG",
+    "release_dates": [
+     {
+      "certification": "PG13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "SI",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "SK",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "SN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "TH",
+    "release_dates": [
+     {
+      "certification": "13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "TJ",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-08-06T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "TN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "TR",
+    "release_dates": [
+     {
+      "certification": "13+",
+      "descriptors": [
+       "Violence / Horror",
+       "Negative examples"
+      ],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "TT",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-30T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "TW",
+    "release_dates": [
+     {
+      "certification": "6+",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "UA",
+    "release_dates": [
+     {
+      "certification": "12+",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "US",
+    "release_dates": [
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "Los Angeles, California",
+      "release_date": "2026-07-27T00:00:00.000Z",
+      "type": 1
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "IMAX",
+      "release_date": "2026-08-06T00:00:00.000Z",
+      "type": 2
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "4K Ultra HD / Blu-ray / DVD",
+      "release_date": "2026-12-15T00:00:00.000Z",
+      "type": 5
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "UY",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "UZ",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-08-06T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "VE",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "VI",
+    "release_dates": [
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-10-06T00:00:00.000Z",
+      "type": 4
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "4K Ultra HD / Blu-ray / DVD",
+      "release_date": "2026-12-15T00:00:00.000Z",
+      "type": 5
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "VN",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "XK",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "ZA",
+    "release_dates": [
+     {
+      "certification": "13",
+      "descriptors": [
+       "L",
+       "V"
+      ],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-07-31T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   }
+  ]
+ },
+ "external_ids": {
+  "imdb_id": "tt22084616",
+  "wikidata_id": "Q113244935",
+  "facebook_id": "SpiderManMovie",
+  "instagram_id": "spidermanmovie",
+  "twitter_id": "SpiderManMovie"
+ }
+}

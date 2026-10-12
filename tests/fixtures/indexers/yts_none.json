@@ -1,0 +1,19 @@
+{
+ "status": "ok",
+ "status_message": "Query was successful. NOTICE: Base URL moving to https://movies-api.accel.li/api/v2/",
+ "data": {
+  "movie_count": 0,
+  "limit": 20,
+  "page_number": 1
+ },
+ "@meta": {
+  "migration": {
+   "message": "API base is moving; update your client.",
+   "old_base": "https://yts.gg/api/v2/",
+   "new_base": "https://movies-api.accel.li/api/v2/",
+   "sunset": "2026-04-10T00:00:00Z"
+  },
+  "api_version": 2,
+  "execution_time": "0 ms"
+ }
+}

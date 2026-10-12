@@ -1,0 +1,449 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "backdrop_path": "/hINekSpbcBxjnjGqmIm6I4bz2ab.jpg",
+   "genre_ids": [
+    10767,
+    35
+   ],
+   "id": 22980,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Watch What Happens Live with Andy Cohen",
+   "overview": "Bravo network executive Andy Cohen discusses pop culture topics with celebrities and reality show personalities.",
+   "popularity": 581.0837,
+   "poster_path": "/onSD9UXfJwrMXWhq7UY7hGF2S1h.jpg",
+   "first_air_date": "2009-07-16",
+   "softcore": false,
+   "name": "Watch What Happens Live with Andy Cohen",
+   "vote_average": 5.01,
+   "vote_count": 100
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/obtdxPgmfykYwVnvuYXC5f2xKlQ.jpg",
+   "genre_ids": [
+    80,
+    18,
+    9648
+   ],
+   "id": 2734,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Law & Order: Special Victims Unit",
+   "overview": "In the criminal justice system, sexually-based offenses are considered especially heinous. In New York City, the dedicated detectives who investigate these vicious felonies are members of an elite squad known as the Special Victims Unit. These are their stories.",
+   "popularity": 436.6554,
+   "poster_path": "/iofokHZoUB4Qhik4PflvJl8TT6a.jpg",
+   "first_air_date": "1999-09-20",
+   "softcore": false,
+   "name": "Law & Order: Special Victims Unit",
+   "vote_average": 7.957,
+   "vote_count": 4374
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/wsHj4oHQJoe7DMYaqNFwVoyLiAh.jpg",
+   "genre_ids": [
+    35,
+    10764
+   ],
+   "id": 33238,
+   "origin_country": [
+    "KR"
+   ],
+   "original_language": "ko",
+   "original_name": "런닝맨",
+   "overview": "These days, as variety shows are gradually disappearing, this is one of Korea’s representative variety shows that has been responsible for Sunday evenings for over 10 years. This program features numerous stars and members going around various places, playing games, and completing missions. In particular, among the many fun elements of variety shows, this one focuses solely on laughter.\n\nOpen your eyes! Big fun is coming in!\n\nOpen your mouth! Big laughter is coming in!\n\nOpen your heart! Useful lessons are coming in!",
+   "popularity": 348.9373,
+   "poster_path": "/2Wmmu1MkqxJ48J7aySET9EKEjXz.jpg",
+   "first_air_date": "2010-07-11",
+   "softcore": false,
+   "name": "Running Man",
+   "vote_average": 8.2,
+   "vote_count": 221
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/tc7canPSAn2X14hYi6Rl3gZm1o4.jpg",
+   "genre_ids": [
+    80,
+    18
+   ],
+   "id": 549,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Law & Order",
+   "overview": "In cases ripped from the headlines, police investigate serious and often deadly crimes, weighing the evidence and questioning the suspects until someone is taken into custody. The district attorney's office then builds a case to convict the perpetrator by proving the person guilty beyond a reasonable doubt. Working together, these expert teams navigate all sides of the complex criminal justice system to make New York a safer place.",
+   "popularity": 383.3557,
+   "poster_path": "/haJ9eHytVO3H3JooMJG1DiWwDNm.jpg",
+   "first_air_date": "1990-09-13",
+   "softcore": false,
+   "name": "Law & Order",
+   "vote_average": 7.284,
+   "vote_count": 732
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/qcSHGC5BfoqBoP99PzDIERYG5Qm.jpg",
+   "genre_ids": [
+    16,
+    35
+   ],
+   "id": 456,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "The Simpsons",
+   "overview": "Set in Springfield, the average American town, the show focuses on the antics and everyday adventures of the Simpson family; Homer, Marge, Bart, Lisa and Maggie, as well as a virtual cast of thousands. Since the beginning, the series has been a pop culture icon, attracting hundreds of celebrities to guest star. The show has also made name for itself in its fearless satirical take on politics, media and American life in general.",
+   "popularity": 338.7245,
+   "poster_path": "/tf0CUEynk6GfmrlHIQKQ5mfFP5P.jpg",
+   "first_air_date": "1989-12-17",
+   "softcore": false,
+   "name": "The Simpsons",
+   "vote_average": 8.0,
+   "vote_count": 11067
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/c1aBrG5s5xFa6Tbnihu2Hhj4t2q.jpg",
+   "genre_ids": [
+    80,
+    18,
+    10759
+   ],
+   "id": 4614,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "NCIS",
+   "overview": "From murder and espionage to terrorism and stolen submarines, a team of special agents investigates any crime that has any connection to Navy and Marine Corps personnel, regardless of rank or position.",
+   "popularity": 318.5451,
+   "poster_path": "/y4fGncqELtnvRQuwSpuH8LncZqU.jpg",
+   "first_air_date": "2003-09-23",
+   "softcore": false,
+   "name": "NCIS",
+   "vote_average": 7.6,
+   "vote_count": 2590
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/h0OC7ouop8YLwbAVfS3UUE2Lw4T.jpg",
+   "genre_ids": [
+    80,
+    18
+   ],
+   "id": 247718,
+   "origin_country": [
+    "GB",
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "MobLand",
+   "overview": "Two mob families clash in a war that threatens to topple empires and lives.",
+   "popularity": 310.6735,
+   "poster_path": "/5Xc7WpWsgflfgEMoBlf9TmWhfbH.jpg",
+   "first_air_date": "2025-03-30",
+   "softcore": false,
+   "name": "MobLand",
+   "vote_average": 8.499,
+   "vote_count": 1013
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/usLRh1bcbL0Q9X8zf6rL4OV1qrA.jpg",
+   "genre_ids": [
+    10759,
+    10765,
+    18
+   ],
+   "id": 2661,
+   "origin_country": [
+    "JP"
+   ],
+   "original_language": "ja",
+   "original_name": "仮面ライダー",
+   "overview": "Takeshi Hongo is a promising young man with a passion for motorcycle racing. However, his dreams are suddenly ruined when he gets kidnapped by Shocker, the evil secret organization planning to dominate the world. After being remodeled into a cyborg, Takeshi escapes and swears to protect the world from the inhuman monsters.",
+   "popularity": 284.0492,
+   "poster_path": "/2DIBDFHiKQawz4WPsYekl9DHwyA.jpg",
+   "first_air_date": "1971-04-03",
+   "softcore": false,
+   "name": "Kamen Rider",
+   "vote_average": 6.4,
+   "vote_count": 108
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/jP0Rhj9OTPDAwQlHQwOLFDdeE8t.jpg",
+   "genre_ids": [
+    18
+   ],
+   "id": 1416,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Grey's Anatomy",
+   "overview": "Follows the personal and professional lives of a group of doctors at Seattle's Grey Sloan Memorial Hospital.",
+   "popularity": 278.1486,
+   "poster_path": "/hjJkrLXhWvGHpLeLBDFznpBTY1S.jpg",
+   "first_air_date": "2005-03-27",
+   "softcore": false,
+   "name": "Grey's Anatomy",
+   "vote_average": 8.204,
+   "vote_count": 11073
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/ksNrsIkIwFKpetIyiUA7kBSBKvC.jpg",
+   "genre_ids": [
+    10766
+   ],
+   "id": 11890,
+   "origin_country": [
+    "NL"
+   ],
+   "original_language": "nl",
+   "original_name": "Goede Tijden, Slechte Tijden",
+   "overview": "Goede tijden, slechte tijden, also known as GTST, is the longest-running Dutch soap opera,  revolving around the lives of the families Alberts, Sanders, De Jong, Van Houten and Bouwhuis. It all takes place in the fictional town of Meerdijk.",
+   "popularity": 224.849,
+   "poster_path": "/p1oXgtJ0q0wAcEp3tHA5DpiynxL.jpg",
+   "first_air_date": "1990-10-01",
+   "softcore": false,
+   "name": "Goede Tijden, Slechte Tijden",
+   "vote_average": 5.3,
+   "vote_count": 21
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/a8a8z4aJr40zYgRMfmSESppX2eO.jpg",
+   "genre_ids": [
+    10764,
+    35
+   ],
+   "id": 70672,
+   "origin_country": [
+    "KR"
+   ],
+   "original_language": "ko",
+   "original_name": "아는 형님",
+   "overview": "Male celebs play make-believe as high schoolers, welcoming star transfer students every week and engaging in battles of witty humor and slapstick.",
+   "popularity": 230.2519,
+   "poster_path": "/2jIi55JtYKJTL1km8qHMuUilOWo.jpg",
+   "first_air_date": "2015-12-05",
+   "softcore": false,
+   "name": "Men on a Mission",
+   "vote_average": 7.4,
+   "vote_count": 42
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/gPQppUnLx9vqPDLz3WwZ2HJsNbt.jpg",
+   "genre_ids": [
+    80,
+    18,
+    9648
+   ],
+   "id": 95480,
+   "origin_country": [
+    "GB"
+   ],
+   "original_language": "en",
+   "original_name": "Slow Horses",
+   "overview": "Follow a dysfunctional team of MI5 agents—and their obnoxious boss, the notorious Jackson Lamb—as they navigate the espionage world's smoke and mirrors to defend England from sinister forces.",
+   "popularity": 242.7367,
+   "poster_path": "/AdYr4DjOgXvDUMwu6vEhZy1Rnxk.jpg",
+   "first_air_date": "2022-04-01",
+   "softcore": false,
+   "name": "Slow Horses",
+   "vote_average": 8.05,
+   "vote_count": 1040
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/s1dTt4M31q2HwD5Fkl1tf5tQzJg.jpg",
+   "genre_ids": [
+    10766
+   ],
+   "id": 206559,
+   "origin_country": [
+    "ZA"
+   ],
+   "original_language": "af",
+   "original_name": "Binnelanders",
+   "overview": "A South African Afrikaans soap opera. It is set in and around the fictional private hospital, Binneland Kliniek, in Pretoria, and the storyline follows the trials, trauma and tribulations of the staff and patients of the hospital.",
+   "popularity": 205.7224,
+   "poster_path": "/3bzECfllho8PphdYujLUIuhncJD.jpg",
+   "first_air_date": "2005-10-13",
+   "softcore": false,
+   "name": "Binnelanders",
+   "vote_average": 5.5,
+   "vote_count": 112
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/ykWWT8FAChBffNxcDzoJMCK9LBb.jpg",
+   "genre_ids": [
+    10764
+   ],
+   "id": 4656,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "Raw",
+   "overview": "A regularly scheduled, live, year-round program featuring some of the biggest WWE Superstars.",
+   "popularity": 225.8985,
+   "poster_path": "/fstEe6RsyNyPUnMwNcL20iNl0nE.jpg",
+   "first_air_date": "1993-01-11",
+   "softcore": false,
+   "name": "Raw",
+   "vote_average": 6.764,
+   "vote_count": 379
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/c6nAwZgiMobI3HrmZR78wpIjSnr.jpg",
+   "genre_ids": [
+    80,
+    18,
+    10766
+   ],
+   "id": 72879,
+   "origin_country": [
+    "FR"
+   ],
+   "original_language": "fr",
+   "original_name": "Demain nous appartient",
+   "overview": "The story revolves around the people of Sète, France. Their lives are punctuated by family rivalries, romance and scenes from daily life, but also by plots involving police investigations, secrets and betrayals.",
+   "popularity": 223.0388,
+   "poster_path": "/n6LIjlzlTFbowOik0EghVJUTysA.jpg",
+   "first_air_date": "2017-07-17",
+   "softcore": false,
+   "name": "Tomorrow Is Ours",
+   "vote_average": 6.3,
+   "vote_count": 74
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/5APjn4LnV5wWk5DXq7ZewT6zzP1.jpg",
+   "genre_ids": [
+    10766
+   ],
+   "id": 291,
+   "origin_country": [
+    "GB"
+   ],
+   "original_language": "en",
+   "original_name": "Coronation Street",
+   "overview": "The residents of Coronation Street are ordinary, working-class people, and the show follows them through regular social and family interactions at home, in the workplace, and in their local pub, the Rovers Return Inn. Britain's longest-running soap.",
+   "popularity": 218.0005,
+   "poster_path": "/5x1HXqYqPyYw7oc7Isu1lvVmwRP.jpg",
+   "first_air_date": "1960-12-09",
+   "softcore": false,
+   "name": "Coronation Street",
+   "vote_average": 5.336,
+   "vote_count": 119
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/5G4Bnc4Q0YUK1bwLEUYmIsmm2Ib.jpg",
+   "genre_ids": [
+    18,
+    9648,
+    10765
+   ],
+   "id": 1413,
+   "origin_country": [
+    "US"
+   ],
+   "original_language": "en",
+   "original_name": "American Horror Story",
+   "overview": "An anthology horror drama series centering on different characters and locations, including a house with a murderous past, an asylum, a witch coven, a freak show, a hotel, a farmhouse in Roanoke, a cult, the apocalypse and a summer camp.",
+   "popularity": 201.1464,
+   "poster_path": "/yCkPLQ10qKIUgRBXmQVVMF1h96d.jpg",
+   "first_air_date": "2011-10-05",
+   "softcore": false,
+   "name": "American Horror Story",
+   "vote_average": 8.077,
+   "vote_count": 6231
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/sztoil0XfQ0cSHy4PXmYW6uAdfQ.jpg",
+   "genre_ids": [
+    10764
+   ],
+   "id": 65282,
+   "origin_country": [
+    "KR"
+   ],
+   "original_language": "ko",
+   "original_name": "나 혼자 산다",
+   "overview": "It can be a badge of honor to be “single.” “I Live Alone” is a documentary-style South Korean reality series that follows the members of a self-formed club called Rainbow, which is comprised of  celebrities who are single and live alone.",
+   "popularity": 217.594,
+   "poster_path": "/1hqGagr94soBq70Lq7tPHvNmmxy.jpg",
+   "first_air_date": "2013-03-22",
+   "softcore": false,
+   "name": "Home Alone",
+   "vote_average": 7.5,
+   "vote_count": 18
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/kCd0rmnNwCd3sgupO9DqSi9aHa0.jpg",
+   "genre_ids": [
+    10767
+   ],
+   "id": 65270,
+   "origin_country": [
+    "KR"
+   ],
+   "original_language": "ko",
+   "original_name": "라디오스타",
+   "overview": "“Radio Star” is a South Korean music talk show where the guests and hosts talk openly and intimately about their lives, their pasts and their work. It is part of Munhwa Broadcasting Corporation's \"Golden Fishery\" programming block.",
+   "popularity": 200.3748,
+   "poster_path": "/uRUZDsvUfIP3JUEgOC8ReBlQQUU.jpg",
+   "first_air_date": "2007-05-30",
+   "softcore": false,
+   "name": "Radio Star",
+   "vote_average": 5.5,
+   "vote_count": 6
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/A4iwF1mpDq8HScQ3MZMhMJuT93k.jpg",
+   "genre_ids": [
+    18,
+    80
+   ],
+   "id": 3034,
+   "origin_country": [
+    "DE",
+    "AT",
+    "CH"
+   ],
+   "original_language": "de",
+   "original_name": "Tatort",
+   "overview": "Tatort is a long-running German/Austrian/Swiss crime television series set in various parts of these countries. The show is broadcast on the channels of ARD in Germany, ORF in Austria and SF1 in Switzerland.",
+   "popularity": 184.0463,
+   "poster_path": "/yh43TKi9himQWhzrlWBxV8WjsFn.jpg",
+   "first_air_date": "1970-11-29",
+   "softcore": false,
+   "name": "Scene of the Crime",
+   "vote_average": 6.2,
+   "vote_count": 127
+  }
+ ],
+ "total_pages": 85,
+ "total_results": 1684
+}
