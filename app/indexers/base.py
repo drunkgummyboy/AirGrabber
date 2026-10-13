@@ -105,6 +105,8 @@ class BaseIndexer(ABC):
     name: ClassVar[str]  # stable id: "apibay", "eztv", "bitsearch", "yts", "prowlarr"
     label: ClassVar[str]  # short UI label: "APIBay", "EZTV", "Bitsearch", "YTS", "Prowlarr"
     kinds: ClassVar[frozenset[SearchKind]]  # request kinds it can answer
+    # Seconds the search service allows one whole search (retries included); None = its default.
+    search_timeout: ClassVar[float | None] = None
 
     def __init__(
         self, http: httpx.AsyncClient, *, max_concurrent: int = 2, retry_delay: float = 1.0
@@ -144,9 +146,11 @@ class BaseIndexer(ABC):
         *,
         headers: Mapping[str, str] | None = None,
         failed_attempts: int = FAILED_ATTEMPTS,
+        timeout: httpx.Timeout | None = None,
     ) -> object:
         """GET `base + path` and decode its JSON body.
 
+        `timeout` replaces the shared client's timeouts for these requests only.
         429 is retried up to 4 attempts in all, 5xx and transport errors up to `failed_attempts`;
         attempts are counted together and the limit of the latest failure applies. The semaphore
         is held only for the request itself, never while waiting to retry. Every raise sits
@@ -155,6 +159,7 @@ class BaseIndexer(ABC):
         """
         url = base + path
         request_headers = {"User-Agent": USER_AGENT, **(headers or {})}
+        request_timeout = httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
         attempt = 0
         while True:
             attempt += 1
@@ -163,7 +168,9 @@ class BaseIndexer(ABC):
             retryable = True
             try:
                 async with self._slots:
-                    response = await self._http.get(url, params=params, headers=request_headers)
+                    response = await self._http.get(
+                        url, params=params, headers=request_headers, timeout=request_timeout
+                    )
             except httpx.UnsupportedProtocol as exc:  # e.g. no http(s)://; retrying won't help
                 error_name = type(exc).__name__
                 retryable = False

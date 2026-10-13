@@ -1,0 +1,13 @@
+<Config>
+  <Port>9697</Port>
+  <LogLevel>debug</LogLevel>
+  <UrlBase>/prowlarr/</UrlBase>
+  <EnableSsl>False</EnableSsl>
+  <AuthenticationMethod>None</AuthenticationMethod>
+  <ApiKey>0123456789abcdef0123456789abcdef</ApiKey>
+  <AuthenticationRequired>Enabled</AuthenticationRequired>
+  <InstanceName>Prowlarr</InstanceName>
+  <BindAddress>127.0.0.1</BindAddress>
+  <SslPort>6970</SslPort>
+  <Branch>master</Branch>
+</Config>

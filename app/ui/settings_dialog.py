@@ -1,12 +1,14 @@
-"""Preferences dialog. Every change goes through SettingsService, which validates first."""
+"""Preferences dialog: General and Advanced tabs, in plain words. Every change goes through
+SettingsService, which validates first."""
 
 from __future__ import annotations
 
 import asyncio
-import webbrowser
+import math
 from collections.abc import Awaitable, Callable
 from tkinter import filedialog
-from typing import Any
+from pathlib import Path
+from typing import Any, NamedTuple
 
 import customtkinter as ctk
 from pydantic import ValidationError
@@ -19,10 +21,12 @@ from app.indexers import (
     ProwlarrIndexer,
     YtsIndexer,
 )
-from app.models import QualityProfile, UpdateInfo, Weekday
+from app.models import DownloadMode, QualityProfile, UpdateInfo, Weekday
 from app.services import (
+    DiscoveryService,
     DownloadStationClient,
     SettingsService,
+    TorrentAppService,
     TorrentSearchService,
     UpdateError,
     UpdateService,
@@ -30,30 +34,103 @@ from app.services import (
 from app.services.synology import DownloadStationError
 from app.ui import theme
 from app.ui.branding import set_window_icon
+from app.ui.dialog_kit import (
+    BUTTON_HEIGHT,
+    BUTTON_RADIUS,
+    DETAIL_SIZE,
+    LINE_GAP,
+    PAD_X,
+    SMALL_SIZE,
+    activate_later,
+    place_over,
+    primary_button,
+    secondary_button,
+    text_label,
+)
 from app.ui.tasks import async_command, spawn
-
-TMDB_KEY_URL = "https://www.themoviedb.org/settings/api"
+from app.ui.tmdb_key_guide import TmdbKeyDialog
+from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
 
 TAB_GENERAL = "General"
-TAB_INDEXERS = "Indexers"
-TAB_STATION = "Download Station"
+TAB_ADVANCED = "Advanced"
+
+# Logical (unscaled) CTk units.
+_TABS_WIDTH = 720 - 2 * PAD_X
+_TABS_HEIGHT = 200  # at least; the dialog takes General's tallest state, within the screen
+SCREEN_RESERVE = 80  # left free for the taskbar and the title bar
+_TAB_PAD = 24  # inside a tab
+_LABEL_WIDTH = 170
+_FIELD_WIDTH = _TABS_WIDTH - 2 * _TAB_PAD - _LABEL_WIDTH - 24  # tab view edges, scrollbar
+_ROW_GAP = 20
+_SECTION_GAP = 28
+_INDENT = 30  # under a radio button's text
+_HINT_GAP = 6
+_SCROLL_PAD_LEFT = _TAB_PAD - 6  # a scrollable frame has its own inset
+_TEST_BUTTON_WIDTH = 160
+_UPDATE_BUTTON_WIDTH = 180
+_RESULT_WIDTH = _FIELD_WIDTH - _UPDATE_BUTTON_WIDTH - 12
 
 # (stable id, label) of every source, in the order the search runs them.
 _SOURCES = [
     (cls.name, cls.label)
     for cls in (ApibayIndexer, EztvIndexer, BitsearchIndexer, YtsIndexer, ProwlarrIndexer)
 ]
+_SOURCE_COLUMNS = 3
+
+# Plain names for the quality profiles, in menu order. The stored values stay QualityProfile's.
+QUALITY_NAMES: dict[QualityProfile, str] = {
+    QualityProfile.FULL_HD: "Full HD (1080p)",
+    QualityProfile.HD: "HD (720p)",
+    QualityProfile.UHD: "4K (2160p)",
+    QualityProfile.HEVC: "Smaller files (1080p x265)",
+    QualityProfile.ANY: "Any quality",
+}
+
+
+def quality_name(profile: QualityProfile) -> str:
+    return QUALITY_NAMES[profile]
+
+
+def quality_from_name(name: str) -> QualityProfile:
+    for profile, shown in QUALITY_NAMES.items():
+        if shown == name:
+            return profile
+    raise ValueError(f"unknown quality name: {name!r}")
+
+
+class DownloadRows(NamedTuple):
+    """Which extra rows "When I download" shows under its two choices."""
+
+    torrent_status: bool  # the torrent-program status line (+ Install qBittorrent)
+    folder: bool  # the folder entry + Browse
+
+
+def download_rows(mode: DownloadMode) -> DownloadRows:
+    return DownloadRows(torrent_status=mode is DownloadMode.APP, folder=mode is DownloadMode.FOLDER)
+
+
+def download_dir_to_save(mode: DownloadMode, entry: str, stored: Path) -> str | Path:
+    """The folder entry only counts when it shows ("Save to a folder"); otherwise the stored
+    folder stays, whatever the hidden entry holds."""
+    return entry.strip() if mode is DownloadMode.FOLDER else stored
+
+
+def dialog_height(wanted: int, screen_height: int, *, reserve: int = SCREEN_RESERVE) -> int:
+    """The dialog's height (logical units): what its content wants, but never taller than the
+    screen minus room for the taskbar and title bar (the tabs scroll instead)."""
+    return max(1, min(wanted, screen_height - reserve))
+
 
 _FIELD_LABELS = {
+    "download_mode": "When I download",
+    "download_dir": "Save to a folder",
     "quality": "Preferred quality",
     "first_day": "Week starts on",
-    "download_dir": "Torrent folder",
-    "tmdb_api_key": "TMDB API key",
-    "excluded_keywords": "Excluded keywords",
-    "preferred_groups": "Preferred groups",
-    "min_size_mb": "Minimum size",
-    "max_size_mb": "Maximum size",
-    "disabled_indexers": "Sources",
+    "tmdb_api_key": "Movies key",
+    "auto_update": "Updates",
+    "disabled_indexers": "Search these sites",
+    "excluded_keywords": "Skip releases with these words",
+    "preferred_groups": "Prefer releases from",
     "prowlarr_url": "Prowlarr URL",
     "prowlarr_api_key": "Prowlarr API key",
     "ds_url": "NAS address",
@@ -64,17 +141,17 @@ _FIELD_LABELS = {
 }
 
 _FIELD_TABS = {
-    "excluded_keywords": TAB_INDEXERS,
-    "preferred_groups": TAB_INDEXERS,
-    "disabled_indexers": TAB_INDEXERS,
-    "prowlarr_url": TAB_INDEXERS,
-    "prowlarr_api_key": TAB_INDEXERS,
-    "ds_url": TAB_STATION,
-    "ds_username": TAB_STATION,
-    "ds_password": TAB_STATION,
-    "ds_verify_tls": TAB_STATION,
-    "ds_destination": TAB_STATION,
-}  # everything else (incl. the model-level size check) lives on General
+    "disabled_indexers": TAB_ADVANCED,
+    "excluded_keywords": TAB_ADVANCED,
+    "preferred_groups": TAB_ADVANCED,
+    "prowlarr_url": TAB_ADVANCED,
+    "prowlarr_api_key": TAB_ADVANCED,
+    "ds_url": TAB_ADVANCED,
+    "ds_username": TAB_ADVANCED,
+    "ds_password": TAB_ADVANCED,
+    "ds_verify_tls": TAB_ADVANCED,
+    "ds_destination": TAB_ADVANCED,
+}  # everything else lives on General
 
 
 def _describe(error: ValidationError) -> str:
@@ -94,25 +171,47 @@ def _first_tab(error: ValidationError) -> str:
 
 
 class _Form:
-    """A two-column label/field grid inside one tab."""
+    """A label column (muted) and a field column inside one tab, with roomy rows."""
 
-    def __init__(self, master: Any) -> None:
+    def __init__(
+        self, master: Any, *, pad_left: int = _TAB_PAD, pad_right: int = _TAB_PAD
+    ) -> None:
         self.frame = ctk.CTkFrame(master, fg_color="transparent")
-        self.frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        self.frame.pack(fill="both", expand=True, padx=(pad_left, pad_right), pady=(4, _TAB_PAD))
+        # Plain Tk grid options are not DPI-scaled by CTk.
+        scaling = ctk.ScalingTracker.get_widget_scaling(self.frame)
+        self.frame.grid_columnconfigure(0, minsize=round(_LABEL_WIDTH * scaling))
         self.frame.grid_columnconfigure(1, weight=1)
         self._next_row = 0
 
     def row(self, label: str) -> ctk.CTkFrame:
         row = self._take_row()
-        ctk.CTkLabel(self.frame, text=label, text_color=theme.TEXT_MUTED).grid(
-            row=row, column=0, sticky="nw", padx=(0, 20), pady=6
-        )
+        pady = (0 if row == 0 else _ROW_GAP, 0)
+        ctk.CTkLabel(
+            self.frame,
+            text=label,
+            height=BUTTON_HEIGHT,
+            font=theme.font(DETAIL_SIZE),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=_LABEL_WIDTH - 16,
+        ).grid(row=row, column=0, sticky="nw", padx=(0, 16), pady=pady)
         cell = ctk.CTkFrame(self.frame, fg_color="transparent")
-        cell.grid(row=row, column=1, sticky="ew", pady=6)
+        cell.grid(row=row, column=1, sticky="ew", pady=pady)
         return cell
 
-    def full_width(self, widget: Any, **grid: Any) -> None:
-        widget.grid(row=self._take_row(), column=0, columnspan=2, sticky="w", **grid)
+    def section(self, title: str, note: str) -> None:
+        ctk.CTkLabel(
+            self.frame, text=title, font=theme.font(16, bold=True), text_color=theme.TEXT
+        ).grid(row=self._take_row(), column=0, columnspan=2, sticky="w", pady=(_SECTION_GAP, 0))
+        text_label(
+            self.frame,
+            note,
+            size=DETAIL_SIZE,
+            color=theme.TEXT_MUTED,
+            wraplength=_LABEL_WIDTH + _FIELD_WIDTH,
+        ).grid(row=self._take_row(), column=0, columnspan=2, sticky="w", pady=(LINE_GAP, 0))
 
     def _take_row(self) -> int:
         row = self._next_row
@@ -129,6 +228,8 @@ class SettingsDialog(ctk.CTkToplevel):
         search: TorrentSearchService,
         station: DownloadStationClient,
         updates: UpdateService,
+        torrent_app: TorrentAppService,
+        discovery: DiscoveryService,
         update_info: UpdateInfo | None = None,
         on_update: Callable[[], None] | None = None,
     ) -> None:
@@ -137,8 +238,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self._search = search
         self._station = station
         self._updates = updates
+        self._torrent_app = torrent_app
+        self._discovery = discovery
         self._on_update = on_update
         self._tests: dict[str, asyncio.Task[None]] = {}
+        self._key_dialog: TmdbKeyDialog | None = None
         current = settings.current
 
         self.title("Settings")
@@ -146,14 +250,13 @@ class SettingsDialog(ctk.CTkToplevel):
         self.resizable(False, False)
         self.transient(master)
 
-        self._quality = ctk.StringVar(value=current.quality.value)
+        self._mode = ctk.StringVar(value=current.download_mode.value)
+        self._quality = ctk.StringVar(value=quality_name(current.quality))
         self._first_day = ctk.StringVar(value=current.first_day.value)
         self._download_dir = ctk.StringVar(value=str(current.download_dir))
         self._tmdb_key = ctk.StringVar(value=current.tmdb_api_key.get_secret_value())
         self._excluded = ctk.StringVar(value=", ".join(current.excluded_keywords))
         self._preferred = ctk.StringVar(value=", ".join(current.preferred_groups))
-        self._min_size = ctk.StringVar(value=str(current.min_size_mb))
-        self._max_size = ctk.StringVar(value=str(current.max_size_mb))
         disabled = set(current.disabled_indexers)
         self._sources = {
             name: ctk.BooleanVar(value=name not in disabled) for name, _label in _SOURCES
@@ -164,17 +267,15 @@ class SettingsDialog(ctk.CTkToplevel):
         self._ds_username = ctk.StringVar(value=current.ds_username)
         self._ds_password = ctk.StringVar(value=current.ds_password.get_secret_value())
         self._ds_verify = ctk.BooleanVar(value=current.ds_verify_tls)
+        self._auto_update = ctk.BooleanVar(value=current.auto_update)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=25, pady=20)
-        ctk.CTkLabel(body, text="Settings", font=theme.font(20, bold=True)).pack(
-            anchor="w", pady=(0, 8)
-        )
+        body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_X)
 
         self._tabs = ctk.CTkTabview(
             body,
-            width=600,
-            height=440,
+            width=_TABS_WIDTH,
+            height=_TABS_HEIGHT,
             corner_radius=15,
             border_width=1,
             fg_color=theme.TAB_BG,
@@ -183,131 +284,108 @@ class SettingsDialog(ctk.CTkToplevel):
             segmented_button_selected_color=theme.ACCENT,
             segmented_button_selected_hover_color=theme.ACCENT_HOVER,
             segmented_button_unselected_color=theme.SURFACE,
-            segmented_button_font=theme.font(13, bold=True),
+            segmented_button_font=theme.font(15, bold=True),
         )
-        self._tabs.pack(fill="both", expand=True)
-        self._build_general(_Form(self._tabs.add(TAB_GENERAL)))
-        self._build_indexers(_Form(self._tabs.add(TAB_INDEXERS)))
-        self._build_station(_Form(self._tabs.add(TAB_STATION)))
+        self._general = self._scroll_tab(TAB_GENERAL)
+        self._general_form = _Form(self._general, pad_left=_SCROLL_PAD_LEFT, pad_right=8)
+        self._build_general(self._general_form)
+        advanced = self._scroll_tab(TAB_ADVANCED)
+        self._build_advanced(_Form(advanced, pad_left=_SCROLL_PAD_LEFT, pad_right=8))
         self._tabs.set(TAB_GENERAL)
         if update_info is not None:
             self._show_update(update_info)
 
-        self._error = ctk.CTkLabel(
-            body, text="", text_color=theme.DANGER, justify="left", wraplength=560
-        )
-        self._error.pack(anchor="w", pady=(8, 0))
-
+        # Packed from the bottom before the tabs, so the buttons keep their place and the tabs
+        # get what is left when the screen is short.
         buttons = ctk.CTkFrame(body, fg_color="transparent")
-        buttons.pack(anchor="e", pady=(8, 0))
-        ctk.CTkButton(
-            buttons,
-            text="Cancel",
-            width=100,
-            fg_color="transparent",
-            border_width=1,
-            border_color=theme.EDGE,
-            hover_color=theme.SURFACE,
-            command=self.destroy,
-        ).pack(side="right")
-        self._save_button = ctk.CTkButton(
-            buttons,
-            text="Save",
-            width=100,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            command=async_command(self._save),
+        buttons.pack(side="bottom", anchor="e", pady=(10, 0))
+        secondary_button(buttons, "Cancel", self.destroy).pack(side="right")
+        self._save_button = primary_button(buttons, "Save", async_command(self._save))
+        self._save_button.pack(side="right", padx=(0, 12))
+        self._error = ctk.CTkLabel(
+            body,
+            text="",
+            font=theme.font(14),
+            text_color=theme.DANGER,
+            justify="left",
+            wraplength=_TABS_WIDTH,
         )
-        self._save_button.pack(side="right", padx=(0, 8))
+        self._error.pack(side="bottom", anchor="w", pady=(10, 0))
+        self._tabs.pack(fill="both", expand=True)
 
         self.bind("<Escape>", lambda _event: self.destroy())
-        self._center_on(master)
-        # CTkToplevel can open behind its parent on Windows; raise and grab once it is mapped.
-        self.after(150, self._activate)
+        self._fit_size()
+        place_over(self, master)
+        activate_later(self)
 
     # -- tabs ----------------------------------------------------------------------------------
 
     def _build_general(self, form: _Form) -> None:
-        self._option_row(form, "Preferred quality", self._quality, [q.value for q in QualityProfile])
-        self._option_row(form, "Week starts on", self._first_day, [d.value for d in Weekday])
+        download = form.row("When I download")
+        download.grid_columnconfigure(0, weight=1)
+        self._radio(download, "Open in my torrent program", DownloadMode.APP).grid(
+            row=0, column=0, sticky="w"
+        )
+        self._torrent = TorrentAppStatus(
+            download,
+            torrent_app=self._torrent_app,
+            wraplength=_FIELD_WIDTH - _INDENT - INSTALL_BUTTON_WIDTH - 16,
+        )
+        self._radio(download, "Save to a folder", DownloadMode.FOLDER).grid(
+            row=2, column=0, sticky="w", pady=(4, 0)
+        )
+        self._folder_row = ctk.CTkFrame(download, fg_color="transparent")
+        self._entry(self._folder_row, self._download_dir).pack(side="left", fill="x", expand=True)
+        secondary_button(self._folder_row, "Browse", self._browse, width=110).pack(
+            side="left", padx=(10, 0)
+        )
+        self._option_menu(
+            form.row("Preferred quality"), self._quality, list(QUALITY_NAMES.values())
+        )
+        self._option_menu(form.row("Week starts on"), self._first_day, [d.value for d in Weekday])
 
-        folder = form.row("Torrent folder")
-        self._entry(folder, self._download_dir, width=230).pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(
-            folder,
-            text="Browse",
-            width=70,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            command=self._browse,
-        ).pack(side="left", padx=(8, 0))
-
-        key = form.row("TMDB API key")
+        key = form.row("Movies key")
         self._entry(key, self._tmdb_key, show="•").pack(fill="x")
         link = ctk.CTkLabel(
             key,
-            text="Get a free key at themoviedb.org",
+            text="How do I get a key?",
+            font=theme.font(DETAIL_SIZE, underline=True),
             text_color=theme.LINK,
-            font=theme.font(11, underline=True),
             cursor="hand2",
         )
-        link.pack(anchor="w")
-        link.bind("<Button-1>", lambda _event: webbrowser.open(TMDB_KEY_URL))
+        link.bind("<Button-1>", lambda _event: self._open_key_guide())
+        link.pack(anchor="w", pady=(_HINT_GAP, 0))
 
-        sizes = form.row("Size limits (MB)")
-        self._entry(sizes, self._min_size, width=80).pack(side="left")
-        ctk.CTkLabel(sizes, text="to").pack(side="left", padx=8)
-        self._entry(sizes, self._max_size, width=80).pack(side="left")
-        ctk.CTkLabel(sizes, text="0 = no limit", text_color=theme.TEXT_DIM).pack(side="left", padx=10)
+        updates = form.row("Updates")
+        self._checkbox(updates, "Install updates automatically", self._auto_update).pack(anchor="w")
+        text_label(
+            updates, f"Version {self._updates.current}", size=SMALL_SIZE, color=theme.TEXT_MUTED
+        ).pack(anchor="w", pady=(2, 10))
+        check = ctk.CTkFrame(updates, fg_color="transparent")
+        check.pack(fill="x")
+        self._update_button = primary_button(
+            check, "Check for updates", self._check_updates, width=_UPDATE_BUTTON_WIDTH
+        )
+        self._update_button.pack(side="left", anchor="n")
+        self._update_result = text_label(check, "", size=SMALL_SIZE, wraplength=_RESULT_WIDTH)
+        self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
 
-        version = form.row("App version")
-        ctk.CTkLabel(version, text=self._updates.current).pack(side="left", anchor="n")
-        self._update_button = ctk.CTkButton(
-            version,
-            text="Check for updates",
-            width=150,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            command=self._check_updates,
-        )
-        self._update_button.pack(side="left", anchor="n", padx=(14, 0))
-        self._update_result = ctk.CTkLabel(
-            version, text="", justify="left", anchor="w", wraplength=230
-        )
-        self._update_result.pack(side="left", padx=(10, 0), fill="x", expand=True)
+    def _build_advanced(self, form: _Form) -> None:
+        sources = form.row("Search these sites")
+        for index, (name, label) in enumerate(_SOURCES):
+            row, column = divmod(index, _SOURCE_COLUMNS)
+            self._checkbox(sources, label, self._sources[name]).grid(
+                row=row, column=column, sticky="w", padx=(0, 20)
+            )
 
-    def _build_indexers(self, form: _Form) -> None:
-        sources = form.row("Sources")
-        for name, label in _SOURCES:
-            ctk.CTkCheckBox(
-                sources,
-                text=label,
-                variable=self._sources[name],
-                width=0,
-                checkbox_width=20,
-                checkbox_height=20,
-                fg_color=theme.ACCENT,
-                hover_color=theme.ACCENT_HOVER,
-                border_color=theme.EDGE,
-            ).pack(side="left", padx=(0, 12))
-        self._entry(form.row("Excluded keywords"), self._excluded).pack(fill="x")
-        self._entry(form.row("Preferred groups"), self._preferred).pack(fill="x")
+        excluded = form.row("Skip releases with these words")
+        self._entry(excluded, self._excluded).pack(fill="x")
+        self._hint(excluded, "Separate with commas, for example: cam, telesync")
+        preferred = form.row("Prefer releases from")
+        self._entry(preferred, self._preferred).pack(fill="x")
+        self._hint(preferred, "Release group names, separated with commas")
 
-        form.full_width(
-            ctk.CTkLabel(form.frame, text="Prowlarr (optional)", font=theme.font(14, bold=True)),
-            pady=(14, 0),
-        )
-        form.full_width(
-            ctk.CTkLabel(
-                form.frame,
-                text="Routes searches through your own Prowlarr — brings back sites the "
-                "built-in sources can't reach.",
-                text_color=theme.TEXT_MUTED,
-                justify="left",
-                wraplength=520,
-            ),
-            pady=(0, 4),
-        )
+        form.section("Prowlarr", "Connected automatically when Prowlarr runs on this PC.")
         self._prowlarr_url = self._hinted_entry(
             form.row("URL"), self._settings.current.prowlarr_url, "http://localhost:9696"
         )
@@ -316,33 +394,16 @@ class SettingsDialog(ctk.CTkToplevel):
             form, lambda: self._start_test("prowlarr", self._search.test_prowlarr)
         )
 
-    def _build_station(self, form: _Form) -> None:
-        form.full_width(
-            ctk.CTkLabel(
-                form.frame,
-                text="Only used for releases that have no .torrent file (magnet-only). Everything "
-                "else is saved as a .torrent file into the torrent folder, as before.",
-                text_color=theme.TEXT_MUTED,
-                justify="left",
-                wraplength=460,
-            ),
-            pady=(0, 6),
+        form.section(
+            "Synology NAS (Download Station)",
+            "Used for releases that only have a magnet link, when you save to a folder.",
         )
         self._ds_url = self._hinted_entry(
             form.row("NAS address"), self._settings.current.ds_url, "http://192.168.1.x:5000"
         )
         self._entry(form.row("Username"), self._ds_username).pack(fill="x")
         self._entry(form.row("Password"), self._ds_password, show="•").pack(fill="x")
-        ctk.CTkCheckBox(
-            form.row(""),
-            text="Verify TLS certificate",
-            variable=self._ds_verify,
-            checkbox_width=20,
-            checkbox_height=20,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            border_color=theme.EDGE,
-        ).pack(anchor="w")
+        self._checkbox(form.row(""), "Verify TLS certificate", self._ds_verify).pack(anchor="w")
         self._ds_destination = self._hinted_entry(
             form.row("Destination folder"),
             self._settings.current.ds_destination,
@@ -355,9 +416,15 @@ class SettingsDialog(ctk.CTkToplevel):
     # -- widgets -------------------------------------------------------------------------------
 
     def _entry(self, master: Any, variable: ctk.StringVar, **kwargs: Any) -> ctk.CTkEntry:
-        kwargs.setdefault("width", 310)
         return ctk.CTkEntry(
-            master, textvariable=variable, fg_color=theme.SURFACE, border_color=theme.EDGE, **kwargs
+            master,
+            textvariable=variable,
+            height=BUTTON_HEIGHT,
+            corner_radius=BUTTON_RADIUS,
+            font=theme.font(DETAIL_SIZE),
+            fg_color=theme.SURFACE,
+            border_color=theme.EDGE,
+            **kwargs,
         )
 
     def _hinted_entry(self, master: Any, value: str, placeholder: str) -> ctk.CTkEntry:
@@ -365,7 +432,9 @@ class SettingsDialog(ctk.CTkToplevel):
         textvariable, so this one is read with `get()` (which returns "" for the placeholder)."""
         entry = ctk.CTkEntry(
             master,
-            width=310,
+            height=BUTTON_HEIGHT,
+            corner_radius=BUTTON_RADIUS,
+            font=theme.font(DETAIL_SIZE),
             placeholder_text=placeholder,
             fg_color=theme.SURFACE,
             border_color=theme.EDGE,
@@ -375,46 +444,121 @@ class SettingsDialog(ctk.CTkToplevel):
         entry.pack(fill="x")
         return entry
 
-    def _option_row(
-        self, form: _Form, label: str, variable: ctk.StringVar, values: list[str]
-    ) -> None:
+    def _hint(self, master: Any, text: str) -> None:
+        text_label(
+            master, text, size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=_FIELD_WIDTH
+        ).pack(anchor="w", pady=(_HINT_GAP, 0))
+
+    def _option_menu(self, master: Any, variable: ctk.StringVar, values: list[str]) -> None:
         ctk.CTkOptionMenu(
-            form.row(label),
+            master,
             variable=variable,
             values=values,
+            width=260,
+            height=BUTTON_HEIGHT,
+            corner_radius=BUTTON_RADIUS,
+            font=theme.font(DETAIL_SIZE),
+            dropdown_font=theme.font(DETAIL_SIZE),
             fg_color=theme.SURFACE,
             button_color=theme.EDGE,
             button_hover_color=theme.ACCENT_HOVER,
         ).pack(side="left")
 
+    def _checkbox(self, master: Any, text: str, variable: ctk.BooleanVar) -> ctk.CTkCheckBox:
+        return ctk.CTkCheckBox(
+            master,
+            text=text,
+            variable=variable,
+            width=0,
+            height=BUTTON_HEIGHT,
+            checkbox_width=22,
+            checkbox_height=22,
+            corner_radius=6,
+            font=theme.font(DETAIL_SIZE),
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            border_color=theme.EDGE,
+        )
+
+    def _radio(self, master: Any, text: str, mode: DownloadMode) -> ctk.CTkRadioButton:
+        return ctk.CTkRadioButton(
+            master,
+            text=text,
+            variable=self._mode,
+            value=mode.value,
+            width=0,
+            height=BUTTON_HEIGHT,
+            radiobutton_width=22,
+            radiobutton_height=22,
+            font=theme.font(DETAIL_SIZE),
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            border_color=theme.EDGE,
+            command=self._show_download_rows,
+        )
+
     def _test_row(
         self, form: _Form, command: Callable[[], None]
     ) -> tuple[ctk.CTkButton, ctk.CTkLabel]:
         cell = form.row("")
-        button = ctk.CTkButton(
-            cell,
-            text="Test connection",
-            width=130,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            command=command,
-        )
+        button = primary_button(cell, "Test connection", command, width=_TEST_BUTTON_WIDTH)
         button.pack(side="left", anchor="n")
-        result = ctk.CTkLabel(cell, text="", justify="left", anchor="w", wraplength=250)
-        result.pack(side="left", padx=(10, 0), fill="x", expand=True)
+        result = text_label(
+            cell, "", size=SMALL_SIZE, wraplength=_FIELD_WIDTH - _TEST_BUTTON_WIDTH - 12
+        )
+        result.pack(side="left", padx=(12, 0), fill="x", expand=True)
         return button, result
 
-    def _center_on(self, master: ctk.CTk) -> None:
-        self.update_idletasks()
-        x = master.winfo_rootx() + (master.winfo_width() - self.winfo_reqwidth()) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - self.winfo_reqheight()) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+    # -- General -------------------------------------------------------------------------------
 
-    def _activate(self) -> None:
-        if self.winfo_exists():
-            self.lift()
-            self.focus_force()
-            self.grab_set()
+    def _scroll_tab(self, name: str) -> ctk.CTkScrollableFrame:
+        """A tab whose content scrolls when the dialog is shorter than it (small screens)."""
+        frame = ctk.CTkScrollableFrame(
+            self._tabs.add(name),
+            fg_color="transparent",
+            scrollbar_button_color=theme.SURFACE,
+            scrollbar_button_hover_color=theme.EDGE,
+        )
+        frame.pack(fill="both", expand=True)
+        return frame
+
+    def _fit_size(self) -> None:
+        """Fix the dialog at the size of General's tallest state (either download choice, with
+        the Install button showing), so it doesn't change between choices or tabs; on a short
+        screen at the screen's height instead, the tabs scrolling."""
+        self._torrent.show(TorrentStatus.MISSING)
+        content = 0
+        for mode in DownloadMode:
+            self._grid_download_rows(download_rows(mode))
+            self.update_idletasks()
+            content = max(content, self._general_form.frame.winfo_reqheight())
+        self._torrent.show(TorrentStatus.LOOKING)
+        self._show_download_rows()
+        scaling = ctk.ScalingTracker.get_window_scaling(self)
+        # Let General's scroll area ask for all of its content, then measure the whole dialog.
+        self._general.configure(height=math.ceil(content / scaling) + _TAB_PAD + 8)
+        self.update_idletasks()
+        width = math.ceil(self.winfo_reqwidth() / scaling)
+        wanted = math.ceil(self.winfo_reqheight() / scaling)
+        _screen_width, screen_height = self.wm_maxsize()  # physical pixels
+        height = dialog_height(wanted, int(screen_height / scaling))
+        self.geometry(f"{width}x{height}")  # CTk scales the size (not the position)
+
+    def _show_download_rows(self) -> None:
+        rows = download_rows(DownloadMode(self._mode.get()))
+        self._grid_download_rows(rows)
+        if rows.torrent_status:
+            self._torrent.refresh()  # again each time: a program may have been installed
+
+    def _grid_download_rows(self, rows: DownloadRows) -> None:
+        if rows.torrent_status:
+            self._torrent.grid(row=1, column=0, sticky="ew", padx=(_INDENT, 0))
+        else:
+            self._torrent.grid_remove()
+        if rows.folder:
+            self._folder_row.grid(row=3, column=0, sticky="ew", padx=(_INDENT, 0), pady=(4, 0))
+        else:
+            self._folder_row.grid_remove()
 
     def _browse(self) -> None:
         # Native modal dialog: the event loop (and background tasks) pause until it closes.
@@ -422,20 +566,39 @@ class SettingsDialog(ctk.CTkToplevel):
         if chosen:
             self._download_dir.set(chosen)
 
+    def _open_key_guide(self) -> None:
+        if self._key_dialog is not None and self._key_dialog.winfo_exists():
+            self._key_dialog.lift()
+            self._key_dialog.focus_force()
+            return
+        self._key_dialog = TmdbKeyDialog(
+            self,
+            settings=self._settings,
+            discovery=self._discovery,
+            on_saved=self._key_saved,
+        )
+
+    def _key_saved(self, key: str) -> None:
+        if self.winfo_exists():
+            self._tmdb_key.set(key)
+
     # -- saving and testing --------------------------------------------------------------------
 
     async def _store(self) -> None:
         """Validate and persist the whole form. Raises ValidationError."""
         disabled = tuple(name for name, var in self._sources.items() if not var.get())
         await self._settings.update(
-            quality=self._quality.get(),
+            download_mode=self._mode.get(),
+            quality=quality_from_name(self._quality.get()),
             first_day=self._first_day.get(),
-            download_dir=self._download_dir.get().strip(),
+            download_dir=download_dir_to_save(
+                DownloadMode(self._mode.get()),
+                self._download_dir.get(),
+                self._settings.current.download_dir,
+            ),
             tmdb_api_key=self._tmdb_key.get(),
             excluded_keywords=self._excluded.get(),
             preferred_groups=self._preferred.get(),
-            min_size_mb=self._min_size.get().strip() or 0,
-            max_size_mb=self._max_size.get().strip() or 0,
             disabled_indexers=disabled + self._unknown_disabled,
             prowlarr_url=self._prowlarr_url.get(),
             prowlarr_api_key=self._prowlarr_key.get(),
@@ -444,6 +607,7 @@ class SettingsDialog(ctk.CTkToplevel):
             ds_password=self._ds_password.get(),
             ds_verify_tls=self._ds_verify.get(),
             ds_destination=self._ds_destination.get(),
+            auto_update=self._auto_update.get(),
         )
 
     async def _save(self) -> None:

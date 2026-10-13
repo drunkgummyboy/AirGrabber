@@ -29,6 +29,9 @@ _TV_CATEGORY = "5000"
 _MOVIE_CATEGORY = "2000"
 _MAX_QUERIES = 2
 _LIMIT = "100"
+# Prowlarr answers a search only once every site it asks has answered (each within 15 s, plus
+# retries), so its searches get longer than the shared client's 10 s read timeout.
+_SEARCH_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 
 class _ProwlarrRelease(WireModel):
@@ -49,6 +52,7 @@ class ProwlarrIndexer(BaseIndexer):
     name = "prowlarr"
     label = "Prowlarr"
     kinds = frozenset(SearchKind)
+    search_timeout = 40.0  # room for one slow 30 s answer plus the second query
 
     def __init__(
         self,
@@ -75,7 +79,9 @@ class ProwlarrIndexer(BaseIndexer):
 
         async def search_query(query: str) -> list[TorrentRelease]:
             params = {"query": query, "type": "search", "categories": category, "limit": _LIMIT}
-            payload = await self._get_json(base, _SEARCH_PATH, params, headers=headers)
+            payload = await self._get_json(
+                base, _SEARCH_PATH, params, headers=headers, timeout=_SEARCH_TIMEOUT
+            )
             return self._parse_releases(_SEARCH_PATH, payload, self._release)
 
         return await self._first_hit(text_queries(request)[:_MAX_QUERIES], search_query)

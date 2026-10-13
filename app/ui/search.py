@@ -17,6 +17,7 @@ from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.branding import set_window_icon
 from app.ui.cards import CARD_WIDTH, ShowCard, TrackState
+from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width
@@ -299,7 +300,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         discovery: DiscoveryService,
         status: StatusReporter,
         query: str,
-        on_grab: Callable[[Movie], None],
+        movie_actions: DownloadActions[Movie],
         on_open_settings: Callable[[], None],
     ) -> None:
         super().__init__(master, fg_color=theme.BG)
@@ -308,7 +309,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._images = images
         self._status = status
         self._query = query
-        self._on_grab = on_grab
+        self._movie_actions = movie_actions  # the movie cards' Download and ⋯ buttons
         self._on_open_settings = on_open_settings
         self._cards: dict[int, ShowCard] = {}
 
@@ -445,7 +446,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 movie,
                 images=self._images,
                 details=self._discovery.movie_details,
-                on_grab=self._on_grab,
+                actions=self._movie_actions,
             )
         grid.relayout()
 

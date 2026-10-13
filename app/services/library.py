@@ -45,18 +45,21 @@ SYNC_CONCURRENCY = 3
 SCHEDULE_RETENTION = timedelta(days=60)
 
 
-def calendar_range(
-    today: date, *, first_day: Weekday, weeks_before: int, weeks_total: int
-) -> tuple[date, date]:
-    """First and last day of the calendar grid.
+def week_start(day: date, first_day: Weekday) -> date:
+    """The first day of the week (starting on `first_day`) that contains `day`."""
+    return day - timedelta(days=(day.weekday() - first_day.weekday) % 7)
 
-    The grid starts `weeks_before` weeks before the current week and spans `weeks_total` weeks
-    in all (past weeks included), but always reaches at least the end of the current week.
+
+def calendar_range(
+    today: date, *, first_day: Weekday, weeks: int, offset: int = 0
+) -> tuple[date, date]:
+    """First and last day of the calendar grid: `weeks` whole weeks.
+
+    The grid starts at the week containing `today` moved by `offset` weeks (earlier weeks when
+    negative).
     """
-    week_start = today - timedelta(days=(today.weekday() - first_day.weekday) % 7)
-    start = week_start - timedelta(weeks=weeks_before)
-    end = start + timedelta(weeks=weeks_total, days=-1)
-    return start, max(end, week_start + timedelta(days=6))
+    start = week_start(today, first_day) + timedelta(weeks=offset)
+    return start, start + timedelta(weeks=weeks, days=-1)
 
 
 class LibraryService:

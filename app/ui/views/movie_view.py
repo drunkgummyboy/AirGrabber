@@ -10,6 +10,7 @@ import customtkinter as ctk
 from app.models import Movie
 from app.services import DiscoveryService, ImageCache
 from app.ui import theme
+from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
 from app.ui.views.base import StatusReporter
 from app.ui.views.shelves import Shelf, ShelvesView
@@ -28,14 +29,14 @@ class MovieView(ShelvesView[Movie]):
         images: ImageCache,
         status: StatusReporter,
         on_open_settings: Callable[[], None],
-        on_grab: Callable[[Movie], None],
+        movie_actions: DownloadActions[Movie],
         **kwargs: Any,
     ) -> None:
         super().__init__(
             master, images=images, status=status, on_open_settings=on_open_settings, **kwargs
         )
         self._discovery = discovery
-        self._on_grab = on_grab
+        self._movie_actions = movie_actions  # the cards' Download and ⋯ buttons
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=15, pady=5)
@@ -83,5 +84,5 @@ class MovieView(ShelvesView[Movie]):
             item,
             images=self._images,
             details=self._discovery.movie_details,
-            on_grab=self._on_grab,
+            actions=self._movie_actions,
         )

@@ -56,6 +56,7 @@ from app.ui import theme
 from app.ui.branding import set_window_icon
 from app.ui.media_cards import format_runtime
 from app.ui.tasks import spawn
+from app.ui.tooltip import Tooltip, add_tooltip
 from app.ui.widgets import LoadingBar, PosterImage
 
 if TYPE_CHECKING:
@@ -128,6 +129,7 @@ _ACTION_COLUMN = f"#{_COLUMN_IDS.index('action') + 1}"
 _ROW_HEIGHT = 26
 _TABLE_FONT_SIZE = 11
 _STYLE = "AG.Treeview"
+CHIP_TIP = "Open this site's search in your browser"
 
 
 # -- text --------------------------------------------------------------------------------------
@@ -371,6 +373,7 @@ class IndexerDialog(ctk.CTkToplevel):
         self._fixing = False
         self._chips: dict[str, ctk.CTkLabel] = {}
         self._chip_urls: dict[str, str | None] = {}
+        self._chip_tips: dict[str, Tooltip] = {}
         self._quality_buttons: dict[str, ctk.CTkButton] = {}
         self._quality_painted: dict[str, tuple[str, bool]] = {}
         self._season_buttons: dict[int, ctk.CTkButton] = {}
@@ -973,9 +976,11 @@ class IndexerDialog(ctk.CTkToplevel):
                 chip.pack(side="left", padx=(10, 0))
                 chip.bind("<Button-1>", lambda _event, name=status.name: self._open_indexer(name))
                 self._chips[status.name] = chip
+                self._chip_tips[status.name] = add_tooltip(chip, "")
             elif chip.cget("text") != text or chip.cget("text_color") != color:
                 chip.configure(text=text, text_color=color)
             self._chip_urls[status.name] = status.web_url
+            self._chip_tips[status.name].set_text(CHIP_TIP if status.web_url else "")
 
     def _open_indexer(self, name: str) -> None:
         url = self._chip_urls.get(name)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import logging
+import os
 import tempfile
 import unittest
 from collections import Counter
@@ -21,12 +22,21 @@ from app.models import (
     DownloadRecord,
     GrabOutcome,
     GrabTarget,
+    DownloadMode,
     MediaType,
     Settings,
+    TorrentApp,
     TorrentRelease,
 )
 from app.services import Services
-from app.services.downloads import DownloadService, GrabError, safe_filename
+from app.services.downloads import (
+    NO_TORRENT_APP,
+    DownloadService,
+    GrabError,
+    prune_torrent_cache,
+    safe_filename,
+)
+from app.services.torrent_app import TorrentAppService
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient, DownloadStationError
 
@@ -98,7 +108,18 @@ class DownloadTestCase(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.http.aclose)
         self.station = mock.create_autospec(DownloadStationClient, instance=True)
         self.station.configured = False
-        self.service = DownloadService(self.http, self.db.history, self.settings, self.station)
+        self.cache = root / "data" / "torrents"
+        self.opened: list[str] = []
+        self.app: TorrentApp | None = TorrentApp(name="qBittorrent")
+        self.service = DownloadService(
+            self.http,
+            self.db.history,
+            self.settings,
+            self.station,
+            self.cache,
+            find_app=lambda: self.app,
+            opener=self.opened.append,  # never the real os.startfile
+        )
         self.notifications = 0
         self.service.subscribe(self.on_grab)
 
@@ -371,6 +392,140 @@ class HistoryTests(DownloadTestCase):
             GrabTarget(media_type=MediaType.MOVIE, media_id=1, episode=3)
 
 
+class AppModeTests(DownloadTestCase):
+    """DownloadMode.APP: open in the torrent program (a fake opener; nothing really opens)."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.station.configured = True  # must still not be used in APP mode
+        await self.settings.update(download_mode=DownloadMode.APP)
+
+    def cache_files(self) -> list[str]:
+        return sorted(path.name for path in self.cache.iterdir()) if self.cache.exists() else []
+
+    async def test_torrent_is_saved_in_the_cache_and_opened(self) -> None:
+        self.serve(DIRECT_URL, TORRENT)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.OPENED)
+        self.assertEqual(result.message, "Opened in your torrent program")
+        expected = self.cache / "Some.Show.S01E02.1080p.WEB.h264-GRP.torrent"
+        self.assertEqual(result.path, str(expected))
+        self.assertEqual(expected.read_bytes(), TORRENT)
+        self.assertEqual(self.opened, [str(expected)])
+        self.assertEqual(self.cache_files(), [expected.name])
+        self.assertEqual(self.watch_files(), [])  # the watch folder is not used
+        self.station.add_magnet.assert_not_called()
+
+    async def test_itorrents_copy_is_opened(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(), EPISODE)
+        self.assertEqual(Path(result.path or "").read_bytes(), CACHED)
+        self.assertEqual(self.opened, [result.path])
+
+    async def test_magnet_only_release_opens_its_magnet(self) -> None:
+        magnet = f"magnet:?xt=urn:btih:{HASH}&dn=Original&tr=udp://tracker"
+        result = await self.service.grab(release(info_hash=None, magnet_uri=magnet), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.OPENED)
+        self.assertIsNone(result.path)
+        self.assertEqual(self.opened, [magnet])
+        self.assertEqual(self.web.requests[ITORRENTS], 1)  # a .torrent is still preferred
+        self.assertEqual(self.cache_files(), [])
+        self.station.add_magnet.assert_not_called()
+
+    async def test_prowlarr_redirect_to_a_magnet_opens_it(self) -> None:
+        magnet = f"magnet:?xt=urn:btih:{OTHER_HASH}&dn=Redirected"
+        self.web.routes[DIRECT_URL] = lambda: httpx.Response(302, headers={"Location": magnet})
+        result = await self.service.grab(
+            release(info_hash=None, download_url=DIRECT_URL), EPISODE
+        )
+        self.assertIs(result.outcome, GrabOutcome.OPENED)
+        self.assertEqual(self.opened, [magnet])
+        self.assertEqual((await self.history())[0].info_hash, OTHER_HASH)
+
+    async def test_hash_only_release_opens_a_built_magnet(self) -> None:
+        title = "Show & Tell / S01E02 [1080p] #1?"
+        await self.service.grab(release(title=title), EPISODE)
+        self.assertEqual(
+            self.opened,
+            [
+                f"magnet:?xt=urn:btih:{HASH}"
+                "&dn=Show%20%26%20Tell%20%2F%20S01E02%20%5B1080p%5D%20%231%3F"
+            ],
+        )
+
+    async def test_no_torrent_program_fails_before_any_request(self) -> None:
+        self.app = None
+        self.serve(DIRECT_URL, TORRENT)
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(str(caught.exception), NO_TORRENT_APP)
+        self.assertIn('choose "Save to a folder" in Settings.', NO_TORRENT_APP)
+        self.assertEqual(sum(self.web.requests.values()), 0)
+        self.assertEqual(self.opened, [])
+        self.assertEqual(await self.history(), [])
+        self.assertEqual(self.notifications, 0)
+
+    async def test_history_records_the_opened_grab(self) -> None:
+        self.serve(ITORRENTS, CACHED)
+        await self.service.grab(release(), EPISODE)
+        record = (await self.history())[0]
+        self.assertEqual(record.saved_path, "qBittorrent")
+        self.assertEqual(record.info_hash, HASH)
+        self.assertEqual(record.season, 1)
+        self.assertEqual(self.notifications, 1)
+        self.assertEqual(await self.service.grabbed_hashes(), frozenset({HASH}))
+
+    async def test_open_failure_is_a_grab_error_without_the_magnet(self) -> None:
+        def refuse(target: str) -> None:
+            raise OSError(2, "No application is associated")
+
+        self.service._opener = refuse
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(), EPISODE)
+        self.assertNotIn("magnet", str(caught.exception))
+        self.assertIn("qBittorrent", str(caught.exception))
+        self.assertEqual(await self.history(), [])
+
+    async def test_magnets_are_not_logged(self) -> None:
+        with self.assertLogs("app.services.downloads", "INFO") as logs:
+            await self.service.grab(release(), EPISODE)
+        self.assertNotIn("magnet:", "\n".join(logs.output))
+        self.assertNotIn(HASH, "\n".join(logs.output))
+
+    async def test_cache_is_pruned_to_the_newest_files(self) -> None:
+        self.cache.mkdir(parents=True)
+        for number in range(55):
+            old = self.cache / f"old {number}.torrent"
+            old.write_bytes(CACHED)
+            os.utime(old, (1_000_000 + number, 1_000_000 + number))
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(), EPISODE)
+        files = self.cache_files()
+        self.assertEqual(len(files), 50)
+        self.assertIn(Path(result.path or "").name, files)
+        self.assertNotIn("old 0.torrent", files)  # the oldest went first
+        self.assertIn("old 54.torrent", files)
+
+    def test_prune_keeps_other_files_and_tolerates_a_missing_folder(self) -> None:
+        prune_torrent_cache(self.cache, 1)  # no folder yet
+        self.cache.mkdir(parents=True)
+        (self.cache / "a.torrent").write_bytes(b"x")
+        (self.cache / "notes.txt").write_bytes(b"x")
+        prune_torrent_cache(self.cache, 0)
+        self.assertEqual(self.cache_files(), ["notes.txt"])
+
+
+class FolderModeTests(DownloadTestCase):
+    async def test_folder_is_the_default_and_never_opens_anything(self) -> None:
+        self.assertIs(Settings().download_mode, DownloadMode.FOLDER)
+        self.app = None  # detection is not consulted in FOLDER mode
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+        self.assertEqual(self.opened, [])
+        self.assertFalse(self.cache.exists())
+
+
 class WiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_services_expose_downloads_and_the_station(self) -> None:
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -383,6 +538,8 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(services.downloads._station, services.station)
             self.assertIs(services.downloads._http, services._http)
             self.assertFalse(services.station.configured)
+            self.assertEqual(services.downloads._torrent_cache, Path(tmp.name) / "torrents")
+            self.assertIsInstance(services.torrent_app, TorrentAppService)
         finally:
             await services.aclose()
 

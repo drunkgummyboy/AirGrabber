@@ -623,6 +623,41 @@ class ClearCacheTests(DiscoveryTestCase):
         self.assertEqual(self.server.count(*TV_PATHS), 6)
 
 
+class KeyCheckTests(DiscoveryTestCase):
+    """check_tmdb_key: the welcome's / key guide's Check, before any key is saved."""
+
+    AUTH = "/3/authentication"
+
+    async def test_accepted_key_without_a_saved_key(self) -> None:
+        self.key = ""  # nothing configured yet
+        self.server.tmdb[self.AUTH] = {"success": True, "status_code": 1}
+        self.assertTrue(await self.service.check_tmdb_key(V3_KEY))
+        [request] = self.server.of(self.AUTH)
+        self.assertEqual(request.url.params["api_key"], V3_KEY)
+
+    async def test_rejected_key(self) -> None:
+        self.server.failures[self.AUTH] = 401
+        self.assertFalse(await self.service.check_tmdb_key("wrongkey"))
+
+    async def test_network_error_raises(self) -> None:
+        async def unreachable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("timed out", request=request)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(unreachable))
+        self.addAsyncCleanup(http.aclose)
+        tvmaze = TVMazeClient(http, retry_delay=0)
+        service = DiscoveryService(TMDBClient(http, lambda: "", retry_delay=0), tvmaze, self.library)
+        with self.assertRaises(TMDBError):
+            await service.check_tmdb_key(V3_KEY)
+
+    async def test_the_check_does_not_touch_the_caches(self) -> None:
+        await self.service.movie_details(SPIDER_MAN)
+        self.server.tmdb[self.AUTH] = {"success": True}
+        await self.service.check_tmdb_key("otherkey")
+        await self.service.movie_details(SPIDER_MAN)
+        self.assertEqual(self.server.count(f"/3/movie/{SPIDER_MAN}"), 1)
+
+
 class TrackTests(DiscoveryTestCase):
     def lookups(self) -> list[tuple[str, str]]:
         return [

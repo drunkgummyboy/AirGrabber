@@ -57,9 +57,28 @@ def _run(paths: AppPaths) -> int:
             loop.run_until_complete(services.aclose())
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
+        _apply_staged_update()
         log.info("=== AirGrabber stopped ===")
         if restart:
             _relaunch()
+
+
+def _apply_staged_update() -> None:
+    """Swap in an update that was downloaded in the background, now that the app has shut down.
+
+    Never raises: a failed update must not break closing (or restarting) AirGrabber.
+    """
+    try:
+        # Third-party packages are importable by now (the package check passed earlier).
+        from app.services.install_info import ensure_uninstall_entry
+        from app.services.updates import apply_staged
+
+        install_dir = Path(__file__).resolve().parent
+        version = apply_staged(install_dir)  # logs what it did; None: nothing installed
+        if version is not None:
+            ensure_uninstall_entry(install_dir, version)  # "Installed apps" shows the new version
+    except Exception:
+        log.exception("Installing the downloaded update failed")
 
 
 def _relaunch() -> None:

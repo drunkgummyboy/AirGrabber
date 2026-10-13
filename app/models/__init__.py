@@ -18,6 +18,8 @@ from app.models.domain import (
     Movie,
     MovieDashboard,
     MovieDetails,
+    ProwlarrSetupResult,
+    QuickDownloadResult,
     Resolution,
     SearchKind,
     SearchRequest,
@@ -28,15 +30,17 @@ from app.models.domain import (
     SyncReport,
     TVDashboard,
     TVDetails,
+    TorrentApp,
     TorrentRelease,
     UpdateInfo,
 )
-from app.models.settings import QualityProfile, Settings, Weekday
+from app.models.settings import DownloadMode, QualityProfile, Settings, Weekday
 
 __all__ = [
     "CalendarEntry",
     "DiscoverShow",
     "DiscoverShowEntry",
+    "DownloadMode",
     "DownloadRecord",
     "Episode",
     "GrabOutcome",
@@ -51,7 +55,9 @@ __all__ = [
     "Movie",
     "MovieDashboard",
     "MovieDetails",
+    "ProwlarrSetupResult",
     "QualityProfile",
+    "QuickDownloadResult",
     "Resolution",
     "SearchKind",
     "SearchRequest",
@@ -63,6 +69,7 @@ __all__ = [
     "SyncReport",
     "TVDashboard",
     "TVDetails",
+    "TorrentApp",
     "TorrentRelease",
     "UpdateInfo",
     "Weekday",

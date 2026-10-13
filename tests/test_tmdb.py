@@ -827,6 +827,86 @@ class SecretHygieneTests(TMDBTestCase):
         self.assertIn("skipping malformed", logged)
         self.assertNotIn(SECRET, logged)
 
+    async def test_key_check_never_leaks(self) -> None:
+        for key in (SECRET, SECRET_TOKEN):
+            for handler in (self.leaky_transport_error, self.leaky_redirects_error):
+                with self.subTest(key=key, handler=handler.__name__):
+
+                    async def async_handler(
+                        request: httpx.Request,
+                        handler: Callable[[httpx.Request], httpx.Response] = handler,
+                    ) -> httpx.Response:
+                        return handler(request)
+
+                    with self.assertRaises(TMDBError) as caught:
+                        await self.client(async_handler, key="").check_key(key)
+                    for exc in exception_chain(caught.exception):
+                        self.assertNotIn(key, str(exc))
+                        self.assertNotIn(key, repr(exc))
+        self.assertNotIn(SECRET, self.log_output.getvalue())
+        self.assertNotIn(SECRET_TOKEN, self.log_output.getvalue())
+
+
+class KeyCheckTests(TMDBTestCase):
+    """check_key: one request to /authentication with the given key, whatever key is set."""
+
+    async def test_accepted_key(self) -> None:
+        server = FakeTMDB(ok({"success": True, "status_code": 1, "status_message": "Success."}))
+        self.assertTrue(await self.client(server, key="").check_key(f"  {V3_KEY}\n"))
+        [request] = server.requests
+        self.assertEqual(request.method, "GET")
+        self.assertEqual(str(request.url.copy_with(query=None)), BASE + "/authentication")
+        self.assertEqual(request.url.params.multi_items(), [("api_key", V3_KEY)])
+        self.assertNotIn("Authorization", request.headers)
+
+    async def test_checks_the_given_key_not_the_configured_one(self) -> None:
+        server = FakeTMDB(ok({"success": True}))
+        self.assertTrue(await self.client(server, key="configuredkey").check_key(V3_KEY))
+        [request] = server.requests
+        self.assertEqual(request.url.params["api_key"], V3_KEY)
+
+    async def test_v4_token_goes_in_a_bearer_header(self) -> None:
+        server = FakeTMDB(ok({"success": True}))
+        self.assertTrue(await self.client(server).check_key(V4_TOKEN))
+        [request] = server.requests
+        self.assertEqual(request.headers["Authorization"], f"Bearer {V4_TOKEN}")
+        self.assertNotIn("api_key", request.url.params)
+
+    async def test_rejected_key(self) -> None:
+        server = FakeTMDB(
+            httpx.Response(
+                401,
+                json={"success": False, "status_code": 7, "status_message": "Invalid API key"},
+            )
+        )
+        self.assertFalse(await self.client(server).check_key(V3_KEY))
+        self.assertEqual(len(server.requests), 1)
+
+    async def test_network_error_raises_without_retrying(self) -> None:
+        server = FakeTMDB(httpx.ConnectError("unreachable"))
+        with self.assertRaises(TMDBError) as caught:
+            await self.client(server).check_key(V3_KEY)
+        self.assertNotIsInstance(caught.exception, TMDBAuthError)
+        self.assertIn("ConnectError", str(caught.exception))
+        self.assertEqual(len(server.requests), 1)
+
+    async def test_unexpected_status_raises(self) -> None:
+        for status in (429, 500, 503, 404):
+            with self.subTest(status=status):
+                server = FakeTMDB(httpx.Response(status))
+                with self.assertRaises(TMDBError) as caught:
+                    await self.client(server).check_key(V3_KEY)
+                self.assertIn(f"HTTP {status}", str(caught.exception))
+                self.assertEqual(len(server.requests), 1)
+
+    async def test_empty_or_invalid_key_is_rejected_without_a_request(self) -> None:
+        server = FakeTMDB(ok({"success": True}))
+        client = self.client(server)
+        for key in ("", "   ", "abc​def", "clé"):
+            with self.subTest(key=key):
+                self.assertFalse(await client.check_key(key))
+        self.assertEqual(server.requests, [])
+
 
 if __name__ == "__main__":
     unittest.main()

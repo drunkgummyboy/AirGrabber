@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,8 +25,6 @@ OLD_STORED: dict[str, Any] = {
     "tmdb_api_key": "tmdbkey",
     "excluded_keywords": ["cam", "telesync"],
     "preferred_groups": [],
-    "min_size_mb": 0,
-    "max_size_mb": 0,
 }
 
 
@@ -32,7 +32,10 @@ class SettingsModelTests(unittest.TestCase):
     def test_old_stored_settings_load_with_new_defaults(self) -> None:
         settings = Settings.model_validate(json.loads(json.dumps(OLD_STORED)))
         self.assertEqual(settings.tmdb_api_key.get_secret_value(), "tmdbkey")
-        self.assertEqual(settings.prev_weeks_to_show, 1)
+        self.assertEqual(settings.weeks_to_show, 3)
+        # The retired "previous weeks" setting is ignored; suggestions are on by default.
+        self.assertNotIn("prev_weeks_to_show", settings.model_dump())
+        self.assertTrue(settings.show_suggestions)
         self.assertEqual(settings.prowlarr_url, "")
         self.assertEqual(settings.prowlarr_api_key.get_secret_value(), "")
         self.assertEqual(settings.ds_url, "")
@@ -121,6 +124,33 @@ class SettingsStorageTests(unittest.IsolatedAsyncioTestCase):
         loaded = await db.settings.load()
         self.assertEqual(loaded, settings)
         self.assertEqual(loaded.ds_password.get_secret_value(), "DSMPASS123")
+
+    async def test_retired_keys_are_ignored_on_load_and_removed_on_save(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "settings.db"
+        await (await Database.open(path)).close()  # create the schema
+        # A database written by an older version, with settings that no longer exist.
+        with contextlib.closing(sqlite3.connect(path)) as raw, raw:
+            raw.executemany(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                [
+                    ("retired_limit", "500"),
+                    ("retired_flag", "true"),
+                    ("prev_weeks_to_show", "2"),
+                    ("weeks_to_show", "4"),
+                ],
+            )
+        db = await Database.open(path)
+        self.addAsyncCleanup(db.close)
+        loaded = await db.settings.load()
+        self.assertEqual(loaded.weeks_to_show, 4)
+        self.assertNotIn("retired_limit", loaded.model_dump())
+        await db.settings.save(loaded)
+        with contextlib.closing(sqlite3.connect(path)) as raw:
+            keys = {row[0] for row in raw.execute("SELECT key FROM settings")}
+        self.assertEqual(keys, set(Settings.model_fields))
+        self.assertEqual(await db.settings.load(), loaded)
 
 
 if __name__ == "__main__":

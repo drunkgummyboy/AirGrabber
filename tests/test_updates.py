@@ -8,22 +8,30 @@ import stat
 import tempfile
 import unittest
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
 import httpx
 
+import main
 from app.services import updates
+from app.services.install_info import UNINSTALL_KEY
 from app.services.updates import (
     ARCHIVE_URL,
+    READY_FILE,
+    STAGING_DIR,
     VERSION_URL,
     UpdateError,
     UpdateService,
+    apply_staged,
     install_archive,
     is_development_copy,
     is_newer,
     parse_version,
+    stage_archive,
 )
+from tests.test_install_info import FakeRegistry
 
 TOP = "AirGrabber-main/"
 
@@ -170,6 +178,159 @@ class InstallArchiveTests(InstallDirTestCase):
         self.assertEqual(self.read("main.py"), "print('new main')\n")
 
 
+class StageAndApplyTests(InstallDirTestCase):
+    """Automatic updates: unpack in the background, swap in once the app has closed."""
+
+    @property
+    def staging(self) -> Path:
+        return self.dir / STAGING_DIR
+
+    def test_stage_then_apply_swaps_the_files(self) -> None:
+        self.assertEqual(stage_archive(archive(release()), self.dir, newer_than="2.0.0"), "2.1.0")
+        self.assert_untouched()  # staging alone changes nothing
+        self.assertTrue((self.staging / "new" / "app" / "ui" / "new_module.py").exists())
+        self.assertEqual((self.staging / READY_FILE).read_text(encoding="utf-8"), "2.1.0")
+
+        with self.assertLogs(updates.log, "INFO"):
+            self.assertEqual(apply_staged(self.dir), "2.1.0")
+        self.assertEqual(self.read("main.py"), "print('new main')\n")
+        self.assertEqual(self.read("requirements.txt"), "httpx>=0.28\n")
+        self.assertTrue((self.dir / "app" / "ui" / "new_module.py").exists())
+        self.assertFalse((self.dir / "app" / "ui" / "stale.py").exists())
+        self.assertEqual(self.read("notes.txt"), "mine\n")
+        self.assertFalse(self.staging.exists())
+        self.assertIsNone(apply_staged(self.dir))  # nothing left to apply
+
+    def test_nothing_staged(self) -> None:
+        self.assertIsNone(apply_staged(self.dir))
+        self.assert_untouched()
+
+    def test_a_stale_staged_update_is_deleted_not_applied(self) -> None:
+        for staged in ("2.0.0", "1.9.9"):  # equal to / older than the version on disk
+            with self.subTest(staged=staged):
+                stage_archive(archive(release(staged)), self.dir)
+                with self.assertLogs(updates.log, "INFO"):
+                    self.assertIsNone(apply_staged(self.dir))
+                self.assert_untouched()
+                self.assertFalse(self.staging.exists())
+
+    def test_staged_update_older_than_a_reinstall_is_deleted(self) -> None:
+        stage_archive(archive(release("2.1.0")), self.dir, newer_than="2.0.0")
+        # The user reran the installer meanwhile, which brought 2.2.0.
+        (self.dir / "app" / "__init__.py").write_text('__version__ = "2.2.0"\n', encoding="utf-8")
+        with self.assertLogs(updates.log, "INFO"):
+            self.assertIsNone(apply_staged(self.dir))
+        self.assertEqual(self.read("app/__init__.py"), '__version__ = "2.2.0"\n')
+        self.assertEqual(self.read("main.py"), "print('old main')\n")
+        self.assertFalse(self.staging.exists())
+
+    def test_an_incomplete_staged_update_is_deleted(self) -> None:
+        cases: dict[str, Callable[[], object]] = {
+            "no ready marker": lambda: (self.staging / READY_FILE).unlink(),
+            "marker for another version": lambda: (self.staging / READY_FILE).write_text(
+                "2.2.0", encoding="utf-8"
+            ),
+            "an entry missing": lambda: (self.staging / "new" / "main.py").unlink(),
+        }
+        for name, damage in cases.items():
+            with self.subTest(name):
+                stage_archive(archive(release()), self.dir)
+                damage()
+                with self.assertLogs(updates.log, "INFO"):
+                    self.assertIsNone(apply_staged(self.dir))
+                self.assert_untouched()
+                self.assertFalse(self.staging.exists())
+
+    def test_a_failed_apply_rolls_back_without_raising(self) -> None:
+        stage_archive(archive(release()), self.dir)
+        real_rename = updates._rename
+
+        def flaky(source: Path, destination: Path) -> None:
+            if source.name == "app" and source.parent.name == "new":  # the last entry to go in
+                raise PermissionError("locked")
+            real_rename(source, destination)
+
+        with mock.patch.object(updates, "_rename", side_effect=flaky), mock.patch("time.sleep"):
+            with self.assertLogs(updates.log, "WARNING"):
+                self.assertIsNone(apply_staged(self.dir))
+        self.assert_untouched()
+        self.assertEqual(self.read("app/__init__.py"), '__version__ = "2.0.0"\n')
+        self.assertFalse(self.staging.exists())  # rolled back: never tried again
+
+    def test_unexpected_errors_never_escape(self) -> None:
+        stage_archive(archive(release()), self.dir)
+        with mock.patch.object(updates, "_swap", side_effect=RuntimeError("bug")):
+            with self.assertLogs(updates.log, "ERROR"):
+                self.assertIsNone(apply_staged(self.dir))
+        self.assert_untouched()
+
+    def test_a_development_copy_never_applies(self) -> None:
+        stage_archive(archive(release()), self.dir)
+        (self.dir / "tests").mkdir()
+        self.assertIsNone(apply_staged(self.dir))
+        self.assert_untouched()
+        self.assertTrue((self.staging / READY_FILE).exists())  # not even cleaned up
+
+    def test_stage_refuses_a_version_that_is_not_newer(self) -> None:
+        with self.assertRaisesRegex(UpdateError, "not newer"):
+            stage_archive(archive(release("2.0.0")), self.dir, newer_than="2.0.0")
+        self.assertFalse(self.staging.exists())
+        self.assert_untouched()
+
+    def test_a_failed_stage_leaves_nothing_behind(self) -> None:
+        with self.assertRaisesRegex(UpdateError, "unsafe"):
+            stage_archive(archive(release(**{"app/../../evil.py": "x"})), self.dir)
+        self.assertFalse(self.staging.exists())
+        with self.assertRaisesRegex(UpdateError, "not a valid archive"):
+            stage_archive(b"<html>rate limited</html>", self.dir)
+        self.assertFalse(self.staging.exists())
+        self.assert_untouched()
+
+    def test_install_replaces_a_staged_update(self) -> None:
+        stage_archive(archive(release("2.1.0")), self.dir)
+        self.assertEqual(install_archive(archive(release("2.2.0")), self.dir), "2.2.0")
+        self.assertFalse(self.staging.exists())
+        self.assertIsNone(apply_staged(self.dir))
+        self.assertIn('__version__ = "2.2.0"', self.read("app/__init__.py"))
+
+
+class ExitTests(InstallDirTestCase):
+    """main.py applies a staged update after shutdown and never fails the exit over it."""
+
+    def test_applies_and_refreshes_the_installed_apps_entry(self) -> None:
+        with (
+            mock.patch.object(updates, "apply_staged", return_value="2.1.0") as apply,
+            mock.patch("app.services.install_info.ensure_uninstall_entry") as ensure,
+        ):
+            main._apply_staged_update()
+        install_dir = Path(main.__file__).resolve().parent
+        apply.assert_called_once_with(install_dir)
+        ensure.assert_called_once_with(install_dir, "2.1.0")
+
+    def test_nothing_applied_leaves_the_entry_alone(self) -> None:
+        with (
+            mock.patch.object(updates, "apply_staged", return_value=None),
+            mock.patch("app.services.install_info.ensure_uninstall_entry") as ensure,
+        ):
+            main._apply_staged_update()
+        ensure.assert_not_called()
+
+    def test_failures_never_escape(self) -> None:
+        with (
+            mock.patch.object(updates, "apply_staged", return_value="2.1.0"),
+            mock.patch(
+                "app.services.install_info.ensure_uninstall_entry", side_effect=RuntimeError("x")
+            ),
+            self.assertLogs(main.log, "ERROR"),
+        ):
+            main._apply_staged_update()
+
+    def test_this_development_copy_is_never_updated_on_exit(self) -> None:
+        with mock.patch.object(updates, "_swap") as swap:
+            main._apply_staged_update()
+        swap.assert_not_called()
+
+
 class UpdateServiceTests(InstallDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.routes: dict[str, httpx.Response] = {}
@@ -229,13 +390,65 @@ class UpdateServiceTests(InstallDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_development_copy_is_never_overwritten(self) -> None:
         (self.dir / "tests").mkdir()
         self.routes[VERSION_URL] = httpx.Response(200, text='__version__ = "2.1.0"\n')
+        self.routes[ARCHIVE_URL] = httpx.Response(200, content=archive(release()))
         info = await self.service().check()
         self.assertTrue(info.available)
         self.assertFalse(info.installable)
         with self.assertRaisesRegex(UpdateError, "development copy"):
             await self.service().install()
+        with self.assertRaisesRegex(UpdateError, "development copy"):
+            await self.service().stage()
         self.assertNotIn(ARCHIVE_URL, self.requests)
+        self.assertFalse((self.dir / STAGING_DIR).exists())
+        self.assertIsNone(apply_staged(self.dir))
         self.assert_untouched()
+
+    async def test_stage_downloads_and_unpacks_without_swapping(self) -> None:
+        self.routes[ARCHIVE_URL] = httpx.Response(200, content=archive(release()))
+        with self.assertLogs(updates.log, "INFO"):
+            self.assertEqual(await self.service().stage(), "2.1.0")
+        self.assert_untouched()
+        self.assertTrue((self.dir / STAGING_DIR / READY_FILE).exists())
+        self.assertEqual(apply_staged(self.dir), "2.1.0")
+        self.assertEqual(self.read("main.py"), "print('new main')\n")
+
+    async def test_stage_refuses_a_download_that_is_not_newer(self) -> None:
+        self.routes[ARCHIVE_URL] = httpx.Response(200, content=archive(release("2.0.0")))
+        with self.assertRaisesRegex(UpdateError, "not newer"):
+            await self.service().stage()
+        self.assertFalse((self.dir / STAGING_DIR).exists())
+
+    async def test_stage_reports_http_errors(self) -> None:
+        self.routes[ARCHIVE_URL] = httpx.Response(503)
+        with self.assertRaisesRegex(UpdateError, "503"):
+            await self.service().stage()
+        self.assertFalse((self.dir / STAGING_DIR).exists())
+
+    async def test_stage_reports_file_errors_as_update_errors(self) -> None:
+        self.routes[ARCHIVE_URL] = httpx.Response(200, content=archive(release()))
+        with (
+            mock.patch.object(updates, "_extract", side_effect=PermissionError("denied")),
+            self.assertLogs(updates.log, "WARNING"),
+            self.assertRaisesRegex(UpdateError, "unpack"),
+        ):
+            await self.service().stage()
+        self.assertFalse((self.dir / STAGING_DIR).exists())
+
+    async def test_register_install_adds_the_installed_apps_entry(self) -> None:
+        registry = FakeRegistry()
+        service = UpdateService(self.http, self.dir, current="2.0.0", registry=registry)
+        with self.assertLogs("app.services.install_info", "INFO"):
+            await service.register_install()
+        entry = registry.keys[UNINSTALL_KEY]
+        self.assertEqual(entry["DisplayVersion"], "2.0.0")
+        self.assertEqual(entry["InstallLocation"], str(self.dir))
+
+    async def test_register_install_skips_a_development_copy(self) -> None:
+        (self.dir / "tests").mkdir()
+        registry = FakeRegistry()
+        await UpdateService(self.http, self.dir, registry=registry).register_install()
+        self.assertEqual(registry.keys, {})
+        self.assertEqual(registry.writes, [])
 
 
 class DevelopmentCopyTests(unittest.TestCase):

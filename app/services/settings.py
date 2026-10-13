@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
@@ -20,6 +21,9 @@ class SettingsService:
         self._repository = repository
         self._current = initial
         self._listeners: list[SettingsListener] = []
+        # One update at a time: each merges its changes into the settings the previous one
+        # stored, so concurrent callers (Prowlarr setup, welcome, Settings) can't undo each other.
+        self._lock = asyncio.Lock()
 
     @classmethod
     async def load(cls, repository: SettingsRepository) -> SettingsService:
@@ -30,18 +34,23 @@ class SettingsService:
         return self._current
 
     async def update(self, **changes: Any) -> Settings:
-        """Validate, persist, then notify listeners. Raises pydantic.ValidationError on bad input."""
-        updated = Settings.model_validate({**self._current.model_dump(), **changes})
-        if updated == self._current:
+        """Validate, persist, then notify listeners. Raises pydantic.ValidationError on bad input.
+
+        Updates are serialized: `changes` are merged into the settings as they are once every
+        earlier update has been saved.
+        """
+        async with self._lock:
+            updated = Settings.model_validate({**self._current.model_dump(), **changes})
+            if updated == self._current:
+                return updated
+            await self._repository.save(updated)
+            self._current = updated
+            for listener in list(self._listeners):
+                try:
+                    listener(updated)
+                except Exception:
+                    log.exception("Settings listener %r failed", listener)
             return updated
-        await self._repository.save(updated)
-        self._current = updated
-        for listener in list(self._listeners):
-            try:
-                listener(updated)
-            except Exception:
-                log.exception("Settings listener %r failed", listener)
-        return updated
 
     def subscribe(self, listener: SettingsListener) -> Callable[[], None]:
         """Call `listener` after every change. Returns a function that unsubscribes it."""

@@ -371,6 +371,11 @@ class DiscoveryService:
     async def search_movies(self, query: str, *, limit: int = 12) -> list[Movie]:
         return await self._tmdb.search_movies(query, limit=limit)
 
+    async def check_tmdb_key(self, key: str) -> bool:
+        """Whether TMDB accepts `key` (not yet saved). Raises TMDBError when TMDB can't be
+        reached; see TMDBClient.check_key."""
+        return await self._tmdb.check_key(key)
+
     # -- tracking ------------------------------------------------------------------------------
 
     async def track(self, show: DiscoverShow) -> Show:

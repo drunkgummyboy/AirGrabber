@@ -2,8 +2,16 @@
 
 An installed copy (made by install.ps1) consists of exactly APP_ENTRIES; an update replaces exactly
 those, so nothing else in the folder is touched. User data lives in the data directory
-(`app.config.AppPaths`), never next to the code. The app restarts itself afterwards (see main.py),
-and the launch-time package check installs whatever new requirements the update brought.
+(`app.config.AppPaths`), never next to the code.
+
+Two ways in:
+- `UpdateService.install` (Settings' "Update to X") swaps the new files in at once; the app then
+  restarts itself (see main.py).
+- `UpdateService.stage` (automatic updates) only unpacks and validates the new files into
+  `<install>/.update/new`; main.py swaps them in with `apply_staged` once AirGrabber has closed.
+
+Either way the launch-time package check installs whatever new requirements the update brought.
+`apply_staged` and the file-system helpers below use the standard library only.
 """
 
 from __future__ import annotations
@@ -16,6 +24,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 import zipfile
 from collections.abc import Callable
@@ -26,6 +35,7 @@ import httpx
 from app import __version__
 from app.bootstrap import version_tuple
 from app.models import UpdateInfo
+from app.services.install_info import Registry, ensure_uninstall_entry
 
 log = logging.getLogger(__name__)
 
@@ -38,9 +48,14 @@ INSTALL_DIR = Path(__file__).resolve().parents[2]
 APP_ENTRIES = ("main.py", "requirements.txt", "app")  # keep in step with install.ps1
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 STAGING_DIR = ".update"
+READY_FILE = "ready"  # in STAGING_DIR: written last by stage_archive (holds the staged version)
 
 _VERSION_LINE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
 _RENAME_ATTEMPTS = 5  # antivirus scanners briefly lock freshly written files on Windows
+# Staging, installing and applying run in worker threads, and apply_staged at exit: one at a time.
+# A staging thread can outlive the event loop (closing the app cancels the task, not the thread).
+_STAGING_LOCK = threading.Lock()
+_STAGING_WAIT_S = 120.0
 
 
 class UpdateError(Exception):
@@ -65,11 +80,17 @@ def is_development_copy(install_dir: Path) -> bool:
 
 class UpdateService:
     def __init__(
-        self, http: httpx.AsyncClient, install_dir: Path = INSTALL_DIR, *, current: str = __version__
+        self,
+        http: httpx.AsyncClient,
+        install_dir: Path = INSTALL_DIR,
+        *,
+        current: str = __version__,
+        registry: Registry | None = None,
     ) -> None:
         self._http = http
         self._dir = install_dir
         self._current = current
+        self._registry = registry  # None: the real Windows registry
 
     @property
     def current(self) -> str:
@@ -114,6 +135,32 @@ class UpdateService:
         log.info("Updated from %s to %s", self._current, version)
         return version
 
+    async def stage(self) -> str:
+        """Download the latest version and unpack it, ready to be swapped in once AirGrabber has
+        closed (main.py calls `apply_staged`). Returns the staged version.
+
+        Raises UpdateError, also when the download is not newer than the running version.
+        """
+        if not self.installable:
+            raise UpdateError("This is a development copy; it is never overwritten by an update.")
+        data = await self._download()
+        try:
+            version = await asyncio.to_thread(
+                stage_archive, data, self._dir, newer_than=self._current
+            )
+        except OSError as exc:
+            log.warning("Could not unpack the update: %r", exc)
+            raise UpdateError("Could not unpack the update.") from exc
+        log.info("Update %s is ready; it is installed when AirGrabber closes", version)
+        return version
+
+    async def register_install(self) -> None:
+        """Create or refresh this copy's entry in Windows' "Installed apps" (installed copies only)."""
+        if self.installable:
+            await asyncio.to_thread(
+                ensure_uninstall_entry, self._dir, self._current, registry=self._registry
+            )
+
     async def _download(self) -> bytes:
         try:
             async with self._http.stream("GET", ARCHIVE_URL, timeout=httpx.Timeout(30.0)) as response:
@@ -129,7 +176,8 @@ class UpdateService:
             raise UpdateError("Download failed: could not reach GitHub.") from exc
 
 
-# Everything below runs in a worker thread: plain file-system work on its arguments.
+# Everything below is plain, blocking file-system work on its arguments: it runs in a worker
+# thread, or (apply_staged) in main.py after shutdown.
 
 
 def install_archive(data: bytes, install_dir: Path) -> str:
@@ -137,25 +185,132 @@ def install_archive(data: bytes, install_dir: Path) -> str:
 
     The old files are moved aside first and put back if anything fails half-way.
     """
+    with _STAGING_LOCK:
+        version = _unpack(data, install_dir)
+        staging = install_dir / STAGING_DIR
+        _swap(staging / "new", staging / "old", install_dir)
+        _remove_tree(staging)  # best effort: a leftover is cleared by the next update
+        return version
+
+
+def stage_archive(data: bytes, install_dir: Path, *, newer_than: str | None = None) -> str:
+    """Unpack and validate a GitHub branch archive into `<install>/.update/new` without swapping
+    it in (that is `apply_staged`'s job). Returns the staged version.
+
+    With `newer_than`, an archive that is not newer than that version is refused (UpdateError).
+    The ready marker is written last, so an unpack that was cut short is never applied.
+    """
+    with _STAGING_LOCK:
+        version = _unpack(data, install_dir)
+        staging = install_dir / STAGING_DIR
+        try:
+            if newer_than is not None and not is_newer(version, newer_than):
+                raise UpdateError(
+                    f"The download is version {version}, which is not newer than {newer_than}."
+                )
+            (staging / READY_FILE).write_text(version, encoding="utf-8")
+        except BaseException:
+            _remove_tree(staging)
+            raise
+        return version
+
+
+def apply_staged(install_dir: Path) -> str | None:
+    """Swap in the update `stage_archive` left in `<install>/.update`. Returns the version
+    installed, or None when nothing was installed.
+
+    main.py calls this once AirGrabber has shut down. It never raises: a failed swap is rolled
+    back and logged. A staged update that is incomplete, or not newer than the version on disk
+    (the installer ran in between), is deleted instead. A development copy is never touched.
+    """
+    try:
+        if is_development_copy(install_dir):
+            return None
+        if not _STAGING_LOCK.acquire(timeout=_STAGING_WAIT_S):
+            log.warning("The update was still being unpacked; it is installed next time")
+            return None
+        try:
+            return _apply_staged(install_dir)
+        finally:
+            _STAGING_LOCK.release()
+    except Exception:
+        log.exception("Installing the downloaded update failed")
+        return None
+
+
+def _apply_staged(install_dir: Path) -> str | None:
+    staging = install_dir / STAGING_DIR
+    if not staging.exists():
+        return None
+    staged = _staged_version(staging)
+    if staged is None:
+        log.info("Removing an incomplete downloaded update")
+        _remove_tree(staging)
+        return None
+    installed = _read_version(install_dir / "app" / "__init__.py")
+    if installed is None or not is_newer(staged, installed):
+        log.info("Removing the downloaded update %s: %s is installed", staged, installed or "?")
+        _remove_tree(staging)
+        return None
+    old = staging / "old"
+    try:
+        _swap(staging / "new", old, install_dir)
+    except UpdateError as exc:
+        log.warning("Could not install the downloaded update %s: %s", staged, exc)
+        (staging / READY_FILE).unlink(missing_ok=True)  # never tried again
+        if not old.exists() or not any(old.iterdir()):  # rolled back: no old file is left there
+            _remove_tree(staging)
+        return None
+    _remove_tree(staging)  # best effort: a leftover is cleared by the next update
+    log.info("Installed the downloaded update: %s -> %s", installed, staged)
+    return staged
+
+
+def _unpack(data: bytes, install_dir: Path) -> str:
+    """Extract and validate an archive into `<install>/.update/new` (cleared first). Returns its
+    version. On failure the staging folder is removed again and nothing else was changed."""
     staging = install_dir / STAGING_DIR
     _remove_tree(staging)
     if staging.exists():
         raise UpdateError(f"Could not clear the folder {staging}; delete it and try again.")
-    new, old = staging / "new", staging / "old"
+    new = staging / "new"
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            _extract(archive, new)
-    except zipfile.BadZipFile as exc:
-        raise UpdateError("The download is not a valid archive.") from exc
-    for entry in APP_ENTRIES:
-        if not (new / entry).exists():
-            raise UpdateError(f"The download has no {entry}; nothing was changed.")
-    version = parse_version((new / "app" / "__init__.py").read_text(encoding="utf-8", errors="replace"))
-    if version is None:
-        raise UpdateError("The download has no version number; nothing was changed.")
-    _swap(new, old, install_dir)
-    _remove_tree(staging)  # best effort: a leftover is cleared by the next update
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                _extract(archive, new)
+        except zipfile.BadZipFile as exc:
+            raise UpdateError("The download is not a valid archive.") from exc
+        for entry in APP_ENTRIES:
+            if not (new / entry).exists():
+                raise UpdateError(f"The download has no {entry}; nothing was changed.")
+        version = _read_version(new / "app" / "__init__.py")
+        if version is None:
+            raise UpdateError("The download has no version number; nothing was changed.")
+    except BaseException:
+        _remove_tree(staging)
+        raise
     return version
+
+
+def _staged_version(staging: Path) -> str | None:
+    """The version of a complete staged update (ready marker written, every entry there, the
+    marker's version is the files' version), else None."""
+    try:
+        marker = (staging / READY_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    new = staging / "new"
+    if not all((new / entry).exists() for entry in APP_ENTRIES):
+        return None
+    version = _read_version(new / "app" / "__init__.py")
+    return version if version is not None and version == marker else None
+
+
+def _read_version(init_file: Path) -> str | None:
+    try:
+        return parse_version(init_file.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
 
 
 def _extract(archive: zipfile.ZipFile, target: Path) -> None:

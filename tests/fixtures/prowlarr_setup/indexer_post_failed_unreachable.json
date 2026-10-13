@@ -1,0 +1,3 @@
+[
+  {"isWarning": false, "detailedDescription": "Received an unexpected EOF or 0 bytes from the transport stream.", "propertyName": "", "errorMessage": "Unable to connect to indexer. This is typically caused by DNS/SSL issues. Check DNS settings, ensure IPv6 is working or disabled, consider using different DNS servers, or try a VPN/proxy if needed. See: 'https://wiki.servarr.com/prowlarr/troubleshooting#dns-ssl-connection-issues' The SSL connection could not be established, see inner exception.", "severity": "error"}
+]

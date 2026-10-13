@@ -1,0 +1,1350 @@
+[
+  {
+    "indexerUrls": [
+      "https://knaben.org/"
+    ],
+    "definitionName": "Knaben",
+    "description": "Knaben is a Public torrent meta-search engine",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 3000, "name": "Audio"},
+        {"id": 5000, "name": "TV"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 4000, "name": "PC"},
+        {"id": 6000, "name": "XXX"},
+        {"id": 7000, "name": "Books"},
+        {"id": 1000, "name": "Console"},
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "knaben",
+    "name": "Knaben",
+    "fields": [
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false}
+    ],
+    "implementationName": "Knaben",
+    "implementation": "Knaben",
+    "configContract": "NoAuthTorrentBaseSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#knaben",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://www.limetorrents.fun/",
+      "https://limetorrents.ninjaproxy1.com/",
+      "https://limetorrents.proxyninja.org/",
+      "https://limetorrents.torrentbay.st/",
+      "https://limetorrents.torrentsbay.org/"
+    ],
+    "definitionName": "limetorrents",
+    "description": "LimeTorrents is a Public general torrent index with mostly verified torrents",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 1000, "name": "Console"},
+        {"id": 4000, "name": "PC"},
+        {"id": 8000, "name": "Other"},
+        {"id": 7000, "name": "Books"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "limetorrents",
+    "name": "LimeTorrents",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "limetorrents", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "primarydownloadlink", "type": "select", "value": 1},
+      {"name": "fallbackdownloadlink", "type": "select", "value": 0},
+      {"name": "info_download", "type": "info", "value": "As the .torrent download links on this site are known to fail from time to time, you can optionally set as a fallback an automatic alternate link."},
+      {"name": "sort", "type": "select", "value": 0},
+      {"name": "info_category_8000", "type": "info", "value": "LimeTorrents only returns category <b>Other</b> in its <i>Keywordless</i> search results page.</br>To pass your apps' indexer TEST you will need to include the 8000(Other) category."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#limetorrents",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://www.torrentdownloads.pro/",
+      "https://torrentdownloads.ninjaproxy1.com/",
+      "https://torrentdownloads.proxyninja.org/"
+    ],
+    "definitionName": "torrentdownloads",
+    "description": "Torrent Downloads (TD) is a Public torrent site for all kinds of content",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 4000, "name": "PC"},
+        {"id": 7000, "name": "Books"},
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrent downloads",
+    "name": "Torrent Downloads",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "torrentdownloads", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "primarydownloadlink", "type": "select", "value": 1},
+      {"name": "fallbackdownloadlink", "type": "select", "value": 0},
+      {"name": "info_download", "type": "info", "value": "As the .torrent download links on this site are known to fail from time to time, you can optionally set as a fallback an automatic alternate link."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentdownloads",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://www.torrentdownload.info/"
+    ],
+    "definitionName": "torrentdownload",
+    "description": "TorrentDownload is a Public torrent meta-search engine",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 6000, "name": "XXX"},
+        {"id": 5000, "name": "TV"},
+        {"id": 4000, "name": "PC"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 7000, "name": "Books"},
+        {"id": 1000, "name": "Console"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrentdownload",
+    "name": "TorrentDownload",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "torrentdownload", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "sort", "type": "select", "value": 1}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentdownload",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://www.magnetdownload.com/"
+    ],
+    "definitionName": "magnetdownload",
+    "description": "MagnetDownload is a Public DHT Crawler",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "magnetdownload",
+    "name": "MagnetDownload",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "magnetdownload", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_category_8000", "type": "info", "value": "MagnetDownload does not return categories in its search results. To sync to your apps, include 8000(Other) in your Apps' Sync Categories."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#magnetdownload",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://nyaa.si/",
+      "https://nyaa.iss.ink/",
+      "https://nyaa.land/",
+      "https://nyaa.mom/",
+      "https://nyaa.media/"
+    ],
+    "definitionName": "nyaasi",
+    "description": "Nyaa is a Public torrent site focused on Eastern ASIAN media including anime, manga, literature and music",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 7000, "name": "Books"},
+        {"id": 8000, "name": "Other"},
+        {"id": 4000, "name": "PC"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "nyaa si",
+    "name": "Nyaa.si",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "nyaasi", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "prefer_magnet_links", "type": "checkbox", "value": true},
+      {"name": "sonarr_compatibility", "type": "checkbox", "value": false},
+      {"name": "strip_s01", "type": "checkbox", "value": false},
+      {"name": "radarr_compatibility", "type": "checkbox", "value": false},
+      {"name": "filter-id", "type": "select", "value": 0},
+      {"name": "cat-id", "type": "select", "value": 0},
+      {"name": "sort", "type": "select", "value": 0},
+      {"name": "type", "type": "select", "value": 1}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#nyaasi",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://uindex.org/"
+    ],
+    "definitionName": "uindex",
+    "description": "Uindex is a Public Torrent Tracker for MOVIES / TV / MUSIC / GENERAL",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 2000, "name": "Movies"},
+        {"id": 5000, "name": "TV"},
+        {"id": 1000, "name": "Console"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 4000, "name": "PC"},
+        {"id": 6000, "name": "XXX"},
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "uindex",
+    "name": "Uindex",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "uindex", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#uindex",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://kickass.torrentbay.st/",
+      "https://kickass.torrentsbay.org/",
+      "https://kickasstorrents.ninjaproxy1.com/",
+      "https://kickasstorrents.proxyninja.org/"
+    ],
+    "definitionName": "kickasstorrents-to",
+    "description": "kickasstorrents.to is a Public KickAssTorrent clone for MOVIES / TV / GENERAL",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 2000, "name": "Movies"},
+        {"id": 6000, "name": "XXX"},
+        {"id": 4000, "name": "PC"},
+        {"id": 5000, "name": "TV"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 8000, "name": "Other"},
+        {"id": 7000, "name": "Books"},
+        {"id": 1000, "name": "Console"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "kickasstorrents to",
+    "name": "kickasstorrents.to",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "kickasstorrents-to", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#kickasstorrents-to",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://kickass.ws/",
+      "https://kickasstorrents.bz/",
+      "https://kkickass.com/",
+      "https://kkat.net/",
+      "https://kick4ss.com/",
+      "https://kickasst.net/",
+      "https://kickasstorrents.id/",
+      "https://thekat.cc/",
+      "https://kattracker.com/"
+    ],
+    "definitionName": "kickasstorrents-ws",
+    "description": "kickasstorrents.ws is a Public KickAssTorrent clone for MOVIES / TV / GENERAL",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 4000, "name": "PC"},
+        {"id": 7000, "name": "Books"},
+        {"id": 1000, "name": "Console"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 8000, "name": "Other"},
+        {"id": 5000, "name": "TV"},
+        {"id": 6000, "name": "XXX"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "kickasstorrents ws",
+    "name": "kickasstorrents.ws",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "kickasstorrents-ws", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "sort", "type": "select", "value": 2},
+      {"name": "type", "type": "select", "value": 1},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#kickasstorrents-ws",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://www7.torrent9.to/"
+    ],
+    "definitionName": "torrent9",
+    "description": "Torrent9 is a FRENCH Public site for MOVIES / TV / GENERAL",
+    "language": "fr-FR",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 2000, "name": "Movies"},
+        {"id": 5000, "name": "TV"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 7000, "name": "Books"},
+        {"id": 4000, "name": "PC"},
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrent9",
+    "name": "Torrent9",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "torrent9", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."},
+      {"name": "multilang", "type": "checkbox", "value": false},
+      {"name": "multilanguage", "type": "select", "value": 1},
+      {"name": "vostfr", "type": "checkbox", "value": false},
+      {"name": "sort", "type": "select", "value": 0}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrent9",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://1337x.to/",
+      "https://1337x.st/",
+      "https://x1337x.ws/",
+      "https://x1337x.eu/",
+      "https://x1337x.cc/"
+    ],
+    "definitionName": "1337x",
+    "description": "1337x is a Public torrent site that offers verified torrent downloads",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 4000, "name": "PC"},
+        {"id": 1000, "name": "Console"},
+        {"id": 6000, "name": "XXX"},
+        {"id": 8000, "name": "Other"},
+        {"id": 7000, "name": "Books"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "1337x",
+    "name": "1337x",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "1337x", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "uploader", "type": "textbox"},
+      {"name": "info_uploader", "type": "info", "value": "You can filter by Uploader by entering a Case Sensitive username, or leave empty to get all results.<br>Note: this is the username of the Uploader and not the Groupname that often show up at the end of 1337x titles, eg -GalaxyRG."},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."},
+      {"name": "primarydownloadlink", "type": "select", "value": 1},
+      {"name": "fallbackdownloadlink", "type": "select", "value": 0},
+      {"name": "info_download", "type": "info", "value": "As the iTorrents .torrent download link on this site is known to fail from time to time, we suggest using the magnet link as a fallback. The BTCache and Torrage services are not supported because they require additional user interaction (a captcha for BTCache and a download button on Torrage.)"},
+      {"name": "disablesort", "type": "checkbox", "value": false},
+      {"name": "sort", "type": "select", "value": 2},
+      {"name": "type", "type": "select", "value": 1}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#1337x",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://torrents-csv.com/"
+    ],
+    "definitionName": "TorrentsCSV",
+    "description": "Torrents.csv is a self-hostable open source torrent search engine and database",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": false,
+    "redirect": false,
+    "supportsRss": false,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrentscsv",
+    "name": "TorrentsCSV",
+    "fields": [
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false}
+    ],
+    "implementationName": "TorrentsCSV",
+    "implementation": "TorrentsCSV",
+    "configContract": "NoAuthTorrentBaseSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentscsv",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://torrentproject2.net/",
+      "https://torrentproject2.org/",
+      "https://torrentproject.info/",
+      "https://torrentproject.biz/",
+      "https://torrentproject.xyz/",
+      "https://torrentproject.cc/"
+    ],
+    "definitionName": "torrentproject2",
+    "description": "TorrentProject2 is a Public torrent meta-search engine",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrentproject2",
+    "name": "TorrentProject2",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "torrentproject2", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "filter-verified", "type": "checkbox", "value": false},
+      {"name": "sort", "type": "select", "value": 0},
+      {"name": "info_category_8000", "type": "info", "value": "TorrentProject2 does not return categories in its search results. To sync to your apps, include 8000(Other) in your Apps' Sync Categories."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentproject2",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://www.torrentkitty.cam/",
+      "https://www.torrentkitty.ink/",
+      "https://www.torrentkitty.io/",
+      "https://www.torrentkitty.vip/",
+      "https://www.torrentkitty.app/",
+      "https://www.torrentkitty.red/",
+      "https://www.torrentkitty.lol/",
+      "https://www.torrentkitty.best/",
+      "https://www.torrentkitty.tv/",
+      "https://torkitty.com/"
+    ],
+    "definitionName": "torrentkitty",
+    "description": "TorrentKitty is a Public torrent indexer",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrentkitty",
+    "name": "TorrentKitty",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "torrentkitty", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."},
+      {"name": "info_category_8000", "type": "info", "value": "TorrentKitty does not return categories in its search results. To sync to your apps, include 8000(Other) in your Apps' Sync Categories."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentkitty",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://extratorrent.st/",
+      "https://extratorrent.ninjaproxy1.com/",
+      "https://extratorrent.proxyninja.org/"
+    ],
+    "definitionName": "extratorrent-st",
+    "description": "ExtraTorrent.st is a Public tracker for MOVIE / TV / GENERAL magnets",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 2000, "name": "Movies"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 6000, "name": "XXX"},
+        {"id": 4000, "name": "PC"},
+        {"id": 5000, "name": "TV"},
+        {"id": 7000, "name": "Books"},
+        {"id": 1000, "name": "Console"},
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "extratorrent st",
+    "name": "ExtraTorrent.st",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "extratorrent-st", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#extratorrent-st",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://filemood.com/"
+    ],
+    "definitionName": "filemood",
+    "description": "FileMood is a Public BitTorrent DHT search engine.",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "filemood",
+    "name": "FileMood",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "filemood", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_category_8000", "type": "info", "value": "FileMood does not return categories in its search results. To sync to your apps, include 8000(Other) in your Apps' Sync Categories."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#filemood",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://showrss.info/"
+    ],
+    "definitionName": "showrss",
+    "description": "showRSS is a service that allows you to keep track of your favorite TV shows",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "showrss",
+    "name": "showRSS",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "showrss", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#showrss",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://damag.net/"
+    ],
+    "definitionName": "damagnet",
+    "description": "DaMagNet is a Public DHT Crawler",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "damagnet",
+    "name": "DaMagNet",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "damagnet", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_category_8000", "type": "info", "value": "DaMagNet does not return categories in its search results. To sync to your apps, include 8000(Other) in your Apps' Sync Categories."},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#damagnet",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://magnetcatcat.com/",
+      "https://clmclm.com/",
+      "https://ny52n449.8800591.xyz/",
+      "https://abfexssj.8800592.xyz/",
+      "https://cvo4a9m3.8800593.xyz/",
+      "https://mrn4etas.8800594.xyz/"
+    ],
+    "definitionName": "magnetcat",
+    "description": "Magnet Cat is a Public Tracker for MOVIES / TV / GENERAL",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 8000, "name": "Other"},
+        {"id": 7000, "name": "Books"},
+        {"id": 4000, "name": "PC"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "magnet cat",
+    "name": "Magnet Cat",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "magnetcat", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "cat-id", "type": "select", "value": 0},
+      {"name": "sort", "type": "select", "value": 2}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#magnetcat",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://btmulu.live/",
+      "https://www.btmulu.cyou/",
+      "https://www.btmulu.cfd/",
+      "https://www.btmulu.help/"
+    ],
+    "definitionName": "btdirectory",
+    "description": "BTdirectory (BT目录) is a Public DHT Crawler",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 8000, "name": "Other"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "btdirectory",
+    "name": "BTdirectory",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "btdirectory", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_category_8000", "type": "info", "value": "BTdirectory does not return categories in its search results. To sync to your apps, include 8000(Other) in your Apps' Sync Categories."},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#btdirectory",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://torrentcore.xyz/"
+    ],
+    "definitionName": "torrentcore",
+    "description": "Torrent[CORE] is a Public DHT Crawler",
+    "language": "en-US",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 4000, "name": "PC"},
+        {"id": 2000, "name": "Movies"},
+        {"id": 7000, "name": "Books"},
+        {"id": 3000, "name": "Audio"},
+        {"id": 1000, "name": "Console"},
+        {"id": 5000, "name": "TV"},
+        {"id": 8000, "name": "Other"},
+        {"id": 6000, "name": "XXX"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "torrentcore",
+    "name": "Torrent[CORE]",
+    "fields": [
+      {"name": "definitionFile", "type": "textbox", "value": "torrentcore", "hidden": "hidden"},
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+      {"name": "info_flaresolverr", "type": "info", "value": "This site may use Cloudflare DDoS Protection, therefore Prowlarr requires <a href=\"https://wiki.servarr.com/prowlarr/faq#can-i-use-flaresolverr-indexers\" target=\"_blank\" rel=\"noreferrer\">FlareSolverr</a> to access it."}
+    ],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentcore",
+    "tags": [],
+    "presets": []
+  },
+  {
+    "indexerUrls": [
+      "https://subsplease.org/",
+      "https://subsplease.mrunblock.bond/",
+      "https://subsplease.nocensor.click/"
+    ],
+    "definitionName": "SubsPlease",
+    "description": "SubsPlease - A better HorribleSubs/Erai replacement",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 0,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "categories": [
+        {"id": 5000, "name": "TV"},
+        {"id": 2000, "name": "Movies"}
+      ],
+      "tvSearchParams": [
+        "q",
+        "season",
+        "ep"
+      ],
+      "movieSearchParams": [
+        "q"
+      ]
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "sortName": "subsplease",
+    "name": "SubsPlease",
+    "fields": [
+      {"name": "baseUrl", "type": "select"},
+      {"name": "baseSettings.queryLimit", "type": "number"},
+      {"name": "baseSettings.grabLimit", "type": "number"},
+      {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+      {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+      {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+      {"name": "torrentBaseSettings.seedTime", "type": "number"},
+      {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+      {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false}
+    ],
+    "implementationName": "SubsPlease",
+    "implementation": "SubsPlease",
+    "configContract": "NoAuthTorrentBaseSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#subsplease",
+    "tags": [],
+    "presets": []
+  }
+]

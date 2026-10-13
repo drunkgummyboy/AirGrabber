@@ -1,11 +1,16 @@
-"""Grabbing a release: a .torrent file into the watch folder, else the magnet to Download Station.
+"""Grabbing a release, in the user's chosen `DownloadMode`.
 
-The user's Download Station watches `Settings.download_dir`, so a `.torrent` file written there
+FOLDER: a .torrent file into the watch folder, else the magnet to Download Station.
+APP: the .torrent (kept in an app-owned cache folder) or else a magnet is opened with the
+torrent program Windows has registered for it.
+
+In FOLDER mode the user's Download Station watches `Settings.download_dir`, so a `.torrent` file written there
 is the normal path (as in 1.x). Only when no `.torrent` can be had — the indexer gave no direct
 link (or it failed) and itorrents.org has no cached copy of the info hash, which is common for
 brand-new releases — is the magnet link sent to Download Station through the DSM Web API.
 
-Direct download links may embed an indexer/Prowlarr API key: they are never logged or shown.
+Direct download links may embed an indexer/Prowlarr API key: they are never logged or shown,
+and neither are magnet links.
 """
 
 from __future__ import annotations
@@ -19,22 +24,38 @@ import tempfile
 import zlib
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from pydantic import ValidationError
 
 from app.database import HistoryRepository
-from app.models import DownloadRecord, GrabOutcome, GrabResult, GrabTarget, TorrentRelease
+from app.models import (
+    DownloadMode,
+    DownloadRecord,
+    GrabOutcome,
+    GrabResult,
+    GrabTarget,
+    TorrentApp,
+    TorrentRelease,
+)
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
+from app.services.torrent_app import find_torrent_app
 
 log = logging.getLogger(__name__)
 
 DownloadListener = Callable[[], None]
+Opener = Callable[[str], None]  # opens a file path or magnet link with its Windows handler
 
 ITORRENTS_URL = "https://itorrents.org/torrent/{}.torrent"  # hash in UPPERCASE hex
 MAX_TORRENT_BYTES = 10 * 1024 * 1024
 MAX_NAME_LENGTH = 120
+TORRENT_CACHE_KEEP = 50  # .torrent files kept in the APP-mode cache folder
+NO_TORRENT_APP = (
+    "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose "
+    '"Save to a folder" in Settings.'
+)
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -63,11 +84,18 @@ class DownloadService:
         history: HistoryRepository,
         settings: SettingsService,
         station: DownloadStationClient,
+        torrent_cache: Path,
+        *,
+        find_app: Callable[[], TorrentApp | None] = find_torrent_app,
+        opener: Opener | None = None,
     ) -> None:
         self._http = http
         self._history = history
         self._settings = settings
         self._station = station
+        self._torrent_cache = torrent_cache  # APP mode: .torrent files handed to the program
+        self._find_app = find_app
+        self._opener: Opener = opener or open_with_default_program
         self._listeners: list[DownloadListener] = []
 
     def subscribe(self, listener: DownloadListener) -> Callable[[], None]:
@@ -95,15 +123,73 @@ class DownloadService:
         return await self._history.info_hashes()
 
     async def grab(self, release: TorrentRelease, target: GrabTarget) -> GrabResult:
-        """Save the release's .torrent into the watch folder, or else send its magnet to
-        Download Station; record it in the download history and notify listeners.
+        """Grab the release the way `Settings.download_mode` says; record it in the download
+        history and notify listeners.
+
+        FOLDER: save the .torrent into the watch folder, or else send its magnet to Download
+        Station. APP: open the .torrent (or else a magnet) in the user's torrent program.
 
         Raises GrabError, or DownloadStationError when Download Station refuses the magnet.
-        The grab counts as done once the file is written or the task created: a failure to
-        record it afterwards is logged, not raised, so the user isn't invited to grab it twice.
+        The grab counts as done once the file is written or opened or the task created: a
+        failure to record it afterwards is logged, not raised, so the user isn't invited to
+        grab it twice.
         """
+        if self._settings.current.download_mode is DownloadMode.APP:
+            result, saved_path, info_hash = await self._grab_in_app(release)
+        else:
+            result, saved_path, info_hash = await self._grab_to_folder(release)
+
+        record = DownloadRecord(
+            media_type=target.media_type,
+            media_id=target.media_id,
+            season=target.season,
+            episode=target.episode,
+            release_title=release.title,
+            info_hash=info_hash,
+            source=release.source,
+            size_bytes=release.size_bytes or None,
+            saved_path=saved_path,
+        )
+        try:
+            await self._history.add(record)
+        except Exception:
+            log.exception("Could not record the grab of %r in the download history", release.title)
+        self._notify()
+        return result
+
+    async def _grab_in_app(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
+        """Open the .torrent (saved in the cache folder) or else a magnet in the torrent program.
+
+        Returns (result, history saved_path, info hash). Download Station is not used.
+        """
+        app = await asyncio.to_thread(self._find_app)
+        if app is None:
+            raise GrabError(NO_TORRENT_APP)  # before downloading anything
+        content, magnet, info_hash = await self._obtain(
+            release, _magnet_or_none(release.magnet_uri)
+        )
+        message = "Opened in your torrent program"
+        if content is not None:
+            path = await self._save_to_cache(content, release.title)
+            await self._open(str(path), app)
+            await self._prune_cache()
+            log.info("Grabbed %r: opened %s in %s", release.title, path.name, app.name)
+            result = GrabResult(outcome=GrabOutcome.OPENED, path=str(path), message=message)
+            return result, app.name, info_hash
+        if magnet is None and info_hash:
+            magnet = build_magnet(info_hash, release.title)
+        if magnet is None:
+            raise GrabError("No .torrent file or magnet link is available for this release.")
+        await self._open(magnet, app)
+        log.info("Grabbed %r: magnet opened in %s", release.title, app.name)
+        return GrabResult(outcome=GrabOutcome.OPENED, message=message), app.name, info_hash
+
+    async def _obtain(
+        self, release: TorrentRelease, magnet: str | None
+    ) -> tuple[bytes | None, str | None, str | None]:
+        """(.torrent bytes or None, magnet or None, info hash): the release's direct link first
+        (which may redirect to a magnet), then itorrents.org by info hash."""
         info_hash = release.info_hash
-        magnet = _magnet_or_none(release.magnet)
         download_url = release.download_url or ""
         content: bytes | None = None
 
@@ -120,6 +206,14 @@ class DownloadService:
             content, _ = await self._fetch_torrent(
                 ITORRENTS_URL.format(info_hash.upper()), "itorrents.org"
             )
+        return content, magnet, info_hash
+
+    async def _grab_to_folder(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
+        """Save the .torrent into the watch folder, or else send the magnet to Download Station.
+
+        Returns (result, history saved_path, info hash).
+        """
+        content, magnet, info_hash = await self._obtain(release, _magnet_or_none(release.magnet))
 
         if content is not None:
             path = await self._save(content, release.title)
@@ -143,24 +237,29 @@ class DownloadService:
             result = GrabResult(outcome=GrabOutcome.SENT, message="Sent to Download Station")
             saved_path = "Download Station"
             log.info("Grabbed %r: magnet sent to Download Station", release.title)
+        return result, saved_path, info_hash
 
-        record = DownloadRecord(
-            media_type=target.media_type,
-            media_id=target.media_id,
-            season=target.season,
-            episode=target.episode,
-            release_title=release.title,
-            info_hash=info_hash,
-            source=release.source,
-            size_bytes=release.size_bytes or None,
-            saved_path=saved_path,
-        )
+    async def _open(self, target: str, app: TorrentApp) -> None:
+        """Hand a file path or magnet to its Windows handler. Never logs `target` (magnets)."""
         try:
-            await self._history.add(record)
-        except Exception:
-            log.exception("Could not record the grab of %r in the download history", release.title)
-        self._notify()
-        return result
+            await asyncio.to_thread(self._opener, target)
+        except OSError as exc:
+            reason = exc.strerror or type(exc).__name__
+            raise GrabError(f"Couldn't open this release in {app.name}: {reason}") from None
+
+    async def _save_to_cache(self, content: bytes, title: str) -> Path:
+        directory = self._torrent_cache
+        try:
+            return await asyncio.to_thread(_write_torrent, directory, safe_filename(title), content)
+        except OSError as exc:
+            reason = exc.strerror or type(exc).__name__
+        raise GrabError(f"Can't write the .torrent file to {directory}: {reason}")
+
+    async def _prune_cache(self) -> None:
+        try:
+            await asyncio.to_thread(prune_torrent_cache, self._torrent_cache, TORRENT_CACHE_KEEP)
+        except OSError:
+            log.warning("Could not prune the torrent cache folder", exc_info=True)
 
     async def _fetch_torrent(self, url: str, label: str) -> tuple[bytes | None, str | None]:
         """GET a .torrent file, following up to five redirects by hand.
@@ -215,6 +314,32 @@ class DownloadService:
         except OSError as exc:
             reason = exc.strerror or type(exc).__name__
         raise GrabError(f"Can't write to the download folder {directory}: {reason}")
+
+
+def open_with_default_program(target: str) -> None:
+    """Open a file or a magnet link with its registered Windows handler. Blocking."""
+    startfile = getattr(os, "startfile", None)
+    if startfile is None:
+        raise OSError(0, "Opening torrents is only supported on Windows")
+    startfile(target)
+
+
+def build_magnet(info_hash: str, title: str) -> str:
+    return f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title, safe='')}"
+
+
+def prune_torrent_cache(directory: Path, keep: int) -> None:
+    """Delete all but the `keep` newest .torrent files in `directory`. Blocking."""
+    if not directory.is_dir():
+        return
+    files: list[tuple[float, Path]] = []
+    for path in directory.glob("*.torrent"):
+        with contextlib.suppress(OSError):
+            files.append((path.stat().st_mtime, path))
+    files.sort(key=lambda item: item[0], reverse=True)
+    for _, path in files[keep:]:
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def safe_filename(title: str) -> str:

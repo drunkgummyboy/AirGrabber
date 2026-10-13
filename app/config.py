@@ -45,8 +45,13 @@ class AppPaths:
     def logs(self) -> Path:
         return self.root / "logs"
 
+    @property
+    def torrents(self) -> Path:
+        """Cache of .torrent files handed to the torrent program ("open in my torrent program")."""
+        return self.root / "torrents"
+
     def ensure(self) -> AppPaths:
-        for directory in (self.root, self.posters, self.logs):
+        for directory in (self.root, self.posters, self.logs, self.torrents):
             directory.mkdir(parents=True, exist_ok=True)
         return self
 

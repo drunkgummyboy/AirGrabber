@@ -1,0 +1,69 @@
+{
+  "indexerUrls": [
+    "https://www.limetorrents.fun/",
+    "https://limetorrents.ninjaproxy1.com/",
+    "https://limetorrents.proxyninja.org/",
+    "https://limetorrents.torrentbay.st/",
+    "https://limetorrents.torrentsbay.org/"
+  ],
+  "definitionName": "limetorrents",
+  "description": "LimeTorrents is a Public general torrent index with mostly verified torrents",
+  "language": "en-US",
+  "encoding": "Unicode (UTF-8)",
+  "enable": true,
+  "redirect": false,
+  "supportsRss": true,
+  "supportsSearch": true,
+  "supportsRedirect": false,
+  "supportsPagination": false,
+  "appProfileId": 1,
+  "protocol": "torrent",
+  "privacy": "public",
+  "capabilities": {
+    "categories": [
+      {"id": 5000, "name": "TV"},
+      {"id": 2000, "name": "Movies"},
+      {"id": 3000, "name": "Audio"},
+      {"id": 1000, "name": "Console"},
+      {"id": 4000, "name": "PC"},
+      {"id": 8000, "name": "Other"},
+      {"id": 7000, "name": "Books"}
+    ],
+    "tvSearchParams": [
+      "q",
+      "season",
+      "ep"
+    ],
+    "movieSearchParams": [
+      "q"
+    ]
+  },
+  "priority": 15,
+  "downloadClientId": 0,
+  "added": "2026-10-12T20:02:05Z",
+  "sortName": "limetorrents",
+  "name": "LimeTorrents",
+  "fields": [
+    {"name": "definitionFile", "type": "textbox", "value": "limetorrents", "hidden": "hidden"},
+    {"name": "baseUrl", "type": "select"},
+    {"name": "baseSettings.queryLimit", "type": "number"},
+    {"name": "baseSettings.grabLimit", "type": "number"},
+    {"name": "baseSettings.limitsUnit", "type": "select", "value": 0},
+    {"name": "torrentBaseSettings.appMinimumSeeders", "type": "number"},
+    {"name": "torrentBaseSettings.seedRatio", "type": "number"},
+    {"name": "torrentBaseSettings.seedTime", "type": "number"},
+    {"name": "torrentBaseSettings.packSeedTime", "type": "number"},
+    {"name": "torrentBaseSettings.preferMagnetUrl", "type": "checkbox", "value": false},
+    {"name": "primarydownloadlink", "type": "select", "value": 1},
+    {"name": "fallbackdownloadlink", "type": "select", "value": 0},
+    {"name": "info_download", "type": "info", "value": "As the .torrent download links on this site are known to fail from time to time, you can optionally set as a fallback an automatic alternate link."},
+    {"name": "sort", "type": "select", "value": 0},
+    {"name": "info_category_8000", "type": "info", "value": "LimeTorrents only returns category <b>Other</b> in its <i>Keywordless</i> search results page.</br>To pass your apps' indexer TEST you will need to include the 8000(Other) category."}
+  ],
+  "implementationName": "Cardigann",
+  "implementation": "Cardigann",
+  "configContract": "CardigannSettings",
+  "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#limetorrents",
+  "tags": [],
+  "id": 16
+}

@@ -15,10 +15,13 @@ from app.services.discovery import DiscoveryService
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.prowlarr_setup import ProwlarrSetupService
+from app.services.quick_download import QuickDownloadService
 from app.services.search import TorrentSearchService
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
 from app.services.tmdb import TMDBClient
+from app.services.torrent_app import TorrentAppService
 from app.services.tvmaze import TVMazeClient
 from app.services.updates import UpdateError, UpdateService
 
@@ -38,9 +41,12 @@ class Services:
         "downloads",
         "images",
         "library",
+        "prowlarr_setup",
+        "quick_download",
         "search",
         "settings",
         "station",
+        "torrent_app",
         "updates",
     )
 
@@ -56,6 +62,8 @@ class Services:
         station: DownloadStationClient,
         search: TorrentSearchService,
         updates: UpdateService,
+        prowlarr_setup: ProwlarrSetupService,
+        torrent_app: TorrentAppService,
     ) -> None:
         self._db = db
         self._http = http
@@ -66,7 +74,11 @@ class Services:
         self.downloads = downloads
         self.station = station  # also used directly by Settings ("Test connection")
         self.search = search
+        # One-click Download: search, pick the best release, grab it.
+        self.quick_download = QuickDownloadService(search, downloads, settings)
         self.updates = updates
+        self.prowlarr_setup = prowlarr_setup
+        self.torrent_app = torrent_app  # which torrent program is set up; qBittorrent install
 
     @classmethod
     async def create(cls, paths: AppPaths) -> Services:
@@ -91,7 +103,7 @@ class Services:
             images = ImageCache(http, paths.posters)
             # Reads the NAS address and credentials from the settings on every call.
             station = DownloadStationClient(settings)
-            downloads = DownloadService(http, db.history, settings, station)
+            downloads = DownloadService(http, db.history, settings, station, paths.torrents)
             # The Prowlarr address and key are read from the settings on every call.
             search = TorrentSearchService(
                 default_indexers(
@@ -112,6 +124,9 @@ class Services:
                 station,
                 search,
                 UpdateService(http),
+                # Connects a Prowlarr on this PC and adds public sites to it (once).
+                ProwlarrSetupService(http, settings),
+                TorrentAppService(),
             )
             cleanup.pop_all()
         return services
@@ -145,8 +160,11 @@ __all__ = [
     "DownloadStationClient",
     "ImageCache",
     "LibraryService",
+    "ProwlarrSetupService",
+    "QuickDownloadService",
     "Services",
     "SettingsService",
+    "TorrentAppService",
     "TorrentSearchService",
     "UpdateError",
     "UpdateService",

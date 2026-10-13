@@ -46,7 +46,6 @@ log = logging.getLogger(__name__)
 
 QUALITY_KEYS = ("2160p", "1080p", "720p", "480p", "x265", "any")
 
-_MIB = 1024 * 1024
 _STOPWORDS = frozenset({"the", "a", "an", "of", "and", "&"})
 _APOSTROPHES = re.compile(r"['’`´]")
 _SEPARATORS = re.compile(r"[\W_]+")
@@ -322,18 +321,12 @@ def _excluded_phrases(keywords: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(phrases)
 
 
-def passes_settings(release: TorrentRelease, settings: Settings, kind: SearchKind) -> bool:
-    """False for releases with an excluded keyword (a whole word or phrase; "cam", "telesync",
-    "telecine" and "screener" also cover their scene tags such as CAMRip or HDTS), or outside the
-    size limits. Size limits skip SEASON packs and releases of unknown (0) size."""
+def passes_settings(release: TorrentRelease, settings: Settings) -> bool:
+    """False for releases with an excluded keyword: a whole word or phrase; "cam", "telesync",
+    "telecine" and "screener" also cover their scene tags such as CAMRip or HDTS."""
     text = f" {_normalize(release.title)} "
     for phrase in _excluded_phrases(settings.excluded_keywords):
         if f" {phrase} " in text:
-            return False
-    if kind is not SearchKind.SEASON and release.size_bytes:
-        if settings.min_size_mb and release.size_bytes < settings.min_size_mb * _MIB:
-            return False
-        if settings.max_size_mb and release.size_bytes > settings.max_size_mb * _MIB:
             return False
     return True
 
@@ -467,7 +460,7 @@ def _partition(
     shown: list[TorrentRelease] = []
     hidden: list[TorrentRelease] = []
     for release in merged:
-        ok = is_relevant(release, request) and passes_settings(release, settings, request.kind)
+        ok = is_relevant(release, request) and passes_settings(release, settings)
         (shown if ok else hidden).append(release)
     shown.sort(key=lambda release: release.seeders, reverse=True)
     hidden.sort(key=lambda release: release.seeders, reverse=True)
@@ -483,7 +476,8 @@ class TorrentSearchService:
     def __init__(
         self, indexers: Sequence[BaseIndexer], settings: SettingsService, *, timeout: float = 25.0
     ) -> None:
-        """`timeout` caps each indexer's whole search (retries included), in seconds."""
+        """`timeout` caps each indexer's whole search (retries included), in seconds, unless
+        the indexer sets its own `search_timeout`."""
         self._indexers = tuple(indexers)
         self._settings = settings
         self._timeout = timeout
@@ -582,7 +576,8 @@ class TorrentSearchService:
         self, indexer: BaseIndexer, request: SearchRequest, status: IndexerStatus
     ) -> _Outcome:
         """One indexer's search, turned into its final status; never raises but CancelledError."""
-        deadline = asyncio.timeout(self._timeout)
+        limit = self._timeout if indexer.search_timeout is None else indexer.search_timeout
+        deadline = asyncio.timeout(limit)
         try:
             async with deadline:
                 releases = await indexer.search(request)
@@ -591,7 +586,7 @@ class TorrentSearchService:
             failure = str(exc)
         except Exception as exc:
             if isinstance(exc, TimeoutError) and deadline.expired():
-                log.warning("%s search timed out after %g s", indexer.label, self._timeout)
+                log.warning("%s search timed out after %g s", indexer.label, limit)
                 failure = "timed out"
             else:
                 log.exception("%s search failed unexpectedly", indexer.label)

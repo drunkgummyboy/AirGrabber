@@ -1,14 +1,14 @@
 # File map
 
-- `main.py` — entry point: logging, package check, Services, MainWindow, async Tk loop, shutdown, restart after an update
+- `main.py` — entry point: logging, package check, Services, MainWindow, async Tk loop, shutdown, applying a background-downloaded update (`apply_staged`), restart after an update
 - `install.ps1` — one-command Windows installer (Python via winget/python.org, app into %LOCALAPPDATA%\Programs\AirGrabber, shortcuts)
 - `README.md` — GitHub front page: install / update / uninstall
 - `app/bootstrap.py` — launch-time requirements check: pip-installs missing/outdated packages with a plain-tkinter progress window (stdlib only)
 - `app/__init__.py` — APP_NAME, __version__
-- `app/config.py` — AppPaths (data dir, db, posters, logs), logging setup
+- `app/config.py` — AppPaths (data dir, db, posters, logs, torrents = APP-mode .torrent cache), logging setup
 - `app/database.py` — schema + migrations (append-only), Database (locked shared connection), LibraryRepository, HistoryRepository, SettingsRepository; all SQL
-- `app/models/domain.py` — Show, Episode, LibraryEntry, LibraryStats, CalendarEntry, Movie, SearchKind, SearchRequest, TorrentRelease, DownloadRecord
-- `app/models/settings.py` — Settings model, QualityProfile, Weekday
+- `app/models/domain.py` — Show, Episode, LibraryEntry, LibraryStats, CalendarEntry, Movie, SearchKind, SearchRequest, TorrentRelease, DownloadRecord, GrabOutcome (SAVED/SENT/OPENED), QuickDownloadResult, TorrentApp, ProwlarrSetupResult
+- `app/models/settings.py` — Settings model (incl. the hidden `prowlarr_seeded_url` run-once marker, `setup_done` first-run flag and `last_run_version`; `auto_update`), DownloadMode (APP = open in the torrent program / FOLDER = save to a folder, default; field `download_mode`), QualityProfile, Weekday
 - `app/models/tvmaze.py` — TVMaze wire schemas → domain models
 - `app/models/tmdb.py` — TMDB wire schemas → domain models (release-date/certification extraction)
 - `app/models/types.py` — shared annotated field types, strip_html
@@ -16,16 +16,25 @@
 - `app/services/library.py` — LibraryService: track/search/import, incremental + periodic sync, calendar suggestions (cached TVMaze schedule), change listeners; calendar_range()
 - `app/services/tvmaze.py` — TVMazeClient (async, rate-limit aware retries), TVMazeError/TVMazeNotFound
 - `app/services/images.py` — ImageCache: memory LRU of resized posters over a disk cache; deduped downloads
-- `app/services/tmdb.py` — TMDBClient (v3 key or v4 token, retries, key never in logs/errors), TMDB* errors
-- `app/services/discovery.py` — DiscoveryService: TV/movie dashboards (30 min cache), details (24 h), TMDB→TVMaze tracking
-- `app/services/settings.py` — SettingsService (in-memory current settings, validated updates, listeners)
-- `app/services/updates.py` — UpdateService: version check against GitHub, download + swap APP_ENTRIES with rollback; never in a dev copy
-- `app/services/downloads.py` — DownloadService.grab(): .torrent → watch folder (direct link, then itorrents), else magnet → Download Station; history + listeners
-- `app/services/search.py` — TorrentSearchService: request builders, concurrent indexer search streaming SearchUpdates (per-indexer status, timeout, cancellation); pure build_queries / is_relevant / passes_settings / is_preferred / merge / quality helpers
+- `app/services/tmdb.py` — TMDBClient (v3 key or v4 token, retries, key never in logs/errors; `check_key` = one /authentication call for an unsaved key), TMDB* errors
+- `app/services/discovery.py` — DiscoveryService: TV/movie dashboards (30 min cache), details (24 h), TMDB→TVMaze tracking, `check_tmdb_key`
+- `app/services/settings.py` — SettingsService (in-memory current settings, validated updates serialized by a lock, listeners)
+- `app/services/updates.py` — UpdateService: version check against GitHub, `install` (download + swap APP_ENTRIES with rollback), `stage` (download + unpack into `.update/new` with a ready marker) and `register_install`; `apply_staged` (main.py at exit: swap in a staged update newer than the files on disk, else delete it); never in a dev copy
+- `app/services/install_info.py` — `ensure_uninstall_entry`: the HKCU "Installed apps" entry, mirroring install.ps1's Register-Uninstaller (create when missing, else refresh DisplayVersion of this folder's entry only); injectable registry; stdlib only
+- `app/services/downloads.py` — DownloadService.grab() by `download_mode`: FOLDER = .torrent → watch folder (direct link, then itorrents), else magnet → Download Station; APP = .torrent → `AppPaths.torrents` cache (pruned to 50) or else a magnet (own / Prowlarr redirect / built from the hash), opened with os.startfile; history + listeners
+- `app/services/torrent_app.py` — find_torrent_app() (read-only registry lookup of the magnet / .torrent handler, injectable reader, friendly names), install_qbittorrent() via winget, TorrentAppService (`services.torrent_app`)
+- `app/services/search.py` — TorrentSearchService: request builders, concurrent indexer search streaming SearchUpdates (per-indexer status, timeout (an indexer's own `search_timeout` wins), cancellation); pure build_queries / is_relevant / passes_settings / is_preferred / merge / quality helpers
+- `app/services/picking.py` — pure pick_best / rank_releases for the one-click Download: likely-fake filter (exe/zip/rar/password/codec words, too-small sizes), dead torrents, single episode before a pack, ranking by quality profile, preferred group, seeders, known size
+- `app/services/quick_download.py` — QuickDownloadService (`services.quick_download`): search (30 s cap) → pick_best → DownloadService.grab; UI-independent
+- `app/services/prowlarr_setup.py` — ProwlarrSetupService: finds a Prowlarr on this PC (%ProgramData%\Prowlarr\config.xml, `parse_config`), waits for /ping, verifies and saves URL + key when none is configured; then once per local Prowlarr adds the CURATED public sites (Prowlarr tests each), marker `prowlarr_seeded_url`
 - `app/services/synology.py` — DownloadStationClient (DSM Web API discovery, POST login, DS2/DS task create, logout), DownloadStationError
-- `app/indexers/` — torrent indexers (Strategy pattern): base (BaseIndexer contract, IndexerError, shared GET-JSON/retry helper, USER_AGENT), apibay, eztv (by IMDb id, paged), bitsearch, yts (MOVIE only, base-URL fallback), prowlarr (X-Api-Key, `test()`); `default_indexers()` builds all five
-- `app/ui/main_window.py` — root window: header (mode switch, logo, search, settings), pages, status bar (update badge), update + restart
-- `app/ui/settings_dialog.py` — preferences dialog (General / Indexers / Download Station; app version + update button)
+- `app/indexers/` — torrent indexers (Strategy pattern): base (BaseIndexer contract incl. optional `search_timeout`, IndexerError, shared GET-JSON/retry helper with per-request timeout, USER_AGENT), apibay, eztv (by IMDb id, paged), bitsearch, yts (MOVIE only, base-URL fallback), prowlarr (X-Api-Key, 30 s search read timeout, 40 s cap, `test()`); `default_indexers()` builds all five
+- `app/ui/main_window.py` — root window: header (mode switch, logo, search, settings), pages (reloaded on settings changes except off-page ones — connections, `download_mode`, `setup_done`, `auto_update`, `last_run_version`: `settings_affect_pages`), status bar (update badge / "Restart to update", "Updated to v…" notice `update_notice`, Prowlarr setup message), background update staging, update + restart, first run (`_first_run`: welcome for an empty library, else `setup_done` silently)
+- `app/ui/settings_dialog.py` — preferences dialog in plain words: General (when I download = torrent program with its status / a folder, quality by plain name, week start, Movies key + key guide link, updates) and Advanced (sites, word filters, Prowlarr, Synology NAS); both tabs scroll when the screen is short (height capped by `dialog_height`); pure helpers quality_name / quality_from_name, download_rows, download_dir_to_save (APP mode keeps the stored folder); validation errors open their tab
+- `app/ui/welcome_dialog.py` — WelcomeDialog (first run: welcome → how to download (torrent program found / install qBittorrent, or a folder) → TMDB key; fixed size, saves as it goes, Finish checks an unchecked key first, X = done) and its pure helpers (first_run_action, download_changes, finish_changes, elide_path)
+- `app/ui/torrent_app_status.py` — TorrentAppStatus: the torrent-program status line + "Install qBittorrent" (find / install through `services.torrent_app`), shared by the welcome and Settings; pure torrent_look
+- `app/ui/tmdb_key_guide.py` — TmdbKeyGuide (numbered steps to get a TMDB key, entry + Check through DiscoveryService) and TmdbKeyDialog (the guide on its own for Settings; Save checks an unchecked key first, stores it, `on_saved`); `key_action` = what Finish / Save does with the entry
+- `app/ui/dialog_kit.py` — the roomy setup dialogs' sizes, primary/secondary buttons, heading row, links, placing + activating a modal dialog
 - `app/ui/tasks.py` — spawn / async_command / cancel_all
 - `app/ui/theme.py` — colours and fonts
 - `app/ui/branding.py` — bundled logo (`load_logo`) and window icon (`set_window_icon`, call in every window's __init__)
@@ -33,13 +42,15 @@
 - `app/ui/widgets.py` — reusable widgets: MessagePanel, FlexGrid (responsive grid), PosterImage (async poster), LoadingBar, show_info()
 - `app/ui/cards.py` — ShowCard (Tracked grid / search results)
 - `app/ui/calendar_cards.py` — calendar cards: EpisodeCard (poster), CompactEpisodeCard, SuggestionCard
+- `app/ui/download_control.py` — the cards' one-click Download row (⬇ Download + ⋯ = search window; working / ✓ outcome / nothing-found states) and DownloadStates (run state per title, owned by MainWindow, survives page rebuilds)
 - `app/ui/search.py` — SearchSuggestions (header dropdown) and SearchResultsWindow
 - `app/ui/indexer_dialog.py` — IndexerDialog ("Advanced Indexer Interrogation"): torrent search for an episode / season pack / film, ttk results table, grabs; TvTarget / MovieTarget
 - `app/ui/media_cards.py` — MovieCard, DiscoverShowCard (lazy TMDB details), shared ⓘ IMDb icon
+- `app/ui/tooltip.py` — hover tips: `add_tooltip(widget, text)` (500 ms delay, one shared borderless window, hides on leave / click / destroy), pure `tip_position` (below, flipped above, clamped to the widget's monitor)
 - `app/ui/text_fit.py` — width-aware text fitting: elide_to_width, fit_to_lines, title_lines
 - `app/ui/import_dialog.py` — ImportShowsDialog (paste names / TVMaze ids)
 - `app/ui/views/` — one module per page: base (BaseView, StatusReporter), calendar (grid + layout helpers), tracked (grid, import, cleanup), shelves (ShelvesView base for TMDB pages), discover (TV shelves), movie (movie shelves)
 - `tools/import_legacy.py` — one-shot import of 1.x JSON files
 - `tools/sync_repo.py` — copy the publishable files into the git clone before a release
-- `tests/` — unittest suites; `tests/fixtures/` holds recorded API payloads
+- `tests/` — unittest suites; `tests/fixtures/` holds recorded API payloads (`prowlarr_setup/`: Prowlarr config.xml files and the indexer/app-profile API answers used by test_prowlarr_setup)
 - `airgrabber.py`, `*.json` at root — legacy 1.x app and its data (read-only reference)

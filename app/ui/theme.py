@@ -25,8 +25,7 @@ PLACEHOLDER = "gray20"  # poster placeholder
 # Calendar grid
 CELL_BG = "#121620"  # day cell
 CELL_BORDER = "#1C222E"
-TODAY_BG = "#182133"  # today's cell
-TODAY_BORDER = "#1F3B60"
+TODAY_BG = "#182133"  # today's cell (its border is ACCENT)
 SUGGESTION_BG = "#14121A"  # untracked-show suggestion card
 SUGGESTION_BORDER = "#2A2438"
 GRABBED = "#2E7D4F"  # episode button once downloaded
@@ -35,6 +34,7 @@ NOT_AIRED = "gray25"  # disabled episode button before broadcast
 # Discover / Movies shelf titles
 SECTION_HOT = "#F39C12"  # trending
 SECTION_NEW = "#2ECC71"  # premieres, fresh digital releases
+WARNING = SECTION_HOT  # amber: something is missing rather than broken (no torrent program)
 
 # Indexer search dialog
 CHIP = "gray15"  # unselected season / episode / version button

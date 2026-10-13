@@ -1,7 +1,8 @@
 """Cards for TMDB titles: films on the Movies page, shows on the Discover tab.
 
 Both look like `ShowCard`: poster, a title of up to two lines, a meta line, a details line and
-one action button, with an ⓘ IMDb link in the corner. Each card fetches its title's TMDB details
+one action button (films: the Download row across the card's bottom), with an ⓘ IMDb link in
+the corner. Each card fetches its title's TMDB details
 itself through an injected loader; until they arrive (or if they can't be loaded) it shows what
 the list entry had.
 """
@@ -22,8 +23,16 @@ from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.cards import CARD_WIDTH
+from app.ui.download_control import (
+    ROW_SPACE,
+    Base,
+    DownloadActions,
+    DownloadControl,
+    movie_key,
+)
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, title_lines, unscaled_width
+from app.ui.tooltip import add_tooltip
 from app.ui.widgets import PosterImage
 
 if TYPE_CHECKING:
@@ -35,6 +44,9 @@ D = TypeVar("D")
 TrackState = Literal["idle", "busy", "tracked", "missing"]
 
 CARD_HEIGHT = 135
+_POSTER_HEIGHT = 100
+# Movie cards: the poster with 10 above it, then the Download row across the card.
+MOVIE_CARD_HEIGHT = 10 + _POSTER_HEIGHT + ROW_SPACE
 # Room a card's text keeps clear on the right for the ⓘ (24 units wide, 8 from the card's edge).
 IMDB_ICON_ROOM = 28
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
@@ -121,6 +133,9 @@ def show_imdb_url(details: TVDetails) -> str | None:
 # -- shared parts ----------------------------------------------------------------------------
 
 
+IMDB_TIP = "Open on IMDb"
+
+
 class ImdbIcon(ctk.CTkLabel):
     """An ⓘ in a card's top-right corner that opens `url` (an IMDb page); `url` may change."""
 
@@ -135,6 +150,7 @@ class ImdbIcon(ctk.CTkLabel):
             cursor="hand2",
         )
         self.url = url
+        add_tooltip(self, IMDB_TIP)
         self.place(relx=1.0, x=-8, y=8, anchor="ne")
         self.bind("<Button-1>", lambda _event: webbrowser.open(self.url))
         self.bind("<Enter>", lambda _event: self.configure(text_color=theme.TEXT))
@@ -151,7 +167,11 @@ def add_imdb_icon(card: ctk.CTkFrame, url: str | None) -> ImdbIcon | None:
 
 
 class _MediaCard(ctk.CTkFrame):
-    """Poster | title (two lines at most), meta line, details line and an action button."""
+    """Poster | title (two lines at most), meta line, details line and an action button.
+
+    Without a `command` the card has no button of its own: the subclass packs a row across the
+    card's bottom (before `self._poster`) and passes a `height` with room for it.
+    """
 
     def __init__(
         self,
@@ -160,7 +180,8 @@ class _MediaCard(ctk.CTkFrame):
         title: str,
         poster_url: str | None,
         images: ImageCache,
-        command: Callable[[], None],
+        command: Callable[[], None] | None,
+        height: int = CARD_HEIGHT,
     ) -> None:
         super().__init__(
             master,
@@ -169,7 +190,7 @@ class _MediaCard(ctk.CTkFrame):
             border_width=1,
             corner_radius=8,
             width=CARD_WIDTH,
-            height=CARD_HEIGHT,
+            height=height,
         )
         self.grid_propagate(False)
         self.pack_propagate(False)
@@ -180,23 +201,27 @@ class _MediaCard(ctk.CTkFrame):
         self._details_task: asyncio.Task[None] | None = None
         self._imdb: ImdbIcon | None = None
 
-        poster = PosterImage(self, width=68, height=100)
-        poster.pack(side="left", padx=10, pady=10)
+        pady: int | tuple[int, int] = 10 if command is not None else (10, 0)
+        poster = PosterImage(self, width=68, height=_POSTER_HEIGHT)
+        poster.pack(side="left", anchor="n", padx=10, pady=pady)
         poster.show(images, poster_url)
+        self._poster = poster
 
         info = ctk.CTkFrame(self, fg_color="transparent")
-        info.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=10)
-        # Packed first so the button keeps its room at the bottom whatever the text needs.
-        self._button = ctk.CTkButton(
-            info,
-            text="",
-            height=22,
-            font=theme.font(10, bold=True),
-            corner_radius=4,
-            border_width=0,
-            command=command,
-        )
-        self._button.pack(side="bottom", fill="x")
+        info.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=pady)
+        self._button: ctk.CTkButton | None = None
+        if command is not None:
+            # Packed first so the button keeps its room at the bottom whatever the text needs.
+            self._button = ctk.CTkButton(
+                info,
+                text="",
+                height=22,
+                font=theme.font(10, bold=True),
+                corner_radius=4,
+                border_width=0,
+                command=command,
+            )
+            self._button.pack(side="bottom", fill="x")
         self._title_font = theme.font(12, bold=True)
         self._title = ctk.CTkLabel(
             info,
@@ -255,6 +280,8 @@ class _MediaCard(ctk.CTkFrame):
     # -- button and link -----------------------------------------------------------------------
 
     def _style_button(self, text: str, color: str, hover: str, *, enabled: bool) -> None:
+        if self._button is None:
+            raise RuntimeError("this card has no button of its own")
         self._button.configure(
             text=text,
             fg_color=color,
@@ -301,9 +328,16 @@ class _MediaCard(ctk.CTkFrame):
 # -- cards -----------------------------------------------------------------------------------
 
 
+def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
+    """The Download control once the film is out digitally (`movie_action`), else a disabled
+    "Digital 15 Oct" / "Not Released"."""
+    label, can_grab = movie_action(movie, details, today)
+    return Base("download") if can_grab else Base("unavailable", label)
+
+
 class MovieCard(_MediaCard):
-    """A film: release date and rating, certification and runtime, and a Search / Grab button
-    that unlocks once the film is out digitally."""
+    """A film: release date and rating, certification and runtime, and a Download row ("⬇
+    Download" and "⋯" for the search window) that unlocks once the film is out digitally."""
 
     def __init__(
         self,
@@ -312,32 +346,33 @@ class MovieCard(_MediaCard):
         *,
         images: ImageCache,
         details: Callable[[int], Awaitable[MovieDetails]],
-        on_grab: Callable[[Movie], None],
+        actions: DownloadActions[Movie],
     ) -> None:
         super().__init__(
             master,
             title=movie.title,
             poster_url=movie.poster_url(_POSTER_SIZE),
             images=images,
-            command=self._grab,
+            command=None,
+            height=MOVIE_CARD_HEIGHT,
         )
         self._movie = movie
-        self._on_grab = on_grab
+        self._control = DownloadControl(
+            self,
+            item=movie,
+            key=movie_key(movie.id),
+            base=movie_base(movie, None, date.today()),
+            actions=actions,
+        )
+        self._control.pack_row(before=self._poster)
         self._show_details(None)
         self._load_details(details, movie.id, self._show_details)
 
     def _show_details(self, details: MovieDetails | None) -> None:
         movie = self._movie
         self._set_lines(movie_meta(movie, details), movie_details_line(details))
-        label, can_grab = movie_action(movie, details, date.today())
-        if can_grab:
-            self._style_button(label, theme.ACCENT, theme.ACCENT_HOVER, enabled=True)
-        else:
-            self._style_button(label, theme.NOT_AIRED, theme.NOT_AIRED, enabled=False)
+        self._control.set_base(movie_base(movie, details, date.today()))
         self._set_imdb_url((details.imdb_url if details else None) or imdb_search_url(movie))
-
-    def _grab(self) -> None:
-        self._on_grab(self._movie)
 
 
 class DiscoverShowCard(_MediaCard):

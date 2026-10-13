@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
@@ -10,6 +9,13 @@ import customtkinter as ctk
 from app.models import CalendarEntry
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
+from app.ui.download_control import (
+    ROW_SPACE,
+    Base,
+    DownloadActions,
+    DownloadControl,
+    episode_key,
+)
 from app.ui.media_cards import IMDB_ICON_ROOM, add_imdb_icon
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, unscaled_width
@@ -19,9 +25,22 @@ if TYPE_CHECKING:
     from app.services import ImageCache, LibraryService
     from app.ui.views.base import StatusReporter
 
-SearchEpisode = Callable[[CalendarEntry], None]
+EpisodeActions = DownloadActions[CalendarEntry]
 
-_NAME_MAX_LINES = 3  # full cards: room for three lines of name above the code and the button
+_NAME_MAX_LINES = 3  # full cards: room for three lines of name above the code
+_POSTER_HEIGHT = 100
+# Full cards: the poster (or the name and code) with 10 above it, then the Download row.
+_CARD_HEIGHT = 10 + _POSTER_HEIGHT + ROW_SPACE
+# Compact cards: a name line and a code line, then the Download row.
+_COMPACT_NAME_HEIGHT = 20
+_COMPACT_CODE_HEIGHT = 16
+_COMPACT_HEIGHT = 4 + _COMPACT_NAME_HEIGHT + _COMPACT_CODE_HEIGHT + ROW_SPACE
+# Suggestions: a "Suggested" line, the name, then the code with the + Track button.
+_SUGGESTED_HEIGHT = 16
+_SUGGESTION_PAD_Y = 6
+_SUGGESTION_HEIGHT = (
+    2 * _SUGGESTION_PAD_Y + _SUGGESTED_HEIGHT + _COMPACT_NAME_HEIGHT + 2 + _COMPACT_CODE_HEIGHT
+)
 # Full cards narrower than this (small windows) drop the poster so the name, code and button fit.
 _POSTER_MIN_CARD_WIDTH = 190
 
@@ -40,35 +59,33 @@ def _keep_elided(label: ctk.CTkLabel, text: str, font: ctk.CTkFont, *, reserve: 
     label.master.bind("<Configure>", fit)
 
 
-def _episode_button(
-    master: Any, entry: CalendarEntry, on_search: SearchEpisode, **options: Any
-) -> ctk.CTkButton:
-    """Search (aired), ✓ Grabbed (aired and downloaded) or a disabled Not Aired.
-
-    `options` override the size and font (default: height 22, font 10 bold).
-    """
+def episode_base(entry: CalendarEntry) -> Base:
+    """A disabled Not Aired; ✓ Grabbed (aired and downloaded); Search for an aired special,
+    which has no episode number to download by; else the Download control."""
     if not entry.episode.has_aired():
-        text, color, hover, state = "Not Aired", theme.NOT_AIRED, theme.NOT_AIRED, "disabled"
-    elif entry.is_downloaded:
-        text, color, hover, state = "✓ Grabbed", theme.GRABBED, theme.ACCENT_HOVER, "normal"
-    else:
-        text, color, hover, state = "Search", theme.ACCENT, theme.ACCENT_HOVER, "normal"
-    style: dict[str, Any] = {
-        "height": 22,
-        "font": theme.font(10, bold=True),
-        "corner_radius": 4,
-        "border_width": 0,
-        **options,
-    }
-    return ctk.CTkButton(
-        master,
-        text=text,
-        fg_color=color,
-        hover_color=hover,
-        state=state,
-        command=lambda: on_search(entry),
-        **style,
+        return Base("unavailable", "Not Aired")
+    if entry.is_downloaded:
+        return Base("grabbed")
+    if entry.episode.number is None:
+        return Base("search")
+    return Base("download")
+
+
+def _episode_control(
+    card: ctk.CTkFrame, entry: CalendarEntry, actions: EpisodeActions
+) -> DownloadControl[CalendarEntry]:
+    """The card's Download row, packed at its bottom across its whole width (call this before
+    packing anything else into the card)."""
+    episode = entry.episode
+    control = DownloadControl(
+        card,
+        item=entry,
+        key=episode_key(entry.show.id, episode.season, episode.number),
+        base=episode_base(entry),
+        actions=actions,
     )
+    control.pack_row()
+    return control
 
 
 # -- cards -----------------------------------------------------------------------------------
@@ -83,7 +100,7 @@ class EpisodeCard(ctk.CTkFrame):
         entry: CalendarEntry,
         *,
         images: ImageCache,
-        on_search: SearchEpisode,
+        actions: EpisodeActions,
     ) -> None:
         super().__init__(
             master,
@@ -91,18 +108,18 @@ class EpisodeCard(ctk.CTkFrame):
             border_color=theme.EDGE,
             border_width=1,
             corner_radius=8,
-            height=120,
+            height=_CARD_HEIGHT,
         )
         self.pack_propagate(False)
         show = entry.show
+        _episode_control(self, entry, actions)
 
-        poster = PosterImage(self, width=68, height=100)
-        poster.pack(side="left", padx=10, pady=10)
+        poster = PosterImage(self, width=68, height=_POSTER_HEIGHT)
+        poster.pack(side="left", anchor="n", padx=10, pady=(10, 0))
         poster.show(images, show.poster_url)
 
         info = ctk.CTkFrame(self, fg_color="transparent")
-        info.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=10)
-        _episode_button(info, entry, on_search).pack(side="bottom", fill="x")
+        info.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=(10, 0))
 
         text = ctk.CTkFrame(info, fg_color="transparent")
         text.pack(side="top", fill="both", expand=True, padx=(0, 25))
@@ -150,7 +167,7 @@ class EpisodeCard(ctk.CTkFrame):
             return
         self._poster_shown = wide
         if wide:
-            self._poster.pack(side="left", padx=10, pady=10, before=self._info)
+            self._poster.pack(side="left", anchor="n", padx=10, pady=(10, 0), before=self._info)
             self._info.pack_configure(padx=(0, 5))
         else:
             self._poster.pack_forget()
@@ -158,43 +175,50 @@ class EpisodeCard(ctk.CTkFrame):
 
 
 class CompactEpisodeCard(ctk.CTkFrame):
-    """A tracked episode in two short lines (older weeks): name; code and button."""
+    """A tracked episode in two short lines (older weeks), name and code, over its Download
+    row."""
 
-    def __init__(self, master: Any, entry: CalendarEntry, *, on_search: SearchEpisode) -> None:
+    def __init__(self, master: Any, entry: CalendarEntry, *, actions: EpisodeActions) -> None:
         super().__init__(
             master,
             fg_color=theme.SURFACE,
             border_color=theme.EDGE,
             border_width=1,
             corner_radius=8,
-            height=55,
+            height=_COMPACT_HEIGHT,
         )
         self.pack_propagate(False)
         show = entry.show
+        _episode_control(self, entry, actions)
 
         inner = ctk.CTkFrame(self, fg_color="transparent")
-        inner.pack(side="left", fill="both", expand=True, padx=8, pady=4)
+        inner.pack(side="left", fill="both", expand=True, padx=8, pady=(4, 0))
         name_font = theme.font(11, bold=True)
         name = ctk.CTkLabel(
-            inner, text=show.name, font=name_font, text_color=theme.TEXT, anchor="w"
+            inner,
+            text=show.name,
+            font=name_font,
+            text_color=theme.TEXT,
+            anchor="w",
+            height=_COMPACT_NAME_HEIGHT,
         )
         name.pack(anchor="w")
         _keep_elided(name, show.name, name_font, reserve=IMDB_ICON_ROOM if show.imdb_url else 0)
-
-        bottom = ctk.CTkFrame(inner, fg_color="transparent")
-        bottom.pack(side="bottom", fill="x")
         ctk.CTkLabel(
-            bottom, text=entry.episode.code, font=theme.font(9), text_color=theme.TEXT_MUTED
-        ).pack(side="left")
-        _episode_button(
-            bottom, entry, on_search, width=52, height=18, font=theme.font(9, bold=True)
-        ).pack(side="right")
+            inner,
+            text=entry.episode.code,
+            font=theme.font(9),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+            height=_COMPACT_CODE_HEIGHT,
+        ).pack(anchor="w")
 
         add_imdb_icon(self, show.imdb_url)
 
 
 class SuggestionCard(ctk.CTkFrame):
-    """A popular untracked show airing that day, with a button to track it."""
+    """A popular untracked show airing that day, toned down below the tracked episodes, with a
+    button to track it."""
 
     def __init__(
         self,
@@ -210,7 +234,7 @@ class SuggestionCard(ctk.CTkFrame):
             border_color=theme.SUGGESTION_BORDER,
             border_width=1,
             corner_radius=8,
-            height=55,
+            height=_SUGGESTION_HEIGHT,
         )
         self.pack_propagate(False)
         self._show = entry.show
@@ -218,18 +242,35 @@ class SuggestionCard(ctk.CTkFrame):
         self._status = status
 
         inner = ctk.CTkFrame(self, fg_color="transparent")
-        inner.pack(side="left", fill="both", expand=True, padx=8, pady=4)
+        inner.pack(side="left", fill="both", expand=True, padx=8, pady=_SUGGESTION_PAD_Y)
+        ctk.CTkLabel(
+            inner,
+            text="Suggested",
+            font=theme.font(11),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+            height=_SUGGESTED_HEIGHT,
+        ).pack(anchor="w")
         name_font = theme.font(11, bold=True)
         name = ctk.CTkLabel(
-            inner, text=entry.show.name, font=name_font, text_color="gray50", anchor="w"
+            inner,
+            text=entry.show.name,
+            font=name_font,
+            text_color=theme.TEXT_DIM,
+            anchor="w",
+            height=_COMPACT_NAME_HEIGHT,
         )
         name.pack(anchor="w")
         _keep_elided(name, entry.show.name, name_font)
 
-        bottom = ctk.CTkFrame(inner, fg_color="transparent")
+        bottom = ctk.CTkFrame(inner, fg_color="transparent", height=_COMPACT_CODE_HEIGHT)
         bottom.pack(side="bottom", fill="x")
         ctk.CTkLabel(
-            bottom, text=entry.episode.code, font=theme.font(9), text_color="gray40"
+            bottom,
+            text=entry.episode.code,
+            font=theme.font(9),
+            text_color="gray40",
+            height=_COMPACT_CODE_HEIGHT,
         ).pack(side="left")
         self._track_button = ctk.CTkButton(
             bottom,

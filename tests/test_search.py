@@ -397,10 +397,10 @@ class SettingsFilterTests(unittest.TestCase):
         ]
         for title in dropped:
             with self.subTest(dropped=title):
-                self.assertFalse(passes_settings(release(title), settings, SearchKind.MOVIE))
+                self.assertFalse(passes_settings(release(title), settings))
         for title in kept:
             with self.subTest(kept=title):
-                self.assertTrue(passes_settings(release(title), settings, SearchKind.MOVIE))
+                self.assertTrue(passes_settings(release(title), settings))
 
     def test_phrases_and_case(self) -> None:
         settings = Settings(excluded_keywords="WEB-DL, 3d, dual audio")
@@ -416,33 +416,24 @@ class SettingsFilterTests(unittest.TestCase):
         }
         for title, passes in cases.items():
             with self.subTest(title=title):
-                allowed = passes_settings(release(title), settings, SearchKind.EPISODE)
+                allowed = passes_settings(release(title), settings)
                 self.assertIs(allowed, passes)
 
-    def test_size_limits_by_kind(self) -> None:
-        settings = Settings(excluded_keywords="", min_size_mb=500, max_size_mb=4000)
-        sizes = {400 * MIB: False, 500 * MIB: True, 4000 * MIB: True, 4001 * MIB: False, 0: True}
-        for kind in (SearchKind.EPISODE, SearchKind.MOVIE):
-            for size, passes in sizes.items():
+    def test_size_is_not_filtered(self) -> None:
+        settings = Settings(excluded_keywords="")
+        for kind in SearchKind:
+            for size in (0, 1 * MIB, 100_000 * MIB):  # tiny and huge releases are kept
                 with self.subTest(kind=kind, size=size):
-                    self.assertIs(passes_settings(release("x", size=size), settings, kind), passes)
-        for size in (100 * MIB, 40_000 * MIB):  # season packs ignore the limits
-            self.assertTrue(passes_settings(release("x", size=size), settings, SearchKind.SEASON))
-
-    def test_max_zero_means_no_upper_limit(self) -> None:
-        settings = Settings(min_size_mb=100)
-        huge = release("x", size=100_000 * MIB)
-        self.assertTrue(passes_settings(huge, settings, SearchKind.MOVIE))
-        self.assertFalse(passes_settings(release("x", size=99 * MIB), settings, SearchKind.MOVIE))
+                    self.assertTrue(passes_settings(release("x", size=size), settings))
 
     def check_keywords(self, keywords: str, dropped: list[str], kept: list[str]) -> None:
         settings = Settings(excluded_keywords=keywords)
         for title in dropped:
             with self.subTest(keywords=keywords, dropped=title):
-                self.assertFalse(passes_settings(release(title), settings, SearchKind.MOVIE))
+                self.assertFalse(passes_settings(release(title), settings))
         for title in kept:
             with self.subTest(keywords=keywords, kept=title):
-                self.assertTrue(passes_settings(release(title), settings, SearchKind.MOVIE))
+                self.assertTrue(passes_settings(release(title), settings))
 
     def test_cam_family(self) -> None:
         dropped = [
@@ -731,6 +722,18 @@ def fake(name: str, *, kinds: Iterable[SearchKind] = SearchKind, **options: Any)
     return cls(**options)
 
 
+def timed(name: str, search_timeout: float, **options: Any) -> FakeIndexer:
+    """A fake indexer with its own `search_timeout`."""
+    attributes = {
+        "name": name,
+        "label": name.upper(),
+        "kinds": frozenset(SearchKind),
+        "search_timeout": search_timeout,
+    }
+    cls = cast(type[FakeIndexer], type(f"Timed_{name}", (FakeIndexer,), attributes))
+    return cls(**options)
+
+
 def summary(update: SearchUpdate) -> list[tuple[str, IndexerState, int, str | None]]:
     return [(s.name, s.state, s.count, s.message) for s in update.statuses]
 
@@ -901,6 +904,25 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SLOW search timed out", "\n".join(logs.output))
         self.assertEqual(len(updates[-1].releases), 1)
 
+    async def test_an_indexer_can_set_its_own_timeout(self) -> None:
+        patient = timed("patient", 5.0, delay=0.2, result=[release("Severance S02E01 720p-X")])
+        hasty = timed("hasty", 0.05, delay=30)
+        default = fake("default", delay=30)
+        service = TorrentSearchService([patient, hasty, default], settings_service(), timeout=0.06)
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            updates = [update async for update in service.search(EPISODE)]
+        self.assertEqual(
+            summary(updates[-1]),
+            [
+                ("patient", IndexerState.FOUND, 1, None),  # outlasts the service's 0.06 s
+                ("hasty", IndexerState.FAILED, 0, "timed out"),
+                ("default", IndexerState.FAILED, 0, "timed out"),
+            ],
+        )
+        output = "\n".join(logs.output)
+        self.assertIn("HASTY search timed out after 0.05 s", output)
+        self.assertIn("DEFAULT search timed out after 0.06 s", output)
+
     async def test_unexpected_errors(self) -> None:
         broken = fake("broken", error=RuntimeError("boom"))
         own_timeout = fake("own", error=TimeoutError())  # not the service's deadline
@@ -922,12 +944,11 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
                         download_url="https://b.example/1.torrent")
         wrong_episode = release("Severance S02E10 720p WEB-AAA", h=2, source="a", seeders=99)
         cam = release("Severance S02E01 HDCAM-BBB", h=3, source="a", seeders=98)
-        too_big = release("Severance S02E01 2160p-DDD", h=5, source="b", seeders=97,
-                          size=9000 * MIB)
+        telesync = release("Severance S02E01 TELESYNC-DDD", h=5, source="b", seeders=97)
         other = release("Severance S02E01 1080p WEB-CCC", h=4, source="b", seeders=20)
         a = fake("a", result=[dup_a, wrong_episode, cam], gate=asyncio.Event())
-        b = fake("b", result=[dup_b, other, too_big], gate=asyncio.Event())
-        service = TorrentSearchService([a, b], settings_service(max_size_mb=8000))
+        b = fake("b", result=[dup_b, other, telesync], gate=asyncio.Event())
+        service = TorrentSearchService([a, b], settings_service())
         assert a.gate is not None and b.gate is not None
         async with contextlib.aclosing(service.search(EPISODE)) as updates:
             await anext(updates)
@@ -936,7 +957,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
             a.gate.set()
             final = await anext(updates)
         self.assertEqual([r.title for r in after_b.releases], [dup_b.title, other.title])
-        self.assertEqual(after_b.hidden, (too_big,))
+        self.assertEqual(after_b.hidden, (telesync,))
         self.assertEqual(after_b.statuses[1].count, 3)  # raw hits, before filtering
         # ...but merging follows the indexer order: a's copy is kept, both sources are named.
         self.assertEqual([r.title for r in final.releases], [dup_a.title, other.title])
@@ -945,8 +966,8 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((merged.seeders, merged.leechers), (50, 9))
         self.assertEqual(merged.download_url, "https://b.example/1.torrent")
         self.assertEqual(final.statuses[0].count, 3)
-        # The irrelevant episode, the HDCAM and the oversized release, most seeders first.
-        self.assertEqual(final.hidden, (wrong_episode, cam, too_big))
+        # The irrelevant episode, the HDCAM and the TELESYNC release, most seeders first.
+        self.assertEqual(final.hidden, (wrong_episode, cam, telesync))
         self.assertTrue(final.done)
 
     async def test_settings_are_read_when_the_search_starts(self) -> None:

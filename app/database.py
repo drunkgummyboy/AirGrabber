@@ -552,3 +552,7 @@ class SettingsRepository:
                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 rows,
             )
+            # Drop retired keys (e.g. the old size limits) so they do not linger in the table.
+            fields = tuple(Settings.model_fields)
+            placeholders = ", ".join("?" * len(fields))
+            await conn.execute(f"DELETE FROM settings WHERE key NOT IN ({placeholders})", fields)

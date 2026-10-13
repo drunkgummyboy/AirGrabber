@@ -891,6 +891,29 @@ class ProwlarrTests(IndexerTestCase):
         self.assertIn("invalid characters", str(caught.exception))
         self.assertEqual(server.requests, [])
 
+    async def test_searches_wait_longer_than_the_client_default(self) -> None:
+        # Prowlarr answers once every site it asks has answered; its status call stays quick.
+        server = FakeServer(ok([]), ok(STATUS))
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(server), timeout=httpx.Timeout(10.0, connect=5.0)
+        )
+        self.addAsyncCleanup(http.aclose)
+        indexer = ProwlarrIndexer(http, url=lambda: PROWLARR_URL, api_key=lambda: PROWLARR_KEY)
+        await indexer.search(EPISODE)
+        await indexer.test()
+        search, status = server.requests
+        self.assertEqual(
+            search.extensions["timeout"], {"connect": 5.0, "read": 30.0, "write": 30.0, "pool": 30.0}
+        )
+        self.assertEqual(
+            status.extensions["timeout"], {"connect": 5.0, "read": 10.0, "write": 10.0, "pool": 10.0}
+        )
+        self.assertEqual(ProwlarrIndexer.search_timeout, 40.0)
+        self.assertIsNone(BaseIndexer.search_timeout)
+        self.assertTrue(
+            all(cls.search_timeout is None for cls in (ApibayIndexer, EztvIndexer, YtsIndexer))
+        )
+
     async def test_test_reports_the_version(self) -> None:
         server = FakeServer(ok(STATUS))
         self.assertEqual(await self.prowlarr(server).test(), "Prowlarr 1.24.3.4754")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Self
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -15,7 +15,6 @@ from pydantic import (
     PlainSerializer,
     SecretStr,
     field_validator,
-    model_validator,
 )
 
 
@@ -25,6 +24,11 @@ class QualityProfile(StrEnum):
     FULL_HD = "1080p"
     UHD = "2160p"
     HEVC = "x265"
+
+
+class DownloadMode(StrEnum):
+    APP = "app"  # open the .torrent / magnet in the torrent program on this PC
+    FOLDER = "folder"  # save the .torrent into `download_dir` (else magnet → Download Station)
 
 
 class Weekday(StrEnum):
@@ -79,23 +83,34 @@ class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     quality: QualityProfile = QualityProfile.FULL_HD
+    # FOLDER keeps the 1.x/2.0 behaviour for existing users; new users choose on first run.
+    download_mode: DownloadMode = DownloadMode.FOLDER
     download_dir: Path = Field(default_factory=lambda: Path.home() / "Downloads")
     first_day: Weekday = Weekday.MONDAY
     weeks_to_show: int = Field(default=3, ge=1, le=5)
-    prev_weeks_to_show: int = Field(default=0, ge=0, le=4)
+    show_suggestions: bool = True  # the calendar's suggested (untracked) show per day
     tmdb_api_key: StoredSecret = SecretStr("")
     excluded_keywords: KeywordList = ("cam", "telesync", "hdcam", "sample")
     preferred_groups: KeywordList = ()
-    min_size_mb: int = Field(default=0, ge=0)
-    max_size_mb: int = Field(default=0, ge=0)  # 0 = no upper limit
     prowlarr_url: ServiceUrl = ""
     prowlarr_api_key: StoredSecret = SecretStr("")
+    # The Prowlarr on this PC that AirGrabber already added its public sites to (its base URL);
+    # set by the automatic setup only, never shown in the UI.
+    prowlarr_seeded_url: str = ""
     ds_url: ServiceUrl = ""  # Synology DSM address, e.g. https://nas.local:5001
     ds_username: str = ""
     ds_password: StoredSecret = SecretStr("")
     ds_verify_tls: bool = True  # NAS boxes often use self-signed certificates
     ds_destination: str = ""  # Download Station folder ("video/tv"); "" = its default
     disabled_indexers: KeywordList = ()
+    # The first-run welcome was completed or dismissed (or skipped for a library that already had
+    # shows); never shown in Settings.
+    setup_done: bool = False
+    # Download new versions in the background and install them when AirGrabber closes.
+    auto_update: bool = True
+    # The version that ran last (stored at every start), for the "Updated to v…" notice; never
+    # shown in Settings.
+    last_run_version: str = ""
 
     @field_validator("quality", mode="before")
     @classmethod
@@ -119,9 +134,3 @@ class Settings(BaseModel):
     def _strip_destination(cls, value: Any) -> Any:
         # Download Station wants "shared folder/sub folder", without leading or trailing slashes.
         return value.strip().strip("/").strip() if isinstance(value, str) else value
-
-    @model_validator(mode="after")
-    def _size_window(self) -> Self:
-        if self.max_size_mb and self.min_size_mb > self.max_size_mb:
-            raise ValueError("Minimum size cannot exceed maximum size")
-        return self

@@ -1,0 +1,11 @@
+[
+  {
+    "propertyName": "Name",
+    "errorMessage": "Should be unique",
+    "attemptedValue": "Knaben",
+    "severity": "error",
+    "errorCode": "PredicateValidator",
+    "formattedMessageArguments": [],
+    "formattedMessagePlaceholderValues": {"PropertyName": "Name", "PropertyValue": "Knaben"}
+  }
+]

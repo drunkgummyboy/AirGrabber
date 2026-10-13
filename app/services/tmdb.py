@@ -134,6 +134,36 @@ class TMDBClient:
         payload = await self._get_json(path, {"append_to_response": "external_ids"})
         return _parse_one(path, payload, _tv_details)
 
+    async def check_key(self, key: str) -> bool:
+        """Whether TMDB accepts `key` (a v3 API key or a v4 read access token), whatever key the
+        client is configured with.
+
+        One request to /authentication, without retries. False when TMDB rejects the key (401)
+        or it is empty or contains invalid characters (then nothing is sent). Raises TMDBError
+        when TMDB can't be reached or answers anything else. Like every request here, neither
+        the key nor the URL ends up in a log record or an error.
+        """
+        key = key.strip()
+        if not key or not (key.isascii() and key.isprintable()):
+            return False
+        path = "/authentication"
+        query, headers = _auth(key)
+        response: httpx.Response | None = None
+        error_name = ""
+        try:
+            async with self._slots:
+                response = await self._http.get(self.BASE_URL + path, params=query, headers=headers)
+        except httpx.HTTPError as exc:  # connection failures, timeouts, undecodable bodies
+            error_name = type(exc).__name__
+        # Raised out here so no httpx exception (which may carry the URL) becomes the context.
+        if response is None:
+            raise TMDBError(f"TMDB {path}: request failed ({error_name})")
+        if response.status_code == 401:
+            return False
+        if not response.is_success:
+            raise TMDBError(f"TMDB {path}: HTTP {response.status_code}")
+        return True
+
     async def _list(
         self, path: str, params: Mapping[str, str], convert: Callable[[object], T]
     ) -> list[T]:
@@ -152,12 +182,8 @@ class TMDBClient:
             raise TMDBNotConfigured("TMDB API key is not set")
         if not (key.isascii() and key.isprintable()):  # e.g. a pasted zero-width space
             raise TMDBAuthError("TMDB API key contains invalid characters")
-        query = {**params, "language": self._language}
-        headers: dict[str, str] = {}
-        if key.startswith(_V4_TOKEN_PREFIX):
-            headers["Authorization"] = f"Bearer {key}"
-        else:
-            query["api_key"] = key
+        auth_query, headers = _auth(key)
+        query = {**params, "language": self._language, **auth_query}
         url = self.BASE_URL + path
         attempt = 0
         while True:
@@ -210,6 +236,14 @@ class TMDBClient:
     def _backoff(self, attempt: int) -> float:
         """Exponential delay after the `attempt`-th (1-based) failed attempt."""
         return self._retry_delay * 2.0 ** (attempt - 1)
+
+
+def _auth(key: str) -> tuple[dict[str, str], dict[str, str]]:
+    """(query parameters, headers) that authenticate a request with `key`: a v4 token travels
+    as a Bearer header, a v3 key as the `api_key` parameter."""
+    if key.startswith(_V4_TOKEN_PREFIX):
+        return {}, {"Authorization": f"Bearer {key}"}
+    return {"api_key": key}, {}
 
 
 def _retry_after(response: httpx.Response) -> float | None:

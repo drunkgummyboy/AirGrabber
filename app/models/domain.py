@@ -359,12 +359,29 @@ class GrabTarget(DomainModel):
 class GrabOutcome(StrEnum):
     SAVED = "saved"  # .torrent written to the watch folder
     SENT = "sent"  # magnet handed to Download Station
+    OPENED = "opened"  # .torrent or magnet opened in the torrent program on this PC
 
 
 class GrabResult(DomainModel):
     outcome: GrabOutcome
-    path: str | None = None  # the .torrent file written (SAVED)
+    path: str | None = None  # the .torrent file written (SAVED, or OPENED from a file)
     message: str  # short text for the UI
+
+
+class QuickDownloadResult(DomainModel):
+    """What a one-click download did: the release it picked (if any) and how the grab went."""
+
+    found: bool  # False: no release was good enough, and nothing was grabbed
+    release_title: str | None = None
+    quality: str | None = None  # the picked release's resolution ("1080p"), when its title says
+    seeders: int | None = None
+    grab: GrabResult | None = None
+
+
+class TorrentApp(DomainModel):
+    """The torrent program Windows opens magnet links / .torrent files with."""
+
+    name: str  # friendly name, e.g. "qBittorrent"
 
 
 class IndexerState(StrEnum):
@@ -402,3 +419,10 @@ class UpdateInfo(DomainModel):
     latest: str  # version on GitHub
     available: bool  # latest is newer than current
     installable: bool  # False in a development copy, which is never overwritten
+
+
+class ProwlarrSetupResult(DomainModel):
+    """What the automatic setup of a Prowlarr on this PC did during one run."""
+
+    connected: bool = False  # found it and saved its URL and API key in Settings
+    added: tuple[str, ...] = ()  # names of the public sites added to it, in the order added
