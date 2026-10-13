@@ -38,13 +38,16 @@ function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-function Test-Python([string]$Exe) {
-    # The real interpreter path when $Exe is Python 3.13+ with tkinter, else $null.
+function Test-Python([string]$Exe, [switch]$Tested) {
+    # The real interpreter path when $Exe is Python 3.13+ with tkinter (with -Tested: exactly
+    # 3.13, the version AirGrabber is tested on), else $null.
     if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $null }
     # In Windows PowerShell 5.1, stderr from a redirected native command is a terminating error
     # under 'Stop'; a Python without tkinter must just be skipped.
     $ErrorActionPreference = 'Continue'
-    $probe = 'import sys, tkinter; print(sys.executable) if sys.version_info >= (3, 13) else sys.exit(1)'
+    $wanted = 'sys.version_info[:2] == (3, 13)'
+    if (-not $Tested) { $wanted = 'sys.version_info >= (3, 13)' }
+    $probe = "import sys, tkinter; print(sys.executable) if $wanted else sys.exit(1)"
     $real = & $Exe -c $probe 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $real) { return $null }
     return ($real | Select-Object -Last 1).Trim()
@@ -69,6 +72,11 @@ function Find-Python {
     }
     foreach ($command in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
         $candidates.Add($command.Source)
+    }
+    # Prefer the tested Python 3.13; a newer one is only used when 3.13 isn't there.
+    foreach ($candidate in $candidates) {
+        $python = Test-Python $candidate -Tested
+        if ($python) { return $python }
     }
     foreach ($candidate in $candidates) {
         $python = Test-Python $candidate
@@ -254,7 +262,8 @@ function Install-AirGrabber {
     Install-App
 
     Write-Step 'Installing the parts AirGrabber needs (this can take a minute)'
-    & $python -m pip install --disable-pip-version-check --no-input --quiet -r (Join-Path $InstallDir 'requirements.txt')
+    # --no-warn-script-location: pip's "not on PATH" warnings are harmless but look alarming.
+    & $python -m pip install --disable-pip-version-check --no-input --quiet --no-warn-script-location -r (Join-Path $InstallDir 'requirements.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Some parts AirGrabber needs could not be installed (see the messages above). Check your internet connection and try again.' }
 
     Install-ProwlarrIfWanted
