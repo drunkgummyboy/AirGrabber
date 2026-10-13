@@ -81,8 +81,9 @@ function Install-Python {
     Write-Step 'Installing Python, which AirGrabber runs on (only needed once; this can take a few minutes)'
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
+        # Out-Host: winget's output must not become part of this function's return value.
         & $winget.Source install --id Python.Python.3.13 --exact --scope user --silent `
-            --accept-package-agreements --accept-source-agreements
+            --accept-package-agreements --accept-source-agreements | Out-Host
         $python = Find-Python
         if ($python) { return $python }
         Write-Host 'That did not work; trying another way to install Python.' -ForegroundColor Yellow
@@ -213,7 +214,7 @@ function Install-ProwlarrIfWanted {
         try {
             # Machine scope: Windows shows a UAC prompt for the Prowlarr service.
             & $winget.Source install --id TeamProwlarr.Prowlarr --exact --silent `
-                --accept-package-agreements --accept-source-agreements
+                --accept-package-agreements --accept-source-agreements | Out-Host
             $ok = ($LASTEXITCODE -eq 0)
         } catch {
             $ok = $false
