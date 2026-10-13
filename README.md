@@ -10,20 +10,21 @@ your watch folder or sends magnets to Synology Download Station.
 
 On Windows 10 or 11:
 
-1. Press the **Windows key** and **R** together. A small "Run" window opens.
-2. Paste this line into it:
+1. Click **Start**, type **powershell** and open **Windows PowerShell**.
+2. Copy this line, paste it into the blue window (Ctrl+V or right-click) and press **Enter**:
 
    ```
-   powershell -c "irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex"
+   irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex
    ```
 
-3. Press **Enter** and follow the questions.
+3. Follow the questions.
 
 AirGrabber then appears in the Start menu and on your desktop, and opens by itself. If you don't have
 Python yet (the program AirGrabber runs on), the installer adds it for you. It also asks whether to
 add a free helper program (Prowlarr) that searches more websites; you can say no.
 
-Already in PowerShell? Run `irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex`.
+Only paste commands like this from sources you trust. This one downloads AirGrabber's installer,
+[`install.ps1`](install.ps1), from this page; you can read it first.
 
 ## Update
 

@@ -1,9 +1,10 @@
 <#
-AirGrabber installer for Windows 10/11. Press Win+R and run:
+AirGrabber installer for Windows 10/11. Open Windows PowerShell (Start, type powershell) and run:
 
-    powershell -c "irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex"
+    irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex
 
-(or, already in PowerShell: irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex)
+(Not via the Run dialog: security software blocks download commands started from Win+R, because
+scam pages ask people to paste them there.)
 
 Sets up winget (Windows' app installer) when it is missing, installs Python 3.13 when no
 Python 3.13+ is found, downloads AirGrabber into %LOCALAPPDATA%\Programs\AirGrabber, installs its
@@ -684,7 +685,7 @@ try {
     $failure = $_.Exception
     Write-Host ''
     Write-Host "Installation failed: $($failure.Message)" -ForegroundColor Red
-    # A window says so too. Without one, keep a Win+R window open so the message can be read (a
+    # A window says so too. Without one, keep the console window open so the message can be read (a
     # non-interactive host throws instead).
     $shown = $false
     try { $shown = Show-FailureDialog $failure } catch { $shown = $false }
