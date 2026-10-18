@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from app.models import CalendarEntry, Episode, Settings, Show, Weekday
 from app.services.library import calendar_range, week_start
 from app.ui.main_window import settings_affect_pages
+from app.ui.calendar_cards import fit_words_to_lines
 from app.ui.text_fit import SLACK
 from app.ui.views.calendar_view import (
     WEEK_CHOICES,
@@ -182,6 +183,29 @@ class SettingsRebuildTests(unittest.TestCase):
         for changes in ({"show_suggestions": False}, {"weeks_to_show": 1}):
             with self.subTest(changes):
                 self.assertTrue(settings_affect_pages(before, before.model_copy(update=changes)))
+
+
+class WordFitTests(unittest.TestCase):
+    """Narrow cards' names: two lines, broken only between words (1 unit per character)."""
+
+    def fit(self, text: str, width: float) -> str:
+        return fit_words_to_lines(text, width, 2, len)
+
+    def test_breaks_at_spaces_and_elides_the_rest(self) -> None:
+        self.assertEqual(
+            self.fit("Georgie & Mandy's First Marriage", 10), "Georgie &\nMandy's F…"
+        )
+
+    def test_never_splits_a_word(self) -> None:
+        self.assertEqual(self.fit("Avatar: Seven Havens", 8), "Avatar:\nSeven H…")
+        self.assertEqual(self.fit("Avatar: Seven Havens", 14), "Avatar: Seven\nHavens")
+
+    def test_a_word_wider_than_a_line_is_elided(self) -> None:
+        self.assertEqual(self.fit("Supercalifragilistic", 8), "Superca…")
+        self.assertEqual(self.fit("Big Supercalifragilistic Show", 8), "Big\nSuperca…")
+
+    def test_fits_unchanged(self) -> None:
+        self.assertEqual(self.fit("The Ark", 10), "The Ark")
 
 
 if __name__ == "__main__":

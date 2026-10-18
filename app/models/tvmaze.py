@@ -27,11 +27,16 @@ class TVMazeRating(_Wire):
     average: float | None = None
 
 
+class TVMazeCountry(_Wire):
+    code: str | None = None  # ISO 3166-1 alpha-2, e.g. "US", "GB"
+
+
 class TVMazeChannel(_Wire):
     """Either a broadcast `network` or a streaming `webChannel`."""
 
     id: int
     name: str
+    country: TVMazeCountry | None = None  # null for worldwide streaming services
 
 
 class TVMazeExternals(_Wire):
@@ -117,6 +122,14 @@ class TVMazeShow(_Wire):
             summary=strip_html(self.summary),
             updated=self.updated,
         )
+
+    @property
+    def country(self) -> str | None:
+        """The country code of the show's network (or streaming service), when it has one."""
+        for channel in (self.network, self.web_channel):
+            if channel is not None and channel.country is not None and channel.country.code:
+                return channel.country.code
+        return None
 
     def to_episodes(self) -> list[Episode]:
         """Episodes from `?embed[]=episodes`; empty when the payload wasn't embedded."""

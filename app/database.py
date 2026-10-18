@@ -107,6 +107,21 @@ MIGRATIONS: tuple[str, ...] = (
         fetched_at TEXT NOT NULL
     ) STRICT;
     """,
+    # v2: automatic downloads of new episodes. `auto_download` already exists (v1, filled by the
+    # 1.x import); `auto_since` says from when it applies. Every switch starts off after this
+    # upgrade (the user turns the wanted shows on again in My shows), so the 1.x values are reset
+    # and `auto_since` stays NULL.
+    """
+    ALTER TABLE tracked_shows ADD COLUMN auto_since TEXT;   -- UTC ISO-8601; NULL while switched off
+    UPDATE tracked_shows SET auto_download = 0;
+
+    CREATE TABLE auto_attempts (                            -- the automatic downloads' tries
+        episode_id INTEGER PRIMARY KEY REFERENCES episodes (id) ON DELETE CASCADE,
+        tries      INTEGER NOT NULL,                        -- searches that found nothing / failed
+        last_try   TEXT    NOT NULL,                        -- UTC ISO-8601
+        gave_up    INTEGER NOT NULL DEFAULT 0 CHECK (gave_up IN (0, 1))
+    ) STRICT;
+    """,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -116,6 +131,11 @@ HISTORY_COLUMNS = tuple(DownloadRecord.model_fields)
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _utc(instant: datetime) -> str:
+    """An aware datetime as stored: UTC ISO-8601."""
+    return instant.astimezone(UTC).isoformat()
 
 
 def _upsert_sql(table: str, columns: Sequence[str], key: str = "id") -> str:
@@ -197,6 +217,77 @@ _SUGGESTIONS_SQL = f"""
     WHERE r.day_rank <= :per_day
     ORDER BY r.air_date, r.day_rank
 """
+
+# Episodes the automatic downloads look after: numbered, non-special episodes with an airstamp,
+# of a tracked show whose switch is on, aired after the switch went on, never grabbed (an episode
+# or its season pack) and not given up. Instants are compared through julianday(), which reads
+# both the 'Z' and the '+00:00' spelling of UTC.
+_AUTO_ELIGIBLE = f"""
+    FROM episodes AS e
+    JOIN tracked_shows AS t ON t.show_id = e.show_id
+    JOIN shows AS s ON s.id = e.show_id
+    LEFT JOIN auto_attempts AS a ON a.episode_id = e.id
+    WHERE t.auto_download = 1 AND t.auto_since IS NOT NULL
+      AND e.season > 0 AND e.number IS NOT NULL AND e.airstamp IS NOT NULL
+      AND julianday(e.airstamp) > julianday(t.auto_since)
+      AND COALESCE(a.gave_up, 0) = 0
+      AND NOT {_IS_DOWNLOADED}
+"""
+_AUTO_ORDER = "ORDER BY julianday(e.airstamp), s.name COLLATE NOCASE, e.season, e.number"
+
+# Untried and least-tried episodes first (then the one tried longest ago), so episodes that keep
+# coming back with nothing found can't crowd newer ones out of a run.
+_AUTO_DUE_SQL = f"""
+    SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded
+    {_AUTO_ELIGIBLE}
+      AND julianday(e.airstamp) BETWEEN julianday(:aired_from) AND julianday(:aired_until)
+    ORDER BY COALESCE(a.tries, 0), COALESCE(a.last_try, ''),
+             julianday(e.airstamp), s.name COLLATE NOCASE, e.season, e.number
+    LIMIT :limit
+"""
+
+_AUTO_OVERDUE_SQL = f"""
+    SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded
+    {_AUTO_ELIGIBLE}
+      AND julianday(e.airstamp) < julianday(:aired_before)
+    {_AUTO_ORDER}
+"""
+
+
+# Per tracked show, its first numbered episode still to air (the Tracked cards' "Next: …").
+_NEXT_EPISODES_SQL = f"""
+    SELECT {_EPISODE_FIELDS} FROM (
+        SELECT e.id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY e.show_id
+                   ORDER BY e.air_date, julianday(e.airstamp), e.season, e.number
+               ) AS nth
+        FROM episodes AS e
+        JOIN tracked_shows AS t ON t.show_id = e.show_id
+        WHERE e.season > 0 AND e.number IS NOT NULL
+          AND (
+              (e.airstamp IS NOT NULL AND julianday(e.airstamp) > julianday(:now))
+              OR (e.airstamp IS NULL AND e.air_date >= :today)
+          )
+    ) AS upcoming
+    JOIN episodes AS e ON e.id = upcoming.id
+    WHERE upcoming.nth = 1
+"""
+
+
+_TRACKED_SQL = f"""
+    SELECT {_SHOW_FIELDS}, t.tracked_at, t.auto_download, t.synced_at
+    FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id
+"""
+
+
+def _library_entry(row: sqlite3.Row) -> LibraryEntry:
+    return LibraryEntry(
+        show=_show_from_row(_section(row, "show__")),
+        tracked_at=row["tracked_at"],
+        auto_download=row["auto_download"],
+        synced_at=row["synced_at"],
+    )
 
 
 def _calendar_entry(row: sqlite3.Row, *, is_tracked: bool) -> CalendarEntry:
@@ -317,7 +408,13 @@ class LibraryRepository:
         async with self._db.transaction() as conn:
             await conn.execute(_SHOW_UPSERT, _show_to_row(show))
             if episode_rows is not None:
-                await conn.execute("DELETE FROM episodes WHERE show_id = ?", (show.id,))
+                # Only episodes that are gone are deleted (the rest are upserted), so rows that
+                # cascade from an episode, like its auto_attempts, survive a refresh.
+                await conn.execute(
+                    "DELETE FROM episodes WHERE show_id = ? "
+                    "AND id NOT IN (SELECT value FROM json_each(?))",
+                    (show.id, json.dumps([row["id"] for row in episode_rows])),
+                )
                 await conn.executemany(_EPISODE_UPSERT, episode_rows)
 
     async def save_schedule_day(
@@ -334,13 +431,86 @@ class LibraryRepository:
             )
 
     async def track(self, show_id: int, *, auto_download: bool = False) -> None:
-        """Add a show to the library. The show must already be saved (`save_show`)."""
+        """Add a show to the library. The show must already be saved (`save_show`).
+
+        `auto_download` switches its automatic downloads on from now. A show that is already
+        tracked keeps its switch.
+        """
+        now = _now()
         async with self._db.transaction() as conn:
             await conn.execute(
-                "INSERT INTO tracked_shows (show_id, tracked_at, auto_download) VALUES (?, ?, ?) "
-                "ON CONFLICT (show_id) DO NOTHING",
-                (show_id, _now(), auto_download),
+                "INSERT INTO tracked_shows (show_id, tracked_at, auto_download, auto_since) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (show_id) DO NOTHING",
+                (show_id, now, auto_download, now if auto_download else None),
             )
+
+    async def set_auto_download(
+        self, show_id: int, on: bool, *, since: datetime | None = None
+    ) -> None:
+        """Switch a tracked show's automatic downloads on (from `since`, default now) or off.
+
+        Switching on a switch that is already on keeps the moment it went on; switching off
+        forgets it. Untracked shows are ignored.
+        """
+        async with self._db.transaction() as conn:
+            if on:
+                await conn.execute(
+                    "UPDATE tracked_shows SET auto_download = 1, auto_since = ? "
+                    "WHERE show_id = ? AND (auto_download = 0 OR auto_since IS NULL)",
+                    (_now() if since is None else _utc(since), show_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE tracked_shows SET auto_download = 0, auto_since = NULL "
+                    "WHERE show_id = ?",
+                    (show_id,),
+                )
+
+    async def auto_due(
+        self, *, aired_from: datetime, aired_until: datetime, limit: int
+    ) -> list[CalendarEntry]:
+        """Episodes the automatic downloads should fetch now, at most `limit`: least tried
+        first, then the one tried longest ago, then oldest first.
+
+        Those of a tracked show whose switch is on, numbered and not specials (season 0), with
+        an airstamp after the switch went on and within [aired_from, aired_until], not in the
+        download history (nor their season pack) and not given up.
+        """
+        rows = await self._db.fetch_all(
+            _AUTO_DUE_SQL,
+            {"aired_from": _utc(aired_from), "aired_until": _utc(aired_until), "limit": limit},
+        )
+        return [_calendar_entry(row, is_tracked=True) for row in rows]
+
+    async def record_auto_attempt(self, episode_id: int, when: datetime) -> None:
+        """Count one more automatic try at an episode (ignored if the episode is gone)."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO auto_attempts (episode_id, tries, last_try) "
+                "SELECT id, 1, :when FROM episodes WHERE id = :id "
+                "ON CONFLICT (episode_id) DO UPDATE SET "
+                "tries = auto_attempts.tries + 1, last_try = excluded.last_try",
+                {"id": episode_id, "when": _utc(when)},
+            )
+
+    async def auto_give_up(self, *, aired_before: datetime, when: datetime) -> list[CalendarEntry]:
+        """Mark as given up every episode the automatic downloads look after that aired before
+        `aired_before` and still isn't downloaded; returns them, oldest first.
+
+        Each episode is given up once: later calls skip it. An episode never tried gets an
+        attempts row with no tries, stamped `when`.
+        """
+        async with self._db.transaction() as conn:
+            rows = await conn.execute_fetchall(
+                _AUTO_OVERDUE_SQL, {"aired_before": _utc(aired_before)}
+            )
+            entries = [_calendar_entry(row, is_tracked=True) for row in rows]
+            await conn.executemany(
+                "INSERT INTO auto_attempts (episode_id, tries, last_try, gave_up) "
+                "VALUES (?, 0, ?, 1) ON CONFLICT (episode_id) DO UPDATE SET gave_up = 1",
+                [(entry.episode.id, _utc(when)) for entry in entries],
+            )
+        return entries
 
     async def untrack(self, show_id: int) -> None:
         async with self._db.transaction() as conn:
@@ -396,20 +566,13 @@ class LibraryRepository:
         return _show_from_row(dict(row)) if row else None
 
     async def tracked(self) -> list[LibraryEntry]:
-        rows = await self._db.fetch_all(
-            f"SELECT {_SHOW_FIELDS}, t.tracked_at, t.auto_download, t.synced_at "
-            "FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id "
-            "ORDER BY s.name COLLATE NOCASE"
-        )
-        return [
-            LibraryEntry(
-                show=_show_from_row(_section(row, "show__")),
-                tracked_at=row["tracked_at"],
-                auto_download=row["auto_download"],
-                synced_at=row["synced_at"],
-            )
-            for row in rows
-        ]
+        rows = await self._db.fetch_all(f"{_TRACKED_SQL} ORDER BY s.name COLLATE NOCASE")
+        return [_library_entry(row) for row in rows]
+
+    async def tracked_entry(self, show_id: int) -> LibraryEntry | None:
+        """The library entry of one show; None when it isn't tracked."""
+        row = await self._db.fetch_one(f"{_TRACKED_SQL} WHERE t.show_id = ?", (show_id,))
+        return _library_entry(row) if row else None
 
     async def tracked_ids(self) -> frozenset[int]:
         rows = await self._db.fetch_all("SELECT show_id FROM tracked_shows")
@@ -420,6 +583,14 @@ class LibraryRepository:
             "SELECT * FROM episodes WHERE show_id = ? ORDER BY season, number", (show_id,)
         )
         return [Episode.model_validate(dict(row)) for row in rows]
+
+    async def next_episodes(self, *, now: datetime, today: date) -> list[Episode]:
+        """Per tracked show, its first numbered episode still to air: an airstamp after `now`,
+        or (without one) an air date from `today` on. Shows with nothing upcoming are left out."""
+        rows = await self._db.fetch_all(
+            _NEXT_EPISODES_SQL, {"now": _utc(now), "today": today.isoformat()}
+        )
+        return [Episode.model_validate(_section(row, "ep__")) for row in rows]
 
     async def calendar(self, start: date, end: date) -> list[CalendarEntry]:
         """Tracked episodes airing between `start` and `end` (inclusive), in airing order."""
@@ -503,6 +674,15 @@ class HistoryRepository:
         )
         return bool(row and row[0])
 
+    async def show_grabs(self, show_id: int) -> frozenset[tuple[int, int | None]]:
+        """(season, episode) of every grab for a TV show; episode None = a season pack."""
+        rows = await self._db.fetch_all(
+            "SELECT DISTINCT season, episode FROM download_history "
+            "WHERE media_type = ? AND media_id = ?",
+            (MediaType.TV, show_id),
+        )
+        return frozenset((row["season"], row["episode"]) for row in rows)
+
     async def has_movie(self, movie_id: int) -> bool:
         row = await self._db.fetch_one(
             "SELECT EXISTS (SELECT 1 FROM download_history WHERE media_type = ? AND media_id = ?)",
@@ -515,6 +695,26 @@ class HistoryRepository:
             "SELECT * FROM download_history ORDER BY downloaded_at DESC LIMIT ?", (limit,)
         )
         return [DownloadRecord.model_validate(dict(row)) for row in rows]
+
+    async def latest_tv_grabs(self, since: datetime) -> list[DownloadRecord]:
+        """Per TV show, its latest grab at or after `since` (episodes and season packs)."""
+        rows = await self._db.fetch_all(
+            """
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY media_id ORDER BY julianday(downloaded_at) DESC, id DESC
+                ) AS nth
+                FROM download_history
+                WHERE media_type = 'tv' AND julianday(downloaded_at) >= julianday(?)
+            )
+            WHERE nth = 1
+            """,
+            (_utc(since),),
+        )
+        return [
+            DownloadRecord.model_validate({k: row[k] for k in row.keys() if k != "nth"})
+            for row in rows
+        ]
 
     async def info_hashes(self) -> frozenset[str]:
         """Info hashes (lowercase hex) of every recorded grab that has one."""

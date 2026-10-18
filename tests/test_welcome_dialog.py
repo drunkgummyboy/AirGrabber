@@ -14,11 +14,15 @@ from app.ui.tmdb_key_guide import KeyAction, KeyCheck, key_action, key_check_mes
 from app.ui.torrent_app_status import TorrentStatus, torrent_look
 from app.ui.welcome_dialog import (
     FirstRun,
+    Page,
     download_changes,
     elide_path,
     finish_changes,
     first_run_action,
     nav_buttons,
+    next_page,
+    page_step,
+    previous_page,
     step_label,
 )
 
@@ -48,13 +52,48 @@ class FirstRunActionTests(unittest.TestCase):
 class StepTests(unittest.TestCase):
     def test_step_labels(self) -> None:
         self.assertIsNone(step_label(1))
-        self.assertEqual(step_label(2), "Step 2 of 3")
-        self.assertEqual(step_label(3), "Step 3 of 3")
+        self.assertEqual(step_label(2), "Step 2 of 4")
+        self.assertEqual(step_label(3), "Step 3 of 4")
+        self.assertEqual(step_label(4), "Step 4 of 4")
+
+    def test_pages_and_their_steps(self) -> None:
+        self.assertEqual(
+            [page_step(page) for page in Page], [1, 2, 2, 3, 4]
+        )  # the import panel is still step 2
+        self.assertEqual(step_label(page_step(Page.AIRDATES_IMPORT)), "Step 2 of 4")
+        self.assertEqual(step_label(page_step(Page.DOWNLOAD)), "Step 3 of 4")
+        self.assertEqual(step_label(page_step(Page.TMDB)), "Step 4 of 4")
 
     def test_nav_buttons(self) -> None:
-        self.assertEqual(nav_buttons(1), (None, None))  # "Get started" sits in the content
-        self.assertEqual(nav_buttons(2), ("Back", "Next"))
-        self.assertEqual(nav_buttons(3), ("Skip for now", "Finish"))
+        self.assertEqual(nav_buttons(Page.WELCOME), (None, None))  # "Get started" in the content
+        self.assertEqual(nav_buttons(Page.AIRDATES), ("Back", "Next"))
+        self.assertEqual(nav_buttons(Page.DOWNLOAD), ("Back", "Next"))
+        self.assertEqual(nav_buttons(Page.TMDB), ("Skip for now", "Finish"))
+
+    def test_import_panel_skips_until_imported(self) -> None:
+        self.assertEqual(nav_buttons(Page.AIRDATES_IMPORT), ("Back", "Skip"))
+        self.assertEqual(nav_buttons(Page.AIRDATES_IMPORT, imported=True), ("Back", "Next"))
+        # Only the panel's button depends on an import.
+        self.assertEqual(nav_buttons(Page.DOWNLOAD, imported=True), ("Back", "Next"))
+
+    def test_yes_goes_through_the_panel_to_downloads(self) -> None:
+        page = next_page(Page.WELCOME, import_shows=True)
+        self.assertIs(page, Page.AIRDATES)
+        page = next_page(page, import_shows=True)
+        self.assertIs(page, Page.AIRDATES_IMPORT)
+        page = next_page(page, import_shows=True)
+        self.assertIs(page, Page.DOWNLOAD)
+        self.assertIs(next_page(page, import_shows=True), Page.TMDB)
+
+    def test_no_goes_straight_to_downloads(self) -> None:
+        self.assertIs(next_page(Page.AIRDATES, import_shows=False), Page.DOWNLOAD)
+        self.assertIs(next_page(Page.DOWNLOAD, import_shows=False), Page.TMDB)
+
+    def test_back(self) -> None:
+        self.assertIs(previous_page(Page.AIRDATES, import_shows=True), Page.WELCOME)
+        self.assertIs(previous_page(Page.AIRDATES_IMPORT, import_shows=True), Page.AIRDATES)
+        self.assertIs(previous_page(Page.DOWNLOAD, import_shows=True), Page.AIRDATES_IMPORT)
+        self.assertIs(previous_page(Page.DOWNLOAD, import_shows=False), Page.AIRDATES)
 
 
 class ChangesTests(unittest.TestCase):

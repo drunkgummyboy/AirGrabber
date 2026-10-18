@@ -5,6 +5,7 @@
 Reads followed_shows.json, episodes_cache.json, history.json and settings.json from LEGACY_DIR
 (default: the current directory), whichever exist. The JSON files are never modified, and
 re-running is safe: shows and settings are upserted, history entries are de-duplicated.
+The 1.x per-show "auto" flag is not carried over: imported shows start with automatic downloads off.
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ async def import_legacy(legacy_dir: Path, db: Database) -> ImportReport:
             report.problems.append(f"show {key} ({entry.get('name', '?')}): {exc}")
             continue
         await db.library.save_show(show, episodes)
-        await db.library.track(show.id, auto_download=bool(entry.get("auto")))
+        await db.library.track(show.id)  # 1.x "auto" flag ignored: every switch starts off in 2.x
         report.shows += 1
         report.episodes += len(episodes or ())
 

@@ -35,6 +35,7 @@ NOT_AIRED = "gray25"  # disabled episode button before broadcast
 SECTION_HOT = "#F39C12"  # trending
 SECTION_NEW = "#2ECC71"  # premieres, fresh digital releases
 WARNING = SECTION_HOT  # amber: something is missing rather than broken (no torrent program)
+PANEL_EDGE = PLACEHOLDER  # a quiet 1 px border around a group of settings (Prowlarr)
 
 # Indexer search dialog
 CHIP = "gray15"  # unselected season / episode / version button

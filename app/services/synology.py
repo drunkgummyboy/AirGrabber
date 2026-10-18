@@ -1,4 +1,4 @@
-"""Synology Download Station client (DSM Web API), used to hand magnet links to the NAS.
+"""Synology Download Station client (DSM Web API): a RemoteClient for magnets and .torrent files.
 
 Protocol, per Synology's "Download Station Web API" guide: discover API paths and versions
 with SYNO.API.Info (`/webapi/query.cgi`), log in with SYNO.API.Auth (`session=DownloadStation`,
@@ -8,28 +8,37 @@ SYNO.DownloadStation2.Task `create` when the NAS offers it (Download Station 3.8
 `type="url"`, `url=["magnet:…"]`, `create_list=false`), else with the DSM 6
 SYNO.DownloadStation.Task `create` (`uri=magnet:…`).
 
+A .torrent file goes up as multipart/form-data: DownloadStation2 `type="file"`,
+`file=["torrent"]` (the name of the file part), `destination` ("" = the default folder) and
+`create_list=false`, the file in a part named `torrent`; the old API takes it in a part named
+`file`, sent last. (DSM 6.2.4 / DSM 7 removed the old API's upload; DownloadStation2 replaced it.)
+
 Every operation logs in and out on its own short-lived httpx client, because TLS verification is
 a setting. Secret hygiene: the password and the sid only ever travel in POST bodies, messages and
 log records name the NAS by host and port only, and no httpx exception is chained to (or left as
-the context of) a DownloadStationError.
+the context of) a RemoteError.
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
 import re
-import ssl
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 import httpx
 
-from app import APP_NAME, __version__
-from app.models import Settings
+from app.models import RemoteKind, Settings
+from app.services.remote import (
+    CERTIFICATE_SETTING,
+    HttpClients,
+    RemoteError,
+    host_of,
+    redirect_target,
+    tls_problem,
+)
 from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
@@ -44,7 +53,6 @@ _DS_INFO = "SYNO.DownloadStation.Info"
 _DSM_INFO = "SYNO.DSM.Info"
 _QUERY = ",".join((_AUTH, _TASK2, _TASK, _DS_INFO, _DSM_INFO))
 
-_USER_AGENT = f"{APP_NAME}/{__version__}"
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 
 _TWO_STEP = (
@@ -88,8 +96,12 @@ def _task_errors(destination: str) -> Mapping[int, str]:
     }
 
 
-class DownloadStationError(Exception):
-    """Download Station is not set up, unreachable, or refused the request (user-facing text)."""
+# The older name of RemoteError, from when Download Station was the only remote program;
+# main_window.py still catches it.
+DownloadStationError = RemoteError
+
+# A multipart file part: (file name, content, content type).
+_FilePart = tuple[str, bytes, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,17 +119,18 @@ class _Api:
 
 
 class DownloadStationClient:
+    kind = RemoteKind.SYNOLOGY
+
     def __init__(
         self,
         settings: SettingsService,
         *,
         timeout: float = 15.0,
         transport: httpx.AsyncBaseTransport | None = None,  # tests only
+        http: HttpClients | None = None,  # shared with the other remote clients
     ) -> None:
         self._settings = settings
-        self._timeout = timeout
-        self._transport = transport
-        self._ssl_contexts: dict[bool, ssl.SSLContext] = {}
+        self._http = http or HttpClients(timeout=timeout, transport=transport)
 
     @property
     def configured(self) -> bool:
@@ -159,6 +172,26 @@ class DownloadStationClient:
                 await session.call(_TASK, 3, "create", params, errors=errors)
             log.info("Added a magnet task to Download Station on %s", session.host)
 
+    async def add_torrent(self, content: bytes, filename: str) -> None:
+        """Log in, upload a .torrent file as a Download Station task, log out."""
+        async with self._session() as session:
+            destination = session.destination
+            errors = _task_errors(destination)
+            if session.has(_TASK2) and session.api(_TASK2).supports(2):
+                params: dict[str, object] = {
+                    "type": "file",
+                    "file": ["torrent"],  # the name of the file part below
+                    "destination": destination,  # "" = Download Station's default folder
+                    "create_list": False,
+                }
+                files = {"torrent": (filename, content, "application/x-bittorrent")}
+                await session.call(_TASK2, 2, "create", params, errors=errors, files=files)
+            else:
+                params = {"destination": destination} if destination else {}
+                files = {"file": (filename, content, "application/x-bittorrent")}
+                await session.call(_TASK, 3, "create", params, errors=errors, files=files)
+            log.info("Added a .torrent task to Download Station on %s", session.host)
+
     @contextlib.asynccontextmanager
     async def _session(self) -> AsyncIterator[_Session]:
         settings = self._settings.current  # one snapshot for the whole operation
@@ -167,32 +200,18 @@ class DownloadStationClient:
                 "Download Station isn't set up: enter the NAS address, user name and password "
                 "in Settings."
             )
-        async with await self._client(settings.ds_verify_tls) as http:
-            session = _Session(http, settings.ds_url, settings.ds_destination)
+        # Download Station wants "shared folder/sub folder", without leading or trailing slashes.
+        destination = settings.remote_destination.strip().strip("/").strip()
+        async with await self._http.client(settings.remote_verify_tls) as http:
+            session = _Session(http, settings.remote_url, destination)
             await session.discover()
-            await session.login(settings.ds_username, settings.ds_password.get_secret_value())
+            await session.login(
+                settings.remote_username, settings.remote_password.get_secret_value()
+            )
             try:
                 yield session
             finally:
                 await session.logout()
-
-    async def _client(self, verify: bool) -> httpx.AsyncClient:
-        # No redirects: a redirected POST would lose its body, so a redirect is reported instead.
-        headers = {"User-Agent": _USER_AGENT}
-        if self._transport is not None:
-            return httpx.AsyncClient(
-                transport=self._transport,
-                timeout=self._timeout,
-                follow_redirects=False,
-                headers=headers,
-            )
-        context = self._ssl_contexts.get(verify)
-        if context is None:  # loading the CA bundle blocks for a moment: keep it off the loop
-            context = await asyncio.to_thread(httpx.create_ssl_context, verify=verify)
-            self._ssl_contexts[verify] = context
-        return httpx.AsyncClient(
-            verify=context, timeout=self._timeout, follow_redirects=False, headers=headers
-        )
 
 
 class _Session:
@@ -201,7 +220,7 @@ class _Session:
     def __init__(self, http: httpx.AsyncClient, base_url: str, destination: str) -> None:
         self._http = http
         self._base = base_url.rstrip("/")
-        self.host = _host(base_url)
+        self.host = host_of(base_url)
         self.destination = destination
         self._apis: dict[str, _Api] = {}
         self._sid: str | None = None
@@ -263,15 +282,17 @@ class _Session:
         params: Mapping[str, object],
         *,
         errors: Mapping[int, str] | None = None,
+        files: Mapping[str, _FilePart] | None = None,
     ) -> object:
-        """POST one API method (sid and secrets stay out of the URL); returns its `data`."""
+        """POST one API method (sid and secrets stay out of the URL); returns its `data`.
+        With `files`, as multipart/form-data: api, version and method first, the files last."""
         api = self._apis[name]
         form = {"api": name, "version": str(api.version(preferred_version)), "method": method}
         for key, value in params.items():
             form[key] = json.dumps(value) if api.json_params else _plain(value)
         if self._sid is not None:
             form["_sid"] = self._sid
-        payload = await self._request("POST", api.path, data=form)
+        payload = await self._request("POST", api.path, data=form, files=files)
         if not isinstance(payload, dict):
             raise DownloadStationError(self._unexpected())
         if payload.get("success") is True:
@@ -291,15 +312,18 @@ class _Session:
         *,
         params: Mapping[str, str] | None = None,
         data: Mapping[str, str] | None = None,
+        files: Mapping[str, _FilePart] | None = None,
         not_found: str | None = None,
     ) -> object:
         """Send a request and decode its JSON body. Raises happen outside `except` blocks, so no
-        httpx exception (whose text may hold the URL) becomes a DownloadStationError's context."""
+        httpx exception (whose text may hold the URL) becomes a RemoteError's context."""
         url = f"{self._base}/webapi/{path}"
         response: httpx.Response | None = None
         failure = ""
         try:
-            response = await self._http.request(method, url, params=params, data=data)
+            response = await self._http.request(
+                method, url, params=params, data=data, files=files
+            )
         except httpx.TimeoutException:
             failure = f"The NAS at {self.host} didn't answer in time."
         except httpx.ConnectError as exc:
@@ -327,22 +351,8 @@ class _Session:
 
 
 def _is_configured(settings: Settings) -> bool:
-    password = settings.ds_password.get_secret_value()
-    return bool(settings.ds_url and settings.ds_username and password)
-
-
-def _host(url: str) -> str:
-    """'host:port' of an address: never its credentials, path or query."""
-    try:
-        parts = urlsplit(url)
-        hostname, port = parts.hostname, parts.port
-    except ValueError:
-        return "the configured address"
-    if not hostname:
-        return "the configured address"
-    if ":" in hostname:  # IPv6
-        hostname = f"[{hostname}]"
-    return f"{hostname}:{port}" if port else hostname
+    password = settings.remote_password.get_secret_value()
+    return bool(settings.remote_url and settings.remote_username and password)
 
 
 def _parse_api(raw: object) -> _Api | None:
@@ -380,26 +390,15 @@ def _short_version(data: object) -> str | None:
     return match.group(0) if match else None
 
 
-def _exception_chain(exc: BaseException) -> list[BaseException]:
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
-
-
 def _connect_failure(exc: httpx.ConnectError, host: str) -> str:
-    chain = _exception_chain(exc)
-    text = " ".join(str(item) for item in chain)  # inspected only, never shown
-    if any(isinstance(item, ssl.SSLCertVerificationError) for item in chain) or (
-        "CERTIFICATE_VERIFY_FAILED" in text
-    ):
+    problem = tls_problem(exc)
+    if problem == "certificate":
         return (
             f"Certificate not trusted: the NAS at {host} has a certificate this PC doesn't "
-            "trust. Untick Verify TLS in Settings for a self-signed NAS certificate."
+            f'trust. Untick "{CERTIFICATE_SETTING}" in Settings for a self-signed NAS '
+            "certificate."
         )
-    if any(isinstance(item, ssl.SSLError) for item in chain) or "[SSL" in text:
+    if problem == "tls":
         return (
             f"Couldn't make a secure connection to the NAS at {host}. Check that the address "
             "uses https with the NAS's HTTPS port (usually 5001), or http with its HTTP port."
@@ -408,15 +407,7 @@ def _connect_failure(exc: httpx.ConnectError, host: str) -> str:
 
 
 def _redirect_failure(response: httpx.Response, host: str) -> str:
-    target = ""
-    location = response.headers.get("Location")
-    if location:
-        try:
-            resolved = response.request.url.join(location)
-            if resolved.scheme in ("http", "https") and resolved.host:
-                target = f"{resolved.scheme}://{_host(str(resolved))}"
-        except (httpx.InvalidURL, ValueError):
-            target = ""
+    target = redirect_target(response)
     if target:
         return f"The NAS at {host} redirects to {target}: use that address in Settings."
     return f"The NAS at {host} answered with a redirect: check the address in Settings."

@@ -11,6 +11,7 @@ import os
 import tempfile
 from collections import OrderedDict
 from pathlib import Path, PurePosixPath
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -22,14 +23,26 @@ MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 _SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 _DEFAULT_SUFFIX = ".jpg"
 
-_MemoryKey = tuple[str, tuple[int, int]]
+
+class Finish(Protocol):
+    """A last step `ImageCache.get` runs on the cropped image, in the same worker thread.
+
+    It is part of the memory key, so it must hash and compare by value (a frozen dataclass), and
+    it must be pure: a new image out, its argument left alone.
+    """
+
+    def __call__(self, image: Image.Image, /) -> Image.Image: ...
+
+
+_MemoryKey = tuple[str, tuple[int, int], Finish | None]
 
 
 class ImageCache:
     """Two-level image cache: an LRU of decoded, resized images over a directory of raw bytes.
 
-    `get` looks in memory (keyed by url and size), then on disk, then downloads. Concurrent
-    calls for one url, whatever sizes they ask for, share a single disk read or download.
+    `get` looks in memory (keyed by url, size and finish step), then on disk, then downloads.
+    Concurrent calls for one url, whatever sizes they ask for, share a single disk read or
+    download.
 
     Thread safety: all file I/O and Pillow work runs in worker threads via `asyncio.to_thread`,
     but those functions are pure (bytes/path in, result out) and never see the cache's state.
@@ -58,8 +71,11 @@ class ImageCache:
         self._downloads = asyncio.Semaphore(max_concurrent)
         directory.mkdir(parents=True, exist_ok=True)
 
-    async def get(self, url: str | None, size: tuple[int, int]) -> Image.Image | None:
-        """The image at `url`, cropped to fill exactly `size` pixels, in RGB or RGBA mode.
+    async def get(
+        self, url: str | None, size: tuple[int, int], *, finish: Finish | None = None
+    ) -> Image.Image | None:
+        """The image at `url`, cropped to fill exactly `size` pixels, in RGB or RGBA mode; with
+        `finish`, whatever `finish` makes of that crop (cached per url, size and finish).
 
         None without a url, or when the image cannot be downloaded or decoded (logged at DEBUG).
         Never raises for network or image problems; a non-positive size is a ValueError.
@@ -69,7 +85,7 @@ class ImageCache:
         width, height = size
         if width < 1 or height < 1:
             raise ValueError(f"invalid image size {size!r}")
-        key: _MemoryKey = (url, (width, height))
+        key: _MemoryKey = (url, (width, height), finish)
         cached = self._memory.get(key)
         if cached is not None:
             self._memory.move_to_end(key)
@@ -79,7 +95,7 @@ class ImageCache:
         if source is None:
             return None
         try:
-            fitted = await asyncio.to_thread(_fit, source, key[1])
+            fitted = await asyncio.to_thread(_fit, source, key[1], finish)
         except Exception as exc:
             log.debug("Could not resize image %s to %s: %r", url, key[1], exc)
             return None
@@ -201,9 +217,9 @@ def _decode(data: bytes) -> Image.Image:
         return opened.convert("RGBA" if opened.has_transparency_data else "RGB")
 
 
-def _fit(source: Image.Image, size: tuple[int, int]) -> Image.Image:
-    return ImageOps.fit(source, size, Image.Resampling.LANCZOS)
-
+def _fit(source: Image.Image, size: tuple[int, int], finish: Finish | None) -> Image.Image:
+    fitted = ImageOps.fit(source, size, Image.Resampling.LANCZOS)
+    return fitted if finish is None else finish(fitted)
 
 
 def _read_cached(path: Path) -> Image.Image | None:

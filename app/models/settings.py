@@ -15,6 +15,7 @@ from pydantic import (
     PlainSerializer,
     SecretStr,
     field_validator,
+    model_validator,
 )
 
 
@@ -28,7 +29,37 @@ class QualityProfile(StrEnum):
 
 class DownloadMode(StrEnum):
     APP = "app"  # open the .torrent / magnet in the torrent program on this PC
-    FOLDER = "folder"  # save the .torrent into `download_dir` (else magnet → Download Station)
+    REMOTE = "remote"  # send the .torrent / magnet to the torrent program on a NAS or another PC
+    # Save the .torrent into `download_dir`; a magnet-only release goes to the remote program.
+    FOLDER = "folder"
+
+
+class RemoteKind(StrEnum):
+    """The torrent program on a NAS or another computer (`remote_*` settings)."""
+
+    SYNOLOGY = "synology"  # Synology Download Station (DSM Web API)
+    QBITTORRENT = "qbittorrent"  # qBittorrent's Web UI (Web API v2)
+    TRANSMISSION = "transmission"  # Transmission's RPC
+
+    @property
+    def program(self) -> str:
+        """Its short name in messages: "Sent to qBittorrent"."""
+        return _PROGRAM_NAMES[self]
+
+
+_PROGRAM_NAMES = {
+    RemoteKind.SYNOLOGY: "Download Station",
+    RemoteKind.QBITTORRENT: "qBittorrent",
+    RemoteKind.TRANSMISSION: "Transmission",
+}
+
+
+def remote_ready(kind: RemoteKind, url: str, username: str, password: str) -> bool:
+    """Whether these settings are enough to reach the program: an address, plus a DSM account
+    for Download Station (qBittorrent and Transmission may run without a sign-in)."""
+    if not url.strip():
+        return False
+    return kind is not RemoteKind.SYNOLOGY or bool(username.strip() and password)
 
 
 class Weekday(StrEnum):
@@ -86,6 +117,8 @@ class Settings(BaseModel):
     # FOLDER keeps the 1.x/2.0 behaviour for existing users; new users choose on first run.
     download_mode: DownloadMode = DownloadMode.FOLDER
     download_dir: Path = Field(default_factory=lambda: Path.home() / "Downloads")
+    # Newly followed shows get their "download new episodes automatically" switch turned on.
+    auto_download_new_shows: bool = False
     first_day: Weekday = Weekday.MONDAY
     weeks_to_show: int = Field(default=3, ge=1, le=5)
     show_suggestions: bool = True  # the calendar's suggested (untracked) show per day
@@ -97,11 +130,15 @@ class Settings(BaseModel):
     # The Prowlarr on this PC that AirGrabber already added its public sites to (its base URL);
     # set by the automatic setup only, never shown in the UI.
     prowlarr_seeded_url: str = ""
-    ds_url: ServiceUrl = ""  # Synology DSM address, e.g. https://nas.local:5001
-    ds_username: str = ""
-    ds_password: StoredSecret = SecretStr("")
-    ds_verify_tls: bool = True  # NAS boxes often use self-signed certificates
-    ds_destination: str = ""  # Download Station folder ("video/tv"); "" = its default
+    # The torrent program on a NAS or another computer: DownloadMode.REMOTE sends everything
+    # there, FOLDER only the releases that have no .torrent file.
+    remote_kind: RemoteKind = RemoteKind.SYNOLOGY
+    remote_url: ServiceUrl = ""  # e.g. http://192.168.1.10:8080
+    remote_username: str = ""
+    remote_password: StoredSecret = SecretStr("")
+    remote_verify_tls: bool = True  # NAS boxes often use self-signed certificates
+    # Its download folder: "video/tv" (Download Station), "/downloads/tv"; "" = its default.
+    remote_destination: str = ""
     disabled_indexers: KeywordList = ()
     # The first-run welcome was completed or dismissed (or skipped for a library that already had
     # shows); never shown in Settings.
@@ -111,6 +148,34 @@ class Settings(BaseModel):
     # The version that ran last (stored at every start), for the "Updated to v…" notice; never
     # shown in Settings.
     last_run_version: str = ""
+    # Closing the window keeps AirGrabber running in the tray (when the tray icon works).
+    keep_in_tray: bool = True
+    # The "AirGrabber keeps running" notice was shown (the first close to the tray).
+    tray_notice_shown: bool = False
+    # Mirrors the Startup-folder shortcut (app/services/startup.py) that starts it in the tray.
+    start_with_windows: bool = False
+
+    @property
+    def remote_configured(self) -> bool:
+        """The remote torrent program has what it needs to be reached (see `remote_ready`)."""
+        return remote_ready(
+            self.remote_kind,
+            self.remote_url,
+            self.remote_username,
+            self.remote_password.get_secret_value(),
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_download_station(cls, data: Any) -> Any:
+        """Settings stored before other torrent programs existed keep their Synology Download
+        Station: `ds_*` become `remote_*` (kind Synology). The next save drops the `ds_*` keys."""
+        if not isinstance(data, dict) or any(str(key).startswith("remote_") for key in data):
+            return data
+        moved = {new: data[old] for old, new in _DOWNLOAD_STATION_KEYS if old in data}
+        if not moved:
+            return data
+        return {**data, **moved, "remote_kind": RemoteKind.SYNOLOGY}
 
     @field_validator("quality", mode="before")
     @classmethod
@@ -124,13 +189,21 @@ class Settings(BaseModel):
             raise ValueError("Choose a folder")
         return value
 
-    @field_validator("tmdb_api_key", "prowlarr_api_key", "ds_username", mode="before")
+    @field_validator(
+        "tmdb_api_key", "prowlarr_api_key", "remote_username", "remote_destination", mode="before"
+    )
     @classmethod
     def _strip_key(cls, value: Any) -> Any:
+        # Not the slashes of a destination: qBittorrent and Transmission want absolute paths
+        # ("/downloads/tv"); the Download Station client strips them itself.
         return value.strip() if isinstance(value, str) else value
 
-    @field_validator("ds_destination", mode="before")
-    @classmethod
-    def _strip_destination(cls, value: Any) -> Any:
-        # Download Station wants "shared folder/sub folder", without leading or trailing slashes.
-        return value.strip().strip("/").strip() if isinstance(value, str) else value
+
+# Synology Download Station settings of AirGrabber 2.0 before other programs: (old, new) key.
+_DOWNLOAD_STATION_KEYS = (
+    ("ds_url", "remote_url"),
+    ("ds_username", "remote_username"),
+    ("ds_password", "remote_password"),
+    ("ds_verify_tls", "remote_verify_tls"),
+    ("ds_destination", "remote_destination"),
+)

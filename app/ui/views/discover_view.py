@@ -11,7 +11,8 @@ from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
-from app.ui.media_cards import DiscoverShowCard, TrackState
+from app.ui.media_cards import DiscoverShowCard
+from app.ui.poster_card import TrackState
 from app.ui.views.base import StatusReporter
 from app.ui.views.shelves import Shelf, ShelvesView
 
@@ -27,12 +28,15 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         images: ImageCache,
         status: StatusReporter,
         on_open_settings: Callable[[], None],
+        on_open_show: Callable[[DiscoverShow], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        """`on_open_show`: what a click on a card's cover does (the show details)."""
         super().__init__(
             master, images=images, status=status, on_open_settings=on_open_settings, **kwargs
         )
         self._discovery = discovery
+        self._on_open_show = on_open_show
         # The cards on screen by TMDB id: a show can sit on more than one shelf.
         self._cards: dict[int, list[DiscoverShowCard]] = {}
         self._tracking: set[int] = set()  # TMDB ids being tracked right now
@@ -71,6 +75,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
             details=self._discovery.tv_details,
             is_tracked=item.is_tracked,
             on_track=self._track,
+            on_open_show=self._on_open_show,
         )
         if show.id in self._tracking and not item.is_tracked:
             card.set_track_state("busy")

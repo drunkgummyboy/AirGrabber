@@ -1,4 +1,5 @@
-"""Dialog for pasting a list of shows (names or TVMaze ids) to import."""
+"""Dialog for importing shows: paste a list of names / TVMaze ids, or bring them over from
+airdates.tv (the shared AirdatesImportPanel)."""
 
 from __future__ import annotations
 
@@ -7,15 +8,29 @@ from collections.abc import Callable
 import customtkinter as ctk
 
 from app.ui import theme
+from app.ui.airdates_import import AirdatesImportPanel, PreviewFinder, ShowImporter
 from app.ui.branding import set_window_icon
+from app.ui.dialog_kit import CONTENT_WIDTH, PAD_X, PAD_Y, activate_later, place_over
+
+TAB_NAMES = "Show names"
+TAB_AIRDATES = "From airdates.tv"
+
+_TAB_PAD = 24  # around the content inside a tab
+_TABS_WIDTH = CONTENT_WIDTH + 2 * _TAB_PAD
+_TABS_HEIGHT = 560
 
 
 class ImportShowsDialog(ctk.CTkToplevel):
+    """Two tabs: "Show names" (paste names or TVMaze ids; Import hands them to `on_import`) and
+    "From airdates.tv" (the panel imports by itself)."""
+
     def __init__(
         self,
         master: ctk.CTk | ctk.CTkToplevel,
         *,
         on_import: Callable[[list[str]], None],
+        airdates: PreviewFinder,
+        library: ShowImporter,
     ) -> None:
         super().__init__(master, fg_color=theme.BG)
         self._on_import = on_import
@@ -25,7 +40,36 @@ class ImportShowsDialog(ctk.CTkToplevel):
         self.resizable(False, False)
         self.transient(master)
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        self._tabs = ctk.CTkTabview(
+            self,
+            width=_TABS_WIDTH,
+            height=_TABS_HEIGHT,
+            corner_radius=15,
+            border_width=1,
+            fg_color=theme.TAB_BG,
+            border_color=theme.EDGE,
+            segmented_button_fg_color=theme.SURFACE,
+            segmented_button_selected_color=theme.ACCENT,
+            segmented_button_selected_hover_color=theme.ACCENT_HOVER,
+            segmented_button_unselected_color=theme.SURFACE,
+            segmented_button_font=theme.font(15, bold=True),
+            command=self._focus_tab,
+        )
+        self._tabs.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
+        self._build_names(self._tabs.add(TAB_NAMES))
+        self._panel = AirdatesImportPanel(
+            self._tabs.add(TAB_AIRDATES), airdates=airdates, library=library
+        )
+        self._panel.pack(fill="x", padx=_TAB_PAD, pady=(_TAB_PAD - 8, 0))
+        self._tabs.set(TAB_NAMES)
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        place_over(self, master)
+        activate_later(self)
+        self.after(200, self._focus_tab)
+
+    def _build_names(self, tab: ctk.CTkFrame) -> None:
+        body = ctk.CTkFrame(tab, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=25, pady=20)
         ctk.CTkLabel(
             body, text="Paste show names or TVMaze IDs, one per line:", text_color=theme.TEXT_MUTED
@@ -59,22 +103,16 @@ class ImportShowsDialog(ctk.CTkToplevel):
             command=self._import,
         ).pack(side="right", padx=(0, 8))
 
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self._center_on(master)
-        # CTkToplevel can open behind its parent on Windows; raise and grab once it is mapped.
-        self.after(150, self._activate)
+    def show_airdates(self) -> None:
+        self._tabs.set(TAB_AIRDATES)
+        self._focus_tab()
 
-    def _center_on(self, master: ctk.CTk | ctk.CTkToplevel) -> None:
-        self.update_idletasks()
-        x = master.winfo_rootx() + (master.winfo_width() - self.winfo_reqwidth()) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - self.winfo_reqheight()) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
-
-    def _activate(self) -> None:
-        if self.winfo_exists():
-            self.lift()
-            self.focus_force()
-            self.grab_set()
+    def _focus_tab(self) -> None:
+        if not self.winfo_exists():
+            return
+        if self._tabs.get() == TAB_AIRDATES:
+            self._panel.focus_paste()
+        else:
             self._text.focus_set()
 
     def _import(self) -> None:

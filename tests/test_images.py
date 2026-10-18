@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import warnings
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,22 @@ def encode(
 
 def url_for(n: int, suffix: str = ".jpg") -> str:
     return f"https://image.tmdb.org/t/p/w342/poster{n}{suffix}"
+
+
+@dataclass(frozen=True)
+class Tint:
+    """A finish step: the crop's size, all in one colour."""
+
+    color: tuple[int, int, int]
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        return Image.new("RGB", image.size, self.color)
+
+
+@dataclass(frozen=True)
+class Broken:
+    def __call__(self, image: Image.Image) -> Image.Image:
+        raise RuntimeError("bug in a finish step")
 
 
 class FakeServer:
@@ -221,6 +238,30 @@ class ImageCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(second_b)
         self.assertIsNot(second_b, first_b)
         self.assertEqual(len(self.server.requests), 3)  # b came back from disk
+
+    async def test_finish_runs_on_the_crop(self) -> None:
+        self.server.serve(POSTER, encode(size=(400, 120)))
+        image = await self.make_cache().get(POSTER, SIZE, finish=Tint((10, 20, 30)))
+        assert image is not None
+        self.assertEqual(image.size, SIZE)
+        self.assertEqual(image.getpixel((0, 0)), (10, 20, 30))
+
+    async def test_finished_images_are_cached_per_finish(self) -> None:
+        self.server.serve(POSTER, encode())
+        cache = self.make_cache()
+        tinted = await cache.get(POSTER, SIZE, finish=Tint((1, 2, 3)))
+        # An equal finish step is the same cache entry; another one or none is not.
+        self.assertIs(await cache.get(POSTER, SIZE, finish=Tint((1, 2, 3))), tinted)
+        other = await cache.get(POSTER, SIZE, finish=Tint((4, 5, 6)))
+        plain = await cache.get(POSTER, SIZE)
+        assert other is not None and plain is not None
+        self.assertEqual(other.getpixel((0, 0)), (4, 5, 6))
+        self.assertEqual(plain.getpixel((0, 0)), (0, 0, 0))  # encode() is black
+        self.assertEqual(len(self.server.requests), 1)
+
+    async def test_failing_finish_returns_none(self) -> None:
+        self.server.serve(POSTER, encode())
+        self.assertIsNone(await self.make_cache().get(POSTER, SIZE, finish=Broken()))
 
     async def test_corrupt_disk_file_is_downloaded_again(self) -> None:
         body = encode()

@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import tkinter as tk
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from types import TracebackType
+from typing import NamedTuple
 
 import customtkinter as ctk
 from async_tkinter_loop.mixins import AsyncCTk
 
 from app import APP_NAME, __version__
 from app.models import (
+    AutoDownloaded,
+    AutoError,
+    AutoEvent,
+    AutoGaveUp,
     CalendarEntry,
     GrabTarget,
     MediaType,
@@ -26,6 +32,7 @@ from app.models import (
     UpdateInfo,
 )
 from app.services import Services, UpdateError
+from app.services.auto_download import GIVE_UP_AFTER
 from app.services.downloads import GrabError
 from app.services.synology import DownloadStationError
 from app.services.tmdb import TMDBError
@@ -37,6 +44,7 @@ from app.ui.download_control import (
     DownloadStates,
     Phase,
     RunState,
+    already_downloaded_text,
     download_status_text,
     episode_key,
     movie_key,
@@ -51,8 +59,10 @@ from app.ui.indexer_dialog import (
 )
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.show_details import ShowWindows
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
+from app.ui.tray import TrayHost
 from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, TrackedView
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action
 
@@ -74,15 +84,20 @@ _OFF_PAGE_SETTINGS = frozenset(
         "prowlarr_url",
         "prowlarr_api_key",
         "prowlarr_seeded_url",
-        "ds_url",
-        "ds_username",
-        "ds_password",
-        "ds_verify_tls",
-        "ds_destination",
+        "remote_kind",
+        "remote_url",
+        "remote_username",
+        "remote_password",
+        "remote_verify_tls",
+        "remote_destination",
         "download_mode",
+        "auto_download_new_shows",
         "setup_done",
         "auto_update",
         "last_run_version",
+        "keep_in_tray",
+        "tray_notice_shown",
+        "start_with_windows",
     }
 )
 
@@ -115,6 +130,62 @@ def update_notice(last_run_version: str, running: str) -> str | None:
     return None
 
 
+_AUTO_STATUS_MS = 10_000  # how long an automatic download's line stays in the status bar
+AUTO_ERROR_INTERVAL_S = 3600.0  # at most one "Automatic download didn't work" per hour
+
+
+class AutoNotice(NamedTuple):
+    """How an automatic-download event is told: a tray notification (title, body) and the
+    status-bar line (`status`), for 10 s. Without a tray icon, only the status bar."""
+
+    title: str
+    body: str
+    status: str
+
+
+def auto_notice(event: AutoEvent) -> AutoNotice:
+    if isinstance(event, AutoDownloaded):
+        body = f"{event.quality} · picked automatically" if event.quality else "Picked automatically"
+        return AutoNotice(
+            title=f"{event.label} is downloading",
+            body=body,
+            status=f"{event.label} · downloading (picked automatically)",
+        )
+    if isinstance(event, AutoGaveUp):
+        title = f"Couldn't find {event.label}"
+        body = (
+            f"No good download turned up in {GIVE_UP_AFTER.days} days. "
+            "Choose one yourself from the calendar."
+        )
+        return AutoNotice(title=title, body=body, status=f"{title}. {body}")
+    title = "Automatic download didn't work"
+    return AutoNotice(title=title, body=event.message, status=f"{title}: {event.message}")
+
+
+class AutoNoticeThrottle:
+    """Lets every event through except AutoError, which passes at most once per `interval_s`
+    (a broken setup fails every run). `clock`: monotonic seconds (tests move it)."""
+
+    def __init__(
+        self,
+        interval_s: float = AUTO_ERROR_INTERVAL_S,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._interval_s = interval_s
+        self._clock = clock
+        self._last_error: float | None = None
+
+    def allow(self, event: AutoEvent) -> bool:
+        if not isinstance(event, AutoError):
+            return True
+        now = self._clock()
+        if self._last_error is not None and now - self._last_error < self._interval_s:
+            return False
+        self._last_error = now
+        return True
+
+
 class Mode(StrEnum):
     SERIES = "Series"
     MOVIES = "Movies"
@@ -123,7 +194,13 @@ class Mode(StrEnum):
 class MainWindow(AsyncCTk, ctk.CTk):
     """Owns layout and navigation only; every page fetches its own data through services."""
 
-    def __init__(self, services: Services) -> None:
+    def __init__(
+        self,
+        services: Services,
+        *,
+        start_hidden: bool = False,
+        show_requests: Callable[[], bool] | None = None,
+    ) -> None:
         theme.apply_appearance()
         super().__init__(fg_color=theme.BG)
         self._services = services
@@ -148,6 +225,16 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._movie_actions: DownloadActions[Movie] = DownloadActions(
             download=self._download_movie, choose=self._grab_movie, states=self._download_states
         )
+        # The show details windows (one per show), opened from the show cards.
+        self._show_windows = ShowWindows(
+            self,
+            library=services.library,
+            discovery=services.discovery,
+            images=services.images,
+            status=self.set_status,
+            episode_actions=self._episode_actions,
+            downloads_changed=services.downloads.subscribe,
+        )
 
         self.title(f"{APP_NAME} — Track your shows. Grab your movies.")
         set_window_icon(self)
@@ -166,6 +253,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_library = services.library.subscribe(self._on_library_changed)
         # A grab flags episodes ("✓ Grabbed") and films as downloaded.
         self._unsubscribe_downloads = services.downloads.subscribe(self._reload_pages)
+        # The automatic downloads: a tray notification (or the status bar) per event.
+        self._auto_throttle = AutoNoticeThrottle()
+        self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
+
+        # Closing the window keeps AirGrabber running in the tray; main.py stops the icon at exit.
+        self.tray = TrayHost(
+            self,
+            settings=services.settings,
+            on_check_now=self._check_now,
+            show_requests=show_requests,  # a second start of AirGrabber asks for the window
+        )
+        self.protocol("WM_DELETE_WINDOW", self.tray.close_window)
+        if start_hidden:
+            self.withdraw()  # main.py --tray: only the tray icon shows
 
     def async_mainloop(self, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
         loop = event_loop or asyncio.new_event_loop()
@@ -176,6 +277,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def destroy(self) -> None:
         self._suggestions.destroy()
+        self._show_windows.close()
         if self._results_window is not None and self._results_window.winfo_exists():
             self._results_window.destroy()
         self._results_window = None
@@ -187,6 +289,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_settings()
         self._unsubscribe_library()
         self._unsubscribe_downloads()
+        self._unsubscribe_auto()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
         for job in self.tk.splitlist(self.tk.call("after", "info")):
@@ -323,9 +426,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 images=images,
                 status=self.set_status,
                 on_open_settings=self._open_settings,
+                on_open_show=self._show_windows.open_discover,
             ),
             "Tracked": TrackedView(
-                tabs.add("Tracked"), library=library, images=images, status=self.set_status
+                tabs.add("Tracked"),
+                library=library,
+                airdates=self._services.airdates,
+                images=images,
+                status=self.set_status,
+                on_open_show=self._show_windows.open_show,
             ),
         }
         for view in self._series_views.values():
@@ -361,6 +470,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._services.library.run_periodic_sync(progress=self._on_sync_progress),
             name="library-sync",
         )
+        # Its events arrive in _on_auto_event.
+        spawn(self._services.auto_download.run_periodic(), name="auto-download")
         spawn(self._services.images.prune(), name="poster-prune")
         spawn(self._load_logo(), name="logo")
         spawn(self._note_version(), name="version-notice")
@@ -368,6 +479,29 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._check_for_update(), name="update-check")
         spawn(self._set_up_prowlarr(), name="prowlarr-setup")
         spawn(self._first_run(), name="first-run")
+        self.tray.start()
+
+    def _check_now(self) -> None:
+        """The tray's "Check for new episodes now": refresh the library, then auto-download."""
+
+        async def check() -> None:
+            await self._services.library.sync(progress=self._on_sync_progress)
+            await self._services.auto_download.run_once()
+
+        spawn(check(), name="check-now")
+
+    def _on_auto_event(self, event: AutoEvent) -> None:
+        """Tell the user what the automatic downloads did: a tray notification, plus the status
+        bar for a download; only the status bar when there is no tray icon."""
+        if not self._auto_throttle.allow(event):
+            log.info("Automatic-download error not shown again within the hour")
+            return
+        notice = auto_notice(event)
+        tray_running = self.tray.running
+        if tray_running:
+            self.tray.notify(notice.title, notice.body)
+        if not tray_running or isinstance(event, AutoDownloaded):
+            self._report(notice.status, _AUTO_STATUS_MS)
 
     async def _load_logo(self) -> None:
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
@@ -432,6 +566,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             query=query,
             movie_actions=self._movie_actions,
             on_open_settings=self._open_settings,
+            on_open_show=self._show_windows.open_show,
         )
 
     def _search_episode(self, entry: CalendarEntry) -> None:
@@ -510,6 +645,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         except BaseException:
             self._download_states.set(key, None)
             raise  # cancelled, or logged and reported by the task runner
+        if result.already_downloaded:  # e.g. grabbed meanwhile from another window
+            self._download_states.set(key, RunState(Phase.DONE))
+            self._report(already_downloaded_text(label), _DOWNLOAD_STATUS_MS)
+            return
         if result.grab is None:
             self._download_states.set(key, RunState(Phase.NOTHING))
             self._report(nothing_found_text(label), _DOWNLOAD_STATUS_MS)
@@ -559,6 +698,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             updates=self._services.updates,
             torrent_app=self._services.torrent_app,
             discovery=self._services.discovery,
+            prowlarr=self._services.prowlarr_setup,
             update_info=self._update_info,
             on_update=self._start_update,
         )
@@ -584,6 +724,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 settings=settings,
                 torrent_app=self._services.torrent_app,
                 discovery=self._services.discovery,
+                airdates=self._services.airdates,
+                library=self._services.library,
+                remote=self._services.remote,
             )
 
     # -- updates -----------------------------------------------------------------------------

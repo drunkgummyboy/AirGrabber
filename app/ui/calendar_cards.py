@@ -18,7 +18,7 @@ from app.ui.download_control import (
 )
 from app.ui.media_cards import IMDB_ICON_ROOM, add_imdb_icon
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, unscaled_width
+from app.ui.text_fit import SLACK, Measure, elide_to_width, fit_to_lines, unscaled_width
 from app.ui.widgets import PosterImage
 
 if TYPE_CHECKING:
@@ -41,8 +41,15 @@ _SUGGESTION_PAD_Y = 6
 _SUGGESTION_HEIGHT = (
     2 * _SUGGESTION_PAD_Y + _SUGGESTED_HEIGHT + _COMPACT_NAME_HEIGHT + 2 + _COMPACT_CODE_HEIGHT
 )
-# Full cards narrower than this (small windows) drop the poster so the name, code and button fit.
+# Full cards narrower than this (small windows) swap the poster for a thumbnail beside the name.
 _POSTER_MIN_CARD_WIDTH = 190
+_THUMB_SIZE = (44, 66)
+_NARROW_NAME_MAX_LINES = 2
+_NARROW_NAME_LINE_HEIGHT = 17
+# Narrow cards: two name lines, then the thumbnail row, then the Download row.
+_NARROW_CARD_HEIGHT = (
+    10 + _NARROW_NAME_MAX_LINES * _NARROW_NAME_LINE_HEIGHT + 4 + _THUMB_SIZE[1] + 4 + ROW_SPACE
+)
 
 
 # -- shared parts ----------------------------------------------------------------------------
@@ -57,6 +64,31 @@ def _keep_elided(label: ctk.CTkLabel, text: str, font: ctk.CTkFont, *, reserve: 
             label.configure(text=elide_to_width(text, width, font.measure))
 
     label.master.bind("<Configure>", fit)
+
+
+def fit_words_to_lines(text: str, max_width: float, max_lines: int, measure: Measure) -> str:
+    """`text` word-wrapped into at most `max_lines` lines of `max_width`, breaking only at spaces.
+
+    A word too wide for a line of its own is elided with "…" and ends the text; when the words
+    need more lines, the last line holds the rest elided with "…".
+    """
+    words = text.split()
+    lines: list[str] = []
+    index = 0
+    while index < len(words):
+        if len(lines) == max_lines - 1:
+            lines.append(elide_to_width(" ".join(words[index:]), max_width, measure))
+            break
+        line = words[index]
+        if measure(line) > max_width:
+            lines.append(elide_to_width(line, max_width, measure))
+            break
+        index += 1
+        while index < len(words) and measure(f"{line} {words[index]}") <= max_width:
+            line = f"{line} {words[index]}"
+            index += 1
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def episode_base(entry: CalendarEntry) -> Base:
@@ -134,28 +166,39 @@ class EpisodeCard(ctk.CTkFrame):
             anchor="nw",
         )
         name.pack(anchor="nw")
-        ctk.CTkLabel(
-            text,
-            text=entry.episode.code,
-            font=theme.font(9),
-            text_color=theme.TEXT_MUTED,
-        ).pack(anchor="nw", pady=(2, 0))
+        code_font = theme.font(9)
+        code = ctk.CTkLabel(
+            text, text=entry.episode.code, font=code_font, text_color=theme.TEXT_MUTED
+        )
+        code.pack(anchor="nw", pady=(2, 0))
 
         def wrap(event: Any) -> None:
-            # Wrap at the width the column really leaves; a name needing more than three
-            # lines gets its last line elided so the code and the button still fit.
+            # Wrap at the width the column really leaves. Full cards: a name needing more than
+            # three lines gets its last line elided so the code and the button still fit.
+            # Narrow cards: two lines, broken only between words.
             if event.width > 1:
                 width = unscaled_width(name, event.width) - SLACK
-                name.configure(
-                    wraplength=max(1, round(width)),
-                    text=fit_to_lines(show.name, width, _NAME_MAX_LINES, name_font.measure),
-                )
+                if self._poster_shown:
+                    fitted = fit_to_lines(show.name, width, _NAME_MAX_LINES, name_font.measure)
+                else:
+                    fitted = fit_words_to_lines(
+                        show.name, width, _NARROW_NAME_MAX_LINES, name_font.measure
+                    )
+                name.configure(wraplength=max(1, round(width)), text=fitted)
 
         text.bind("<Configure>", wrap)
         add_imdb_icon(self, show.imdb_url)
 
         self._poster = poster
         self._info = info
+        self._text = text
+        self._name = name
+        self._code = code
+        self._episode_code = entry.episode.code
+        self._code_font = code_font
+        self._images = images
+        self._poster_url = show.poster_url
+        self._thumb_row: ctk.CTkFrame | None = None  # made the first time the card is narrow
         self._poster_shown = True
         self.bind("<Configure>", self._fit_poster, add="+")
 
@@ -169,9 +212,33 @@ class EpisodeCard(ctk.CTkFrame):
         if wide:
             self._poster.pack(side="left", anchor="n", padx=10, pady=(10, 0), before=self._info)
             self._info.pack_configure(padx=(0, 5))
+            if self._thumb_row is not None:
+                self._thumb_row.pack_forget()
+            self._code.pack(anchor="nw", pady=(2, 0))
+            self.configure(height=_CARD_HEIGHT)
         else:
+            # Narrow: the name across the card, then the thumbnail with the code beside it.
             self._poster.pack_forget()
             self._info.pack_configure(padx=(10, 5))
+            self._code.pack_forget()
+            if self._thumb_row is None:
+                self._thumb_row = self._make_thumb_row()
+            self._thumb_row.pack(anchor="nw", fill="x", pady=(4, 0))
+            self.configure(height=_NARROW_CARD_HEIGHT)
+        # Re-fit the name for the other line limit.
+        if self._text.winfo_width() > 1:
+            self._text.event_generate("<Configure>", width=self._text.winfo_width())
+
+    def _make_thumb_row(self) -> ctk.CTkFrame:
+        row = ctk.CTkFrame(self._text, fg_color="transparent")
+        width, height = _THUMB_SIZE
+        thumb = PosterImage(row, width=width, height=height)
+        thumb.pack(side="left", anchor="n")
+        thumb.show(self._images, self._poster_url)
+        ctk.CTkLabel(
+            row, text=self._episode_code, font=self._code_font, text_color=theme.TEXT_MUTED
+        ).pack(side="left", anchor="n", padx=(10, 0))
+        return row
 
 
 class CompactEpisodeCard(ctk.CTkFrame):

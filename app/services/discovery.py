@@ -183,8 +183,8 @@ class DiscoveryService:
         self._generation = 0
         self._movie_details = _DetailsCache("tmdb-movie", tmdb.movie_details, DETAILS_TTL, clock)
         self._tv_details = _DetailsCache("tmdb-tv", tmdb.tv_details, DETAILS_TTL, clock)
-        # TMDB id → TVMaze id of every show tracked through track(): flags it as tracked even
-        # when the two services spell its name differently.
+        # TMDB id → TVMaze id of every show matched through resolve() (and so track()): flags
+        # it as tracked even when the two services spell its name differently.
         self._tracked_via_tmdb: dict[int, int] = {}
 
     def clear_cache(self) -> None:
@@ -378,16 +378,28 @@ class DiscoveryService:
 
     # -- tracking ------------------------------------------------------------------------------
 
-    async def track(self, show: DiscoverShow) -> Show:
-        """Add a TMDB show to the library through its TVMaze counterpart; returns that show.
+    async def resolve(self, show: DiscoverShow) -> Show:
+        """The TVMaze counterpart of a TMDB show (see `_find_on_tvmaze`), without tracking it.
 
-        Raises NoTVMazeMatch when no counterpart is found. TMDB and TVMaze errors propagate.
+        Remembered, so the dashboards flag the show as tracked once that TVMaze show is, however
+        it was tracked. Raises NoTVMazeMatch when no counterpart is found. TMDB and TVMaze errors
+        propagate.
         """
         match, matched_by = await self._find_on_tvmaze(show)
         log.info(
-            "Tracking %s (TMDB id %d) as TVMaze show %d, matched by %s",
+            "Matched %s (TMDB id %d) to TVMaze show %d by %s",
             show.name, show.id, match.id, matched_by,
         )
+        self._tracked_via_tmdb[show.id] = match.id
+        return match
+
+    async def track(self, show: DiscoverShow) -> Show:
+        """Add a TMDB show to the library through its TVMaze counterpart (`resolve`); returns
+        that show.
+
+        Raises NoTVMazeMatch when no counterpart is found. TMDB and TVMaze errors propagate.
+        """
+        match = await self.resolve(show)
         tracked = await self._library.track(match.id)
         self._tracked_via_tmdb[show.id] = tracked.id
         return tracked

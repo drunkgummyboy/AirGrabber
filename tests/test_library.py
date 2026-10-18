@@ -17,10 +17,10 @@ import httpx
 
 from app.config import AppPaths
 from app.database import Database
-from app.models import Settings, SyncProgress, SyncReport
+from app.models import DownloadRecord, Episode, MediaType, Settings, SyncProgress, SyncReport
 from app.models.tvmaze import TVMazeShow
 from app.services import Services, SettingsService
-from app.services.library import LibraryService
+from app.services.library import LibraryService, downloaded_ids, next_episode
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tvmaze"
@@ -615,6 +615,151 @@ class PruneScheduleTests(LibraryTestCase):
         self.assertIsNotNone(synced[1])
         self.assertIsNone(synced[2])
         self.assertIsNotNone(synced[3])
+
+
+SHOW_DETAILS_NOW = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)  # House of the Dragon S03E03 aired
+DRAGON_S1 = {2304397, 2307790, 2307791, 2304477, 2304476, 2304475, 2304474, 2304473, 2304472, 2304470}
+DRAGON_S3E2, DRAGON_S3E4 = 3605745, 3605747
+
+
+class ShowDetailsTests(LibraryTestCase):
+    """LibraryService.show_details: tracked shows from the library, others from TVMaze."""
+
+    async def grab(self, show_id: int, season: int, number: int | None) -> None:
+        await self.db.history.add(
+            DownloadRecord(
+                media_type=MediaType.TV,
+                media_id=show_id,
+                season=season,
+                episode=number,
+                release_title=f"Show {show_id} S{season}E{number}",
+            )
+        )
+
+    async def test_tracked_show_comes_from_the_library(self) -> None:
+        await self.service.track(DRAGON)
+        await self.service.set_auto_download(DRAGON, True)
+        await self.grab(DRAGON, 1, None)  # a season pack
+        await self.grab(DRAGON, 3, 2)
+        await self.grab(DUNE, 1, 1)  # another show's
+
+        details = await self.service.show_details(DRAGON, now=SHOW_DETAILS_NOW)
+
+        self.assertEqual(self.server.requests[f"/shows/{DRAGON}"], 1)  # only the track
+        self.assertEqual(details.show.name, "House of the Dragon")
+        self.assertTrue(details.tracked)
+        self.assertTrue(details.auto_download)
+        self.assertEqual(len(details.episodes), 26)
+        self.assertEqual(
+            [(e.season, e.number) for e in details.episodes],
+            sorted((e.season, e.number or 0) for e in details.episodes),
+        )
+        self.assertEqual(details.downloaded, frozenset(DRAGON_S1 | {DRAGON_S3E2}))
+        assert details.next_episode is not None
+        self.assertEqual(details.next_episode.id, DRAGON_S3E4)
+
+    async def test_untracked_show_is_fetched_and_not_stored(self) -> None:
+        await self.grab(DUNE, 1, 2)  # downloaded from its details window, say
+
+        details = await self.service.show_details(DUNE, now=SHOW_DETAILS_NOW)
+
+        self.assertFalse(details.tracked)
+        self.assertFalse(details.auto_download)
+        self.assertEqual(details.show.name, "Dune: Prophecy")
+        self.assertEqual([e.number for e in details.episodes], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(details.downloaded, frozenset({3031113}))
+        self.assertIsNone(details.next_episode)  # every episode aired in 2024
+        self.assertIsNone(await self.db.library.get_show(DUNE))
+        self.assertEqual(await self.db.library.episodes(DUNE), [])
+        self.assertEqual(await self.service.tracked(), [])
+        self.assertEqual(self.notifications, 0)
+
+    async def test_untracked_show_is_kept_in_memory_until_tracked(self) -> None:
+        await self.service.show_details(DUNE)
+        await self.service.show_details(DUNE)
+        self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 1)
+        await self.service.track(DUNE)
+        await self.service.untrack(DUNE)
+        await self.service.show_details(DUNE)  # the copy from before tracking is dropped
+        self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 3)
+
+    async def test_tracked_show_without_cached_episodes_is_fetched(self) -> None:
+        await self.store_tracked(show_payload(DUNE, "Dune"), synced=False)  # no episodes stored
+        self.server.shows[DUNE] = load("show_embed.json")
+        details = await self.service.show_details(DUNE)
+        self.assertTrue(details.tracked)
+        self.assertEqual(len(details.episodes), 6)
+        self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 1)
+        self.assertEqual(await self.db.library.episodes(DUNE), [])  # still nothing written
+
+    async def test_tvmaze_errors_propagate(self) -> None:
+        with self.assertRaises(TVMazeNotFound):
+            await self.service.show_details(12345)
+        self.server.failures[f"/shows/{DUNE}"] = 500
+        with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(TVMazeError):
+            await self.service.show_details(DUNE)
+
+
+def numbered(
+    episode_id: int,
+    season: int,
+    number: int | None,
+    *,
+    airs: datetime | None = None,
+    air_date: date | None = None,
+) -> Episode:
+    return Episode(
+        id=episode_id,
+        show_id=1,
+        season=season,
+        number=number,
+        airstamp=airs,
+        air_date=air_date if air_date is not None else (airs.date() if airs else None),
+    )
+
+
+class NextEpisodeTests(unittest.TestCase):
+    NOW = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+    def test_first_numbered_regular_episode_still_to_air(self) -> None:
+        episodes = [
+            numbered(1, 2, 3, airs=self.NOW - timedelta(days=7)),
+            numbered(2, 2, 4, airs=self.NOW + timedelta(hours=1)),
+            numbered(3, 2, 5, airs=self.NOW + timedelta(days=7)),
+            numbered(4, 0, 1, airs=self.NOW + timedelta(minutes=5)),  # a special
+            numbered(5, 2, None, airs=self.NOW + timedelta(minutes=5)),  # unnumbered
+        ]
+        upcoming = next_episode(reversed(episodes), self.NOW)
+        assert upcoming is not None
+        self.assertEqual(upcoming.id, 2)
+
+    def test_without_an_airstamp_its_air_date_counts_from_today(self) -> None:
+        today = self.NOW.date()
+        episodes = [
+            numbered(1, 1, 1, air_date=today - timedelta(days=1)),
+            numbered(2, 1, 2, air_date=today),
+            numbered(3, 1, 3),  # no date at all
+        ]
+        upcoming = next_episode(episodes, self.NOW)
+        assert upcoming is not None
+        self.assertEqual(upcoming.id, 2)
+
+    def test_none_when_nothing_is_upcoming(self) -> None:
+        self.assertIsNone(next_episode([numbered(1, 1, 1, airs=self.NOW)], self.NOW))
+        self.assertIsNone(next_episode([], self.NOW))
+
+
+class DownloadedIdsTests(unittest.TestCase):
+    def test_episodes_and_season_packs(self) -> None:
+        episodes = [
+            numbered(11, 1, 1),
+            numbered(12, 1, None),  # unnumbered: only its season's pack covers it
+            numbered(21, 2, 1),
+            numbered(22, 2, 2),
+        ]
+        self.assertEqual(downloaded_ids(episodes, {(1, None), (2, 2)}), {11, 12, 22})
+        self.assertEqual(downloaded_ids(episodes, {(2, 1), (3, None)}), {21})
+        self.assertEqual(downloaded_ids(episodes, set()), frozenset())
 
 
 class ServicesTests(unittest.IsolatedAsyncioTestCase):

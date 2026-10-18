@@ -1,4 +1,5 @@
-"""DownloadStationClient against a fake DSM Web API on httpx.MockTransport."""
+"""DownloadStationClient against a fake DSM Web API on httpx.MockTransport (magnets and
+.torrent uploads)."""
 
 from __future__ import annotations
 
@@ -19,14 +20,17 @@ import httpx
 from app.database import SettingsRepository
 from app.models import Settings
 from app.services.settings import SettingsService
+from app.services.remote import RemoteError
 from app.services.synology import DownloadStationClient, DownloadStationError
+from tests.multipart import parse_multipart
 
 FIXTURES = Path(__file__).parent / "fixtures" / "synology"
-BASE = "http://192.168.1.150:5000"
-HOST = "192.168.1.150:5000"
+BASE = "http://192.168.1.20:5000"
+HOST = "192.168.1.20:5000"
 PASSWORD = "DSMPASS123"
 SID = "SIDx7Kq93LmZp0"
 MAGNET = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Some.Show.S01E01"
+TORRENT = b"d8:announce30:udp://tracker.example.org:13374:infod4:name4:showee"
 
 AUTH = "SYNO.API.Auth"
 TASK2 = "SYNO.DownloadStation2.Task"
@@ -69,6 +73,7 @@ class FakeDSM:
         self.info: Any = api_info()
         self.requests: list[httpx.Request] = []
         self.calls: list[tuple[str, str, dict[str, str]]] = []
+        self.files: list[dict[str, tuple[str, bytes]]] = []  # the file parts of each call
         self.overrides: dict[tuple[str, str], Callable[[], httpx.Response]] = {}
         self.gates: dict[tuple[str, str], asyncio.Event] = {}
         self.ds_info: dict[str, Any] = {"version": 4382, "version_string": "3.9.2-4382"}
@@ -78,7 +83,11 @@ class FakeDSM:
         self.requests.append(request)
         if request.url.path == "/webapi/query.cgi":
             return httpx.Response(200, json=self.info)
-        form = dict(parse_qsl(request.content.decode()))
+        if request.headers.get("Content-Type", "").startswith("multipart/form-data"):
+            form, files = parse_multipart(request)
+        else:
+            form, files = dict(parse_qsl(request.content.decode())), {}
+        self.files.append(files)
         key = (form.get("api", ""), form.get("method", ""))
         self.calls.append((key[0], key[1], form))
         if (gate := self.gates.get(key)) is not None:
@@ -105,7 +114,11 @@ class FakeDSM:
 
 
 def settings_service(**changes: Any) -> SettingsService:
-    values: dict[str, Any] = {"ds_url": BASE, "ds_username": "beau", "ds_password": PASSWORD}
+    values: dict[str, Any] = {
+        "remote_url": BASE,
+        "remote_username": "beau",
+        "remote_password": PASSWORD,
+    }
     values.update(changes)
     return SettingsService(mock.Mock(spec=SettingsRepository), Settings(**values))
 
@@ -130,7 +143,7 @@ class SynologyTestCase(unittest.IsolatedAsyncioTestCase):
 
 class DiscoveryAndTaskTests(SynologyTestCase):
     async def test_dsm_with_downloadstation2_creates_a_json_encoded_task(self) -> None:
-        await self.configure(ds_destination="video/tv")
+        await self.configure(remote_destination="video/tv")
         await self.client.add_magnet(MAGNET)
         self.assertEqual(
             self.dsm.methods(), [(AUTH, "login"), (TASK2, "create"), (AUTH, "logout")]
@@ -162,7 +175,7 @@ class DiscoveryAndTaskTests(SynologyTestCase):
 
     async def test_dsm6_falls_back_to_the_old_task_api(self) -> None:
         self.dsm.info = DSM6_INFO
-        await self.configure(ds_destination="downloads/tv")
+        await self.configure(remote_destination="downloads/tv")
         await self.client.add_magnet(MAGNET)
         self.assertEqual(
             self.dsm.methods(), [(AUTH, "login"), (TASK, "create"), (AUTH, "logout")]
@@ -231,7 +244,7 @@ class DiscoveryAndTaskTests(SynologyTestCase):
         self.assertIn("logout", logs.output[0])
 
     async def test_not_configured_makes_no_request(self) -> None:
-        for missing in ("ds_url", "ds_username", "ds_password"):
+        for missing in ("remote_url", "remote_username", "remote_password"):
             with self.subTest(missing=missing):
                 self.settings = settings_service(**{missing: ""})
                 client = self.make_client(self.dsm)
@@ -242,13 +255,73 @@ class DiscoveryAndTaskTests(SynologyTestCase):
         self.assertTrue(self.client.configured)
 
     async def test_settings_are_read_on_every_call(self) -> None:
-        await self.configure(ds_url="https://nas.local:5001")
+        await self.configure(remote_url="https://nas.local:5001")
         await self.client.add_magnet(MAGNET)
         self.assertTrue(all(r.url.host == "nas.local" for r in self.dsm.requests))
 
     async def test_rejects_non_magnet_links(self) -> None:
         with self.assertRaises(ValueError):
             await self.client.add_magnet("https://example.com/file.torrent")
+
+
+class TorrentUploadTests(SynologyTestCase):
+    def call_index(self, api: str, method: str) -> int:
+        return next(i for i, (name, verb, _) in enumerate(self.dsm.calls) if (name, verb) == (api, method))
+
+    async def test_downloadstation2_uploads_the_file_as_multipart(self) -> None:
+        await self.configure(remote_destination="video/tv")
+        await self.client.add_torrent(TORRENT, "Some Show S01E01.torrent")
+        self.assertEqual(
+            self.dsm.methods(), [(AUTH, "login"), (TASK2, "create"), (AUTH, "logout")]
+        )
+        create = self.dsm.form(TASK2, "create")
+        self.assertEqual(create["api"], TASK2)
+        self.assertEqual(create["version"], "2")
+        self.assertEqual(create["method"], "create")
+        self.assertEqual(create["type"], '"file"')
+        self.assertEqual(json.loads(create["file"]), ["torrent"])
+        self.assertEqual(create["destination"], '"video/tv"')
+        self.assertEqual(create["create_list"], "false")
+        self.assertEqual(create["_sid"], SID)
+        files = self.dsm.files[self.call_index(TASK2, "create")]
+        self.assertEqual(files, {"torrent": ("Some Show S01E01.torrent", TORRENT)})
+        request = next(r for r in self.dsm.requests if r.url.path == "/webapi/entry.cgi")
+        self.assertTrue(request.headers["Content-Type"].startswith("multipart/form-data"))
+        self.assertEqual(request.url.query, b"")
+        # api, version and method lead the body (DSM rejects them later on).
+        body = request.content
+        self.assertLess(body.index(b'name="api"'), body.index(b'name="type"'))
+        self.assertLess(body.index(b'name="method"'), body.index(b'name="torrent"'))
+
+    async def test_downloadstation2_without_a_destination_sends_an_empty_one(self) -> None:
+        await self.client.add_torrent(TORRENT, "x.torrent")
+        self.assertEqual(self.dsm.form(TASK2, "create")["destination"], '""')
+
+    async def test_dsm6_falls_back_to_the_old_task_api(self) -> None:
+        self.dsm.info = DSM6_INFO
+        await self.configure(remote_destination="/downloads/tv/")
+        await self.client.add_torrent(TORRENT, "x.torrent")
+        self.assertEqual(
+            self.dsm.methods(), [(AUTH, "login"), (TASK, "create"), (AUTH, "logout")]
+        )
+        create = self.dsm.form(TASK, "create")
+        self.assertEqual(create["destination"], "downloads/tv")  # slashes stripped for DSM
+        self.assertNotIn("uri", create)
+        files = self.dsm.files[self.call_index(TASK, "create")]
+        self.assertEqual(files, {"file": ("x.torrent", TORRENT)})
+        request = next(r for r in self.dsm.requests if r.url.path.endswith("task.cgi"))
+        body = request.content
+        self.assertGreater(body.index(b'name="file"'), body.index(b'name="_sid"'))  # file last
+
+    async def test_upload_errors_and_logout(self) -> None:
+        self.dsm.overrides[(TASK2, "create")] = lambda: failure(403)
+        error = await self.error_of(self.client.add_torrent(TORRENT, "x.torrent"))
+        self.assertIn("its default folder", str(error))
+        self.assertIsInstance(error, RemoteError)
+        self.assertEqual(self.dsm.methods()[-1], (AUTH, "logout"))
+
+    async def test_the_kind(self) -> None:
+        self.assertEqual(self.client.kind.program, "Download Station")
 
 
 class ConnectionTestTests(SynologyTestCase):
@@ -295,7 +368,7 @@ class ErrorMappingTests(SynologyTestCase):
                     self.assertIn(text, str(error))
 
     async def test_task_errors(self) -> None:
-        await self.configure(ds_destination="video/tv")
+        await self.configure(remote_destination="video/tv")
         expected = {
             401: "maximum number of tasks",
             402: 'isn\'t allowed to save to "video/tv"',
@@ -345,7 +418,7 @@ class ErrorMappingTests(SynologyTestCase):
             with self.subTest(handler=handler.__name__):
                 error = await self.error_of(self.make_client(handler).test())
                 self.assertIn("Certificate not trusted", str(error))
-                self.assertIn("Untick Verify TLS", str(error))
+                self.assertIn('Untick "Verify the certificate (https)"', str(error))
                 self.assertIsNone(error.__context__)
 
     async def test_other_tls_failures(self) -> None:

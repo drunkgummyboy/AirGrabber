@@ -1,16 +1,50 @@
-"""The indexer dialog's pure helpers: table text, row ids, sorting, chips and header lines."""
+"""The indexer dialog's pure helpers (table text, row ids, sorting, chips, header lines, the
+selection bar's text) and its selection bar on a hidden Tk root with fake services."""
 
 from __future__ import annotations
 
+import asyncio
+import tkinter as tk
 import unittest
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from app.models import IndexerState, IndexerStatus, Movie, MovieDetails, Show, TorrentRelease
+import customtkinter as ctk
+
+from app.models import (
+    GrabOutcome,
+    GrabResult,
+    GrabTarget,
+    IndexerState,
+    IndexerStatus,
+    Movie,
+    MovieDetails,
+    SearchUpdate,
+    Settings,
+    Show,
+    TorrentRelease,
+)
+from app.services import (
+    DownloadService,
+    ImageCache,
+    LibraryService,
+    SettingsService,
+    TorrentSearchService,
+)
+from app.services.discovery import DiscoveryService
 from app.ui import theme
 from app.ui.indexer_dialog import (
+    DOWNLOAD_TEXT,
+    DOWNLOADING_TEXT,
+    NO_SELECTION_TEXT,
+    IndexerDialog,
+    MovieTarget,
     SortColumn,
     action_text,
     chip_style,
+    compact_header,
+    download_button_text,
     episode_title,
     failure_text,
     format_age,
@@ -22,6 +56,7 @@ from app.ui.indexer_dialog import (
     quality_button_text,
     release_id,
     searching_text,
+    selection_detail,
     show_meta,
     sort_releases,
 )
@@ -155,12 +190,13 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(failure_text([status(IndexerState.EMPTY)]), "")
 
     def test_actions(self) -> None:
-        self.assertEqual(action_text(None, grabbed=False), "⬇ Grab")
-        self.assertEqual(action_text(None, grabbed=True), "✓ Grabbed")
-        self.assertEqual(action_text("grabbing", grabbed=True), "⏳ Grabbing…")
-        self.assertEqual(action_text("saved", grabbed=False), "✓ Saved")
-        self.assertEqual(action_text("sent", grabbed=False), "📨 Sent to DS")
-        self.assertEqual(action_text("failed", grabbed=True), "✗ Failed")
+        self.assertEqual(action_text(None, grabbed=False), "⬇")
+        self.assertEqual(action_text(None, grabbed=True), "✓")
+        self.assertEqual(action_text("grabbing", grabbed=True), "⏳")
+        self.assertEqual(action_text("opened", grabbed=False), "✓")
+        self.assertEqual(action_text("saved", grabbed=False), "✓")
+        self.assertEqual(action_text("sent", grabbed=False), "✓")
+        self.assertEqual(action_text("failed", grabbed=True), "✗")
 
     def test_hidden_hint(self) -> None:
         self.assertEqual(
@@ -173,6 +209,148 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(searching_text(2, 1), "Searching indexers for S02E01…")
         self.assertEqual(searching_text(2, None), "Searching indexers for Season 02 pack…")
         self.assertEqual(searching_text(None, None), "Searching indexers…")
+
+
+class SelectionBarTextTests(unittest.TestCase):
+    def test_detail_line(self) -> None:
+        item = release("Show.S01E01.1080p.WEB-GRP", size_bytes=round(2.1 * GIB), seeders=412)
+        self.assertEqual(selection_detail(item), "1080p · 2.10 GB · 412 seeders")
+
+    def test_detail_line_partial(self) -> None:
+        self.assertEqual(selection_detail(release("Show.S01E01-GRP", seeders=1)), "1 seeder")
+        hevc = release("Show.S01E01.2160p.x265-GRP", size_bytes=GIB, seeders=0)
+        self.assertEqual(selection_detail(hevc), "2160p x265 · 1.00 GB · 0 seeders")
+        self.assertEqual(selection_detail(release("Show.S01E01.HEVC-GRP")), "x265 · 0 seeders")
+
+    def test_no_selection_and_button(self) -> None:
+        self.assertEqual(NO_SELECTION_TEXT, "Click a release above to select it")
+        self.assertEqual(download_button_text(None), DOWNLOAD_TEXT)
+        self.assertEqual(download_button_text("failed"), DOWNLOAD_TEXT)
+        self.assertEqual(download_button_text("grabbing"), DOWNLOADING_TEXT)
+        self.assertEqual(download_button_text("opened"), "✓ Opened")
+        self.assertEqual(download_button_text("saved"), "✓ Saved")
+        self.assertEqual(download_button_text("sent"), "✓ Sent")
+
+
+class CompactHeaderTests(unittest.TestCase):
+    def test_short_dialogs_get_the_compact_header(self) -> None:
+        self.assertTrue(compact_header(600))  # the minimum size
+        self.assertTrue(compact_header(699.5))
+        self.assertFalse(compact_header(700))
+        self.assertFalse(compact_header(750))  # the default size keeps the full header
+        self.assertFalse(compact_header(1000))
+
+
+class FakeSearch:
+    def __init__(self, releases: tuple[TorrentRelease, ...]) -> None:
+        self._releases = releases
+
+    def movie_request(self, movie: Movie, details: MovieDetails | None = None) -> object:
+        return object()
+
+    async def search(self, request: object) -> AsyncIterator[SearchUpdate]:
+        yield SearchUpdate(statuses=(), releases=self._releases, done=True)
+
+
+class FakeDownloads:
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.grabbed: list[str] = []
+
+    async def grabbed_hashes(self) -> frozenset[str]:
+        return frozenset()
+
+    async def grab(self, item: TorrentRelease, target: GrabTarget) -> GrabResult:
+        self.grabbed.append(item.title)
+        await self.release.wait()
+        return GrabResult(outcome=GrabOutcome.SAVED, message="Saved the torrent")
+
+
+class FakeDiscovery:
+    async def movie_details(self, movie_id: int) -> MovieDetails:
+        return MovieDetails(id=movie_id)
+
+
+class FakeSettings:
+    current = Settings()
+
+
+def _no_status(text: str, *, clear_after_ms: int | None = None) -> None:
+    pass
+
+
+class SelectionBarTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = ctk.CTk()
+        except tk.TclError as exc:  # no display
+            self.skipTest(f"Tk unavailable: {exc}")
+        self.root.withdraw()
+        self.addCleanup(self._destroy_root)
+
+    async def asyncSetUp(self) -> None:
+        asyncio.get_running_loop().slow_callback_duration = 1.0  # building Tk widgets is slow
+
+    def _destroy_root(self) -> None:
+        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.after_cancel(job)
+        self.root.destroy()
+
+    async def _settle(self) -> None:
+        for _ in range(10):
+            await asyncio.sleep(0)
+        self.root.update()
+
+    async def test_selection_fills_the_bar_and_the_button_grabs(self) -> None:
+        big = release("Film.2024.1080p-GRP", size_bytes=4 * GIB, seeders=40)
+        small = release("Film.2024.720p-GRP", size_bytes=GIB, seeders=3)
+        downloads = FakeDownloads()
+        dialog = IndexerDialog(
+            self.root,
+            target=MovieTarget(Movie(id=7, title="Film")),
+            search=cast(TorrentSearchService, FakeSearch((big, small))),
+            downloads=cast(DownloadService, downloads),
+            library=cast(LibraryService, object()),
+            discovery=cast(DiscoveryService, FakeDiscovery()),
+            images=cast(ImageCache, object()),  # never used: the film has no poster
+            settings=cast(SettingsService, FakeSettings()),
+            status=_no_status,
+            on_reopen=lambda _target: None,
+        )
+        self.addCleanup(dialog.destroy)
+        bar: Any = dialog  # the bar's widgets are private
+        dialog._select_quality("any")
+        await self._settle()
+        self.assertEqual(dialog._tree.get_children(), (release_id(big), release_id(small)))
+        self.assertEqual(bar._bar_caption.cget("text"), NO_SELECTION_TEXT)
+        self.assertEqual(bar._download_button.cget("state"), "disabled")
+
+        dialog._tree.selection_set(release_id(small))
+        await self._settle()
+        self.assertEqual(bar._bar_caption.cget("text"), "Selected")
+        self.assertEqual(bar._bar_name.cget("text"), small.title)
+        self.assertEqual(bar._bar_detail.cget("text"), "720p · 1.00 GB · 3 seeders")
+        self.assertEqual(bar._download_button.cget("state"), "normal")
+
+        dialog._tree.focus_set()
+        dialog._tree.focus(release_id(small))
+        dialog._tree.event_generate("<Up>")  # keyboard selection moves the bar along
+        await self._settle()
+        self.assertEqual(bar._bar_name.cget("text"), big.title)
+
+        bar._download_button.invoke()
+        await self._settle()
+        self.assertEqual(downloads.grabbed, [big.title])
+        self.assertEqual(bar._download_button.cget("text"), DOWNLOADING_TEXT)
+        self.assertEqual(bar._download_button.cget("state"), "disabled")
+        downloads.release.set()
+        await self._settle()
+        self.assertEqual(bar._download_button.cget("text"), "✓ Saved")
+        self.assertEqual(dialog._tree.set(release_id(big), "action"), "✓")
+
+        dialog._tree.selection_set(release_id(small))  # another row: its own state
+        await self._settle()
+        self.assertEqual(bar._download_button.cget("text"), DOWNLOAD_TEXT)
 
 
 class HeaderTests(unittest.TestCase):

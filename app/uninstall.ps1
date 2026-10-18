@@ -4,9 +4,9 @@ UninstallString that install.ps1 registers:
 
     powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<install>\app\uninstall.ps1"
 
-It removes the install folder it lives in (this file's parent's parent), this install's Start menu
-and desktop shortcuts and its "Installed apps" entry, and, when the user agrees, the library and
-settings in %LOCALAPPDATA%\AirGrabber (or $env:AIRGRABBER_DATA_DIR).
+It removes the install folder it lives in (this file's parent's parent), this install's Start menu,
+desktop and Startup-folder (start with Windows) shortcuts and its "Installed apps" entry, and, when
+the user agrees, the library and settings in %LOCALAPPDATA%\AirGrabber (or $env:AIRGRABBER_DATA_DIR).
 
 -Quiet: no dialogs, and the library and settings are kept (testing and QuietUninstallString).
 
@@ -86,8 +86,21 @@ function Close-App([string]$MainPy) {
     }
 }
 
+function Get-FirstArgument([string]$Arguments) {
+    # The text inside the first pair of quotes ('"<install>\main.py" --tray' gives
+    # '<install>\main.py'), else the whole trimmed text. As first_argument in
+    # app/services/app_identity.py.
+    if (-not $Arguments) { return '' }
+    $text = $Arguments.Trim()
+    if (-not $text.StartsWith('"')) { return $text }
+    $end = $text.IndexOf('"', 1)
+    if ($end -lt 0) { return $text.Substring(1) }
+    return $text.Substring(1, $end - 1)
+}
+
 function Remove-Shortcut([string]$Path, [string]$MainPy) {
-    # Only removes a shortcut that starts this install (never one for another copy).
+    # Only removes a shortcut that starts this install (never one for another copy), whatever
+    # options follow main.py (the Startup shortcut adds --tray).
     if (-not (Test-Path -LiteralPath $Path)) { return }
     try {
         $shell = New-Object -ComObject WScript.Shell
@@ -96,7 +109,7 @@ function Remove-Shortcut([string]$Path, [string]$MainPy) {
         return
     }
     if (-not $arguments) { return }
-    if (Test-SamePath $arguments.Trim().Trim('"') $MainPy) {
+    if (Test-SamePath (Get-FirstArgument $arguments) $MainPy) {
         Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     }
 }
@@ -137,6 +150,8 @@ function Uninstall-AirGrabber {
 
     Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Programs')) 'AirGrabber.lnk') $mainPy
     Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'AirGrabber.lnk') $mainPy
+    # Start with Windows (app/services/startup.py): "<install>\main.py" --tray
+    Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Startup')) 'AirGrabber.lnk') $mainPy
 
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     $leftOver = Test-Path -LiteralPath $installDir

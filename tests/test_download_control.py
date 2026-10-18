@@ -29,6 +29,7 @@ from app.ui.download_control import (
     DownloadStates,
     Phase,
     RunState,
+    already_downloaded_text,
     control_look,
     download_status_text,
     episode_key,
@@ -81,6 +82,14 @@ class ControlLookTests(unittest.TestCase):
                 self.assertEqual(look.action, "choose")
         # A card rebuilt after the grab (flagged as downloaded now) keeps showing the outcome.
         self.assertEqual(control_look(Base("grabbed"), done(GrabOutcome.SENT)).text, "✓ Sent")
+
+    def test_already_downloaded_shows_grabbed(self) -> None:
+        for base in (DOWNLOAD, Base("grabbed"), Base("search")):
+            look = control_look(base, RunState(Phase.DONE))
+            self.assertEqual(
+                (look.layout, look.text, look.color, look.action),
+                ("button", GRABBED_TEXT, theme.GRABBED, "choose"),
+            )
 
     def test_every_outcome_has_a_text(self) -> None:
         for outcome in GrabOutcome:
@@ -193,6 +202,11 @@ class StatusTextTests(unittest.TestCase):
         self.assertEqual(
             nothing_found_text("Severance S02E01"),
             "No good download found for Severance S02E01. Choose one yourself.",
+        )
+
+    def test_already_downloaded(self) -> None:
+        self.assertEqual(
+            already_downloaded_text("Severance S02E01"), "Severance S02E01 was already downloaded"
         )
 
     def test_movie_one_seeder_no_quality(self) -> None:

@@ -11,12 +11,16 @@ from app.config import AppPaths
 from app.database import Database
 from app.indexers import default_indexers
 from app.models import Settings
+from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportService
+from app.services.auto_download import AutoDownloadService
 from app.services.discovery import DiscoveryService
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
 from app.services.prowlarr_setup import ProwlarrSetupService
 from app.services.quick_download import QuickDownloadService
+from app.services.remote import RemoteError
+from app.services.remote_downloads import RemoteDownloads
 from app.services.search import TorrentSearchService
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
@@ -37,15 +41,17 @@ class Services:
     __slots__ = (
         "_db",
         "_http",
+        "airdates",
+        "auto_download",
         "discovery",
         "downloads",
         "images",
         "library",
         "prowlarr_setup",
         "quick_download",
+        "remote",
         "search",
         "settings",
-        "station",
         "torrent_app",
         "updates",
     )
@@ -59,7 +65,7 @@ class Services:
         images: ImageCache,
         discovery: DiscoveryService,
         downloads: DownloadService,
-        station: DownloadStationClient,
+        remote: RemoteDownloads,
         search: TorrentSearchService,
         updates: UpdateService,
         prowlarr_setup: ProwlarrSetupService,
@@ -72,10 +78,15 @@ class Services:
         self.images = images
         self.discovery = discovery
         self.downloads = downloads
-        self.station = station  # also used directly by Settings ("Test connection")
+        # The torrent program on a NAS or another computer; also Settings' "Test connection".
+        self.remote = remote
         self.search = search
         # One-click Download: search, pick the best release, grab it.
         self.quick_download = QuickDownloadService(search, downloads, settings)
+        # Downloads new episodes of the shows whose switch is on (`run_periodic` from the UI).
+        self.auto_download = AutoDownloadService(db.library, self.quick_download, settings)
+        # Previews the shows followed on airdates.tv (import goes through library.import_shows).
+        self.airdates = AirdatesImportService(AirdatesClient(http), library)
         self.updates = updates
         self.prowlarr_setup = prowlarr_setup
         self.torrent_app = torrent_app  # which torrent program is set up; qBittorrent install
@@ -93,7 +104,7 @@ class Services:
             cleanup.push_async_callback(http.aclose)
             settings = await SettingsService.load(db.settings)
             tvmaze = TVMazeClient(http)  # one client, so library and discovery share its limits
-            library = LibraryService(db.library, db.history, tvmaze)
+            library = LibraryService(db.library, db.history, tvmaze, settings=settings)
             # Read on every request, so a key changed in Settings applies at once.
             tmdb = TMDBClient(
                 http, api_key=lambda: settings.current.tmdb_api_key.get_secret_value()
@@ -101,9 +112,9 @@ class Services:
             discovery = DiscoveryService(tmdb, tvmaze, library)
             _clear_discovery_on_key_change(settings, discovery)
             images = ImageCache(http, paths.posters)
-            # Reads the NAS address and credentials from the settings on every call.
-            station = DownloadStationClient(settings)
-            downloads = DownloadService(http, db.history, settings, station, paths.torrents)
+            # Reads the program, its address and account from the settings on every call.
+            remote = RemoteDownloads(settings)
+            downloads = DownloadService(http, db.history, settings, remote, paths.torrents)
             # The Prowlarr address and key are read from the settings on every call.
             search = TorrentSearchService(
                 default_indexers(
@@ -121,7 +132,7 @@ class Services:
                 images,
                 discovery,
                 downloads,
-                station,
+                remote,
                 search,
                 UpdateService(http),
                 # Connects a Prowlarr on this PC and adds public sites to it (once).
@@ -130,6 +141,11 @@ class Services:
             )
             cleanup.pop_all()
         return services
+
+    @property
+    def station(self) -> RemoteDownloads:
+        """The older name of `remote`; main_window.py still passes it to Settings."""
+        return self.remote
 
     async def aclose(self) -> None:
         try:
@@ -155,6 +171,10 @@ def _clear_discovery_on_key_change(
 
 
 __all__ = [
+    "AirdatesClient",
+    "AirdatesError",
+    "AirdatesImportService",
+    "AutoDownloadService",
     "DiscoveryService",
     "DownloadService",
     "DownloadStationClient",
@@ -162,6 +182,8 @@ __all__ = [
     "LibraryService",
     "ProwlarrSetupService",
     "QuickDownloadService",
+    "RemoteDownloads",
+    "RemoteError",
     "Services",
     "SettingsService",
     "TorrentAppService",

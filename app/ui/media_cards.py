@@ -1,10 +1,12 @@
-"""Cards for TMDB titles: films on the Movies page, shows on the Discover tab.
+"""Cards for TMDB titles: films on the Movies page and in search results, shows on the Discover
+tab. Both are tall poster cards (`PosterCard`): films with the one-click Download row, shows with
+"+ Track". Clicking a film's cover opens it on IMDb; a show's calls `on_open_show`, or opens the
+show on IMDb without one.
 
-Both look like `ShowCard`: poster, a title of up to two lines, a meta line, a details line and
-one action button (films: the Download row across the card's bottom), with an ⓘ IMDb link in
-the corner. Each card fetches its title's TMDB details
-itself through an injected loader; until they arrive (or if they can't be loaded) it shows what
-the list entry had.
+Each card fetches its title's TMDB details itself through an injected loader: a film's decide
+whether it can be downloaded yet, and both name the title's IMDb page.
+
+`ImdbIcon` (an ⓘ in a card's corner) is the calendar cards'.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import logging
 import webbrowser
 from collections.abc import Awaitable, Callable
 from datetime import date
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import quote
 
 import customtkinter as ctk
@@ -22,18 +24,10 @@ import customtkinter as ctk
 from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
 from app.services.tmdb import TMDBError
 from app.ui import theme
-from app.ui.cards import CARD_WIDTH
-from app.ui.download_control import (
-    ROW_SPACE,
-    Base,
-    DownloadActions,
-    DownloadControl,
-    movie_key,
-)
+from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
+from app.ui.poster_card import PosterCard, TrackButton, TrackState, year_rating_line
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, title_lines, unscaled_width
 from app.ui.tooltip import add_tooltip
-from app.ui.widgets import PosterImage
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
@@ -41,17 +35,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 D = TypeVar("D")
-TrackState = Literal["idle", "busy", "tracked", "missing"]
 
-CARD_HEIGHT = 135
-_POSTER_HEIGHT = 100
-# Movie cards: the poster with 10 above it, then the Download row across the card.
-MOVIE_CARD_HEIGHT = 10 + _POSTER_HEIGHT + ROW_SPACE
 # Room a card's text keeps clear on the right for the ⓘ (24 units wide, 8 from the card's edge).
 IMDB_ICON_ROOM = 28
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
-_TITLE_MAX_LINES = 2
-_POSTER_SIZE = "w185"
+# TMDB's poster widths, smallest first ("original" beyond them).
+TMDB_POSTER_WIDTHS = (92, 154, 185, 342, 500, 780)
 
 
 # -- text ------------------------------------------------------------------------------------
@@ -65,27 +54,17 @@ def format_runtime(minutes: int) -> str:
     return f"{hours}h {rest}m" if rest else f"{hours}h"
 
 
-def _rating(vote_average: float, vote_count: int) -> str:
-    return f"★ {vote_average:.1f}" if vote_count else "★ N/A"
+def tmdb_rating(vote_average: float, vote_count: int) -> float | None:
+    """The average vote, or None (unknown) without any votes."""
+    return vote_average if vote_count else None
 
 
-def movie_meta(movie: Movie, details: MovieDetails | None) -> str:
-    """"15 Oct 2026 | ★ 7.3": the digital release date once known, else the release date."""
-    day = (details.digital_release if details else None) or movie.release_date
-    when = f"{day:%d %b %Y}" if day else "TBA"
-    return f"{when} | {_rating(movie.vote_average, movie.vote_count)}"
-
-
-def movie_details_line(details: MovieDetails | None) -> str:
-    """"Rated PG-13 · 2h 25m", or whichever part is known ("" for neither)."""
-    if details is None:
-        return ""
-    parts: list[str] = []
-    if details.certification:
-        parts.append(f"Rated {details.certification}")
-    if details.runtime:
-        parts.append(format_runtime(details.runtime))
-    return " · ".join(parts)
+def tmdb_poster_size(width_px: int) -> str:
+    """TMDB's smallest poster size at least `width_px` pixels wide ("w342"), else "original"."""
+    for width in TMDB_POSTER_WIDTHS:
+        if width >= width_px:
+            return f"w{width}"
+    return "original"
 
 
 def movie_action(movie: Movie, details: MovieDetails | None, today: date) -> tuple[str, bool]:
@@ -109,28 +88,11 @@ def imdb_search_url(movie: Movie) -> str:
     return IMDB_FIND_URL + quote(query, safe="")
 
 
-def show_meta(show: DiscoverShow) -> str:
-    """"2024 | ★ 8.1"."""
-    return f"{show.year or 'TBA'} | {_rating(show.vote_average, show.vote_count)}"
-
-
-def show_details_line(details: TVDetails | None) -> str:
-    """"Returning Series • 3 Seasons", or whichever part is known ("" for neither)."""
-    if details is None:
-        return ""
-    parts: list[str] = []
-    if details.status:
-        parts.append(details.status)
-    if seasons := details.number_of_seasons:
-        parts.append(f"{seasons} Season" if seasons == 1 else f"{seasons} Seasons")
-    return " • ".join(parts)
-
-
 def show_imdb_url(details: TVDetails) -> str | None:
     return f"https://www.imdb.com/title/{details.imdb_id}/" if details.imdb_id else None
 
 
-# -- shared parts ----------------------------------------------------------------------------
+# -- the calendar cards' ⓘ ---------------------------------------------------------------------
 
 
 IMDB_TIP = "Open on IMDb"
@@ -166,139 +128,13 @@ def add_imdb_icon(card: ctk.CTkFrame, url: str | None) -> ImdbIcon | None:
     return None if url is None else ImdbIcon(card, url)
 
 
-class _MediaCard(ctk.CTkFrame):
-    """Poster | title (two lines at most), meta line, details line and an action button.
+# -- cards -----------------------------------------------------------------------------------
 
-    Without a `command` the card has no button of its own: the subclass packs a row across the
-    card's bottom (before `self._poster`) and passes a `height` with room for it.
-    """
 
-    def __init__(
-        self,
-        master: Any,
-        *,
-        title: str,
-        poster_url: str | None,
-        images: ImageCache,
-        command: Callable[[], None] | None,
-        height: int = CARD_HEIGHT,
-    ) -> None:
-        super().__init__(
-            master,
-            fg_color=theme.SURFACE,
-            border_color=theme.EDGE,
-            border_width=1,
-            corner_radius=8,
-            width=CARD_WIDTH,
-            height=height,
-        )
-        self.grid_propagate(False)
-        self.pack_propagate(False)
-        self._title_text = title_lines(title)
-        self._meta_text = ""
-        self._details_text = ""
-        self._text_width: float | None = None  # the text column's unscaled width, once laid out
-        self._details_task: asyncio.Task[None] | None = None
-        self._imdb: ImdbIcon | None = None
+class _TmdbCard(PosterCard):
+    """A poster card that loads its title's TMDB details in the background (`_load_details`)."""
 
-        pady: int | tuple[int, int] = 10 if command is not None else (10, 0)
-        poster = PosterImage(self, width=68, height=_POSTER_HEIGHT)
-        poster.pack(side="left", anchor="n", padx=10, pady=pady)
-        poster.show(images, poster_url)
-        self._poster = poster
-
-        info = ctk.CTkFrame(self, fg_color="transparent")
-        info.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=pady)
-        self._button: ctk.CTkButton | None = None
-        if command is not None:
-            # Packed first so the button keeps its room at the bottom whatever the text needs.
-            self._button = ctk.CTkButton(
-                info,
-                text="",
-                height=22,
-                font=theme.font(10, bold=True),
-                corner_radius=4,
-                border_width=0,
-                command=command,
-            )
-            self._button.pack(side="bottom", fill="x")
-        self._title_font = theme.font(12, bold=True)
-        self._title = ctk.CTkLabel(
-            info,
-            text=self._title_text,
-            font=self._title_font,
-            text_color=theme.TEXT,
-            wraplength=100,  # until the first layout reports the real width
-            justify="left",
-            anchor="nw",
-        )
-        self._title.pack(anchor="nw")
-        self._line_font = theme.font(9)
-        self._meta = ctk.CTkLabel(
-            info, text="", font=self._line_font, text_color=theme.TEXT_MUTED, anchor="w"
-        )
-        self._meta.pack(fill="x")
-        self._details = ctk.CTkLabel(
-            info, text="", font=self._line_font, text_color="gray75", anchor="w"
-        )
-        self._details.pack(fill="x")
-        info.bind("<Configure>", self._on_resize)
-
-    # -- text ----------------------------------------------------------------------------------
-
-    def _on_resize(self, event: Any) -> None:
-        if event.width > 1:
-            self._text_width = unscaled_width(self, event.width)
-            self._fit_title()
-            self._fit_lines()
-
-    def _fit_title(self) -> None:
-        """Wrap the title at the width the column really leaves beside the ⓘ; a title needing
-        more than two lines gets its second line elided."""
-        if self._text_width is None:
-            return
-        width = self._text_width - IMDB_ICON_ROOM - SLACK
-        self._title.configure(
-            wraplength=max(1, round(width)),
-            text=fit_to_lines(self._title_text, width, _TITLE_MAX_LINES, self._title_font.measure),
-        )
-
-    def _set_lines(self, meta: str, details: str) -> None:
-        self._meta_text = meta
-        self._details_text = details
-        self._fit_lines()
-
-    def _fit_lines(self) -> None:
-        meta, details = self._meta_text, self._details_text
-        if self._text_width is not None:
-            width = self._text_width - SLACK
-            meta = elide_to_width(meta, width, self._line_font.measure)
-            details = elide_to_width(details, width, self._line_font.measure)
-        self._meta.configure(text=meta)
-        self._details.configure(text=details)
-
-    # -- button and link -----------------------------------------------------------------------
-
-    def _style_button(self, text: str, color: str, hover: str, *, enabled: bool) -> None:
-        if self._button is None:
-            raise RuntimeError("this card has no button of its own")
-        self._button.configure(
-            text=text,
-            fg_color=color,
-            hover_color=hover,
-            state="normal" if enabled else "disabled",
-        )
-
-    def _set_imdb_url(self, url: str | None) -> None:
-        """Point the ⓘ at `url`, adding it if needed; None leaves the icon as it is."""
-        if url is None:
-            return
-        if self._imdb is None:
-            self._imdb = ImdbIcon(self, url)
-        else:
-            self._imdb.url = url
-
-    # -- details -------------------------------------------------------------------------------
+    _details_task: asyncio.Task[None] | None = None
 
     def _load_details(
         self, load: Callable[[int], Awaitable[D]], item_id: int, show: Callable[[D], None]
@@ -325,9 +161,6 @@ class _MediaCard(ctk.CTkFrame):
         super().destroy()
 
 
-# -- cards -----------------------------------------------------------------------------------
-
-
 def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
     """The Download control once the film is out digitally (`movie_action`), else a disabled
     "Digital 15 Oct" / "Not Released"."""
@@ -335,9 +168,10 @@ def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
     return Base("download") if can_grab else Base("unavailable", label)
 
 
-class MovieCard(_MediaCard):
-    """A film: release date and rating, certification and runtime, and a Download row ("⬇
-    Download" and "⋯" for the search window) that unlocks once the film is out digitally."""
+class MovieCard(_TmdbCard):
+    """A film: year and rating, and a Download row ("⬇ Download" and "⋯" for the search window)
+    that unlocks once the film is out digitally. Clicking the cover opens the film on IMDb: its
+    own page once the details name it, IMDb's search until then."""
 
     def __init__(
         self,
@@ -351,12 +185,12 @@ class MovieCard(_MediaCard):
         super().__init__(
             master,
             title=movie.title,
-            poster_url=movie.poster_url(_POSTER_SIZE),
+            meta=year_rating_line(movie.year, tmdb_rating(movie.vote_average, movie.vote_count)),
+            poster=lambda width: movie.poster_url(tmdb_poster_size(width)),
             images=images,
-            command=None,
-            height=MOVIE_CARD_HEIGHT,
         )
         self._movie = movie
+        self._imdb_url = imdb_search_url(movie)
         self._control = DownloadControl(
             self,
             item=movie,
@@ -364,19 +198,22 @@ class MovieCard(_MediaCard):
             base=movie_base(movie, None, date.today()),
             actions=actions,
         )
-        self._control.pack_row(before=self._poster)
-        self._show_details(None)
+        self._pack_action(self._control)
+        self._set_open(self._open_imdb)
         self._load_details(details, movie.id, self._show_details)
 
-    def _show_details(self, details: MovieDetails | None) -> None:
+    def _show_details(self, details: MovieDetails) -> None:
         movie = self._movie
-        self._set_lines(movie_meta(movie, details), movie_details_line(details))
         self._control.set_base(movie_base(movie, details, date.today()))
-        self._set_imdb_url((details.imdb_url if details else None) or imdb_search_url(movie))
+        self._imdb_url = details.imdb_url or imdb_search_url(movie)
+
+    def _open_imdb(self) -> None:
+        webbrowser.open(self._imdb_url)
 
 
-class DiscoverShowCard(_MediaCard):
-    """A TMDB show: first-air year and rating, status and seasons, and a Track button."""
+class DiscoverShowCard(_TmdbCard):
+    """A TMDB show: first-air year and rating, and a Track button. Clicking the cover calls
+    `on_open_show(show)`; without it, it opens the show on IMDb once the details name it."""
 
     def __init__(
         self,
@@ -387,36 +224,33 @@ class DiscoverShowCard(_MediaCard):
         details: Callable[[int], Awaitable[TVDetails]],
         is_tracked: bool,
         on_track: Callable[[DiscoverShow], None],
+        on_open_show: Callable[[DiscoverShow], None] | None = None,
     ) -> None:
         super().__init__(
             master,
             title=show.name,
-            poster_url=show.poster_url(_POSTER_SIZE),
+            meta=year_rating_line(show.year, tmdb_rating(show.vote_average, show.vote_count)),
+            poster=lambda width: show.poster_url(tmdb_poster_size(width)),
             images=images,
-            command=self._track,
         )
         self._show = show
         self._on_track = on_track
-        self._set_lines(show_meta(show), "")
+        self._on_open_show = on_open_show
+        self._track_button = TrackButton(self, busy_text="Finding…", command=self._track)
+        self._pack_action(self._track_button)
         self.set_track_state("tracked" if is_tracked else "idle")
+        if on_open_show is not None:
+            self._set_open(lambda: on_open_show(show))
         self._load_details(details, show.id, self._show_details)
 
     def set_track_state(self, state: TrackState) -> None:
-        """idle → "+ Track"; busy → "Finding…"; tracked → "Tracking"; missing → "Not on TVMaze"."""
-        if state == "idle":
-            self._style_button("+ Track", theme.ACCENT, theme.ACCENT_HOVER, enabled=True)
-        elif state == "busy":
-            self._style_button("Finding…", theme.ACCENT, theme.ACCENT_HOVER, enabled=False)
-        elif state == "tracked":
-            self._style_button("Tracking", "transparent", theme.ACCENT_HOVER, enabled=False)
-        else:
-            self._style_button(
-                "Not on TVMaze", theme.DANGER_BUTTON, theme.DANGER_BUTTON_HOVER, enabled=False
-            )
+        """idle → "+ Track"; busy → "Finding…"; tracked → "✓ Following"; missing → "Not on
+        TVMaze"."""
+        self._track_button.set_state(state)
 
     def _show_details(self, details: TVDetails) -> None:
-        self._set_lines(show_meta(self._show), show_details_line(details))
-        self._set_imdb_url(show_imdb_url(details))
+        if self._on_open_show is None and (url := show_imdb_url(details)) is not None:
+            self._set_open(lambda: webbrowser.open(url))
 
     def _track(self) -> None:
         self._on_track(self._show)

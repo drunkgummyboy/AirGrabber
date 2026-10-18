@@ -14,7 +14,7 @@ import customtkinter as ctk
 from app.services import ImageCache
 from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.ui import theme
-from app.ui.cards import CARD_WIDTH
+from app.ui.poster_card import POSTER_CARD_WIDTH
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, destroy_tree
@@ -146,7 +146,7 @@ class ShelvesView(BaseView, Generic[T]):
                 anchor="w",
             ).pack(anchor="w", padx=10)
             return
-        grid = FlexGrid(section, item_width=CARD_WIDTH, pad_x=8, pad_y=10)
+        grid = FlexGrid(section, item_width=POSTER_CARD_WIDTH, pad_x=8, pad_y=10)
         grid.pack(fill="x")
         for item in shelf.items:
             self._card(grid, item)

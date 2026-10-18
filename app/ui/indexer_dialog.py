@@ -42,6 +42,7 @@ from app.models import (
     TorrentRelease,
 )
 from app.services.downloads import GrabError
+from app.services.remote import RemoteError
 from app.services.search import (
     QUALITY_KEYS,
     is_preferred,
@@ -49,13 +50,14 @@ from app.services.search import (
     quality_counts,
     quality_key,
 )
-from app.services.synology import DownloadStationError
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError, TVMazeNotFound
 from app.ui import theme
 from app.ui.branding import set_window_icon
+from app.ui.download_control import outcome_text
 from app.ui.media_cards import format_runtime
 from app.ui.tasks import spawn
+from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
 from app.ui.tooltip import Tooltip, add_tooltip
 from app.ui.widgets import LoadingBar, PosterImage
 
@@ -91,7 +93,7 @@ IndexerTarget = TvTarget | MovieTarget
 
 SortColumn = Literal["name", "size", "seeds", "leech", "source", "age"]
 ColumnId = SortColumn | Literal["action"]
-RowState = Literal["grabbing", "saved", "sent", "failed"]
+RowState = Literal["grabbing", "opened", "saved", "sent", "failed"]
 _Anchor = Literal["w", "e", "center"]
 
 QUALITY_LABELS = {
@@ -104,12 +106,23 @@ QUALITY_LABELS = {
 }
 # Columns whose first click sorts biggest first; the others start A→Z / newest first.
 _DESCENDING_FIRST: frozenset[str] = frozenset({"size", "seeds", "leech"})
+# The table's narrow action cell; the selection bar under the table spells things out.
 _ACTION_TEXT: dict[RowState, str] = {
-    "grabbing": "⏳ Grabbing…",
-    "saved": "✓ Saved",
-    "sent": "📨 Sent to DS",
-    "failed": "✗ Failed",
+    "grabbing": "⏳",
+    "opened": "✓",
+    "saved": "✓",
+    "sent": "✓",
+    "failed": "✗",
 }
+_DONE_STATES: frozenset[RowState] = frozenset({"opened", "saved", "sent"})
+_OUTCOME_STATES: dict[GrabOutcome, RowState] = {
+    GrabOutcome.OPENED: "opened",
+    GrabOutcome.SAVED: "saved",
+    GrabOutcome.SENT: "sent",
+}
+DOWNLOAD_TEXT = "⬇ Download"
+DOWNLOADING_TEXT = "Downloading…"
+NO_SELECTION_TEXT = "Click a release above to select it"
 _SIZE_UNITS = ("KB", "MB", "GB", "TB", "PB")
 _UNKNOWN = "—"
 _DETAILS_WAIT = 5.0  # seconds a movie search waits for TMDB details (for the IMDb id)
@@ -122,13 +135,19 @@ _COLUMNS: tuple[tuple[ColumnId, str, int, _Anchor, bool], ...] = (
     ("leech", "Leech", 70, "center", False),
     ("source", "Source", 120, "center", False),
     ("age", "Age", 70, "center", False),
-    ("action", "Action", 120, "center", False),
+    ("action", "", 50, "center", False),
 )
 _COLUMN_IDS = tuple(column[0] for column in _COLUMNS)
 _ACTION_COLUMN = f"#{_COLUMN_IDS.index('action') + 1}"
 _ROW_HEIGHT = 26
 _TABLE_FONT_SIZE = 11
 _STYLE = "AG.Treeview"
+# A dialog shorter than this (CTk units) gets the compact header, so the table keeps its rows.
+COMPACT_BELOW = 700
+_POSTER_SIZE = {False: (150, 225), True: (100, 150)}  # by compact
+_TITLE_SIZE = {False: 24, True: 20}
+_HEADER_PAD = {False: 15, True: 8}
+_SELECTOR_HEIGHT = 30  # the tallest selector chip (the VERSION buttons)
 CHIP_TIP = "Open this site's search in your browser"
 
 
@@ -244,9 +263,33 @@ def failure_text(statuses: Iterable[IndexerStatus]) -> str:
 
 
 def action_text(state: RowState | None, *, grabbed: bool) -> str:
+    """The action cell: "⬇", or a mark for a release being / already grabbed."""
     if state is not None:
         return _ACTION_TEXT[state]
-    return "✓ Grabbed" if grabbed else "⬇ Grab"
+    return "✓" if grabbed else "⬇"
+
+
+def selection_detail(release: TorrentRelease) -> str:
+    """The selection bar's detail line: "1080p · 2.10 GB · 412 seeders", whichever parts are
+    known (the quality from the release name, the size as the table shows it)."""
+    quality = [release.resolution.value] if release.resolution is not None else []
+    if release.is_hevc:
+        quality.append("x265")
+    parts = [" ".join(quality)] if quality else []
+    if release.size_bytes > 0:
+        parts.append(format_size(release.size_bytes))
+    parts.append(f"{release.seeders} seeder" + ("" if release.seeders == 1 else "s"))
+    return " · ".join(parts)
+
+
+def download_button_text(state: RowState | None) -> str:
+    """The selection bar's button: "⬇ Download", "Downloading…" during the grab, then the
+    outcome ("✓ Opened", "✓ Saved" or "✓ Sent"). A failed grab offers the download again."""
+    if state == "grabbing":
+        return DOWNLOADING_TEXT
+    if state in _DONE_STATES:
+        return outcome_text(GrabOutcome(state))
+    return DOWNLOAD_TEXT
 
 
 def episode_title(show: Show, season: int, episode: int | None) -> str:
@@ -292,6 +335,12 @@ def searching_text(season: int | None, episode: int | None) -> str:
     if episode is None:
         return f"Searching indexers for Season {season:02d} pack…"
     return f"Searching indexers for S{season:02d}E{episode:02d}…"
+
+
+def compact_header(height: float) -> bool:
+    """Whether a dialog `height` tall (CTk units) gets the compact header: a smaller poster and
+    title and less padding, so the results table keeps room for its rows."""
+    return height < COMPACT_BELOW
 
 
 def hidden_text(count: int, *, showing: bool) -> str:
@@ -381,6 +430,12 @@ class IndexerDialog(ctk.CTkToplevel):
         self._loading: LoadingBar | None = None
         self._empty_look: tuple[str, str] | None = None
         self._activate_job: str | None = None
+        self._images = images
+        self._poster: PosterImage | None = None
+        self._poster_url: str | None = None
+        self._compact: bool | None = None  # None until the header is built
+        self._selected_name = ""  # the selection bar's release name, before eliding
+        self._name_room = 0.0  # the room for it, in CTk units (0 until laid out)
 
         self._search_task: asyncio.Task[None] | None = None
         self._grab_tasks: dict[str, asyncio.Task[None]] = {}
@@ -393,11 +448,12 @@ class IndexerDialog(ctk.CTkToplevel):
         # CTkToplevel only applies its dark Windows title bar reliably from resizable().
         self.resizable(True, True)
         self.minsize(900, 600)
-        self._place_over(master)
+        height = self._place_over(master)
 
-        self._build_header(images)
+        self._build_header(compact=compact_header(height))
         self._build_results()
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.bind("<Configure>", self._on_configure)
 
         self._start(self._load_grabbed(), "grabbed")
         if isinstance(target, TvTarget):
@@ -411,8 +467,9 @@ class IndexerDialog(ctk.CTkToplevel):
 
     # -- layout ------------------------------------------------------------------------------
 
-    def _place_over(self, master: ctk.CTk) -> None:
-        """Centre over `master`, clamped to the screen (see MainWindow._place for the DPI math)."""
+    def _place_over(self, master: ctk.CTk) -> int:
+        """Centre over `master`, clamped to the screen (see MainWindow._place for the DPI math).
+        Returns the height (CTk units)."""
         scaling = ctk.ScalingTracker.get_window_scaling(self)
         screen_w, screen_h = self.wm_maxsize()
         width = min(self.WIDTH, int(screen_w / scaling) - 40)
@@ -423,17 +480,43 @@ class IndexerDialog(ctk.CTkToplevel):
         x = min(max(0, x), max(0, screen_w - width_px))
         y = min(max(0, y), max(0, screen_h - height_px))
         self.geometry(f"{width}x{height}+{x}+{y}")
+        return height
 
-    def _build_header(self, images: ImageCache) -> None:
+    def _on_configure(self, event: tk.Event[Any]) -> None:
+        # Bound on the toplevel, so every descendant's <Configure> passes here too.
+        if event.widget is not self or event.height < 50:
+            return
+        scaling = ctk.ScalingTracker.get_window_scaling(self)
+        self._set_compact(compact_header(event.height / scaling))
+
+    def _set_compact(self, compact: bool) -> None:
+        """Lay the header out full size or compact (see compact_header)."""
+        if compact == self._compact:
+            return
+        self._compact = compact
+        pad = _HEADER_PAD[compact]
+        self._header_card.pack_configure(padx=15, pady=pad)
+        self._header_info.pack_configure(pady=pad, padx=(0, pad))
+        self._title.configure(font=theme.font(_TITLE_SIZE[compact], bold=True))
+        self._meta.pack_configure(pady=(0, 4) if compact else (2, 10))
+        # PosterImage renders at a fixed size: a new one at the new size (the cache has the image).
+        if self._poster is not None:
+            self._poster.destroy()
+        width, height = _POSTER_SIZE[compact]
+        self._poster = PosterImage(self._header_card, width=width, height=height)
+        self._poster.pack(side="left", padx=pad, pady=pad, before=self._header_info)
+        self._poster.show(self._images, self._poster_url)
+
+    def _build_header(self, *, compact: bool) -> None:
         card = ctk.CTkFrame(
             self, fg_color=theme.SURFACE, border_width=1, border_color=theme.EDGE, corner_radius=8
         )
         card.pack(fill="x", padx=15, pady=15)
-        poster = PosterImage(card, width=150, height=225)
-        poster.pack(side="left", padx=15, pady=15)
+        self._header_card = card
 
         info = ctk.CTkFrame(card, fg_color="transparent")
         info.pack(side="left", fill="both", expand=True, pady=15, padx=(0, 15))
+        self._header_info = info
         title_row = ctk.CTkFrame(info, fg_color="transparent")
         title_row.pack(fill="x")
         self._title = ctk.CTkLabel(
@@ -441,9 +524,9 @@ class IndexerDialog(ctk.CTkToplevel):
         )
         self._title.pack(side="left")
         self._meta = ctk.CTkLabel(
-            info, text="", font=theme.font(12), text_color=theme.TEXT_DIM, anchor="w"
+            info, text="", font=theme.font(12), text_color=theme.TEXT_DIM, anchor="w", height=20
         )
-        self._meta.pack(anchor="w", pady=(2, 10))
+        self._meta.pack(anchor="w", pady=(2, 10))  # see _set_compact
 
         target = self._target
         if isinstance(target, TvTarget):
@@ -473,10 +556,10 @@ class IndexerDialog(ctk.CTkToplevel):
             self._meta.configure(text=show_meta(target.show))
             self._season_row = self._selector_row(info, "SEASON")
             self._episode_row = self._selector_row(info, "EPISODE")
-            poster.show(images, target.show.poster_url_original or target.show.poster_url)
+            self._poster_url = target.show.poster_url_original or target.show.poster_url
         else:
             self._meta.configure(text=movie_meta(target.movie, None))
-            poster.show(images, target.movie.poster_url("w342"))
+            self._poster_url = target.movie.poster_url("w342")
         self._update_title()
 
         versions = self._selector_row(info, "VERSION")
@@ -493,11 +576,12 @@ class IndexerDialog(ctk.CTkToplevel):
             button.pack(side="left", padx=3)
             self._quality_buttons[key] = button
         self._paint_quality({})
+        self._set_compact(compact)
 
     @staticmethod
     def _selector_row(master: Any, label: str) -> ctk.CTkScrollableFrame:
         row = ctk.CTkFrame(master, fg_color="transparent")
-        row.pack(fill="x", pady=5)
+        row.pack(fill="x", pady=2)
         ctk.CTkLabel(
             row,
             text=label,
@@ -506,18 +590,35 @@ class IndexerDialog(ctk.CTkToplevel):
             font=theme.font(12, bold=True),
             text_color=theme.TEXT_DIM,
         ).pack(side="left")
-        # The scrollbar blends into the card until hovered: most rows fit, but long-running
-        # daily shows can have hundreds of episodes in a season.
+        # Most rows fit, but long-running daily shows can have hundreds of episodes in a
+        # season: the scrollbar appears only then (it blends into the card until hovered), so
+        # the rows stay chip-high. No corner radius: it would pad the chips.
         scroll = ctk.CTkScrollableFrame(
             row,
             orientation="horizontal",
-            height=35,
+            height=_SELECTOR_HEIGHT,
+            corner_radius=0,
             fg_color="transparent",
             scrollbar_button_color=theme.SURFACE,
             scrollbar_button_hover_color=theme.EDGE,
         )
         scroll.pack(side="left", fill="x", expand=True)
+        fit = functools.partial(IndexerDialog._fit_scrollbar, scroll)
+        scroll.bind("<Configure>", lambda _event: fit(), add="+")
+        scroll._parent_canvas.bind("<Configure>", lambda _event: fit(), add="+")
+        scroll._scrollbar.grid_remove()
         return scroll
+
+    @staticmethod
+    def _fit_scrollbar(scroll: ctk.CTkScrollableFrame) -> None:
+        """Show a selector row's scrollbar only while its chips overflow."""
+        canvas_width = scroll._parent_canvas.winfo_width()
+        overflow = canvas_width > 1 and scroll.winfo_reqwidth() > canvas_width
+        bar = scroll._scrollbar
+        if overflow and not bar.winfo_manager():
+            bar.grid()
+        elif not overflow and bar.winfo_manager():
+            bar.grid_remove()
 
     def _build_results(self) -> None:
         card = ctk.CTkFrame(
@@ -567,8 +668,11 @@ class IndexerDialog(ctk.CTkToplevel):
         tree.bind("<Double-1>", self._on_double_click)
         tree.bind("<Return>", self._on_return)
         tree.bind("<KP_Enter>", self._on_return)
+        # Mouse and keyboard (Up/Down) selection both fill the selection bar.
+        tree.bind("<<TreeviewSelect>>", lambda _event: self._paint_selection())
         self._tree = tree
         self._update_headings()
+        self._build_selection_bar(card)
 
         self._empty = ctk.CTkLabel(table, text="", fg_color=theme.SURFACE, anchor="w")
         self._hint = ctk.CTkLabel(
@@ -578,9 +682,92 @@ class IndexerDialog(ctk.CTkToplevel):
             text_color=theme.TEXT_MUTED,
             anchor="w",
             cursor="hand2",
+            height=20,
         )
         self._hint.bind("<Button-1>", lambda _event: self._toggle_hidden())
-        self._message = ctk.CTkLabel(card, text="", font=theme.font(11), anchor="w")
+        self._message = ctk.CTkLabel(card, text="", font=theme.font(11), anchor="w", height=20)
+
+    def _build_selection_bar(self, card: ctk.CTkFrame) -> None:
+        """The bar under the table: the selected release and a big Download button. It sits in
+        a row without weight, so on a short screen the table shrinks instead of the bar."""
+        bar = ctk.CTkFrame(
+            card,
+            fg_color=theme.ROW_SELECTED,
+            border_width=1,
+            border_color=theme.EDGE,
+            corner_radius=12,
+        )
+        bar.grid(row=5, column=0, sticky="ew", padx=10, pady=(14, 10))
+        self._download_button = ctk.CTkButton(
+            bar,
+            text=DOWNLOAD_TEXT,
+            width=160,
+            height=44,
+            font=theme.font(15, bold=True),
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            state="disabled",
+            command=self._grab_selected,
+        )
+        self._download_button.pack(side="right", padx=16, pady=12)
+        info = ctk.CTkFrame(bar, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True, padx=(16, 0), pady=12)  # centred
+        info.bind("<Configure>", self._on_bar_resize)
+        self._bar_info = info
+        self._bar_caption = ctk.CTkLabel(
+            info, text="", font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="w", height=18
+        )
+        self._bar_caption.pack(fill="x")
+        self._bar_name_font = theme.font(14, bold=True)
+        self._bar_name = ctk.CTkLabel(
+            info, text="", font=self._bar_name_font, text_color=theme.TEXT, anchor="w", height=22
+        )
+        self._bar_detail = ctk.CTkLabel(
+            info, text="", font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="w", height=18
+        )
+        self._paint_selection()
+
+    def _on_bar_resize(self, event: tk.Event[Any]) -> None:
+        room = unscaled_width(self._bar_info, event.width) - SLACK
+        if room != self._name_room:
+            self._name_room = room
+            self._paint_name()
+
+    def _paint_name(self) -> None:
+        text = self._selected_name
+        if text and self._name_room > 0:
+            text = elide_to_width(text, self._name_room, self._bar_name_font.measure)
+        if self._bar_name.cget("text") != text:
+            self._bar_name.configure(text=text)
+
+    def _selected_iid(self) -> str | None:
+        """The selected row's id, if it is still in the table."""
+        selection = self._tree.selection()
+        return selection[0] if selection and selection[0] in self._rows else None
+
+    def _paint_selection(self) -> None:
+        """Fill the selection bar from the table's selection and that row's grab state."""
+        iid = self._selected_iid()
+        if iid is None:
+            self._selected_name = ""
+            self._bar_caption.configure(text=NO_SELECTION_TEXT)
+            self._bar_name.pack_forget()
+            self._bar_detail.pack_forget()
+            self._download_button.configure(text=DOWNLOAD_TEXT, state="disabled")
+            return
+        release = self._rows[iid][0]
+        state = self._row_states.get(iid)
+        self._selected_name = release.title
+        self._bar_caption.configure(text="Selected")
+        self._paint_name()
+        self._bar_detail.configure(text=selection_detail(release))
+        if not self._bar_name.winfo_manager():
+            self._bar_name.pack(fill="x")
+            self._bar_detail.pack(fill="x")
+        self._download_button.configure(
+            text=download_button_text(state),
+            state="disabled" if state == "grabbing" else "normal",
+        )
 
     def _style_table(self, scaling: float) -> None:
         """The dark "AG." ttk styles (Tk fonts and row heights are physical pixels)."""
@@ -1042,6 +1229,7 @@ class IndexerDialog(ctk.CTkToplevel):
         order = tuple(wanted)
         if tree.get_children() != order:
             tree.set_children("", *order)
+        self._paint_selection()
 
     def _render_row(self, iid: str, settings: Settings, now: datetime) -> None:
         release, hidden = self._rows[iid]
@@ -1056,7 +1244,7 @@ class IndexerDialog(ctk.CTkToplevel):
             format_age(release.published_at, now),
             action_text(state, grabbed=grabbed),
         )
-        if grabbed or state in ("saved", "sent"):
+        if grabbed or state in _DONE_STATES:
             tags: tuple[str, ...] = ("grabbed",)
         elif hidden:
             tags = ("hidden",)
@@ -1074,6 +1262,8 @@ class IndexerDialog(ctk.CTkToplevel):
     def _refresh_row(self, iid: str) -> None:
         if iid in self._rows:
             self._render_row(iid, self._settings.current, datetime.now(UTC))
+            if iid == self._selected_iid():
+                self._paint_selection()
 
     def _render_empty_state(self) -> None:
         if self._rows:
@@ -1150,6 +1340,11 @@ class IndexerDialog(ctk.CTkToplevel):
         for iid in self._tree.selection():
             self._grab(iid)
 
+    def _grab_selected(self) -> None:
+        iid = self._selected_iid()
+        if iid is not None:
+            self._grab(iid)
+
     def _grab_target(self) -> GrabTarget:
         target = self._target
         if isinstance(target, TvTarget):
@@ -1179,7 +1374,7 @@ class IndexerDialog(ctk.CTkToplevel):
     async def _run_grab(self, iid: str, release: TorrentRelease, target: GrabTarget) -> None:
         try:
             result = await self._downloads.grab(release, target)
-        except (GrabError, DownloadStationError) as exc:
+        except (GrabError, RemoteError) as exc:
             self._finish_grab(iid, "failed", str(exc), theme.DANGER, 10_000)
             return
         except Exception:
@@ -1187,7 +1382,7 @@ class IndexerDialog(ctk.CTkToplevel):
                 self._row_states[iid] = "failed"
                 self._refresh_row(iid)
             raise  # logged and reported by the task runner
-        state: RowState = "saved" if result.outcome is GrabOutcome.SAVED else "sent"
+        state = _OUTCOME_STATES[result.outcome]
         self._finish_grab(iid, state, result.message, theme.SUCCESS, 6000)
         await self._load_grabbed()
 

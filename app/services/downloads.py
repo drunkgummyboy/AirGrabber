@@ -1,13 +1,16 @@
 """Grabbing a release, in the user's chosen `DownloadMode`.
 
-FOLDER: a .torrent file into the watch folder, else the magnet to Download Station.
+FOLDER: a .torrent file into the watch folder, else the magnet to the remote torrent program.
 APP: the .torrent (kept in an app-owned cache folder) or else a magnet is opened with the
 torrent program Windows has registered for it.
+REMOTE: the .torrent or else a magnet is sent to the torrent program on a NAS or another
+computer (Download Station, qBittorrent or Transmission: `RemoteDownloads`).
 
-In FOLDER mode the user's Download Station watches `Settings.download_dir`, so a `.torrent` file written there
-is the normal path (as in 1.x). Only when no `.torrent` can be had — the indexer gave no direct
-link (or it failed) and itorrents.org has no cached copy of the info hash, which is common for
-brand-new releases — is the magnet link sent to Download Station through the DSM Web API.
+In FOLDER mode a program (often a NAS's Download Station) watches `Settings.download_dir`, so a
+`.torrent` file written there is the normal path (as in 1.x). Only when no `.torrent` can be
+had — the indexer gave no direct link (or it failed) and itorrents.org has no cached copy of the
+info hash, which is common for brand-new releases — is the magnet link sent to the remote
+torrent program set up in Settings.
 
 Direct download links may embed an indexer/Prowlarr API key: they are never logged or shown,
 and neither are magnet links.
@@ -36,11 +39,13 @@ from app.models import (
     GrabOutcome,
     GrabResult,
     GrabTarget,
+    MediaType,
+    RemoteKind,
     TorrentApp,
     TorrentRelease,
 )
+from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
-from app.services.synology import DownloadStationClient
 from app.services.torrent_app import find_torrent_app
 
 log = logging.getLogger(__name__)
@@ -54,7 +59,11 @@ MAX_NAME_LENGTH = 120
 TORRENT_CACHE_KEEP = 50  # .torrent files kept in the APP-mode cache folder
 NO_TORRENT_APP = (
     "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose "
-    '"Save to a folder" in Settings.'
+    'another option under "When I download" in Settings.'
+)
+NO_REMOTE_FALLBACK = (
+    "No .torrent file is available for this release, and no torrent program on a NAS or "
+    "another computer is set up in Settings to send its magnet link to."
 )
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -83,7 +92,7 @@ class DownloadService:
         http: httpx.AsyncClient,
         history: HistoryRepository,
         settings: SettingsService,
-        station: DownloadStationClient,
+        remote: RemoteDownloads,
         torrent_cache: Path,
         *,
         find_app: Callable[[], TorrentApp | None] = find_torrent_app,
@@ -92,7 +101,7 @@ class DownloadService:
         self._http = http
         self._history = history
         self._settings = settings
-        self._station = station
+        self._remote = remote  # the torrent program on a NAS or another computer
         self._torrent_cache = torrent_cache  # APP mode: .torrent files handed to the program
         self._find_app = find_app
         self._opener: Opener = opener or open_with_default_program
@@ -122,20 +131,32 @@ class DownloadService:
         """Info hashes (lowercase hex) of the releases in the download history."""
         return await self._history.info_hashes()
 
+    async def has_grabbed(self, target: GrabTarget) -> bool:
+        """Whether the download history has `target`: the film, the episode or its season's
+        pack, or (a season target) the season pack."""
+        if target.media_type is MediaType.MOVIE:
+            return await self._history.has_movie(target.media_id)
+        assert target.season is not None  # GrabTarget requires it for TV
+        return await self._history.has_episode(target.media_id, target.season, target.episode)
+
     async def grab(self, release: TorrentRelease, target: GrabTarget) -> GrabResult:
         """Grab the release the way `Settings.download_mode` says; record it in the download
         history and notify listeners.
 
-        FOLDER: save the .torrent into the watch folder, or else send its magnet to Download
-        Station. APP: open the .torrent (or else a magnet) in the user's torrent program.
+        FOLDER: save the .torrent into the watch folder, or else send its magnet to the remote
+        torrent program. APP: open the .torrent (or else a magnet) in the user's torrent
+        program. REMOTE: send the .torrent (or else a magnet) to the remote torrent program.
 
-        Raises GrabError, or DownloadStationError when Download Station refuses the magnet.
+        Raises GrabError, or RemoteError when the remote program can't be reached or refuses.
         The grab counts as done once the file is written or opened or the task created: a
         failure to record it afterwards is logged, not raised, so the user isn't invited to
         grab it twice.
         """
-        if self._settings.current.download_mode is DownloadMode.APP:
+        mode = self._settings.current.download_mode
+        if mode is DownloadMode.APP:
             result, saved_path, info_hash = await self._grab_in_app(release)
+        elif mode is DownloadMode.REMOTE:
+            result, saved_path, info_hash = await self._grab_remote(release)
         else:
             result, saved_path, info_hash = await self._grab_to_folder(release)
 
@@ -160,7 +181,7 @@ class DownloadService:
     async def _grab_in_app(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
         """Open the .torrent (saved in the cache folder) or else a magnet in the torrent program.
 
-        Returns (result, history saved_path, info hash). Download Station is not used.
+        Returns (result, history saved_path, info hash). The remote program is not used.
         """
         app = await asyncio.to_thread(self._find_app)
         if app is None:
@@ -183,6 +204,31 @@ class DownloadService:
         await self._open(magnet, app)
         log.info("Grabbed %r: magnet opened in %s", release.title, app.name)
         return GrabResult(outcome=GrabOutcome.OPENED, message=message), app.name, info_hash
+
+    async def _grab_remote(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
+        """Send the .torrent (direct link, then itorrents.org) or else a magnet (the release's
+        own, a Prowlarr redirect, or one built from the hash) to the remote torrent program.
+
+        Returns (result, history saved_path = the program's name, info hash).
+        """
+        if not self._remote.configured:
+            raise GrabError(_remote_not_set_up(self._remote.kind))  # before any download
+        client = self._remote.client()
+        name = client.kind.program
+        content, magnet, info_hash = await self._obtain(
+            release, _magnet_or_none(release.magnet_uri)
+        )
+        if content is not None:
+            await client.add_torrent(content, f"{safe_filename(release.title)}.torrent")
+            log.info("Grabbed %r: .torrent sent to %s", release.title, name)
+        else:
+            if magnet is None and info_hash:
+                magnet = build_magnet(info_hash, release.title)
+            if magnet is None:
+                raise GrabError("No .torrent file or magnet link is available for this release.")
+            await client.add_magnet(magnet)
+            log.info("Grabbed %r: magnet sent to %s", release.title, name)
+        return GrabResult(outcome=GrabOutcome.SENT, message=f"Sent to {name}"), name, info_hash
 
     async def _obtain(
         self, release: TorrentRelease, magnet: str | None
@@ -209,7 +255,8 @@ class DownloadService:
         return content, magnet, info_hash
 
     async def _grab_to_folder(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
-        """Save the .torrent into the watch folder, or else send the magnet to Download Station.
+        """Save the .torrent into the watch folder, or else send the magnet to the remote
+        torrent program (when one is set up).
 
         Returns (result, history saved_path, info hash).
         """
@@ -222,21 +269,19 @@ class DownloadService:
                 outcome=GrabOutcome.SAVED, path=saved_path, message=f"Saved {path.name}"
             )
             log.info("Grabbed %r: saved %s", release.title, path)
-        elif not self._station.configured:
-            raise GrabError(
-                "No .torrent file is available for this release and Download Station isn't set "
-                "up in Settings."
-            )
+        elif not self._remote.configured:
+            raise GrabError(NO_REMOTE_FALLBACK)
         elif magnet is None:
             raise GrabError(
                 "No .torrent file is available for this release, and it has no magnet link to "
-                "send to Download Station."
+                f"send to {self._remote.kind.program}."
             )
         else:
-            await self._station.add_magnet(magnet)
-            result = GrabResult(outcome=GrabOutcome.SENT, message="Sent to Download Station")
-            saved_path = "Download Station"
-            log.info("Grabbed %r: magnet sent to Download Station", release.title)
+            client = self._remote.client()
+            saved_path = client.kind.program
+            await client.add_magnet(magnet)
+            result = GrabResult(outcome=GrabOutcome.SENT, message=f"Sent to {saved_path}")
+            log.info("Grabbed %r: magnet sent to %s", release.title, saved_path)
         return result, saved_path, info_hash
 
     async def _open(self, target: str, app: TorrentApp) -> None:
@@ -322,6 +367,11 @@ def open_with_default_program(target: str) -> None:
     if startfile is None:
         raise OSError(0, "Opening torrents is only supported on Windows")
     startfile(target)
+
+
+def _remote_not_set_up(kind: RemoteKind) -> str:
+    needs = "address, user name and password" if kind is RemoteKind.SYNOLOGY else "address"
+    return f"{kind.program} isn't set up yet: enter its {needs} in Settings."
 
 
 def build_magnet(info_hash: str, title: str) -> str:

@@ -24,21 +24,24 @@ from app.models import (
     GrabTarget,
     DownloadMode,
     MediaType,
+    RemoteKind,
     Settings,
     TorrentApp,
     TorrentRelease,
 )
 from app.services import Services
 from app.services.downloads import (
+    NO_REMOTE_FALLBACK,
     NO_TORRENT_APP,
     DownloadService,
     GrabError,
     prune_torrent_cache,
     safe_filename,
 )
+from app.services.remote import RemoteError
+from app.services.remote_downloads import RemoteDownloads
 from app.services.torrent_app import TorrentAppService
 from app.services.settings import SettingsService
-from app.services.synology import DownloadStationClient, DownloadStationError
 
 HASH = "0123456789abcdef0123456789abcdef01234567"
 OTHER_HASH = "89abcdef0123456789abcdef0123456789abcdef"
@@ -70,6 +73,50 @@ def release(**changes: Any) -> TorrentRelease:
     }
     values.update(changes)
     return TorrentRelease(**values)
+
+
+class FakeRemoteClient:
+    """A remote torrent program that records what it was sent."""
+
+    def __init__(self, kind: RemoteKind) -> None:
+        self.kind = kind
+        self.magnets: list[str] = []
+        self.torrents: list[tuple[bytes, str]] = []
+        self.error: RemoteError | None = None
+
+    async def test(self) -> str:
+        return f"{self.kind.program} 1.0"
+
+    async def add_magnet(self, magnet: str) -> None:
+        if self.error is not None:
+            raise self.error
+        self.magnets.append(magnet)
+
+    async def add_torrent(self, content: bytes, filename: str) -> None:
+        if self.error is not None:
+            raise self.error
+        self.torrents.append((content, filename))
+
+    @property
+    def calls(self) -> int:
+        return len(self.magnets) + len(self.torrents)
+
+
+def kind_hash(kind: RemoteKind) -> str:
+    """A different info hash per kind (the history keeps one grab per hash)."""
+    return str(list(RemoteKind).index(kind) + 1) * 40
+
+
+# What makes each kind of program configured.
+REMOTE_SETTINGS: dict[RemoteKind, dict[str, Any]] = {
+    RemoteKind.SYNOLOGY: {
+        "remote_url": "http://192.168.1.20:5000",
+        "remote_username": "beau",
+        "remote_password": "secret",
+    },
+    RemoteKind.QBITTORRENT: {"remote_url": "http://192.168.1.20:8080"},
+    RemoteKind.TRANSMISSION: {"remote_url": "http://192.168.1.30:9091"},
+}
 
 
 class FakeWeb:
@@ -106,8 +153,9 @@ class DownloadTestCase(unittest.IsolatedAsyncioTestCase):
         self.web = FakeWeb()
         self.http = httpx.AsyncClient(transport=httpx.MockTransport(self.web))
         self.addAsyncCleanup(self.http.aclose)
-        self.station = mock.create_autospec(DownloadStationClient, instance=True)
-        self.station.configured = False
+        self.clients = {kind: FakeRemoteClient(kind) for kind in RemoteKind}
+        self.remote = RemoteDownloads(self.settings, clients=self.clients)
+        self.station = self.clients[RemoteKind.SYNOLOGY]
         self.cache = root / "data" / "torrents"
         self.opened: list[str] = []
         self.app: TorrentApp | None = TorrentApp(name="qBittorrent")
@@ -115,13 +163,20 @@ class DownloadTestCase(unittest.IsolatedAsyncioTestCase):
             self.http,
             self.db.history,
             self.settings,
-            self.station,
+            self.remote,
             self.cache,
             find_app=lambda: self.app,
             opener=self.opened.append,  # never the real os.startfile
         )
         self.notifications = 0
         self.service.subscribe(self.on_grab)
+
+    async def set_up_remote(self, kind: RemoteKind = RemoteKind.SYNOLOGY) -> FakeRemoteClient:
+        await self.settings.update(remote_kind=kind, **REMOTE_SETTINGS[kind])
+        return self.clients[kind]
+
+    def remote_calls(self) -> int:
+        return sum(client.calls for client in self.clients.values())
 
     def on_grab(self) -> None:
         self.notifications += 1
@@ -150,7 +205,7 @@ class TorrentFileTests(DownloadTestCase):
         self.assertEqual(self.web.requests[ITORRENTS], 0)
         self.assertIn("Mozilla/5.0", self.web.user_agents[0])
         self.assertIn(expected.name, result.message)
-        self.station.add_magnet.assert_not_called()
+        self.assertEqual(self.remote_calls(), 0)
 
     async def test_html_instead_of_a_torrent_falls_back_to_itorrents(self) -> None:
         self.serve(DIRECT_URL, b"<!DOCTYPE html><html>Login required</html>")
@@ -212,49 +267,63 @@ class TorrentFileTests(DownloadTestCase):
         self.assertNotIn(API_KEY, str(caught.exception))
 
 
-class DownloadStationFallbackTests(DownloadTestCase):
+class RemoteFallbackTests(DownloadTestCase):
+    """FOLDER mode: a release without a .torrent file goes to the remote program, if any."""
+
     async def test_nothing_cached_sends_the_magnet(self) -> None:
-        self.station.configured = True
+        await self.set_up_remote()
         item = release()
         result = await self.service.grab(item, EPISODE)
         self.assertIs(result.outcome, GrabOutcome.SENT)
+        self.assertEqual(result.message, "Sent to Download Station")
         self.assertIsNone(result.path)
-        self.station.add_magnet.assert_awaited_once_with(item.magnet)
+        self.assertEqual(self.station.magnets, [item.magnet])
         self.assertEqual(self.watch_files(), [])
         record = (await self.history())[0]
         self.assertEqual(record.saved_path, "Download Station")
         self.assertEqual(self.notifications, 1)
 
+    async def test_each_kind_of_program_gets_the_magnet(self) -> None:
+        for kind in RemoteKind:
+            with self.subTest(kind=kind):
+                client = await self.set_up_remote(kind)
+                item = release(title=f"Show {kind}", info_hash=kind_hash(kind))
+                result = await self.service.grab(item, EPISODE)
+                self.assertEqual(result.message, f"Sent to {kind.program}")
+                self.assertEqual(client.magnets, [item.magnet])
+                self.assertEqual(client.torrents, [])
+        self.assertEqual(self.remote_calls(), 3)
+        saved = {record.saved_path for record in await self.history()}
+        self.assertEqual(saved, {kind.program for kind in RemoteKind})
+
     async def test_release_magnet_uri_is_sent_as_is(self) -> None:
-        self.station.configured = True
+        await self.set_up_remote()
         magnet = f"magnet:?xt=urn:btih:{HASH}&dn=Original&tr=udp://tracker"
         await self.service.grab(release(info_hash=None, magnet_uri=magnet), EPISODE)
-        self.station.add_magnet.assert_awaited_once_with(magnet)
+        self.assertEqual(self.station.magnets, [magnet])
 
-    async def test_nothing_cached_and_no_download_station(self) -> None:
+    async def test_nothing_cached_and_no_remote_program(self) -> None:
+        # Download Station without an account doesn't count as set up.
+        await self.settings.update(remote_url="http://192.168.1.20:5000")
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(), EPISODE)
-        self.assertEqual(
-            str(caught.exception),
-            "No .torrent file is available for this release and Download Station isn't set up "
-            "in Settings.",
-        )
+        self.assertEqual(str(caught.exception), NO_REMOTE_FALLBACK)
         self.assertEqual(await self.history(), [])
         self.assertEqual(self.notifications, 0)
-        self.station.add_magnet.assert_not_called()
+        self.assertEqual(self.remote_calls(), 0)
 
     async def test_no_magnet_to_send(self) -> None:
-        self.station.configured = True
+        await self.set_up_remote(RemoteKind.QBITTORRENT)
         self.serve(DIRECT_URL, b"<html></html>")
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(info_hash=None, download_url=DIRECT_URL), EPISODE)
-        self.assertIn("no magnet link", str(caught.exception))
-        self.station.add_magnet.assert_not_called()
+        self.assertIn("no magnet link to send to qBittorrent", str(caught.exception))
+        self.assertEqual(self.remote_calls(), 0)
 
-    async def test_download_station_errors_propagate_and_record_nothing(self) -> None:
-        self.station.configured = True
-        self.station.add_magnet.side_effect = DownloadStationError("DSM rejected the password.")
-        with self.assertRaises(DownloadStationError):
+    async def test_remote_errors_propagate_and_record_nothing(self) -> None:
+        await self.set_up_remote()
+        self.station.error = RemoteError("DSM rejected the password.")
+        with self.assertRaises(RemoteError):
             await self.service.grab(release(), EPISODE)
         self.assertEqual(await self.history(), [])
         self.assertEqual(self.notifications, 0)
@@ -354,6 +423,27 @@ class HistoryTests(DownloadTestCase):
         self.assertIsNone(record.size_bytes)  # 0 = unknown
         self.assertTrue(await self.db.history.has_movie(557))
 
+    async def test_has_grabbed(self) -> None:
+        movie = GrabTarget(media_type=MediaType.MOVIE, media_id=557)
+        pack = GrabTarget(media_type=MediaType.TV, media_id=42846, season=3)
+        in_pack = GrabTarget(media_type=MediaType.TV, media_id=42846, season=3, episode=7)
+        for target in (EPISODE, movie, pack, in_pack):
+            self.assertFalse(await self.service.has_grabbed(target))
+        self.serve(ITORRENTS, CACHED)
+        self.serve(f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent", TORRENT)
+        await self.service.grab(release(), EPISODE)
+        await self.service.grab(release(title="Spider-Man.2002", info_hash=OTHER_HASH), movie)
+        self.assertTrue(await self.service.has_grabbed(EPISODE))
+        self.assertTrue(await self.service.has_grabbed(movie))
+        self.assertFalse(await self.service.has_grabbed(in_pack))
+        await self.db.history.add(
+            DownloadRecord(
+                media_type=MediaType.TV, media_id=42846, season=3, release_title="Pack S03"
+            )
+        )
+        self.assertTrue(await self.service.has_grabbed(pack))
+        self.assertTrue(await self.service.has_grabbed(in_pack))
+
     async def test_grabbed_hashes(self) -> None:
         self.assertEqual(await self.service.grabbed_hashes(), frozenset())
         self.serve(ITORRENTS, CACHED)
@@ -397,7 +487,7 @@ class AppModeTests(DownloadTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.station.configured = True  # must still not be used in APP mode
+        await self.set_up_remote()  # must still not be used in APP mode
         await self.settings.update(download_mode=DownloadMode.APP)
 
     def cache_files(self) -> list[str]:
@@ -414,7 +504,7 @@ class AppModeTests(DownloadTestCase):
         self.assertEqual(self.opened, [str(expected)])
         self.assertEqual(self.cache_files(), [expected.name])
         self.assertEqual(self.watch_files(), [])  # the watch folder is not used
-        self.station.add_magnet.assert_not_called()
+        self.assertEqual(self.remote_calls(), 0)
 
     async def test_itorrents_copy_is_opened(self) -> None:
         self.serve(ITORRENTS, CACHED)
@@ -430,7 +520,7 @@ class AppModeTests(DownloadTestCase):
         self.assertEqual(self.opened, [magnet])
         self.assertEqual(self.web.requests[ITORRENTS], 1)  # a .torrent is still preferred
         self.assertEqual(self.cache_files(), [])
-        self.station.add_magnet.assert_not_called()
+        self.assertEqual(self.remote_calls(), 0)
 
     async def test_prowlarr_redirect_to_a_magnet_opens_it(self) -> None:
         magnet = f"magnet:?xt=urn:btih:{OTHER_HASH}&dn=Redirected"
@@ -459,7 +549,7 @@ class AppModeTests(DownloadTestCase):
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
         self.assertEqual(str(caught.exception), NO_TORRENT_APP)
-        self.assertIn('choose "Save to a folder" in Settings.', NO_TORRENT_APP)
+        self.assertIn('under "When I download" in Settings.', NO_TORRENT_APP)
         self.assertEqual(sum(self.web.requests.values()), 0)
         self.assertEqual(self.opened, [])
         self.assertEqual(await self.history(), [])
@@ -515,6 +605,97 @@ class AppModeTests(DownloadTestCase):
         self.assertEqual(self.cache_files(), ["notes.txt"])
 
 
+class RemoteModeTests(DownloadTestCase):
+    """DownloadMode.REMOTE: everything goes to the program on the NAS or other computer."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+
+    async def test_the_torrent_file_is_sent_to_each_kind(self) -> None:
+        self.serve(DIRECT_URL, TORRENT)
+        for kind in RemoteKind:
+            with self.subTest(kind=kind):
+                client = await self.set_up_remote(kind)
+                item = release(download_url=DIRECT_URL, info_hash=kind_hash(kind))
+                result = await self.service.grab(item, EPISODE)
+                self.assertIs(result.outcome, GrabOutcome.SENT)
+                self.assertEqual(result.message, f"Sent to {kind.program}")
+                self.assertIsNone(result.path)
+                self.assertEqual(
+                    client.torrents, [(TORRENT, "Some.Show.S01E02.1080p.WEB.h264-GRP.torrent")]
+                )
+                self.assertEqual(client.magnets, [])
+        records = await self.history()
+        self.assertEqual({r.saved_path for r in records}, {k.program for k in RemoteKind})
+        self.assertEqual(self.watch_files(), [])
+        self.assertEqual(self.opened, [])
+        self.assertFalse(self.cache.exists())
+        self.assertEqual(self.notifications, 3)
+
+    async def test_itorrents_copy_is_sent(self) -> None:
+        client = await self.set_up_remote(RemoteKind.TRANSMISSION)
+        self.serve(ITORRENTS, CACHED)
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual([content for content, _ in client.torrents], [CACHED])
+
+    async def test_magnet_only_release_sends_its_own_magnet(self) -> None:
+        client = await self.set_up_remote(RemoteKind.QBITTORRENT)
+        magnet = f"magnet:?xt=urn:btih:{HASH}&dn=Original&tr=udp://tracker"
+        result = await self.service.grab(release(info_hash=None, magnet_uri=magnet), EPISODE)
+        self.assertEqual(result.message, "Sent to qBittorrent")
+        self.assertEqual(client.magnets, [magnet])
+        self.assertEqual(self.web.requests[ITORRENTS], 1)  # a .torrent is still preferred
+
+    async def test_prowlarr_redirect_to_a_magnet_is_sent(self) -> None:
+        client = await self.set_up_remote(RemoteKind.QBITTORRENT)
+        magnet = f"magnet:?xt=urn:btih:{OTHER_HASH}&dn=Redirected"
+        self.web.routes[DIRECT_URL] = lambda: httpx.Response(302, headers={"Location": magnet})
+        await self.service.grab(release(info_hash=None, download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(client.magnets, [magnet])
+        self.assertEqual((await self.history())[0].info_hash, OTHER_HASH)
+
+    async def test_hash_only_release_sends_a_built_magnet(self) -> None:
+        client = await self.set_up_remote()
+        await self.service.grab(release(title="Show & Tell"), EPISODE)
+        self.assertEqual(client.magnets, [f"magnet:?xt=urn:btih:{HASH}&dn=Show%20%26%20Tell"])
+
+    async def test_not_set_up_fails_before_any_request(self) -> None:
+        await self.settings.update(remote_url="http://192.168.1.20:5000")  # no DSM account
+        self.serve(DIRECT_URL, TORRENT)
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(
+            str(caught.exception),
+            "Download Station isn't set up yet: enter its address, user name and password in "
+            "Settings.",
+        )
+        self.assertEqual(sum(self.web.requests.values()), 0)
+        self.assertEqual(await self.history(), [])
+        await self.settings.update(remote_kind=RemoteKind.QBITTORRENT, remote_url="")
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(), EPISODE)
+        self.assertEqual(
+            str(caught.exception), "qBittorrent isn't set up yet: enter its address in Settings."
+        )
+
+    async def test_remote_errors_propagate_and_record_nothing(self) -> None:
+        client = await self.set_up_remote(RemoteKind.TRANSMISSION)
+        client.error = RemoteError("Transmission: wrong user name or password.")
+        self.serve(ITORRENTS, CACHED)
+        with self.assertRaises(RemoteError):
+            await self.service.grab(release(), EPISODE)
+        self.assertEqual(await self.history(), [])
+        self.assertEqual(self.notifications, 0)
+
+    async def test_nothing_at_all_to_send(self) -> None:
+        await self.set_up_remote()
+        self.serve(DIRECT_URL, b"<html></html>")
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(info_hash=None, download_url=DIRECT_URL), EPISODE)
+        self.assertIn("No .torrent file or magnet link", str(caught.exception))
+
+
 class FolderModeTests(DownloadTestCase):
     async def test_folder_is_the_default_and_never_opens_anything(self) -> None:
         self.assertIs(Settings().download_mode, DownloadMode.FOLDER)
@@ -534,10 +715,12 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         services = await Services.create(AppPaths(Path(tmp.name)))
         try:
             self.assertIsInstance(services.downloads, DownloadService)
-            self.assertIsInstance(services.station, DownloadStationClient)
-            self.assertIs(services.downloads._station, services.station)
+            self.assertIsInstance(services.remote, RemoteDownloads)
+            self.assertIs(services.downloads._remote, services.remote)
+            self.assertIs(services.station, services.remote)  # main_window.py's older name
             self.assertIs(services.downloads._http, services._http)
-            self.assertFalse(services.station.configured)
+            self.assertFalse(services.remote.configured)
+            self.assertIs(services.remote.kind, RemoteKind.SYNOLOGY)
             self.assertEqual(services.downloads._torrent_cache, Path(tmp.name) / "torrents")
             self.assertIsInstance(services.torrent_app, TorrentAppService)
         finally:

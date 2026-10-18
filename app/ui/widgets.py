@@ -121,7 +121,8 @@ class FlexGrid(ctk.CTkFrame):
 
 
 class PosterImage(ctk.CTkFrame):
-    """A fixed-size poster slot: a placeholder until `show()` has loaded the image."""
+    """A fixed-size poster slot: a placeholder until `show()` has loaded the image.
+    `set_on_click` makes it clickable."""
 
     def __init__(self, master: Any, *, width: int = 68, height: int = 100, **kwargs: Any) -> None:
         kwargs.setdefault("fg_color", theme.PLACEHOLDER)
@@ -132,12 +133,28 @@ class PosterImage(ctk.CTkFrame):
         self._size = (width, height)
         self._image: ctk.CTkImage | None = None
         self._load: asyncio.Task[None] | None = None
+        self._on_click: Callable[[], object] | None = None
+        self.bind("<Button-1>", self._clicked, add="+")
         self._label = self._new_label()
 
     def _new_label(self) -> ctk.CTkLabel:
-        label = ctk.CTkLabel(self, text="")
+        label = ctk.CTkLabel(self, text="", cursor=self._cursor())
         label.place(relx=0.5, rely=0.5, anchor="center")
+        label.bind("<Button-1>", self._clicked, add="+")
         return label
+
+    def set_on_click(self, command: Callable[[], object] | None) -> None:
+        """What a click on the poster does (None: nothing); a hand cursor shows while it does."""
+        self._on_click = command
+        self.configure(cursor=self._cursor())
+        self._label.configure(cursor=self._cursor())
+
+    def _cursor(self) -> str:
+        return "hand2" if self._on_click is not None else ""
+
+    def _clicked(self, _event: Any) -> None:
+        if self._on_click is not None:
+            self._on_click()
 
     def show(self, images: ImageCache, url: str | None) -> None:
         """Load `url` (None: keep the placeholder), replacing any load still in flight."""

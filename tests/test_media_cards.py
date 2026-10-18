@@ -1,20 +1,18 @@
-"""What the Movies and Discover cards say: meta and details lines, button states, IMDb links."""
+"""The Movies and Discover cards: ratings, poster sizes, button states, IMDb links."""
 
 from __future__ import annotations
 
 import unittest
 from datetime import date
 
-from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
+from app.models import Movie, MovieDetails, TVDetails
 from app.ui.media_cards import (
     format_runtime,
     imdb_search_url,
     movie_action,
-    movie_details_line,
-    movie_meta,
-    show_details_line,
     show_imdb_url,
-    show_meta,
+    tmdb_poster_size,
+    tmdb_rating,
 )
 
 TODAY = date(2026, 10, 12)
@@ -38,41 +36,6 @@ class FormatRuntimeTests(unittest.TestCase):
 
     def test_under_an_hour(self) -> None:
         self.assertEqual(format_runtime(45), "45m")
-
-
-class MovieMetaTests(unittest.TestCase):
-    def test_release_date_and_rating_from_the_list(self) -> None:
-        film = movie(release_date="2026-03-01", vote_average=8.24, vote_count=900)
-        self.assertEqual(movie_meta(film, None), "01 Mar 2026 | ★ 8.2")
-
-    def test_digital_release_wins_once_known(self) -> None:
-        film = movie(release_date="2026-03-01", vote_average=8.0, vote_count=10)
-        self.assertEqual(
-            movie_meta(film, details(digital_release="2026-04-16")), "16 Apr 2026 | ★ 8.0"
-        )
-        # Details without a digital date keep the release date.
-        self.assertEqual(movie_meta(film, details(runtime=120)), "01 Mar 2026 | ★ 8.0")
-
-    def test_no_date(self) -> None:
-        self.assertEqual(movie_meta(movie(vote_average=6.5, vote_count=3), None), "TBA | ★ 6.5")
-
-    def test_no_votes(self) -> None:
-        film = movie(release_date="2026-03-01", vote_average=0.0, vote_count=0)
-        self.assertEqual(movie_meta(film, None), "01 Mar 2026 | ★ N/A")
-
-
-class MovieDetailsLineTests(unittest.TestCase):
-    def test_both_parts(self) -> None:
-        line = movie_details_line(details(certification="PG-13", runtime=145))
-        self.assertEqual(line, "Rated PG-13 · 2h 25m")
-
-    def test_one_part(self) -> None:
-        self.assertEqual(movie_details_line(details(certification="R")), "Rated R")
-        self.assertEqual(movie_details_line(details(runtime=95)), "1h 35m")
-
-    def test_nothing_known(self) -> None:
-        self.assertEqual(movie_details_line(details()), "")
-        self.assertEqual(movie_details_line(None), "")
 
 
 class MovieActionTests(unittest.TestCase):
@@ -116,34 +79,34 @@ class ImdbSearchUrlTests(unittest.TestCase):
         )
 
 
-def show(**fields: object) -> DiscoverShow:
-    return DiscoverShow.model_validate({"id": 7, "name": "Severance", **fields})
-
-
-class ShowTextTests(unittest.TestCase):
-    def test_meta(self) -> None:
-        self.assertEqual(
-            show_meta(show(first_air_date="2022-02-17", vote_average=8.36, vote_count=2000)),
-            "2022 | ★ 8.4",
-        )
-        self.assertEqual(show_meta(show()), "TBA | ★ N/A")
-
-    def test_details_line(self) -> None:
-        line = show_details_line(
-            TVDetails(id=7, status="Returning Series", number_of_seasons=2)
-        )
-        self.assertEqual(line, "Returning Series • 2 Seasons")
-        self.assertEqual(show_details_line(TVDetails(id=7, number_of_seasons=1)), "1 Season")
-        self.assertEqual(show_details_line(TVDetails(id=7, status="Ended")), "Ended")
-        self.assertEqual(show_details_line(TVDetails(id=7, number_of_seasons=0)), "")
-        self.assertEqual(show_details_line(None), "")
-
+class ShowImdbUrlTests(unittest.TestCase):
     def test_imdb_url(self) -> None:
         self.assertEqual(
             show_imdb_url(TVDetails(id=7, imdb_id="tt11280740")),
             "https://www.imdb.com/title/tt11280740/",
         )
         self.assertIsNone(show_imdb_url(TVDetails(id=7)))
+
+
+class TmdbRatingTests(unittest.TestCase):
+    def test_average_with_votes(self) -> None:
+        self.assertEqual(tmdb_rating(7.84, 1200), 7.84)
+
+    def test_unknown_without_votes(self) -> None:
+        self.assertIsNone(tmdb_rating(0.0, 0))
+        self.assertIsNone(tmdb_rating(6.0, 0))
+
+
+class TmdbPosterSizeTests(unittest.TestCase):
+    def test_smallest_size_at_least_as_wide(self) -> None:
+        self.assertEqual(tmdb_poster_size(185), "w185")
+        self.assertEqual(tmdb_poster_size(186), "w342")
+        self.assertEqual(tmdb_poster_size(288), "w342")  # a poster card at 150 %
+        self.assertEqual(tmdb_poster_size(384), "w500")  # ... at 200 %
+        self.assertEqual(tmdb_poster_size(50), "w92")
+
+    def test_original_beyond_the_largest(self) -> None:
+        self.assertEqual(tmdb_poster_size(781), "original")
 
 
 if __name__ == "__main__":

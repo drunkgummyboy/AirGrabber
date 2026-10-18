@@ -53,6 +53,12 @@ class TVMazeClient:
 
     async def search_shows(self, query: str, *, limit: int = 10) -> list[Show]:
         """Shows matching `query`, best match first (TVMaze returns at most 10)."""
+        return [show for show, _ in await self.search_shows_with_country(query, limit=limit)]
+
+    async def search_shows_with_country(
+        self, query: str, *, limit: int = 10
+    ) -> list[tuple[Show, str | None]]:
+        """Like `search_shows`, each show paired with its network's country code (or None)."""
         query = query.strip()
         if not query or limit <= 0:
             return []
@@ -226,8 +232,9 @@ def _show_with_episodes(raw: object) -> tuple[Show, list[Episode]]:
     return wire.to_show(), wire.to_episodes()
 
 
-def _search_hit(raw: object) -> Show:
-    return TVMazeSearchResult.model_validate(raw).show.to_show()
+def _search_hit(raw: object) -> tuple[Show, str | None]:
+    wire = TVMazeSearchResult.model_validate(raw).show
+    return wire.to_show(), wire.country
 
 
 def _schedule_entry(raw: object) -> tuple[Show, Episode]:

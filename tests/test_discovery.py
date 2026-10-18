@@ -743,6 +743,29 @@ class TrackTests(DiscoveryTestCase):
         self.assertEqual(self.server.count(*TV_PATHS), 3)  # flags changed on cached lists
 
 
+class ResolveTests(DiscoveryTestCase):
+    """DiscoveryService.resolve: the TVMaze show a Discover card opens, without tracking it."""
+
+    async def test_resolves_without_tracking(self) -> None:
+        show = await self.service.resolve(LINK_CLICK)
+        self.assertEqual((show.id, show.name), (LINK_CLICK_TVMAZE, "LINK CLICK"))
+        self.assertEqual(await self.tracked_ids(), [])
+        self.assertEqual(self.server.count("/lookup/shows"), 1)  # by IMDb id, as track() does
+
+    async def test_no_match_raises(self) -> None:
+        self.server.lookups.clear()
+        with self.assertRaises(NoTVMazeMatch):
+            await self.service.resolve(LINK_CLICK)
+
+    async def test_resolved_show_tracked_by_its_tvmaze_id_is_flagged(self) -> None:
+        # Tracked from the details window: through the library, under another name.
+        self.server.shows[LINK_CLICK_TVMAZE]["name"] = "Shiguang Dailiren"
+        show = await self.service.resolve(LINK_CLICK)
+        await self.library.track(show.id)
+        trending = (await self.service.tv_dashboard()).trending
+        self.assertTrue(next(e.is_tracked for e in trending if e.show.id == LINK_CLICK_TMDB))
+
+
 class ServicesWiringTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)

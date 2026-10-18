@@ -467,6 +467,21 @@ def _partition(
     return tuple(shown), tuple(hidden)
 
 
+def episode_request(show: Show, season: int, episode: int) -> SearchRequest:
+    """The search for one episode (also used without the UI, by the automatic downloads)."""
+    return SearchRequest(
+        kind=SearchKind.EPISODE,
+        title=show.name,
+        year=show.year,
+        season=season,
+        episode=episode,
+        imdb_id=show.imdb_id,
+        queries=build_queries(
+            SearchKind.EPISODE, show.name, year=show.year, season=season, episode=episode
+        ),
+    )
+
+
 _Outcome = tuple[IndexerStatus, list[TorrentRelease]]
 
 
@@ -485,17 +500,7 @@ class TorrentSearchService:
     # Request builders: what the UI searches for.
 
     def episode_request(self, show: Show, season: int, episode: int) -> SearchRequest:
-        return SearchRequest(
-            kind=SearchKind.EPISODE,
-            title=show.name,
-            year=show.year,
-            season=season,
-            episode=episode,
-            imdb_id=show.imdb_id,
-            queries=build_queries(
-                SearchKind.EPISODE, show.name, year=show.year, season=season, episode=episode
-            ),
-        )
+        return episode_request(show, season, episode)
 
     def season_request(self, show: Show, season: int) -> SearchRequest:
         return SearchRequest(

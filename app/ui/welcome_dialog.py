@@ -1,7 +1,10 @@
-"""First-run welcome: what AirGrabber does, how downloads should open, and the TMDB key.
+"""First-run welcome: what AirGrabber does, importing shows from airdates.tv, how downloads
+should open, and the TMDB key.
 
 MainWindow opens it on the first start of a new library (see `first_run_action`). Choices are
-saved as they are made: step 2's Next stores how to download; Finish, Skip for now and closing
+saved as they are made: an airdates.tv import tracks its shows at once; step 3's Next stores
+how to download (with the NAS / other computer form when that is the choice; its Test
+connection saves the form first); Finish, Skip for now and closing
 the window all mark the setup as done (with the TMDB key, when one checked OK). Finish checks a
 pasted key nobody checked yet, and stays on the step when TMDB doesn't accept it.
 """
@@ -11,18 +14,25 @@ from __future__ import annotations
 import asyncio
 import math
 import tkinter as tk
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from enum import Enum
 from pathlib import Path
 from tkinter import filedialog
 from typing import Any
 
 import customtkinter as ctk
+from pydantic import ValidationError
 
 from app import APP_NAME
 from app.models import DownloadMode, Settings
-from app.services import DiscoveryService, SettingsService, TorrentAppService
+from app.services import DiscoveryService, RemoteDownloads, SettingsService, TorrentAppService
 from app.ui import theme
+from app.ui.airdates_import import (
+    SIZING_PREVIEW,
+    AirdatesImportPanel,
+    PreviewFinder,
+    ShowImporter,
+)
 from app.ui.branding import load_logo, set_window_icon
 from app.ui.dialog_kit import (
     BLOCK_GAP,
@@ -42,12 +52,16 @@ from app.ui.dialog_kit import (
     secondary_button,
     text_label,
 )
+from app.ui.remote_program_form import RemoteProgramForm, describe_error, result_look
 from app.ui.tasks import spawn
 from app.ui.text_fit import ELLIPSIS, SLACK, Measure, elide_to_width
 from app.ui.tmdb_key_guide import TMDB_HEADING, TMDB_INTRO, KeyAction, TmdbKeyGuide
 from app.ui.torrent_app_status import TorrentAppStatus, TorrentStatus
 
-STEP_COUNT = 3
+STEP_COUNT = 4
+AIRDATES_HEADING = "Already follow shows on airdates.tv?"
+AIRDATES_INTRO = "Bring your list over, so your calendar is ready right away."
+AIRDATES_IMPORT_HEADING = "Import from airdates.tv"
 WELCOME_TEXT = (
     "Follow your favourite shows, see what's on each day, and download episodes and movies "
     "with one click."
@@ -62,6 +76,9 @@ _DOT_GAP = 14
 _CARD_TEXT_WIDTH = CONTENT_WIDTH - 2 * _CARD_PAD_X - _DOT_SIZE - _DOT_GAP
 _FOLDER_BUTTON_WIDTH = 150
 _FOLDER_TEXT_WIDTH = _CARD_TEXT_WIDTH - _FOLDER_BUTTON_WIDTH - 16
+_REMOTE_LABEL_WIDTH = 150
+REMOTE_TITLE = "Send to a torrent program on my NAS or another computer"
+REMOTE_NOTE = "For a NAS or home server (Synology, qBittorrent, Transmission)"
 
 
 # -- decisions (pure, tested) --------------------------------------------------------------------
@@ -79,26 +96,89 @@ def first_run_action(setup_done: bool, tracked_shows: int) -> FirstRun:
     return FirstRun.MARK_DONE if tracked_shows > 0 else FirstRun.WELCOME
 
 
+class Page(Enum):
+    """The welcome's pages; AIRDATES_IMPORT is still step 2 (after "Yes" on AIRDATES)."""
+
+    WELCOME = "welcome"
+    AIRDATES = "airdates"  # already follow shows on airdates.tv? yes / no
+    AIRDATES_IMPORT = "airdates_import"  # the import panel
+    DOWNLOAD = "download"
+    TMDB = "tmdb"
+
+
+_STEPS = {
+    Page.WELCOME: 1,
+    Page.AIRDATES: 2,
+    Page.AIRDATES_IMPORT: 2,
+    Page.DOWNLOAD: 3,
+    Page.TMDB: 4,
+}
+
+
+def page_step(page: Page) -> int:
+    return _STEPS[page]
+
+
 def step_label(step: int) -> str | None:
-    """'Step 2 of 3' at the top right of steps 2 and 3; the welcome itself has none."""
+    """'Step 2 of 4' at the top right of steps 2 to 4; the welcome itself has none."""
     return f"Step {step} of {STEP_COUNT}" if step >= 2 else None
 
 
-def nav_buttons(step: int) -> tuple[str | None, str | None]:
-    """(left, right) texts of the bottom row; the welcome step has its button in the content."""
-    if step == 2:
+def nav_buttons(page: Page, *, imported: bool = False) -> tuple[str | None, str | None]:
+    """(left, right) texts of the bottom row; the welcome step has its button in the content.
+    The import panel's right button is "Skip" until an import is done."""
+    if page is Page.AIRDATES_IMPORT:
+        return "Back", "Next" if imported else "Skip"
+    if page in (Page.AIRDATES, Page.DOWNLOAD):
         return "Back", "Next"
-    if step == 3:
+    if page is Page.TMDB:
         return "Skip for now", "Finish"
     return None, None
 
 
-def download_changes(current: Settings, mode: DownloadMode, folder: Path) -> dict[str, Any]:
-    """What step 2's Next saves: the mode, and the folder when it was changed."""
+def next_page(page: Page, *, import_shows: bool) -> Page:
+    """Where the right button (or "Get started") leads; `import_shows` = "Yes" on AIRDATES."""
+    if page is Page.WELCOME:
+        return Page.AIRDATES
+    if page is Page.AIRDATES:
+        return Page.AIRDATES_IMPORT if import_shows else Page.DOWNLOAD
+    if page is Page.AIRDATES_IMPORT:
+        return Page.DOWNLOAD
+    return Page.TMDB
+
+
+def previous_page(page: Page, *, import_shows: bool) -> Page:
+    """Where Back leads (TMDB's left button is Skip for now, not Back)."""
+    if page is Page.DOWNLOAD:
+        return Page.AIRDATES_IMPORT if import_shows else Page.AIRDATES
+    if page is Page.AIRDATES_IMPORT:
+        return Page.AIRDATES
+    return Page.WELCOME
+
+
+def download_changes(
+    current: Settings,
+    mode: DownloadMode,
+    folder: Path,
+    remote: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """What step 3's Next saves: the mode, the folder when it was changed, and the NAS / other
+    computer form (`remote`, its `remote_*` settings) when that is the choice."""
     changes: dict[str, Any] = {"download_mode": mode}
     if folder != current.download_dir:
         changes["download_dir"] = folder
+    if mode is DownloadMode.REMOTE and remote is not None:
+        changes.update(remote)
     return changes
+
+
+def changes_error(current: Settings, changes: Mapping[str, Any]) -> str | None:
+    """Why `changes` wouldn't save (e.g. "Address: Use a full address like …"), else None."""
+    try:
+        Settings.model_validate({**current.model_dump(), **changes})
+    except ValidationError as exc:
+        return describe_error(exc)
+    return None
 
 
 def elide_path(path: str, max_width: float, measure: Measure) -> str:
@@ -128,6 +208,10 @@ def finish_changes(checked_key: str | None) -> dict[str, Any]:
     return changes
 
 
+def _page_heading(page: ctk.CTkFrame, title: str, which: Page) -> None:
+    heading_row(page, title, step_label(page_step(which))).pack(fill="x")
+
+
 # -- widgets -------------------------------------------------------------------------------------
 
 
@@ -137,7 +221,7 @@ class _OptionCard(ctk.CTkFrame):
     The whole card is clickable; call `bind_select()` once everything inside it exists.
     """
 
-    def __init__(self, master: Any, title: str, description: str) -> None:
+    def __init__(self, master: Any, title: str, description: str | None = None) -> None:
         super().__init__(master, corner_radius=10, cursor="hand2")
         inner = ctk.CTkFrame(self, fg_color="transparent")
         inner.pack(fill="x", padx=_CARD_PAD_X, pady=_CARD_PAD_Y)
@@ -157,9 +241,14 @@ class _OptionCard(ctk.CTkFrame):
             text_color=theme.TEXT,
             anchor="w",
         ).grid(row=0, column=1, sticky="w")
-        text_label(
-            inner, description, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=_CARD_TEXT_WIDTH
-        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+        if description is not None:
+            text_label(
+                inner,
+                description,
+                size=DETAIL_SIZE,
+                color=theme.TEXT_MUTED,
+                wraplength=_CARD_TEXT_WIDTH,
+            ).grid(row=1, column=1, sticky="w", pady=(4, 0))
         self.extra = ctk.CTkFrame(inner, fg_color="transparent")
         self.set_selected(False)
 
@@ -189,8 +278,9 @@ class _OptionCard(ctk.CTkFrame):
 
 
 class WelcomeDialog(ctk.CTkToplevel):
-    """Three steps: welcome; open downloads in the torrent program or save them to a folder;
-    the TMDB key. Modal over the main window."""
+    """Four steps: welcome; import the shows followed on airdates.tv (a yes / no question, then
+    the import panel); open downloads in the torrent program or save them to a folder; the TMDB
+    key. Modal over the main window."""
 
     def __init__(
         self,
@@ -199,13 +289,19 @@ class WelcomeDialog(ctk.CTkToplevel):
         settings: SettingsService,
         torrent_app: TorrentAppService,
         discovery: DiscoveryService,
+        airdates: PreviewFinder,
+        library: ShowImporter,
+        remote: RemoteDownloads | None = None,  # None: one reading `settings` (main_window.py)
     ) -> None:
         super().__init__(master, fg_color=theme.BG)
         self._settings = settings
         self._torrent_app = torrent_app
+        self._remote = remote if remote is not None else RemoteDownloads(settings)
         self._tasks: set[asyncio.Task[Any]] = set()
         self._logo_image: ctk.CTkImage | None = None
-        self._step = 1
+        self._page = Page.WELCOME
+        self._import_shows = True  # step 2's suggestion
+        self._imported = False  # an airdates.tv import finished
         self._mode = DownloadMode.APP  # the welcome's suggestion, whatever is stored
         self._folder = settings.current.download_dir
 
@@ -225,9 +321,11 @@ class WelcomeDialog(ctk.CTkToplevel):
             row=0, column=0, sticky="n"
         )
         self._pages = {
-            1: self._build_welcome(body),
-            2: self._build_download(body),
-            3: self._build_tmdb(body, discovery),
+            Page.WELCOME: self._build_welcome(body),
+            Page.AIRDATES: self._build_airdates(body),
+            Page.AIRDATES_IMPORT: self._build_airdates_import(body, airdates, library),
+            Page.DOWNLOAD: self._build_download(body),
+            Page.TMDB: self._build_tmdb(body, discovery),
         }
         for page in self._pages.values():
             page.grid(row=0, column=0, sticky="nsew")
@@ -238,7 +336,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._left = secondary_button(nav, "", self._on_left)
         self._right = primary_button(nav, "", self._on_right)
 
-        self._show_step(1)
+        self._show_page(Page.WELCOME)
         self._keep_tallest_size()
         place_over(self, master)
         activate_later(self)
@@ -266,24 +364,61 @@ class WelcomeDialog(ctk.CTkToplevel):
             justify="center",
             wraplength=480,
         ).pack(pady=(12, 0))
-        primary_button(inner, "Get started", lambda: self._show_step(2), width=180).pack(
-            pady=(NAV_GAP, 0)
+        primary_button(
+            inner, "Get started", lambda: self._show_page(Page.AIRDATES), width=180
+        ).pack(pady=(NAV_GAP, 0))
+        return page
+
+    def _build_airdates(self, master: Any) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(master, fg_color="transparent")
+        _page_heading(page, AIRDATES_HEADING, Page.AIRDATES)
+        text_label(page, AIRDATES_INTRO, size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
+            anchor="w", pady=(LINE_GAP, 0)
         )
+        self._yes_card = _OptionCard(page, "Yes, import my shows")
+        self._yes_card.pack(fill="x", pady=(BLOCK_GAP, 0))
+        self._yes_card.bind_select(lambda: self._select_import(True))
+        self._no_card = _OptionCard(page, "No, I'll add shows myself")
+        self._no_card.pack(fill="x", pady=(_CARD_GAP, 0))
+        self._no_card.bind_select(lambda: self._select_import(False))
+        self._select_import(self._import_shows)
+        return page
+
+    def _build_airdates_import(
+        self, master: Any, airdates: PreviewFinder, library: ShowImporter
+    ) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(master, fg_color="transparent")
+        _page_heading(page, AIRDATES_IMPORT_HEADING, Page.AIRDATES_IMPORT)
+        self._airdates_panel = AirdatesImportPanel(
+            page, airdates=airdates, library=library, on_done=self._on_imported
+        )
+        self._airdates_panel.pack(fill="x", pady=(BLOCK_GAP, 0))
         return page
 
     def _build_download(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        heading_row(page, "How do you want to download?", step_label(2)).pack(fill="x")
+        _page_heading(page, "How do you want to download?", Page.DOWNLOAD)
         text_label(
             page, "You can change this later in Settings.", size=DETAIL_SIZE, color=theme.TEXT_MUTED
         ).pack(anchor="w", pady=(LINE_GAP, 0))
 
-        self._app_card = _OptionCard(
+        # The cards scroll when the NAS / other computer form makes them taller than the step.
+        self._download_cards = ctk.CTkScrollableFrame(
             page,
+            width=CONTENT_WIDTH,
+            fg_color="transparent",
+            scrollbar_button_color=theme.SURFACE,
+            scrollbar_button_hover_color=theme.EDGE,
+        )
+        self._download_cards.pack(fill="both", expand=True, pady=(BLOCK_GAP, 0))
+        cards = self._download_cards
+
+        self._app_card = _OptionCard(
+            cards,
             "Open in my torrent program",
             "Each download opens in your torrent program by itself. Best for most people.",
         )
-        self._app_card.pack(fill="x", pady=(BLOCK_GAP, 0))
+        self._app_card.pack(fill="x")
         self._torrent = TorrentAppStatus(
             self._app_card.extra, torrent_app=self._torrent_app, wraplength=_CARD_TEXT_WIDTH
         )
@@ -291,8 +426,20 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._app_card.show_extra(True)
         self._app_card.bind_select(lambda: self._select_mode(DownloadMode.APP))
 
+        self._remote_card = _OptionCard(cards, REMOTE_TITLE, REMOTE_NOTE)
+        self._remote_card.pack(fill="x", pady=(_CARD_GAP, 0))
+        self._remote_form = RemoteProgramForm(
+            self._remote_card.extra,
+            settings=self._settings.current,
+            run_test=self._test_remote,
+            label_width=_REMOTE_LABEL_WIDTH,
+            field_width=_CARD_TEXT_WIDTH - _REMOTE_LABEL_WIDTH,
+        )
+        self._remote_form.pack(fill="x")
+        self._remote_card.bind_select(lambda: self._select_mode(DownloadMode.REMOTE))
+
         self._folder_card = _OptionCard(
-            page, "Save to a folder", "For a watch folder, for example on a NAS."
+            cards, "Save to a folder", "For a watch folder, for example on a NAS."
         )
         self._folder_card.pack(fill="x", pady=(_CARD_GAP, 0))
         folder_row = self._folder_card.extra
@@ -310,7 +457,7 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_tmdb(self, master: Any, discovery: DiscoveryService) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        heading_row(page, TMDB_HEADING, step_label(3)).pack(fill="x")
+        _page_heading(page, TMDB_HEADING, Page.TMDB)
         text_label(
             page,
             f"{TMDB_INTRO} You can skip this and do it later.",
@@ -322,53 +469,84 @@ class WelcomeDialog(ctk.CTkToplevel):
         return page
 
     def _keep_tallest_size(self) -> None:
-        """Fix the dialog at its tallest (step 2 with both the install button and the folder
-        row), so it doesn't change size between steps or while step 2 changes."""
+        """Fix the dialog at its tallest (the downloads step with the install button and the
+        folder row, or the airdates.tv review with every kind of line), so it doesn't change size
+        between steps or while a step changes. The download cards' area takes the height of the
+        cards with the NAS / other computer form folded; with the form open they scroll."""
         self._torrent.show(TorrentStatus.MISSING)
+        self._remote_card.show_extra(False)
         self._folder_card.show_extra(True)
+        self._airdates_panel.show_review(SIZING_PREVIEW)
         self.update_idletasks()
         scaling = ctk.ScalingTracker.get_window_scaling(self)
+        cards = math.ceil(self._download_cards.winfo_reqheight() / scaling)
+        self._download_cards.configure(height=cards)
+        self.update_idletasks()
         width = math.ceil(self.winfo_reqwidth() / scaling)
         height = math.ceil(self.winfo_reqheight() / scaling)
         self._torrent.show(TorrentStatus.LOOKING)
         self._select_mode(self._mode)
+        self._airdates_panel.show_paste()
         self.geometry(f"{width}x{height}")  # CTk scales the size (not the position)
 
-    def _show_step(self, step: int) -> None:
-        self._step = step
-        self._pages[step].tkraise()
-        left, right = nav_buttons(step)
+    def _show_page(self, page: Page) -> None:
+        self._page = page
+        self._pages[page].tkraise()
+        left, right = nav_buttons(page, imported=self._imported)
         for button, text, side in ((self._left, left, "left"), (self._right, right, "right")):
             if text is None:
                 button.pack_forget()
             else:
                 button.configure(text=text, state="normal")
                 button.pack(side=side)
-        if step == 2:
+        if page is Page.DOWNLOAD:
             self._torrent.refresh()  # again each time: a program may have been installed
+        elif page is Page.AIRDATES_IMPORT:
+            self._airdates_panel.focus_paste()
 
     def _on_left(self) -> None:
-        if self._step == 2:
-            self._show_step(1)
-        elif self._step == 3:
+        if self._page is Page.TMDB:
             self._finish(None)  # Skip for now
+        else:
+            self._show_page(previous_page(self._page, import_shows=self._import_shows))
 
     def _on_right(self) -> None:
-        if self._step == 2:
+        if self._page is Page.DOWNLOAD:
             self._spawn(self._save_download_choice(), "welcome-download-choice")
-        elif self._step == 3:
+        elif self._page in (Page.AIRDATES, Page.AIRDATES_IMPORT):
+            self._show_page(next_page(self._page, import_shows=self._import_shows))
+        elif self._page is Page.TMDB:
             if self._guide.key_action() is KeyAction.CHECK:
                 self._spawn(self._check_then_finish(), "welcome-finish")
             else:
                 self._finish(self._guide.checked_key)
 
-    # -- step 2: how to download -----------------------------------------------------------------
+    # -- step 2: shows from airdates.tv -----------------------------------------------------------
+
+    def _select_import(self, import_shows: bool) -> None:
+        self._import_shows = import_shows
+        self._yes_card.set_selected(import_shows)
+        self._no_card.set_selected(not import_shows)
+
+    def _on_imported(self, _count: int) -> None:
+        self._imported = True
+        if self._page is Page.AIRDATES_IMPORT:
+            self._show_page(Page.AIRDATES_IMPORT)  # Skip becomes Next
+
+    # -- step 3: how to download -----------------------------------------------------------------
 
     def _select_mode(self, mode: DownloadMode) -> None:
         self._mode = mode
         self._app_card.set_selected(mode is DownloadMode.APP)
+        self._remote_card.set_selected(mode is DownloadMode.REMOTE)
+        self._remote_card.show_extra(mode is DownloadMode.REMOTE)
         self._folder_card.set_selected(mode is DownloadMode.FOLDER)
         self._folder_card.show_extra(mode is DownloadMode.FOLDER)
+
+    async def _test_remote(self) -> str:
+        """The form's Test connection: save its settings, then test the program."""
+        await self._settings.update(**self._remote_form.changes())
+        return await self._remote.test()
 
     def _choose_folder(self) -> None:
         # Native modal dialog: the event loop (and background tasks) pause until it closes.
@@ -383,15 +561,20 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._folder_label.configure(text=text)
 
     async def _save_download_choice(self) -> None:
+        current = self._settings.current
+        changes = download_changes(current, self._mode, self._folder, self._remote_form.changes())
+        if (error := changes_error(current, changes)) is not None:
+            self._remote_form.show_result(result_look(error=error))  # e.g. a bad address
+            return
         self._set_nav_state("disabled")
-        saved = self._save(download_changes(self._settings.current, self._mode, self._folder))
+        saved = self._save(changes)
         await asyncio.wait([saved])  # not `await saved`: cancelling this must not cancel the save
         if not self.winfo_exists():
             return
         self._set_nav_state("normal")
         if saved.cancelled() or saved.exception() is not None:
             return  # logged and reported by the task runner
-        self._show_step(3)
+        self._show_page(Page.TMDB)
 
     # -- finishing -------------------------------------------------------------------------------
 
@@ -416,7 +599,7 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _save(self, changes: dict[str, Any]) -> asyncio.Task[Settings]:
         """Save `changes`; not cancelled with the dialog. SettingsService applies updates one at
-        a time, in order, so step 2's save and Finish's can't undo each other."""
+        a time, in order, so step 3's save and Finish's can't undo each other."""
         return spawn(self._settings.update(**changes), name="welcome-save")
 
     # -- helpers ---------------------------------------------------------------------------------

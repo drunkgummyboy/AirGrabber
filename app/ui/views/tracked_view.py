@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import tkinter as tk
-from collections.abc import Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Sequence
+from datetime import datetime
 from typing import Any
 
 import customtkinter as ctk
@@ -13,11 +15,14 @@ from app.models import ImportResult, Show
 from app.services import ImageCache, LibraryService
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
-from app.ui.cards import CARD_WIDTH, ShowCard
+from app.ui.airdates_import import PreviewFinder
+from app.ui.cards import CARD_WIDTH, ShowCard, card_info_line
 from app.ui.import_dialog import ImportShowsDialog
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, show_info
+
+log = logging.getLogger(__name__)
 
 _MAX_NAMES = 10
 _EMPTY_HEIGHT = 300
@@ -55,16 +60,24 @@ class TrackedView(BaseView):
         master: Any,
         *,
         library: LibraryService,
+        airdates: PreviewFinder,
         images: ImageCache,
         status: StatusReporter,
+        on_open_show: Callable[[Show], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        """`on_open_show`: what a click on a card's poster or title does (the show details)."""
         super().__init__(master, **kwargs)
         self._library = library
+        self._airdates = airdates
         self._images = images
         self._status = status
+        self._on_open_show = on_open_show
         self._tasks: set[asyncio.Task[None]] = set()
         self._import_dialog: ImportShowsDialog | None = None
+        self._cards: dict[int, ShowCard] = {}
+        # Switch changes in flight: the library change they cause needs no reload of this page.
+        self._own_changes = 0
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -102,13 +115,22 @@ class TrackedView(BaseView):
     # -- loading -----------------------------------------------------------------------------
 
     def _clear_body(self) -> None:
+        self._cards.clear()
         for child in self._body.winfo_children():
             child.destroy()
+
+    def refresh(self) -> None:
+        if self._own_changes:  # this page's own switch: it already shows the change
+            self._stale = False
+            return
+        super().refresh()
 
     async def load(self) -> None:
         self._clear_body()
         LoadingBar(self._body).pack(fill="x")
         entries = await self._library.tracked()
+        activity = await self._library.activity()
+        now = datetime.now().astimezone()
         self._clear_body()
         self._title.configure(text=f"Tracked TV Shows ({len(entries)})")
         if not entries:
@@ -122,8 +144,15 @@ class TrackedView(BaseView):
         grid = FlexGrid(self._body, item_width=CARD_WIDTH, pad_x=8, pad_y=10)
         grid.pack(fill="x", expand=True)
         for entry in entries:
-            ShowCard(
-                grid, entry.show, images=self._images, mode="library", on_remove=self._remove
+            self._cards[entry.show.id] = ShowCard(
+                grid,
+                entry.show,
+                images=self._images,
+                on_remove=self._remove,
+                auto_download=entry.auto_download,
+                info_line=card_info_line(activity.get(entry.show.id), now),
+                on_auto_download=self._toggle_auto,
+                on_open=self._on_open_show,
             )
         grid.relayout()
 
@@ -142,6 +171,26 @@ class TrackedView(BaseView):
 
     def _remove(self, show: Show) -> None:
         self._start(self._untrack(show), "TrackedView.remove")
+
+    def _toggle_auto(self, show: Show, on: bool) -> None:
+        self._own_changes += 1
+        self._start(self._set_auto(show, on), "TrackedView.auto-download")
+
+    async def _set_auto(self, show: Show, on: bool) -> None:
+        try:
+            await self._library.set_auto_download(show.id, on)
+        except Exception:
+            log.exception("Switching automatic downloads for TVMaze show %d failed", show.id)
+            card = self._cards.get(show.id)
+            if card is not None and card.winfo_exists():
+                card.set_auto_download(not on)
+            state = "on" if on else "off"
+            self._report(
+                f"Could not switch automatic downloads {state} for {show.name}",
+                clear_after_ms=8000,
+            )
+        finally:
+            self._own_changes -= 1
 
     async def _untrack(self, show: Show) -> None:
         await self._library.untrack(show.id)
@@ -166,7 +215,9 @@ class TrackedView(BaseView):
             dialog.focus_force()
             return
         if (window := self._window()) is not None:
-            self._import_dialog = ImportShowsDialog(window, on_import=self._on_import)
+            self._import_dialog = ImportShowsDialog(
+                window, on_import=self._on_import, airdates=self._airdates, library=self._library
+            )
 
     def _window(self) -> ctk.CTk | ctk.CTkToplevel | None:
         toplevel = self.winfo_toplevel()

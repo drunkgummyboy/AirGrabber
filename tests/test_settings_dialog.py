@@ -70,12 +70,20 @@ class QualityNameTests(unittest.TestCase):
 class DownloadRowsTests(unittest.TestCase):
     def test_torrent_program_shows_its_status_only(self) -> None:
         self.assertEqual(
-            download_rows(DownloadMode.APP), DownloadRows(torrent_status=True, folder=False)
+            download_rows(DownloadMode.APP),
+            DownloadRows(torrent_status=True, remote_form=False, folder=False),
+        )
+
+    def test_remote_program_shows_its_form_only(self) -> None:
+        self.assertEqual(
+            download_rows(DownloadMode.REMOTE),
+            DownloadRows(torrent_status=False, remote_form=True, folder=False),
         )
 
     def test_folder_shows_the_folder_only(self) -> None:
         self.assertEqual(
-            download_rows(DownloadMode.FOLDER), DownloadRows(torrent_status=False, folder=True)
+            download_rows(DownloadMode.FOLDER),
+            DownloadRows(torrent_status=False, remote_form=False, folder=True),
         )
 
 
@@ -121,6 +129,9 @@ class ValidationErrorTests(unittest.TestCase):
             {"quality": "720"},
             {"first_day": "Someday"},
             {"download_mode": "cloud"},
+            {"remote_url": "nas.local"},  # the NAS / other computer form is on General now
+            {"remote_kind": "utorrent"},
+            {"remote_verify_tls": "maybe"},
         ):
             with self.subTest(fields=fields):
                 self.assertEqual(_first_tab(validation_error(**fields)), TAB_GENERAL)
@@ -128,8 +139,6 @@ class ValidationErrorTests(unittest.TestCase):
     def test_advanced_fields_open_advanced(self) -> None:
         for fields in (
             {"prowlarr_url": "localhost:9696"},
-            {"ds_url": "nas.local"},
-            {"ds_verify_tls": "maybe"},
             {"excluded_keywords": 5},
             {"preferred_groups": 5},
             {"disabled_indexers": 5},
@@ -139,12 +148,14 @@ class ValidationErrorTests(unittest.TestCase):
 
     def test_plain_labels(self) -> None:
         self.assertEqual(
-            _describe(validation_error(download_dir="")), "Save to a folder: Choose a folder"
+            _describe(validation_error(download_dir="")),
+            "Save .torrent files to a folder: Choose a folder",
         )
         self.assertEqual(
-            _describe(validation_error(ds_url="nas.local")),
-            "NAS address: Use a full address like https://nas.local:5001",
+            _describe(validation_error(remote_url="nas.local")),
+            "Address: Use a full address like https://nas.local:5001",
         )
+        self.assertTrue(_describe(validation_error(remote_kind="x")).startswith("Program: "))
         self.assertTrue(
             _describe(validation_error(excluded_keywords=5)).startswith(
                 "Skip releases with these words: "
@@ -153,10 +164,10 @@ class ValidationErrorTests(unittest.TestCase):
         self.assertTrue(_describe(validation_error(quality="x")).startswith("Preferred quality: "))
 
     def test_the_first_error_decides(self) -> None:
-        error = validation_error(ds_url="nas.local", download_dir="")
+        error = validation_error(prowlarr_url="nas.local", download_dir="")
         self.assertEqual(len(error.errors()), 2)
         first = str(error.errors()[0]["loc"][0])
-        expected = TAB_ADVANCED if first == "ds_url" else TAB_GENERAL
+        expected = TAB_ADVANCED if first == "prowlarr_url" else TAB_GENERAL
         self.assertEqual(_first_tab(error), expected)
 
 

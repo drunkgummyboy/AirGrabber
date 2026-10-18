@@ -1,7 +1,9 @@
 """One-click download: search every source, pick the best release by itself, grab it.
 
 UI-independent, so an automatic "download new episodes" job can use it as well as the cards'
-Download buttons.
+Download buttons. Downloads of the same target run one after another, and one whose target is in
+the download history by then is skipped, so two windows (or a window and the automatic job)
+never grab the same thing twice.
 
 Log hygiene: release links may embed an API key, so only the request's show / film and episode
 and the outcome are logged, never a release or a URL.
@@ -12,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass, field
 
 from app.models import (
     GrabTarget,
     IndexerState,
+    MediaType,
     QuickDownloadResult,
     SearchKind,
     SearchRequest,
@@ -31,7 +35,16 @@ log = logging.getLogger(__name__)
 
 Progress = Callable[[str], None]
 
+# (media type, TVMaze show id or TMDB movie id, season, episode)
+_TargetKey = tuple[MediaType, int, int | None, int | None]
+
 SEARCH_TIMEOUT = 30.0  # seconds a one-click download waits for the sources, in all
+
+
+@dataclass(slots=True)
+class _TargetLock:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0  # holding or waiting
 
 
 def request_label(request: SearchRequest) -> str:
@@ -59,6 +72,23 @@ class QuickDownloadService:
         self._downloads = downloads
         self._settings = settings
         self._timeout = timeout
+        self._target_locks: dict[_TargetKey, _TargetLock] = {}
+
+    @contextlib.asynccontextmanager
+    async def _target_lock(self, target: GrabTarget) -> AsyncIterator[None]:
+        """Hold `target`'s lock; the entry is dropped once nobody holds or waits for it."""
+        key = (target.media_type, target.media_id, target.season, target.episode)
+        entry = self._target_locks.get(key)
+        if entry is None:
+            entry = self._target_locks[key] = _TargetLock()
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0:
+                del self._target_locks[key]
 
     async def download(
         self, request: SearchRequest, target: GrabTarget, progress: Progress | None = None
@@ -66,12 +96,25 @@ class QuickDownloadService:
         """Search every source for `request`, pick the best release (`pick_best`) and grab it
         for `target`.
 
+        One download per target at a time: a call for a target already being downloaded waits
+        for that one. A target in the download history by then (or from before) is not searched
+        again: `already_downloaded=True` and nothing is grabbed.
+
         The search runs to completion, but after `timeout` seconds in all the pick is made from
         whatever has arrived. Nothing suitable: `found=False` and nothing is grabbed. Grab
-        failures propagate (GrabError, or DownloadStationError from Download Station).
+        failures propagate (GrabError, or RemoteError from the remote torrent program).
         `progress` receives short status texts along the way.
         """
         label = request_label(request)
+        async with self._target_lock(target):
+            if await self._downloads.has_grabbed(target):
+                log.info("One-click %s: already downloaded, not searching again", label)
+                return QuickDownloadResult(found=False, already_downloaded=True)
+            return await self._search_and_grab(request, target, label, progress)
+
+    async def _search_and_grab(
+        self, request: SearchRequest, target: GrabTarget, label: str, progress: Progress | None
+    ) -> QuickDownloadResult:
         settings = self._settings.current
         releases = await self._collect(request, label, progress)
         best = pick_best(releases, request, settings)

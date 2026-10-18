@@ -14,14 +14,17 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   Users install with `install.ps1` (one-liner in README.md) and update from Settings.
 
 ## Rules
-- `main.py`'s top-level imports, `app/__init__.py`, `app/config.py` and `app/bootstrap.py` run before the
-  package check, so they must stay stdlib-only. Import third-party packages from `main._run` onwards.
+- `main.py`'s top-level imports, `app/__init__.py`, `app/config.py`, `app/bootstrap.py`,
+  `app/single_instance.py` and `app/identity.py` run before the package check, so they must stay
+  stdlib-only. Import third-party packages from `main._run` onwards.
 - An installed copy is only `main.py`, `requirements.txt` and `app/` (`APP_ENTRIES` in `app/services/updates.py`
   and `install.ps1`): runtime files belong under `app/` (images in `app/assets`). Installed copies only see a
   release whose `__version__` is higher. A folder with `tests/` (this one) never updates itself.
 - `install.ps1` must run in Windows PowerShell 5.1 under `irm | iex`: no `&&`/ternaries/`??`, and no `exit`.
 - One asyncio loop drives Tk (async-tkinter-loop). No threads, executors or UI queues for I/O:
   await httpx/aiosqlite directly, then update widgets. CPU-heavy Pillow work goes through `asyncio.to_thread`.
+- The one exception: the tray icon (`app/ui/tray.py`, pystray) runs its own Win32 message loop on a daemon
+  thread. Its callbacks may only hand work to the loop with `loop.call_soon_threadsafe` and never touch Tk.
 - UI code starts coroutines only via `app.ui.tasks.spawn` / `async_command` (they log + report failures).
   Nothing may spawn before the loop runs (see `MainWindow.async_mainloop`).
 - Layers: `app/ui` → `app/services` → repositories (`app/database.py`) and API clients.

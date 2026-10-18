@@ -34,6 +34,8 @@ $Branch = 'main'
 $ArchiveUrl = "https://codeload.github.com/$Repo/zip/refs/heads/$Branch"
 $AppEntries = @('main.py', 'requirements.txt', 'app')  # keep in step with app/services/updates.py
 $IconPath = 'app\assets\airgrabber.ico'                # keep in step with app/ui/branding.py
+$AppId = 'drunkgummyboy.AirGrabber'                    # keep in step with app/identity.py (APP_USER_MODEL_ID)
+$AppIdHelper = 'app\shortcut_app_id.cs'                # also app/services/powershell.py (SHORTCUT_HELPER)
 $PythonFallback = '3.13.15'                            # python.org build used when winget can't
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AirGrabber'
 # winget for PCs without it: App Installer (which brings winget.exe) from winget's own release, plus
@@ -259,6 +261,23 @@ function New-Shortcut([string]$Path, [string]$PythonW) {
     $link.IconLocation = (Join-Path $InstallDir $IconPath) + ',0'
     $link.Description = 'Track your shows. Grab your movies.'
     $link.Save()
+    Set-ShortcutAppId $Path
+}
+
+function Set-ShortcutAppId([string]$Path) {
+    # AirGrabber's AppUserModelID (app/identity.py) on the shortcut: Windows takes a notification's
+    # name and icon from the Start-menu shortcut that has it, and taskbar pins group by it.
+    # The C# helper comes with the app just installed, compiled once per run. Optional: without
+    # it the shortcut still works (and AirGrabber adds the ID to its Start-menu shortcut itself).
+    try {
+        if (-not ('AirGrabber.ShortcutAppId' -as [type])) {
+            $helper = (Resolve-Path -LiteralPath (Join-Path $InstallDir $AppIdHelper)).ProviderPath
+            Add-Type -TypeDefinition ([IO.File]::ReadAllText($helper))
+        }
+        [AirGrabber.ShortcutAppId]::Set($Path, $AppId)
+    } catch {
+        Write-Verbose ('No AppUserModelID on ' + $Path + ': ' + $_.Exception.Message)
+    }
 }
 
 function Register-Uninstaller {

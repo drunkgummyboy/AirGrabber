@@ -6,9 +6,12 @@ import asyncio
 import inspect
 import json
 import logging
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -16,13 +19,17 @@ from unittest import mock
 import httpx
 
 from app.database import SettingsRepository
-from app.models import ProwlarrSetupResult, Settings
+from app.models import ProwlarrSetupResult, ProwlarrState, ProwlarrStatus, Settings
 from app.services.prowlarr_setup import (
     CURATED,
+    WINGET_COMMAND,
     LocalProwlarr,
     ProwlarrSetupService,
+    WingetRunner,
+    on_this_pc,
     parse_config,
     read_local_config,
+    run_winget,
 )
 from app.services.settings import SettingsService
 
@@ -118,6 +125,18 @@ class FakeTime:
     async def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.now += seconds
+
+
+class FakeWinget:
+    """Stands in for winget: records the arguments and answers `result` (never runs winget)."""
+
+    def __init__(self, result: bool) -> None:
+        self.result = result
+        self.calls: list[tuple[str, ...]] = []
+
+    async def __call__(self, arguments: Sequence[str]) -> bool:
+        self.calls.append(tuple(arguments))
+        return self.result
 
 
 def settings_service(**values: Any) -> SettingsService:
@@ -255,14 +274,23 @@ class SetupTestCase(unittest.IsolatedAsyncioTestCase):
         self.time = FakeTime()
 
     def service(
-        self, settings: SettingsService, *, config_path: Path = FIXTURES / "config.xml"
+        self,
+        settings: SettingsService,
+        *,
+        config_path: Path = FIXTURES / "config.xml",
+        winget: WingetRunner | None = None,
     ) -> ProwlarrSetupService:
         http = httpx.AsyncClient(
             transport=httpx.MockTransport(self.server), timeout=httpx.Timeout(10.0, connect=5.0)
         )
         self.addAsyncCleanup(http.aclose)
         return ProwlarrSetupService(
-            http, settings, config_path=config_path, sleep=self.time.sleep, clock=self.time.clock
+            http,
+            settings,
+            config_path=config_path,
+            sleep=self.time.sleep,
+            clock=self.time.clock,
+            winget=winget if winget is not None else FakeWinget(False),
         )
 
     async def run_setup(self, settings: SettingsService, **options: Any) -> ProwlarrSetupResult:
@@ -754,7 +782,7 @@ class SeedingTests(SetupTestCase):
             quality="720p",
             prowlarr_url="http://127.0.0.1:9696/",
             prowlarr_api_key=KEY,
-            ds_url="https://nas.local:5001",
+            remote_url="https://nas.local:5001",
         )
         self.assertEqual(settings.current.prowlarr_seeded_url, BASE)
         stored = settings.current.model_dump(mode="json")
@@ -767,6 +795,324 @@ class SeedingTests(SetupTestCase):
         self.assertEqual(first.added, CURATED_NAMES)
         self.assertEqual(second, ProwlarrSetupResult())  # saw the marker the first one set
         self.assertEqual(len(self.server.posted()), 5)
+
+
+class OnThisPcTests(unittest.TestCase):
+    def test_loopback_addresses(self) -> None:
+        for url in (
+            "http://localhost:9696",
+            "http://LocalHost:9696/prowlarr",
+            "http://127.0.0.1:9696",
+            "http://127.0.0.2:1",
+            "http://[::1]:9696",
+            " http://127.0.0.1:9696/ ",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(on_this_pc(url))
+
+    def test_other_computers(self) -> None:
+        for url in ("http://nas.local:9696", "http://192.168.1.20:9696", "", "not a url", "http://"):
+            with self.subTest(url=url):
+                self.assertFalse(on_this_pc(url))
+
+    def test_the_address_in_config_xml(self) -> None:
+        local = LocalProwlarr("http://192.168.1.20:9696", KEY)
+        self.assertTrue(on_this_pc("http://192.168.1.20:9696", local))
+        self.assertTrue(on_this_pc("http://192.168.1.20:9696/", local))
+        self.assertFalse(on_this_pc("http://192.168.1.21:9696", local))
+
+
+class StatusTests(SetupTestCase):
+    def configured(self, **values: Any) -> SettingsService:
+        values.setdefault("prowlarr_url", BASE)
+        values.setdefault("prowlarr_api_key", KEY)
+        values.setdefault("prowlarr_seeded_url", BASE)
+        return settings_service(**values)
+
+    async def status(self, settings: SettingsService, **options: Any) -> ProwlarrStatus:
+        return await self.service(settings, **options).status()
+
+    async def test_not_installed(self) -> None:
+        settings = settings_service()
+        status = await self.status(settings, config_path=self.missing_config())
+        self.assertEqual(status, ProwlarrStatus(state=ProwlarrState.NOT_INSTALLED))
+        self.assertEqual(self.server.requests, [])
+
+    async def test_installed_but_not_answering(self) -> None:
+        for failure in (httpx.ConnectError("refused"), httpx.Response(503)):
+            with self.subTest(failure=failure):
+                self.server = FakeProwlarr()
+                self.server.on("GET", "/ping", failure)
+                settings = settings_service()
+                status = await self.status(settings)
+                self.assertEqual(
+                    status, ProwlarrStatus(state=ProwlarrState.NOT_RUNNING, address=BASE)
+                )
+                self.assertEqual(self.server.paths(), ["/ping"])  # one look, no waiting
+                self.assertEqual(self.time.sleeps, [])
+                self.assertEqual(settings.current, Settings())
+
+    async def test_the_connected_prowlarr_on_this_pc_stopped_answering(self) -> None:
+        self.server.on("GET", "/ping", httpx.ConnectError("refused"))
+        self.server.on("GET", "/api/v1/system/status", httpx.ConnectError("refused"))
+        with self.assertLogs(LOGGER, "WARNING"):
+            status = await self.status(self.configured())
+        self.assertEqual(status, ProwlarrStatus(state=ProwlarrState.NOT_RUNNING, address=BASE))
+        self.assertEqual(self.server.paths(), ["/api/v1/system/status", "/ping"])
+
+    async def test_connected_on_this_pc_counts_its_sites(self) -> None:
+        self.server.on("GET", "/api/v1/indexer", ok(load("indexer_list.json")))
+        status = await self.status(self.configured())
+        self.assertEqual(
+            status, ProwlarrStatus(state=ProwlarrState.CONNECTED_LOCAL, sites=5, address=BASE)
+        )
+        self.assertEqual(self.server.paths(), ["/api/v1/system/status", "/api/v1/indexer"])
+        self.assertEqual(self.server.posted(), [])
+        self.assert_secret_hygiene()
+
+    async def test_only_switched_on_sites_count(self) -> None:
+        sites = load("indexer_list.json")
+        sites[0]["enable"] = False
+        del sites[1]["enable"]
+        sites[2]["enable"] = "maybe"
+        self.server.on("GET", "/api/v1/indexer", ok([*sites, "garbage"]))
+        status = await self.status(self.configured())
+        self.assertEqual(status.sites, 2)
+
+    async def test_sites_unknown_when_the_list_fails(self) -> None:
+        self.server.on("GET", "/api/v1/indexer", httpx.Response(500))
+        with self.assertLogs(LOGGER, "WARNING"):
+            status = await self.status(self.configured())
+        self.assertEqual(
+            status, ProwlarrStatus(state=ProwlarrState.CONNECTED_LOCAL, sites=None, address=BASE)
+        )
+
+    async def test_a_loopback_address_is_this_pc(self) -> None:
+        url = "http://localhost:9696"
+        settings = self.configured(prowlarr_url=url)
+        status = await self.status(settings, config_path=self.missing_config())
+        self.assertEqual(
+            status, ProwlarrStatus(state=ProwlarrState.CONNECTED_LOCAL, sites=0, address=url)
+        )
+
+    async def test_connected_elsewhere(self) -> None:
+        url = "http://nas.local:9696"
+        status = await self.status(self.configured(prowlarr_url=url, prowlarr_api_key="nas"))
+        self.assertEqual(status, ProwlarrStatus(state=ProwlarrState.CONNECTED_REMOTE, address=url))
+        self.assertEqual([str(r.url) for r in self.server.requests], [f"{url}/api/v1/system/status"])
+        self.assertEqual(self.server.requests[0].headers["X-Api-Key"], "nas")
+
+    async def test_not_connected(self) -> None:
+        nas = "http://nas.local:9696"
+        cases: dict[str, tuple[dict[str, str], Path | None, str]] = {
+            "key rejected here": ({}, None, BASE),
+            "key rejected elsewhere": ({"prowlarr_url": nas}, None, BASE),
+            "elsewhere, none here": ({"prowlarr_url": nas}, self.missing_config(), ""),
+            "url only": ({"prowlarr_api_key": ""}, None, BASE),
+            "key only": ({"prowlarr_url": ""}, self.missing_config(), ""),
+        }
+        for case, (values, config_path, address) in cases.items():
+            with self.subTest(case):
+                self.server = FakeProwlarr()
+                self.server.on("GET", "/api/v1/system/status", httpx.Response(401))
+                settings = self.configured(**values)
+                before = settings.current
+                options = {} if config_path is None else {"config_path": config_path}
+                status = await self.status(settings, **options)
+                self.assertEqual(
+                    status, ProwlarrStatus(state=ProwlarrState.NOT_CONNECTED, address=address)
+                )
+                self.assertIs(settings.current, before)
+                self.assertNotIn("/api/v1/indexer", self.server.paths())
+
+    async def test_connects_a_prowlarr_started_since_launch(self) -> None:
+        self.server.on(
+            "GET",
+            "/api/v1/indexer",
+            ok(load("indexer_list_empty.json")),  # before adding the sites
+            ok(load("indexer_list.json")),
+        )
+        settings = settings_service()
+        status = await self.status(settings)
+        self.assertEqual(
+            status, ProwlarrStatus(state=ProwlarrState.CONNECTED_LOCAL, sites=5, address=BASE)
+        )
+        current = settings.current
+        self.assertEqual(
+            (current.prowlarr_url, current.prowlarr_api_key.get_secret_value()), (BASE, KEY)
+        )
+        self.assertEqual(current.prowlarr_seeded_url, BASE)
+        self.assertEqual(len(self.server.posted()), 5)
+        self.assert_secret_hygiene()
+
+    async def test_a_prowlarr_here_with_a_rejected_key_is_not_connected(self) -> None:
+        self.server.on("GET", "/api/v1/system/status", httpx.Response(401))
+        settings = settings_service()
+        status = await self.status(settings)
+        self.assertEqual(status, ProwlarrStatus(state=ProwlarrState.NOT_CONNECTED, address=BASE))
+        self.assertEqual(settings.current, Settings())
+
+    async def test_logs_never_show_the_key_or_urls(self) -> None:
+        self.server.on("GET", "/api/v1/system/status", httpx.ConnectError(f"{BASE}?apikey={KEY}"))
+        self.server.on("GET", "/ping", httpx.ConnectError(f"{BASE}/ping"))
+        with self.assertLogs(logging.getLogger("app"), "DEBUG") as logs:
+            await self.status(self.configured())
+        output = "\n".join(logs.output)
+        for secret in (KEY, "http", "apikey", "127.0.0.1"):
+            self.assertNotIn(secret, output)
+
+
+class InstallTests(SetupTestCase):
+    async def asyncSetUp(self) -> None:
+        # The test loop runs in debug mode, which logs every step over 0.1 s; 90 fake seconds of
+        # polling (a file read in a thread each) can take longer than that on a busy machine.
+        asyncio.get_running_loop().slow_callback_duration = 2.0
+
+    async def install(
+        self, settings: SettingsService, winget: FakeWinget, **options: Any
+    ) -> tuple[bool, list[str]]:
+        steps: list[str] = []
+        installed = await self.service(settings, winget=winget, **options).install(steps.append)
+        return installed, steps
+
+    def test_the_winget_command(self) -> None:
+        self.assertEqual(
+            WINGET_COMMAND,
+            (
+                "install",
+                "--id",
+                "TeamProwlarr.Prowlarr",
+                "--exact",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ),
+        )
+
+    async def test_installs_connects_and_adds_the_sites(self) -> None:
+        winget = FakeWinget(True)
+        settings = settings_service()
+        installed, steps = await self.install(settings, winget)
+        self.assertTrue(installed)
+        self.assertEqual(winget.calls, [WINGET_COMMAND])
+        self.assertEqual(
+            steps, ["Installing… Windows may ask for permission", "Setting up Prowlarr…"]
+        )
+        current = settings.current
+        self.assertEqual(
+            (current.prowlarr_url, current.prowlarr_api_key.get_secret_value()), (BASE, KEY)
+        )
+        self.assertEqual(current.prowlarr_seeded_url, BASE)
+        self.assertEqual(len(self.server.posted()), 5)
+        self.assert_secret_hygiene()
+
+    async def test_waits_for_the_new_prowlarr(self) -> None:
+        path = self.missing_config()
+
+        async def sleep(seconds: float) -> None:  # Prowlarr writes its config after 3 s
+            await self.time.sleep(seconds)
+            if self.time.now == 3.0:
+                path.write_bytes((FIXTURES / "config.xml").read_bytes())
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(self.server))
+        self.addAsyncCleanup(http.aclose)
+        settings = settings_service()
+        service = ProwlarrSetupService(
+            http,
+            settings,
+            config_path=path,
+            sleep=sleep,
+            clock=self.time.clock,
+            winget=FakeWinget(True),
+        )
+        # ... and answers after 5 s.
+        self.server.on("GET", "/ping", *[httpx.ConnectError("refused")] * 2, ok({"status": "OK"}))
+        self.assertTrue(await service.install())
+        self.assertEqual(self.time.now, 5.0)
+        self.assertEqual(settings.current.prowlarr_url, BASE)
+        self.assertEqual(settings.current.prowlarr_seeded_url, BASE)
+
+    async def test_winget_failing(self) -> None:
+        settings = settings_service()
+        installed, steps = await self.install(settings, FakeWinget(False))
+        self.assertFalse(installed)
+        self.assertEqual(steps, ["Installing… Windows may ask for permission"])
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(settings.current, Settings())
+
+    async def test_prowlarr_not_answering(self) -> None:
+        self.server.on("GET", "/ping", httpx.ConnectError("refused"))
+        settings = settings_service()
+        service = self.service(settings, winget=FakeWinget(True))
+        with self.assertLogs(LOGGER, "INFO") as logs:
+            installed = await service.install()
+        self.assertTrue(installed)  # installed; `status` tells it isn't answering
+        self.assertEqual(self.time.now, 90.0)
+        self.assertEqual(self.server.paths(), ["/ping"] * 91)
+        self.assertEqual(settings.current, Settings())
+        self.assertIn("did not answer within 90 s", "\n".join(logs.output))
+        status = await service.status()
+        self.assertEqual(status, ProwlarrStatus(state=ProwlarrState.NOT_RUNNING, address=BASE))
+
+    async def test_no_prowlarr_config_appears(self) -> None:
+        settings = settings_service()
+        with self.assertLogs(LOGGER, "INFO"):
+            installed, _steps = await self.install(
+                settings, FakeWinget(True), config_path=self.missing_config()
+            )
+        self.assertFalse(installed)
+        self.assertEqual(self.time.now, 90.0)
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(settings.current, Settings())
+
+
+class WingetProcess:
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+
+    async def communicate(self) -> tuple[bytes, None]:
+        return b"winget output", None
+
+    def kill(self) -> None:
+        pass
+
+
+class RunWingetTests(unittest.IsolatedAsyncioTestCase):
+    """run_winget with the process start patched out: winget never runs."""
+
+    def patch_winget(self, returncode: int | None, path: str | None = r"C:\winget.exe") -> Any:
+        self.enterContext(mock.patch.object(sys, "platform", "win32"))
+        self.enterContext(mock.patch.object(shutil, "which", return_value=path))
+        if returncode is None:
+            spawn = mock.AsyncMock(side_effect=FileNotFoundError(2, "missing"))
+        else:
+            spawn = mock.AsyncMock(return_value=WingetProcess(returncode))
+        self.enterContext(mock.patch.object(asyncio, "create_subprocess_exec", spawn))
+        return spawn
+
+    async def test_success(self) -> None:
+        spawn = self.patch_winget(0)
+        self.assertTrue(await run_winget(WINGET_COMMAND))
+        args = spawn.await_args
+        assert args is not None
+        self.assertEqual(args.args, (r"C:\winget.exe", *WINGET_COMMAND))
+        self.assertEqual(args.kwargs["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.assertEqual(args.kwargs["stdin"], subprocess.DEVNULL)
+
+    async def test_non_zero_exit_logs_the_code_only(self) -> None:
+        self.patch_winget(-1978335212)
+        with self.assertLogs(LOGGER, "INFO") as logs:
+            self.assertFalse(await run_winget(WINGET_COMMAND))
+        self.assertIn("-1978335212", "\n".join(logs.output))
+
+    async def test_winget_missing(self) -> None:
+        spawn = self.patch_winget(0, path=None)
+        self.assertFalse(await run_winget(WINGET_COMMAND))
+        spawn.assert_not_awaited()
+
+    async def test_winget_cannot_start(self) -> None:
+        self.patch_winget(None)
+        self.assertFalse(await run_winget(WINGET_COMMAND))
 
 
 if __name__ == "__main__":

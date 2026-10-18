@@ -16,9 +16,10 @@ from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.branding import set_window_icon
-from app.ui.cards import CARD_WIDTH, ShowCard, TrackState
+from app.ui.cards import SearchShowCard
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
+from app.ui.poster_card import POSTER_CARD_WIDTH, TrackState
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width
 from app.ui.widgets import FlexGrid, LoadingBar
@@ -283,7 +284,8 @@ class SearchSuggestions:
 
 
 class SearchResultsWindow(ctk.CTkToplevel):
-    """Results for `query` (not modal): TVMaze shows with a "+ Track" button, then TMDB movies.
+    """Results for `query` (not modal): TVMaze shows with a "+ Track" button (a click on a
+    show's cover calls `on_open_show`), then TMDB movies.
 
     Both searches run at once; each section renders as soon as its own search is done.
     """
@@ -302,7 +304,9 @@ class SearchResultsWindow(ctk.CTkToplevel):
         query: str,
         movie_actions: DownloadActions[Movie],
         on_open_settings: Callable[[], None],
+        on_open_show: Callable[[Show], None] | None = None,
     ) -> None:
+        """`on_open_show`: what a click on a show card's cover does (the show details)."""
         super().__init__(master, fg_color=theme.BG)
         self._library = library
         self._discovery = discovery
@@ -311,7 +315,8 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._query = query
         self._movie_actions = movie_actions  # the movie cards' Download and ⋯ buttons
         self._on_open_settings = on_open_settings
-        self._cards: dict[int, ShowCard] = {}
+        self._on_open_show = on_open_show
+        self._cards: dict[int, SearchShowCard] = {}
 
         self.title(f"Search Results: {query}")
         set_window_icon(self)
@@ -389,16 +394,16 @@ class SearchResultsWindow(ctk.CTkToplevel):
         if not results:
             self._message(self._shows_section, "No TV shows found.", "gray50")
             return
-        grid = FlexGrid(self._shows_section, item_width=CARD_WIDTH, pad_x=8, pad_y=10)
+        grid = FlexGrid(self._shows_section, item_width=POSTER_CARD_WIDTH, pad_x=8, pad_y=10)
         grid.pack(fill="x")
         for result in results:
-            self._cards[result.show.id] = ShowCard(
+            self._cards[result.show.id] = SearchShowCard(
                 grid,
                 result.show,
                 images=self._images,
-                mode="search",
                 is_tracked=result.is_tracked,
                 on_track=self._track,
+                on_open_show=self._on_open_show,
             )
         grid.relayout()
 
@@ -438,7 +443,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         if not movies:
             self._message(self._movies_section, "No movies found.", "gray50")
             return
-        grid = FlexGrid(self._movies_section, item_width=CARD_WIDTH, pad_x=8, pad_y=10)
+        grid = FlexGrid(self._movies_section, item_width=POSTER_CARD_WIDTH, pad_x=8, pad_y=10)
         grid.pack(fill="x")
         for movie in movies:
             MovieCard(

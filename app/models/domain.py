@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, date, datetime, time
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Self, TypeAlias
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -91,7 +91,7 @@ class LibraryEntry(DomainModel):
 
     show: Show
     tracked_at: UtcDatetime
-    auto_download: bool = False
+    auto_download: bool = False  # new episodes are downloaded automatically (AutoDownloadService)
     synced_at: UtcDatetime | None = None  # None = metadata never synced from TVMaze
 
 
@@ -134,6 +134,35 @@ class ImportResult(DomainModel):
     already_tracked: tuple[str, ...] = ()
     not_found: tuple[str, ...] = ()  # the input lines that matched nothing
     failed: tuple[str, ...] = ()  # input lines that hit a TVMaze/network error
+
+
+class ImportMatch(DomainModel):
+    """The TVMaze show a name from another app was matched to, before anything is tracked.
+
+    The show fields are None when TVMaze found nothing for the name. `failed`: the TVMaze
+    lookup itself failed (network/server error), so nothing is known either way.
+    """
+
+    source_name: str
+    show_id: int | None = None
+    show_name: str | None = None
+    year: int | None = None
+    network: str | None = None
+    already_tracked: bool = False
+    failed: bool = False
+
+    @property
+    def found(self) -> bool:
+        return self.show_id is not None
+
+
+class AirdatesPreview(DomainModel):
+    """What an airdates.tv export would import: its matches, the ids airdates.tv couldn't name,
+    and how many lookups failed (airdates.tv or TVMaze unreachable)."""
+
+    matches: tuple[ImportMatch, ...] = ()
+    unknown_ids: tuple[int, ...] = ()
+    failed: int = 0
 
 
 class Movie(DomainModel):
@@ -339,6 +368,32 @@ class DownloadRecord(DomainModel):
         return self
 
 
+class ShowActivity(DomainModel):
+    """What a tracked show's card says under its title: its latest grab of the past week and its
+    next episode, as far as the history and the cached episodes know."""
+
+    show_id: int
+    last_grab: DownloadRecord | None = None  # the latest TV grab within the recent window
+    next_episode: Episode | None = None  # the first numbered episode still to air
+
+
+class ShowDetails(DomainModel):
+    """What the show details window shows: a TVMaze show with its episodes (in season and
+    number order), whether it is tracked (and its "Download new episodes" switch), which
+    episodes were downloaded, and its next episode."""
+
+    show: Show
+    episodes: tuple[Episode, ...] = ()
+    tracked: bool = False
+    auto_download: bool = False
+    # Ids of the episodes in the download history: the episode itself or its season's pack.
+    downloaded: frozenset[int] = frozenset()
+    next_episode: Episode | None = None  # the first numbered episode still to air
+
+    def is_downloaded(self, episode: Episode) -> bool:
+        return episode.id in self.downloaded
+
+
 class GrabTarget(DomainModel):
     """What a grabbed release is for: recorded in the download history, drives calendar flags."""
 
@@ -358,7 +413,7 @@ class GrabTarget(DomainModel):
 
 class GrabOutcome(StrEnum):
     SAVED = "saved"  # .torrent written to the watch folder
-    SENT = "sent"  # magnet handed to Download Station
+    SENT = "sent"  # handed to the torrent program on a NAS or another computer
     OPENED = "opened"  # .torrent or magnet opened in the torrent program on this PC
 
 
@@ -372,10 +427,45 @@ class QuickDownloadResult(DomainModel):
     """What a one-click download did: the release it picked (if any) and how the grab went."""
 
     found: bool  # False: no release was good enough, and nothing was grabbed
+    # The target was in the download history already (e.g. grabbed meanwhile from another
+    # window or by the automatic downloads): nothing was searched or grabbed; `found` is False.
+    already_downloaded: bool = False
     release_title: str | None = None
     quality: str | None = None  # the picked release's resolution ("1080p"), when its title says
     seeders: int | None = None
     grab: GrabResult | None = None
+
+
+class AutoDownloaded(DomainModel):
+    """Event: the automatic downloads grabbed a new episode."""
+
+    label: str  # "Severance S02E04"
+    quality: str | None = None  # the release's resolution ("1080p"), when its title says
+
+
+class AutoGaveUp(DomainModel):
+    """Event: an episode wasn't found within the automatic downloads' window; it isn't tried
+    again."""
+
+    label: str  # "Severance S02E04"
+
+
+class AutoError(DomainModel):
+    """Event: a grab failed (no torrent program, unwritable folder, ...); that run stopped."""
+
+    message: str  # user-facing reason, as the one-click Download reports it
+
+
+AutoEvent: TypeAlias = AutoDownloaded | AutoGaveUp | AutoError
+
+
+class AutoDownloadReport(DomainModel):
+    """What one run of the automatic downloads did."""
+
+    downloaded: tuple[AutoDownloaded, ...] = ()
+    not_found: tuple[str, ...] = ()  # labels searched without a good enough release (tried again)
+    gave_up: tuple[str, ...] = ()  # labels
+    error: str | None = None  # the AutoError message that stopped the run
 
 
 class TorrentApp(DomainModel):
@@ -426,3 +516,19 @@ class ProwlarrSetupResult(DomainModel):
 
     connected: bool = False  # found it and saved its URL and API key in Settings
     added: tuple[str, ...] = ()  # names of the public sites added to it, in the order added
+
+
+class ProwlarrState(StrEnum):
+    CONNECTED_LOCAL = "connected_local"  # the configured Prowlarr answers and runs on this PC
+    CONNECTED_REMOTE = "connected_remote"  # it answers from another computer
+    NOT_RUNNING = "not_running"  # installed on this PC (config.xml), but it doesn't answer
+    NOT_INSTALLED = "not_installed"  # nothing configured and none on this PC
+    NOT_CONNECTED = "not_connected"  # configured, but the URL or key doesn't work
+
+
+class ProwlarrStatus(DomainModel):
+    """Where AirGrabber stands with Prowlarr (Settings → Advanced)."""
+
+    state: ProwlarrState
+    sites: int | None = Field(default=None, ge=0)  # CONNECTED_LOCAL: its enabled sites, if read
+    address: str = ""  # the web address "Open Prowlarr" opens; "" when there is none

@@ -65,14 +65,14 @@ def movie_key(movie_id: int) -> DownloadKey:
 
 class Phase(StrEnum):
     WORKING = "working"
-    DONE = "done"  # grabbed
+    DONE = "done"  # grabbed (by this run, or already before it)
     NOTHING = "nothing"  # no release was good enough
 
 
 @dataclass(frozen=True, slots=True)
 class RunState:
     phase: Phase
-    outcome: GrabOutcome | None = None  # DONE
+    outcome: GrabOutcome | None = None  # DONE; None = it was already downloaded ("✓ Grabbed")
 
 
 # What a card shows without a run: the Download split control, a "✓ Grabbed" or "Search" button
@@ -129,8 +129,9 @@ def control_look(base: Base, state: RunState | None) -> Look:
     """
     if state is not None and state.phase is Phase.WORKING:
         return Look("label", WORKING_TEXT, text_color=theme.TEXT_MUTED, short=(WORKING_SHORT,))
-    if state is not None and state.phase is Phase.DONE and state.outcome is not None:
-        return Look("button", outcome_text(state.outcome), theme.GRABBED, action="choose")
+    if state is not None and state.phase is Phase.DONE:
+        text = outcome_text(state.outcome) if state.outcome is not None else GRABBED_TEXT
+        return Look("button", text, theme.GRABBED, action="choose")
     if base.kind == "grabbed":
         return Look("button", GRABBED_TEXT, theme.GRABBED, action="choose")
     if base.kind == "unavailable":
@@ -153,6 +154,11 @@ def control_look(base: Base, state: RunState | None) -> Look:
 def nothing_found_text(label: str) -> str:
     """The status bar when a one-click download found nothing good enough."""
     return f"No good download found for {label}. Choose one yourself."
+
+
+def already_downloaded_text(label: str) -> str:
+    """The status bar when a one-click download finds its title already downloaded."""
+    return f"{label} was already downloaded"
 
 
 def download_status_text(label: str, result: QuickDownloadResult) -> str:

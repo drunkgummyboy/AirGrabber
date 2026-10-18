@@ -9,24 +9,30 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
+import unicodedata
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, ParamSpec
+from typing import Any, NamedTuple, ParamSpec
 
 from app.database import HistoryRepository, LibraryRepository
 from app.models import (
     CalendarEntry,
     Episode,
+    ImportMatch,
     ImportResult,
     LibraryEntry,
     LibraryStats,
     Show,
+    ShowActivity,
+    ShowDetails,
     ShowSearchResult,
     SyncProgress,
     SyncReport,
     Weekday,
 )
+from app.services.settings import SettingsService
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
 log = logging.getLogger(__name__)
@@ -43,6 +49,13 @@ UPDATES_WINDOW = timedelta(days=28)
 SYNC_CONCURRENCY = 3
 # After each sync, untracked shows' schedule episodes older than this are dropped.
 SCHEDULE_RETENTION = timedelta(days=60)
+# The Tracked cards mention a grab ("Downloaded S02E08 · today") for this long.
+RECENT_GRAB_WINDOW = timedelta(days=7)
+# Untracked shows opened in the details window are fetched from TVMaze and never stored: they are
+# kept in memory this long (at most DETAILS_CACHE_SIZE of them), so reopening one, or the window
+# reloading after a library change, needs no new request.
+DETAILS_TTL = timedelta(minutes=15)
+DETAILS_CACHE_SIZE = 20
 
 
 def week_start(day: date, first_day: Weekday) -> date:
@@ -64,11 +77,19 @@ def calendar_range(
 
 class LibraryService:
     def __init__(
-        self, library: LibraryRepository, history: HistoryRepository, tvmaze: TVMazeClient
+        self,
+        library: LibraryRepository,
+        history: HistoryRepository,
+        tvmaze: TVMazeClient,
+        *,
+        settings: SettingsService | None = None,
     ) -> None:
+        """`settings`: read for `auto_download_new_shows` whenever a show is newly followed
+        (without it, new shows start with automatic downloads off)."""
         self._library = library
         self._history = history
         self._tvmaze = tvmaze
+        self._settings = settings
         self._listeners: list[LibraryListener] = []
         # Held while saving-then-tracking a show and while pruning (which deletes untracked
         # shows), so a show can't be pruned between being saved and being tracked.
@@ -76,6 +97,8 @@ class LibraryService:
         self._schedule_fetches: dict[date, asyncio.Task[None]] = {}
         self._sync_run: asyncio.Task[SyncReport] | None = None
         self._waiters: Counter[asyncio.Task[Any]] = Counter()
+        # Untracked shows fetched for `show_details`, oldest first.
+        self._fetched: dict[int, _Fetched] = {}
 
     def subscribe(self, listener: LibraryListener) -> Callable[[], None]:
         """Call `listener` after every library change. Returns a function that unsubscribes it."""
@@ -109,6 +132,63 @@ class LibraryService:
         """The stored episodes of a show, by season and number (specials have no number)."""
         return await self._library.episodes(show_id)
 
+    async def activity(self, *, now: datetime | None = None) -> dict[int, ShowActivity]:
+        """Per tracked show id: its latest grab within RECENT_GRAB_WINDOW and its next episode
+        (see ShowActivity). Shows with neither are left out. `now`: an aware instant (tests);
+        its time zone decides which day "today" is."""
+        now = now if now is not None else datetime.now().astimezone()
+        grabs = await self._history.latest_tv_grabs(now - RECENT_GRAB_WINDOW)
+        upcoming = await self._library.next_episodes(now=now, today=now.date())
+        last = {record.media_id: record for record in grabs}
+        following = {episode.show_id: episode for episode in upcoming}
+        tracked = await self._library.tracked_ids()
+        return {
+            show_id: ShowActivity(
+                show_id=show_id, last_grab=last.get(show_id), next_episode=following.get(show_id)
+            )
+            for show_id in sorted((last.keys() | following.keys()) & tracked)
+        }
+
+    async def show_details(self, show_id: int, *, now: datetime | None = None) -> ShowDetails:
+        """A TVMaze show with its episodes, tracked state, downloads and next episode (see
+        ShowDetails), for the show details window.
+
+        A tracked show comes from the library's cache. Any other show (or a tracked one whose
+        cache holds no episodes yet) is fetched from TVMaze and kept in memory for DETAILS_TTL;
+        nothing is written to the database. TVMaze errors propagate. `now`: an aware instant
+        (tests); its time zone decides which day "today" is.
+        """
+        now = now if now is not None else datetime.now().astimezone()
+        entry = await self._library.tracked_entry(show_id)
+        episodes = await self._library.episodes(show_id) if entry is not None else []
+        if entry is not None and episodes:
+            show = entry.show
+        else:
+            show, episodes = await self._fetch_show(show_id)
+        grabs = await self._history.show_grabs(show.id)
+        return ShowDetails(
+            show=show,
+            episodes=tuple(episodes),
+            tracked=entry is not None,
+            auto_download=entry is not None and entry.auto_download,
+            downloaded=downloaded_ids(episodes, grabs),
+            next_episode=next_episode(episodes, now),
+        )
+
+    async def _fetch_show(self, show_id: int) -> tuple[Show, list[Episode]]:
+        """The show and its episodes from TVMaze, or from memory when fetched recently."""
+        fetched = self._fetched.get(show_id)
+        stored_at = datetime.now(UTC)
+        if fetched is not None and timedelta(0) <= stored_at - fetched.stored_at < DETAILS_TTL:
+            return fetched.show, list(fetched.episodes)
+        show, episodes = await self._tvmaze.get_show_with_episodes(show_id)
+        episodes.sort(key=_episode_order)  # as the library lists them
+        self._fetched.pop(show_id, None)  # re-inserted last: the newest
+        self._fetched[show_id] = _Fetched(show, tuple(episodes), stored_at)
+        while len(self._fetched) > DETAILS_CACHE_SIZE:
+            del self._fetched[next(iter(self._fetched))]
+        return show, episodes
+
     async def search(self, query: str, *, limit: int = 12) -> list[ShowSearchResult]:
         """TVMaze shows matching `query`, best match first, flagged when already tracked."""
         shows = await self._tvmaze.search_shows(query, limit=limit)
@@ -121,6 +201,12 @@ class LibraryService:
         await self._library.untrack(show_id)
         self._notify()
 
+    async def set_auto_download(self, show_id: int, on: bool) -> None:
+        """Switch a tracked show's automatic downloads of new episodes on (from now) or off."""
+        await self._library.set_auto_download(show_id, on)
+        log.info("Automatic downloads %s for TVMaze show %d", "on" if on else "off", show_id)
+        self._notify()
+
     async def remove_ended(self) -> int:
         removed = await self._library.untrack_ended()
         if removed:
@@ -130,7 +216,9 @@ class LibraryService:
     async def track(self, show_id: int) -> Show:
         """Fetch a show with all its episodes from TVMaze and add it to the library.
 
-        Tracking a show that is already tracked refreshes it. TVMaze errors propagate.
+        A newly followed show starts with automatic downloads on when the
+        `auto_download_new_shows` setting says so. Tracking a show that is already tracked
+        refreshes it (and keeps its switch). TVMaze errors propagate.
         """
         show = await self._fetch_and_track(show_id)
         self._notify()
@@ -189,22 +277,80 @@ class LibraryService:
                 known = await self._library.get_show(show_id)
                 return (known.name if known else entry), False
         else:
-            hits = await self._tvmaze.search_shows(entry, limit=1)
-            if not hits:
+            hit = await self._best_hit(entry)
+            if hit is None:
                 return None
-            show_id = hits[0].id
+            show_id = hit.id
             if show_id in tracked:
-                return hits[0].name, False
+                return hit.name, False
         show = await self._fetch_and_track(show_id)
         tracked.add(show.id)
         return show.name, True
 
+    async def find_matches(
+        self, names: Sequence[str], progress: Callable[[int, int], None] | None = None
+    ) -> tuple[ImportMatch, ...]:
+        """Match show names (from another app) to TVMaze shows without tracking anything.
+
+        Uses the same best-hit rule as `import_shows`. Blank and repeated names are dropped;
+        the rest are looked up one by one (TVMaze's rate limit), `progress(done, total)` after
+        each. A failed lookup gives a match with `failed` set instead of raising.
+        """
+        pending = list(dict.fromkeys(name.strip() for name in names if name.strip()))
+        tracked = await self._library.tracked_ids() if pending else frozenset[int]()
+        matches: list[ImportMatch] = []
+        for done, name in enumerate(pending, start=1):
+            try:
+                show = await self._best_hit(name)
+            except TVMazeNotFound:
+                matches.append(ImportMatch(source_name=name))
+            except TVMazeError as exc:
+                log.warning("Matching a show name on TVMaze failed: %s", exc)
+                matches.append(ImportMatch(source_name=name, failed=True))
+            else:
+                matches.append(_match(name, show, tracked))
+            if progress is not None:
+                _invoke(progress, done, len(pending))
+        found = sum(match.found for match in matches)
+        log.info(
+            "Matched %d of %d show names on TVMaze (%d failed)",
+            found, len(matches), sum(match.failed for match in matches),
+        )
+        return tuple(matches)
+
+    async def _best_hit(self, name: str) -> Show | None:
+        """The TVMaze show a name stands for: the best search hit, or None.
+
+        A trailing "(YYYY)" or country "(US)" / "(UK)" is searched without, and the first hit
+        premiering in that year / from that country wins; without such a hit, the best hit does.
+        The name is searched normalised (`search_name`): Unicode dashes, minus signs and curly
+        quotes as their ASCII forms.
+        """
+        name = search_name(name)
+        hint = _name_hint(name)
+        if hint is None:
+            hits = await self._tvmaze.search_shows(name, limit=1)
+            return hits[0] if hits else None
+        candidates = await self._tvmaze.search_shows_with_country(hint.query)
+        for show, country in candidates:
+            if (hint.year is None or show.year == hint.year) and (
+                hint.country is None or country == hint.country
+            ):
+                return show
+        if candidates:
+            return candidates[0][0]
+        hits = await self._tvmaze.search_shows(name, limit=1)  # perhaps the suffix is the name
+        return hits[0] if hits else None
+
     async def _fetch_and_track(self, show_id: int) -> Show:
         show, episodes = await self._tvmaze.get_show_with_episodes(show_id)
+        settings = self._settings
+        auto_download = settings is not None and settings.current.auto_download_new_shows
         async with self._tracking:
             await self._library.save_show(show, episodes)
-            await self._library.track(show.id)
+            await self._library.track(show.id, auto_download=auto_download)
         await self._library.mark_synced(show.id)
+        self._fetched.pop(show.id, None)  # the library's copy is the current one now
         return show
 
     # -- calendar suggestions ------------------------------------------------------------------
@@ -401,6 +547,118 @@ class LibraryService:
             for task in tasks:  # mark every failure as retrieved; the first one is raised above
                 if task.done() and not task.cancelled():
                     task.exception()
+
+
+class _Fetched(NamedTuple):
+    """An untracked show fetched for `show_details`."""
+
+    show: Show
+    episodes: tuple[Episode, ...]
+    stored_at: datetime
+
+
+_FAR_FUTURE = datetime.max.replace(tzinfo=UTC)
+
+
+def _episode_order(episode: Episode) -> tuple[int, int]:
+    """By season, then number; unnumbered episodes (specials) first, as SQLite sorts NULL."""
+    return episode.season, -1 if episode.number is None else episode.number
+
+
+def next_episode(episodes: Iterable[Episode], now: datetime) -> Episode | None:
+    """The first numbered, non-special episode still to air: an airstamp after `now`, or
+    (without one) an air date from `now`'s day on. The Tracked cards' rule
+    (LibraryRepository.next_episodes); `now` is aware, its time zone decides the day."""
+    today = now.date()
+    upcoming = [
+        episode
+        for episode in episodes
+        if episode.season > 0
+        and episode.number is not None
+        and (
+            episode.airstamp > now
+            if episode.airstamp is not None
+            else episode.air_date is not None and episode.air_date >= today
+        )
+    ]
+    return min(
+        upcoming,
+        key=lambda episode: (
+            episode.air_date or date.max,
+            episode.airstamp or _FAR_FUTURE,
+            episode.season,
+            episode.number or 0,
+        ),
+        default=None,
+    )
+
+
+def downloaded_ids(
+    episodes: Iterable[Episode], grabs: Iterable[tuple[int, int | None]]
+) -> frozenset[int]:
+    """Ids of the episodes `grabs` ((season, episode) pairs; episode None = a season pack)
+    cover: the episode itself, or its season's pack (as the calendar flags them)."""
+    grabbed = set(grabs)
+    packs = {season for season, number in grabbed if number is None}
+    return frozenset(
+        episode.id
+        for episode in episodes
+        if episode.season in packs
+        or (episode.number is not None and (episode.season, episode.number) in grabbed)
+    )
+
+
+class _NameHint(NamedTuple):
+    query: str  # the name without its suffix
+    year: int | None
+    country: str | None  # ISO code as TVMaze gives it
+
+
+_SUFFIX = re.compile(r"^(?P<base>.*\S)\s*\((?P<tag>\d{4}|[A-Z]{2})\)$")
+# Names other sites use for a country, mapped to TVMaze's ISO 3166-1 code.
+_COUNTRY_ALIASES = {"UK": "GB"}
+
+
+_DASHES = re.compile("[‐-―−]")  # hyphens, dashes, the minus sign
+_QUOTES = str.maketrans(
+    {
+        "‘": "'", "’": "'", "‚": "'", "‛": "'",
+        "“": '"', "”": '"', "„": '"', "‟": '"',
+    }
+)
+
+
+def search_name(name: str) -> str:
+    """`name` as searched on TVMaze: NFKC, every Unicode dash or minus sign as "-", curly
+    quotes as straight ones, whitespace collapsed. (airdates.tv writes "Re:Zero − Starting
+    Life in Another World" with a minus sign; TVMaze knows it with "-".)"""
+    text = _DASHES.sub("-", unicodedata.normalize("NFKC", name)).translate(_QUOTES)
+    return " ".join(text.split())
+
+
+def _name_hint(name: str) -> _NameHint | None:
+    """The year or country a show name ends with, e.g. "Ghosts (2021)" or "The Office (US)"."""
+    match = _SUFFIX.match(name.strip())
+    if match is None:
+        return None
+    base, tag = match["base"], match["tag"]
+    if tag.isdigit():
+        year = int(tag)
+        return _NameHint(base, year, None) if 1900 <= year <= 2100 else None
+    return _NameHint(base, None, _COUNTRY_ALIASES.get(tag, tag))
+
+
+def _match(name: str, show: Show | None, tracked: frozenset[int]) -> ImportMatch:
+    if show is None:
+        return ImportMatch(source_name=name)
+    return ImportMatch(
+        source_name=name,
+        show_id=show.id,
+        show_name=show.name,
+        year=show.year,
+        network=show.network,
+        already_tracked=show.id in tracked,
+    )
 
 
 def _is_stale(entry: LibraryEntry, changed_at: int | None, now: datetime) -> bool:

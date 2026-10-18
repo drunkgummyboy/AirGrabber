@@ -9,6 +9,9 @@ site before saving it, so sites that are blocked on this network are simply not 
 indexers, app profiles, proxies and tags are never changed or deleted. A run that could not finish
 (Prowlarr gone, key rejected, site definitions not downloaded yet) is tried again next launch.
 
+For Settings: `status` tells where AirGrabber stands with Prowlarr, and `install` installs it
+with winget (no console window; Windows asks for permission once), then connects as above.
+
 Secret hygiene: the API key travels only in the `X-Api-Key` header. Logs name API paths, status
 codes and site names: never a URL, the key, a request or response body, or an httpx error text.
 """
@@ -16,22 +19,27 @@ codes and site names: never a URL, the key, a request or response body, or an ht
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import TypeVar
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
-from app.models import ProwlarrSetupResult
+from app.models import ProwlarrSetupResult, ProwlarrState, ProwlarrStatus
 from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
@@ -70,6 +78,21 @@ _PING_BUDGET_S = 60.0  # covers Prowlarr's first start right after it was instal
 _SCHEMA_TIMEOUT = httpx.Timeout(60.0, connect=5.0)  # ~660 definitions, ~6 MB
 _ADD_TIMEOUT = httpx.Timeout(90.0, connect=5.0)  # Prowlarr tests the site before saving it
 
+_INSTALL_BUDGET_S = 90.0  # after winget: Prowlarr's service writes config.xml, then starts
+
+# `winget install` for Prowlarr's official installer (a Windows service, data in ProgramData).
+WINGET_COMMAND = (
+    "install",
+    "--id",
+    "TeamProwlarr.Prowlarr",
+    "--exact",
+    "--silent",
+    "--accept-package-agreements",
+    "--accept-source-agreements",
+)
+INSTALLING_TEXT = "Installing… Windows may ask for permission"
+SETTING_UP_TEXT = "Setting up Prowlarr…"
+
 _SEARCHED_CATEGORIES = frozenset({2000, 5000})  # Movies and TV: all AirGrabber ever asks for
 _NEW_APP_PROFILE: dict[str, JsonValue] = {
     "name": "AirGrabber",
@@ -81,6 +104,8 @@ _NEW_APP_PROFILE: dict[str, JsonValue] = {
 _IDENTIFIER = re.compile(r"[\w.\[\]]{1,80}")
 
 Sleep = Callable[[float], Awaitable[None]]
+# Runs winget with these arguments: True when it exited with 0 (tests pass a fake).
+WingetRunner = Callable[[Sequence[str]], Awaitable[bool]]
 WireT = TypeVar("WireT", bound="_Wire")
 
 
@@ -163,6 +188,60 @@ def read_local_config(path: Path) -> LocalProwlarr | None:
     return local
 
 
+def on_this_pc(url: str, local: LocalProwlarr | None = None) -> bool:
+    """Whether the Prowlarr at `url` (a Settings.prowlarr_url) runs on this PC: the address its
+    config.xml gives (`local`), or a loopback host such as localhost or 127.0.0.1."""
+    if local is not None and url.strip().rstrip("/") == local.base_url:
+        return True
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+# --- winget -----------------------------------------------------------------------------------
+
+
+async def run_winget(arguments: Sequence[str]) -> bool:
+    """Run winget with `arguments` without a console window. True when it exits with 0; False
+    (logged with the exit code only) when winget is missing, cannot start or fails. Cancelling
+    kills winget."""
+    winget = shutil.which("winget")
+    if sys.platform != "win32" or winget is None:
+        log.info("Prowlarr install skipped: winget is not available")
+        return False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            winget,
+            *arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError as exc:
+        log.info("Prowlarr install failed: winget could not start (%s)", type(exc).__name__)
+        return False
+    try:
+        await process.communicate()
+    except asyncio.CancelledError:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        raise
+    if process.returncode != 0:
+        log.info("Prowlarr install failed: winget exit code %s", process.returncode)
+        return False
+    return True
+
+
 # --- Prowlarr payloads ------------------------------------------------------------------------
 
 
@@ -178,6 +257,9 @@ class _Indexer(_Wire):
     name: str | None = None
     definition_name: str | None = Field(default=None, alias="definitionName")
 
+
+class _IndexerSwitch(_Wire):
+    enable: bool = False  # Prowlarr asks this site in searches
 
 class _Category(_Wire):
     id: int
@@ -264,14 +346,16 @@ class ProwlarrSetupService:
         config_path: Path | None = None,
         sleep: Sleep = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        winget: WingetRunner = run_winget,
     ) -> None:
         """`config_path` defaults to `CONFIG_PATH`; `sleep` and `clock` pace the wait for
-        Prowlarr to come up (tests pass fakes)."""
+        Prowlarr to come up; `winget` runs winget for `install` (tests pass fakes)."""
         self._http = http
         self._settings = settings
         self._config_path = CONFIG_PATH if config_path is None else config_path
         self._sleep = sleep
         self._clock = clock
+        self._winget = winget
         self._lock = asyncio.Lock()
 
     async def run(self) -> ProwlarrSetupResult:
@@ -310,6 +394,81 @@ class ProwlarrSetupService:
         else:
             log.info("Prowlarr setup: adding public sites is unfinished; trying again next launch")
         return ProwlarrSetupResult(connected=connected, added=added)
+
+    # -- Settings: status and install ----------------------------------------------------------
+
+    async def status(self) -> ProwlarrStatus:
+        """Where AirGrabber stands with Prowlarr. When nothing is configured and the Prowlarr on
+        this PC answers (installed or started since launch), this first connects to it and adds
+        the sites, as `run` does at launch. Problems are logged, never raised."""
+        local = await asyncio.to_thread(read_local_config, self._config_path)
+        url, key = self._connection()
+        if not (url or key):
+            if local is None:
+                return ProwlarrStatus(state=ProwlarrState.NOT_INSTALLED)
+            if not await self._ping(local.base_url):
+                return ProwlarrStatus(state=ProwlarrState.NOT_RUNNING, address=local.base_url)
+            await self.run()
+            url, key = self._connection()
+        installed = local.base_url if local is not None else ""
+        if not (url and key):
+            return ProwlarrStatus(state=ProwlarrState.NOT_CONNECTED, address=installed)
+        if await self._is_prowlarr(url, key):
+            if on_this_pc(url, local):
+                sites = await self._enabled_sites(url, key)
+                return ProwlarrStatus(state=ProwlarrState.CONNECTED_LOCAL, sites=sites, address=url)
+            return ProwlarrStatus(state=ProwlarrState.CONNECTED_REMOTE, address=url)
+        if local is not None and on_this_pc(url, local) and not await self._ping(local.base_url):
+            return ProwlarrStatus(state=ProwlarrState.NOT_RUNNING, address=local.base_url)
+        return ProwlarrStatus(state=ProwlarrState.NOT_CONNECTED, address=installed)
+
+    async def install(self, progress: Callable[[str], None] | None = None) -> bool:
+        """Install Prowlarr with winget (Windows asks for permission once), wait up to 90 s for it
+        to answer, then connect to it and add the sites (`run`). True when Prowlarr is installed
+        on this PC afterwards, even if it did not answer in time (`status` then says so); False
+        when winget is missing or failed, or no Prowlarr config appeared."""
+
+        def report(text: str) -> None:
+            if progress is not None:
+                progress(text)
+
+        report(INSTALLING_TEXT)
+        if not await self._winget(WINGET_COMMAND):
+            return False
+        report(SETTING_UP_TEXT)
+        local, answering = await self._wait_for_install()
+        if local is None:
+            log.info("Prowlarr setup: winget finished, but no Prowlarr config appeared")
+            return False
+        if not answering:
+            log.info("Prowlarr setup: installed, but Prowlarr did not answer within 90 s")
+            return True
+        log.info("Prowlarr setup: installed Prowlarr")
+        await self.run()
+        return True
+
+    def _connection(self) -> tuple[str, str]:
+        current = self._settings.current
+        return current.prowlarr_url, current.prowlarr_api_key.get_secret_value()
+
+    async def _wait_for_install(self) -> tuple[LocalProwlarr | None, bool]:
+        """Poll every second, for up to 90 s, until the new Prowlarr's config.xml is there and
+        it answers: (its config, whether it answered)."""
+        deadline = self._clock() + _INSTALL_BUDGET_S
+        while True:
+            local = await asyncio.to_thread(read_local_config, self._config_path)
+            if local is not None and await self._ping(local.base_url):
+                return local, True
+            if self._clock() + _PING_INTERVAL_S > deadline:
+                return local, False
+            await self._sleep(_PING_INTERVAL_S)
+
+    async def _enabled_sites(self, base: str, key: str) -> int | None:
+        """How many sites Prowlarr has switched on; None when the list could not be read."""
+        payload = await self._get_list(base, _INDEXER_PATH, key)
+        if payload is None:
+            return None
+        return sum(1 for site in _parse_each(_IndexerSwitch, payload) if site.enable)
 
     # -- connecting --------------------------------------------------------------------------
 
