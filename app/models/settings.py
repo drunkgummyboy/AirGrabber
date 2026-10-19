@@ -62,6 +62,59 @@ def remote_ready(kind: RemoteKind, url: str, username: str, password: str) -> bo
     return kind is not RemoteKind.SYNOLOGY or bool(username.strip() and password)
 
 
+# Subtitle languages offered in Settings: OpenSubtitles' code -> plain name, in menu order.
+# OpenSubtitles uses ISO 639-1 codes, plus pt-PT / pt-BR and zh-CN / zh-TW.
+SUBTITLE_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "nl": "Dutch",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt-PT": "Portuguese",
+    "pt-BR": "Portuguese (Brazil)",
+    "sv": "Swedish",
+    "da": "Danish",
+    "no": "Norwegian",
+    "fi": "Finnish",
+    "pl": "Polish",
+    "cs": "Czech",
+    "hu": "Hungarian",
+    "ro": "Romanian",
+    "el": "Greek",
+    "tr": "Turkish",
+    "ru": "Russian",
+    "uk": "Ukrainian",
+    "ar": "Arabic",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "id": "Indonesian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh-CN": "Chinese (simplified)",
+    "zh-TW": "Chinese (traditional)",
+}
+_LANGUAGE_CODES = {code.lower(): code for code in SUBTITLE_LANGUAGES}
+
+
+def _subtitle_languages(value: Any) -> Any:
+    """Known codes in their canonical spelling ("pt-br" -> "pt-BR"), without repeats, in the
+    order given; unknown codes are dropped. A comma-separated string is accepted too."""
+    if isinstance(value, str):
+        value = [part for part in value.split(",")]
+    if not isinstance(value, (list, tuple)):
+        return value
+    codes: list[str] = []
+    for item in value:
+        code = _LANGUAGE_CODES.get(str(item).strip().lower())
+        if code is not None and code not in codes:
+            codes.append(code)
+    return tuple(codes)
+
+
+SubtitleLanguages = Annotated[tuple[str, ...], BeforeValidator(_subtitle_languages)]
+
+
 class Weekday(StrEnum):
     MONDAY = "Monday"
     TUESDAY = "Tuesday"
@@ -75,6 +128,17 @@ class Weekday(StrEnum):
     def weekday(self) -> int:
         """0 = Monday, matching date.weekday()."""
         return list(Weekday).index(self)
+
+
+class CardSize(StrEnum):
+    """How big the poster cards (Movies, Discover, search results, the watchlist) and the My
+    shows cards are drawn, smallest first. XL is the original size and the default."""
+
+    XS = "xs"
+    S = "s"
+    M = "m"
+    L = "l"
+    XL = "xl"
 
 
 def _split_csv(value: Any) -> Any:
@@ -122,6 +186,8 @@ class Settings(BaseModel):
     first_day: Weekday = Weekday.MONDAY
     weeks_to_show: int = Field(default=3, ge=1, le=5)
     show_suggestions: bool = True  # the calendar's suggested (untracked) show per day
+    # The cards' size (app/ui/card_scale.py); the calendar keeps its own sizing.
+    card_size: CardSize = CardSize.XL
     tmdb_api_key: StoredSecret = SecretStr("")
     excluded_keywords: KeywordList = ("cam", "telesync", "hdcam", "sample")
     preferred_groups: KeywordList = ()
@@ -154,6 +220,22 @@ class Settings(BaseModel):
     tray_notice_shown: bool = False
     # Mirrors the Startup-folder shortcut (app/services/startup.py) that starts it in the tray.
     start_with_windows: bool = False
+    # Subtitles from OpenSubtitles.com for the grabbed episodes and films
+    # (app/services/subtitles.py), saved next to the videos in `subtitles_folder`.
+    subtitles_enabled: bool = False
+    subtitle_languages: SubtitleLanguages = ("en",)
+    # Where the torrent program puts finished downloads ("" = not chosen); a UNC path such as
+    # \\NAS\video works too.
+    subtitles_folder: str = ""
+    # The user's own OpenSubtitles account, optional (downloads count against it; AirGrabber's
+    # API key is shipped with the app). The password only ever travels in the body of the login
+    # POST; the session token lives in memory. An `opensubtitles_api_key` stored by an earlier
+    # build is ignored on load and dropped by the next save.
+    opensubtitles_username: str = ""
+    opensubtitles_password: StoredSecret = SecretStr("")
+    # The user's own OpenSubtitles API key, optional: when set it is used instead of the shipped
+    # one (app/services/opensubtitles.py, `effective_api_key`). Header only, never logged.
+    opensubtitles_own_key: StoredSecret = SecretStr("")
 
     @property
     def remote_configured(self) -> bool:
@@ -190,7 +272,14 @@ class Settings(BaseModel):
         return value
 
     @field_validator(
-        "tmdb_api_key", "prowlarr_api_key", "remote_username", "remote_destination", mode="before"
+        "tmdb_api_key",
+        "prowlarr_api_key",
+        "remote_username",
+        "remote_destination",
+        "subtitles_folder",
+        "opensubtitles_username",
+        "opensubtitles_own_key",
+        mode="before",
     )
     @classmethod
     def _strip_key(cls, value: Any) -> Any:

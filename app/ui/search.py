@@ -16,6 +16,7 @@ from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.branding import set_window_icon
+from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import SearchShowCard
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
@@ -25,7 +26,7 @@ from app.ui.text_fit import SLACK, elide_to_width
 from app.ui.widgets import FlexGrid, LoadingBar
 
 if TYPE_CHECKING:
-    from app.services import ImageCache, LibraryService
+    from app.services import ImageCache, LibraryService, WatchlistService
     from app.services.discovery import DiscoveryService
     from app.ui.views.base import StatusReporter
 
@@ -287,7 +288,9 @@ class SearchResultsWindow(ctk.CTkToplevel):
     """Results for `query` (not modal): TVMaze shows with a "+ Track" button (a click on a
     show's cover calls `on_open_show`), then TMDB movies.
 
-    Both searches run at once; each section renders as soon as its own search is done.
+    Both searches run at once; each section renders as soon as its own search is done. The cards
+    are drawn at `card_scale`, the card size when the window opened: a window already open
+    keeps its size until the next search opens a new one.
     """
 
     WIDTH = 1150
@@ -303,17 +306,21 @@ class SearchResultsWindow(ctk.CTkToplevel):
         status: StatusReporter,
         query: str,
         movie_actions: DownloadActions[Movie],
+        watchlist: WatchlistService,
         on_open_settings: Callable[[], None],
         on_open_show: Callable[[Show], None] | None = None,
+        card_scale: CardScale = FULL,
     ) -> None:
         """`on_open_show`: what a click on a show card's cover does (the show details)."""
         super().__init__(master, fg_color=theme.BG)
+        self._scale = card_scale
         self._library = library
         self._discovery = discovery
         self._images = images
         self._status = status
         self._query = query
         self._movie_actions = movie_actions  # the movie cards' Download and ⋯ buttons
+        self._watchlist = watchlist  # the movie cards' watchlist buttons
         self._on_open_settings = on_open_settings
         self._on_open_show = on_open_show
         self._cards: dict[int, SearchShowCard] = {}
@@ -394,7 +401,8 @@ class SearchResultsWindow(ctk.CTkToplevel):
         if not results:
             self._message(self._shows_section, "No TV shows found.", "gray50")
             return
-        grid = FlexGrid(self._shows_section, item_width=POSTER_CARD_WIDTH, pad_x=8, pad_y=10)
+        item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
+        grid = FlexGrid(self._shows_section, item_width=item_width, pad_x=8, pad_y=10)
         grid.pack(fill="x")
         for result in results:
             self._cards[result.show.id] = SearchShowCard(
@@ -404,6 +412,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 is_tracked=result.is_tracked,
                 on_track=self._track,
                 on_open_show=self._on_open_show,
+                scale=self._scale,
             )
         grid.relayout()
 
@@ -443,7 +452,8 @@ class SearchResultsWindow(ctk.CTkToplevel):
         if not movies:
             self._message(self._movies_section, "No movies found.", "gray50")
             return
-        grid = FlexGrid(self._movies_section, item_width=POSTER_CARD_WIDTH, pad_x=8, pad_y=10)
+        item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
+        grid = FlexGrid(self._movies_section, item_width=item_width, pad_x=8, pad_y=10)
         grid.pack(fill="x")
         for movie in movies:
             MovieCard(
@@ -452,6 +462,8 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 images=self._images,
                 details=self._discovery.movie_details,
                 actions=self._movie_actions,
+                watchlist=self._watchlist,
+                scale=self._scale,
             )
         grid.relayout()
 

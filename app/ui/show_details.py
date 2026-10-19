@@ -9,10 +9,11 @@ fetches any other from TVMaze. TMDB shows (Discover) are matched to TVMaze first
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import tkinter as tk
 import webbrowser
-from collections.abc import Callable, Coroutine, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -40,9 +41,28 @@ from app.ui.download_control import (
     DownloadControl,
     episode_key,
 )
+from app.ui.missing_control import (
+    CHIP_HAVE_TEXT,
+    CHIP_MISSING_TEXT,
+    CHIP_TIP,
+    HAVE_EPISODE_TEXT,
+    HAVE_SEASON_TEXT,
+    MARK_MISSING_TEXT,
+    MISSING_COLOR,
+    NOTHING_MISSING_TEXT,
+    SEASON_MENU_TIP,
+    MenuItem,
+    MissingActions,
+    MissingButton,
+    chip,
+    missing_text,
+    popup_menu,
+)
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
+from app.ui.subtitle_settings import CREDIT_TEXT
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, unscaled_width
+from app.ui.tooltip import add_tooltip
 from app.ui.widgets import FlexGrid, LoadingBar, PosterImage
 
 if TYPE_CHECKING:
@@ -52,8 +72,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 RowState = Literal["downloaded", "downloadable", "upcoming"]
+Mark = Literal["missing", "have"]  # the latest season's amber "Missing" / muted "✓ Have it"
 Listener = Callable[[], None]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
+# Per (season, episode) of a show (TVMaze id), its subtitle mark ("CC EN NL").
+SubtitleMarks = Callable[[int], Awaitable[Mapping[tuple[int, int], str]]]
 
 # Logical (unscaled) CTk units.
 WINDOW_WIDTH = 860
@@ -72,7 +95,12 @@ EPISODE_ROW_HEIGHT = 52
 CODE_WIDTH = 72
 DATE_WIDTH = 64
 SLOT_WIDTH = 200  # the row's right side: ✓ Downloaded, the Download row, or when it airs
+MARK_WIDTH = 92  # the latest season's "Missing" / "✓ Have it" chip, left of that
+MARK_HEIGHT = 26
+MISSING_BUTTON_WIDTH = 300  # the season bar's "⬇ Download missing (3)"
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
+CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's title
+CC_GAP = 8
 NEAR_DAYS = 6  # an episode airing within this many days is named by its weekday
 
 DOWNLOADED_TEXT = "✓ Downloaded"
@@ -132,11 +160,14 @@ def season_numbers(episodes: Iterable[Episode]) -> list[int]:
 
 
 def default_season(details: ShowDetails, now: datetime) -> int | None:
-    """The season shown first: the next episode's, else the latest with an aired episode, else
-    the first; None when the show lists no seasons."""
+    """The season shown first: the latest season while it has missing episodes, else the next
+    episode's, else the latest with an aired episode, else the first; None when the show lists
+    no seasons."""
     seasons = season_numbers(details.episodes)
     if not seasons:
         return None
+    if details.missing and details.latest_season in seasons:
+        return details.latest_season
     upcoming = details.next_episode
     if upcoming is not None and upcoming.season in seasons:
         return upcoming.season
@@ -157,6 +188,44 @@ def episode_row_state(episode: Episode, *, downloaded: bool, now: datetime) -> R
     if not episode.has_aired(now):
         return "upcoming"
     return "downloaded" if downloaded else "downloadable"
+
+
+def row_mark(details: ShowDetails, episode: Episode) -> Mark | None:
+    """The chip a row of a tracked show's latest season gets: "missing" (see
+    app.services.missing), "have" (marked "I already have this" and not downloaded), else
+    None. Older seasons never get one."""
+    if not details.tracked or episode.season != details.latest_season:
+        return None
+    if details.is_missing(episode):
+        return "missing"
+    if details.has_it(episode) and not details.is_downloaded(episode):
+        return "have"
+    return None
+
+
+def season_marks(details: ShowDetails, season: int | None) -> tuple[list[int], list[int]]:
+    """The ids of `season`'s missing episodes (oldest first) and of its episodes marked "I
+    already have this"; both empty unless it is the tracked show's latest season."""
+    if not details.tracked or season is None or season != details.latest_season:
+        return [], []
+    episodes = season_episodes(details.episodes, season)
+    missing = [e.id for e in episodes if details.is_missing(e)]
+    have = [e.id for e in episodes if row_mark(details, e) == "have"]
+    return missing, have
+
+
+SeasonAction = Literal["mark", "unmark"]
+
+
+def season_menu_items(missing: Sequence[int], have: Sequence[int]) -> list[tuple[str, SeasonAction]]:
+    """The season bar's ⋯ menu: "I already have this season" while episodes are missing,
+    "Mark as missing again" while some are marked."""
+    items: list[tuple[str, SeasonAction]] = []
+    if missing:
+        items.append((HAVE_SEASON_TEXT, "mark"))
+    if have:
+        items.append((MARK_MISSING_TEXT, "unmark"))
+    return items
 
 
 def upcoming_text(episode: Episode, now: datetime) -> str:
@@ -200,7 +269,8 @@ def _exists(widget: Any) -> bool:
 
 class _EpisodeRow(ctk.CTkFrame):
     """"S02E01  Title  17 Jan" with its state on the right: ✓ Downloaded, the Download row (⬇
-    Download + ⋯), or when it airs."""
+    Download + ⋯), or when it airs. In a tracked show's latest season, a chip left of that:
+    amber "Missing" or muted "✓ Have it", each opening a menu (`on_mark`)."""
 
     def __init__(
         self,
@@ -210,15 +280,24 @@ class _EpisodeRow(ctk.CTkFrame):
         state: RowState,
         now: datetime,
         actions: DownloadActions[CalendarEntry],
+        mark: Mark | None = None,
+        marks_shown: bool = False,
+        on_mark: Callable[[Episode, Mark, Any], None] | None = None,
+        cc: str = "",
     ) -> None:
         super().__init__(
             master, fg_color=theme.SURFACE, corner_radius=8, height=EPISODE_ROW_HEIGHT
         )
+        self._cc_text = ""
+        self._holder_width = 0  # physical px, from the title holder's last <Configure>
         self.grid_propagate(False)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self._actions = actions
+        self._on_mark = on_mark
         self._state: RowState | None = None
+        self._mark: tuple[Mark | None, bool] | None = None
+        self._mark_slot: ctk.CTkFrame | None = None
         episode = entry.episode
 
         ctk.CTkLabel(
@@ -236,15 +315,29 @@ class _EpisodeRow(ctk.CTkFrame):
         title = ctk.CTkLabel(
             holder, text="", font=title_font, text_color=theme.TEXT, anchor="w", height=24
         )
-        title.pack(fill="x")
+        title.pack(side="left", fill="x", expand=True)
+        # "CC EN NL" right of the title once subtitles were saved (downloaded rows only).
+        self._cc = ctk.CTkLabel(
+            holder,
+            text="",
+            font=theme.font(CC_FONT_SIZE, bold=True),
+            text_color=theme.SUCCESS,
+            height=24,
+        )
+        add_tooltip(self._cc, CREDIT_TEXT)  # the credit OpenSubtitles asks for
         name = episode.name
 
-        def fit(event: Any) -> None:
-            if event.width > 1:
-                room = unscaled_width(holder, event.width) - SLACK
+        def fit(width: int) -> None:
+            if width > 1:
+                self._holder_width = width
+                room = unscaled_width(holder, width) - SLACK
+                if self._cc_text:
+                    room -= unscaled_width(holder, self._cc.winfo_reqwidth()) + CC_GAP
                 title.configure(text=elide_to_width(name, room, title_font.measure))
 
-        holder.bind("<Configure>", fit)
+        self._fit_title = fit
+        self._title = title
+        holder.bind("<Configure>", lambda event: fit(event.width))
         self._date = ctk.CTkLabel(
             self, text="", width=DATE_WIDTH, font=theme.font(13), text_color=theme.TEXT_MUTED,
             anchor="e",
@@ -254,11 +347,24 @@ class _EpisodeRow(ctk.CTkFrame):
             self, fg_color="transparent", width=SLOT_WIDTH, height=CONTROL_HEIGHT
         )
         self._slot.pack_propagate(False)
-        self._slot.grid(row=0, column=3, padx=(0, 8))
-        self.set_state(entry, state, now)
+        self._slot.grid(row=0, column=4, padx=(0, 8))
+        self.set_state(entry, state, now, mark=mark, marks_shown=marks_shown, cc=cc)
 
-    def set_state(self, entry: CalendarEntry, state: RowState, now: datetime) -> None:
-        """Show `state` on the right (nothing changes when it already does)."""
+    def set_state(
+        self,
+        entry: CalendarEntry,
+        state: RowState,
+        now: datetime,
+        *,
+        mark: Mark | None = None,
+        marks_shown: bool = False,
+        cc: str = "",
+    ) -> None:
+        """Show `state` on the right and `mark`'s chip (in a slot kept while `marks_shown`, so
+        the season's rows stay aligned), and `cc` ("CC EN NL") beside the title of a
+        downloaded row; nothing changes when they already show."""
+        self._set_mark(entry.episode, mark, marks_shown)
+        self._set_cc(cc if state == "downloaded" else "")
         if state == self._state:
             return
         self._state = state
@@ -296,6 +402,65 @@ class _EpisodeRow(ctk.CTkFrame):
                 anchor="e",
             ).pack(fill="both", expand=True, padx=(0, 6))
 
+    @property
+    def mark(self) -> Mark | None:
+        return None if self._mark is None else self._mark[0]
+
+    @property
+    def cc(self) -> str:
+        """The subtitle mark showing ("CC EN NL"), "" for none."""
+        return self._cc_text
+
+    def _set_cc(self, text: str) -> None:
+        if text == self._cc_text:
+            return
+        self._cc_text = text
+        if text:
+            self._cc.configure(text=text)
+            self._cc.pack(side="right", padx=(CC_GAP, 0), before=self._title)
+        else:
+            self._cc.pack_forget()
+        if self._holder_width:
+            self._fit_title(self._holder_width)
+
+    def _set_mark(self, episode: Episode, mark: Mark | None, marks_shown: bool) -> None:
+        if (mark, marks_shown) == self._mark:
+            return
+        self._mark = (mark, marks_shown)
+        if not marks_shown and mark is None:
+            if self._mark_slot is not None:
+                self._mark_slot.destroy()
+                self._mark_slot = None
+            return
+        if self._mark_slot is None:
+            self._mark_slot = ctk.CTkFrame(
+                self, fg_color="transparent", width=MARK_WIDTH, height=MARK_HEIGHT
+            )
+            self._mark_slot.pack_propagate(False)
+            self._mark_slot.grid(row=0, column=3, padx=(0, 8))
+        for child in self._mark_slot.winfo_children():
+            child.destroy()
+        if mark is None:
+            return
+        on_mark = self._on_mark
+        if mark == "missing":
+            text, color = CHIP_MISSING_TEXT, MISSING_COLOR
+        else:
+            text, color = CHIP_HAVE_TEXT, theme.TEXT_MUTED
+        button = chip(
+            self._mark_slot,
+            text,
+            color,
+            height=MARK_HEIGHT,
+            font_size=13,
+            width=MARK_WIDTH,
+            clickable=on_mark is not None,
+        )
+        button.pack(fill="both", expand=True)
+        if on_mark is not None:
+            button.configure(command=functools.partial(on_mark, episode, mark, button))
+            add_tooltip(button, CHIP_TIP)
+
 
 # -- the window --------------------------------------------------------------------------------
 
@@ -313,9 +478,17 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         images: ImageCache,
         status: StatusReporter,
         episode_actions: DownloadActions[CalendarEntry],
+        missing_actions: MissingActions | None = None,
+        subtitle_marks: SubtitleMarks | None = None,
     ) -> None:
+        """`subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
+        without it no row gets one."""
         super().__init__(master, fg_color=theme.BG)
         self._show = show
+        self._subtitle_marks = subtitle_marks
+        self._cc: Mapping[tuple[int, int], str] = {}
+        self._missing_actions = missing_actions
+        self._missing_button: MissingButton | None = None
         self._library = library
         self._images = images
         self._status = status
@@ -352,6 +525,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         self._build_header(content)
         self._chip_grid = FlexGrid(content, item_width=CHIP_WIDTH, pad_x=4, pad_y=4)
         self._chip_grid.pack(fill="x", pady=(dialog_kit.BLOCK_GAP, 0))
+        self._season_bar = self._build_season_bar(content)
         self._episode_list = ctk.CTkFrame(content, fg_color="transparent")
         self._episode_list.pack(fill="x", pady=(12, 0))
         LoadingBar(self._episode_list).pack(fill="x", pady=(8, 0))
@@ -421,6 +595,41 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         self._buttons.grid(row=5, column=0, sticky="w", pady=(16, 0))
         info.bind("<Configure>", self._on_info_resize)
         self._paint_header(show, None)
+
+    def _build_season_bar(self, master: Any) -> ctk.CTkFrame:
+        """"3 missing" + "⬇ Download missing (3)" + ⋯, above the latest season's rows (packed
+        while it applies, see `_paint_season_bar`)."""
+        bar = ctk.CTkFrame(master, fg_color="transparent", height=CONTROL_HEIGHT)
+        self._missing_label = ctk.CTkLabel(
+            bar, text="", font=theme.font(15, bold=True), text_color=MISSING_COLOR, anchor="w"
+        )
+        self._missing_label.pack(side="left")
+        self._season_more = ctk.CTkButton(
+            bar,
+            text="⋯",
+            width=CONTROL_HEIGHT,
+            height=CONTROL_HEIGHT,
+            corner_radius=CONTROL_RADIUS,
+            font=theme.font(CONTROL_FONT_SIZE, bold=True),
+            fg_color="transparent",
+            hover_color=theme.ACCENT_HOVER,
+            border_width=1,
+            border_color=theme.EDGE,
+            command=self._open_season_menu,
+        )
+        add_tooltip(self._season_more, SEASON_MENU_TIP)
+        if self._missing_actions is not None:
+            self._missing_button = MissingButton(
+                bar,
+                show=self._show,
+                count=0,
+                actions=self._missing_actions,
+                with_count=True,
+                height=CONTROL_HEIGHT,
+                font_size=CONTROL_FONT_SIZE,
+                width=MISSING_BUTTON_WIDTH,
+            )
+        return bar
 
     def _on_info_resize(self, event: Any) -> None:
         if event.width <= 1:
@@ -558,8 +767,15 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             if self.winfo_exists() and self._details is None:
                 self._episodes_message(f"Couldn't load the episodes: {exc}", theme.DANGER)
             return
+        if self._subtitle_marks is not None:
+            self._cc = await self._subtitle_marks(details.show.id)
         if self.winfo_exists():
             self._apply(details)
+
+    def _cc_for(self, episode: Episode) -> str:
+        if episode.number is None:
+            return ""
+        return self._cc.get((episode.season, episode.number), "")
 
     def _apply(self, details: ShowDetails) -> None:
         self._details = details
@@ -628,15 +844,25 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         if details is None:
             return
         if self._season is None:
+            self._paint_season_bar()
             self._episodes_message(NO_EPISODES_TEXT, theme.TEXT_MUTED)
             return
+        self._paint_season_bar()
         episodes = tuple(season_episodes(details.episodes, self._season))
         now = _now()
         if episodes == self._row_episodes and self._rows:
+            marks_shown = self._marks_shown()
             for episode in episodes:
                 row = self._rows.get(episode.id)
                 if row is not None and row.winfo_exists():
-                    row.set_state(self._entry(episode), self._row_state(episode, now), now)
+                    row.set_state(
+                        self._entry(episode),
+                        self._row_state(episode, now),
+                        now,
+                        mark=row_mark(details, episode),
+                        marks_shown=marks_shown,
+                        cc=self._cc_for(episode),
+                    )
             return
         self._cancel_rows()
         for child in self._episode_list.winfo_children():
@@ -648,11 +874,15 @@ class ShowDetailsWindow(ctk.CTkToplevel):
     async def _build_rows(self, episodes: Sequence[Episode]) -> None:
         """Build the rows a batch at a time, so a long season doesn't freeze the window."""
         now = _now()
+        on_mark = self._open_mark_menu if self._missing_actions is not None else None
         for start in range(0, len(episodes), ROWS_PER_BATCH):
             if start:
                 await asyncio.sleep(0.001)
                 if not self.winfo_exists():
                     return
+            details = self._details
+            assert details is not None
+            marks_shown = self._marks_shown()
             for episode in episodes[start : start + ROWS_PER_BATCH]:
                 row = _EpisodeRow(
                     self._episode_list,
@@ -660,6 +890,10 @@ class ShowDetailsWindow(ctk.CTkToplevel):
                     state=self._row_state(episode, now),
                     now=now,
                     actions=self._episode_actions,
+                    mark=row_mark(details, episode),
+                    marks_shown=marks_shown,
+                    on_mark=on_mark,
+                    cc=self._cc_for(episode),
                 )
                 row.pack(fill="x", pady=3)
                 self._rows[episode.id] = row
@@ -679,6 +913,70 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         details = self._details
         assert details is not None
         return episode_row_state(episode, downloaded=details.is_downloaded(episode), now=now)
+
+    # -- missing episodes --------------------------------------------------------------------
+
+    def _marks_shown(self) -> bool:
+        """Whether the rows keep a slot for the "Missing" / "✓ Have it" chips: the tracked
+        show's latest season is selected (and missing episodes are shown at all)."""
+        details = self._details
+        return (
+            self._missing_actions is not None
+            and details is not None
+            and details.tracked
+            and self._season is not None
+            and self._season == details.latest_season
+        )
+
+    def _paint_season_bar(self) -> None:
+        """Shown on a tracked show's latest season while episodes are missing or marked "I
+        already have this", or a "Download missing" run has something to tell."""
+        details, actions = self._details, self._missing_actions
+        if details is None or actions is None or not self._marks_shown():
+            self._season_bar.pack_forget()
+            return
+        missing, have = season_marks(details, self._season)
+        if not (missing or have or actions.runs.get(details.show.id) is not None):
+            self._season_bar.pack_forget()
+            return
+        self._missing_label.configure(
+            text=missing_text(len(missing)) if missing else NOTHING_MISSING_TEXT,
+            text_color=MISSING_COLOR if missing else theme.TEXT_MUTED,
+        )
+        self._season_more.pack_forget()
+        if self._missing_button is not None:
+            self._missing_button.pack_forget()
+        if season_menu_items(missing, have):
+            self._season_more.pack(side="right")
+        if self._missing_button is not None:
+            self._missing_button.set_count(len(missing))
+            self._missing_button.pack(side="right", padx=(0, 8))
+        if not self._season_bar.winfo_manager():
+            self._season_bar.pack(fill="x", pady=(12, 0), before=self._episode_list)
+
+    def _open_season_menu(self) -> None:
+        details, actions = self._details, self._missing_actions
+        if details is None or actions is None:
+            return
+        missing, have = season_marks(details, self._season)
+        show = details.show
+        items: list[MenuItem] = []
+        for label, kind in season_menu_items(missing, have):
+            ids = tuple(missing if kind == "mark" else have)
+            act = actions.mark_have if kind == "mark" else actions.unmark_have
+            items.append((label, functools.partial(act, show, ids)))
+        popup_menu(self._season_more, items)
+
+    def _open_mark_menu(self, episode: Episode, mark: Mark, anchor: Any) -> None:
+        details, actions = self._details, self._missing_actions
+        if details is None or actions is None:
+            return
+        ids = (episode.id,)
+        if mark == "missing":
+            item = (HAVE_EPISODE_TEXT, functools.partial(actions.mark_have, details.show, ids))
+        else:
+            item = (MARK_MISSING_TEXT, functools.partial(actions.unmark_have, details.show, ids))
+        popup_menu(anchor, [item])
 
     def _cancel_rows(self) -> None:
         if self._rows_task is not None and not self._rows_task.done():
@@ -767,8 +1065,15 @@ class ShowWindows:
         status: StatusReporter,
         episode_actions: DownloadActions[CalendarEntry],
         downloads_changed: Subscribe,
+        missing_actions: MissingActions | None = None,
+        subtitle_marks: SubtitleMarks | None = None,
+        subtitles_changed: Subscribe | None = None,
     ) -> None:
+        """`subtitle_marks` / `subtitles_changed`: the rows' "CC EN NL" marks and when they
+        change (subtitles saved)."""
         self._master = master
+        self._missing_actions = missing_actions
+        self._subtitle_marks = subtitle_marks
         self._library = library
         self._discovery = discovery
         self._images = images
@@ -778,6 +1083,8 @@ class ShowWindows:
         self._resolving: set[int] = set()  # TMDB ids being matched to TVMaze right now
         self._tasks: set[asyncio.Task[None]] = set()
         self._unsubscribe = [library.subscribe(self.reload_all), downloads_changed(self.reload_all)]
+        if subtitles_changed is not None:
+            self._unsubscribe.append(subtitles_changed(self.reload_all))
 
     def open_show(self, show: Show) -> None:
         """Open the details of a TVMaze show, or raise its window."""
@@ -792,6 +1099,8 @@ class ShowWindows:
             images=self._images,
             status=self._status,
             episode_actions=self._episode_actions,
+            missing_actions=self._missing_actions,
+            subtitle_marks=self._subtitle_marks,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

@@ -11,6 +11,7 @@ from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
+from app.ui.card_scale import FULL, CardScale
 from app.ui.media_cards import DiscoverShowCard
 from app.ui.poster_card import TrackState
 from app.ui.views.base import StatusReporter
@@ -29,11 +30,18 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         status: StatusReporter,
         on_open_settings: Callable[[], None],
         on_open_show: Callable[[DiscoverShow], None] | None = None,
+        card_scale: Callable[[], CardScale] = lambda: FULL,
         **kwargs: Any,
     ) -> None:
-        """`on_open_show`: what a click on a card's cover does (the show details)."""
+        """`on_open_show`: what a click on a card's cover does (the show details).
+        `card_scale`: the card size (Settings), read at every load."""
         super().__init__(
-            master, images=images, status=status, on_open_settings=on_open_settings, **kwargs
+            master,
+            images=images,
+            status=status,
+            on_open_settings=on_open_settings,
+            card_scale=card_scale,
+            **kwargs,
         )
         self._discovery = discovery
         self._on_open_show = on_open_show
@@ -76,6 +84,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
             is_tracked=item.is_tracked,
             on_track=self._track,
             on_open_show=self._on_open_show,
+            scale=self._scale,
         )
         if show.id in self._tracking and not item.is_tracked:
             card.set_track_state("busy")

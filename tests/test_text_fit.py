@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.ui.text_fit import elide_to_width, fit_to_lines, title_lines
+from app.ui.text_fit import break_lines, elide_to_width, fit_to_lines, title_lines
 
 
 def measure(text: str) -> float:
@@ -99,6 +99,21 @@ class FitToLinesWithBreaksTests(unittest.TestCase):
     def test_a_blank_source_line_takes_a_line(self) -> None:
         self.assertEqual(fit_to_lines("aaa\n\nbbb", 49, 3, measure), "aaa\n\nbbb")
         self.assertEqual(fit_to_lines("aaa\n\nbbb ccc", 49, 2, measure), "aaa\nbbb ccc")
+
+
+class BreakLinesTests(unittest.TestCase):
+    def test_breaks_become_newlines(self) -> None:
+        # "Matchbox the Movie" is 126 wide: fit_to_lines keeps it whole (it wraps into two).
+        fitted = fit_to_lines("Matchbox the Movie", 100, 2, measure)
+        self.assertEqual(fitted, "Matchbox the Movie")
+        self.assertEqual(break_lines(fitted, 100, measure), "Matchbox the\nMovie")
+
+    def test_existing_breaks_and_fitting_lines_stay(self) -> None:
+        two = "Spider-Man\nBrand New Day"
+        self.assertEqual(break_lines(two, 100, measure), two)
+        self.assertEqual(break_lines("Animals", 100, measure), "Animals")
+        elided = fit_to_lines("Insidious\nOut of the Further Again", 100, 2, measure)
+        self.assertEqual(break_lines(elided, 100, measure), elided)
 
 
 class TitleLinesTests(unittest.TestCase):

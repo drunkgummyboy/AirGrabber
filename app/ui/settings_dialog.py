@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from tkinter import filedialog
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
@@ -21,12 +22,13 @@ from app.indexers import (
     ProwlarrIndexer,
     YtsIndexer,
 )
-from app.models import DownloadMode, ProwlarrStatus, QualityProfile, UpdateInfo, Weekday
+from app.models import CardSize, DownloadMode, ProwlarrStatus, QualityProfile, UpdateInfo, Weekday
 from app.services import (
     DiscoveryService,
     ProwlarrSetupService,
     RemoteDownloads,
     SettingsService,
+    SubtitleService,
     TorrentAppService,
     TorrentSearchService,
     UpdateError,
@@ -36,6 +38,7 @@ from app.services import startup
 from app.services.startup import StartupError
 from app.ui import theme
 from app.ui.branding import set_window_icon
+from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
 from app.ui.dialog_kit import (
     BUTTON_HEIGHT,
     BUTTON_RADIUS,
@@ -52,8 +55,30 @@ from app.ui.dialog_kit import (
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
 from app.ui.remote_program_form import FIELD_LABELS as REMOTE_LABELS
 from app.ui.remote_program_form import RemoteProgramForm, folder_note
+from app.ui.subtitle_settings import (
+    ACCOUNT_HINT,
+    ACCOUNT_LABEL,
+    CREDIT_TEXT,
+    CREDIT_URL,
+    FOLDER_HINT,
+    FOLDER_LABEL,
+    OWN_KEY_LABEL,
+    SIGN_UP_TEXT,
+    SIGNUP_URL,
+    SUBTITLES_HEADING,
+    SUBTITLES_NOTE,
+    SWITCH_TEXT,
+    UNAVAILABLE_TEXT,
+    AccountRow,
+    LanguageTags,
+    OwnKeyRow,
+    link,
+    quota_line,
+    subtitle_problem,
+)
 from app.ui.tasks import async_command, spawn
 from app.ui.tmdb_key_guide import TmdbKeyDialog
+from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
 
 TAB_GENERAL = "General"
@@ -202,6 +227,7 @@ _FIELD_LABELS = {
     "download_dir": "Save .torrent files to a folder",
     "quality": "Preferred quality",
     "first_day": "Week starts on",
+    "card_size": CARD_SIZE_LABEL,
     "tmdb_api_key": "Movies key",
     "auto_update": "Updates",
     "disabled_indexers": "Built-in sites",
@@ -209,6 +235,11 @@ _FIELD_LABELS = {
     "preferred_groups": "Prefer releases from",
     "prowlarr_url": "Prowlarr URL",
     "prowlarr_api_key": "Prowlarr API key",
+    "subtitle_languages": "Subtitle languages",
+    "subtitles_folder": FOLDER_LABEL,
+    "opensubtitles_username": ACCOUNT_LABEL,
+    "opensubtitles_password": ACCOUNT_LABEL,
+    "opensubtitles_own_key": OWN_KEY_LABEL,
     **REMOTE_LABELS,
 }
 
@@ -313,8 +344,15 @@ class SettingsDialog(ctk.CTkToplevel):
         update_info: UpdateInfo | None = None,
         on_update: Callable[[], None] | None = None,
         startup_shortcut: StartupShortcut | None = None,
+        subtitles: SubtitleService | None = None,
     ) -> None:
+        """`subtitles`: the Subtitles section (General) shows when it is given."""
         super().__init__(master, fg_color=theme.BG)
+        self._subtitles = subtitles
+        self._subtitle_rows: ctk.CTkFrame | None = None
+        self._language_tags: LanguageTags | None = None
+        self._account: AccountRow | None = None
+        self._own_key: OwnKeyRow | None = None
         self._startup = startup_shortcut if startup_shortcut is not None else WindowsStartup()
         self._settings = settings
         self._search = search
@@ -336,6 +374,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._mode = ctk.StringVar(value=current.download_mode.value)
         self._quality = ctk.StringVar(value=quality_name(current.quality))
         self._first_day = ctk.StringVar(value=current.first_day.value)
+        self._card_size = ctk.StringVar(value=CARD_SIZE_LABELS[current.card_size])
         self._download_dir = ctk.StringVar(value=str(current.download_dir))
         self._tmdb_key = ctk.StringVar(value=current.tmdb_api_key.get_secret_value())
         self._excluded = ctk.StringVar(value=", ".join(current.excluded_keywords))
@@ -356,6 +395,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._startup_shown = self._startup.is_enabled()
         self._start_with_windows = ctk.BooleanVar(value=self._startup_shown)
         self._auto_new_shows = ctk.BooleanVar(value=current.auto_download_new_shows)
+        self._subtitles_on = ctk.BooleanVar(value=current.subtitles_enabled)
+        self._subtitles_folder = ctk.StringVar(value=current.subtitles_folder)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_X)
@@ -445,6 +486,23 @@ class SettingsDialog(ctk.CTkToplevel):
             form.row("Preferred quality"), self._quality, list(QUALITY_NAMES.values())
         )
         self._option_menu(form.row("Week starts on"), self._first_day, [d.value for d in Weekday])
+        sizes = ctk.CTkSegmentedButton(
+            form.row(CARD_SIZE_LABEL),
+            values=[CARD_SIZE_LABELS[size] for size in CardSize],
+            variable=self._card_size,
+            width=260,
+            height=BUTTON_HEIGHT,
+            corner_radius=BUTTON_RADIUS,
+            font=theme.font(DETAIL_SIZE, bold=True),
+            fg_color=theme.SURFACE,
+            selected_color=theme.ACCENT,
+            selected_hover_color=theme.ACCENT_HOVER,
+            unselected_color=theme.SURFACE,
+            unselected_hover_color=theme.CHIP_HOVER,
+            dynamic_resizing=False,
+        )
+        sizes.pack(side="left")
+        add_tooltip(sizes, CARD_SIZE_TIP)
 
         key = form.row("Movies key")
         self._entry(key, self._tmdb_key, show="•").pack(fill="x")
@@ -489,6 +547,148 @@ class SettingsDialog(ctk.CTkToplevel):
         self._checkbox(
             auto, "Download new episodes for shows I start following", self._auto_new_shows
         ).pack(anchor="w", pady=(_ROW_GAP, 0))
+        if self._subtitles is not None:
+            self._build_subtitles(form, self._subtitles)
+
+    def _build_subtitles(self, form: _Form, subtitles: SubtitleService) -> None:
+        """The Subtitles section: the credit line, the switch (with today's downloads left,
+        when known), and while it is on the languages, the finished-downloads folder and the
+        OpenSubtitles account. Without an API key in this version: one quiet line instead."""
+        if not subtitles.available:
+            form.section(SUBTITLES_HEADING, UNAVAILABLE_TEXT)
+            return
+        current = self._settings.current
+        form.section(SUBTITLES_HEADING, SUBTITLES_NOTE)
+        credit = ctk.CTkFrame(form.frame, fg_color="transparent")
+        link(credit, CREDIT_TEXT, CREDIT_URL, size=SMALL_SIZE).pack(anchor="w")
+        form.wide(credit, gap=_HINT_GAP)
+        switch = form.row("Subtitles")
+        ctk.CTkSwitch(
+            switch,
+            text=SWITCH_TEXT,
+            variable=self._subtitles_on,
+            command=self._show_subtitle_rows,
+            height=BUTTON_HEIGHT,
+            font=theme.font(DETAIL_SIZE),
+            progress_color=theme.ACCENT,  # as the show window's "Download new episodes"
+        ).pack(anchor="w")
+        self._quota = text_label(
+            switch, "", size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=_FIELD_WIDTH
+        )
+
+        rows = ctk.CTkFrame(form.frame, fg_color="transparent")
+        scaling = ctk.ScalingTracker.get_widget_scaling(form.frame)
+        rows.grid_columnconfigure(0, minsize=round(_LABEL_WIDTH * scaling))
+        rows.grid_columnconfigure(1, weight=1)
+        form.wide(rows)
+        self._subtitle_rows = rows
+        self._show_quota()
+
+        self._language_tags = LanguageTags(
+            self._subtitle_row(rows, 0, "Languages"), current.subtitle_languages
+        )
+        self._language_tags.pack(anchor="w")
+
+        folder = self._subtitle_row(rows, 1, FOLDER_LABEL)
+        line = ctk.CTkFrame(folder, fg_color="transparent")
+        line.pack(fill="x")
+        self._entry(line, self._subtitles_folder).pack(side="left", fill="x", expand=True)
+        secondary_button(line, "Choose…", self._choose_subtitles_folder, width=110).pack(
+            side="left", padx=(10, 0)
+        )
+        self._hint(folder, FOLDER_HINT)
+
+        account = self._subtitle_row(rows, 2, ACCOUNT_LABEL)
+        hint = ctk.CTkFrame(account, fg_color="transparent")
+        hint.pack(anchor="w")
+        text_label(hint, ACCOUNT_HINT, size=SMALL_SIZE, color=theme.TEXT_MUTED).pack(side="left")
+        link(hint, SIGN_UP_TEXT, SIGNUP_URL, size=SMALL_SIZE).pack(side="left", padx=(4, 0))
+        self._account = AccountRow(
+            account,
+            subtitles=subtitles,
+            username=current.opensubtitles_username,
+            password=current.opensubtitles_password.get_secret_value(),
+            on_signed_in=lambda _account: self._show_quota(),
+            field_width=_FIELD_ROOM,
+        )
+        self._account.pack(fill="x", pady=(8, 0))
+
+        self._own_key = OwnKeyRow(
+            self._subtitle_row(rows, 3, OWN_KEY_LABEL),
+            subtitles=subtitles,
+            key=current.opensubtitles_own_key.get_secret_value(),
+            field_width=_FIELD_ROOM,
+        )
+        self._own_key.pack(fill="x")
+        self._show_subtitle_rows()
+
+    def _subtitle_row(self, rows: ctk.CTkFrame, row: int, label: str) -> ctk.CTkFrame:
+        """A labelled row of the Subtitles section (like `_Form.row`, in its own frame)."""
+        ctk.CTkLabel(
+            rows,
+            text=label,
+            height=BUTTON_HEIGHT,
+            font=theme.font(DETAIL_SIZE),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=_LABEL_WIDTH - 16,
+        ).grid(row=row, column=0, sticky="nw", padx=(0, 16), pady=(_ROW_GAP, 0))
+        cell = ctk.CTkFrame(rows, fg_color="transparent")
+        cell.grid(row=row, column=1, sticky="ew", pady=(_ROW_GAP, 0))
+        return cell
+
+    def _show_subtitle_rows(self) -> None:
+        if self._subtitle_rows is None:
+            return
+        if self._subtitles_on.get():
+            self._subtitle_rows.grid()
+        else:
+            self._subtitle_rows.grid_remove()
+
+    def _show_quota(self) -> None:
+        if self._subtitles is None or self._subtitle_rows is None or not self.winfo_exists():
+            return
+        text = quota_line(self._subtitles.quota, datetime.now(UTC))
+        if text:
+            self._quota.configure(text=text)
+            self._quota.pack(anchor="w", pady=(2, 0))
+        else:
+            self._quota.pack_forget()
+
+    def _choose_subtitles_folder(self) -> None:
+        # Native modal dialog: the event loop (and background tasks) pause until it closes.
+        chosen = filedialog.askdirectory(
+            parent=self, initialdir=self._subtitles_folder.get() or None
+        )
+        if chosen:
+            self._subtitles_folder.set(str(Path(chosen)))  # Windows separators, UNC kept
+
+    def _subtitle_changes(self) -> dict[str, Any]:
+        """The Subtitles section's part of Save (nothing without the section's form)."""
+        if self._language_tags is None or self._account is None or self._own_key is None:
+            return {}
+        username, password = self._account.values
+        return {
+            "subtitles_enabled": self._subtitles_on.get(),
+            "subtitle_languages": self._language_tags.languages,
+            "subtitles_folder": self._subtitles_folder.get(),
+            "opensubtitles_username": username,
+            "opensubtitles_password": password,
+            "opensubtitles_own_key": self._own_key.value,
+        }
+
+    def _subtitle_problem(self) -> str | None:
+        changes = self._subtitle_changes()
+        if not changes:
+            return None
+        return subtitle_problem(
+            enabled=changes["subtitles_enabled"],
+            folder=changes["subtitles_folder"],
+            languages=changes["subtitle_languages"],
+            username=changes["opensubtitles_username"],
+            password=changes["opensubtitles_password"],
+        )
 
     def _build_advanced(self, form: _Form) -> None:
         sites = form.row("Built-in sites")
@@ -646,6 +846,8 @@ class SettingsDialog(ctk.CTkToplevel):
         the Install button or the magnet-only note showing), so it doesn't change between
         choices or tabs; on a short screen at the screen's height instead, the tabs scrolling."""
         self._torrent.show(TorrentStatus.MISSING)
+        if self._subtitle_rows is not None:
+            self._subtitle_rows.grid()  # measured with the Subtitles rows showing
         content = 0
         for mode in DownloadMode:
             self._grid_download_rows(download_rows(mode), note="Magnet-only releases …")
@@ -653,6 +855,7 @@ class SettingsDialog(ctk.CTkToplevel):
             content = max(content, self._general_form.frame.winfo_reqheight())
         self._torrent.show(TorrentStatus.LOOKING)
         self._show_download_rows()
+        self._show_subtitle_rows()
         scaling = ctk.ScalingTracker.get_window_scaling(self)
         # Let General's scroll area ask for all of its content, then measure the whole dialog.
         self._general.configure(height=math.ceil(content / scaling) + _TAB_PAD + 8)
@@ -746,6 +949,7 @@ class SettingsDialog(ctk.CTkToplevel):
             download_mode=self._mode.get(),
             quality=quality_from_name(self._quality.get()),
             first_day=self._first_day.get(),
+            card_size=size_from_label(self._card_size.get()),
             download_dir=download_dir_to_save(
                 DownloadMode(self._mode.get()),
                 self._download_dir.get(),
@@ -761,11 +965,28 @@ class SettingsDialog(ctk.CTkToplevel):
             auto_update=self._auto_update.get(),
             keep_in_tray=self._keep_in_tray.get(),
             auto_download_new_shows=self._auto_new_shows.get(),
+            **self._subtitle_changes(),
         )
 
     async def _save(self) -> None:
         self._error.configure(text="")
+        problem = self._subtitle_problem()
+        if problem is not None:
+            self._error.configure(text=problem)
+            self._tabs.set(TAB_GENERAL)
+            return
         self._save_button.configure(state="disabled")
+        if self._own_key is not None and self._own_key.needs_check:
+            problem = await self._own_key.verify()  # a new own key: does OpenSubtitles take it?
+            if not self.winfo_exists():
+                return
+            if problem is not None:
+                self._error.configure(text=f"{OWN_KEY_LABEL}: {problem}")
+                self._tabs.set(TAB_GENERAL)
+                self._subtitles_on.set(True)  # the key's row shows while subtitles are on
+                self._show_subtitle_rows()
+                self._save_button.configure(state="normal")
+                return
         try:
             await self._store()
         except ValidationError as exc:

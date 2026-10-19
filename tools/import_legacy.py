@@ -15,6 +15,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +81,14 @@ async def import_legacy(legacy_dir: Path, db: Database) -> ImportReport:
         except (ValidationError, ValueError, KeyError) as exc:
             report.problems.append(f"show {key} ({entry.get('name', '?')}): {exc}")
             continue
+        newly_tracked = await db.library.tracked_entry(show.id) is None
         await db.library.save_show(show, episodes)
         await db.library.track(show.id)  # 1.x "auto" flag ignored: every switch starts off in 2.x
+        if newly_tracked:  # what aired already counts as had (as in LibraryService.track)
+            now = datetime.now(UTC)
+            await db.library.mark_aired_have(
+                show.id, now=now, today=now.astimezone().date(), when=now
+            )
         report.shows += 1
         report.episodes += len(episodes or ())
 

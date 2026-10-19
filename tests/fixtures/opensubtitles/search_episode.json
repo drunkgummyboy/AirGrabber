@@ -1,0 +1,454 @@
+{
+  "total_pages": 1,
+  "total_count": 8,
+  "per_page": 60,
+  "page": 1,
+  "data": [
+    {
+      "id": "1001",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1001",
+        "language": "en",
+        "download_count": 9000,
+        "new_download_count": 7,
+        "hearing_impaired": false,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1001",
+        "machine_translated": true,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1001,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1001",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10011,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1002",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1002",
+        "language": "en",
+        "download_count": 8000,
+        "new_download_count": 7,
+        "hearing_impaired": false,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": true,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1002",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1002,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1002",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10021,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1003",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1003",
+        "language": "en",
+        "download_count": 7000,
+        "new_download_count": 7,
+        "hearing_impaired": false,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 2,
+        "slug": "desperate-housewives-s01e05-1003",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1003,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1003",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10031,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          },
+          {
+            "file_id": 10032,
+            "cd_number": 2,
+            "file_name": "Desperate Housewives - s01e05.cd2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1004",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1004",
+        "language": "en",
+        "download_count": 5000,
+        "new_download_count": 7,
+        "hearing_impaired": true,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1004",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1004,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1004",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10041,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1005",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1005",
+        "language": "en",
+        "download_count": 3000,
+        "new_download_count": 7,
+        "hearing_impaired": false,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1005",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1005,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1005",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10051,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1006",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1006",
+        "language": "en",
+        "download_count": 100,
+        "new_download_count": 7,
+        "hearing_impaired": true,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1006",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1006,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1006",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10061,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ],
+        "moviehash_match": true
+      }
+    },
+    {
+      "id": "1007",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1007",
+        "language": "nl",
+        "download_count": 400,
+        "new_download_count": 7,
+        "hearing_impaired": false,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1007",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1007,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1007",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10071,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1008",
+      "type": "subtitle",
+      "attributes": {
+        "subtitle_id": "1008",
+        "language": "nl",
+        "download_count": 900,
+        "new_download_count": 7,
+        "hearing_impaired": true,
+        "hd": false,
+        "fps": 23.976,
+        "votes": 0,
+        "ratings": 0,
+        "from_trusted": false,
+        "foreign_parts_only": false,
+        "upload_date": "2010-06-09T19:21:33Z",
+        "ai_translated": false,
+        "nb_cd": 1,
+        "slug": "desperate-housewives-s01e05-1008",
+        "machine_translated": false,
+        "release": "Desperate Housewives S01E05 - hdtv_lol",
+        "comments": "",
+        "legacy_subtitle_id": 1008,
+        "legacy_uploader_id": 143124,
+        "uploader": {
+          "uploader_id": 36406,
+          "name": "deepblue",
+          "rank": "gold member"
+        },
+        "feature_details": {
+          "feature_id": 805,
+          "feature_type": "Episode",
+          "year": 2004,
+          "title": "Come In, Stranger",
+          "movie_name": "Desperate Housewives - S01E05  Come In, Stranger",
+          "imdb_id": 558705,
+          "tmdb_id": 38366,
+          "season_number": 1,
+          "episode_number": 5,
+          "parent_imdb_id": 410975,
+          "parent_title": "Desperate Housewives",
+          "parent_tmdb_id": 693,
+          "parent_feature_id": 107
+        },
+        "url": "https://www.opensubtitles.com/en/subtitles/desperate-housewives-s01e05-1008",
+        "related_links": [],
+        "files": [
+          {
+            "file_id": 10081,
+            "cd_number": 1,
+            "file_name": "Desperate Housewives - s01e05.cd1"
+          }
+        ]
+      }
+    }
+  ]
+}

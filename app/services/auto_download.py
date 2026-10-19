@@ -9,8 +9,16 @@ it is neither downloaded nor given up. Nothing found: the try is counted and the
 again. Downloaded meanwhile by hand: skipped, not counted. A failed grab (no torrent program, unwritable folder, the remote torrent program refusing) is
 counted too, reported as one AutoError and ends the run.
 
-Log hygiene: only episode labels ("Severance S02E04") and outcomes are logged, never a release
-or a URL.
+Then, unless a grab failed, the watchlist films whose "Download when it's out" switch is on:
+their release dates are refreshed from TMDB when stale, and the films that are out and not
+searched within the last few hours (`app.services.watchlist.is_due`) are fetched the same way,
+at most MAX_MOVIES_PER_RUN. Nothing found: the try is counted, and a film searched for long
+enough is given up (its switch goes off). A downloaded film leaves the watchlist. A failed grab
+ends the run as above. A film found downloaded already (from before it was put on the list)
+has its switch turned off instead of being searched again and again.
+
+Log hygiene: only episode labels ("Severance S02E04"), film titles and outcomes are logged,
+never a release or a URL.
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.database import LibraryRepository
@@ -27,15 +36,20 @@ from app.models import (
     AutoError,
     AutoEvent,
     AutoGaveUp,
+    AutoMovieDownloaded,
+    AutoMovieGaveUp,
     CalendarEntry,
     GrabTarget,
     MediaType,
+    MovieDetails,
 )
 from app.services.downloads import GrabError
 from app.services.quick_download import QuickDownloadService
 from app.services.remote import RemoteError
-from app.services.search import episode_request
+from app.services.search import episode_request, movie_request
 from app.services.settings import SettingsService
+from app.services.watchlist import GIVE_UP_AFTER as MOVIE_GIVE_UP_AFTER
+from app.services.watchlist import WatchlistService
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +58,7 @@ AutoListener = Callable[[AutoEvent], None]
 DUE_DELAY = timedelta(hours=2)  # wait this long after airing: releases need time to appear
 GIVE_UP_AFTER = timedelta(days=3)  # stop looking this long after airing
 MAX_PER_RUN = 5  # episodes fetched per run, one after another
+MAX_MOVIES_PER_RUN = 5  # watchlist films fetched per run, after the episodes
 RUN_INTERVAL_S = 1800.0  # seconds between runs
 
 
@@ -65,11 +80,14 @@ class AutoDownloadService:
         quick_download: QuickDownloadService,
         settings: SettingsService,
         *,
+        watchlist: WatchlistService | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
-        """`clock` returns the current UTC instant (tests move it)."""
+        """`watchlist`: its films are fetched too. `clock` returns the current UTC instant
+        (tests move it)."""
         self._library = library
         self._quick_download = quick_download
+        self._watchlist = watchlist
         # Not read yet: the grabs read the download preferences through QuickDownloadService.
         self._settings = settings
         self._clock = clock
@@ -171,11 +189,19 @@ class AutoDownloadService:
             downloaded.append(event)
             self._emit(event)
 
+        movies = _MovieRun()
+        if error is None and self._watchlist is not None:
+            movies = await self._run_watchlist(self._watchlist)
+            error = movies.error
+
         report = AutoDownloadReport(
             downloaded=tuple(downloaded),
             not_found=tuple(not_found),
             gave_up=tuple(gave_up),
             error=error,
+            movies_downloaded=tuple(movies.downloaded),
+            movies_not_found=tuple(movies.not_found),
+            movies_gave_up=tuple(movies.gave_up),
         )
         if due or gave_up:
             log.info(
@@ -187,3 +213,67 @@ class AutoDownloadService:
                 ", stopped by a failed grab" if error is not None else "",
             )
         return report
+
+    async def _run_watchlist(self, watchlist: WatchlistService) -> _MovieRun:
+        """Fetch the watchlist films that are due (see the module docstring)."""
+        run = _MovieRun()
+        await watchlist.refresh_release_dates()
+        now = self._clock()
+        due = watchlist.due(now, MAX_MOVIES_PER_RUN)
+        for entry in due:
+            movie = entry.movie
+            title = movie.title
+            request = movie_request(movie, MovieDetails(id=movie.id, imdb_id=entry.imdb_id))
+            target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie.id)
+            log.info("Auto-download %s: searching", title)
+            try:
+                result = await self._quick_download.download(request, target)
+            except (GrabError, RemoteError) as exc:
+                await watchlist.record_try(movie.id, when=self._clock())
+                run.error = str(exc)  # user-facing text, free of URLs and keys
+                log.warning(
+                    "Auto-download %s: the grab failed, stopping this run: %s", title, run.error
+                )
+                self._emit(AutoError(message=run.error))
+                break
+            if result.already_downloaded:  # in the history from before it was put on the list
+                log.info("Auto-download %s: downloaded before, switching it off", title)
+                await watchlist.set_auto_download(movie.id, False)
+                continue
+            if result.grab is None:
+                if await watchlist.record_try(movie.id, when=self._clock()):
+                    log.info(
+                        "Auto-download %s: not found within %d days, giving up",
+                        title,
+                        MOVIE_GIVE_UP_AFTER.days,
+                    )
+                    run.gave_up.append(title)
+                    self._emit(AutoMovieGaveUp(title=title))
+                else:
+                    log.info("Auto-download %s: nothing suitable yet, trying again later", title)
+                    run.not_found.append(title)
+                continue
+            event = AutoMovieDownloaded(title=title, quality=result.quality)
+            log.info("Auto-download %s: downloaded (%s)", title, event.quality or "unknown quality")
+            run.downloaded.append(event)
+            self._emit(event)
+        if due:
+            log.info(
+                "Auto-download watchlist run: %d due, %d downloaded, %d not found, %d given up%s",
+                len(due),
+                len(run.downloaded),
+                len(run.not_found),
+                len(run.gave_up),
+                ", stopped by a failed grab" if run.error is not None else "",
+            )
+        return run
+
+
+@dataclass(slots=True)
+class _MovieRun:
+    """What the watchlist part of a run did."""
+
+    downloaded: list[AutoMovieDownloaded] = field(default_factory=list)
+    not_found: list[str] = field(default_factory=list)
+    gave_up: list[str] = field(default_factory=list)
+    error: str | None = None

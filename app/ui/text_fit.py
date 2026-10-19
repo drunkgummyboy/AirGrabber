@@ -91,6 +91,22 @@ def fit_to_lines(text: str, max_width: float, max_lines: int, measure: Measure) 
     return text
 
 
+def break_lines(text: str, max_width: float, measure: Measure) -> str:
+    """`text` word-wrapped to `max_width` with every break made an explicit newline (as
+    `fit_to_lines` wraps: line breaks already in `text` are kept). For labels without a
+    wraplength, whose height is counted from their newlines."""
+    lines: list[str] = []
+    for source in text.strip().split("\n"):
+        rest = source.strip()
+        if not rest:
+            lines.append("")
+            continue
+        while rest:
+            line, rest = _first_line(rest, max_width, measure)
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def title_lines(title: str) -> str:
     """`title` with its first ": " or " - " separator turned into a line break, so a long title
     wraps between title and subtitle: "Mission: Impossible – Dead Reckoning" becomes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 
 import httpx
 
@@ -17,17 +18,22 @@ from app.services.discovery import DiscoveryService
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.missing import MissingDownloadService
 from app.services.prowlarr_setup import ProwlarrSetupService
 from app.services.quick_download import QuickDownloadService
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.search import TorrentSearchService
+from app.services import opensubtitles
+from app.services.opensubtitles import OpenSubtitlesClient
 from app.services.settings import SettingsService
+from app.services.subtitles import SubtitleService
 from app.services.synology import DownloadStationClient
-from app.services.tmdb import TMDBClient
+from app.services.tmdb import TMDBClient, TMDBError
 from app.services.torrent_app import TorrentAppService
 from app.services.tvmaze import TVMazeClient
 from app.services.updates import UpdateError, UpdateService
+from app.services.watchlist import WatchlistService
 
 USER_AGENT = f"{APP_NAME}/{__version__} (+https://github.com/drunkgummyboy/AirGrabber)"
 
@@ -47,13 +53,16 @@ class Services:
         "downloads",
         "images",
         "library",
+        "missing",
         "prowlarr_setup",
         "quick_download",
         "remote",
         "search",
         "settings",
+        "subtitles",
         "torrent_app",
         "updates",
+        "watchlist",
     )
 
     def __init__(
@@ -83,13 +92,37 @@ class Services:
         self.search = search
         # One-click Download: search, pick the best release, grab it.
         self.quick_download = QuickDownloadService(search, downloads, settings)
-        # Downloads new episodes of the shows whose switch is on (`run_periodic` from the UI).
-        self.auto_download = AutoDownloadService(db.library, self.quick_download, settings)
+        # "Download missing": a tracked show's missing episodes, one at a time.
+        self.missing = MissingDownloadService(library, self.quick_download)
+        # The movie watchlist (in memory once `load`ed; Services.create does that).
+        self.watchlist = WatchlistService(db.watchlist, discovery, downloads)
+        # Downloads new episodes of the shows whose switch is on, and the watchlist films whose
+        # "Download when it's out" is on (`run_periodic` from the UI).
+        self.auto_download = AutoDownloadService(
+            db.library, self.quick_download, settings, watchlist=self.watchlist
+        )
         # Previews the shows followed on airdates.tv (import goes through library.import_shows).
         self.airdates = AirdatesImportService(AirdatesClient(http), library)
         self.updates = updates
         self.prowlarr_setup = prowlarr_setup
         self.torrent_app = torrent_app  # which torrent program is set up; qBittorrent install
+        # Subtitles from OpenSubtitles.com next to the grabbed videos (`run_periodic` from the
+        # UI), with the user's own API key when Settings has one, else AirGrabber's shipped key
+        # (read on every request, so a changed key applies at once), and the user's optional
+        # OpenSubtitles account.
+        self.subtitles = SubtitleService(
+            db.subtitles,
+            OpenSubtitlesClient(
+                http,
+                api_key=lambda: opensubtitles.effective_api_key(
+                    _own_opensubtitles_key(settings), opensubtitles.APP_API_KEY
+                ),
+                own_key=lambda: bool(_own_opensubtitles_key(settings)),
+            ),
+            settings,
+            show=db.library.get_show,
+            movie_imdb_id=functools.partial(_movie_imdb_id, discovery),
+        )
 
     @classmethod
     async def create(cls, paths: AppPaths) -> Services:
@@ -139,6 +172,7 @@ class Services:
                 ProwlarrSetupService(http, settings),
                 TorrentAppService(),
             )
+            await services.watchlist.load()
             cleanup.pop_all()
         return services
 
@@ -152,6 +186,18 @@ class Services:
             await self._http.aclose()
         finally:
             await self._db.close()
+
+
+def _own_opensubtitles_key(settings: SettingsService) -> str:
+    return settings.current.opensubtitles_own_key.get_secret_value().strip()
+
+
+async def _movie_imdb_id(discovery: DiscoveryService, movie_id: int) -> str | None:
+    """A film's IMDb id from TMDB's details; None without a TMDB key or when TMDB fails."""
+    try:
+        return (await discovery.movie_details(movie_id)).imdb_id
+    except TMDBError:
+        return None
 
 
 def _clear_discovery_on_key_change(
@@ -180,14 +226,17 @@ __all__ = [
     "DownloadStationClient",
     "ImageCache",
     "LibraryService",
+    "MissingDownloadService",
     "ProwlarrSetupService",
     "QuickDownloadService",
     "RemoteDownloads",
     "RemoteError",
     "Services",
     "SettingsService",
+    "SubtitleService",
     "TorrentAppService",
     "TorrentSearchService",
     "UpdateError",
     "UpdateService",
+    "WatchlistService",
 ]

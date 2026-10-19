@@ -27,11 +27,45 @@ from app.models import (
     LibraryEntry,
     LibraryStats,
     MediaType,
+    Movie,
     Settings,
     Show,
+    SubtitleFile,
+    SubtitleGrab,
+    WatchlistEntry,
 )
 
 log = logging.getLogger(__name__)
+
+# v6: subtitles (app/services/subtitles.py). One row per video file and language: its tries,
+# given up, or the subtitle saved next to it; with the grab the video belongs to (episode = the
+# video's own, also inside a season pack), so the show details can mark it. And per grab the
+# languages it is complete for, so a finished grab isn't looked for again. Self-contained.
+SUBTITLES_MIGRATION = """
+    CREATE TABLE subtitle_files (
+        video_path    TEXT    NOT NULL,
+        language      TEXT    NOT NULL,                     -- OpenSubtitles code: 'en', 'pt-BR'
+        history_id    INTEGER REFERENCES download_history (id) ON DELETE SET NULL,
+        media_type    TEXT    NOT NULL CHECK (media_type IN ('tv', 'movie')),
+        media_id      INTEGER NOT NULL,                     -- TVMaze show id / TMDB movie id
+        season        INTEGER,
+        episode       INTEGER,
+        tries         INTEGER NOT NULL DEFAULT 0,
+        first_try     TEXT,                                 -- UTC ISO-8601
+        last_try      TEXT,
+        gave_up       INTEGER NOT NULL DEFAULT 0 CHECK (gave_up IN (0, 1)),
+        saved_at      TEXT,                                 -- NULL until a subtitle is there
+        subtitle_path TEXT,
+        PRIMARY KEY (video_path, language)
+    ) STRICT;
+    CREATE INDEX ix_subtitle_files_media ON subtitle_files (media_type, media_id, season, episode);
+
+    CREATE TABLE subtitle_grabs (
+        history_id INTEGER PRIMARY KEY REFERENCES download_history (id) ON DELETE CASCADE,
+        languages  TEXT    NOT NULL,                        -- JSON array the grab is complete for
+        done_at    TEXT    NOT NULL                         -- UTC ISO-8601
+    ) STRICT;
+"""
 
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
@@ -122,6 +156,58 @@ MIGRATIONS: tuple[str, ...] = (
         gave_up    INTEGER NOT NULL DEFAULT 0 CHECK (gave_up IN (0, 1))
     ) STRICT;
     """,
+    # v3: the movie watchlist. A film is kept as the JSON of the TMDB list entry it was saved
+    # with (the `Movie` model), so its card draws without TMDB; the release dates come from
+    # TMDB's details and are refreshed now and then. A film leaves the list once it is
+    # downloaded (HistoryRepository.add).
+    """
+    CREATE TABLE watchlist (
+        movie_id           INTEGER PRIMARY KEY,             -- TMDB movie id
+        title              TEXT    NOT NULL,
+        movie              TEXT    NOT NULL,                -- JSON of the Movie model
+        added_at           TEXT    NOT NULL,                -- UTC ISO-8601
+        auto_download      INTEGER NOT NULL DEFAULT 1 CHECK (auto_download IN (0, 1)),
+        imdb_id            TEXT,
+        digital_release    TEXT,                            -- YYYY-MM-DD, TMDB client's region
+        theatrical_release TEXT,                            -- YYYY-MM-DD
+        details_at         TEXT,                            -- UTC; NULL = never read from TMDB
+        tries              INTEGER NOT NULL DEFAULT 0,      -- automatic searches without a grab
+        first_try          TEXT,                            -- UTC
+        last_try           TEXT,                            -- UTC
+        gave_up            INTEGER NOT NULL DEFAULT 0 CHECK (gave_up IN (0, 1))
+    ) STRICT;
+    """,
+    # v4: episodes the user marked "I already have this": no longer counted as missing (the
+    # latest season's aired episodes that aren't downloaded; app.services.missing). A mark
+    # goes with its episode.
+    """
+    CREATE TABLE have_episodes (
+        episode_id INTEGER PRIMARY KEY REFERENCES episodes (id) ON DELETE CASCADE,
+        marked_at  TEXT    NOT NULL                         -- UTC ISO-8601
+    ) STRICT;
+    """,
+    # v5: AirGrabber never saw what the user got before (or elsewhere), so the episodes of the
+    # tracked shows that aired before this upgrade count as had: only later ones can become
+    # missing. Newly tracked shows get the same start (LibraryRepository.mark_aired_have).
+    """
+    INSERT INTO have_episodes (episode_id, marked_at)
+    SELECT e.id, strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+    FROM episodes AS e
+    JOIN tracked_shows AS t ON t.show_id = e.show_id
+    WHERE e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
+      AND (
+          (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday('now'))
+          OR (e.airstamp IS NULL AND e.air_date <= date('now', 'localtime'))
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM download_history AS h
+          WHERE h.media_type = 'tv' AND h.media_id = e.show_id AND h.season = e.season
+            AND (h.episode IS NULL OR h.episode = e.number)
+      )
+    ON CONFLICT (episode_id) DO NOTHING;
+    """,
+    # v6: subtitles; see SUBTITLES_MIGRATION above.
+    SUBTITLES_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -275,6 +361,34 @@ _NEXT_EPISODES_SQL = f"""
 """
 
 
+# Per tracked show, how many episodes are missing: the regular numbered episodes (seasons from 1)
+# of its latest season — the highest with such an episode aired (an airstamp up to :now, or
+# without one an air date up to :today) — that aired, aren't downloaded (the episode or its
+# season pack) and aren't marked "I already have this". The SQL twin of
+# app.services.missing.missing_episodes; tests keep the two in step.
+_MISSING_COUNTS_SQL = f"""
+    WITH aired AS (
+        SELECT e.id, e.show_id, e.season, e.number
+        FROM episodes AS e
+        JOIN tracked_shows AS t ON t.show_id = e.show_id
+        WHERE e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
+          AND (
+              (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(:now))
+              OR (e.airstamp IS NULL AND e.air_date <= :today)
+          )
+    ),
+    latest AS (
+        SELECT show_id, MAX(season) AS season FROM aired GROUP BY show_id
+    )
+    SELECT e.show_id, COUNT(*) AS missing
+    FROM aired AS e
+    JOIN latest AS l ON l.show_id = e.show_id AND l.season = e.season
+    WHERE NOT EXISTS (SELECT 1 FROM have_episodes AS m WHERE m.episode_id = e.id)
+      AND NOT {_IS_DOWNLOADED}
+    GROUP BY e.show_id
+"""
+
+
 _TRACKED_SQL = f"""
     SELECT {_SHOW_FIELDS}, t.tracked_at, t.auto_download, t.synced_at
     FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id
@@ -312,6 +426,8 @@ class Database:
         self.library = LibraryRepository(self)
         self.history = HistoryRepository(self)
         self.settings = SettingsRepository(self)
+        self.watchlist = WatchlistRepository(self)
+        self.subtitles = SubtitleRepository(self)
 
     @classmethod
     async def open(cls, path: Path | str) -> Database:
@@ -592,6 +708,76 @@ class LibraryRepository:
         )
         return [Episode.model_validate(_section(row, "ep__")) for row in rows]
 
+    async def missing_counts(self, *, now: datetime, today: date) -> dict[int, int]:
+        """Per tracked show id, how many episodes of its latest season are missing (see
+        _MISSING_COUNTS_SQL): aired by `now` (without an airstamp: by `today`). Shows with
+        none are left out."""
+        rows = await self._db.fetch_all(
+            _MISSING_COUNTS_SQL, {"now": _utc(now), "today": today.isoformat()}
+        )
+        return {row["show_id"]: row["missing"] for row in rows}
+
+    async def have_ids(self, show_id: int) -> frozenset[int]:
+        """Ids of the show's episodes marked "I already have this"."""
+        rows = await self._db.fetch_all(
+            "SELECT m.episode_id FROM have_episodes AS m "
+            "JOIN episodes AS e ON e.id = m.episode_id WHERE e.show_id = ?",
+            (show_id,),
+        )
+        return frozenset(row["episode_id"] for row in rows)
+
+    async def mark_have(self, episode_ids: Iterable[int], when: datetime) -> int:
+        """Mark episodes "I already have this" (unknown episodes are ignored, marked ones keep
+        their mark). Returns how many were newly marked."""
+        ids = json.dumps(sorted(set(episode_ids)))
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO have_episodes (episode_id, marked_at) "
+                "SELECT id, ? FROM episodes WHERE id IN (SELECT value FROM json_each(?)) "
+                "ON CONFLICT (episode_id) DO NOTHING",
+                (_utc(when), ids),
+            )
+            return cursor.rowcount
+
+    async def mark_aired_have(
+        self, show_id: int, *, now: datetime, today: date, when: datetime
+    ) -> int:
+        """Mark the show's regular numbered episodes that aired by `now` (without an airstamp:
+        by `today`) and aren't downloaded as "I already have this": a newly tracked show starts
+        with nothing missing. Returns how many were newly marked."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                f"""
+                INSERT INTO have_episodes (episode_id, marked_at)
+                SELECT e.id, :when FROM episodes AS e
+                WHERE e.show_id = :show_id
+                  AND e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
+                  AND (
+                      (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(:now))
+                      OR (e.airstamp IS NULL AND e.air_date <= :today)
+                  )
+                  AND NOT {_IS_DOWNLOADED}
+                ON CONFLICT (episode_id) DO NOTHING
+                """,
+                {
+                    "show_id": show_id,
+                    "now": _utc(now),
+                    "today": today.isoformat(),
+                    "when": _utc(when),
+                },
+            )
+            return cursor.rowcount
+
+    async def unmark_have(self, episode_ids: Iterable[int]) -> int:
+        """Take the "I already have this" mark off episodes. Returns how many had one."""
+        ids = json.dumps(sorted(set(episode_ids)))
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM have_episodes WHERE episode_id IN (SELECT value FROM json_each(?))",
+                (ids,),
+            )
+            return cursor.rowcount
+
     async def calendar(self, start: date, end: date) -> list[CalendarEntry]:
         """Tracked episodes airing between `start` and `end` (inclusive), in airing order."""
         rows = await self._db.fetch_all(
@@ -654,7 +840,11 @@ class HistoryRepository:
         self._db = db
 
     async def add(self, record: DownloadRecord) -> bool:
-        """Record a grab. Returns False if this exact torrent (info hash) was already recorded."""
+        """Record a grab. Returns False if this exact torrent (info hash) was already recorded.
+
+        A film's grab also takes it off the watchlist, in the same transaction and however it
+        was grabbed: a downloaded film leaves the list.
+        """
         columns = [column for column in HISTORY_COLUMNS if column != "id"]
         sql = (
             f"INSERT INTO download_history ({', '.join(columns)}) "
@@ -663,6 +853,8 @@ class HistoryRepository:
         )
         async with self._db.transaction() as conn:
             cursor = await conn.execute(sql, record.model_dump(mode="json", exclude={"id"}))
+            if record.media_type is MediaType.MOVIE:
+                await conn.execute("DELETE FROM watchlist WHERE movie_id = ?", (record.media_id,))
             return cursor.rowcount > 0
 
     async def has_episode(self, show_id: int, season: int, episode: int | None) -> bool:
@@ -724,6 +916,127 @@ class HistoryRepository:
         return frozenset(row["info_hash"] for row in rows)
 
 
+_WATCHLIST_SQL = """
+    SELECT movie_id, movie, added_at, auto_download, imdb_id, digital_release,
+           theatrical_release, details_at, tries, first_try, last_try, gave_up
+    FROM watchlist
+"""
+
+
+def _watchlist_entry(row: sqlite3.Row) -> WatchlistEntry:
+    return WatchlistEntry(
+        movie=Movie.model_validate_json(row["movie"]),
+        added_at=row["added_at"],
+        auto_download=bool(row["auto_download"]),
+        imdb_id=row["imdb_id"],
+        digital_release=row["digital_release"],
+        theatrical_release=row["theatrical_release"],
+        details_at=row["details_at"],
+        tries=row["tries"],
+        first_try=row["first_try"],
+        last_try=row["last_try"],
+        gave_up=bool(row["gave_up"]),
+    )
+
+
+def _iso_date(day: date | None) -> str | None:
+    return day.isoformat() if day is not None else None
+
+
+class WatchlistRepository:
+    """The movie watchlist: films by TMDB id, with their release dates and automatic tries."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def entries(self) -> list[WatchlistEntry]:
+        """Every film on the list, newest first. A row whose stored film no longer reads as a
+        `Movie` is skipped (and logged) rather than hiding the whole list."""
+        rows = await self._db.fetch_all(
+            f"{_WATCHLIST_SQL} ORDER BY julianday(added_at) DESC, movie_id DESC"
+        )
+        entries: list[WatchlistEntry] = []
+        for row in rows:
+            try:
+                entries.append(_watchlist_entry(row))
+            except ValidationError:
+                log.warning("Skipping watchlist film %d: its stored data no longer reads", row[0])
+        return entries
+
+    async def entry(self, movie_id: int) -> WatchlistEntry | None:
+        row = await self._db.fetch_one(f"{_WATCHLIST_SQL} WHERE movie_id = ?", (movie_id,))
+        return _watchlist_entry(row) if row else None
+
+    async def add(self, movie: Movie, *, auto_download: bool, when: datetime) -> bool:
+        """Put a film on the list. A film already on it keeps its row (and switch); returns
+        whether it was added."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO watchlist (movie_id, title, movie, added_at, auto_download, imdb_id) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (movie_id) DO NOTHING",
+                (
+                    movie.id,
+                    movie.title,
+                    movie.model_dump_json(),
+                    _utc(when),
+                    auto_download,
+                    movie.imdb_id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    async def remove(self, movie_id: int) -> bool:
+        """Take a film off the list; returns whether it was on it."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute("DELETE FROM watchlist WHERE movie_id = ?", (movie_id,))
+            return cursor.rowcount > 0
+
+    async def set_auto_download(self, movie_id: int, on: bool) -> None:
+        """Switch "Download when it's out" on or off. Switching it on starts afresh: the tries
+        and a given-up mark are forgotten."""
+        async with self._db.transaction() as conn:
+            if on:
+                await conn.execute(
+                    "UPDATE watchlist SET auto_download = 1, tries = 0, first_try = NULL, "
+                    "last_try = NULL, gave_up = 0 WHERE movie_id = ? AND auto_download = 0",
+                    (movie_id,),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE watchlist SET auto_download = 0 WHERE movie_id = ?", (movie_id,)
+                )
+
+    async def set_release_dates(
+        self,
+        movie_id: int,
+        *,
+        imdb_id: str | None,
+        digital: date | None,
+        theatrical: date | None,
+        when: datetime,
+    ) -> None:
+        """Store what TMDB's details say about a film; an IMDb id already known is kept when
+        the details name none."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE watchlist SET imdb_id = COALESCE(?, imdb_id), digital_release = ?, "
+                "theatrical_release = ?, details_at = ? WHERE movie_id = ?",
+                (imdb_id, _iso_date(digital), _iso_date(theatrical), _utc(when), movie_id),
+            )
+
+    async def record_try(self, movie_id: int, when: datetime, *, give_up: bool) -> None:
+        """Count one more automatic try at a film; with `give_up` the automatic downloads stop
+        looking and its switch goes off. Ignored for a film that isn't on the list."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE watchlist SET tries = tries + 1, first_try = COALESCE(first_try, :when), "
+                "last_try = :when, gave_up = :give_up, "
+                "auto_download = CASE WHEN :give_up THEN 0 ELSE auto_download END "
+                "WHERE movie_id = :id",
+                {"id": movie_id, "when": _utc(when), "give_up": give_up},
+            )
+
+
 class SettingsRepository:
     """Preferences as key/value rows, validated as one `Settings` model on the way out."""
 
@@ -756,3 +1069,150 @@ class SettingsRepository:
             fields = tuple(Settings.model_fields)
             placeholders = ", ".join("?" * len(fields))
             await conn.execute(f"DELETE FROM settings WHERE key NOT IN ({placeholders})", fields)
+
+
+_SUBTITLE_FILE_SQL = """
+    SELECT video_path, language, tries, first_try, last_try, gave_up, saved_at, subtitle_path
+    FROM subtitle_files
+"""
+
+
+def _subtitle_file(row: sqlite3.Row) -> SubtitleFile:
+    return SubtitleFile.model_validate({**dict(row), "gave_up": bool(row["gave_up"])})
+
+
+def _subtitle_owner(
+    record: DownloadRecord, season: int | None, episode: int | None
+) -> dict[str, Any]:
+    return {
+        "history_id": record.id,
+        "media_type": record.media_type.value,
+        "media_id": record.media_id,
+        "season": season,
+        "episode": episode,
+    }
+
+
+class SubtitleRepository:
+    """The subtitles' bookkeeping: per video file and language (tries, given up, saved) and per
+    grab the languages it is complete for."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def grabs_since(self, since: datetime) -> list[SubtitleGrab]:
+        """Every grab recorded at or after `since` (oldest first), with the languages it is
+        complete for (none when it never was)."""
+        rows = await self._db.fetch_all(
+            "SELECT h.*, g.languages AS done_languages FROM download_history AS h "
+            "LEFT JOIN subtitle_grabs AS g ON g.history_id = h.id "
+            "WHERE julianday(h.downloaded_at) >= julianday(?) "
+            "ORDER BY julianday(h.downloaded_at), h.id",
+            (_utc(since),),
+        )
+        grabs = []
+        for row in rows:
+            record = DownloadRecord.model_validate(
+                {key: row[key] for key in row.keys() if key != "done_languages"}
+            )
+            done = json.loads(row["done_languages"]) if row["done_languages"] else []
+            grabs.append(SubtitleGrab(record=record, done_languages=tuple(done)))
+        return grabs
+
+    async def files(self, video_paths: Iterable[str]) -> dict[tuple[str, str], SubtitleFile]:
+        """The rows of these videos, by (video path, language)."""
+        paths = json.dumps(sorted(set(video_paths)))
+        rows = await self._db.fetch_all(
+            f"{_SUBTITLE_FILE_SQL} WHERE video_path IN (SELECT value FROM json_each(?))",
+            (paths,),
+        )
+        files = [_subtitle_file(row) for row in rows]
+        return {(file.video_path, file.language): file for file in files}
+
+    async def record_try(
+        self,
+        video_path: str,
+        language: str,
+        *,
+        record: DownloadRecord,
+        season: int | None,
+        episode: int | None,
+        when: datetime,
+        give_up: bool = False,
+    ) -> None:
+        """Count one more try without a subtitle; `give_up` stops further tries."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO subtitle_files (video_path, language, history_id, media_type, "
+                "media_id, season, episode, tries, first_try, last_try, gave_up) "
+                "VALUES (:path, :language, :history_id, :media_type, :media_id, :season, "
+                ":episode, 1, :when, :when, :give_up) "
+                "ON CONFLICT (video_path, language) DO UPDATE SET "
+                "tries = subtitle_files.tries + 1, "
+                "first_try = COALESCE(subtitle_files.first_try, excluded.first_try), "
+                "last_try = excluded.last_try, gave_up = excluded.gave_up",
+                {
+                    **_subtitle_owner(record, season, episode),
+                    "path": video_path,
+                    "language": language,
+                    "when": _utc(when),
+                    "give_up": give_up,
+                },
+            )
+
+    async def record_saved(
+        self,
+        video_path: str,
+        language: str,
+        *,
+        record: DownloadRecord,
+        season: int | None,
+        episode: int | None,
+        subtitle_path: str,
+        when: datetime,
+    ) -> None:
+        """A subtitle for this video and language is there (saved now, or found already)."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO subtitle_files (video_path, language, history_id, media_type, "
+                "media_id, season, episode, saved_at, subtitle_path) "
+                "VALUES (:path, :language, :history_id, :media_type, :media_id, :season, "
+                ":episode, :when, :subtitle_path) "
+                "ON CONFLICT (video_path, language) DO UPDATE SET "
+                "saved_at = excluded.saved_at, subtitle_path = excluded.subtitle_path, "
+                "gave_up = 0, history_id = excluded.history_id, season = excluded.season, "
+                "episode = excluded.episode",
+                {
+                    **_subtitle_owner(record, season, episode),
+                    "path": video_path,
+                    "language": language,
+                    "subtitle_path": subtitle_path,
+                    "when": _utc(when),
+                },
+            )
+
+    async def mark_grab_done(
+        self, history_id: int, languages: Iterable[str], when: datetime
+    ) -> None:
+        """The grab is complete for `languages` (its videos have them, or were given up)."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO subtitle_grabs (history_id, languages, done_at) "
+                "SELECT id, ?, ? FROM download_history WHERE id = ? "
+                "ON CONFLICT (history_id) DO UPDATE SET "
+                "languages = excluded.languages, done_at = excluded.done_at",
+                (json.dumps(sorted(set(languages))), _utc(when), history_id),
+            )
+
+    async def show_languages(self, show_id: int) -> dict[tuple[int, int], frozenset[str]]:
+        """Per (season, episode) of a TV show, the languages of the subtitles saved for it."""
+        rows = await self._db.fetch_all(
+            "SELECT DISTINCT season, episode, language FROM subtitle_files "
+            "WHERE media_type = ? AND media_id = ? AND saved_at IS NOT NULL "
+            "AND season IS NOT NULL AND episode IS NOT NULL",
+            (MediaType.TV, show_id),
+        )
+        found: dict[tuple[int, int], set[str]] = {}
+        for row in rows:
+            found.setdefault((row["season"], row["episode"]), set()).add(row["language"])
+        return {key: frozenset(languages) for key, languages in found.items()}

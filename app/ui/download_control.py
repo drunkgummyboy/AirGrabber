@@ -21,6 +21,7 @@ import customtkinter as ctk
 
 from app.models import GrabOutcome, MediaType, QuickDownloadResult
 from app.ui import theme
+from app.ui.card_scale import FULL, TEXT_MIN, CardScale
 from app.ui.text_fit import SLACK, Measure, elide_to_width, unscaled_width
 from app.ui.tooltip import add_tooltip
 
@@ -234,9 +235,18 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
     content, so it spans the card's whole width."""
 
     def __init__(
-        self, master: Any, *, item: T, key: DownloadKey, base: Base, actions: DownloadActions[T]
+        self,
+        master: Any,
+        *,
+        item: T,
+        key: DownloadKey,
+        base: Base,
+        actions: DownloadActions[T],
+        scale: CardScale = FULL,
     ) -> None:
-        super().__init__(master, fg_color="transparent", height=ROW_HEIGHT)
+        """`scale`: the card size (poster cards; the calendar keeps FULL)."""
+        height = scale.px(ROW_HEIGHT)
+        super().__init__(master, fg_color="transparent", height=height)
         self.pack_propagate(False)
         self.key = key
         self._item = item
@@ -244,15 +254,19 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         self._actions = actions
         self._look: Look | None = None
         self._width: float | None = None  # unscaled, once laid out
-        self._font = theme.font(FONT_SIZE, bold=True)
-        self._label_font = theme.font(FONT_SIZE)
+        self._more_width = scale.px(MORE_WIDTH)
+        self._gap = scale.px(GAP)
+        self._corner = scale.px(CORNER_RADIUS)
+        font_size = scale.font(FONT_SIZE, TEXT_MIN)
+        self._font = theme.font(font_size, bold=True)
+        self._label_font = theme.font(font_size)
 
         self._more = ctk.CTkButton(
             self,
             text=MORE_TEXT,
-            width=MORE_WIDTH,
-            height=ROW_HEIGHT,
-            corner_radius=CORNER_RADIUS,
+            width=self._more_width,
+            height=height,
+            corner_radius=self._corner,
             font=self._font,
             fg_color="transparent",
             hover_color=theme.ACCENT_HOVER,
@@ -263,8 +277,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         self._main = ctk.CTkButton(
             self,
             text="",
-            height=ROW_HEIGHT,
-            corner_radius=CORNER_RADIUS,
+            height=height,
+            corner_radius=self._corner,
             font=self._font,
             border_width=0,
             command=self._click,
@@ -273,7 +287,7 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         self._main_tip = add_tooltip(self._main, "")  # only for a shortened Download text
         self._default_text_color = self._main.cget("text_color")
         self._label = ctk.CTkLabel(
-            self, text="", height=ROW_HEIGHT, font=self._label_font, text_color=theme.TEXT_MUTED
+            self, text="", height=height, font=self._label_font, text_color=theme.TEXT_MUTED
         )
         self.bind("<Configure>", self._on_resize, add="+")
         actions.states.attach(self)
@@ -301,7 +315,7 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
                 self._label.pack(fill="both", expand=True)
             else:
                 if look.layout == "split":
-                    self._more.pack(side="right", padx=(GAP, 0))
+                    self._more.pack(side="right", padx=(self._gap, 0))
                 self._main.pack(side="left", fill="both", expand=True)
         if look.layout != "label":
             self._main.configure(
@@ -331,8 +345,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
             self._label.configure(text=text)
             return
         if self._width is not None:
-            width = self._width - (MORE_WIDTH + GAP if look.layout == "split" else 0)
-            room = width - 2 * CORNER_RADIUS - SLACK
+            more = self._more_width + self._gap if look.layout == "split" else 0
+            room = self._width - more - 2 * self._corner - SLACK
             text = fit_text(look.texts, room, self._font.measure)
         self._main.configure(text=text)
         shortened = look.action == "download" and text != look.text

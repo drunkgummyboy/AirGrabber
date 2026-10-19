@@ -32,6 +32,7 @@ from app.models import (
     SyncReport,
     Weekday,
 )
+from app.services.missing import latest_season, missing_episodes
 from app.services.settings import SettingsService
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
@@ -166,14 +167,49 @@ class LibraryService:
         else:
             show, episodes = await self._fetch_show(show_id)
         grabs = await self._history.show_grabs(show.id)
+        downloaded = downloaded_ids(episodes, grabs)
+        tracked = entry is not None
+        have = await self._library.have_ids(show.id) if tracked else frozenset[int]()
+        missing = (
+            missing_episodes(episodes, downloaded=downloaded, have=have, now=now)
+            if tracked
+            else []
+        )
         return ShowDetails(
             show=show,
             episodes=tuple(episodes),
-            tracked=entry is not None,
+            tracked=tracked,
             auto_download=entry is not None and entry.auto_download,
-            downloaded=downloaded_ids(episodes, grabs),
+            downloaded=downloaded,
             next_episode=next_episode(episodes, now),
+            latest_season=latest_season(episodes, now) if tracked else None,
+            missing=frozenset(episode.id for episode in missing),
+            have=have,
         )
+
+    async def missing_episodes(
+        self, show_id: int, *, now: datetime | None = None
+    ) -> list[CalendarEntry]:
+        """A tracked show's missing episodes (app.services.missing), oldest first, from the
+        library alone; [] for a show that isn't tracked. `now`: an aware instant (tests)."""
+        now = now if now is not None else datetime.now().astimezone()
+        entry = await self._library.tracked_entry(show_id)
+        if entry is None:
+            return []
+        episodes = await self._library.episodes(show_id)
+        downloaded = downloaded_ids(episodes, await self._history.show_grabs(show_id))
+        have = await self._library.have_ids(show_id)
+        return [
+            CalendarEntry(show=entry.show, episode=episode, is_tracked=True)
+            for episode in missing_episodes(episodes, downloaded=downloaded, have=have, now=now)
+        ]
+
+    async def missing_counts(self, *, now: datetime | None = None) -> dict[int, int]:
+        """Per tracked show id, how many of its latest season's episodes are missing (one
+        query for every show); shows with none are left out. `now`: an aware instant (tests);
+        its time zone decides which day "today" is."""
+        now = now if now is not None else datetime.now().astimezone()
+        return await self._library.missing_counts(now=now, today=now.date())
 
     async def _fetch_show(self, show_id: int) -> tuple[Show, list[Episode]]:
         """The show and its episodes from TVMaze, or from memory when fetched recently."""
@@ -205,6 +241,20 @@ class LibraryService:
         """Switch a tracked show's automatic downloads of new episodes on (from now) or off."""
         await self._library.set_auto_download(show_id, on)
         log.info("Automatic downloads %s for TVMaze show %d", "on" if on else "off", show_id)
+        self._notify()
+
+    async def mark_have(self, episode_ids: Iterable[int]) -> None:
+        """Mark episodes "I already have this": they no longer count as missing."""
+        ids = list(episode_ids)
+        marked = await self._library.mark_have(ids, datetime.now(UTC))
+        log.info("Marked %d of %d episodes as already had", marked, len(ids))
+        self._notify()
+
+    async def unmark_have(self, episode_ids: Iterable[int]) -> None:
+        """Take the "I already have this" mark off episodes ("Mark as missing again")."""
+        ids = list(episode_ids)
+        unmarked = await self._library.unmark_have(ids)
+        log.info("Marked %d of %d episodes as missing again", unmarked, len(ids))
         self._notify()
 
     async def remove_ended(self) -> int:
@@ -347,8 +397,16 @@ class LibraryService:
         settings = self._settings
         auto_download = settings is not None and settings.current.auto_download_new_shows
         async with self._tracking:
+            newly_tracked = await self._library.tracked_entry(show.id) is None
             await self._library.save_show(show, episodes)
             await self._library.track(show.id, auto_download=auto_download)
+            if newly_tracked:
+                # AirGrabber can't know what the user already got: what aired before the show
+                # was followed counts as had, so only later episodes can become missing.
+                now = datetime.now(UTC)
+                await self._library.mark_aired_have(
+                    show.id, now=now, today=now.astimezone().date(), when=now
+                )
         await self._library.mark_synced(show.id)
         self._fetched.pop(show.id, None)  # the library's copy is the current one now
         return show

@@ -5,6 +5,10 @@ Tk can't draw a see-through widget over an image, so the cover, the fade, the bo
 rounded corners are baked into one image at the card's physical size, in a worker thread
 (`compose_card`, cached by `ImageCache` per url and size). The fade turns solid just above the
 text, so the labels and buttons, whose own background is `theme.BG`, blend in.
+
+A card is drawn at a `CardScale` (Settings, Card size: app/ui/card_scale.py): every size, gap
+and font below is the XL card's and scales with it; the cover is rendered at the scaled card's
+physical size.
 """
 
 from __future__ import annotations
@@ -20,11 +24,12 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageOps
 
 from app.ui import theme
+from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TEXT_MIN, TITLE_MIN, CardScale
 from app.ui.download_control import CORNER_RADIUS as ROW_CORNER_RADIUS
 from app.ui.download_control import FONT_SIZE as ROW_FONT_SIZE
 from app.ui.download_control import ROW_HEIGHT
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, title_lines
+from app.ui.text_fit import SLACK, break_lines, elide_to_width, fit_to_lines, title_lines
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
@@ -43,7 +48,7 @@ SIDE_PAD = 12  # the text and the action row, from the border
 BOTTOM_PAD = 12  # under the action row
 ROW_GAP = 10  # between the text and the action row
 META_GAP = 2  # between the title and the year / rating line
-TEXT_WIDTH = POSTER_CARD_WIDTH - 2 * (BORDER + SIDE_PAD)
+TEXT_WIDTH = POSTER_CARD_WIDTH - 2 * (BORDER + SIDE_PAD)  # at XL; see `text_width`
 TITLE_SIZE = 15
 TITLE_MAX_LINES = 2
 META_SIZE = 12
@@ -58,6 +63,37 @@ TRACK_TEXT = "+ Track"
 MISSING_TEXT = "Not on TVMaze"
 
 _SUPERSAMPLE = 4  # the rounded corners are drawn this much larger, then scaled down
+
+
+# -- sizes -----------------------------------------------------------------------------------
+
+
+def card_size(scale: CardScale = FULL) -> tuple[int, int]:
+    """The card's (width, height) in CTk units at `scale`."""
+    return scale.px(POSTER_CARD_WIDTH), scale.px(POSTER_CARD_HEIGHT)
+
+
+def border_width(scale: CardScale = FULL) -> int:
+    return scale.px(BORDER, minimum=1)
+
+
+def side_pad(scale: CardScale = FULL) -> int:
+    """From the card's edge to the text and the action row (border included)."""
+    return border_width(scale) + scale.px(SIDE_PAD)
+
+
+def text_width(scale: CardScale = FULL) -> int:
+    """The room the title, the meta line and the rows under them have, in CTk units."""
+    return card_size(scale)[0] - 2 * side_pad(scale)
+
+
+def row_height(scale: CardScale = FULL) -> int:
+    """The action row's height (the Download row, Track)."""
+    return scale.px(ROW_HEIGHT)
+
+
+def row_font_size(scale: CardScale = FULL) -> int:
+    return scale.font(ROW_FONT_SIZE, TEXT_MIN)
 
 
 # -- text ------------------------------------------------------------------------------------
@@ -113,18 +149,28 @@ class CardFace:
 
 
 def card_face(
-    scale: float, text_height: float, *, bg: RGB, edge: RGB, outside: RGB, placeholder: RGB
+    scale: float,
+    text_height: float,
+    *,
+    bg: RGB,
+    edge: RGB,
+    outside: RGB,
+    placeholder: RGB,
+    card: CardScale = FULL,
 ) -> CardFace:
-    """The face of a card at widget scaling `scale` whose text and action row take
-    `text_height` CTk units above the bottom padding: the fade starts at 45 % of the card's
-    height and is solid from SOLID_MARGIN above the text down."""
-    width, height = round(POSTER_CARD_WIDTH * scale), round(POSTER_CARD_HEIGHT * scale)
-    solid_from = height - round((BORDER + BOTTOM_PAD + text_height + SOLID_MARGIN) * scale)
-    solid_from = max(0, solid_from)
+    """The face of a card at widget scaling `scale` (DPI) and card size `card` whose text and
+    action row take `text_height` CTk units above the bottom padding: the fade starts at 45 %
+    of the card's height and is solid from SOLID_MARGIN above the text down. In physical
+    pixels (DPI factor x card scale), so the cover stays sharp at every size."""
+    units_w, units_h = card_size(card)
+    width, height = round(units_w * scale), round(units_h * scale)
+    border = border_width(card)
+    bottom = border + card.px(BOTTOM_PAD) + text_height + card.px(SOLID_MARGIN)
+    solid_from = max(0, height - round(bottom * scale))
     return CardFace(
         size=(width, height),
-        border=max(1, round(BORDER * scale)),
-        radius=round(CORNER_RADIUS * scale),
+        border=max(1, round(border * scale)),
+        radius=round(card.px(CORNER_RADIUS) * scale),
         fade_from=min(round(height * FADE_FROM), solid_from),
         solid_from=solid_from,
         bg=bg,
@@ -247,13 +293,20 @@ class TrackButton(ctk.CTkButton):
     """A show card's action row: "+ Track", `busy_text` while adding, "✓ Following" once
     tracked (see `track_look`)."""
 
-    def __init__(self, master: Any, *, busy_text: str, command: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        master: Any,
+        *,
+        busy_text: str,
+        command: Callable[[], None],
+        scale: CardScale = FULL,
+    ) -> None:
         super().__init__(
             master,
             text="",
-            height=ROW_HEIGHT,
-            corner_radius=ROW_CORNER_RADIUS,
-            font=theme.font(ROW_FONT_SIZE, bold=True),
+            height=row_height(scale),
+            corner_radius=scale.px(ROW_CORNER_RADIUS),
+            font=theme.font(row_font_size(scale), bold=True),
             border_width=0,
             command=command,
         )
@@ -290,7 +343,11 @@ class PosterCard(ctk.CTkFrame):
 
     `poster` gives the cover's url for a card that many physical pixels wide (None: no cover).
     Subclasses create their action row with this card as master and hand it to `_pack_action`;
-    `_set_open` sets what a click on the cover or the text does.
+    `_set_open` sets what a click on the cover or the text does. A subclass with a row between
+    the text and the action row (`_pack_above_action`) passes its height, gap included, as
+    `extra_height` (already at `scale`), so the fade turns solid above that row too.
+
+    `scale` sizes the whole card (`self.scale`; subclasses size their rows with it).
     """
 
     def __init__(
@@ -301,30 +358,42 @@ class PosterCard(ctk.CTkFrame):
         meta: str,
         poster: Callable[[int], str | None],
         images: ImageCache,
+        extra_height: float = 0,
+        scale: CardScale = FULL,
     ) -> None:
+        self.scale = scale
+        width, height = card_size(scale)
         super().__init__(
             master,
             fg_color=theme.BG,
             border_color=theme.EDGE,
-            border_width=BORDER,
-            corner_radius=CORNER_RADIUS,
-            width=POSTER_CARD_WIDTH,
-            height=POSTER_CARD_HEIGHT,
+            border_width=border_width(scale),
+            corner_radius=scale.px(CORNER_RADIUS),
+            width=width,
+            height=height,
         )
         self.grid_propagate(False)
         self.pack_propagate(False)
         self._open: Callable[[], object] | None = None
         self._cover_image: ctk.CTkImage | None = None
+        self._size = (width, height)
+        self._pad_x = side_pad(scale)
+        self._bottom_pad = border_width(scale) + scale.px(BOTTOM_PAD)
+        room = text_width(scale) - SLACK
 
         # Created first so the text and buttons stack above it; placed once it has an image.
-        self._cover = ctk.CTkLabel(
-            self, text="", width=POSTER_CARD_WIDTH, height=POSTER_CARD_HEIGHT
-        )
+        self._cover = ctk.CTkLabel(self, text="", width=width, height=height)
         self._text = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0, border_width=0)
-        self._text.pack(side="bottom", fill="x", padx=BORDER + SIDE_PAD, pady=(0, ROW_GAP))
-        title_font = theme.font(TITLE_SIZE, bold=True)
-        fitted = fit_to_lines(
-            title_lines(title), TEXT_WIDTH - SLACK, TITLE_MAX_LINES, title_font.measure
+        row_gap = scale.px(ROW_GAP)
+        self._text.pack(side="bottom", fill="x", padx=self._pad_x, pady=(0, row_gap))
+        self.title_font = theme.font(scale.font(TITLE_SIZE, TITLE_MIN), bold=True)
+        title_font = self.title_font
+        # Breaks made explicit: a title that only fits word-wrapped would otherwise stay one
+        # line (cut off at both sides on a small card) and its height would be counted wrong.
+        fitted = break_lines(
+            fit_to_lines(title_lines(title), room, TITLE_MAX_LINES, title_font.measure),
+            room,
+            title_font.measure,
         )
         self._title = ctk.CTkLabel(
             self._text,
@@ -336,26 +405,29 @@ class PosterCard(ctk.CTkFrame):
         )
         self._title.pack(fill="x")
         clickable: list[Any] = [self._cover, self._text, self._title]
-        text_height = ROW_HEIGHT + ROW_GAP + (fitted.count("\n") + 1) * _linespace(title_font)
+        title_height = (fitted.count("\n") + 1) * _linespace(title_font)
+        text_height = row_height(scale) + extra_height + row_gap + title_height
         if meta:
-            meta_font = theme.font(META_SIZE)
+            meta_font = theme.font(scale.font(META_SIZE, SMALL_TEXT_MIN))
+            meta_gap = scale.px(META_GAP)
             line = ctk.CTkLabel(
                 self._text,
-                text=elide_to_width(meta, TEXT_WIDTH - SLACK, meta_font.measure),
+                text=elide_to_width(meta, room, meta_font.measure),
                 height=0,
                 font=meta_font,
                 text_color=theme.TEXT_MUTED,
             )
-            line.pack(fill="x", pady=(META_GAP, 0))
+            line.pack(fill="x", pady=(meta_gap, 0))
             clickable.append(line)
-            text_height += META_GAP + _linespace(meta_font)
+            text_height += meta_gap + _linespace(meta_font)
         for widget in clickable:
             widget.bind("<Button-1>", self._clicked, add="+")
 
-        scale: float = ctk.ScalingTracker.get_widget_scaling(self)
+        scaling: float = ctk.ScalingTracker.get_widget_scaling(self)
         self._face = card_face(
-            scale,
+            scaling,
             text_height,
+            card=scale,
             bg=_rgb(self, theme.BG),
             edge=_rgb(self, theme.EDGE),
             outside=_rgb(self, self._apply_appearance_mode(self.cget("bg_color"))),
@@ -371,10 +443,15 @@ class PosterCard(ctk.CTkFrame):
         row.pack(
             side="bottom",
             fill="x",
-            padx=BORDER + SIDE_PAD,
-            pady=(0, BORDER + BOTTOM_PAD),
+            padx=self._pad_x,
+            pady=(0, self._bottom_pad),
             before=self._text,
         )
+
+    def _pack_above_action(self, row: Any, gap: int) -> None:
+        """Pack `row` (created with this card as master) between the text and the action row,
+        `gap` (at the card's scale) above the action row. Call after `_pack_action`."""
+        row.pack(side="bottom", fill="x", padx=self._pad_x, pady=(0, gap), before=self._text)
 
     def _set_open(self, action: Callable[[], object] | None) -> None:
         """What a click on the cover or the text does (None: nothing)."""
@@ -401,9 +478,7 @@ class PosterCard(ctk.CTkFrame):
     def _show_cover(self, image: Image.Image) -> None:
         if not self.winfo_exists():
             return
-        self._cover_image = ctk.CTkImage(
-            light_image=image, dark_image=image, size=(POSTER_CARD_WIDTH, POSTER_CARD_HEIGHT)
-        )
+        self._cover_image = ctk.CTkImage(light_image=image, dark_image=image, size=self._size)
         self._cover.configure(image=self._cover_image)
         if not self._cover.winfo_manager():
             self._cover.place(x=0, y=0, relwidth=1, relheight=1)

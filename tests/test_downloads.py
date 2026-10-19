@@ -207,6 +207,19 @@ class TorrentFileTests(DownloadTestCase):
         self.assertIn(expected.name, result.message)
         self.assertEqual(self.remote_calls(), 0)
 
+    async def test_grab_listeners_hear_the_target_first(self) -> None:
+        heard: list[object] = []
+        self.service.subscribe(lambda: heard.append("grabbed"))
+        unsubscribe = self.service.subscribe_grabs(heard.append)
+        self.serve(DIRECT_URL, TORRENT)
+        await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(heard, [EPISODE, "grabbed"])
+        unsubscribe()
+        unsubscribe()
+        with self.assertRaises(GrabError):  # a failed grab: nobody hears of it
+            await self.service.grab(release(), EPISODE)
+        self.assertEqual(heard, [EPISODE, "grabbed"])
+
     async def test_html_instead_of_a_torrent_falls_back_to_itorrents(self) -> None:
         self.serve(DIRECT_URL, b"<!DOCTYPE html><html>Login required</html>")
         self.serve(ITORRENTS, CACHED)

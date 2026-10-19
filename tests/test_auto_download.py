@@ -347,7 +347,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         version = await db.fetch_one("PRAGMA user_version")
         assert version is not None
         self.assertEqual(version[0], len(MIGRATIONS))
-        self.assertEqual(len(MIGRATIONS), 2)
+        self.assertGreaterEqual(len(MIGRATIONS), 2)
         entries = {entry.show.id: entry for entry in await db.library.tracked()}
         self.assertEqual(sorted(entries), [1, 2])
         self.assertEqual(entries[1].show.genres, ("Drama",))
@@ -391,7 +391,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
         version = await db.fetch_one("PRAGMA user_version")
         assert version is not None
-        self.assertEqual(version[0], 2)
+        self.assertEqual(version[0], len(MIGRATIONS))
         columns = {row["name"] for row in await db.fetch_all("PRAGMA table_info(tracked_shows)")}
         self.assertIn("auto_since", columns)
 

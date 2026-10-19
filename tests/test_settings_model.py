@@ -89,7 +89,16 @@ class SettingsModelTests(unittest.TestCase):
         secrets = [
             name for name, field in Settings.model_fields.items() if field.annotation is SecretStr
         ]
-        self.assertEqual(set(secrets), {"tmdb_api_key", "prowlarr_api_key", "remote_password"})
+        self.assertEqual(
+            set(secrets),
+            {
+                "tmdb_api_key",
+                "prowlarr_api_key",
+                "remote_password",
+                "opensubtitles_password",
+                "opensubtitles_own_key",
+            },
+        )
         settings = Settings(**{name: f"value-{name}" for name in secrets})
         stored = settings.model_dump(mode="json")
         for name in secrets:

@@ -14,6 +14,7 @@ import customtkinter as ctk
 from app.services import ImageCache
 from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.ui import theme
+from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.poster_card import POSTER_CARD_WIDTH
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
@@ -38,7 +39,8 @@ class Shelf(Generic[T]):
 class ShelvesView(BaseView, Generic[T]):
     """A scrolling column of shelves from one TMDB dashboard.
 
-    Subclasses fetch the dashboard (`_fetch_shelves`) and build one card per item (`_card`).
+    Subclasses fetch the dashboard (`_fetch_shelves`) and build one card per item (`_card`,
+    at `self._scale`: the card size `card_scale` gave when the load started).
     `reload()` refetches from TMDB instead of using the dashboard cache.
     """
 
@@ -51,12 +53,16 @@ class ShelvesView(BaseView, Generic[T]):
         images: ImageCache,
         status: StatusReporter,
         on_open_settings: Callable[[], None],
+        card_scale: Callable[[], CardScale] = lambda: FULL,
         **kwargs: Any,
     ) -> None:
+        """`card_scale`: the card size (Settings), read at every load."""
         super().__init__(master, **kwargs)
         self._images = images
         self._status = status
         self._on_open_settings = on_open_settings
+        self._card_scale = card_scale
+        self._scale = card_scale()
         self._force = False  # the next load bypasses the dashboard cache
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -86,6 +92,7 @@ class ShelvesView(BaseView, Generic[T]):
 
     async def load(self) -> None:
         force, self._force = self._force, False
+        self._scale = self._card_scale()
         self._clear_body()
         LoadingBar(self._body).pack(fill="x")
         try:
@@ -146,7 +153,8 @@ class ShelvesView(BaseView, Generic[T]):
                 anchor="w",
             ).pack(anchor="w", padx=10)
             return
-        grid = FlexGrid(section, item_width=POSTER_CARD_WIDTH, pad_x=8, pad_y=10)
+        item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
+        grid = FlexGrid(section, item_width=item_width, pad_x=8, pad_y=10)
         grid.pack(fill="x")
         for item in shelf.items:
             self._card(grid, item)

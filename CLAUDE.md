@@ -39,5 +39,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - The TMDB v3 key travels as a URL parameter and Prowlarr's `TorrentRelease.download_url` embeds its
   API key: never log request URLs or release objects, never put `str(httpx_exc)` in messages, and keep
   the `httpx`/`httpcore` loggers at WARNING (`app/config.py`). DSM passwords go in POST bodies only.
+  OpenSubtitles: AirGrabber's one API key (`APP_API_KEY` in `app/services/opensubtitles.py`) ships
+  with the app and is public, but is still never logged; it travels in the `Api-Key` header. A user's
+  own key (`opensubtitles_own_key`, replaces the shipped one when filled in) is a secret: header only,
+  never in a URL, message or log. Signing in with an account is optional: the password only in the
+  /login POST body, the session token in the `Authorization` header and in memory only; /download's
+  temporary links are never logged.
 
 See `filemap.md` for where things live.

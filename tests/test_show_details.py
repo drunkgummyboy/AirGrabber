@@ -97,6 +97,18 @@ class SeasonTests(unittest.TestCase):
         )
         self.assertEqual(default_season(details(*episodes), NOW), 2)
 
+    def test_default_is_the_latest_season_while_it_has_missing_episodes(self) -> None:
+        aired = episode(1, 1, 1, airs=NOW - timedelta(days=400))
+        upcoming = episode(2, 2, 1, airs=NOW + timedelta(days=3))
+        missing = ShowDetails(
+            show=show(),
+            episodes=(aired, upcoming),
+            next_episode=upcoming,
+            latest_season=1,
+            missing=frozenset({1}),
+        )
+        self.assertEqual(default_season(missing, NOW), 1)
+
     def test_default_without_aired_episodes_is_the_first_season(self) -> None:
         self.assertEqual(default_season(details(episode(1, 2, 1), episode(2, 1, 1)), NOW), 1)
 

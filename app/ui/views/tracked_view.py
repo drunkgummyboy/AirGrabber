@@ -16,8 +16,10 @@ from app.services import ImageCache, LibraryService
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.airdates_import import PreviewFinder
+from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import CARD_WIDTH, ShowCard, card_info_line
 from app.ui.import_dialog import ImportShowsDialog
+from app.ui.missing_control import MissingActions
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, show_info
@@ -64,15 +66,21 @@ class TrackedView(BaseView):
         images: ImageCache,
         status: StatusReporter,
         on_open_show: Callable[[Show], None] | None = None,
+        missing_actions: MissingActions | None = None,
+        card_scale: Callable[[], CardScale] = lambda: FULL,
         **kwargs: Any,
     ) -> None:
-        """`on_open_show`: what a click on a card's poster or title does (the show details)."""
+        """`on_open_show`: what a click on a card's poster or title does (the show details).
+        `missing_actions`: the cards show their missing episodes and "Download missing".
+        `card_scale`: the card size (Settings), read at every load."""
         super().__init__(master, **kwargs)
+        self._card_scale = card_scale
         self._library = library
         self._airdates = airdates
         self._images = images
         self._status = status
         self._on_open_show = on_open_show
+        self._missing_actions = missing_actions
         self._tasks: set[asyncio.Task[None]] = set()
         self._import_dialog: ImportShowsDialog | None = None
         self._cards: dict[int, ShowCard] = {}
@@ -130,6 +138,9 @@ class TrackedView(BaseView):
         LoadingBar(self._body).pack(fill="x")
         entries = await self._library.tracked()
         activity = await self._library.activity()
+        missing = (
+            await self._library.missing_counts() if self._missing_actions is not None else {}
+        )
         now = datetime.now().astimezone()
         self._clear_body()
         self._title.configure(text=f"Tracked TV Shows ({len(entries)})")
@@ -141,7 +152,10 @@ class TrackedView(BaseView):
                 height=_EMPTY_HEIGHT,
             ).pack(fill="x", expand=True)
             return
-        grid = FlexGrid(self._body, item_width=CARD_WIDTH, pad_x=8, pad_y=10)
+        scale = self._card_scale()
+        grid = FlexGrid(
+            self._body, item_width=grid_item_width(CARD_WIDTH, scale), pad_x=8, pad_y=10
+        )
         grid.pack(fill="x", expand=True)
         for entry in entries:
             self._cards[entry.show.id] = ShowCard(
@@ -153,6 +167,9 @@ class TrackedView(BaseView):
                 info_line=card_info_line(activity.get(entry.show.id), now),
                 on_auto_download=self._toggle_auto,
                 on_open=self._on_open_show,
+                missing=missing.get(entry.show.id, 0),
+                missing_actions=self._missing_actions,
+                scale=scale,
             )
         grid.relayout()
 

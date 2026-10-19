@@ -39,6 +39,12 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "keep_in_tray": False,
     "tray_notice_shown": True,
     "start_with_windows": True,
+    "subtitles_enabled": True,
+    "subtitle_languages": ("en", "nl"),
+    "subtitles_folder": r"\\NAS\video",
+    "opensubtitles_username": "beau",
+    "opensubtitles_password": "pw",
+    "opensubtitles_own_key": "OWNKEY",
 }
 
 PAGE_CHANGES: dict[str, Any] = {
@@ -51,6 +57,7 @@ PAGE_CHANGES: dict[str, Any] = {
     "excluded_keywords": "cam",
     "preferred_groups": "ELiTE",
     "disabled_indexers": "yts",
+    "card_size": "s",  # the cards on every page but the calendar
 }
 
 

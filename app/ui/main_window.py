@@ -20,24 +20,34 @@ from app.models import (
     AutoError,
     AutoEvent,
     AutoGaveUp,
+    AutoMovieDownloaded,
+    AutoMovieGaveUp,
     CalendarEntry,
     GrabTarget,
     MediaType,
+    MissingProgress,
     Movie,
     MovieDetails,
     ProwlarrSetupResult,
     QuickDownloadResult,
     Settings,
+    Show,
+    SubtitleEvent,
+    SubtitleProblem,
+    SubtitlesSaved,
     SyncProgress,
     UpdateInfo,
 )
 from app.services import Services, UpdateError
+from app.services.missing import MissingRunBusy
 from app.services.auto_download import GIVE_UP_AFTER
+from app.services.watchlist import GIVE_UP_AFTER as MOVIE_GIVE_UP_AFTER
 from app.services.downloads import GrabError
 from app.services.synology import DownloadStationError
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.branding import load_logo, set_window_icon
+from app.ui.card_scale import CardScale
 from app.ui.download_control import (
     DownloadActions,
     DownloadKey,
@@ -50,6 +60,14 @@ from app.ui.download_control import (
     movie_key,
     nothing_found_text,
 )
+from app.ui.missing_control import (
+    OUTCOME_MS,
+    MissingActions,
+    MissingRuns,
+    MissingRunState,
+    have_status_text,
+    outcome_status_text,
+)
 from app.ui.indexer_dialog import (
     IndexerDialog,
     IndexerTarget,
@@ -60,6 +78,7 @@ from app.ui.indexer_dialog import (
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
+from app.ui.subtitle_settings import subtitle_mark
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.tray import TrayHost
@@ -98,6 +117,12 @@ _OFF_PAGE_SETTINGS = frozenset(
         "keep_in_tray",
         "tray_notice_shown",
         "start_with_windows",
+        "subtitles_enabled",
+        "subtitle_languages",
+        "subtitles_folder",
+        "opensubtitles_username",
+        "opensubtitles_password",
+        "opensubtitles_own_key",
     }
 )
 
@@ -109,6 +134,11 @@ def settings_affect_pages(previous: Settings, updated: Settings) -> bool:
         for name in Settings.model_fields
         if name not in _OFF_PAGE_SETTINGS
     )
+
+
+def subtitle_status_text(problem: SubtitleProblem) -> str:
+    """The status-bar line for a subtitle problem (already plain words, no URLs or secrets)."""
+    return f"⚠ Subtitles: {problem.message}"
 
 
 def prowlarr_setup_message(result: ProwlarrSetupResult) -> str | None:
@@ -130,6 +160,7 @@ def update_notice(last_run_version: str, running: str) -> str | None:
     return None
 
 
+_SUBTITLE_STATUS_MS = 15_000  # how long a subtitle problem stays in the status bar
 _AUTO_STATUS_MS = 10_000  # how long an automatic download's line stays in the status bar
 AUTO_ERROR_INTERVAL_S = 3600.0  # at most one "Automatic download didn't work" per hour
 
@@ -156,6 +187,20 @@ def auto_notice(event: AutoEvent) -> AutoNotice:
         body = (
             f"No good download turned up in {GIVE_UP_AFTER.days} days. "
             "Choose one yourself from the calendar."
+        )
+        return AutoNotice(title=title, body=body, status=f"{title}. {body}")
+    if isinstance(event, AutoMovieDownloaded):
+        how = "picked automatically from your watchlist"
+        return AutoNotice(
+            title=f"Downloaded {event.title}",
+            body=f"{event.quality} · {how}" if event.quality else how.capitalize(),
+            status=f"Downloaded {event.title} ({how})",
+        )
+    if isinstance(event, AutoMovieGaveUp):
+        title = f"Couldn't find {event.title}"
+        body = (
+            f"No good download turned up in {MOVIE_GIVE_UP_AFTER.days} days. "
+            "Choose one yourself from your watchlist on the Movies page."
         )
         return AutoNotice(title=title, body=body, status=f"{title}. {body}")
     title = "Automatic download didn't work"
@@ -225,6 +270,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._movie_actions: DownloadActions[Movie] = DownloadActions(
             download=self._download_movie, choose=self._grab_movie, states=self._download_states
         )
+        # "Download missing": its run state per show, shared by every button that shows it.
+        self._missing_runs = MissingRuns()
+        self._missing_actions = MissingActions(
+            download=self._download_missing,
+            mark_have=self._mark_have,
+            unmark_have=self._unmark_have,
+            runs=self._missing_runs,
+        )
         # The show details windows (one per show), opened from the show cards.
         self._show_windows = ShowWindows(
             self,
@@ -234,6 +287,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
             status=self.set_status,
             episode_actions=self._episode_actions,
             downloads_changed=services.downloads.subscribe,
+            missing_actions=self._missing_actions,
+            subtitle_marks=self._subtitle_marks,
+            subtitles_changed=self._on_subtitles_saved,
         )
 
         self.title(f"{APP_NAME} — Track your shows. Grab your movies.")
@@ -256,6 +312,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # The automatic downloads: a tray notification (or the status bar) per event.
         self._auto_throttle = AutoNoticeThrottle()
         self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
+        # Subtitles: problems in the status bar (saved ones only update the show windows).
+        self._unsubscribe_subtitles = services.subtitles.subscribe(self._on_subtitle_event)
 
         # Closing the window keeps AirGrabber running in the tray; main.py stops the icon at exit.
         self.tray = TrayHost(
@@ -290,6 +348,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_library()
         self._unsubscribe_downloads()
         self._unsubscribe_auto()
+        self._unsubscribe_subtitles()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
         for job in self.tk.splitlist(self.tk.call("after", "info")):
@@ -427,6 +486,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 status=self.set_status,
                 on_open_settings=self._open_settings,
                 on_open_show=self._show_windows.open_discover,
+                card_scale=self._card_scale,
             ),
             "Tracked": TrackedView(
                 tabs.add("Tracked"),
@@ -435,6 +495,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 images=images,
                 status=self.set_status,
                 on_open_show=self._show_windows.open_show,
+                missing_actions=self._missing_actions,
+                card_scale=self._card_scale,
             ),
         }
         for view in self._series_views.values():
@@ -447,7 +509,13 @@ class MainWindow(AsyncCTk, ctk.CTk):
             status=self.set_status,
             on_open_settings=self._open_settings,
             movie_actions=self._movie_actions,
+            watchlist=self._services.watchlist,
+            card_scale=self._card_scale,
         )
+
+    def _card_scale(self) -> CardScale:
+        """The cards' size as Settings has it now; the pages read it at every load."""
+        return CardScale.of(self._services.settings.current.card_size)
 
     def _build_status_bar(self) -> None:
         bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -472,6 +540,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
         # Its events arrive in _on_auto_event.
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
+        # Its problems arrive in _on_subtitle_event.
+        spawn(self._services.subtitles.run_periodic(), name="subtitles")
         spawn(self._services.images.prune(), name="poster-prune")
         spawn(self._load_logo(), name="logo")
         spawn(self._note_version(), name="version-notice")
@@ -492,7 +562,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _on_auto_event(self, event: AutoEvent) -> None:
         """Tell the user what the automatic downloads did: a tray notification, plus the status
-        bar for a download; only the status bar when there is no tray icon."""
+        bar for a download (an episode or a watchlist film); only the status bar when there is
+        no tray icon."""
         if not self._auto_throttle.allow(event):
             log.info("Automatic-download error not shown again within the hour")
             return
@@ -500,8 +571,29 @@ class MainWindow(AsyncCTk, ctk.CTk):
         tray_running = self.tray.running
         if tray_running:
             self.tray.notify(notice.title, notice.body)
-        if not tray_running or isinstance(event, AutoDownloaded):
+        if not tray_running or isinstance(event, (AutoDownloaded, AutoMovieDownloaded)):
             self._report(notice.status, _AUTO_STATUS_MS)
+
+    def _on_subtitle_event(self, event: SubtitleEvent) -> None:
+        """A subtitle problem (bad key, wrong password, folder out of reach, downloads used
+        up) shows in the status bar, in plain words."""
+        if isinstance(event, SubtitleProblem):
+            self._report(subtitle_status_text(event), _SUBTITLE_STATUS_MS)
+
+    def _on_subtitles_saved(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe `listener` to "subtitles were saved" (the show windows' CC marks)."""
+
+        def on_event(event: SubtitleEvent) -> None:
+            if isinstance(event, SubtitlesSaved):
+                listener()
+
+        return self._services.subtitles.subscribe(on_event)
+
+    async def _subtitle_marks(self, show_id: int) -> dict[tuple[int, int], str]:
+        """Per (season, episode), the show window's "CC EN NL" mark."""
+        found = await self._services.subtitles.show_languages(show_id)
+        order = self._services.settings.current.subtitle_languages
+        return {key: subtitle_mark(languages, order) for key, languages in found.items()}
 
     async def _load_logo(self) -> None:
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
@@ -565,8 +657,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             status=self.set_status,
             query=query,
             movie_actions=self._movie_actions,
+            watchlist=self._services.watchlist,
             on_open_settings=self._open_settings,
             on_open_show=self._show_windows.open_show,
+            card_scale=self._card_scale(),
         )
 
     def _search_episode(self, entry: CalendarEntry) -> None:
@@ -656,6 +750,72 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._download_states.set(key, RunState(Phase.DONE, result.grab.outcome))
         self._report(download_status_text(label, result), _DOWNLOAD_STATUS_MS)
 
+    # -- missing episodes ----------------------------------------------------------------------
+
+    def _download_missing(self, show: Show) -> None:
+        """Start "Download missing" for a tracked show, unless its run is going already."""
+        runs = self._missing_runs
+        if runs.is_working(show.id) or self._services.missing.is_running(show.id):
+            return
+        runs.set(show.id, MissingRunState())
+        task = spawn(self._run_missing(show), name="download-missing")
+        self._download_tasks.add(task)
+        task.add_done_callback(self._download_tasks.discard)
+
+    async def _run_missing(self, show: Show) -> None:
+        # The buttons may be gone or rebuilt by now: MissingRuns repaints whichever exist.
+        runs = self._missing_runs
+
+        def on_progress(step: MissingProgress) -> None:
+            runs.set(show.id, MissingRunState(index=step.index, total=step.total))
+            self._missing_step(show, step)
+
+        try:
+            report = await self._services.missing.download_missing(show.id, on_progress)
+        except MissingRunBusy:
+            return  # that run's state is the one shown
+        except BaseException:
+            runs.set(show.id, None)
+            raise  # cancelled, or logged and reported by the task runner
+        state = MissingRunState(index=report.total, total=report.total, report=report)
+        runs.set(show.id, state)
+        self._report(outcome_status_text(show.name, report), _DOWNLOAD_STATUS_MS)
+        self.after(OUTCOME_MS, lambda: runs.expire(show.id, state))
+
+    def _missing_step(self, show: Show, step: MissingProgress) -> None:
+        """The episode's own Download row follows the run (show details window)."""
+        episode, result, states = step.episode, step.result, self._download_states
+        key = episode_key(show.id, episode.season, episode.number)
+        if step.failed:
+            states.set(key, None)
+        elif result is None:
+            states.set(key, RunState(Phase.WORKING))
+        elif result.already_downloaded:
+            current = states.get(key)
+            if current is None or current.phase is not Phase.DONE:  # keep "✓ Saved" and co
+                states.set(key, RunState(Phase.DONE))
+        elif result.grab is None:
+            states.set(key, RunState(Phase.NOTHING))
+        else:
+            states.set(key, RunState(Phase.DONE, result.grab.outcome))
+
+    def _mark_have(self, show: Show, episode_ids: tuple[int, ...]) -> None:
+        """ "I already have this": the episodes no longer count as missing."""
+        spawn(self._set_have(show, episode_ids, have=True), name="mark-have")
+
+    def _unmark_have(self, show: Show, episode_ids: tuple[int, ...]) -> None:
+        """ "Mark as missing again"."""
+        spawn(self._set_have(show, episode_ids, have=False), name="unmark-have")
+
+    async def _set_have(self, show: Show, episode_ids: tuple[int, ...], *, have: bool) -> None:
+        library = self._services.library
+        if have:
+            await library.mark_have(episode_ids)
+        else:
+            await library.unmark_have(episode_ids)
+        # The library's listeners reload the pages and the show windows.
+        self._report(have_status_text(show.name, len(episode_ids), have=have), 6000)
+
     def _report(self, text: str, clear_after_ms: int) -> None:
         try:
             self.set_status(text, clear_after_ms=clear_after_ms)
@@ -701,6 +861,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             prowlarr=self._services.prowlarr_setup,
             update_info=self._update_info,
             on_update=self._start_update,
+            subtitles=self._services.subtitles,
         )
 
     async def _set_up_prowlarr(self) -> None:

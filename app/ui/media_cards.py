@@ -3,6 +3,9 @@ tab. Both are tall poster cards (`PosterCard`): films with the one-click Downloa
 "+ Track". Clicking a film's cover opens it on IMDb; a show's calls `on_open_show`, or opens the
 show on IMDb without one.
 
+A film's card also carries the watchlist button (`WatchlistButton`); the watchlist shelf's own
+cards are in `watchlist_cards`.
+
 Each card fetches its title's TMDB details itself through an injected loader: a film's decide
 whether it can be downloaded yet, and both name the title's IMDb page.
 
@@ -24,13 +27,16 @@ import customtkinter as ctk
 from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
 from app.services.tmdb import TMDBError
 from app.ui import theme
+from app.ui.card_scale import FULL, CardScale
 from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
 from app.ui.poster_card import PosterCard, TrackButton, TrackState, year_rating_line
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
+from app.ui.watchlist_button import WATCH_ROW_GAP, WATCH_ROW_HEIGHT, WatchlistButton
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
+    from app.services.watchlist import WatchlistService
 
 log = logging.getLogger(__name__)
 
@@ -169,9 +175,10 @@ def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
 
 
 class MovieCard(_TmdbCard):
-    """A film: year and rating, and a Download row ("⬇ Download" and "⋯" for the search window)
-    that unlocks once the film is out digitally. Clicking the cover opens the film on IMDb: its
-    own page once the details name it, IMDb's search until then."""
+    """A film: year and rating, the watchlist button ("+ Watchlist" / "✓ On watchlist") and a
+    Download row ("⬇ Download" and "⋯" for the search window) that unlocks once the film is out
+    digitally. Clicking the cover opens the film on IMDb: its own page once the details name it,
+    IMDb's search until then."""
 
     def __init__(
         self,
@@ -181,13 +188,18 @@ class MovieCard(_TmdbCard):
         images: ImageCache,
         details: Callable[[int], Awaitable[MovieDetails]],
         actions: DownloadActions[Movie],
+        watchlist: WatchlistService,
+        scale: CardScale = FULL,
     ) -> None:
+        gap = scale.px(WATCH_ROW_GAP)
         super().__init__(
             master,
             title=movie.title,
             meta=year_rating_line(movie.year, tmdb_rating(movie.vote_average, movie.vote_count)),
             poster=lambda width: movie.poster_url(tmdb_poster_size(width)),
             images=images,
+            extra_height=scale.px(WATCH_ROW_HEIGHT) + gap,
+            scale=scale,
         )
         self._movie = movie
         self._imdb_url = imdb_search_url(movie)
@@ -197,8 +209,11 @@ class MovieCard(_TmdbCard):
             key=movie_key(movie.id),
             base=movie_base(movie, None, date.today()),
             actions=actions,
+            scale=scale,
         )
         self._pack_action(self._control)
+        self.watch_button = WatchlistButton(self, movie=movie, watchlist=watchlist, scale=scale)
+        self._pack_above_action(self.watch_button, gap)
         self._set_open(self._open_imdb)
         self._load_details(details, movie.id, self._show_details)
 
@@ -225,6 +240,7 @@ class DiscoverShowCard(_TmdbCard):
         is_tracked: bool,
         on_track: Callable[[DiscoverShow], None],
         on_open_show: Callable[[DiscoverShow], None] | None = None,
+        scale: CardScale = FULL,
     ) -> None:
         super().__init__(
             master,
@@ -232,11 +248,14 @@ class DiscoverShowCard(_TmdbCard):
             meta=year_rating_line(show.year, tmdb_rating(show.vote_average, show.vote_count)),
             poster=lambda width: show.poster_url(tmdb_poster_size(width)),
             images=images,
+            scale=scale,
         )
         self._show = show
         self._on_track = on_track
         self._on_open_show = on_open_show
-        self._track_button = TrackButton(self, busy_text="Finding…", command=self._track)
+        self._track_button = TrackButton(
+            self, busy_text="Finding…", command=self._track, scale=scale
+        )
         self._pack_action(self._track_button)
         self.set_track_state("tracked" if is_tracked else "idle")
         if on_open_show is not None:

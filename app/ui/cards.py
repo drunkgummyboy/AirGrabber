@@ -1,9 +1,14 @@
-"""Show cards: the Tracked grid's `ShowCard` and the search results' poster `SearchShowCard`."""
+"""Show cards: the Tracked grid's `ShowCard` and the search results' poster `SearchShowCard`.
+
+Both are drawn at a `CardScale` (Settings, Card size: app/ui/card_scale.py); `show_card_layout`
+holds the My shows card's sizes at a scale.
+"""
 
 from __future__ import annotations
 
 import webbrowser
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +16,11 @@ import customtkinter as ctk
 
 from app.models import DownloadRecord, Episode, Show, ShowActivity
 from app.ui import theme
+from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TEXT_MIN, CardScale
+from app.ui.missing_control import MISSING_COLOR, MissingActions, MissingButton, chip, missing_text
 from app.ui.poster_card import PosterCard, TrackButton, TrackState, year_rating_line
+from app.ui.text_fit import SLACK, elide_to_width
+from app.ui.tooltip import add_tooltip
 from app.ui.widgets import PosterImage
 
 if TYPE_CHECKING:
@@ -29,6 +38,26 @@ _INFO_HEIGHT = 18
 _SWITCH_HEIGHT = 24
 _AUTO_BOTTOM = 10
 _AUTO_HEIGHT = _AUTO_GAP + _INFO_HEIGHT + _SWITCH_HEIGHT + _AUTO_BOTTOM
+# With missing episodes shown: a row above the info line, "3 missing" + "⬇ Download missing".
+_MISSING_HEIGHT = 26
+_MISSING_GAP = 8  # below that row
+_MISSING_ROOM = _MISSING_HEIGHT + _MISSING_GAP
+_MISSING_FONT = 13
+# The rest of the card at XL: poster, paddings, fonts, the small buttons, the switch.
+_POSTER_SIZE = (68, 100)
+_POSTER_PAD = 8  # left and right of the poster
+_ROW_PAD = 10  # above and below the poster; left and right of the rows under it
+_INFO_PAD = 5  # right of the title column
+_TITLE_FONT = 12
+_STATUS_FONT = 9
+_BUTTON_FONT = 10
+_BUTTON_SIZE = (40, 20)  # remove / IMDb
+_BUTTON_GAP = 5
+_INFO_FONT = 13
+_SWITCH_FONT = 14
+_SWITCH_SIZE = (36, 18)  # CTkSwitch's own default track
+_SWITCH_TEXT_GAP = 6  # CTkSwitch's gap between the track and its text
+_CHIP_GAP = 8  # right of the "3 missing" chip
 _RECENT_GRAB_DAYS = 6  # "today" … six days ago; older grabs aren't mentioned
 _NEAR_DAYS = 6  # a next episode up to this many days away is named by its weekday
 
@@ -38,6 +67,105 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
 
 def _truncate(text: str) -> str:
     return text if len(text) <= _TITLE_MAX else text[: _TITLE_MAX - 3] + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class ShowCardLayout:
+    """A My shows card's sizes (CTk units) and font sizes at one card size."""
+
+    width: int
+    library_height: int  # the poster row
+    poster: tuple[int, int]
+    poster_pad: int
+    row_pad: int
+    info_pad: int
+    title_font: int
+    status_font: int
+    button_font: int
+    button: tuple[int, int]
+    button_gap: int
+    auto_gap: int
+    info_height: int
+    info_font: int
+    switch_height: int
+    switch_font: int
+    switch: tuple[int, int]
+    auto_bottom: int
+    missing_height: int
+    missing_gap: int
+    missing_font: int
+    chip_gap: int
+
+    @property
+    def auto_height(self) -> int:
+        """The info line and the switch under the poster row, gaps included."""
+        return self.auto_gap + self.info_height + self.switch_height + self.auto_bottom
+
+    @property
+    def missing_room(self) -> int:
+        return self.missing_height + self.missing_gap
+
+    def height(self, *, with_switch: bool, with_missing: bool) -> int:
+        return (
+            self.library_height
+            + (self.auto_height if with_switch else 0)
+            + (self.missing_room if with_switch and with_missing else 0)
+        )
+
+    @property
+    def title_room(self) -> int:
+        """The title and status lines' width: beside the poster, inside the 1-unit border."""
+        return self.width - 2 - self.poster[0] - 2 * self.poster_pad - self.info_pad - SLACK
+
+    @property
+    def row_room(self) -> int:
+        """The width of the rows under the poster (the info line)."""
+        return self.width - 2 - 2 * self.row_pad - SLACK
+
+    @property
+    def switch_text_room(self) -> int:
+        """Room for the switch's text: the row's width less the track and its gap."""
+        return self.row_room - self.switch[0] - _SWITCH_TEXT_GAP
+
+
+def show_card_layout(scale: CardScale = FULL) -> ShowCardLayout:
+    """The My shows card at `scale`: everything shrinks with the card, the fonts down to their
+    minimums (card_scale), each text row at least as tall as its font needs."""
+    poster_w, poster_h = _POSTER_SIZE
+    poster = (scale.px(poster_w), scale.px(poster_h))
+    row_pad = scale.px(_ROW_PAD)
+    title_font = scale.font(_TITLE_FONT, TEXT_MIN)
+    status_font = scale.font(_STATUS_FONT, SMALL_TEXT_MIN)
+    button_font = scale.font(_BUTTON_FONT, SMALL_TEXT_MIN)
+    info_font = scale.font(_INFO_FONT, SMALL_TEXT_MIN)
+    switch_font = scale.font(_SWITCH_FONT, TEXT_MIN)
+    missing_font = scale.font(_MISSING_FONT, TEXT_MIN)
+    button_w, button_h = _BUTTON_SIZE
+    switch_w, switch_h = _SWITCH_SIZE
+    return ShowCardLayout(
+        width=scale.px(CARD_WIDTH),
+        library_height=max(scale.px(_LIBRARY_HEIGHT), poster[1] + 2 * row_pad),
+        poster=poster,
+        poster_pad=scale.px(_POSTER_PAD),
+        row_pad=row_pad,
+        info_pad=scale.px(_INFO_PAD),
+        title_font=title_font,
+        status_font=status_font,
+        button_font=button_font,
+        button=(scale.px(button_w), scale.text_height(button_h, button_font)),
+        button_gap=scale.px(_BUTTON_GAP),
+        auto_gap=scale.px(_AUTO_GAP),
+        info_height=scale.text_height(_INFO_HEIGHT, info_font),
+        info_font=info_font,
+        switch_height=scale.text_height(_SWITCH_HEIGHT, switch_font),
+        switch_font=switch_font,
+        switch=(scale.px(switch_w), scale.px(switch_h)),
+        auto_bottom=scale.px(_AUTO_BOTTOM),
+        missing_height=scale.text_height(_MISSING_HEIGHT, missing_font),
+        missing_gap=scale.px(_MISSING_GAP),
+        missing_font=missing_font,
+        chip_gap=scale.px(_CHIP_GAP),
+    )
 
 
 def _grab_code(record: DownloadRecord) -> str:
@@ -105,8 +233,10 @@ class ShowCard(ctk.CTkFrame):
 
     With `on_auto_download`, the card also shows `info_line` and the "Download new episodes"
     switch (state `auto_download`) under the poster; toggling it calls
-    `on_auto_download(show, on)`. With `on_open`, a click on the poster or the title calls
-    `on_open(show)`.
+    `on_auto_download(show, on)`. With `missing_actions` as well, a row above them shows the
+    show's `missing` episodes ("3 missing" + "⬇ Download missing"; blank but kept when none, so
+    every card is equally tall). With `on_open`, a click on the poster or the title calls
+    `on_open(show)`. `scale` sizes the whole card (`show_card_layout`).
     """
 
     def __init__(
@@ -120,16 +250,21 @@ class ShowCard(ctk.CTkFrame):
         info_line: str | None = None,
         on_auto_download: Callable[[Show, bool], None] | None = None,
         on_open: Callable[[Show], None] | None = None,
+        missing: int = 0,
+        missing_actions: MissingActions | None = None,
+        scale: CardScale = FULL,
     ) -> None:
         with_switch = on_auto_download is not None
+        with_missing = with_switch and missing_actions is not None
+        layout = self._layout = show_card_layout(scale)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
             border_color=theme.EDGE,
             border_width=1,
-            corner_radius=8,
-            width=CARD_WIDTH,
-            height=_LIBRARY_HEIGHT + (_AUTO_HEIGHT if with_switch else 0),
+            corner_radius=scale.px(8),
+            width=layout.width,
+            height=layout.height(with_switch=with_switch, with_missing=with_missing),
         )
         self.grid_propagate(False)
         self.pack_propagate(False)
@@ -138,21 +273,29 @@ class ShowCard(ctk.CTkFrame):
         self._on_auto_download = on_auto_download
         self._auto_switch: ctk.CTkSwitch | None = None
         self._auto_var = ctk.BooleanVar(value=auto_download)
+        self.missing_button: MissingButton | None = None
 
         if with_switch:  # packed first, so the poster row keeps its height above it
-            self._build_auto_rows(info_line)
+            rows = self._build_auto_rows(info_line, with_missing=with_missing)
+            if with_missing:
+                assert missing_actions is not None
+                self._build_missing_row(rows, missing, missing_actions)
 
-        poster = PosterImage(self, width=68, height=100)
-        poster.pack(side="left", padx=8, pady=10)
+        poster_w, poster_h = layout.poster
+        poster = PosterImage(self, width=poster_w, height=poster_h)
+        poster.pack(side="left", padx=layout.poster_pad, pady=layout.row_pad)
         poster.show(images, show.poster_url)
 
         info = ctk.CTkFrame(self, fg_color="transparent")
-        info.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=10)
+        info.pack(
+            side="left", fill="both", expand=True, padx=(0, layout.info_pad), pady=layout.row_pad
+        )
 
+        title_font = theme.font(layout.title_font, bold=True)
         title = ctk.CTkLabel(
             info,
-            text=_truncate(show.name),
-            font=theme.font(12, bold=True),
+            text=elide_to_width(_truncate(show.name), layout.title_room, title_font.measure),
+            font=title_font,
             text_color=theme.TEXT,
             anchor="w",
         )
@@ -161,22 +304,26 @@ class ShowCard(ctk.CTkFrame):
             poster.set_on_click(lambda: on_open(show))
             title.configure(cursor="hand2")
             title.bind("<Button-1>", lambda _event: on_open(show))
+        status_font = theme.font(layout.status_font)
         ctk.CTkLabel(
             info,
-            text=f"Status: {show.status or 'Unknown'}",
-            font=theme.font(9),
+            text=elide_to_width(
+                f"Status: {show.status or 'Unknown'}", layout.title_room, status_font.measure
+            ),
+            font=status_font,
             text_color="gray50",
             anchor="w",
         ).pack(fill="x")
 
         bottom = ctk.CTkFrame(info, fg_color="transparent")
         bottom.pack(side="bottom", fill="x")
+        button_w, button_h = layout.button
         ctk.CTkButton(
             bottom,
             text="remove",
-            width=40,
-            height=20,
-            font=theme.font(10, bold=True),
+            width=button_w,
+            height=button_h,
+            font=theme.font(layout.button_font, bold=True),
             fg_color=theme.DANGER_BUTTON,
             hover_color=theme.DANGER_BUTTON_HOVER,
             border_width=0,
@@ -186,39 +333,82 @@ class ShowCard(ctk.CTkFrame):
             ctk.CTkButton(
                 bottom,
                 text="IMDb",
-                width=40,
-                height=20,
-                font=theme.font(10, bold=True),
+                width=button_w,
+                height=button_h,
+                font=theme.font(layout.button_font, bold=True),
                 fg_color=theme.IMDB,
                 text_color="black",
                 hover_color=theme.IMDB_HOVER,
                 border_width=0,
                 command=lambda: webbrowser.open(imdb_url),
-            ).pack(side="right", padx=(0, 5))
+            ).pack(side="right", padx=(0, layout.button_gap))
 
-    def _build_auto_rows(self, info_line: str | None) -> None:
-        rows = ctk.CTkFrame(self, fg_color="transparent", height=_AUTO_HEIGHT - _AUTO_GAP)
-        rows.pack(side="bottom", fill="x", padx=10, pady=(_AUTO_GAP, _AUTO_BOTTOM))
+    def _build_auto_rows(self, info_line: str | None, *, with_missing: bool) -> ctk.CTkFrame:
+        layout = self._layout
+        rows = ctk.CTkFrame(
+            self,
+            fg_color="transparent",
+            height=layout.auto_height
+            - layout.auto_gap
+            + (layout.missing_room if with_missing else 0),
+        )
+        rows.pack(
+            side="bottom", fill="x", padx=layout.row_pad, pady=(layout.auto_gap, layout.auto_bottom)
+        )
         # The line keeps its place when empty, so every card in the grid is equally tall.
+        info_font = theme.font(layout.info_font)
         ctk.CTkLabel(
             rows,
-            text=info_line or "",
-            height=_INFO_HEIGHT,
-            font=theme.font(13),
+            text=elide_to_width(info_line or "", layout.row_room, info_font.measure),
+            height=layout.info_height,
+            font=info_font,
             text_color=theme.TEXT_MUTED,
             anchor="w",
         ).pack(fill="x")
+        switch_font = theme.font(layout.switch_font)
+        text = elide_to_width(AUTO_SWITCH_TEXT, layout.switch_text_room, switch_font.measure)
+        switch_w, switch_h = layout.switch
         self._auto_switch = ctk.CTkSwitch(
             rows,
-            text=AUTO_SWITCH_TEXT,
+            text=text,
             variable=self._auto_var,
-            height=_SWITCH_HEIGHT,
-            font=theme.font(14),
+            height=layout.switch_height,
+            switch_width=switch_w,
+            switch_height=switch_h,
+            font=switch_font,
             text_color=auto_switch_color(self._auto_var.get()),
             progress_color=theme.ACCENT,
             command=self._auto_toggled,
         )
         self._auto_switch.pack(anchor="w")
+        if text != AUTO_SWITCH_TEXT:  # shortened on a small card: the tip says it in full
+            add_tooltip(self._auto_switch, AUTO_SWITCH_TEXT)
+        return rows
+
+    def _build_missing_row(self, rows: ctk.CTkFrame, count: int, actions: MissingActions) -> None:
+        """"3 missing" + "⬇ Download missing", above the info line."""
+        layout = self._layout
+        row = ctk.CTkFrame(rows, fg_color="transparent", height=layout.missing_height)
+        row.pack(fill="x", pady=(0, layout.missing_gap), before=rows.winfo_children()[0])
+        row.pack_propagate(False)
+        if count > 0:
+            chip(
+                row,
+                missing_text(count),
+                MISSING_COLOR,
+                height=layout.missing_height,
+                font_size=layout.missing_font,
+            ).pack(side="left", padx=(0, layout.chip_gap))
+        self.missing_button = MissingButton(
+            row,
+            show=self._show,
+            count=count,
+            actions=actions,
+            with_count=False,
+            height=layout.missing_height,
+            font_size=layout.missing_font,
+        )
+        self.missing_button.pack(side="left", fill="both", expand=True)
 
     @property
     def auto_download(self) -> bool:
@@ -256,6 +446,7 @@ class SearchShowCard(PosterCard):
         is_tracked: bool,
         on_track: Callable[[Show], None],
         on_open_show: Callable[[Show], None] | None = None,
+        scale: CardScale = FULL,
     ) -> None:
         super().__init__(
             master,
@@ -263,10 +454,13 @@ class SearchShowCard(PosterCard):
             meta=year_rating_line(show.year, show.rating),
             poster=lambda width: tvmaze_poster_url(show, width),
             images=images,
+            scale=scale,
         )
         self._show = show
         self._on_track = on_track
-        self._track_button = TrackButton(self, busy_text="Adding…", command=self._track)
+        self._track_button = TrackButton(
+            self, busy_text="Adding…", command=self._track, scale=scale
+        )
         self._pack_action(self._track_button)
         self.set_track_state("tracked" if is_tracked else "idle")
         if on_open_show is not None:

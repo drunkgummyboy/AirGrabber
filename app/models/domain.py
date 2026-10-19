@@ -389,9 +389,22 @@ class ShowDetails(DomainModel):
     # Ids of the episodes in the download history: the episode itself or its season's pack.
     downloaded: frozenset[int] = frozenset()
     next_episode: Episode | None = None  # the first numbered episode still to air
+    # Tracked shows only (see app.services.missing): the latest season (the highest with an
+    # aired regular numbered episode), its aired episodes not downloaded and not marked "I
+    # already have this" (ids), and every episode marked so (ids, any season).
+    latest_season: int | None = None
+    missing: frozenset[int] = frozenset()
+    have: frozenset[int] = frozenset()
 
     def is_downloaded(self, episode: Episode) -> bool:
         return episode.id in self.downloaded
+
+    def is_missing(self, episode: Episode) -> bool:
+        return episode.id in self.missing
+
+    def has_it(self, episode: Episode) -> bool:
+        """Marked "I already have this"."""
+        return episode.id in self.have
 
 
 class GrabTarget(DomainModel):
@@ -436,6 +449,31 @@ class QuickDownloadResult(DomainModel):
     grab: GrabResult | None = None
 
 
+class MissingProgress(DomainModel):
+    """One step of a "Download missing" run: episode `index` of `total` is being searched
+    (`result` None, not `failed`), or is done (`result`), or its grab failed (`failed`; the
+    run stops)."""
+
+    show_id: int
+    index: int  # 1-based
+    total: int
+    episode: Episode
+    result: QuickDownloadResult | None = None
+    failed: bool = False
+
+
+class MissingRunReport(DomainModel):
+    """What one "Download missing" run did, by episode label ("Severance S02E04")."""
+
+    show_id: int
+    total: int = 0  # episodes this run set out to fetch (at most the per-run cap)
+    downloaded: tuple[str, ...] = ()  # grabbed by this run
+    already: tuple[str, ...] = ()  # found in the download history meanwhile: nothing searched
+    not_found: tuple[str, ...] = ()  # no good enough release yet
+    left_over: int = 0  # missing episodes beyond the per-run cap, not tried
+    error: str | None = None  # the failed grab's user-facing reason; the run stopped there
+
+
 class AutoDownloaded(DomainModel):
     """Event: the automatic downloads grabbed a new episode."""
 
@@ -456,7 +494,23 @@ class AutoError(DomainModel):
     message: str  # user-facing reason, as the one-click Download reports it
 
 
-AutoEvent: TypeAlias = AutoDownloaded | AutoGaveUp | AutoError
+class AutoMovieDownloaded(DomainModel):
+    """Event: the automatic downloads grabbed a film from the watchlist (it left the list)."""
+
+    title: str  # "Dune: Part Three"
+    quality: str | None = None  # the release's resolution ("1080p"), when its title says
+
+
+class AutoMovieGaveUp(DomainModel):
+    """Event: a watchlist film wasn't found within the automatic downloads' window; its
+    "Download when it's out" switch went off."""
+
+    title: str  # "Dune: Part Three"
+
+
+AutoEvent: TypeAlias = (
+    AutoDownloaded | AutoGaveUp | AutoError | AutoMovieDownloaded | AutoMovieGaveUp
+)
 
 
 class AutoDownloadReport(DomainModel):
@@ -466,6 +520,99 @@ class AutoDownloadReport(DomainModel):
     not_found: tuple[str, ...] = ()  # labels searched without a good enough release (tried again)
     gave_up: tuple[str, ...] = ()  # labels
     error: str | None = None  # the AutoError message that stopped the run
+    # Watchlist films: downloaded, searched without a good enough release, given up (titles).
+    movies_downloaded: tuple[AutoMovieDownloaded, ...] = ()
+    movies_not_found: tuple[str, ...] = ()
+    movies_gave_up: tuple[str, ...] = ()
+
+
+class SubtitleFile(DomainModel):
+    """The subtitles' bookkeeping for one video file and one language (app/services/subtitles.py):
+    tries without a subtitle, given up, or saved (where)."""
+
+    video_path: str
+    language: str  # OpenSubtitles code: "en", "pt-BR"
+    tries: int = 0  # searches (or downloads) that didn't give a subtitle
+    first_try: UtcDatetime | None = None
+    last_try: UtcDatetime | None = None
+    gave_up: bool = False
+    saved_at: UtcDatetime | None = None  # set once the subtitle file exists next to the video
+    subtitle_path: str | None = None
+
+
+class SubtitleGrab(DomainModel):
+    """A grab from the download history the subtitles look after, with the languages it is
+    complete for (all of its videos have them, or were given up)."""
+
+    record: DownloadRecord
+    done_languages: tuple[str, ...] = ()
+
+
+class SubtitleQuota(DomainModel):
+    """OpenSubtitles' download allowance as last heard: downloads left today and when the count
+    starts again (midnight UTC)."""
+
+    remaining: int | None = None
+    allowed: int | None = None  # per day, when signed in
+    reset_at: UtcDatetime | None = None
+
+
+class SubtitleAccount(DomainModel):
+    """The OpenSubtitles account that signed in (Settings' "Sign in")."""
+
+    level: str = ""  # "Sub leecher", "VIP Member"
+    allowed_downloads: int = 0  # per day
+    remaining_downloads: int | None = None  # left today, when known
+    vip: bool = False
+
+
+class SubtitlesSaved(DomainModel):
+    """Event: subtitles were saved next to a video."""
+
+    label: str  # "Severance S02E04", or the film's release title
+    languages: tuple[str, ...]
+
+
+class SubtitleProblem(DomainModel):
+    """Event: a subtitle run stopped or couldn't start (bad key, wrong password, the folder out
+    of reach, today's downloads used up); `message` is plain words, without URLs or secrets."""
+
+    message: str
+
+
+SubtitleEvent: TypeAlias = SubtitlesSaved | SubtitleProblem
+
+
+class SubtitleRunReport(DomainModel):
+    """What one subtitle run did."""
+
+    videos: int = 0  # video files matched to the pending grabs
+    saved: tuple[str, ...] = ()  # "Severance S02E04 (EN)"
+    not_found: tuple[str, ...] = ()  # searched without a usable subtitle (tried again later)
+    gave_up: tuple[str, ...] = ()
+    problem: str | None = None  # the SubtitleProblem that stopped (or skipped) the run
+
+
+class WatchlistEntry(DomainModel):
+    """A film on the user's watchlist: the TMDB list data it was saved with (enough to draw its
+    card offline), its release dates as TMDB's details last said, and the automatic downloads'
+    "Download when it's out" switch with its tries."""
+
+    movie: Movie
+    added_at: UtcDatetime
+    auto_download: bool = True  # "Download when it's out"
+    imdb_id: ImdbId = None  # from TMDB's details (list entries rarely carry one)
+    digital_release: date | None = None  # for the TMDB client's region
+    theatrical_release: date | None = None
+    details_at: UtcDatetime | None = None  # when the release dates were last read from TMDB
+    tries: int = 0  # automatic searches that found nothing good enough (or failed to grab)
+    first_try: UtcDatetime | None = None
+    last_try: UtcDatetime | None = None
+    gave_up: bool = False  # the automatic downloads stopped looking (the switch went off)
+
+    @property
+    def movie_id(self) -> int:
+        return self.movie.id
 
 
 class TorrentApp(DomainModel):

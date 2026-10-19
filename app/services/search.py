@@ -482,6 +482,19 @@ def episode_request(show: Show, season: int, episode: int) -> SearchRequest:
     )
 
 
+def movie_request(movie: Movie, details: MovieDetails | None = None) -> SearchRequest:
+    """The search for a film; the details' IMDb id wins over the list entry's (also used
+    without the UI, by the automatic downloads of watchlist films)."""
+    imdb_id = (details.imdb_id if details else None) or movie.imdb_id
+    return SearchRequest(
+        kind=SearchKind.MOVIE,
+        title=movie.title,
+        year=movie.year,
+        imdb_id=imdb_id,
+        queries=build_queries(SearchKind.MOVIE, movie.title, year=movie.year),
+    )
+
+
 _Outcome = tuple[IndexerStatus, list[TorrentRelease]]
 
 
@@ -513,14 +526,7 @@ class TorrentSearchService:
         )
 
     def movie_request(self, movie: Movie, details: MovieDetails | None = None) -> SearchRequest:
-        imdb_id = (details.imdb_id if details else None) or movie.imdb_id
-        return SearchRequest(
-            kind=SearchKind.MOVIE,
-            title=movie.title,
-            year=movie.year,
-            imdb_id=imdb_id,
-            queries=build_queries(SearchKind.MOVIE, movie.title, year=movie.year),
-        )
+        return movie_request(movie, details)
 
     async def search(self, request: SearchRequest) -> AsyncGenerator[SearchUpdate, None]:
         """Stream the search for `request` as snapshots.

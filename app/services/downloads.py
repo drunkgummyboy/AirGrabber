@@ -51,6 +51,7 @@ from app.services.torrent_app import find_torrent_app
 log = logging.getLogger(__name__)
 
 DownloadListener = Callable[[], None]
+GrabListener = Callable[[GrabTarget], None]
 Opener = Callable[[str], None]  # opens a file path or magnet link with its Windows handler
 
 ITORRENTS_URL = "https://itorrents.org/torrent/{}.torrent"  # hash in UPPERCASE hex
@@ -106,6 +107,7 @@ class DownloadService:
         self._find_app = find_app
         self._opener: Opener = opener or open_with_default_program
         self._listeners: list[DownloadListener] = []
+        self._grab_listeners: list[GrabListener] = []
 
     def subscribe(self, listener: DownloadListener) -> Callable[[], None]:
         """Call `listener` after every successful grab. Returns a function that unsubscribes it."""
@@ -120,7 +122,26 @@ class DownloadService:
 
         return unsubscribe
 
-    def _notify(self) -> None:
+    def subscribe_grabs(self, listener: GrabListener) -> Callable[[], None]:
+        """Call `listener` with the target of every successful grab, before the `subscribe`
+        listeners hear of it. Returns a function that unsubscribes it."""
+        self._grab_listeners.append(listener)
+        subscribed = True
+
+        def unsubscribe() -> None:
+            nonlocal subscribed
+            if subscribed:
+                subscribed = False
+                self._grab_listeners.remove(listener)
+
+        return unsubscribe
+
+    def _notify(self, target: GrabTarget) -> None:
+        for grab_listener in list(self._grab_listeners):
+            try:
+                grab_listener(target)
+            except Exception:
+                log.exception("Grab listener %r failed", grab_listener)
         for listener in list(self._listeners):
             try:
                 listener()
@@ -175,7 +196,7 @@ class DownloadService:
             await self._history.add(record)
         except Exception:
             log.exception("Could not record the grab of %r in the download history", release.title)
-        self._notify()
+        self._notify(target)
         return result
 
     async def _grab_in_app(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
