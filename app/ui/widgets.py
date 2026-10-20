@@ -72,28 +72,63 @@ class MessagePanel(ctk.CTkFrame):
             ).pack(pady=(16, 0))
 
 
+def flex_columns(width: float, slot: float) -> int:
+    """How many `slot`-wide columns fit in `width` (both in the same pixels): at least one."""
+    return max(1, int(width // slot)) if slot > 0 else 1
+
+
+def flex_cell(index: int, columns: int, *, center: bool = True) -> tuple[int, int]:
+    """The (row, column) of the `index`-th child in a `FlexGrid` of `columns` columns, row by
+    row. Centred, the cards' columns are 1..`columns`: columns 0 and `columns` + 1 are the
+    equal margins left and right of the block, so a short last row stays under the columns
+    above it."""
+    row, column = divmod(index, columns)
+    return row, column + (1 if center else 0)
+
+
+def flex_margin(width: float, columns: int, slot: float) -> float:
+    """The empty room left (and right) of a centred `FlexGrid`'s block of `columns` columns."""
+    return max(0.0, (width - columns * slot) / 2)
+
+
 class FlexGrid(ctk.CTkFrame):
-    """Grids its children row-major into as many columns as fit its width.
+    """Grids its children row by row into as many columns as fit its width.
+
+    With `center` (the default) the block of columns sits in the middle of the width: every
+    column is a whole card slot wide (also where a short last row leaves it empty) and two
+    stretching margin columns share the rest. Without it, the columns start at the left.
 
     Children are re-flowed on resize only when the column count changes. Call `relayout()`
     after adding or removing children.
     """
 
     def __init__(
-        self, master: Any, *, item_width: int, pad_x: int = 8, pad_y: int = 10, **kwargs: Any
+        self,
+        master: Any,
+        *,
+        item_width: int,
+        pad_x: int = 8,
+        pad_y: int = 10,
+        center: bool = True,
+        **kwargs: Any,
     ) -> None:
         kwargs.setdefault("fg_color", "transparent")
         super().__init__(master, **kwargs)
         self.item_width = item_width
         self.pad_x = pad_x
         self.pad_y = pad_y
+        self.center = center
         self._current_cols = 0
+        self._configured_cols = 0  # the grid columns `_configure_columns` last set up
         self.bind("<Configure>", self._on_resize, add="+")
 
+    def _slot(self) -> float:
+        """One column's width in physical pixels (Tk's); item_width / pad_x are CTk units."""
+        scaling: float = ctk.ScalingTracker.get_widget_scaling(self)
+        return (self.item_width + self.pad_x * 2) * scaling
+
     def _columns(self, width: int) -> int:
-        # Widths from Tk are physical pixels; item_width/pad_x are unscaled CTk units.
-        slot = (self.item_width + self.pad_x * 2) * ctk.ScalingTracker.get_widget_scaling(self)
-        return max(1, int(width // slot))
+        return flex_columns(width, self._slot())
 
     def _on_resize(self, event: tk.Event[Any]) -> None:
         if event.width < 10:
@@ -104,11 +139,26 @@ class FlexGrid(ctk.CTkFrame):
         self._current_cols = cols
         self._regrid(cols)
 
+    def _configure_columns(self, cols: int) -> None:
+        """Centred: the margin columns 0 and `cols` + 1 stretch equally, the `cols` card
+        columns between them keep a slot's width even when empty."""
+        for column in range(self._configured_cols + 2):
+            self.grid_columnconfigure(column, weight=0, minsize=0)
+        self._configured_cols = 0
+        if not self.center:
+            return
+        slot = round(self._slot())
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(cols + 1, weight=1)
+        for column in range(1, cols + 1):
+            self.grid_columnconfigure(column, minsize=slot)
+        self._configured_cols = cols
+
     def _regrid(self, cols: int) -> None:
+        self._configure_columns(cols)
         for idx, child in enumerate(self.winfo_children()):
-            child.grid(
-                row=idx // cols, column=idx % cols, padx=self.pad_x, pady=self.pad_y, sticky="nw"
-            )
+            row, column = flex_cell(idx, cols, center=self.center)
+            child.grid(row=row, column=column, padx=self.pad_x, pady=self.pad_y, sticky="nw")
 
     def relayout(self) -> None:
         self.update_idletasks()

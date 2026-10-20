@@ -1,5 +1,5 @@
 """The calendar page on a hidden Tk root with fake services: what each day cell holds, the
-suggestions switch, the weeks menu and the week navigation."""
+top bar (week count, Suggestions toggle, wrapping) and the week navigation."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ import asyncio
 import tkinter as tk
 import unittest
 from datetime import date, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest import mock
 
 import customtkinter as ctk
 
@@ -15,10 +17,25 @@ from app.models import CalendarEntry, Episode, Settings, Show
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import calendar_range
 from app.ui import theme
-from app.ui.calendar_cards import EpisodeCard, SuggestionCard
+from app.ui.calendar_cards import CompactEpisodeCard, EpisodeCard, SuggestionCard
 from app.ui.download_control import DownloadActions, DownloadStates
 from app.ui.text_fit import SLACK
-from app.ui.views.calendar_view import CalendarView, range_label, range_slot_width
+from app.ui.views.calendar_view import (
+    RANGE_FONT_SIZE,
+    CalendarView,
+    range_label,
+    range_slot_width,
+)
+
+TODAY = date(2026, 10, 19)  # a Monday: the grid starts a week earlier (Settings: Monday first)
+GRID_START = TODAY - timedelta(weeks=1)
+SUNDAY = TODAY - timedelta(days=1)
+
+
+class FixedDate(date):
+    @classmethod
+    def today(cls) -> FixedDate:
+        return cls(TODAY.year, TODAY.month, TODAY.day)
 
 
 def entry(show_id: int, day: date, *, tracked: bool) -> CalendarEntry:
@@ -82,9 +99,9 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             self.skipTest(f"Tk unavailable: {exc}")
         self.root.withdraw()
         self.addCleanup(self._destroy_root)
-        self.today = date.today()
-        self.first, _ = calendar_range(self.today, first_day=Settings().first_day, weeks=1)
-        self.second = self.first + timedelta(days=1)
+        patcher = mock.patch("app.ui.views.calendar_view.date", FixedDate)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     async def asyncSetUp(self) -> None:
         # The test loop runs in debug mode, which logs every step over 0.1 s; building a page
@@ -97,11 +114,15 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.root.destroy()
 
     def library(self) -> FakeLibrary:
-        tracked = [entry(1, self.first, tracked=True), entry(2, self.first, tracked=True)]
+        tracked = [
+            entry(1, TODAY, tracked=True),
+            entry(2, TODAY, tracked=True),
+            entry(3, GRID_START, tracked=True),  # a week ago: compact
+        ]
         suggestions = [
-            entry(10, self.first, tracked=False),  # the first day's best-ranked
-            entry(11, self.first, tracked=False),
-            entry(12, self.second, tracked=False),
+            entry(10, TODAY, tracked=False),  # today's best-ranked
+            entry(11, TODAY, tracked=False),
+            entry(12, SUNDAY, tracked=False),
         ]
         return FakeLibrary(tracked, suggestions)
 
@@ -118,33 +139,40 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def cards(self, view: CalendarView, day: date) -> list[str]:
-        """The cards in `day`'s cell, in order: "tracked" or the suggested show's name."""
+        """The cards in `day`'s cell, in order: "full", "compact" or the suggested show's
+        name."""
         assert view._weeks is not None
         cells: dict[tuple[int, int], Any] = {}
         for cell in view._weeks.grid_slaves():
             info = cell.grid_info()
             cells[int(info["row"]), int(info["column"])] = cell
-        index = (day - self.first).days
+        index = (day - GRID_START).days
         header, *cards = cells[index // 7, index % 7].pack_slaves()
         names: list[str] = []
         for card in cards:
             if isinstance(card, SuggestionCard):
                 names.append(cast(Any, card)._show.name)
+            elif isinstance(card, CompactEpisodeCard):
+                names.append("compact")
             else:
                 self.assertIsInstance(card, EpisodeCard)
-                names.append("tracked")
+                names.append("full")
         return names
 
     async def test_tracked_episodes_first_then_one_suggestion(self) -> None:
         library = self.library()
         view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
         await view.load()
-        week_end = self.first + timedelta(days=6)
-        self.assertEqual(library.suggestion_calls, [(self.first, week_end, 1)])
-        self.assertEqual(self.cards(view, self.first), ["tracked", "tracked", "Show 10"])
-        self.assertEqual(self.cards(view, self.second), ["Show 12"])
-        self.assertEqual(self.cards(view, self.second + timedelta(days=1)), [])
-        self.assertTrue(view._suggestions_switch.get())
+        # Monday: last week too, so the weekend's episodes are still on screen.
+        week_end = TODAY + timedelta(days=6)
+        self.assertEqual(library.calendar_calls, [(GRID_START, week_end)])
+        self.assertEqual(library.suggestion_calls, [(GRID_START, week_end, 1)])
+        self.assertEqual(self.cards(view, TODAY), ["full", "full", "Show 10"])
+        self.assertEqual(self.cards(view, SUNDAY), ["Show 12"])
+        self.assertEqual(self.cards(view, GRID_START), ["compact"])
+        self.assertEqual(self.cards(view, TODAY + timedelta(days=1)), [])
+        self.assertTrue(view._suggestions_shown)
+        self.assertEqual(view._range.cget("text"), "12 – 25 Oct")
 
     async def test_switched_off_suggestions_are_not_fetched(self) -> None:
         library = self.library()
@@ -152,29 +180,57 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         view = self.view(library, FakeSettings(prefs))
         await view.load()
         self.assertEqual(library.suggestion_calls, [])
-        self.assertEqual(self.cards(view, self.first), ["tracked", "tracked"])
-        self.assertEqual(self.cards(view, self.second), [])
-        self.assertFalse(view._suggestions_switch.get())
+        self.assertEqual(self.cards(view, TODAY), ["full", "full"])
+        self.assertEqual(self.cards(view, SUNDAY), [])
+        self.assertFalse(view._suggestions_shown)
+        self.assertEqual(view._suggestions_toggle.cget("fg_color"), "transparent")
 
     async def test_header_controls_save_the_settings(self) -> None:
         settings = FakeSettings(Settings())
         view = self.view(self.library(), settings)
-        self.assertEqual(view._weeks_menu.get(), "3 weeks")
-        self.assertTrue(view._suggestions_switch.get())
-        view._suggestions_switch.toggle()  # as a click does
-        view._weeks_menu.cget("command")("1 week")  # as picking from the menu does
+        self.assertEqual(view._week_count.get(), "3")
+        self.assertEqual(view._week_count.cget("values"), ["1", "2", "3", "4", "5"])
+        self.assertEqual(view._suggestions_toggle.cget("fg_color"), theme.ACCENT)
+        view._suggestions_toggle.invoke()  # as a click does
+        self.assertEqual(view._suggestions_toggle.cget("fg_color"), "transparent")
+        view._week_count.cget("command")("1")  # as clicking "1" does
         await asyncio.sleep(0)
         self.assertEqual(settings.updates, [{"show_suggestions": False}, {"weeks_to_show": 1}])
+        view._suggestions_toggle.invoke()
+        await asyncio.sleep(0)
+        self.assertEqual(settings.updates[-1], {"show_suggestions": True})
+        self.assertEqual(view._suggestions_toggle.cget("fg_color"), theme.ACCENT)
 
-    def test_range_slot_is_the_widest_label_of_any_range(self) -> None:
-        font = theme.font(16, bold=True)
-        first = date(2026, 1, 1)
+    async def test_reload_shows_settings_saved_elsewhere(self) -> None:
+        settings = FakeSettings(Settings())
+        view = self.view(self.library(), settings)
+        settings.current = Settings(weeks_to_show=5, show_suggestions=False)
+        await view.load()
+        self.assertEqual(view._week_count.get(), "5")
+        self.assertFalse(view._suggestions_shown)
+
+    async def test_right_hand_controls_wrap_when_narrow(self) -> None:
+        view = self.view(self.library(), FakeSettings(Settings()))
+        self.root.update_idletasks()
+        self.assertEqual(int(view._right.grid_info()["row"]), 0)
+        view._fit_header(SimpleNamespace(width=200))
+        self.assertEqual(int(view._right.grid_info()["row"]), 1)
+        view._fit_header(SimpleNamespace(width=20000))
+        info = view._right.grid_info()
+        self.assertEqual((int(info["row"]), int(info["column"])), (0, 2))
+
+    def test_range_slot_is_the_widest_label_within_a_year(self) -> None:
+        font = theme.font(RANGE_FONT_SIZE, bold=True)
+        first = date(2027, 1, 1)
         widest = max(
-            font.measure(range_label(start, start + timedelta(weeks=weeks, days=-1)))
-            for start in (first + timedelta(days=n) for n in range(366))
-            for weeks in range(1, 6)
+            font.measure(range_label(start, end))
+            for start in (first + timedelta(days=n) for n in range(365))
+            for weeks in range(1, 7)  # 1–5 weeks, and one more early in a week
+            if (end := start + timedelta(weeks=weeks, days=-1)).year == start.year
         )
         self.assertEqual(range_slot_width(font.measure), widest + SLACK)
+        # Close to the usual labels: the buttons sit right after the dates.
+        self.assertLess(range_slot_width(font.measure) - font.measure("12 Oct – 8 Nov"), 30)
 
     async def test_range_label_keeps_its_width(self) -> None:
         library = self.library()
@@ -182,12 +238,17 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         widths = set()
         for start, end in (
             (date(2026, 10, 12), date(2026, 10, 18)),
-            (date(2026, 12, 28), date(2027, 1, 31)),
+            (date(2026, 10, 19), date(2026, 11, 8)),
+            (date(2027, 3, 31), date(2027, 5, 11)),
         ):
             view._range.configure(text=range_label(start, end))
             self.root.update_idletasks()
             widths.add(view._range.winfo_reqwidth())
         self.assertEqual(len(widths), 1, widths)
+        # A label with years, around New Year, may push the buttons.
+        view._range.configure(text=range_label(date(2026, 12, 28), date(2027, 1, 31)))
+        self.root.update_idletasks()
+        self.assertGreater(view._range.winfo_reqwidth(), widths.pop())
 
     async def test_week_navigation(self) -> None:
         library = self.library()
@@ -206,12 +267,15 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             return library.calendar_calls[-1]
 
         def weeks_from_now(offset: int) -> tuple[date, date]:
-            return calendar_range(self.today, first_day=prefs.first_day, weeks=2, offset=offset)
+            return calendar_range(TODAY, first_day=prefs.first_day, weeks=2, offset=offset)
 
         await view.load()
         self.assertEqual(library.calendar_calls, [weeks_from_now(0)])
+        self.assertEqual(weeks_from_now(0), (GRID_START, TODAY + timedelta(days=13)))
         self.assertEqual(view._range.cget("text"), range_label(*weeks_from_now(0)))
-        self.assertEqual(await press("▶"), weeks_from_now(1))
+        # Away from today, whole weeks without the extra one.
+        next_weeks = (TODAY + timedelta(weeks=1), TODAY + timedelta(days=20))
+        self.assertEqual(await press("▶"), next_weeks)
         self.assertEqual(view._range.cget("text"), range_label(*weeks_from_now(1)))
         self.assertEqual(await press("◀"), weeks_from_now(0))
         self.assertEqual(await press("◀"), weeks_from_now(-1))

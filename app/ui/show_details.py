@@ -25,7 +25,12 @@ from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError
 from app.ui import dialog_kit, theme
 from app.ui.branding import set_window_icon
-from app.ui.cards import AUTO_SWITCH_TEXT, auto_switch_color, tvmaze_poster_url
+from app.ui.cards import (
+    AUTO_SWITCH_TEXT,
+    AUTO_SWITCH_TIP,
+    auto_switch_color,
+    tvmaze_poster_url,
+)
 from app.ui.download_control import (
     CORNER_RADIUS as CONTROL_RADIUS,
 )
@@ -523,7 +528,9 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         content = ctk.CTkFrame(body, fg_color="transparent")
         content.pack(fill="x", padx=dialog_kit.PAD_X, pady=dialog_kit.PAD_Y)
         self._build_header(content)
-        self._chip_grid = FlexGrid(content, item_width=CHIP_WIDTH, pad_x=4, pad_y=4)
+        self._chip_grid = FlexGrid(
+            content, item_width=CHIP_WIDTH, pad_x=4, pad_y=4, center=False
+        )
         self._chip_grid.pack(fill="x", pady=(dialog_kit.BLOCK_GAP, 0))
         self._season_bar = self._build_season_bar(content)
         self._episode_list = ctk.CTkFrame(content, fg_color="transparent")
@@ -689,7 +696,8 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             self._paint_buttons(details)
 
     def _paint_buttons(self, details: ShowDetails) -> None:
-        """+ Track, or ✓ Following with the "Download new episodes" switch; then IMDb."""
+        """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
+        the hover tip says so); then IMDb."""
         imdb_url = details.show.imdb_url
         look = (details.tracked, details.auto_download, self._tracking, imdb_url)
         if look == self._buttons_look:
@@ -724,6 +732,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
                 command=self._auto_toggled,
             )
             self._auto_switch.pack(side="left", padx=(16, 0))
+            add_tooltip(self._auto_switch, AUTO_SWITCH_TIP)
         else:
             track = dialog_kit.primary_button(self._buttons, TRACK_TEXT, self._track)
             if self._tracking:

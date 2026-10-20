@@ -1,5 +1,6 @@
-"""The NAS / other computer form: its pure helpers, the widget, Settings → General's three
-download choices, the welcome's third option card, and RemoteDownloads picking the client."""
+"""The NAS / other computer form: its pure helpers (the magnet note too), the widget, Settings →
+"Where downloads go" (three choices; in folder mode the form under the magnet note), the
+welcome's third option card, and RemoteDownloads picking the client."""
 
 from __future__ import annotations
 
@@ -26,15 +27,17 @@ from app.ui.remote_program_form import (
     ADDRESS_HINTS,
     PROGRAM_NAMES,
     TESTING_TEXT,
+    FolderNote,
     RemoteProgramForm,
     describe_error,
     folder_note,
     kind_from_name,
     program_name,
     remote_changes,
+    remote_host,
     result_look,
 )
-from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_dialog import SECTION_WHERE, SettingsDialog
 from app.ui.welcome_dialog import REMOTE_NOTE, REMOTE_TITLE, changes_error, download_changes
 
 
@@ -114,16 +117,51 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(settings.remote_verify_tls)
         self.assertEqual(settings.remote_destination, "/dl/tv")
 
-    def test_folder_note(self) -> None:
+    def test_folder_note_with_a_program(self) -> None:
         self.assertEqual(
-            folder_note(RemoteKind.SYNOLOGY, True),
-            "Magnet-only releases are sent to your Download Station.",
+            folder_note(RemoteKind.SYNOLOGY, True, "http://192.168.1.20:5000"),
+            FolderNote(
+                "Some releases have no .torrent file, only a magnet link. Those are sent to "
+                "Download Station at 192.168.1.20.",
+                "Change",
+            ),
         )
         self.assertEqual(
-            folder_note(RemoteKind.QBITTORRENT, True),
-            "Magnet-only releases are sent to your qBittorrent.",
+            folder_note(RemoteKind.QBITTORRENT, True, "https://NAS.local:8080/qbt").text,
+            "Some releases have no .torrent file, only a magnet link. Those are sent to "
+            "qBittorrent at nas.local.",
         )
-        self.assertIsNone(folder_note(RemoteKind.TRANSMISSION, False))
+
+    def test_folder_note_without_a_program(self) -> None:
+        for kind in RemoteKind:
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    folder_note(kind, False, ""),
+                    FolderNote(
+                        "Some releases have no .torrent file, only a magnet link. Those can't "
+                        "be saved to a folder.",
+                        "Set up a torrent program to receive them",
+                    ),
+                )
+
+    def test_folder_note_never_shows_an_account_or_the_full_address(self) -> None:
+        note = folder_note(RemoteKind.TRANSMISSION, True, "http://beau:SECRET@10.0.0.5:9091/rpc")
+        self.assertIn("Transmission at 10.0.0.5.", note.text)
+        for leak in ("beau", "SECRET", "9091", "http", "rpc"):
+            self.assertNotIn(leak, note.text)
+        # An address that can't be read names the program only.
+        self.assertTrue(
+            folder_note(RemoteKind.QBITTORRENT, True, "nas:8080").text.endswith(
+                "Those are sent to qBittorrent."
+            )
+        )
+
+    def test_remote_host(self) -> None:
+        self.assertEqual(remote_host("http://192.168.1.20:5000"), "192.168.1.20")
+        self.assertEqual(remote_host(" https://user:pw@nas.local/ "), "nas.local")
+        self.assertEqual(remote_host("http://[fe80::1]:8080"), "fe80::1")
+        self.assertEqual(remote_host(""), "")
+        self.assertEqual(remote_host("http://[broken"), "")
 
     def test_result_lines(self) -> None:
         self.assertEqual(result_look(), (TESTING_TEXT, theme.TEXT_MUTED))
@@ -318,16 +356,18 @@ class SettingsGeneralTests(GuiTestCase):
         dialog, _settings = self.dialog(download_mode=DownloadMode.APP)
         radios = [
             w.cget("text")
-            for w in dialog._remote_form.master.winfo_children()
+            for w in _descendants(dialog.page(SECTION_WHERE))
             if isinstance(w, ctk.CTkRadioButton)
         ]
         self.assertEqual(
-            radios,
-            [
-                "Open in my torrent program on this PC",
-                "Send to a torrent program on my NAS\nor another computer",
-                "Save .torrent files to a folder",
-            ],
+            sorted(radios),
+            sorted(
+                [
+                    "Open in my torrent program on this PC",
+                    "Send to a torrent program on my NAS or another computer",
+                    "Save .torrent files to a folder",
+                ]
+            ),
         )
         expected = {
             DownloadMode.APP: (True, False, False),
@@ -337,21 +377,81 @@ class SettingsGeneralTests(GuiTestCase):
         for mode, (status, form, folder) in expected.items():
             with self.subTest(mode=mode):
                 dialog._mode.set(mode.value)
-                dialog._show_download_rows()
+                dialog._mode_changed()
                 self.assertEqual(self.shown(dialog._torrent), status)
                 self.assertEqual(self.shown(dialog._remote_form), form)
                 self.assertEqual(self.shown(dialog._folder_row), folder)
+                self.assertEqual(self.shown(dialog._folder_note), folder)
+        # The form sits in the remote program's box.
+        dialog._mode.set(DownloadMode.REMOTE.value)
+        dialog._mode_changed()
+        self.assertEqual(self.container(dialog._remote_form), dialog._remote_box.body)
+
+    @staticmethod
+    def container(widget: Any) -> Any:
+        return widget.nametowidget(widget.grid_info()["in"])
 
     async def test_folder_note_names_the_configured_program(self) -> None:
         dialog, _settings = self.dialog(
-            remote_kind=RemoteKind.QBITTORRENT, remote_url="http://192.168.1.20:8080"
+            remote_kind=RemoteKind.QBITTORRENT, remote_url="http://admin:pw@192.168.1.20:8080"
         )
         self.assertTrue(self.shown(dialog._folder_note))
         self.assertEqual(
-            dialog._folder_note.cget("text"), "Magnet-only releases are sent to your qBittorrent."
+            dialog._folder_note.cget("text"),
+            "Some releases have no .torrent file, only a magnet link. Those are sent to "
+            "qBittorrent at 192.168.1.20.",
         )
-        nothing, _ = self.dialog()  # Download Station without an address
-        self.assertFalse(self.shown(nothing._folder_note))
+        self.assertEqual(dialog._folder_link.cget("text"), "Change")
+        self.assertTrue(self.shown(dialog._folder_link))
+        self.assertFalse(self.shown(dialog._remote_form))
+
+    async def test_without_a_program_the_note_says_so_and_offers_the_form(self) -> None:
+        dialog, settings = self.dialog()  # Download Station without an address
+        self.assertEqual(
+            dialog._folder_note.cget("text"),
+            "Some releases have no .torrent file, only a magnet link. Those can't be saved to "
+            "a folder.",
+        )
+        self.assertEqual(
+            dialog._folder_link.cget("text"), "Set up a torrent program to receive them"
+        )
+        dialog._reveal_remote_form()  # what the link does
+        self.assertTrue(self.shown(dialog._remote_form))
+        self.assertEqual(self.container(dialog._remote_form), dialog._folder_box.body)
+        self.assertFalse(self.shown(dialog._folder_link))
+        self.assertEqual(dialog._mode.get(), DownloadMode.FOLDER.value)  # still folder mode
+        # Set it up there and test: saved first, then the note names it.
+        form = dialog._remote_form
+        form._program.set("Transmission")
+        form._address.insert(0, "http://192.168.1.30:9091")
+        form._start_test()
+        assert form._test_task is not None
+        await form._test_task
+        self.assertEqual(form._result.cget("text"), "✓ Transmission 9.9")
+        self.assertIs(settings.current.download_mode, DownloadMode.FOLDER)
+        self.assertEqual(settings.current.remote_url, "http://192.168.1.30:9091")
+        self.assertTrue(
+            dialog._folder_note.cget("text").endswith("sent to Transmission at 192.168.1.30.")
+        )
+        # Another choice folds it away again.
+        for mode in (DownloadMode.APP, DownloadMode.FOLDER):
+            dialog._mode.set(mode.value)
+            dialog._mode_changed()
+        self.assertFalse(self.shown(dialog._remote_form))
+        self.assertEqual(dialog._folder_link.cget("text"), "Change")
+
+    async def test_a_bad_address_in_folder_mode_opens_the_form(self) -> None:
+        dialog, settings = self.dialog()
+        dialog._remote_form._address.insert(0, "nas:8080")
+        await dialog._save()
+        self.assertTrue(dialog.winfo_exists())
+        self.assertEqual(dialog.section, SECTION_WHERE)
+        self.assertEqual(
+            dialog._error.cget("text"), "Address: Use a full address like https://nas.local:5001"
+        )
+        self.assertTrue(self.shown(dialog._remote_form))
+        self.assertEqual(self.container(dialog._remote_form), dialog._folder_box.body)
+        self.assertEqual(settings.current.remote_url, "")
 
     async def test_save_stores_the_form_and_the_mode(self) -> None:
         dialog, settings = self.dialog()
@@ -391,7 +491,7 @@ class SettingsGeneralTests(GuiTestCase):
         )
         self.assertEqual(self.clients[RemoteKind.SYNOLOGY].tests, 0)
 
-    async def test_the_advanced_tab_has_no_nas_section_any_more(self) -> None:
+    async def test_the_advanced_page_has_no_nas_section_any_more(self) -> None:
         dialog, _settings = self.dialog()
         texts: list[str] = []
         stack: list[Any] = [dialog]

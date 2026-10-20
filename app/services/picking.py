@@ -3,8 +3,10 @@
 `pick_best` looks only at what the search window would show for the request (relevant releases
 without an excluded keyword), drops likely fakes, pre-release copies (cam, telesync, telecine,
 screener: whatever the excluded keywords say) and dead torrents, prefers a single episode to a
-multi-episode pack, and ranks the rest: quality closest to the user's profile, then preferred
-release groups, then seeders, then a known size before an unknown one.
+multi-episode pack, and ranks the rest: quality closest to the user's profile for the kind (the
+series one for episodes and season packs, the movie one for films), then the size range (inside
+it first, an unknown size next, then the closest size; never a filter), then preferred release
+groups, then seeders, then a known size before an unknown one.
 
 Pure functions; nothing here logs.
 """
@@ -31,6 +33,7 @@ from app.services.search import (
 )
 
 MIB = 1024 * 1024
+GIB = 1024 * MIB  # the size ranges' "GB" (binary, as the search window shows sizes)
 
 # Words (in the normalized title, so ".exe" reads "exe") that mark malware or unusable releases.
 FAKE_WORDS = frozenset(
@@ -132,9 +135,53 @@ def quality_rank(release: TorrentRelease, profile: QualityProfile) -> int:
     return rank
 
 
-def _sort_key(release: TorrentRelease, settings: Settings) -> tuple[int, bool, int, bool]:
+def quality_profile(kind: SearchKind, settings: Settings) -> QualityProfile:
+    """The quality a request asks for: the movie one for a film, else the series one."""
+    return settings.quality_movie if kind is SearchKind.MOVIE else settings.quality_tv
+
+
+def size_range(
+    release: TorrentRelease, request: SearchRequest, settings: Settings
+) -> tuple[float | None, float | None] | None:
+    """The (smallest, largest) size in GB the release is judged by; None when no range applies:
+    none is set for the kind, the request is a season pack, or the release holds more than one
+    episode (a pack picked for one episode)."""
+    if request.kind is SearchKind.MOVIE:
+        low, high = settings.size_movie_min_gb, settings.size_movie_max_gb
+    elif request.kind is SearchKind.EPISODE and not is_multi_episode(release):
+        low, high = settings.size_tv_min_gb, settings.size_tv_max_gb
+    else:
+        return None
+    if low is None and high is None:
+        return None
+    return low, high
+
+
+def size_rank(
+    release: TorrentRelease, request: SearchRequest, settings: Settings
+) -> tuple[int, float]:
+    """How well the size fits the range, within one quality: (0, 0) inside it (or when no range
+    applies), (1, 0) an unknown size, (2, GB away from the range) outside it, closest first."""
+    limits = size_range(release, request, settings)
+    if limits is None:
+        return 0, 0.0
+    if not release.size_bytes:
+        return 1, 0.0
+    size = release.size_bytes / GIB
+    low, high = limits
+    if low is not None and size < low:
+        return 2, low - size
+    if high is not None and size > high:
+        return 2, size - high
+    return 0, 0.0
+
+
+def _sort_key(
+    release: TorrentRelease, request: SearchRequest, settings: Settings
+) -> tuple[int, tuple[int, float], bool, int, bool]:
     return (
-        quality_rank(release, settings.quality),
+        quality_rank(release, quality_profile(request.kind, settings)),
+        size_rank(release, request, settings),
         not is_preferred(release, settings),
         -release.seeders,
         not release.size_bytes,
@@ -147,10 +194,11 @@ def rank_releases(
     """The releases `pick_best` would choose from, best first.
 
     Kept: relevant to `request`, no excluded keyword, not a likely fake, not a pre-release
-    copy; and, when any of those has seeders, only the ones that have. For an EPISODE request the single-episode releases
-    only, unless there are none (then the packs that hold the episode). Ranked by quality
-    closeness, preferred group, seeders (most first), known size before unknown; ties keep
-    their order.
+    copy; and, when any of those has seeders, only the ones that have. For an EPISODE request
+    the single-episode releases only, unless there are none (then the packs that hold the
+    episode). Ranked by quality closeness (`quality_profile` for the request's kind), the size
+    range (`size_rank`), preferred group, seeders (most first), known size before unknown; ties
+    keep their order.
     """
     candidates = [
         release
@@ -165,7 +213,7 @@ def rank_releases(
     if request.kind is SearchKind.EPISODE:
         singles = [release for release in candidates if not is_multi_episode(release)]
         candidates = singles or candidates
-    return sorted(candidates, key=lambda release: _sort_key(release, settings))
+    return sorted(candidates, key=lambda release: _sort_key(release, request, settings))
 
 
 def pick_best(

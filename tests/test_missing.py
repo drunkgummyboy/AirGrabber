@@ -11,7 +11,6 @@ import sqlite3
 import tempfile
 import tkinter as tk
 import unittest
-from typing import Any
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,7 +41,6 @@ from app.services.missing import (
 )
 from app.services.synology import DownloadStationError
 from app.services.tvmaze import TVMazeClient
-from app.ui.cards import ShowCard
 from app.ui.missing_control import (
     FAILED_TEXT,
     NOTHING_MISSING_TEXT,
@@ -730,11 +728,6 @@ class MenuPositionTests(unittest.TestCase):
         self.assertEqual(menu_position((500, 60, 40, 30), (200, 2000), self.WINDOW), (340, 92))
 
 
-class _FakeImages:
-    async def get(self, *args: object, **kwargs: object) -> None:
-        return None
-
-
 class WidgetTests(unittest.TestCase):
     def setUp(self) -> None:
         try:
@@ -789,30 +782,6 @@ class WidgetTests(unittest.TestCase):
         rebuilt.set_count(0)
         self.runs.expire(7, done)
         self.assertIsNone(rebuilt.look)  # nothing missing, nothing to tell
-
-    def test_a_tracked_card_shows_the_missing_row(self) -> None:
-        images: Any = _FakeImages()
-        card = ShowCard(
-            self.root, self.show, images=images, on_auto_download=lambda s, on: None,
-            missing=3, missing_actions=self.actions,
-        )
-        card.pack()
-        empty = ShowCard(
-            self.root, Show(id=8, name="Silo"), images=images, on_auto_download=lambda s, on: None,
-            missing=0, missing_actions=self.actions,
-        )
-        empty.pack()
-        plain = ShowCard(self.root, self.show, images=images, on_auto_download=lambda s, on: None)
-        plain.pack()
-        self.root.update()
-        assert card.missing_button is not None and card.missing_button.look is not None
-        self.assertEqual(card.missing_button.look.action, "download")
-        self.assertTrue(card.missing_button.look.text.startswith("⬇"))
-        assert empty.missing_button is not None
-        self.assertIsNone(empty.missing_button.look)
-        self.assertEqual(card.cget("height"), empty.cget("height"))  # equally tall
-        self.assertGreater(card.cget("height"), plain.cget("height"))
-        self.assertIsNone(plain.missing_button)
 
     def test_popup_menu_runs_the_choice_and_closes(self) -> None:
         anchor = ctk.CTkButton(self.root, text="⋯")

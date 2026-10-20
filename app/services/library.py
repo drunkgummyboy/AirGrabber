@@ -50,13 +50,15 @@ UPDATES_WINDOW = timedelta(days=28)
 SYNC_CONCURRENCY = 3
 # After each sync, untracked shows' schedule episodes older than this are dropped.
 SCHEDULE_RETENTION = timedelta(days=60)
-# The Tracked cards mention a grab ("Downloaded S02E08 · today") for this long.
+# The Tracked cards mention a grab ("✓ S02E08 · today") for this long.
 RECENT_GRAB_WINDOW = timedelta(days=7)
 # Untracked shows opened in the details window are fetched from TVMaze and never stored: they are
 # kept in memory this long (at most DETAILS_CACHE_SIZE of them), so reopening one, or the window
 # reloading after a library change, needs no new request.
 DETAILS_TTL = timedelta(minutes=15)
 DETAILS_CACHE_SIZE = 20
+# The calendar always shows this many days before today (on a Monday, the weekend's episodes).
+RECENT_DAYS = 3
 
 
 def week_start(day: date, first_day: Weekday) -> date:
@@ -67,13 +69,19 @@ def week_start(day: date, first_day: Weekday) -> date:
 def calendar_range(
     today: date, *, first_day: Weekday, weeks: int, offset: int = 0
 ) -> tuple[date, date]:
-    """First and last day of the calendar grid: `weeks` whole weeks.
+    """First and last day of the calendar grid: whole weeks.
 
-    The grid starts at the week containing `today` moved by `offset` weeks (earlier weeks when
-    negative).
+    The grid shows `weeks` weeks from the week containing `today` moved by `offset` weeks
+    (earlier weeks when negative). At the current position (offset 0) it starts a week earlier
+    while today is fewer than RECENT_DAYS days into its week, so the last RECENT_DAYS days are
+    always on it and the chosen number of weeks still lies ahead (`weeks` + 1 weeks).
     """
-    start = week_start(today, first_day) + timedelta(weeks=offset)
-    return start, start + timedelta(weeks=weeks, days=-1)
+    this_week = week_start(today, first_day)
+    start = this_week + timedelta(weeks=offset)
+    end = start + timedelta(weeks=weeks, days=-1)
+    if offset == 0 and (today - this_week).days < RECENT_DAYS:
+        start -= timedelta(weeks=1)
+    return start, end
 
 
 class LibraryService:

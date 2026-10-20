@@ -13,7 +13,7 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import customtkinter as ctk
 
@@ -167,12 +167,24 @@ def missing_look(count: int, state: MissingRunState | None, *, with_count: bool)
     )
 
 
+class RunView(Protocol):
+    """What shows a show's run state and follows it: a `MissingButton`, a My shows card."""
+
+    @property
+    def show_id(self) -> int: ...
+
+    def repaint(self) -> None: ...
+
+    def winfo_exists(self) -> bool: ...
+
+
 class MissingRuns:
-    """The "Download missing" run state of every show, and the buttons showing them."""
+    """The "Download missing" run state of every show, and the views (buttons, My shows cards)
+    showing them."""
 
     def __init__(self) -> None:
         self._states: dict[int, MissingRunState] = {}
-        self._buttons: dict[int, list[MissingButton]] = {}
+        self._buttons: dict[int, list[RunView]] = {}
 
     def get(self, show_id: int) -> MissingRunState | None:
         return self._states.get(show_id)
@@ -182,7 +194,7 @@ class MissingRuns:
         return state is not None and state.working
 
     def set(self, show_id: int, state: MissingRunState | None) -> None:
-        """Record `state` (None: back to the buttons' own look) and repaint the show's buttons."""
+        """Record `state` (None: back to the views' own look) and repaint the show's views."""
         if state is None:
             self._states.pop(show_id, None)
         else:
@@ -195,16 +207,16 @@ class MissingRuns:
         if self._states.get(show_id) is state:
             self.set(show_id, None)
 
-    def attach(self, button: MissingButton) -> None:
+    def attach(self, button: RunView) -> None:
         self._live(button.show_id).append(button)
 
-    def detach(self, button: MissingButton) -> None:
+    def detach(self, button: RunView) -> None:
         buttons = self._buttons.get(button.show_id, [])
         if button in buttons:
             buttons.remove(button)
 
-    def _live(self, show_id: int) -> list[MissingButton]:
-        """The show's buttons whose widgets still exist (cards go when a page reloads)."""
+    def _live(self, show_id: int) -> list[RunView]:
+        """The show's views whose widgets still exist (cards go when a page reloads)."""
         live = [button for button in self._buttons.get(show_id, []) if _exists(button)]
         self._buttons = {k: v for k, v in self._buttons.items() if v and k != show_id}
         self._buttons[show_id] = live

@@ -1,4 +1,4 @@
-"""Card size (Settings → General): the scale maths, font minimums and grid widths (pure), the
+"""Card size (Settings → Looks): the scale maths, font minimums and grid widths (pure), the
 setting itself, and the poster / My shows cards drawn at a scale on a real (hidden) Tk root."""
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from app.ui.card_scale import (
     scaled_font_size,
     size_from_label,
 )
-from app.ui.cards import AUTO_SWITCH_TEXT, CARD_WIDTH, ShowCard, show_card_layout
+from app.ui.cards import AUTO_SWITCH_TEXT, ShowCard
 from app.ui.download_control import DOWNLOAD_SHORT, DOWNLOAD_TEXT, DownloadActions, DownloadStates
 from app.ui import poster_card
 from app.ui.main_window import settings_affect_pages
@@ -44,7 +44,6 @@ from app.ui.poster_card import (
     row_height,
     text_width,
 )
-from app.ui.text_fit import ELLIPSIS
 from app.ui.watchlist_cards import WatchlistShelf
 from app.ui.widgets import FlexGrid
 
@@ -114,8 +113,7 @@ class ScaleMathTests(unittest.TestCase):
         for size in SIZES:
             scale = CardScale.of(size)
             self.assertEqual(grid_item_width(POSTER_CARD_WIDTH, scale), card_size(scale)[0])
-            self.assertEqual(grid_item_width(CARD_WIDTH, scale), show_card_layout(scale).width)
-        self.assertEqual(grid_item_width(CARD_WIDTH, FULL), 245)
+        self.assertEqual(grid_item_width(POSTER_CARD_WIDTH, FULL), 192)
 
     def test_labels(self) -> None:
         self.assertEqual([CARD_SIZE_LABELS[size] for size in SIZES], ["XS", "S", "M", "L", "XL"])
@@ -123,36 +121,6 @@ class ScaleMathTests(unittest.TestCase):
             self.assertIs(size_from_label(CARD_SIZE_LABELS[size]), size)
         with self.assertRaises(ValueError):
             size_from_label("XXL")
-
-
-class ShowCardLayoutTests(unittest.TestCase):
-    def test_xl_is_todays_card(self) -> None:
-        layout = show_card_layout(FULL)
-        self.assertEqual((layout.width, layout.library_height, layout.poster), (245, 120, (68, 100)))
-        self.assertEqual((layout.info_height, layout.switch_height, layout.missing_height), (18, 24, 26))
-        self.assertEqual(layout.auto_height, 4 + 18 + 24 + 10)
-        self.assertEqual(layout.missing_room, 26 + 8)
-        self.assertEqual(
-            (layout.title_font, layout.status_font, layout.info_font, layout.switch_font), (12, 9, 13, 14)
-        )
-        self.assertEqual(layout.height(with_switch=True, with_missing=True), 120 + 56 + 34)
-        self.assertEqual(layout.height(with_switch=False, with_missing=True), 120)
-
-    def test_every_size_is_smaller_and_readable(self) -> None:
-        layouts = [show_card_layout(CardScale.of(size)) for size in SIZES]
-        widths = [layout.width for layout in layouts]
-        heights = [layout.height(with_switch=True, with_missing=True) for layout in layouts]
-        self.assertEqual(widths, sorted(widths))
-        self.assertEqual(heights, sorted(heights))
-        for layout in layouts[:-1]:  # the smaller sizes (XL is today's card, tested above)
-            self.assertGreaterEqual(layout.title_font, TEXT_MIN)
-            self.assertGreaterEqual(layout.info_font, SMALL_TEXT_MIN)
-            self.assertGreaterEqual(layout.switch_font, TEXT_MIN)
-            self.assertGreaterEqual(layout.missing_font, TEXT_MIN)
-            self.assertGreaterEqual(layout.info_height, line_height(layout.info_font))
-            self.assertGreaterEqual(layout.library_height, layout.poster[1] + 2 * layout.row_pad)
-            self.assertGreater(layout.switch_text_room, 0)
-            self.assertGreater(layout.title_room, 0)
 
 
 class CardFaceScaleTests(unittest.TestCase):
@@ -178,9 +146,9 @@ class CardFaceScaleTests(unittest.TestCase):
 
 
 class SettingTests(unittest.TestCase):
-    def test_existing_settings_load_as_the_largest(self) -> None:
-        self.assertIs(Settings().card_size, CardSize.XL)
-        self.assertIs(Settings.model_validate({"first_day": "Sunday"}).card_size, CardSize.XL)
+    def test_settings_without_a_size_load_as_medium(self) -> None:
+        self.assertIs(Settings().card_size, CardSize.M)
+        self.assertIs(Settings.model_validate({"first_day": "Sunday"}).card_size, CardSize.M)
 
     def test_stored_by_value(self) -> None:
         settings = Settings(card_size="s")
@@ -330,7 +298,7 @@ class CardWidgetTests(unittest.IsolatedAsyncioTestCase):
         cards = {
             size: ShowCard(
                 self.root, show, images=images, on_auto_download=lambda s, on: None,
-                info_line="Downloaded S02E08 · yesterday", scale=CardScale.of(size),
+                info_line="✓ S02E08 · yesterday", scale=CardScale.of(size),
             )
             for size in (CardSize.XS, CardSize.XL)
         }
@@ -338,13 +306,15 @@ class CardWidgetTests(unittest.IsolatedAsyncioTestCase):
             card.pack(side="left")
         self.root.update()
         xs, xl = cards[CardSize.XS], cards[CardSize.XL]
-        self.assertEqual(xl.cget("width"), CARD_WIDTH)
-        self.assertEqual(xs.cget("width"), show_card_layout(CardScale.of(CardSize.XS)).width)
+        # A poster card like Discover's, at the page's card size.
+        self.assertEqual(xl.cget("width"), POSTER_CARD_WIDTH)
+        self.assertEqual(xs.cget("width"), card_size(CardScale.of(CardSize.XS))[0])
         self.assertLess(xs.cget("height"), xl.cget("height"))
+        self.assertLess(xs.menu_button.winfo_reqwidth(), xl.menu_button.winfo_reqwidth())
         assert xs._auto_switch is not None and xl._auto_switch is not None
         self.assertEqual(xl._auto_switch.cget("text"), AUTO_SWITCH_TEXT)
-        text = xs._auto_switch.cget("text")
-        self.assertTrue(text == AUTO_SWITCH_TEXT or text.endswith(ELLIPSIS))
+        self.assertEqual(xs._auto_switch.cget("text"), AUTO_SWITCH_TEXT)  # short: never cut
+        self.assertEqual((xs.meta_text, xl.meta_text), ("✓ S02E08 · yesterday",) * 2)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-"""Poster cards: the year / rating line, the fade, the baked card image and the Track looks."""
+"""Poster cards: the year / rating line, the fade (capped at FADE_MAX behind the text), the
+baked card image, the badge pill and the Track looks."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from PIL import Image
 
 from app.ui import theme
 from app.ui.poster_card import (
+    FADE_MAX,
     FOLLOWING_TEXT,
     POSTER_CARD_HEIGHT,
     POSTER_CARD_WIDTH,
@@ -19,6 +21,8 @@ from app.ui.poster_card import (
     card_face,
     compose_card,
     fade_alpha,
+    fade_row_alpha,
+    pill_image,
     placeholder_image,
     track_look,
     year_rating_line,
@@ -30,10 +34,13 @@ OUTSIDE: RGB = (28, 28, 28)
 PLACEHOLDER: RGB = (51, 51, 51)
 
 
-def face(scale: float = 1.5, text_height: float = 110, **colors: RGB) -> CardFace:
+def face(
+    scale: float = 1.5, text_height: float = 58, rows_height: float = 36, **colors: RGB
+) -> CardFace:
     return card_face(
         scale,
         text_height,
+        rows_height=rows_height,
         bg=colors.get("bg", BG),
         edge=colors.get("edge", EDGE),
         outside=colors.get("outside", OUTSIDE),
@@ -62,14 +69,19 @@ class YearRatingLineTests(unittest.TestCase):
 
 
 class FadeAlphaTests(unittest.TestCase):
+    def test_the_fade_stops_at_80_percent(self) -> None:
+        self.assertEqual(FADE_MAX, 0.80)
+        self.assertEqual(fade_alpha(1.0), FADE_MAX)
+        self.assertEqual(fade_alpha(1.5), FADE_MAX)
+        self.assertLessEqual(max(fade_alpha(step / 200) for step in range(-20, 241)), FADE_MAX)
+
     def test_ends(self) -> None:
         self.assertEqual(fade_alpha(-0.5), 0.0)
         self.assertEqual(fade_alpha(0.0), 0.0)
-        self.assertEqual(fade_alpha(1.0), 1.0)
-        self.assertEqual(fade_alpha(1.5), 1.0)
+        self.assertEqual(fade_alpha(1.0, maximum=1.0), 1.0)
 
-    def test_85_percent_a_little_under_half_way(self) -> None:
-        self.assertAlmostEqual(fade_alpha(0.45), 0.85)
+    def test_85_percent_of_the_way_a_little_under_half_way(self) -> None:
+        self.assertAlmostEqual(fade_alpha(0.45), 0.85 * FADE_MAX)
 
     def test_soft_start(self) -> None:
         self.assertLess(fade_alpha(0.02), 0.01)
@@ -78,16 +90,33 @@ class FadeAlphaTests(unittest.TestCase):
         values = [fade_alpha(step / 200) for step in range(201)]
         self.assertEqual(values, sorted(values))
 
+    def test_rows_behind_the_text_stay_at_the_cap_then_turn_solid(self) -> None:
+        rows = [fade_row_alpha(row, 100, 200, 300, 320, FADE_MAX) for row in range(400)]
+        self.assertEqual(rows[:100], [0.0] * 100)
+        self.assertEqual(set(rows[200:300]), {FADE_MAX})
+        self.assertEqual(rows[320:], [1.0] * 80)
+        self.assertEqual(rows, sorted(rows))  # soft start, cap, then on to solid
+        self.assertLess(rows[101], 0.01)
+
 
 class CardFaceTests(unittest.TestCase):
     def test_physical_size_and_rows(self) -> None:
-        card = face(1.5, text_height=110)
+        card = face(1.5, text_height=58, rows_height=36)
         self.assertEqual(card.size, (POSTER_CARD_WIDTH * 3 // 2, POSTER_CARD_HEIGHT * 3 // 2))
         self.assertEqual((card.border, card.radius), (3, 21))
         height = card.size[1]
         self.assertEqual(card.fade_from, round(height * 0.45))
-        # Solid from 4 units above the text: border 2 + bottom padding 12 + text 110.
-        self.assertEqual(card.solid_from, height - round((2 + 12 + 110 + 4) * 1.5))
+        self.assertEqual(card.fade_max, FADE_MAX)
+        # Solid from the top of the widget rows: border 2 + bottom padding 12 + rows 36.
+        self.assertEqual(card.solid_from, height - round((2 + 12 + 36) * 1.5))
+        # At the cap down to the row gap (10) above the widget rows.
+        self.assertEqual(card.ramp_from, height - round((2 + 12 + 36 + 10) * 1.5))
+        # At the cap from 4 units above the text (58 tall).
+        self.assertEqual(card.full_from, height - round((2 + 12 + 36 + 10 + 58 + 4) * 1.5))
+
+    def test_one_action_row_by_default(self) -> None:
+        default = card_face(1.5, 58, bg=BG, edge=EDGE, outside=OUTSIDE, placeholder=PLACEHOLDER)
+        self.assertEqual(default, face(1.5, text_height=58, rows_height=36))
 
     def test_whole_pixels_at_common_scales(self) -> None:
         for scale in (1.0, 1.25, 1.5, 1.75, 2.0):
@@ -96,15 +125,24 @@ class CardFaceTests(unittest.TestCase):
                 self.assertEqual(face(scale).size, (int(width), int(height)))
                 self.assertEqual((width, height), (int(width), int(height)))
 
-    def test_text_taller_than_the_fade_leaves_no_fade(self) -> None:
-        card = face(1.0, text_height=250)
-        self.assertEqual(card.fade_from, card.solid_from)
-        self.assertGreaterEqual(card.solid_from, 0)
+    def test_tall_text_keeps_a_soft_start(self) -> None:
+        # Two title lines over two rows of buttons: the fade starts higher than 45 %.
+        card = face(1.0, text_height=60, rows_height=74)
+        height = card.size[1]
+        self.assertLess(card.fade_from, round(height * 0.45))
+        self.assertGreaterEqual(card.full_from - card.fade_from, round(height * 0.12))
+
+    def test_text_taller_than_the_card_still_orders_the_rows(self) -> None:
+        card = face(1.0, text_height=400)
+        self.assertEqual((card.fade_from, card.full_from), (0, 0))
+        self.assertLessEqual(card.full_from, card.ramp_from)
+        self.assertLessEqual(card.ramp_from, card.solid_from)
 
     def test_faces_compare_by_value(self) -> None:
         self.assertEqual(face(), face())
         self.assertEqual(hash(face()), hash(face()))
         self.assertNotEqual(face(), face(outside=(0, 0, 0)))
+        self.assertNotEqual(face(), face(rows_height=74))
 
 
 class ComposeCardTests(unittest.TestCase):
@@ -128,6 +166,14 @@ class ComposeCardTests(unittest.TestCase):
             for x in range(inset, self.width - inset, 7):
                 self.assertEqual(self.card.getpixel((x, y)), BG, (x, y))
 
+    def test_the_cover_shows_through_behind_the_text(self) -> None:
+        white = compose_card(Image.new("RGB", self.face.size, (255, 255, 255)), self.face)
+        x = self.width // 2
+        expected = 255 * (1 - FADE_MAX) + BG[0] * FADE_MAX  # 80 % BG over white
+        for y in range(self.face.full_from, self.face.ramp_from):
+            red = white.getpixel((x, y))[0]  # type: ignore[index]
+            self.assertAlmostEqual(red, expected, delta=1.5)
+
     def test_rows_above_the_fade_are_the_cover(self) -> None:
         border = self.face.border
         for y in range(self.face.radius + 1, self.face.fade_from, 5):
@@ -145,6 +191,8 @@ class ComposeCardTests(unittest.TestCase):
         self.assertEqual(column, sorted(column, reverse=True))
         self.assertGreater(column[0], 245)
         self.assertLess(column[-1], 40)
+        steps = [above - below for above, below in zip(column, column[1:])]
+        self.assertLess(max(steps), 12)  # no hard edge anywhere
 
     def test_border_and_corners(self) -> None:
         width, height = self.face.size
@@ -168,6 +216,23 @@ class ComposeCardTests(unittest.TestCase):
         before = self.cover.tobytes()
         self.assertEqual(self.face(self.cover).tobytes(), self.card.tobytes())
         self.assertEqual(self.cover.tobytes(), before)
+
+
+class PillImageTests(unittest.TestCase):
+    def test_a_filled_pill_with_an_edge_and_see_through_ends(self) -> None:
+        amber: RGB = (243, 156, 18)
+        pill = pill_image((90, 30), 2, BG, amber)
+        self.assertEqual((pill.mode, pill.size), ("RGBA", (90, 30)))
+        self.assertEqual(pill.getpixel((45, 15)), (*BG, 255))  # inside
+        self.assertEqual(pill.getpixel((45, 0)), (*amber, 255))  # the edge line
+        for corner in ((0, 0), (89, 0), (0, 29), (89, 29)):
+            self.assertEqual(pill.getpixel(corner)[3], 0, corner)  # type: ignore[index]
+
+    def test_a_square_one_is_a_circle(self) -> None:
+        ring = pill_image((36, 36), 1, BG, EDGE)
+        self.assertEqual(ring.getpixel((18, 18)), (*BG, 255))
+        self.assertEqual(ring.getpixel((2, 2))[3], 0)  # type: ignore[index]
+        self.assertEqual(ring.getpixel((18, 0))[3], 255)  # type: ignore[index]
 
 
 class TrackLookTests(unittest.TestCase):

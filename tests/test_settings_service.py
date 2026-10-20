@@ -40,7 +40,7 @@ class ConcurrentUpdateTests(unittest.IsolatedAsyncioTestCase):
         notified: list[Settings] = []
         service.subscribe(notified.append)
 
-        first = asyncio.create_task(service.update(quality="720p"))
+        first = asyncio.create_task(service.update(quality_tv="720p"))
         await asyncio.sleep(0.01)  # the first update is now waiting inside save()
         second = asyncio.create_task(service.update(first_day="Sunday", setup_done=True))
         await asyncio.sleep(0.01)
@@ -50,11 +50,11 @@ class ConcurrentUpdateTests(unittest.IsolatedAsyncioTestCase):
 
         for settings in (service.current, await SettingsRepository(self.db).load()):
             with self.subTest(settings=settings):
-                self.assertIs(settings.quality, QualityProfile.HD)
+                self.assertIs(settings.quality_tv, QualityProfile.HD)
                 self.assertIs(settings.first_day, Weekday.SUNDAY)
                 self.assertTrue(settings.setup_done)
         # Listeners saw each change, in order, the second including the first.
-        self.assertEqual([s.quality for s in notified], [QualityProfile.HD, QualityProfile.HD])
+        self.assertEqual([s.quality_tv for s in notified], [QualityProfile.HD, QualityProfile.HD])
         self.assertEqual([s.first_day for s in notified], [Weekday.MONDAY, Weekday.SUNDAY])
 
     async def test_a_failed_update_does_not_block_the_next(self) -> None:

@@ -1,9 +1,10 @@
-"""How big the cards are drawn: Settings → General → Card size (`Settings.card_size`).
+"""How big the cards are drawn: Settings → Looks → Card size (`Settings.card_size`).
 
-The poster cards (Movies, Discover, search results, the watchlist shelf) and the My shows cards
-scale as a whole, like zooming: picture, buttons, gaps and text. The calendar keeps its own
-sizing. The main window reads the setting (`CardScale.of`) when a page loads and hands the
-`CardScale` to the page, which hands it to its cards and its `FlexGrid` (`scale.px(width)`).
+The poster cards (Movies, Discover, search results, the watchlist shelf), the My shows cards
+and the calendar's cards scale as a whole, like zooming: picture, buttons, gaps and text (the
+calendar's compact and suggestion cards only their text). The main window reads the setting
+(`CardScale.of`) when a page loads and hands the `CardScale` to the page, which hands it to its
+cards and its `FlexGrid` (`scale.px(width)`).
 
 Fonts shrink with the card but never below a readable minimum (`scaled_font_size`); text that
 then no longer fits is shortened by the cards' own fitting (text_fit, the Download row's
@@ -40,7 +41,7 @@ CARD_SIZE_LABELS: dict[CardSize, str] = {
 }
 CARD_SIZE_LABEL = "Card size"
 CARD_SIZE_TIP = (
-    "How big the cards are on Movies, Discover, My shows and in search results. "
+    "How big the cards are on the calendar, Movies, Discover, My shows and in search results. "
     "Smaller cards fit more on the screen."
 )
 

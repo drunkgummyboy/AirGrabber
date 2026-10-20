@@ -48,7 +48,12 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
 }
 
 PAGE_CHANGES: dict[str, Any] = {
-    "quality": "720p",
+    "quality_tv": "720p",
+    "quality_movie": "2160p",
+    "size_tv_min_gb": 1.5,
+    "size_tv_max_gb": 4,
+    "size_movie_min_gb": 6,
+    "size_movie_max_gb": 15,
     "download_dir": Path("Z:/watch"),
     "first_day": "Sunday",
     "weeks_to_show": 5,

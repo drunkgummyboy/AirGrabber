@@ -779,7 +779,7 @@ class SeedingTests(SetupTestCase):
     async def test_marker_survives_saving_the_settings_dialog(self) -> None:
         settings = self.configured(prowlarr_seeded_url=BASE)
         await settings.update(
-            quality="720p",
+            quality_tv="720p",
             prowlarr_url="http://127.0.0.1:9696/",
             prowlarr_api_key=KEY,
             remote_url="https://nas.local:5001",

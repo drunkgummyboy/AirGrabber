@@ -1,4 +1,5 @@
-"""pick_best / rank_releases: fake filters, dead torrents, pack fallback and quality profiles."""
+"""pick_best / rank_releases: fake filters, dead torrents, pack fallback, quality profiles per
+kind and the size ranges."""
 
 from __future__ import annotations
 
@@ -17,8 +18,11 @@ from app.services.picking import (
     is_multi_episode,
     is_pre_release,
     pick_best,
+    quality_profile,
     quality_rank,
     rank_releases,
+    size_range,
+    size_rank,
 )
 
 MIB = 1024 * 1024
@@ -333,7 +337,7 @@ class QualityTests(unittest.TestCase):
             for name, title in self.RELEASES
             if wanted is None or name in wanted
         ]
-        ranked = rank_releases(releases, EPISODE, Settings(quality=profile))
+        ranked = rank_releases(releases, EPISODE, Settings(quality_tv=profile))
         return [names[release.title] for release in ranked]
 
     def test_1080p(self) -> None:
@@ -368,7 +372,7 @@ class QualityTests(unittest.TestCase):
             rel("Severance S02E01 2160p WEB-B", seeders=10, size=5 * GIB),
             rel("Severance S02E01 1080p WEB-C", seeders=20),
         ]
-        ranked = rank_releases(releases, EPISODE, Settings(quality=QualityProfile.ANY))
+        ranked = rank_releases(releases, EPISODE, Settings(quality_tv=QualityProfile.ANY))
         self.assertEqual(
             titles(ranked),
             ["Severance S02E01 480p WEB-A", "Severance S02E01 1080p WEB-C",
@@ -385,6 +389,109 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(quality_rank(rel("Severance S02E01 4K"), QualityProfile.UHD), 0)
         self.assertEqual(quality_rank(rel("Severance S02E01 4K"), QualityProfile.ANY), 0)
         self.assertEqual(quality_rank(rel("Severance S02E01 1080p HEVC"), QualityProfile.HEVC), 0)
+
+
+class KindQualityTests(unittest.TestCase):
+    SETTINGS = Settings(quality_tv=QualityProfile.HD, quality_movie=QualityProfile.UHD)
+
+    def test_each_kind_has_its_own_profile(self) -> None:
+        self.assertIs(quality_profile(SearchKind.EPISODE, self.SETTINGS), QualityProfile.HD)
+        self.assertIs(quality_profile(SearchKind.SEASON, self.SETTINGS), QualityProfile.HD)
+        self.assertIs(quality_profile(SearchKind.MOVIE, self.SETTINGS), QualityProfile.UHD)
+
+    def test_episodes_use_the_series_quality(self) -> None:
+        hd = rel("Severance S02E01 720p WEB-A", size=900 * MIB)
+        uhd = rel("Severance S02E01 2160p WEB-B", size=6 * GIB)
+        self.assertEqual(best_title([uhd, hd], EPISODE, self.SETTINGS), hd.title)
+
+    def test_films_use_the_movie_quality(self) -> None:
+        hd = rel("Dune Part Two 2024 720p WEB-A", size=2 * GIB)
+        uhd = rel("Dune Part Two 2024 2160p WEB-B", size=20 * GIB)
+        self.assertEqual(best_title([hd, uhd], MOVIE, self.SETTINGS), uhd.title)
+
+
+class SizeRangeTests(unittest.TestCase):
+    TV = Settings(size_tv_min_gb=2.5, size_tv_max_gb=4)
+    FILMS = Settings(size_movie_min_gb=6, size_movie_max_gb=15)
+
+    def test_inside_first_then_unknown_then_the_closest(self) -> None:
+        releases = [
+            rel("Severance S02E01 1080p WEB-A", seeders=900, size=int(1.5 * GIB)),
+            rel("Severance S02E01 1080p WEB-B", seeders=5, size=3 * GIB),
+            rel("Severance S02E01 1080p WEB-C", seeders=100, size=6 * GIB),
+            rel("Severance S02E01 1080p WEB-D", seeders=50, size=2 * GIB),
+            rel("Severance S02E01 1080p WEB-E", seeders=1000, size=0),  # unknown
+        ]
+        ranked = rank_releases(releases, EPISODE, self.TV)
+        self.assertEqual([r.title[-1] for r in ranked], ["B", "E", "D", "A", "C"])
+
+    def test_inside_the_range_the_usual_order_decides(self) -> None:
+        settings = Settings(size_tv_min_gb=2, size_tv_max_gb=4, preferred_groups="ntb")
+        few = rel("Severance.S02E01.1080p.WEB-FLUX", seeders=5, size=3 * GIB)
+        many = rel("Severance.S02E01.1080p.WEB-GRP", seeders=500, size=3 * GIB)
+        preferred = rel("Severance.S02E01.1080p.WEB-NTb", seeders=1, size=int(2.5 * GIB))
+        outside = rel("Severance.S02E01.1080p.WEB-BIG", seeders=900, size=9 * GIB)
+        self.assertEqual(
+            titles(rank_releases([outside, few, many, preferred], EPISODE, settings)),
+            [preferred.title, many.title, few.title, outside.title],
+        )
+
+    def test_quality_comes_before_size(self) -> None:
+        fits = rel("Severance S02E01 720p WEB-A", size=3 * GIB)
+        right_quality = rel("Severance S02E01 1080p WEB-B", size=8 * GIB)
+        self.assertEqual(best_title([fits, right_quality], EPISODE, self.TV), right_quality.title)
+
+    def test_size_never_filters(self) -> None:
+        huge = rel("Severance S02E01 1080p WEB-A", size=40 * GIB)
+        self.assertEqual(best_title([huge], EPISODE, self.TV), huge.title)
+        film = rel("Dune Part Two 2024 1080p WEB-A", size=1 * GIB)
+        self.assertEqual(best_title([film], MOVIE, self.FILMS), film.title)
+
+    def test_one_sided_ranges(self) -> None:
+        small = rel("Severance S02E01 1080p WEB-A", seeders=900, size=2 * GIB)
+        big = rel("Severance S02E01 1080p WEB-B", seeders=5, size=10 * GIB)
+        at_least = Settings(size_tv_min_gb=3)
+        self.assertEqual(titles(rank_releases([small, big], EPISODE, at_least)),
+                         [big.title, small.title])
+        at_most = Settings(size_tv_max_gb=3)
+        self.assertEqual(titles(rank_releases([big, small], EPISODE, at_most)),
+                         [small.title, big.title])
+
+    def test_without_a_range_the_old_order_stays(self) -> None:
+        unknown = rel("Severance S02E01 1080p WEB-A", seeders=900, size=0)
+        known = rel("Severance S02E01 1080p WEB-B", seeders=5, size=3 * GIB)
+        self.assertEqual(best_title([known, unknown]), unknown.title)  # seeders first
+        self.assertEqual(size_rank(known, EPISODE, DEFAULTS), (0, 0.0))
+
+    def test_packs_ignore_the_series_range(self) -> None:
+        busy = rel("Severance.S02E01-E10.1080p.WEB-A", seeders=900, size=20 * GIB)
+        close = rel("Severance.S02E01-E10.1080p.WEB-B", seeders=10, size=5 * GIB)
+        self.assertIsNone(size_range(busy, EPISODE, self.TV))
+        self.assertEqual(best_title([close, busy], EPISODE, self.TV), busy.title)
+        season = SearchRequest(kind=SearchKind.SEASON, title="Severance", season=2)
+        packs = [
+            rel("Severance.S02.1080p.WEB-A", seeders=10, size=4 * GIB),
+            rel("Severance.S02.1080p.WEB-B", seeders=900, size=30 * GIB),
+        ]
+        self.assertEqual(best_title(packs, season, self.TV), packs[1].title)
+
+    def test_films_use_their_own_range(self) -> None:
+        in_range = rel("Dune Part Two 2024 1080p WEB-A", seeders=5, size=10 * GIB)
+        busy = rel("Dune Part Two 2024 1080p WEB-B", seeders=900, size=30 * GIB)
+        self.assertEqual(best_title([busy, in_range], MOVIE, self.FILMS), in_range.title)
+        self.assertEqual(best_title([busy, in_range], MOVIE, self.TV), busy.title)  # TV range
+        episode = rel("Severance S02E01 1080p WEB-A", size=30 * GIB)
+        self.assertIsNone(size_range(episode, EPISODE, self.FILMS))
+
+    def test_size_rank_values(self) -> None:
+        self.assertEqual(size_rank(rel("Severance S02E01 1080p", size=3 * GIB), EPISODE, self.TV),
+                         (0, 0.0))
+        self.assertEqual(size_rank(rel("Severance S02E01 1080p", size=0), EPISODE, self.TV),
+                         (1, 0.0))
+        self.assertEqual(size_rank(rel("Severance S02E01 1080p", size=5 * GIB), EPISODE, self.TV),
+                         (2, 1.0))
+        self.assertEqual(size_rank(rel("Severance S02E01 1080p", size=2 * GIB), EPISODE, self.TV),
+                         (2, 0.5))
 
 
 class PreferredGroupTests(unittest.TestCase):

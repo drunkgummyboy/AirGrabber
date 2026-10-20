@@ -3,33 +3,36 @@ the title, a "2024 | ★ 7.8" line and an action row (Download, + Track) sit.
 
 Tk can't draw a see-through widget over an image, so the cover, the fade, the border and the
 rounded corners are baked into one image at the card's physical size, in a worker thread
-(`compose_card`, cached by `ImageCache` per url and size). The fade turns solid just above the
-text, so the labels and buttons, whose own background is `theme.BG`, blend in.
+(`compose_card`, cached by `ImageCache` per url and size), and shown on a canvas that fills the
+card. The title and the line under it are text on that canvas, so the cover shows through
+behind them: the fade stops at FADE_MAX there. The rows of widgets under the text (buttons,
+switches) have `theme.BG` as their own background, so the fade turns solid where they start.
 
 A card is drawn at a `CardScale` (Settings, Card size: app/ui/card_scale.py): every size, gap
 and font below is the XL card's and scales with it; the cover is rendered at the scaled card's
-physical size.
+physical size (and again when Windows' scaling changes, `_set_scaling`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+import tkinter as tk
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 from app.ui import theme
 from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TEXT_MIN, TITLE_MIN, CardScale
 from app.ui.download_control import CORNER_RADIUS as ROW_CORNER_RADIUS
 from app.ui.download_control import FONT_SIZE as ROW_FONT_SIZE
-from app.ui.download_control import ROW_HEIGHT
+from app.ui.download_control import ROW_HEIGHT, fit_text
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, break_lines, elide_to_width, fit_to_lines, title_lines
+from app.ui.text_fit import SLACK, break_lines, fit_to_lines, title_lines
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
@@ -52,11 +55,20 @@ TEXT_WIDTH = POSTER_CARD_WIDTH - 2 * (BORDER + SIDE_PAD)  # at XL; see `text_wid
 TITLE_SIZE = 15
 TITLE_MAX_LINES = 2
 META_SIZE = 12
-# The fade covers the bottom 55 % of the cover: soft at first, 85 % opaque a little under half
-# way, solid SOLID_MARGIN above the text.
+# The fade starts at 45 % of the card's height: soft at first, then on up to FADE_MAX, which it
+# reaches TEXT_MARGIN above the text and keeps behind it; under the text it turns solid by the
+# top of the widget rows. Above tall text (two title lines over two rows of buttons) it starts
+# higher, so its soft part keeps at least FADE_MIN_SPAN of the card's height.
 FADE_FROM = 0.45
-FADE_KNEE = (0.45, 0.85)
-SOLID_MARGIN = 4
+FADE_MIN_SPAN = 0.12
+FADE_KNEE = (0.45, 0.85)  # the soft part's shape: 85 % of the way up a little under half way
+FADE_MAX = 0.80  # the fade's opacity behind the text: the cover shows through at 20 %
+TEXT_MARGIN = 4
+# A badge in the cover's top-left corner ("3 missing" on My shows): a pill on `theme.BG`.
+BADGE_INSET = 10  # from the card's outer edge
+BADGE_HEIGHT = 22
+BADGE_PAD = 8  # inside the pill, left and right of the text
+BADGE_FONT = 12
 
 FOLLOWING_TEXT = "✓ Following"
 TRACK_TEXT = "+ Track"
@@ -112,18 +124,21 @@ def year_rating_line(year: int | None, rating: float | None) -> str:
 # -- the baked image -------------------------------------------------------------------------
 
 
-def fade_alpha(position: float) -> float:
-    """The fade's opacity at `position`: 0 where it starts, 1 where it turns solid. Smooth from
-    0 up to 85 % at 0.45 (no visible edge where it starts), then straight on to 100 %."""
+def fade_alpha(position: float, maximum: float = FADE_MAX) -> float:
+    """The fade's opacity at `position`: 0 where it starts, `maximum` where it reaches the text.
+    Smooth from 0 up to 85 % of `maximum` at 0.45 (no visible edge where it starts), then
+    straight on to `maximum`."""
     if position <= 0:
         return 0.0
     if position >= 1:
-        return 1.0
-    knee, knee_alpha = FADE_KNEE
+        return maximum
+    knee, knee_share = FADE_KNEE
     if position < knee:
         t = position / knee
-        return knee_alpha * t * t * (3 - 2 * t)
-    return knee_alpha + (1 - knee_alpha) * (position - knee) / (1 - knee)
+        share = knee_share * t * t * (3 - 2 * t)
+    else:
+        share = knee_share + (1 - knee_share) * (position - knee) / (1 - knee)
+    return maximum * share
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +153,10 @@ class CardFace:
     border: int
     radius: int  # outer corner radius
     fade_from: int  # first row of the fade
-    solid_from: int  # first row of solid `bg`
+    full_from: int  # first row at `fade_max` (TEXT_MARGIN above the text)
+    ramp_from: int  # first row under the text: from `fade_max` on to solid
+    solid_from: int  # first row of solid `bg` (the widget rows)
+    fade_max: float  # the fade's opacity behind the text
     bg: RGB
     edge: RGB  # the border
     outside: RGB  # behind the rounded corners: what the card sits on
@@ -152,27 +170,45 @@ def card_face(
     scale: float,
     text_height: float,
     *,
+    rows_height: float | None = None,
     bg: RGB,
     edge: RGB,
     outside: RGB,
     placeholder: RGB,
     card: CardScale = FULL,
 ) -> CardFace:
-    """The face of a card at widget scaling `scale` (DPI) and card size `card` whose text and
-    action row take `text_height` CTk units above the bottom padding: the fade starts at 45 %
-    of the card's height and is solid from SOLID_MARGIN above the text down. In physical
-    pixels (DPI factor x card scale), so the cover stays sharp at every size."""
+    """The face of a card at widget scaling `scale` (DPI) and card size `card` whose text (the
+    title and the line under it) is `text_height` CTk units tall, above widget rows of
+    `rows_height` units (None: one action row) on the bottom padding.
+
+    The fade starts at 45 % of the card's height (higher above tall text: FADE_MIN_SPAN),
+    reaches FADE_MAX TEXT_MARGIN above the text, and turns solid between the text and the
+    widget rows (ROW_GAP). In physical pixels (DPI
+    factor x card scale), so the cover stays sharp at every size."""
     units_w, units_h = card_size(card)
     width, height = round(units_w * scale), round(units_h * scale)
     border = border_width(card)
-    bottom = border + card.px(BOTTOM_PAD) + text_height + card.px(SOLID_MARGIN)
-    solid_from = max(0, height - round(bottom * scale))
+    rows = row_height(card) if rows_height is None else rows_height
+    rows_top = border + card.px(BOTTOM_PAD) + rows  # all from the card's bottom edge
+    text_bottom = rows_top + card.px(ROW_GAP)
+    text_top = text_bottom + text_height
+
+    def row(units: float) -> int:
+        """The pixel row `units` above the card's bottom edge."""
+        return max(0, height - round(units * scale))
+
+    solid_from = row(rows_top)
+    ramp_from = min(row(text_bottom), solid_from)
+    full_from = min(row(text_top + card.px(TEXT_MARGIN)), ramp_from)
     return CardFace(
         size=(width, height),
         border=max(1, round(border * scale)),
         radius=round(card.px(CORNER_RADIUS) * scale),
-        fade_from=min(round(height * FADE_FROM), solid_from),
+        fade_from=max(0, min(round(height * FADE_FROM), full_from - round(height * FADE_MIN_SPAN))),
+        full_from=full_from,
+        ramp_from=ramp_from,
         solid_from=solid_from,
+        fade_max=FADE_MAX,
         bg=bg,
         edge=edge,
         outside=outside,
@@ -197,7 +233,10 @@ def compose_card(cover: Image.Image | None, face: CardFace) -> Image.Image:
         else:
             base.paste(fitted.convert("RGB"), (0, 0))
     shade = Image.new("RGB", face.size, face.bg)
-    faded = Image.composite(shade, base, _fade_mask(face.size, face.fade_from, face.solid_from))
+    mask = _fade_mask(
+        face.size, face.fade_from, face.full_from, face.ramp_from, face.solid_from, face.fade_max
+    )
+    faded = Image.composite(shade, base, mask)
     card = Image.new("RGB", face.size, face.outside)
     card.paste(face.edge, (0, 0, width, height), _rounded_mask(face.size, face.radius, 0))
     inner = _rounded_mask(face.size, max(0, face.radius - face.border), face.border)
@@ -205,20 +244,41 @@ def compose_card(cover: Image.Image | None, face: CardFace) -> Image.Image:
     return card
 
 
+def fade_row_alpha(
+    row: int, fade_from: int, full_from: int, ramp_from: int, solid_from: int, fade_max: float
+) -> float:
+    """The fade's opacity on pixel row `row` (see `CardFace`): 0 above `fade_from`,
+    `fade_alpha` up to `fade_max` at `full_from`, `fade_max` behind the text, then straight on
+    to 1 at `solid_from`."""
+    if row >= solid_from:
+        return 1.0
+    middle = row + 0.5
+    if row >= ramp_from:
+        return fade_max + (1 - fade_max) * (middle - ramp_from) / max(1, solid_from - ramp_from)
+    if row >= full_from:
+        return fade_max
+    return fade_alpha((middle - fade_from) / max(1, full_from - fade_from), fade_max)
+
+
 @lru_cache(maxsize=16)
-def _fade_mask(size: tuple[int, int], fade_from: int, solid_from: int) -> Image.Image:
-    """An L mask, one value per row: 0 above `fade_from`, `fade_alpha` down to `solid_from`,
-    255 from there. Shared between calls: read-only."""
+def _fade_mask(
+    size: tuple[int, int],
+    fade_from: int,
+    full_from: int,
+    ramp_from: int,
+    solid_from: int,
+    fade_max: float,
+) -> Image.Image:
+    """An L mask, one value per row (`fade_row_alpha`). Shared between calls: read-only."""
     width, height = size
-    span = max(1, solid_from - fade_from)
     column = bytes(
-        255 if row >= solid_from else round(255 * fade_alpha((row + 0.5 - fade_from) / span))
+        round(255 * fade_row_alpha(row, fade_from, full_from, ramp_from, solid_from, fade_max))
         for row in range(height)
     )
     return Image.frombytes("L", (1, height), column).resize(size, Image.Resampling.NEAREST)
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=32)
 def _rounded_mask(size: tuple[int, int], radius: int, inset: int) -> Image.Image:
     """An anti-aliased L mask of a rounded rectangle `inset` pixels inside `size`. Shared
     between calls: read-only."""
@@ -228,6 +288,20 @@ def _rounded_mask(size: tuple[int, int], radius: int, inset: int) -> Image.Image
     box = (inset * scale, inset * scale, (width - inset) * scale - 1, (height - inset) * scale - 1)
     ImageDraw.Draw(big).rounded_rectangle(box, radius=radius * scale, fill=255)
     return big.resize(size, Image.Resampling.BOX)
+
+
+@lru_cache(maxsize=32)
+def pill_image(size: tuple[int, int], border: int, fill: RGB, edge: RGB) -> Image.Image:
+    """A pill (a circle when square) of `size` physical pixels in RGBA: `fill` inside a
+    `border`-pixel `edge` line, transparent around its rounded ends, anti-aliased. Small: fine
+    on the event loop. Shared between calls: read-only."""
+    width, height = size
+    radius = min(width, height) // 2
+    colour = Image.new("RGB", size, edge)
+    colour.paste(fill, (0, 0, width, height), _rounded_mask(size, max(0, radius - border), border))
+    pill = colour.convert("RGBA")
+    pill.putalpha(_rounded_mask(size, radius, 0))
+    return pill
 
 
 # Placeholder images by face, and the composes still running; touched on the event-loop thread
@@ -332,20 +406,23 @@ class TrackButton(ctk.CTkButton):
 # -- the card --------------------------------------------------------------------------------
 
 
-def _rgb(widget: Any, color: str) -> RGB:
+def rgb(widget: tk.Misc, color: str) -> RGB:
+    """`color` (a name or "#rrggbb") as 8-bit RGB."""
     red, green, blue = widget.winfo_rgb(color)  # 16 bits per channel
     return (red >> 8, green >> 8, blue >> 8)
 
 
 class PosterCard(ctk.CTkFrame):
-    """A 2:3 card: the cover with the title, the "2024 | ★ 7.8" line (`meta`, left out when
-    empty) and an action row on its faded bottom.
+    """A 2:3 card: the cover with the title, the "2024 | ★ 7.8" line (`meta`; left out when
+    empty unless `meta_row`, which keeps its room for `_set_meta`) and an action row on its
+    faded bottom.
 
     `poster` gives the cover's url for a card that many physical pixels wide (None: no cover).
     Subclasses create their action row with this card as master and hand it to `_pack_action`;
     `_set_open` sets what a click on the cover or the text does. A subclass with a row between
     the text and the action row (`_pack_above_action`) passes its height, gap included, as
-    `extra_height` (already at `scale`), so the fade turns solid above that row too.
+    `extra_height` (already at `scale`), so the fade turns solid behind that row too.
+    `_set_badge` puts a pill in the cover's top-left corner.
 
     `scale` sizes the whole card (`self.scale`; subclasses size their rows with it).
     """
@@ -360,6 +437,7 @@ class PosterCard(ctk.CTkFrame):
         images: ImageCache,
         extra_height: float = 0,
         scale: CardScale = FULL,
+        meta_row: bool = False,
     ) -> None:
         self.scale = scale
         width, height = card_size(scale)
@@ -374,95 +452,184 @@ class PosterCard(ctk.CTkFrame):
         )
         self.grid_propagate(False)
         self.pack_propagate(False)
+        self._units = (width, height)
+        self._poster = poster
+        self._images = images
         self._open: Callable[[], object] | None = None
-        self._cover_image: ctk.CTkImage | None = None
-        self._size = (width, height)
+        self._cover_task: asyncio.Task[None] | None = None
+        self._photo: ImageTk.PhotoImage | None = None
         self._pad_x = side_pad(scale)
         self._bottom_pad = border_width(scale) + scale.px(BOTTOM_PAD)
-        room = text_width(scale) - SLACK
+        self._rows_height = row_height(scale) + extra_height
+        self._room = text_width(scale) - SLACK
 
-        # Created first so the text and buttons stack above it; placed once it has an image.
-        self._cover = ctk.CTkLabel(self, text="", width=width, height=height)
-        self._text = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0, border_width=0)
-        row_gap = scale.px(ROW_GAP)
-        self._text.pack(side="bottom", fill="x", padx=self._pad_x, pady=(0, row_gap))
         self.title_font = theme.font(scale.font(TITLE_SIZE, TITLE_MIN), bold=True)
-        title_font = self.title_font
         # Breaks made explicit: a title that only fits word-wrapped would otherwise stay one
         # line (cut off at both sides on a small card) and its height would be counted wrong.
-        fitted = break_lines(
-            fit_to_lines(title_lines(title), room, TITLE_MAX_LINES, title_font.measure),
-            room,
-            title_font.measure,
+        self._title_text = break_lines(
+            fit_to_lines(title_lines(title), self._room, TITLE_MAX_LINES, self.title_font.measure),
+            self._room,
+            self.title_font.measure,
         )
-        self._title = ctk.CTkLabel(
-            self._text,
-            text=fitted,
-            height=0,
-            font=title_font,
-            text_color=theme.TEXT,
-            justify="center",
-        )
-        self._title.pack(fill="x")
-        clickable: list[Any] = [self._cover, self._text, self._title]
-        title_height = (fitted.count("\n") + 1) * _linespace(title_font)
-        text_height = row_height(scale) + extra_height + row_gap + title_height
-        if meta:
-            meta_font = theme.font(scale.font(META_SIZE, SMALL_TEXT_MIN))
-            meta_gap = scale.px(META_GAP)
-            line = ctk.CTkLabel(
-                self._text,
-                text=elide_to_width(meta, room, meta_font.measure),
-                height=0,
-                font=meta_font,
-                text_color=theme.TEXT_MUTED,
-            )
-            line.pack(fill="x", pady=(meta_gap, 0))
-            clickable.append(line)
-            text_height += meta_gap + _linespace(meta_font)
-        for widget in clickable:
-            widget.bind("<Button-1>", self._clicked, add="+")
+        self._meta_font = theme.font(scale.font(META_SIZE, SMALL_TEXT_MIN))
+        self._meta_gap = scale.px(META_GAP)
+        with_meta = bool(meta) or meta_row
+        self._text_height: float = (self._title_text.count("\n") + 1) * _linespace(self.title_font)
+        if with_meta:
+            self._text_height += self._meta_gap + _linespace(self._meta_font)
 
+        # Placed once it has an image; the action rows, created later, stack above it.
+        self._sheet = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=theme.BG)
+        self._cover_item = self._sheet.create_image(0, 0, anchor="nw")
+        self._title_item = self._sheet.create_text(
+            0, 0, text=self._title_text, fill=theme.TEXT, anchor="s", justify="center"
+        )
+        self._meta_item: int | None = None
+        self._meta_shown = ("", theme.TEXT_MUTED)  # text, colour
+        if with_meta:
+            self._meta_item = self._sheet.create_text(0, 0, text="", anchor="n")
+            self._set_meta(meta)
+        self._badge: tuple[str, str] | None = None  # text, colour
+        self._badge_font = theme.font(scale.font(BADGE_FONT, TEXT_MIN), bold=True)
+        self._badge_items: tuple[int, int] | None = None  # pill image, text
+        self._badge_photo: ImageTk.PhotoImage | None = None
+        self._sheet.bind("<Button-1>", self._clicked, add="+")
+        self._apply_scale()
+
+    @property
+    def scaling(self) -> float:
+        """Windows' scaling of this card (physical pixels per CTk unit)."""
         scaling: float = ctk.ScalingTracker.get_widget_scaling(self)
+        return scaling
+
+    # -- layout --------------------------------------------------------------------------------
+
+    def _apply_scale(self) -> None:
+        """Lay the canvas out at the current scaling and (re)load the cover at that size."""
+        scaling = self.scaling
+        width, height = self._units
+        canvas = self._sheet
+        text_bottom = height - (self._bottom_pad + self._rows_height + self.scale.px(ROW_GAP))
+        centre = round(width * scaling) / 2
+        title_bottom: float = text_bottom
+        if self._meta_item is not None:
+            meta_top = text_bottom - _linespace(self._meta_font)
+            canvas.coords(self._meta_item, centre, round(meta_top * scaling))
+            canvas.itemconfigure(
+                self._meta_item, font=self._meta_font.create_scaled_tuple(scaling)
+            )
+            title_bottom = meta_top - self._meta_gap
+        canvas.coords(self._title_item, centre, round(title_bottom * scaling))
+        canvas.itemconfigure(self._title_item, font=self.title_font.create_scaled_tuple(scaling))
+        self._draw_badge()
+
         self._face = card_face(
             scaling,
-            text_height,
-            card=scale,
-            bg=_rgb(self, theme.BG),
-            edge=_rgb(self, theme.EDGE),
-            outside=_rgb(self, self._apply_appearance_mode(self.cget("bg_color"))),
-            placeholder=_rgb(self, theme.PLACEHOLDER),
+            self._text_height,
+            rows_height=self._rows_height,
+            card=self.scale,
+            bg=rgb(self, theme.BG),
+            edge=rgb(self, theme.EDGE),
+            outside=rgb(self, self._apply_appearance_mode(self.cget("bg_color"))),
+            placeholder=rgb(self, theme.PLACEHOLDER),
         )
-        url = poster(self._face.size[0])
-        self._cover_task = spawn(self._load_cover(images, url), name="PosterCard.cover")
+        if self._cover_task is not None:
+            self._cover_task.cancel()
+        url = self._poster(self._face.size[0])
+        self._cover_task = spawn(self._load_cover(self._images, url), name="PosterCard.cover")
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed (the window moved to another screen): CTk resizes the
+        widgets; the canvas follows here."""
+        super()._set_scaling(*args, **kwargs)
+        self._apply_scale()
 
     # -- action row and opening ----------------------------------------------------------------
 
     def _pack_action(self, row: Any) -> None:
         """Pack `row` (created with this card as master) as the card's bottom row."""
-        row.pack(
-            side="bottom",
-            fill="x",
-            padx=self._pad_x,
-            pady=(0, self._bottom_pad),
-            before=self._text,
-        )
+        row.pack(side="bottom", fill="x", padx=self._pad_x, pady=(0, self._bottom_pad))
 
     def _pack_above_action(self, row: Any, gap: int) -> None:
         """Pack `row` (created with this card as master) between the text and the action row,
         `gap` (at the card's scale) above the action row. Call after `_pack_action`."""
-        row.pack(side="bottom", fill="x", padx=self._pad_x, pady=(0, gap), before=self._text)
+        row.pack(side="bottom", fill="x", padx=self._pad_x, pady=(0, gap))
 
     def _set_open(self, action: Callable[[], object] | None) -> None:
         """What a click on the cover or the text does (None: nothing)."""
         self._open = action
-        cursor = "hand2" if action is not None else ""
-        self._cover.configure(cursor=cursor)  # the image fills the cover label's inner label
-        self._text.configure(cursor=cursor)  # the title and year lines inherit it
+        self._sheet.configure(cursor="hand2" if action is not None else "")
 
     def _clicked(self, _event: Any) -> None:
         if self._open is not None:
             self._open()
+
+    # -- text and badge --------------------------------------------------------------------------
+
+    @property
+    def title_text(self) -> str:
+        """The title as shown (fitted to two lines)."""
+        return self._title_text
+
+    @property
+    def meta_text(self) -> str | None:
+        """The line under the title as shown; None for a card without one."""
+        return self._meta_shown[0] if self._meta_item is not None else None
+
+    @property
+    def meta_color(self) -> str | None:
+        return self._meta_shown[1] if self._meta_item is not None else None
+
+    def _set_meta(self, text: str | Sequence[str], color: str = theme.TEXT_MUTED) -> None:
+        """Show `text` under the title (the first of several, longest first, that fits; else
+        shortened), in `color`. Only on a card with that line (`meta` or `meta_row`)."""
+        if self._meta_item is None:
+            return
+        texts = (text,) if isinstance(text, str) else tuple(text)
+        fitted = fit_text(texts, self._room, self._meta_font.measure) if texts else ""
+        self._sheet.itemconfigure(self._meta_item, text=fitted, fill=color)
+        self._meta_shown = (fitted, color)
+
+    @property
+    def badge_text(self) -> str | None:
+        return self._badge[0] if self._badge is not None else None
+
+    def _set_badge(self, text: str | None, color: str = theme.TEXT) -> None:
+        """A pill with `text` in `color` (outline and text, on `theme.BG`) in the cover's
+        top-left corner; None takes it away."""
+        self._badge = (text, color) if text else None
+        self._draw_badge()
+
+    def _draw_badge(self) -> None:
+        canvas = self._sheet
+        if self._badge is None:
+            if self._badge_items is not None:
+                canvas.delete(*self._badge_items)
+            self._badge_items = None
+            self._badge_photo = None
+            return
+        text, color = self._badge
+        scaling = self.scaling
+        scale = self.scale
+        font = self._badge_font
+        height = scale.text_height(BADGE_HEIGHT, int(font.cget("size")))
+        width = font.measure(text) + 2 * scale.px(BADGE_PAD)
+        size = (round(width * scaling), round(height * scaling))
+        x = y = round(scale.px(BADGE_INSET) * scaling)
+        pill = pill_image(size, max(1, round(scaling)), rgb(self, theme.BG), rgb(self, color))
+        self._badge_photo = ImageTk.PhotoImage(pill, master=canvas)
+        if self._badge_items is None:
+            self._badge_items = (
+                canvas.create_image(0, 0, anchor="nw"),
+                canvas.create_text(0, 0, anchor="center"),
+            )
+        image_item, text_item = self._badge_items
+        canvas.coords(image_item, x, y)
+        canvas.itemconfigure(image_item, image=self._badge_photo)
+        canvas.coords(text_item, x + size[0] / 2, y + size[1] / 2)
+        canvas.itemconfigure(
+            text_item, text=text, fill=color, font=font.create_scaled_tuple(scaling)
+        )
 
     # -- cover -----------------------------------------------------------------------------------
 
@@ -478,13 +645,14 @@ class PosterCard(ctk.CTkFrame):
     def _show_cover(self, image: Image.Image) -> None:
         if not self.winfo_exists():
             return
-        self._cover_image = ctk.CTkImage(light_image=image, dark_image=image, size=self._size)
-        self._cover.configure(image=self._cover_image)
-        if not self._cover.winfo_manager():
-            self._cover.place(x=0, y=0, relwidth=1, relheight=1)
+        self._photo = ImageTk.PhotoImage(image, master=self._sheet)
+        self._sheet.itemconfigure(self._cover_item, image=self._photo)
+        if not self._sheet.winfo_manager():
+            self._sheet.place(x=0, y=0, relwidth=1, relheight=1)
 
     def destroy(self) -> None:
-        self._cover_task.cancel()
+        if self._cover_task is not None:
+            self._cover_task.cancel()
         super().destroy()
 
 

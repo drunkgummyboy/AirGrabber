@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
     PlainSerializer,
     SecretStr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -132,7 +135,7 @@ class Weekday(StrEnum):
 
 class CardSize(StrEnum):
     """How big the poster cards (Movies, Discover, search results, the watchlist) and the My
-    shows cards are drawn, smallest first. XL is the original size and the default."""
+    shows cards are drawn, smallest first. XL is the original size; M is the default."""
 
     XS = "xs"
     S = "s"
@@ -148,6 +151,29 @@ def _split_csv(value: Any) -> Any:
 
 
 KeywordList = Annotated[tuple[str, ...], BeforeValidator(_split_csv)]
+
+
+def _size_gb(value: Any) -> Any:
+    """A size limit as typed: "" = no limit, "2,5" and "2.5" both 2.5 (GB)."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        raise ValueError("Use a number, like 2.5") from None
+
+
+def _positive_size(value: float | None) -> float | None:
+    if value is not None and not (math.isfinite(value) and value > 0):
+        raise ValueError("Use a size above 0")
+    return value
+
+
+# A release size limit in GB (binary, as the search window shows sizes); None = no limit.
+SizeLimit = Annotated[float | None, BeforeValidator(_size_gb), AfterValidator(_positive_size)]
 
 
 def _reveal(value: SecretStr) -> str:
@@ -177,7 +203,19 @@ ServiceUrl = Annotated[str, BeforeValidator(_normalize_url)]
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    quality: QualityProfile = QualityProfile.FULL_HD
+    # The quality a one-click or automatic download picks: series (an episode or a season pack)
+    # and films each have their own. Settings stored with the one `quality` of before move it
+    # into both (`_from_one_quality`); the next save drops it.
+    quality_tv: QualityProfile = QualityProfile.FULL_HD
+    quality_movie: QualityProfile = QualityProfile.FULL_HD
+    # The size range (GB) a release of the right quality should be in; None = no limit. Never a
+    # filter: outside it the closest size wins (app/services/picking.py). Season packs and
+    # multi-episode releases ignore the series range. Each `*_min_gb` comes before its
+    # `*_max_gb`, which is checked against it.
+    size_tv_min_gb: SizeLimit = None
+    size_tv_max_gb: SizeLimit = None
+    size_movie_min_gb: SizeLimit = None
+    size_movie_max_gb: SizeLimit = None
     # FOLDER keeps the 1.x/2.0 behaviour for existing users; new users choose on first run.
     download_mode: DownloadMode = DownloadMode.FOLDER
     download_dir: Path = Field(default_factory=lambda: Path.home() / "Downloads")
@@ -186,8 +224,9 @@ class Settings(BaseModel):
     first_day: Weekday = Weekday.MONDAY
     weeks_to_show: int = Field(default=3, ge=1, le=5)
     show_suggestions: bool = True  # the calendar's suggested (untracked) show per day
-    # The cards' size (app/ui/card_scale.py); the calendar keeps its own sizing.
-    card_size: CardSize = CardSize.XL
+    # The cards' size on every page, the calendar too (app/ui/card_scale.py). A stored size
+    # stays as it is.
+    card_size: CardSize = CardSize.M
     tmdb_api_key: StoredSecret = SecretStr("")
     excluded_keywords: KeywordList = ("cam", "telesync", "hdcam", "sample")
     preferred_groups: KeywordList = ()
@@ -259,10 +298,30 @@ class Settings(BaseModel):
             return data
         return {**data, **moved, "remote_kind": RemoteKind.SYNOLOGY}
 
-    @field_validator("quality", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _from_one_quality(cls, data: Any) -> Any:
+        """Settings stored when series and films shared one `quality`: it becomes both
+        `quality_tv` and `quality_movie` (a new key already there wins). The next save drops
+        `quality`."""
+        if not isinstance(data, dict) or "quality" not in data:
+            return data
+        old = data["quality"]
+        return {"quality_tv": old, "quality_movie": old, **data}
+
+    @field_validator("quality_tv", "quality_movie", mode="before")
     @classmethod
     def _legacy_quality(cls, value: Any) -> Any:
         return QualityProfile.HEVC if value == "x265/HEVC" else value
+
+    @field_validator("size_tv_max_gb", "size_movie_max_gb")
+    @classmethod
+    def _max_not_below_min(cls, value: float | None, info: ValidationInfo) -> float | None:
+        name = info.field_name or ""
+        low = info.data.get(name.replace("_max_", "_min_"))
+        if value is not None and low is not None and value < low:
+            raise ValueError("The first number can't be bigger than the second")
+        return value
 
     @field_validator("download_dir", mode="before")
     @classmethod

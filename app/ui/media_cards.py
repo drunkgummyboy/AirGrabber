@@ -9,7 +9,6 @@ cards are in `watchlist_cards`.
 Each card fetches its title's TMDB details itself through an injected loader: a film's decide
 whether it can be downloaded yet, and both name the title's IMDb page.
 
-`ImdbIcon` (an ⓘ in a card's corner) is the calendar cards'.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from app.ui.card_scale import FULL, CardScale
 from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
 from app.ui.poster_card import PosterCard, TrackButton, TrackState, year_rating_line
 from app.ui.tasks import spawn
-from app.ui.tooltip import add_tooltip
 from app.ui.watchlist_button import WATCH_ROW_GAP, WATCH_ROW_HEIGHT, WatchlistButton
 
 if TYPE_CHECKING:
@@ -42,7 +40,7 @@ log = logging.getLogger(__name__)
 
 D = TypeVar("D")
 
-# Room a card's text keeps clear on the right for the ⓘ (24 units wide, 8 from the card's edge).
+# Room the compact calendar cards' text keeps clear on the right for their ⓘ.
 IMDB_ICON_ROOM = 28
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
 # TMDB's poster widths, smallest first ("original" beyond them).
@@ -96,42 +94,6 @@ def imdb_search_url(movie: Movie) -> str:
 
 def show_imdb_url(details: TVDetails) -> str | None:
     return f"https://www.imdb.com/title/{details.imdb_id}/" if details.imdb_id else None
-
-
-# -- the calendar cards' ⓘ ---------------------------------------------------------------------
-
-
-IMDB_TIP = "Open on IMDb"
-
-
-class ImdbIcon(ctk.CTkLabel):
-    """An ⓘ in a card's top-right corner that opens `url` (an IMDb page); `url` may change."""
-
-    def __init__(self, card: ctk.CTkFrame, url: str) -> None:
-        super().__init__(
-            card,
-            text="ⓘ",
-            width=24,
-            height=24,
-            font=theme.font(16),
-            text_color=theme.TEXT_MUTED,
-            cursor="hand2",
-        )
-        self.url = url
-        add_tooltip(self, IMDB_TIP)
-        self.place(relx=1.0, x=-8, y=8, anchor="ne")
-        self.bind("<Button-1>", lambda _event: webbrowser.open(self.url))
-        self.bind("<Enter>", lambda _event: self.configure(text_color=theme.TEXT))
-        self.bind("<Leave>", self._restore)
-        card.bind("<Leave>", self._restore)
-
-    def _restore(self, _event: Any) -> None:
-        self.configure(text_color=theme.TEXT_MUTED)
-
-
-def add_imdb_icon(card: ctk.CTkFrame, url: str | None) -> ImdbIcon | None:
-    """An `ImdbIcon` on `card`; none without a url."""
-    return None if url is None else ImdbIcon(card, url)
 
 
 # -- cards -----------------------------------------------------------------------------------

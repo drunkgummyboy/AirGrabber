@@ -1,4 +1,9 @@
-"""Weekly episode calendar: tracked episodes from SQL, plus one suggested show per day."""
+"""Weekly episode calendar: tracked episodes from SQL, plus one suggested show per day.
+
+The top bar, in one line: the visible dates, ◀ Today ▶, and on the right the number of weeks
+(1–5) and the 💡 Suggestions toggle; on a window too narrow for one line the right-hand
+controls move to a second line. The cards follow Settings → Card size (`card_scale`).
+"""
 
 from __future__ import annotations
 
@@ -12,14 +17,16 @@ import customtkinter as ctk
 
 from app.models import CalendarEntry, Settings, Weekday
 from app.services import ImageCache, LibraryService, SettingsService
-from app.services.library import calendar_range, week_start
+from app.services.library import RECENT_DAYS, calendar_range
 from app.ui import theme
 from app.ui.calendar_cards import (
     CompactEpisodeCard,
     EpisodeActions,
     EpisodeCard,
+    OpenShow,
     SuggestionCard,
 )
+from app.ui.card_scale import FULL, CardScale
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK
 from app.ui.tooltip import add_tooltip
@@ -30,21 +37,29 @@ log = logging.getLogger(__name__)
 
 CardStyle = Literal["full", "compact"]
 
-
-def week_choice(weeks: int) -> str:
-    """The weeks menu's text for `weeks`: "1 week", "3 weeks"."""
-    return f"{weeks} week" + ("" if weeks == 1 else "s")
-
-
-WEEK_CHOICES = {week_choice(weeks): weeks for weeks in range(1, 6)}  # Settings.weeks_to_show
+WEEK_COUNTS = tuple(range(1, 6))  # the choices of Settings.weeks_to_show
+WEEKS_TIP = "How many weeks to show"
+SUGGESTIONS_TEXT = "💡 Suggestions"
+SUGGESTIONS_TIP = (
+    "Also show one popular episode a day from a show you don't follow yet. "
+    "Click + Track on it to start following that show."
+)
 
 HEADER_GAP = 22  # below the header row, above the grid
-NAV_HEIGHT = 36  # the ◀ / Today / ▶ buttons (and the weeks menu beside them)
-NAV_RADIUS = 8
-NAV_GAP = 6  # between the navigation buttons
-RANGE_GAP = 10  # between the ▶ button and the date range
-# Inside a day cell, around its header and cards. Horizontally only 8: at the default 1650 px
-# window, cards keep room for their posters (EpisodeCard's _POSTER_MIN_CARD_WIDTH).
+RANGE_FONT_SIZE = 20  # the visible dates, bold
+NAV_HEIGHT = 28  # the ◀ / Today / ▶ buttons, the week count and the Suggestions toggle
+NAV_FONT_SIZE = 13
+NAV_RADIUS = 7
+NAV_GAP = 4  # between the navigation buttons
+TODAY_WIDTH = 60
+RANGE_GAP = 12  # between the date range and the ◀ button
+CONTROL_GAP = 10  # between the week count and the Suggestions toggle
+WEEK_BUTTON_WIDTH = 30  # each of the week count's 1–5
+TOGGLE_PAD_X = 14  # the Suggestions toggle's room left and right of its text
+HEADER_MIN_GAP = 24  # least room between the left and right groups on one line
+WRAP_GAP = 10  # above the right-hand controls when they wrap to a second line
+# Inside a day cell, around its header and cards. Horizontally only 8: the poster cards keep
+# room for their text and Download row at the narrower windows.
 CELL_PAD_X = 8
 CELL_PAD_Y = 12
 CARD_GAP = 12  # between the cards of a day
@@ -59,13 +74,17 @@ _MONTHS = (
 _WEEKDAYS = tuple(weekday.value[:3] for weekday in Weekday)  # "Mon" … "Sun", by date.weekday()
 
 
+def _short_month(day: date) -> str:
+    return _MONTHS[day.month - 1][:3]
+
+
 def _day_month(day: date) -> str:
-    return f"{day.day} {_MONTHS[day.month - 1]}"
+    return f"{day.day} {_short_month(day)}"
 
 
 def range_label(start: date, end: date) -> str:
-    """The visible dates: "12 – 25 October", "28 September – 11 October", or with the years
-    when the range spans two: "29 December 2026 – 11 January 2027"."""
+    """The visible dates: "12 – 25 Oct", "28 Sep – 11 Oct", or with the years when the range
+    spans two: "29 Dec 2026 – 11 Jan 2027"."""
     if start.year != end.year:
         return f"{_day_month(start)} {start.year} – {_day_month(end)} {end.year}"
     if start.month != end.month:
@@ -74,19 +93,43 @@ def range_label(start: date, end: date) -> str:
 
 
 def range_slot_width(measure: Callable[[str], int]) -> int:
-    """Room for every label `range_label` gives a grid of 1–5 weeks: the widest, measured.
+    """Room for the labels `range_label` gives the grid within one year: the widest, measured.
+    The grid holds 1–5 weeks, and one more at the start of a week (`calendar_range`).
 
-    The labels with years, of ranges that cross into a new year, are the widest; those ranges
-    start in a year's last five weeks. A fixed slot keeps the buttons before it in place.
+    A slot this wide keeps the buttons after the label in place all year; only the longer
+    labels with years, of the few ranges that cross into a new year, push them a little.
     """
-    year_end = date(2026, 12, 31)
+    first = date(2026, 1, 1)  # any year: the month names are what differ
     labels = (
-        range_label(start, start + timedelta(weeks=weeks, days=-1))
-        for weeks in range(1, 6)
-        # The last day is in the next year from 7 * weeks - 2 days before year_end on.
-        for start in (year_end - timedelta(days=back) for back in range(7 * weeks - 1))
+        range_label(start, end)
+        for weeks in range(1, WEEK_COUNTS[-1] + 2)
+        for start in (first + timedelta(days=day) for day in range(365))
+        if (end := start + timedelta(weeks=weeks, days=-1)).year == start.year
     )
     return max(measure(label) for label in labels) + SLACK
+
+
+def header_wraps(width: float, left: float, right: float, gap: float) -> bool:
+    """Whether the top bar's right-hand controls (`right` wide) go on a second line: when they
+    and the left group (`left` wide) don't fit in `width` with `gap` between them."""
+    return left + gap + right > width
+
+
+def suggestions_look(shown: bool) -> dict[str, Any]:
+    """The Suggestions toggle's colours: filled accent while on, an outline while off."""
+    if shown:
+        return {
+            "fg_color": theme.ACCENT,
+            "hover_color": theme.ACCENT_HOVER,
+            "border_color": theme.ACCENT,
+            "text_color": theme.TEXT,
+        }
+    return {
+        "fg_color": "transparent",
+        "hover_color": theme.SURFACE,
+        "border_color": theme.EDGE,
+        "text_color": theme.TEXT_MUTED,
+    }
 
 
 def day_label(day: date) -> str:
@@ -95,16 +138,9 @@ def day_label(day: date) -> str:
     return f"{text} {_MONTHS[day.month - 1][:3]}" if day.day == 1 else text
 
 
-def card_style(day: date, *, today: date, week_start: date) -> CardStyle:
-    """Poster cards from the current week (starting `week_start`) on, compact cards before.
-
-    The previous week keeps poster cards during the first two days of the current week.
-    """
-    if day >= week_start:
-        return "full"
-    if day >= week_start - timedelta(weeks=1) and (today - week_start).days < 2:
-        return "full"
-    return "compact"
+def card_style(day: date, *, today: date) -> CardStyle:
+    """Poster cards from RECENT_DAYS days before `today` on, compact cards before."""
+    return "full" if day >= today - timedelta(days=RECENT_DAYS) else "compact"
 
 
 def by_day(entries: Iterable[CalendarEntry]) -> dict[date, list[CalendarEntry]]:
@@ -152,7 +188,7 @@ def _nav_button(
         border_color=theme.EDGE,
         hover_color=theme.SURFACE,
         text_color=theme.TEXT,
-        font=theme.font(14),
+        font=theme.font(NAV_FONT_SIZE),
         command=command,
     )
     if tip:
@@ -189,7 +225,10 @@ def _cell_header(cell: ctk.CTkFrame, day: date, *, is_today: bool) -> ctk.CTkFra
 
 class CalendarView(BaseView):
     """Weeks of tracked episodes in a 7-column grid, each day with one suggested show after
-    them (unless suggestions are switched off); ◀ / Today / ▶ move through the weeks."""
+    them (unless suggestions are switched off); ◀ / Today / ▶ move through the weeks.
+
+    `card_scale`: the card size (Settings), read at every load. `on_open_show`: what a click on
+    a card's poster or name (compact cards: their ⓘ) does, the show's window."""
 
     def __init__(
         self,
@@ -200,6 +239,8 @@ class CalendarView(BaseView):
         images: ImageCache,
         status: StatusReporter,
         episode_actions: EpisodeActions,
+        card_scale: Callable[[], CardScale] = lambda: FULL,
+        on_open_show: OpenShow | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -208,9 +249,12 @@ class CalendarView(BaseView):
         self._images = images
         self._status = status
         self._episode_actions = episode_actions  # the cards' Download and ⋯ buttons
+        self._card_scale = card_scale
+        self._on_open_show = on_open_show
         self._weeks: ctk.CTkFrame | None = None  # the grid of day cells, rebuilt on every load
         self._rendered_for: date | None = None  # the "today" of the last load
         self._offset = 0  # weeks from the current one; this session only
+        self._suggestions_shown = settings.current.show_suggestions  # the toggle's state
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -225,55 +269,92 @@ class CalendarView(BaseView):
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=15, pady=(5, HEADER_GAP))
-        # Equal side columns keep the navigation in the middle.
-        header.grid_columnconfigure((0, 2), weight=1, uniform="side")
+        header.grid_columnconfigure(1, weight=1)
+        self._header = header
 
+        # Left: the dates in a slot of fixed width (the buttons after it never move), then
+        # ◀ Today ▶; the "Finding suggestions…" note follows in the stretching middle column.
         left = ctk.CTkFrame(header, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w")
-        self._suggestions_switch = ctk.CTkSwitch(
-            left,
-            text="Show suggestions",
-            font=theme.font(14),
-            text_color=theme.TEXT_MUTED,
-            progress_color=theme.ACCENT,
-            command=self._save_show_suggestions,
-        )
-        self._suggestions_switch.pack(side="left")
-        self._note = ctk.CTkLabel(left, text="", font=theme.font(12), text_color=theme.TEXT_MUTED)
-        self._note.pack(side="left", padx=(12, 0))
-
-        nav = ctk.CTkFrame(header, fg_color="transparent")
-        nav.grid(row=0, column=1)
-        _nav_button(
-            nav, "◀", NAV_HEIGHT, lambda: self._go_to(self._offset - 1), "Previous week"
-        ).pack(side="left")
-        _nav_button(nav, "Today", 72, lambda: self._go_to(0)).pack(side="left", padx=NAV_GAP)
-        _nav_button(
-            nav, "▶", NAV_HEIGHT, lambda: self._go_to(self._offset + 1), "Next week"
-        ).pack(side="left")
-        range_font = theme.font(16, bold=True)
+        range_font = theme.font(RANGE_FONT_SIZE, bold=True)
         self._range = ctk.CTkLabel(
-            nav,
+            left,
             text="",
             font=range_font,
             text_color=theme.TEXT,
-            width=range_slot_width(range_font.measure),  # fixed: the buttons never move
+            width=range_slot_width(range_font.measure),
             anchor="w",
         )
-        self._range.pack(side="left", padx=(RANGE_GAP, 0))
+        self._range.pack(side="left")
+        _nav_button(
+            left, "◀", NAV_HEIGHT, lambda: self._go_to(self._offset - 1), "Previous week"
+        ).pack(side="left", padx=(RANGE_GAP, 0))
+        _nav_button(left, "Today", TODAY_WIDTH, lambda: self._go_to(0)).pack(
+            side="left", padx=NAV_GAP
+        )
+        _nav_button(
+            left, "▶", NAV_HEIGHT, lambda: self._go_to(self._offset + 1), "Next week"
+        ).pack(side="left")
+        self._left = left
+        self._note = ctk.CTkLabel(
+            header, text="", font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="w"
+        )
+        self._note.grid(row=0, column=1, sticky="w", padx=(16, 0))
 
-        self._weeks_menu = ctk.CTkOptionMenu(
-            header,
-            values=list(WEEK_CHOICES),
-            width=110,
+        # Right: the week count, then the Suggestions toggle.
+        right = ctk.CTkFrame(header, fg_color="transparent")
+        self._week_count = ctk.CTkSegmentedButton(
+            right,
+            values=[str(weeks) for weeks in WEEK_COUNTS],
+            width=WEEK_BUTTON_WIDTH * len(WEEK_COUNTS),
             height=NAV_HEIGHT,
             corner_radius=NAV_RADIUS,
+            font=theme.font(NAV_FONT_SIZE, bold=True),
             fg_color=theme.SURFACE,
-            button_color=theme.EDGE,
-            button_hover_color=theme.ACCENT_HOVER,
+            selected_color=theme.ACCENT,
+            selected_hover_color=theme.ACCENT_HOVER,
+            unselected_color=theme.SURFACE,
+            unselected_hover_color=theme.CHIP_HOVER,
+            dynamic_resizing=False,
             command=self._save_weeks,
         )
-        self._weeks_menu.grid(row=0, column=2, sticky="e")
+        self._week_count.pack(side="left")
+        add_tooltip(self._week_count, WEEKS_TIP)
+        toggle_font = theme.font(NAV_FONT_SIZE)
+        self._suggestions_toggle = ctk.CTkButton(
+            right,
+            text=SUGGESTIONS_TEXT,
+            width=round(toggle_font.measure(SUGGESTIONS_TEXT)) + 2 * TOGGLE_PAD_X,
+            height=NAV_HEIGHT,
+            corner_radius=NAV_RADIUS,
+            border_width=1,
+            font=toggle_font,
+            command=self._toggle_suggestions,
+        )
+        self._suggestions_toggle.pack(side="left", padx=(CONTROL_GAP, 0))
+        add_tooltip(self._suggestions_toggle, SUGGESTIONS_TIP)
+        self._right = right
+        self._wrapped: bool | None = None
+        self._place_right(wrapped=False)
+        header.bind("<Configure>", self._fit_header, add="+")
+
+    def _fit_header(self, event: Any) -> None:
+        """One line while everything fits, else the right-hand controls on a second line."""
+        if event.width <= 1:
+            return
+        gap = round(HEADER_MIN_GAP * ctk.ScalingTracker.get_widget_scaling(self))
+        wraps = header_wraps(
+            event.width, self._left.winfo_reqwidth(), self._right.winfo_reqwidth(), gap
+        )
+        if wraps != self._wrapped:
+            self._place_right(wrapped=wraps)
+
+    def _place_right(self, *, wrapped: bool) -> None:
+        self._wrapped = wrapped
+        if wrapped:
+            self._right.grid(row=1, column=0, columnspan=3, sticky="w", pady=(WRAP_GAP, 0))
+        else:
+            self._right.grid(row=0, column=2, columnspan=1, sticky="e", pady=0)
 
     def _go_to(self, offset: int) -> None:
         if offset != self._offset:
@@ -284,24 +365,26 @@ class CalendarView(BaseView):
 
     def _save_weeks(self, choice: str) -> None:
         spawn(
-            self._settings.update(weeks_to_show=WEEK_CHOICES[choice]),
+            self._settings.update(weeks_to_show=int(choice)),
             name="CalendarView.save_weeks",
         )
 
-    def _save_show_suggestions(self) -> None:
-        shown = bool(self._suggestions_switch.get())
+    def _toggle_suggestions(self) -> None:
+        shown = not self._suggestions_shown
+        self._show_suggestions_state(shown)
         spawn(
             self._settings.update(show_suggestions=shown),
             name="CalendarView.save_show_suggestions",
         )
 
+    def _show_suggestions_state(self, shown: bool) -> None:
+        self._suggestions_shown = shown
+        self._suggestions_toggle.configure(**suggestions_look(shown))
+
     def _sync_controls(self, prefs: Settings) -> None:
         """Show the stored values (the window may reload with settings saved elsewhere)."""
-        self._weeks_menu.set(week_choice(prefs.weeks_to_show))
-        if prefs.show_suggestions:
-            self._suggestions_switch.select()
-        else:
-            self._suggestions_switch.deselect()
+        self._week_count.set(str(prefs.weeks_to_show))
+        self._show_suggestions_state(prefs.show_suggestions)
 
     # -- loading -------------------------------------------------------------------------------
 
@@ -315,6 +398,7 @@ class CalendarView(BaseView):
         self._note.configure(text="")
         today = date.today()
         self._rendered_for = today
+        scale = self._card_scale()
         start, end = calendar_range(
             today, first_day=prefs.first_day, weeks=prefs.weeks_to_show, offset=self._offset
         )
@@ -324,10 +408,7 @@ class CalendarView(BaseView):
         if not self.winfo_exists():
             return
         cells = await self._render_tracked(
-            _days(start, end),
-            by_day(entries),
-            today=today,
-            this_week=week_start(today, prefs.first_day),
+            _days(start, end), by_day(entries), today=today, scale=scale
         )
 
         if not prefs.show_suggestions:
@@ -342,7 +423,7 @@ class CalendarView(BaseView):
             return
         if not self.winfo_exists():
             return
-        await self._render_suggestions(cells, best_suggestions(suggestions))
+        await self._render_suggestions(cells, best_suggestions(suggestions), scale=scale)
         self._note.configure(text="")
 
     # -- rendering -----------------------------------------------------------------------------
@@ -353,7 +434,7 @@ class CalendarView(BaseView):
         tracked: Mapping[date, Sequence[CalendarEntry]],
         *,
         today: date,
-        this_week: date,
+        scale: CardScale,
     ) -> dict[date, ctk.CTkFrame]:
         """Replace the grid: one cell per day with its tracked episodes. Returns the cells.
 
@@ -386,21 +467,36 @@ class CalendarView(BaseView):
             )
             cells[day] = cell
 
-            style = card_style(day, today=today, week_start=this_week)
+            style = card_style(day, today=today)
             for entry in tracked.get(day, ()):
                 card: ctk.CTkFrame
                 if style == "full":
                     card = EpisodeCard(
-                        cell, entry, images=self._images, actions=self._episode_actions
+                        cell,
+                        entry,
+                        images=self._images,
+                        actions=self._episode_actions,
+                        scale=scale,
+                        on_open_show=self._on_open_show,
                     )
                 else:
-                    card = CompactEpisodeCard(cell, entry, actions=self._episode_actions)
+                    card = CompactEpisodeCard(
+                        cell,
+                        entry,
+                        actions=self._episode_actions,
+                        scale=scale,
+                        on_open_show=self._on_open_show,
+                    )
                 card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()
         return cells
 
     async def _render_suggestions(
-        self, cells: Mapping[date, ctk.CTkFrame], picks: Mapping[date, CalendarEntry]
+        self,
+        cells: Mapping[date, ctk.CTkFrame],
+        picks: Mapping[date, CalendarEntry],
+        *,
+        scale: CardScale,
     ) -> None:
         """Each day's suggestion, after its tracked episodes. Yields to the event loop after
         each card."""
@@ -408,7 +504,7 @@ class CalendarView(BaseView):
             cell = cells.get(day)
             if cell is None:
                 continue
-            SuggestionCard(cell, entry, library=self._library, status=self._status).pack(
-                fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP)
-            )
+            SuggestionCard(
+                cell, entry, library=self._library, status=self._status, scale=scale
+            ).pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()

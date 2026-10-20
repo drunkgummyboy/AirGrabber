@@ -1,4 +1,4 @@
-"""Settings → General, Subtitles: the texts (pure), the language tags, Sign in, the credit line,
+"""Settings → Subtitles: the texts (pure), the language tags, Sign in, the credit line,
 the section's rows and Save (and its one line while this version ships no API key); the
 settings fields (an older build's per-user key is dropped); and the show window's "CC EN NL"
 mark."""
@@ -42,7 +42,13 @@ from app.services.opensubtitles import (
     Unreachable,
 )
 from app.ui.main_window import subtitle_status_text
-from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_dialog import (
+    KEY_GUIDE_LINK,
+    SECTION_AUTOMATIC,
+    SECTION_LOOKS,
+    SECTION_SUBTITLES,
+    SettingsDialog,
+)
 from app.ui.show_details import _EpisodeRow
 from app.ui.subtitle_settings import (
     CREDIT_TEXT,
@@ -386,14 +392,14 @@ class SettingsSectionTests(TkTestCase):
 
     async def test_the_credit_line_and_the_sign_up_link(self) -> None:
         dialog, _settings = self.dialog()
-        texts = self.texts(dialog._general_form.frame)
+        texts = self.texts(dialog.page(SECTION_SUBTITLES))
         self.assertIn(CREDIT_TEXT, texts)
         self.assertIn("Create a free account", texts)
-        self.assertNotIn("How do I get a key?", texts[texts.index(CREDIT_TEXT) :])
+        self.assertNotIn(KEY_GUIDE_LINK, texts)  # the TMDB key has its own page
 
     async def test_without_a_shipped_key_one_quiet_line(self) -> None:
         dialog, settings = self.dialog(FakeSubtitles(available=False), subtitles_enabled=True)
-        texts = self.texts(dialog._general_form.frame)
+        texts = self.texts(dialog.page(SECTION_SUBTITLES))
         self.assertIn(UNAVAILABLE_TEXT, texts)
         self.assertNotIn(CREDIT_TEXT, texts)
         self.assertIsNone(dialog._subtitle_rows)
@@ -427,7 +433,7 @@ class SettingsSectionTests(TkTestCase):
 
     async def test_the_own_key_row_sits_with_the_account(self) -> None:
         dialog, _settings = self.dialog()
-        texts = self.texts(dialog._general_form.frame)
+        texts = self.texts(dialog.page(SECTION_SUBTITLES))
         self.assertIn(OWN_KEY_HINT, texts)
         self.assertGreater(texts.index(OWN_KEY_LABEL), texts.index("OpenSubtitles account"))
         assert dialog._own_key is not None
@@ -458,6 +464,7 @@ class SettingsSectionTests(TkTestCase):
         self.assertNotIn("BADKEY", error)
         self.assertEqual(dialog._own_key.result_text, f"\u2717 {OWN_KEY_REJECTED_TEXT}")
         self.assertTrue(dialog._subtitles_on.get())  # the row shows, so it can be fixed
+        self.assertEqual(dialog.section, SECTION_SUBTITLES)
 
     async def test_an_unreachable_check_still_saves(self) -> None:
         subtitles = FakeSubtitles()
@@ -484,12 +491,22 @@ class SettingsSectionTests(TkTestCase):
 
     async def test_the_card_size_control(self) -> None:
         dialog, settings = self.dialog()
-        self.assertEqual(dialog._card_size.get(), "XL")  # existing settings: the largest
-        texts = self.texts(dialog._general_form.frame)
-        self.assertEqual(texts.index("Card size"), texts.index("Week starts on") + 1)
+        self.assertEqual(dialog._card_size.get(), "M")  # the default
+        texts = self.texts(dialog.page(SECTION_LOOKS))
+        self.assertLess(texts.index("Card size"), texts.index("Week starts on"))
         dialog._card_size.set("S")
         await dialog._save()
         self.assertEqual(settings.current.card_size.value, "s")
+
+    async def test_problems_open_the_subtitles_page(self) -> None:
+        dialog, _settings = self.dialog()
+        dialog._show_section(SECTION_AUTOMATIC)
+        dialog._subtitles_on.set(True)  # no folder chosen
+        await dialog._save()
+        self.assertEqual(dialog.section, SECTION_SUBTITLES)
+        self.assertEqual(
+            dialog._error.cget("text"), "Choose where finished downloads end up, for subtitles"
+        )
 
     async def test_off_needs_nothing(self) -> None:
         dialog, settings = self.dialog()
@@ -508,6 +525,7 @@ class SettingsSectionTests(TkTestCase):
         )
         self.addCleanup(dialog.destroy)
         self.assertIsNone(dialog._subtitle_rows)
+        self.assertNotIn(SECTION_SUBTITLES, dialog._items)
 
 
 class EpisodeRowMarkTests(TkTestCase):

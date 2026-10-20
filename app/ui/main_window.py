@@ -478,6 +478,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 images=images,
                 status=self.set_status,
                 episode_actions=self._episode_actions,
+                card_scale=self._card_scale,
+                on_open_show=self._show_windows.open_show,
             ),
             "Discover": DiscoverView(
                 tabs.add("Discover"),

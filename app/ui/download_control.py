@@ -244,7 +244,7 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         actions: DownloadActions[T],
         scale: CardScale = FULL,
     ) -> None:
-        """`scale`: the card size (poster cards; the calendar keeps FULL)."""
+        """`scale`: the card size (poster cards; a share of it on the calendar's full cards)."""
         height = scale.px(ROW_HEIGHT)
         super().__init__(master, fg_color="transparent", height=height)
         self.pack_propagate(False)

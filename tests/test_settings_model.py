@@ -1,5 +1,6 @@
 """Settings model: Prowlarr and remote torrent program fields, URL validation, secret persistence,
-the move from the Download Station (`ds_*`) settings."""
+the move from the Download Station (`ds_*`) settings, the quality per kind (moved from the one
+`quality`), the size ranges and the card size default."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from typing import Any
 from pydantic import SecretStr, ValidationError
 
 from app.database import Database
-from app.models import DownloadMode, RemoteKind, Settings
+from app.models import CardSize, DownloadMode, QualityProfile, RemoteKind, Settings
 
 # Preferences as stored before the Prowlarr / Download Station fields existed.
 OLD_STORED: dict[str, Any] = {
@@ -181,7 +182,104 @@ class DownloadStationMigrationTests(unittest.TestCase):
         )
 
 
+class QualityAndSizeTests(unittest.TestCase):
+    def test_the_one_stored_quality_becomes_both(self) -> None:
+        for stored, expected in (
+            ("720p", QualityProfile.HD),
+            ("2160p", QualityProfile.UHD),
+            ("x265/HEVC", QualityProfile.HEVC),  # 1.x's name
+        ):
+            with self.subTest(stored=stored):
+                settings = Settings.model_validate({**OLD_STORED, "quality": stored})
+                self.assertIs(settings.quality_tv, expected)
+                self.assertIs(settings.quality_movie, expected)
+                self.assertNotIn("quality", settings.model_dump())
+
+    def test_new_keys_win_over_the_old_one(self) -> None:
+        settings = Settings.model_validate(
+            {"quality": "720p", "quality_tv": "1080p", "quality_movie": "2160p"}
+        )
+        self.assertIs(settings.quality_tv, QualityProfile.FULL_HD)
+        self.assertIs(settings.quality_movie, QualityProfile.UHD)
+
+    def test_defaults(self) -> None:
+        settings = Settings()
+        self.assertIs(settings.quality_tv, QualityProfile.FULL_HD)
+        self.assertIs(settings.quality_movie, QualityProfile.FULL_HD)
+        for name in SIZE_FIELDS:
+            self.assertIsNone(getattr(settings, name))
+
+    def test_sizes_as_typed(self) -> None:
+        settings = Settings(
+            size_tv_min_gb=" 2,5 ", size_tv_max_gb="4", size_movie_min_gb="", size_movie_max_gb=15
+        )
+        self.assertEqual(settings.size_tv_min_gb, 2.5)
+        self.assertEqual(settings.size_tv_max_gb, 4.0)
+        self.assertIsNone(settings.size_movie_min_gb)  # empty: no limit
+        self.assertEqual(settings.size_movie_max_gb, 15.0)
+        self.assertEqual(Settings.model_validate(settings.model_dump(mode="json")), settings)
+
+    def test_bad_sizes(self) -> None:
+        cases = {
+            "size_tv_min_gb": ("lots", "Use a number, like 2.5"),
+            "size_tv_max_gb": ("0", "Use a size above 0"),
+            "size_movie_min_gb": (-3, "Use a size above 0"),
+            "size_movie_max_gb": ("inf", "Use a size above 0"),
+        }
+        for name, (value, message) in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ValidationError) as caught:
+                    Settings(**{name: value})
+                errors = caught.exception.errors()
+                self.assertEqual(errors[0]["loc"], (name,))
+                self.assertIn(message, errors[0]["msg"])
+
+    def test_the_first_size_cant_be_bigger(self) -> None:
+        for low, high in (("size_tv_min_gb", "size_tv_max_gb"),
+                          ("size_movie_min_gb", "size_movie_max_gb")):
+            with self.subTest(field=high):
+                with self.assertRaises(ValidationError) as caught:
+                    Settings(**{low: 6, high: "5"})
+                errors = caught.exception.errors()
+                self.assertEqual(errors[0]["loc"], (high,))
+                self.assertIn("The first number can't be bigger than the second", errors[0]["msg"])
+                self.assertEqual(getattr(Settings(**{low: 5, high: 5}), high), 5.0)
+
+    def test_card_size_defaults_to_m_and_a_stored_size_stays(self) -> None:
+        self.assertIs(Settings().card_size, CardSize.M)
+        self.assertIs(Settings.model_validate(OLD_STORED).card_size, CardSize.M)
+        self.assertIs(Settings.model_validate({"card_size": "xl"}).card_size, CardSize.XL)
+
+
+SIZE_FIELDS = ("size_tv_min_gb", "size_tv_max_gb", "size_movie_min_gb", "size_movie_max_gb")
+
+
 class SettingsStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_old_quality_moves_and_is_dropped_on_the_next_save(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "settings.db"
+        await (await Database.open(path)).close()  # create the schema
+        old = {**OLD_STORED, "quality": "720p"}
+        with contextlib.closing(sqlite3.connect(path)) as raw, raw:
+            raw.executemany(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                [(key, json.dumps(value)) for key, value in old.items()],
+            )
+        db = await Database.open(path)
+        self.addAsyncCleanup(db.close)
+        loaded = await db.settings.load()
+        self.assertIs(loaded.quality_tv, QualityProfile.HD)
+        self.assertIs(loaded.quality_movie, QualityProfile.HD)
+        await db.settings.save(loaded)
+        with contextlib.closing(sqlite3.connect(path)) as raw:
+            rows = raw.execute("SELECT key, value FROM settings")
+            stored = {row[0]: json.loads(row[1]) for row in rows}
+        self.assertNotIn("quality", stored)
+        self.assertEqual((stored["quality_tv"], stored["quality_movie"]), ("720p", "720p"))
+        self.assertIsNone(stored["size_tv_min_gb"])
+        self.assertEqual(await db.settings.load(), loaded)
+
     async def test_ds_keys_migrate_on_load_and_are_pruned_on_the_next_save(self) -> None:
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)

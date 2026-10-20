@@ -406,7 +406,10 @@ class IndexerDialog(ctk.CTkToplevel):
         self._season = target.season if isinstance(target, TvTarget) else 0
         self._episode = target.episode if isinstance(target, TvTarget) else None
         self._episodes: list[Episode] = []
-        self._quality = quality_key(settings.current.quality)
+        current = settings.current
+        self._quality = quality_key(
+            current.quality_movie if isinstance(target, MovieTarget) else current.quality_tv
+        )
         self._update: SearchUpdate | None = None
         self._searching = False
         self._sort_column: SortColumn = "size"

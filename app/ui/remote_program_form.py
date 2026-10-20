@@ -1,6 +1,7 @@
 """The form for a torrent program on a NAS or another computer: program, address, user name,
 password, destination folder, certificate check, and "Test connection" with its result line.
-Shared by Settings → General ("When I download") and the first-run welcome.
+Shared by Settings → "Where downloads go" (under its choice, or in folder mode under the magnet
+note) and the first-run welcome.
 
 The form only edits; its host stores `changes()` (Settings' Save, the welcome's Next) and hands
 it `run_test`, which saves first and then tests, as the other test buttons do.
@@ -12,6 +13,7 @@ import asyncio
 import tkinter as tk
 from collections.abc import Awaitable, Callable
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 
 import customtkinter as ctk
 from pydantic import ValidationError
@@ -57,6 +59,11 @@ FIELD_LABELS: dict[str, str] = {
 }
 TESTING_TEXT = "Saving and testing…"
 TEST_BUTTON_WIDTH = 160
+# Settings' folder mode: what happens to a release without a .torrent file (`folder_note`).
+MAGNET_NOTE = "Some releases have no .torrent file, only a magnet link."
+NO_PROGRAM_TEXT = "Those can't be saved to a folder."
+CHANGE_LINK = "Change"
+SET_UP_LINK = "Set up a torrent program to receive them"
 
 _ROW_GAP = 10
 _LABEL_GAP = 12  # between the label and the field column
@@ -97,9 +104,31 @@ def remote_changes(
     }
 
 
-def folder_note(kind: RemoteKind, ready: bool) -> str | None:
-    """The muted line under "Save .torrent files to a folder" when a remote program is set."""
-    return f"Magnet-only releases are sent to your {kind.program}." if ready else None
+class FolderNote(NamedTuple):
+    """The note under "Save .torrent files to a folder" and the link after it (both open this
+    form under the note)."""
+
+    text: str
+    link: str
+
+
+def remote_host(url: str) -> str:
+    """Only the host name or IP address in `url` ("192.168.1.20"): never a user name,
+    password, port or path; "" when there is none."""
+    try:
+        return urlsplit(url.strip()).hostname or ""
+    except ValueError:
+        return ""
+
+
+def folder_note(kind: RemoteKind, ready: bool, url: str = "") -> FolderNote:
+    """Where magnet-only releases go in folder mode: to the remote program when one is set up
+    (`ready`; `url` its address), else nowhere."""
+    if not ready:
+        return FolderNote(f"{MAGNET_NOTE} {NO_PROGRAM_TEXT}", SET_UP_LINK)
+    host = remote_host(url)
+    where = f"{kind.program} at {host}" if host else kind.program
+    return FolderNote(f"{MAGNET_NOTE} Those are sent to {where}.", CHANGE_LINK)
 
 
 def describe_error(error: ValidationError, labels: dict[str, str] = FIELD_LABELS) -> str:
@@ -230,6 +259,11 @@ class RemoteProgramForm(ctk.CTkFrame):
             bool(self._verify.get()),
             self._destination.get(),
         )
+
+    @property
+    def address(self) -> str:
+        """The address as typed ("" while the hint shows)."""
+        return str(self._address.get())
 
     @property
     def ready(self) -> bool:

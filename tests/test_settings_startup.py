@@ -1,4 +1,4 @@
-"""Settings → General, "Automatic downloads": the start-with-Windows box shows the real
+"""Settings → Automatic, "In the background": the start-with-Windows box shows the real
 shortcut, and Save adds or removes it only when the box changed (a fake shortcut throughout;
 the real Startup folder is never touched)."""
 

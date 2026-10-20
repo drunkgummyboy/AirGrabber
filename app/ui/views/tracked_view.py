@@ -1,4 +1,5 @@
-"""The user's tracked TV library: a responsive poster grid with import and cleanup."""
+"""The user's tracked TV library: a responsive grid of poster cards (`ShowCard`) with import
+and cleanup."""
 
 from __future__ import annotations
 
@@ -17,9 +18,10 @@ from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.airdates_import import PreviewFinder
 from app.ui.card_scale import FULL, CardScale, grid_item_width
-from app.ui.cards import CARD_WIDTH, ShowCard, card_info_line
+from app.ui.cards import ShowCard, card_info_line
 from app.ui.import_dialog import ImportShowsDialog
 from app.ui.missing_control import MissingActions
+from app.ui.poster_card import POSTER_CARD_WIDTH
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, show_info
@@ -154,7 +156,7 @@ class TrackedView(BaseView):
             return
         scale = self._card_scale()
         grid = FlexGrid(
-            self._body, item_width=grid_item_width(CARD_WIDTH, scale), pad_x=8, pad_y=10
+            self._body, item_width=grid_item_width(POSTER_CARD_WIDTH, scale), pad_x=8, pad_y=10
         )
         grid.pack(fill="x", expand=True)
         for entry in entries:

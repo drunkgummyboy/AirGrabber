@@ -1,10 +1,14 @@
-"""Preferences dialog: General and Advanced tabs, in plain words. Every change goes through
-SettingsService, which validates first."""
+"""Preferences dialog in plain words: a sidebar of sections (Downloading: where downloads go,
+quality, automatic, subtitles; App: movie & show info, looks, updates, advanced) and one
+scrolling page per section, its settings grouped in boxes that each say what they are for.
+Every change goes through SettingsService, which validates first."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+import tkinter as tk
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from tkinter import filedialog
@@ -36,6 +40,7 @@ from app.services import (
 )
 from app.services import startup
 from app.services.startup import StartupError
+from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.branding import set_window_icon
 from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
@@ -43,7 +48,6 @@ from app.ui.dialog_kit import (
     BUTTON_HEIGHT,
     BUTTON_RADIUS,
     DETAIL_SIZE,
-    LINE_GAP,
     PAD_X,
     SMALL_SIZE,
     activate_later,
@@ -54,7 +58,7 @@ from app.ui.dialog_kit import (
 )
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
 from app.ui.remote_program_form import FIELD_LABELS as REMOTE_LABELS
-from app.ui.remote_program_form import RemoteProgramForm, folder_note
+from app.ui.remote_program_form import FolderNote, RemoteProgramForm, folder_note
 from app.ui.subtitle_settings import (
     ACCOUNT_HINT,
     ACCOUNT_LABEL,
@@ -65,7 +69,6 @@ from app.ui.subtitle_settings import (
     OWN_KEY_LABEL,
     SIGN_UP_TEXT,
     SIGNUP_URL,
-    SUBTITLES_HEADING,
     SUBTITLES_NOTE,
     SWITCH_TEXT,
     UNAVAILABLE_TEXT,
@@ -77,42 +80,152 @@ from app.ui.subtitle_settings import (
     subtitle_problem,
 )
 from app.ui.tasks import async_command, spawn
-from app.ui.tmdb_key_guide import TmdbKeyDialog
-from app.ui.tooltip import add_tooltip
+from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
 
-TAB_GENERAL = "General"
-TAB_ADVANCED = "Advanced"
+log = logging.getLogger(__name__)
 
-# Logical (unscaled) CTk units.
-_TABS_WIDTH = 720 - 2 * PAD_X
-_TABS_HEIGHT = 200  # at least; the dialog takes General's tallest state, within the screen
+# -- sections ----------------------------------------------------------------------------------
+
+SECTION_WHERE = "Where downloads go"
+SECTION_QUALITY = "Quality"
+SECTION_AUTOMATIC = "Automatic"
+SECTION_SUBTITLES = "Subtitles"
+SECTION_INFO = "Movie & show info"
+SECTION_LOOKS = "Looks"
+SECTION_UPDATES = "Updates"
+SECTION_ADVANCED = "Advanced"
+
+# The sidebar: a small group label above each part of the list, then its sections in order.
+SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Downloading", (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES)),
+    ("App", (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_ADVANCED)),
+)
+SECTIONS: tuple[str, ...] = tuple(name for _group, names in SECTION_GROUPS for name in names)
+SECTION_ICONS: dict[str, str] = {
+    SECTION_WHERE: "⬇",
+    SECTION_QUALITY: "🎚",
+    SECTION_AUTOMATIC: "⏱",
+    SECTION_SUBTITLES: "💬",
+    SECTION_INFO: "🎬",
+    SECTION_LOOKS: "🖼",
+    SECTION_UPDATES: "⟳",
+    SECTION_ADVANCED: "🛠",
+}
+# Each page's one muted line under its heading (Subtitles uses its own texts).
+SECTION_NOTES: dict[str, str] = {
+    SECTION_WHERE: "What happens when you click Download.",
+    SECTION_QUALITY: (
+        "Which copy AirGrabber picks when you click Download, and for automatic downloads."
+    ),
+    SECTION_AUTOMATIC: "What AirGrabber does on its own, without you clicking anything.",
+    SECTION_INFO: (
+        "The Movies and Discover pages get their lists, posters and release dates from TMDB, "
+        "a free film database."
+    ),
+    SECTION_LOOKS: "How AirGrabber's pages look.",
+    SECTION_UPDATES: "Getting new versions of AirGrabber.",
+    SECTION_ADVANCED: (
+        "Where AirGrabber searches, and which releases it skips. Most people never need to "
+        "change these."
+    ),
+}
+
+# -- texts ---------------------------------------------------------------------------------------
+
+APP_CHOICE = "Open in my torrent program on this PC"
+APP_TEXT = "Each download opens in your torrent program by itself. Best for most people."
+REMOTE_CHOICE = "Send to a torrent program on my NAS or another computer"
+REMOTE_TEXT = "For a NAS or home server (Synology, qBittorrent, Transmission)."
+FOLDER_CHOICE = "Save .torrent files to a folder"
+FOLDER_TEXT = "For a watch folder, for example on a NAS."
+
+SERIES_TITLE = "Series"
+SERIES_TEXT = "For one episode. Season packs ignore the size."
+MOVIES_TITLE = "Movies"
+MOVIES_TEXT = "For one film."
+QUALITY_NOTE = (
+    "If nothing matches, AirGrabber takes the closest match: the right quality first, then the "
+    "size nearest your range. Leave a size empty for no limit."
+)
+
+BACKGROUND_TITLE = "In the background"
+BACKGROUND_TEXT = "Needed for new episodes to download while the window is closed."
+TRAY_TEXT = "Keep running in the tray when I close the window"
+START_TEXT = "Start AirGrabber when Windows starts"
+NEW_SHOWS_TITLE = "New shows"
+NEW_SHOWS_TEXT = "You can still change this for each show."
+NEW_SHOWS_SWITCH = "Download new episodes for shows I start following"
+
+SUBTITLE_SWITCH_TITLE = "Automatic subtitles"
+SUBTITLE_SWITCH_TEXT = "AirGrabber looks for subtitles for what you download, every half hour."
+LANGUAGES_TITLE = "Languages"
+LANGUAGES_TEXT = "AirGrabber looks for subtitles in each of these languages."
+
+TMDB_KEY_LABEL = "TMDB key"
+TMDB_KEY_TEXT = (
+    "A free code from themoviedb.org that lets AirGrabber ask TMDB for this information. "
+    "Without it, the Movies and Discover pages stay empty. Your shows and the Calendar work "
+    "without it."
+)
+KEY_GUIDE_LINK = "How do I get a free key?"
+
+WEEK_TITLE = "Week starts on"
+WEEK_TEXT = "The first day of each week on the Calendar."
+
+AUTO_UPDATE_TITLE = "Automatic updates"
+AUTO_UPDATE_TEXT = (
+    "New versions download in the background and are installed when AirGrabber closes."
+)
+AUTO_UPDATE_SWITCH = "Install updates automatically"
+CHECK_UPDATES_TEXT = "Check whether a newer version is out."
+
+SITES_TITLE = "Built-in sites"
+SITES_TEXT = "Websites AirGrabber searches by itself."
+EXCLUDED_TITLE = "Skip releases with these words"
+EXCLUDED_TEXT = "Separate with commas, for example: cam, telesync"
+PREFERRED_TITLE = "Prefer releases from"
+PREFERRED_TEXT = "Release group names, separated with commas"
+
+# -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
+
+_SIDEBAR_WIDTH = 220  # at least; wider when a section's name in bold needs it
+_SIDEBAR_PAD = 12
+_ITEM_HEIGHT = 36
+_ICON_WIDTH = 30
+_ITEM_PAD = (8, 4, 10)  # left of the icon, between icon and name, right of the name
+# The page column's content: the boxes' outer width. With the sidebar the dialog stays about
+# 880 wide, so it fits a 1366 x 768 screen at 150 % (910 wide).
+_PAGE_WIDTH = 580
+_PAGE_PAD_LEFT = 22
+_PAGE_PAD_RIGHT = 8  # the scrollbar has its own inset
+_PAGE_TOP = 20
+_PAGE_BOTTOM = 20  # under a page's last box
+_MAX_PAGE_HEIGHT = 680  # a taller page scrolls; the dialog stays about as tall as it was
 SCREEN_RESERVE = 80  # left free for the taskbar and the title bar
-_TAB_PAD = 24  # inside a tab
-_LABEL_WIDTH = 170
-_FIELD_WIDTH = _TABS_WIDTH - 2 * _TAB_PAD - _LABEL_WIDTH - 24  # tab view edges, scrollbar
-_ROW_GAP = 20
-_SECTION_GAP = 28
+_HEADING_SIZE = 20
+_BOX_RADIUS = 12  # as the Prowlarr panel's
+_BOX_PAD_X = 18
+_BOX_PAD_Y = 16
+_BOX_GAP = 14  # between boxes
+_FIRST_BOX_GAP = 18  # under a page's muted line
+_TEXT_SIZE = SMALL_SIZE + 1  # a box's explanation
+_BOX_INNER = _PAGE_WIDTH - 2 * (_BOX_PAD_X + 1)  # inside a box's border and padding
+_CONTROL_GAP = 12  # between a box's explanation and its controls
 _INDENT = 30  # under a radio button's text
-_HINT_GAP = 6
-_SCROLL_PAD_LEFT = _TAB_PAD - 6  # a scrollable frame has its own inset
+_ROW_GAP = 14  # between two controls in one box
 _TEST_BUTTON_WIDTH = 160
 _UPDATE_BUTTON_WIDTH = 180
-_RESULT_WIDTH = _FIELD_WIDTH - _UPDATE_BUTTON_WIDTH - 12
-_PANEL_GAP = 18  # above the Prowlarr panel
+_CHECK_BUTTON_WIDTH = 110
+_SIZE_ENTRY_WIDTH = 70
+_QUALITY_MENU_WIDTH = 230
+_REMOTE_LABEL_WIDTH = 130
+# The NAS / other computer form under its radio button (or the magnet note), with some slack.
+_REMOTE_FIELD_WIDTH = _BOX_INNER - _INDENT - _REMOTE_LABEL_WIDTH - 10
+_REMOTE_GAP = 12  # above that form
 _PANEL_INSET = PANEL_PAD_X + 1  # the Prowlarr panel's border and padding
-# The Prowlarr panel spans both columns; its "another computer" fields line up with the others.
-_PANEL_WIDTH = _LABEL_WIDTH + _FIELD_WIDTH
-_PANEL_LABEL_WIDTH = _LABEL_WIDTH - _PANEL_INSET
-_PANEL_FIELD_WIDTH = _FIELD_WIDTH - _PANEL_INSET
-# The NAS / other computer form under its radio button. The field column really gets about 40
-# less than _FIELD_WIDTH (the scroll area's scrollbar and insets); wider rows would be cut off.
-_FIELD_ROOM = _FIELD_WIDTH - 40
-_REMOTE_LABEL_WIDTH = 120
-_REMOTE_FIELD_WIDTH = _FIELD_ROOM - _INDENT - _REMOTE_LABEL_WIDTH
-# Too long for one line of the field column: broken where the sentence breaks best.
-REMOTE_CHOICE = "Send to a torrent program on my NAS\nor another computer"
-_REMOTE_GAP = 8  # above and below that form
+_PANEL_LABEL_WIDTH = 120
+_PANEL_FIELD_WIDTH = _PAGE_WIDTH - 2 * _PANEL_INSET - _PANEL_LABEL_WIDTH
 
 # (stable id, label) of the websites AirGrabber searches itself, in the order the search runs
 # them. Prowlarr (searched last) has its own panel.
@@ -142,12 +255,17 @@ def quality_from_name(name: str) -> QualityProfile:
     raise ValueError(f"unknown quality name: {name!r}")
 
 
+def size_text(value: float | None) -> str:
+    """A stored size limit as its entry shows it: "" for no limit, "2.5", "4" (not "4.0")."""
+    return "" if value is None else f"{value:g}"
+
+
 class DownloadRows(NamedTuple):
-    """Which extra rows "When I download" shows under its three choices."""
+    """Which extra rows "Where downloads go" shows under its three choices."""
 
     torrent_status: bool  # the torrent-program status line (+ Install qBittorrent)
     remote_form: bool  # the NAS / other computer form (program, address, account, Test)
-    folder: bool  # the folder entry + Browse (and the magnet-only note)
+    folder: bool  # the folder entry + Browse, and the magnet note with its link
 
 
 def download_rows(mode: DownloadMode) -> DownloadRows:
@@ -178,7 +296,7 @@ def disabled_indexers(
 
 def dialog_height(wanted: int, screen_height: int, *, reserve: int = SCREEN_RESERVE) -> int:
     """The dialog's height (logical units): what its content wants, but never taller than the
-    screen minus room for the taskbar and title bar (the tabs scroll instead)."""
+    screen minus room for the taskbar and title bar (the pages scroll instead)."""
     return max(1, min(wanted, screen_height - reserve))
 
 
@@ -223,16 +341,21 @@ async def apply_start_with_windows(
 
 
 _FIELD_LABELS = {
-    "download_mode": "When I download",
-    "download_dir": "Save .torrent files to a folder",
-    "quality": "Preferred quality",
-    "first_day": "Week starts on",
+    "download_mode": "Where downloads go",
+    "download_dir": FOLDER_CHOICE,
+    "quality_tv": "Series quality",
+    "quality_movie": "Movies quality",
+    "size_tv_min_gb": "Series size",
+    "size_tv_max_gb": "Series size",
+    "size_movie_min_gb": "Movies size",
+    "size_movie_max_gb": "Movies size",
+    "first_day": WEEK_TITLE,
     "card_size": CARD_SIZE_LABEL,
-    "tmdb_api_key": "Movies key",
+    "tmdb_api_key": TMDB_KEY_LABEL,
     "auto_update": "Updates",
-    "disabled_indexers": "Built-in sites",
-    "excluded_keywords": "Skip releases with these words",
-    "preferred_groups": "Prefer releases from",
+    "disabled_indexers": SITES_TITLE,
+    "excluded_keywords": EXCLUDED_TITLE,
+    "preferred_groups": PREFERRED_TITLE,
     "prowlarr_url": "Prowlarr URL",
     "prowlarr_api_key": "Prowlarr API key",
     "subtitle_languages": "Subtitle languages",
@@ -243,13 +366,39 @@ _FIELD_LABELS = {
     **REMOTE_LABELS,
 }
 
-_FIELD_TABS = {
-    "disabled_indexers": TAB_ADVANCED,
-    "excluded_keywords": TAB_ADVANCED,
-    "preferred_groups": TAB_ADVANCED,
-    "prowlarr_url": TAB_ADVANCED,
-    "prowlarr_api_key": TAB_ADVANCED,
-}  # everything else (the remote_* program form too) lives on General
+# Which section shows each setting; anything else (the remote_* program form too) lives on
+# "Where downloads go".
+_FIELD_SECTIONS: dict[str, str] = {
+    "quality_tv": SECTION_QUALITY,
+    "quality_movie": SECTION_QUALITY,
+    "size_tv_min_gb": SECTION_QUALITY,
+    "size_tv_max_gb": SECTION_QUALITY,
+    "size_movie_min_gb": SECTION_QUALITY,
+    "size_movie_max_gb": SECTION_QUALITY,
+    "keep_in_tray": SECTION_AUTOMATIC,
+    "start_with_windows": SECTION_AUTOMATIC,
+    "auto_download_new_shows": SECTION_AUTOMATIC,
+    "subtitles_enabled": SECTION_SUBTITLES,
+    "subtitle_languages": SECTION_SUBTITLES,
+    "subtitles_folder": SECTION_SUBTITLES,
+    "opensubtitles_username": SECTION_SUBTITLES,
+    "opensubtitles_password": SECTION_SUBTITLES,
+    "opensubtitles_own_key": SECTION_SUBTITLES,
+    "tmdb_api_key": SECTION_INFO,
+    "card_size": SECTION_LOOKS,
+    "first_day": SECTION_LOOKS,
+    "auto_update": SECTION_UPDATES,
+    "disabled_indexers": SECTION_ADVANCED,
+    "excluded_keywords": SECTION_ADVANCED,
+    "preferred_groups": SECTION_ADVANCED,
+    "prowlarr_url": SECTION_ADVANCED,
+    "prowlarr_api_key": SECTION_ADVANCED,
+}
+
+
+def section_for_field(name: str) -> str:
+    """The section a setting is on (where Save's validation error takes the user)."""
+    return _FIELD_SECTIONS.get(name, SECTION_WHERE)
 
 
 def _describe(error: ValidationError) -> str:
@@ -261,70 +410,204 @@ def _describe(error: ValidationError) -> str:
     return "\n".join(lines)
 
 
+def _error_fields(error: ValidationError) -> list[str]:
+    return [str(item["loc"][0]) for item in error.errors() if item["loc"]]
+
+
 def _prowlarr_error(error: ValidationError) -> bool:
-    return any(item["loc"] and item["loc"][0] in _PROWLARR_FIELDS for item in error.errors())
+    return any(name in _PROWLARR_FIELDS for name in _error_fields(error))
 
 
-def _first_tab(error: ValidationError) -> str:
+def _remote_error(error: ValidationError) -> bool:
+    return any(name in REMOTE_LABELS for name in _error_fields(error))
+
+
+def _first_section(error: ValidationError) -> str:
+    """The section with the first problem."""
     errors = error.errors()
     if not errors or not errors[0]["loc"]:
-        return TAB_GENERAL
-    return _FIELD_TABS.get(str(errors[0]["loc"][0]), TAB_GENERAL)
+        return SECTION_WHERE
+    return section_for_field(str(errors[0]["loc"][0]))
 
 
-class _Form:
-    """A label column (muted) and a field column inside one tab, with roomy rows."""
+# -- layout pieces ---------------------------------------------------------------------------------
 
-    def __init__(
-        self, master: Any, *, pad_left: int = _TAB_PAD, pad_right: int = _TAB_PAD
-    ) -> None:
-        self.frame = ctk.CTkFrame(master, fg_color="transparent")
-        self.frame.pack(fill="both", expand=True, padx=(pad_left, pad_right), pady=(4, _TAB_PAD))
-        # Plain Tk grid options are not DPI-scaled by CTk.
-        scaling = ctk.ScalingTracker.get_widget_scaling(self.frame)
-        self.frame.grid_columnconfigure(0, minsize=round(_LABEL_WIDTH * scaling))
-        self.frame.grid_columnconfigure(1, weight=1)
+
+class _Box:
+    """A rounded block of related settings: a bold name, a short muted explanation, then the
+    controls (`add`, one below the other)."""
+
+    def __init__(self, master: Any, title: str | None = None, text: str | None = None) -> None:
+        self.frame = ctk.CTkFrame(
+            master,
+            fg_color=theme.TAB_BG,
+            border_width=1,
+            border_color=theme.PANEL_EDGE,
+            corner_radius=_BOX_RADIUS,
+        )
+        self.body = ctk.CTkFrame(self.frame, fg_color="transparent")
+        self.body.pack(fill="both", expand=True, padx=_BOX_PAD_X, pady=_BOX_PAD_Y)
+        self.body.grid_columnconfigure(0, weight=1)
         self._next_row = 0
+        if title is not None:
+            self.add(
+                ctk.CTkLabel(
+                    self.body,
+                    text=title,
+                    font=theme.font(16, bold=True),
+                    text_color=theme.TEXT,
+                    anchor="w",
+                ),
+                gap=0,
+                sticky="w",
+            )
+        if text is not None:
+            self.add(self.text(text), gap=2, sticky="w")
 
-    def row(self, label: str) -> ctk.CTkFrame:
-        row = self._take_row()
-        pady = (0 if row == 0 else _ROW_GAP, 0)
-        ctk.CTkLabel(
-            self.frame,
-            text=label,
-            height=BUTTON_HEIGHT,
-            font=theme.font(DETAIL_SIZE),
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-            justify="left",
-            wraplength=_LABEL_WIDTH - 16,
-        ).grid(row=row, column=0, sticky="nw", padx=(0, 16), pady=pady)
-        cell = ctk.CTkFrame(self.frame, fg_color="transparent")
-        cell.grid(row=row, column=1, sticky="ew", pady=pady)
-        return cell
+    def text(self, text: str, *, indent: int = 0) -> ctk.CTkLabel:
+        """A muted explanation line in this box (not placed yet)."""
+        return text_label(
+            self.body, text, size=_TEXT_SIZE, color=theme.TEXT_MUTED, wraplength=_BOX_INNER - indent
+        )
 
-    def wide(self, widget: Any, *, gap: int = _ROW_GAP) -> None:
-        """`widget` across both columns, `gap` below the previous row."""
-        row = self._take_row()
-        pady = (0 if row == 0 else gap, 0)
-        widget.grid(row=row, column=0, columnspan=2, sticky="ew", pady=pady)
+    def add(
+        self, widget: Any, *, gap: int = _CONTROL_GAP, sticky: str = "ew", padx: int = 0
+    ) -> int:
+        """Place `widget` (a child of `body`) on the next row, `gap` below the previous one.
+        Returns its row."""
+        row = self.take_row()
+        widget.grid(
+            row=row, column=0, sticky=sticky, padx=(padx, 0), pady=(0 if row == 0 else gap, 0)
+        )
+        return row
 
-    def section(self, title: str, note: str) -> None:
-        ctk.CTkLabel(
-            self.frame, text=title, font=theme.font(16, bold=True), text_color=theme.TEXT
-        ).grid(row=self._take_row(), column=0, columnspan=2, sticky="w", pady=(_SECTION_GAP, 0))
-        text_label(
-            self.frame,
-            note,
-            size=DETAIL_SIZE,
-            color=theme.TEXT_MUTED,
-            wraplength=_LABEL_WIDTH + _FIELD_WIDTH,
-        ).grid(row=self._take_row(), column=0, columnspan=2, sticky="w", pady=(LINE_GAP, 0))
+    def frame_row(self, *, gap: int = _CONTROL_GAP) -> ctk.CTkFrame:
+        """A transparent frame on the next row, for a line of controls."""
+        row = ctk.CTkFrame(self.body, fg_color="transparent")
+        self.add(row, gap=gap)
+        return row
 
-    def _take_row(self) -> int:
+    def take_row(self) -> int:
         row = self._next_row
         self._next_row += 1
         return row
+
+
+class _Page:
+    """One section's page: a heading, its muted line, then boxes (`box`) and other blocks
+    (`add`), one below the other."""
+
+    def __init__(self, master: Any, title: str, note: str) -> None:
+        self.frame = ctk.CTkFrame(master, fg_color="transparent")
+        self.frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            self.frame,
+            text=title,
+            font=theme.font(_HEADING_SIZE, bold=True),
+            text_color=theme.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        text_label(
+            self.frame, note, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=_PAGE_WIDTH
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._next_row = 2
+
+    def box(self, title: str | None = None, text: str | None = None) -> _Box:
+        box = _Box(self.frame, title, text)
+        self.add(box.frame)
+        return box
+
+    def add(self, widget: Any, *, gap: int | None = None) -> None:
+        if gap is None:
+            gap = _FIRST_BOX_GAP if self._next_row == 2 else _BOX_GAP
+        widget.grid(row=self._next_row, column=0, sticky="ew", pady=(gap, 0))
+        self._next_row += 1
+
+
+class _SidebarItem(ctk.CTkFrame):
+    """One section in the sidebar: its icon and name; a click shows its page."""
+
+    def __init__(self, master: Any, section: str, on_click: Callable[[str], None]) -> None:
+        super().__init__(master, fg_color="transparent", corner_radius=8, cursor="hand2")
+        self.section = section
+        self._on_click = on_click
+        self._selected = False
+        self._hovered = False
+        self._icon = ctk.CTkLabel(
+            self,
+            text=SECTION_ICONS[section],
+            width=_ICON_WIDTH,
+            height=_ITEM_HEIGHT,
+            font=theme.font(DETAIL_SIZE),
+            text_color=theme.TEXT_MUTED,
+        )
+        self._icon.pack(side="left", padx=(_ITEM_PAD[0], _ITEM_PAD[1]))
+        self._name = ctk.CTkLabel(
+            self,
+            text=section,
+            height=_ITEM_HEIGHT,
+            anchor="w",
+            font=theme.font(DETAIL_SIZE),
+            text_color=theme.TEXT,
+        )
+        self._name.pack(side="left", fill="x", expand=True, padx=(0, _ITEM_PAD[2]))
+        for widget in (self, self._icon, self._name):
+            widget.bind("<Button-1>", lambda _event: self.click(), add="+")
+            widget.bind("<Enter>", lambda _event: self._hover(True), add="+")
+            widget.bind("<Leave>", self._on_leave, add="+")
+
+    @property
+    def selected(self) -> bool:
+        return self._selected
+
+    def click(self) -> None:
+        self._on_click(self.section)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._paint()
+
+    def _on_leave(self, event: tk.Event[Any]) -> None:
+        # Moving between the item's own labels is not leaving it.
+        try:
+            inside = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            inside = None
+        while inside is not None:
+            if inside is self:
+                return
+            inside = inside.master
+        self._hover(False)
+
+    def _hover(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._paint()
+
+    def _paint(self) -> None:
+        if self._selected:
+            color = theme.ROW_SELECTED
+        else:
+            color = theme.CHIP if self._hovered else "transparent"
+        self.configure(fg_color=color)
+        self._name.configure(font=theme.font(DETAIL_SIZE, bold=self._selected))
+
+
+def sidebar_width() -> int:
+    """The sidebar's width (logical): room for the longest section name in bold (the selected
+    one), so the pages don't shift when another section is chosen."""
+    bold = theme.font(DETAIL_SIZE, bold=True)
+    widest = max(int(bold.measure(section)) for section in SECTIONS)
+    item = sum(_ITEM_PAD) + _ICON_WIDTH + widest + 4  # + a little slack
+    return max(_SIDEBAR_WIDTH, item + 2 * _SIDEBAR_PAD)
+
+
+def _paint_background(widget: ctk.CTkFrame, color: str) -> None:
+    """Give a transparent CTk frame that sits inside a box but belongs to the page (the remote
+    form, the Prowlarr panel) the box's colour; its transparent children follow."""
+    widget.configure(fg_color=color)
+
+
+# -- the dialog --------------------------------------------------------------------------------
 
 
 class SettingsDialog(ctk.CTkToplevel):
@@ -346,7 +629,7 @@ class SettingsDialog(ctk.CTkToplevel):
         startup_shortcut: StartupShortcut | None = None,
         subtitles: SubtitleService | None = None,
     ) -> None:
-        """`subtitles`: the Subtitles section (General) shows when it is given."""
+        """`subtitles`: the Subtitles section shows when it is given."""
         super().__init__(master, fg_color=theme.BG)
         self._subtitles = subtitles
         self._subtitle_rows: ctk.CTkFrame | None = None
@@ -364,6 +647,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._on_update = on_update
         self._tests: dict[str, asyncio.Task[None]] = {}
         self._key_dialog: TmdbKeyDialog | None = None
+        self._form_in_folder = False  # the remote form opened under the magnet note
         current = settings.current
 
         self.title("Settings")
@@ -372,7 +656,12 @@ class SettingsDialog(ctk.CTkToplevel):
         self.transient(master)
 
         self._mode = ctk.StringVar(value=current.download_mode.value)
-        self._quality = ctk.StringVar(value=quality_name(current.quality))
+        self._quality_tv = ctk.StringVar(value=quality_name(current.quality_tv))
+        self._quality_movie = ctk.StringVar(value=quality_name(current.quality_movie))
+        self._size_tv_min = ctk.StringVar(value=size_text(current.size_tv_min_gb))
+        self._size_tv_max = ctk.StringVar(value=size_text(current.size_tv_max_gb))
+        self._size_movie_min = ctk.StringVar(value=size_text(current.size_movie_min_gb))
+        self._size_movie_max = ctk.StringVar(value=size_text(current.size_movie_max_gb))
         self._first_day = ctk.StringVar(value=current.first_day.value)
         self._card_size = ctk.StringVar(value=CARD_SIZE_LABELS[current.card_size])
         self._download_dir = ctk.StringVar(value=str(current.download_dir))
@@ -399,244 +688,396 @@ class SettingsDialog(ctk.CTkToplevel):
         self._subtitles_folder = ctk.StringVar(value=current.subtitles_folder)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_X)
+        body.pack(fill="both", expand=True)
+        scaling = ctk.ScalingTracker.get_widget_scaling(body)
+        # Plain Tk grid options are not DPI-scaled by CTk.
+        body.grid_columnconfigure(0, minsize=round(sidebar_width() * scaling))
+        body.grid_columnconfigure(2, weight=1)
+        body.grid_rowconfigure(0, weight=1)
 
-        self._tabs = ctk.CTkTabview(
-            body,
-            width=_TABS_WIDTH,
-            height=_TABS_HEIGHT,
-            corner_radius=15,
-            border_width=1,
-            fg_color=theme.TAB_BG,
-            border_color=theme.EDGE,
-            segmented_button_fg_color=theme.SURFACE,
-            segmented_button_selected_color=theme.ACCENT,
-            segmented_button_selected_hover_color=theme.ACCENT_HOVER,
-            segmented_button_unselected_color=theme.SURFACE,
-            segmented_button_font=theme.font(15, bold=True),
+        self._sidebar = ctk.CTkFrame(body, fg_color="transparent")
+        self._sidebar.grid(
+            row=0, column=0, rowspan=2, sticky="nsew", padx=_SIDEBAR_PAD, pady=(_PAGE_TOP, 12)
         )
-        self._general = self._scroll_tab(TAB_GENERAL)
-        self._general_form = _Form(self._general, pad_left=_SCROLL_PAD_LEFT, pad_right=8)
-        self._build_general(self._general_form)
-        advanced = self._scroll_tab(TAB_ADVANCED)
-        self._build_advanced(_Form(advanced, pad_left=_SCROLL_PAD_LEFT, pad_right=8))
-        self._tabs.set(TAB_GENERAL)
-        if update_info is not None:
-            self._show_update(update_info)
-
-        # Packed from the bottom before the tabs, so the buttons keep their place and the tabs
-        # get what is left when the screen is short.
-        buttons = ctk.CTkFrame(body, fg_color="transparent")
-        buttons.pack(side="bottom", anchor="e", pady=(10, 0))
-        secondary_button(buttons, "Cancel", self.destroy).pack(side="right")
-        self._save_button = primary_button(buttons, "Save", async_command(self._save))
-        self._save_button.pack(side="right", padx=(0, 12))
-        self._error = ctk.CTkLabel(
+        # A 1-pixel line between the sidebar and the page (a CTkFrame that thin draws nothing).
+        tk.Frame(body, width=1, background=theme.PANEL_EDGE, highlightthickness=0).grid(
+            row=0, column=1, rowspan=2, sticky="ns"
+        )
+        self._scroll = ctk.CTkScrollableFrame(
             body,
+            width=_PAGE_WIDTH,
+            height=200,
+            fg_color="transparent",
+            scrollbar_button_color=theme.SURFACE,
+            scrollbar_button_hover_color=theme.EDGE,
+        )
+        self._scroll.grid(
+            row=0,
+            column=2,
+            sticky="nsew",
+            padx=(_PAGE_PAD_LEFT, _PAGE_PAD_RIGHT),
+            pady=(_PAGE_TOP, 0),
+        )
+        self._scroll.grid_columnconfigure(0, weight=1)
+
+        # Save / Cancel under the page, with the error line above them.
+        footer = ctk.CTkFrame(body, fg_color="transparent")
+        footer.grid(row=1, column=2, sticky="ew", padx=(_PAGE_PAD_LEFT, PAD_X), pady=(10, 20))
+        self._error = ctk.CTkLabel(
+            footer,
             text="",
             font=theme.font(14),
             text_color=theme.DANGER,
             justify="left",
-            wraplength=_TABS_WIDTH,
+            anchor="w",
+            wraplength=_PAGE_WIDTH,
         )
-        self._error.pack(side="bottom", anchor="w", pady=(10, 0))
-        self._tabs.pack(fill="both", expand=True)
+        self._error.pack(anchor="w")
+        buttons = ctk.CTkFrame(footer, fg_color="transparent")
+        buttons.pack(anchor="e", pady=(6, 0))
+        secondary_button(buttons, "Cancel", self.destroy).pack(side="right")
+        self._save_button = primary_button(buttons, "Save", async_command(self._save))
+        self._save_button.pack(side="right", padx=(0, 12))
+
+        self._pages: dict[str, _Page] = {}
+        builders: dict[str, Callable[[], _Page]] = {
+            SECTION_WHERE: self._build_where,
+            SECTION_QUALITY: self._build_quality,
+            SECTION_AUTOMATIC: self._build_automatic,
+            SECTION_INFO: self._build_info,
+            SECTION_LOOKS: self._build_looks,
+            SECTION_UPDATES: self._build_updates,
+            SECTION_ADVANCED: self._build_advanced,
+        }
+        if self._subtitles is not None:
+            subtitles_service = self._subtitles
+            builders[SECTION_SUBTITLES] = lambda: self._build_subtitles(subtitles_service)
+        for section in SECTIONS:
+            if section in builders:
+                self._pages[section] = builders[section]()
+        self._items: dict[str, _SidebarItem] = {}
+        self._build_sidebar()
+        self._section = SECTION_WHERE
+        self._show_section(SECTION_WHERE)
+        if update_info is not None:
+            self._show_update(update_info)
 
         self.bind("<Escape>", lambda _event: self.destroy())
         self._fit_size()
         place_over(self, master)
         activate_later(self)
 
-    # -- tabs ----------------------------------------------------------------------------------
+    # -- sidebar and pages ---------------------------------------------------------------------
 
-    def _build_general(self, form: _Form) -> None:
-        download = form.row("When I download")
-        download.grid_columnconfigure(0, weight=1)
-        self._radio(download, "Open in my torrent program on this PC", DownloadMode.APP).grid(
-            row=0, column=0, sticky="w"
-        )
+    @property
+    def section(self) -> str:
+        """The section whose page shows."""
+        return self._section
+
+    def page(self, section: str) -> ctk.CTkFrame:
+        """A section's page frame (tests look inside it)."""
+        return self._pages[section].frame
+
+    def _build_sidebar(self) -> None:
+        first = True
+        for group, sections in SECTION_GROUPS:
+            shown = [section for section in sections if section in self._pages]
+            if not shown:
+                continue
+            ctk.CTkLabel(
+                self._sidebar,
+                text=group.upper(),
+                font=theme.font(12, bold=True),
+                text_color=theme.TEXT_MUTED,
+                anchor="w",
+            ).pack(fill="x", padx=(10, 0), pady=(0 if first else 14, 4))
+            first = False
+            for section in shown:
+                item = _SidebarItem(self._sidebar, section, self._show_section)
+                item.pack(fill="x", pady=(0, 2))
+                self._items[section] = item
+
+    def _show_section(self, section: str) -> None:
+        if section not in self._pages:
+            return
+        self._section = section
+        self._grid_page(section)
+        self._scroll._parent_canvas.yview_moveto(0)  # each page starts at its top
+        for name, item in self._items.items():
+            item.set_selected(name == section)
+
+    def _grid_page(self, section: str) -> None:
+        for name, page in self._pages.items():
+            if name != section:
+                page.frame.grid_remove()
+        self._pages[section].frame.grid(row=0, column=0, sticky="ew", pady=(0, _PAGE_BOTTOM))
+
+    def _new_page(self, section: str, note: str | None = None) -> _Page:
+        return _Page(self._scroll, section, note if note is not None else SECTION_NOTES[section])
+
+    # -- Where downloads go ------------------------------------------------------------------
+
+    def _build_where(self) -> _Page:
+        page = self._new_page(SECTION_WHERE)
+
+        app = page.box()
+        app.add(self._radio(app.body, APP_CHOICE, DownloadMode.APP), gap=0, sticky="w")
+        app.add(app.text(APP_TEXT, indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
         self._torrent = TorrentAppStatus(
-            download,
+            app.body,
             torrent_app=self._torrent_app,
-            wraplength=_FIELD_WIDTH - _INDENT - INSTALL_BUTTON_WIDTH - 16,
+            wraplength=_BOX_INNER - _INDENT - INSTALL_BUTTON_WIDTH - 16,
         )
-        self._radio(download, REMOTE_CHOICE, DownloadMode.REMOTE).grid(
-            row=2, column=0, sticky="w", pady=(4, 0)
+        self._torrent_row = app.take_row()
+
+        remote = page.box()
+        remote.add(self._radio(remote.body, REMOTE_CHOICE, DownloadMode.REMOTE), gap=0, sticky="w")
+        remote.add(remote.text(REMOTE_TEXT, indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
+        self._remote_box = remote
+        self._remote_row = remote.take_row()
+
+        folder = page.box()
+        folder.add(self._radio(folder.body, FOLDER_CHOICE, DownloadMode.FOLDER), gap=0, sticky="w")
+        folder.add(folder.text(FOLDER_TEXT, indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
+        self._folder_box = folder
+        self._folder_row = ctk.CTkFrame(folder.body, fg_color="transparent")
+        self._entry(self._folder_row, self._download_dir).pack(side="left", fill="x", expand=True)
+        secondary_button(self._folder_row, "Browse", self._browse, width=110).pack(
+            side="left", padx=(10, 0)
         )
+        self._folder_row_index = folder.take_row()
+        self._folder_note = folder.text("", indent=_INDENT)
+        self._folder_note_row = folder.take_row()
+        self._folder_link = ctk.CTkLabel(
+            folder.body,
+            text="",
+            font=theme.font(_TEXT_SIZE, underline=True),
+            text_color=theme.LINK,
+            cursor="hand2",
+            anchor="w",
+        )
+        self._folder_link.bind("<Button-1>", lambda _event: self._reveal_remote_form())
+        self._folder_link_row = folder.take_row()
+        self._folder_form_row = folder.take_row()
+
+        # One form, shown in the remote box or (folder mode) under the magnet note: it belongs to
+        # the page and is placed into either box, painted in the boxes' colour.
         self._remote_form = RemoteProgramForm(
-            download,
+            page.frame,
             settings=self._settings.current,
             run_test=self._test_remote,
             label_width=_REMOTE_LABEL_WIDTH,
             field_width=_REMOTE_FIELD_WIDTH,
             describe=_describe,
         )
-        self._radio(download, "Save .torrent files to a folder", DownloadMode.FOLDER).grid(
-            row=4, column=0, sticky="w", pady=(4, 0)
-        )
-        self._folder_row = ctk.CTkFrame(download, fg_color="transparent")
-        self._entry(self._folder_row, self._download_dir).pack(side="left", fill="x", expand=True)
-        secondary_button(self._folder_row, "Browse", self._browse, width=110).pack(
-            side="left", padx=(10, 0)
-        )
-        self._folder_note = text_label(
-            download, "", size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=_FIELD_WIDTH - _INDENT
-        )
-        self._option_menu(
-            form.row("Preferred quality"), self._quality, list(QUALITY_NAMES.values())
-        )
-        self._option_menu(form.row("Week starts on"), self._first_day, [d.value for d in Weekday])
-        sizes = ctk.CTkSegmentedButton(
-            form.row(CARD_SIZE_LABEL),
-            values=[CARD_SIZE_LABELS[size] for size in CardSize],
-            variable=self._card_size,
-            width=260,
-            height=BUTTON_HEIGHT,
-            corner_radius=BUTTON_RADIUS,
-            font=theme.font(DETAIL_SIZE, bold=True),
-            fg_color=theme.SURFACE,
-            selected_color=theme.ACCENT,
-            selected_hover_color=theme.ACCENT_HOVER,
-            unselected_color=theme.SURFACE,
-            unselected_hover_color=theme.CHIP_HOVER,
-            dynamic_resizing=False,
-        )
-        sizes.pack(side="left")
-        add_tooltip(sizes, CARD_SIZE_TIP)
+        self._remote_form.configure(corner_radius=0)
+        _paint_background(self._remote_form, theme.TAB_BG)
+        return page
 
-        key = form.row("Movies key")
-        self._entry(key, self._tmdb_key, show="•").pack(fill="x")
-        link = ctk.CTkLabel(
-            key,
-            text="How do I get a key?",
-            font=theme.font(DETAIL_SIZE, underline=True),
-            text_color=theme.LINK,
-            cursor="hand2",
+    def _mode_changed(self) -> None:
+        self._form_in_folder = False
+        self._show_download_rows()
+
+    def _show_download_rows(self) -> None:
+        rows = download_rows(DownloadMode(self._mode.get()))
+        self._grid_download_rows(rows, form_in_folder=self._form_in_folder)
+        if rows.torrent_status:
+            self._torrent.refresh()  # again each time: a program may have been installed
+
+    def _current_note(self) -> FolderNote:
+        # The remote form is hidden in FOLDER mode (until opened), so what it holds is what
+        # Save stores.
+        form = self._remote_form
+        return folder_note(form.kind, form.ready, form.address)
+
+    def _grid_download_rows(self, rows: DownloadRows, *, form_in_folder: bool) -> None:
+        if rows.torrent_status:
+            self._torrent.grid(
+                row=self._torrent_row, column=0, sticky="ew", padx=(_INDENT, 0), pady=(10, 0)
+            )
+        else:
+            self._torrent.grid_remove()
+        if rows.remote_form:
+            self._place_remote_form(self._remote_box, self._remote_row)
+        elif rows.folder and form_in_folder:
+            self._place_remote_form(self._folder_box, self._folder_form_row)
+        else:
+            self._remote_form.grid_remove()
+        if rows.folder:
+            note = self._current_note()
+            self._folder_row.grid(
+                row=self._folder_row_index, column=0, sticky="ew", padx=(_INDENT, 0), pady=(12, 0)
+            )
+            self._folder_note.configure(text=note.text)
+            self._folder_note.grid(
+                row=self._folder_note_row, column=0, sticky="w", padx=(_INDENT, 0), pady=(10, 0)
+            )
+            if form_in_folder:
+                self._folder_link.grid_remove()
+            else:
+                self._folder_link.configure(text=note.link)
+                self._folder_link.grid(
+                    row=self._folder_link_row, column=0, sticky="w", padx=(_INDENT, 0), pady=(2, 0)
+                )
+        else:
+            self._folder_row.grid_remove()
+            self._folder_note.grid_remove()
+            self._folder_link.grid_remove()
+
+    def _place_remote_form(self, box: _Box, row: int) -> None:
+        self._remote_form.grid(
+            in_=box.body,
+            row=row,
+            column=0,
+            sticky="ew",
+            padx=(_INDENT, 0),
+            pady=(_REMOTE_GAP, 0),
         )
-        link.bind("<Button-1>", lambda _event: self._open_key_guide())
-        link.pack(anchor="w", pady=(_HINT_GAP, 0))
+        self._remote_form.lift()  # above the box it is placed in
 
-        updates = form.row("Updates")
-        self._checkbox(updates, "Install updates automatically", self._auto_update).pack(anchor="w")
-        text_label(
-            updates, f"Version {self._updates.current}", size=SMALL_SIZE, color=theme.TEXT_MUTED
-        ).pack(anchor="w", pady=(2, 10))
-        check = ctk.CTkFrame(updates, fg_color="transparent")
-        check.pack(fill="x")
-        self._update_button = primary_button(
-            check, "Check for updates", self._check_updates, width=_UPDATE_BUTTON_WIDTH
+    def _reveal_remote_form(self) -> None:
+        """The magnet note's link: open the remote form under it, staying in folder mode."""
+        self._form_in_folder = True
+        self._show_download_rows()
+
+    def _refresh_folder_note(self) -> None:
+        if self.winfo_exists() and DownloadMode(self._mode.get()) is DownloadMode.FOLDER:
+            self._folder_note.configure(text=self._current_note().text)
+
+    def _browse(self) -> None:
+        # Native modal dialog: the event loop (and background tasks) pause until it closes.
+        chosen = filedialog.askdirectory(parent=self, initialdir=self._download_dir.get() or None)
+        if chosen:
+            self._download_dir.set(chosen)
+
+    # -- Quality -------------------------------------------------------------------------------
+
+    def _build_quality(self) -> _Page:
+        page = self._new_page(SECTION_QUALITY)
+        for title, text, quality, low, high in (
+            (SERIES_TITLE, SERIES_TEXT, self._quality_tv, self._size_tv_min, self._size_tv_max),
+            (
+                MOVIES_TITLE,
+                MOVIES_TEXT,
+                self._quality_movie,
+                self._size_movie_min,
+                self._size_movie_max,
+            ),
+        ):
+            box = page.box(title, text)
+            line = box.frame_row()
+            self._option_menu(line, quality, list(QUALITY_NAMES.values()), _QUALITY_MENU_WIDTH)
+            self._word(line, "between").pack(side="left", padx=(16, 8))
+            self._entry(line, low, width=_SIZE_ENTRY_WIDTH).pack(side="left")
+            self._word(line, "and").pack(side="left", padx=8)
+            self._entry(line, high, width=_SIZE_ENTRY_WIDTH).pack(side="left")
+            self._word(line, "GB").pack(side="left", padx=(8, 0))
+        page.add(
+            text_label(
+                page.frame,
+                QUALITY_NOTE,
+                size=_TEXT_SIZE,
+                color=theme.TEXT_MUTED,
+                wraplength=_PAGE_WIDTH,
+            ),
+            gap=_BOX_GAP,
         )
-        self._update_button.pack(side="left", anchor="n")
-        self._update_result = text_label(check, "", size=SMALL_SIZE, wraplength=_RESULT_WIDTH)
-        self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        return page
 
-        auto = form.row("Automatic downloads")
-        self._checkbox(
-            auto, "Keep running in the tray when I close the window", self._keep_in_tray
-        ).pack(anchor="w")
-        text_label(
-            auto,
-            "Needed for new episodes to download while the window is closed",
-            size=SMALL_SIZE,
-            color=theme.TEXT_MUTED,
-            wraplength=_FIELD_WIDTH - _INDENT,
-        ).pack(anchor="w", padx=(_INDENT, 0))
-        self._checkbox(
-            auto, "Start AirGrabber when Windows starts", self._start_with_windows
-        ).pack(anchor="w", pady=(_ROW_GAP, 0))
-        self._checkbox(
-            auto, "Download new episodes for shows I start following", self._auto_new_shows
-        ).pack(anchor="w", pady=(_ROW_GAP, 0))
-        if self._subtitles is not None:
-            self._build_subtitles(form, self._subtitles)
+    # -- Automatic -----------------------------------------------------------------------------
 
-    def _build_subtitles(self, form: _Form, subtitles: SubtitleService) -> None:
-        """The Subtitles section: the credit line, the switch (with today's downloads left,
-        when known), and while it is on the languages, the finished-downloads folder and the
-        OpenSubtitles account. Without an API key in this version: one quiet line instead."""
+    def _build_automatic(self) -> _Page:
+        page = self._new_page(SECTION_AUTOMATIC)
+        background = page.box(BACKGROUND_TITLE, BACKGROUND_TEXT)
+        background.add(self._checkbox(background.body, TRAY_TEXT, self._keep_in_tray), sticky="w")
+        background.add(
+            self._checkbox(background.body, START_TEXT, self._start_with_windows),
+            gap=8,
+            sticky="w",
+        )
+        shows = page.box(NEW_SHOWS_TITLE, NEW_SHOWS_TEXT)
+        shows.add(self._checkbox(shows.body, NEW_SHOWS_SWITCH, self._auto_new_shows), sticky="w")
+        return page
+
+    # -- Subtitles -----------------------------------------------------------------------------
+
+    def _build_subtitles(self, subtitles: SubtitleService) -> _Page:
+        """The Subtitles page: the switch (with today's downloads left, when known) and the
+        credit line, and while it is on the languages, the finished-downloads folder, the
+        OpenSubtitles account and the own key. Without an API key in this version: one quiet
+        line instead."""
         if not subtitles.available:
-            form.section(SUBTITLES_HEADING, UNAVAILABLE_TEXT)
-            return
+            return self._new_page(SECTION_SUBTITLES, UNAVAILABLE_TEXT)
         current = self._settings.current
-        form.section(SUBTITLES_HEADING, SUBTITLES_NOTE)
-        credit = ctk.CTkFrame(form.frame, fg_color="transparent")
-        link(credit, CREDIT_TEXT, CREDIT_URL, size=SMALL_SIZE).pack(anchor="w")
-        form.wide(credit, gap=_HINT_GAP)
-        switch = form.row("Subtitles")
-        ctk.CTkSwitch(
-            switch,
-            text=SWITCH_TEXT,
-            variable=self._subtitles_on,
-            command=self._show_subtitle_rows,
-            height=BUTTON_HEIGHT,
-            font=theme.font(DETAIL_SIZE),
-            progress_color=theme.ACCENT,  # as the show window's "Download new episodes"
-        ).pack(anchor="w")
-        self._quota = text_label(
-            switch, "", size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=_FIELD_WIDTH
+        page = self._new_page(SECTION_SUBTITLES, SUBTITLES_NOTE)
+        switch = page.box(SUBTITLE_SWITCH_TITLE, SUBTITLE_SWITCH_TEXT)
+        switch.add(
+            ctk.CTkSwitch(
+                switch.body,
+                text=SWITCH_TEXT,
+                variable=self._subtitles_on,
+                command=self._show_subtitle_rows,
+                height=BUTTON_HEIGHT,
+                font=theme.font(DETAIL_SIZE),
+                progress_color=theme.ACCENT,  # as the show window's "Download new episodes"
+            ),
+            sticky="w",
         )
+        self._quota = switch.text("")
+        self._quota_row = switch.take_row()
+        switch.add(link(switch.body, CREDIT_TEXT, CREDIT_URL, size=SMALL_SIZE), gap=8, sticky="w")
 
-        rows = ctk.CTkFrame(form.frame, fg_color="transparent")
-        scaling = ctk.ScalingTracker.get_widget_scaling(form.frame)
-        rows.grid_columnconfigure(0, minsize=round(_LABEL_WIDTH * scaling))
-        rows.grid_columnconfigure(1, weight=1)
-        form.wide(rows)
+        rows = ctk.CTkFrame(page.frame, fg_color="transparent")
+        rows.grid_columnconfigure(0, weight=1)
+        page.add(rows, gap=0)
         self._subtitle_rows = rows
         self._show_quota()
 
-        self._language_tags = LanguageTags(
-            self._subtitle_row(rows, 0, "Languages"), current.subtitle_languages
-        )
-        self._language_tags.pack(anchor="w")
+        languages = self._rows_box(rows, LANGUAGES_TITLE, LANGUAGES_TEXT, first=True)
+        self._language_tags = LanguageTags(languages.body, current.subtitle_languages)
+        languages.add(self._language_tags, sticky="w")
 
-        folder = self._subtitle_row(rows, 1, FOLDER_LABEL)
-        line = ctk.CTkFrame(folder, fg_color="transparent")
-        line.pack(fill="x")
+        folder = self._rows_box(rows, FOLDER_LABEL, FOLDER_HINT)
+        line = folder.frame_row()
         self._entry(line, self._subtitles_folder).pack(side="left", fill="x", expand=True)
         secondary_button(line, "Choose…", self._choose_subtitles_folder, width=110).pack(
             side="left", padx=(10, 0)
         )
-        self._hint(folder, FOLDER_HINT)
 
-        account = self._subtitle_row(rows, 2, ACCOUNT_LABEL)
-        hint = ctk.CTkFrame(account, fg_color="transparent")
-        hint.pack(anchor="w")
-        text_label(hint, ACCOUNT_HINT, size=SMALL_SIZE, color=theme.TEXT_MUTED).pack(side="left")
-        link(hint, SIGN_UP_TEXT, SIGNUP_URL, size=SMALL_SIZE).pack(side="left", padx=(4, 0))
+        account = self._rows_box(rows, ACCOUNT_LABEL)
+        hint = ctk.CTkFrame(account.body, fg_color="transparent")
+        account.add(hint, gap=2, sticky="w")
+        text_label(hint, ACCOUNT_HINT, size=_TEXT_SIZE, color=theme.TEXT_MUTED).pack(side="left")
+        link(hint, SIGN_UP_TEXT, SIGNUP_URL, size=_TEXT_SIZE).pack(side="left", padx=(4, 0))
         self._account = AccountRow(
-            account,
+            account.body,
             subtitles=subtitles,
             username=current.opensubtitles_username,
             password=current.opensubtitles_password.get_secret_value(),
             on_signed_in=lambda _account: self._show_quota(),
-            field_width=_FIELD_ROOM,
+            field_width=_BOX_INNER,
         )
-        self._account.pack(fill="x", pady=(8, 0))
+        account.add(self._account)
 
+        own_key = self._rows_box(rows, OWN_KEY_LABEL)
         self._own_key = OwnKeyRow(
-            self._subtitle_row(rows, 3, OWN_KEY_LABEL),
+            own_key.body,
             subtitles=subtitles,
             key=current.opensubtitles_own_key.get_secret_value(),
-            field_width=_FIELD_ROOM,
+            field_width=_BOX_INNER,
         )
-        self._own_key.pack(fill="x")
+        own_key.add(self._own_key)
         self._show_subtitle_rows()
+        return page
 
-    def _subtitle_row(self, rows: ctk.CTkFrame, row: int, label: str) -> ctk.CTkFrame:
-        """A labelled row of the Subtitles section (like `_Form.row`, in its own frame)."""
-        ctk.CTkLabel(
-            rows,
-            text=label,
-            height=BUTTON_HEIGHT,
-            font=theme.font(DETAIL_SIZE),
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-            justify="left",
-            wraplength=_LABEL_WIDTH - 16,
-        ).grid(row=row, column=0, sticky="nw", padx=(0, 16), pady=(_ROW_GAP, 0))
-        cell = ctk.CTkFrame(rows, fg_color="transparent")
-        cell.grid(row=row, column=1, sticky="ew", pady=(_ROW_GAP, 0))
-        return cell
+    @staticmethod
+    def _rows_box(
+        rows: ctk.CTkFrame, title: str, text: str | None = None, *, first: bool = False
+    ) -> _Box:
+        """A box of the Subtitles rows that show while subtitles are on."""
+        box = _Box(rows, title, text)
+        box.frame.grid(row=len(rows.grid_slaves()), column=0, sticky="ew", pady=(_BOX_GAP, 0))
+        return box
 
     def _show_subtitle_rows(self) -> None:
         if self._subtitle_rows is None:
@@ -652,9 +1093,9 @@ class SettingsDialog(ctk.CTkToplevel):
         text = quota_line(self._subtitles.quota, datetime.now(UTC))
         if text:
             self._quota.configure(text=text)
-            self._quota.pack(anchor="w", pady=(2, 0))
+            self._quota.grid(row=self._quota_row, column=0, sticky="w", pady=(2, 0))
         else:
-            self._quota.pack_forget()
+            self._quota.grid_remove()
 
     def _choose_subtitles_folder(self) -> None:
         # Native modal dialog: the event loop (and background tasks) pause until it closes.
@@ -665,7 +1106,7 @@ class SettingsDialog(ctk.CTkToplevel):
             self._subtitles_folder.set(str(Path(chosen)))  # Windows separators, UNC kept
 
     def _subtitle_changes(self) -> dict[str, Any]:
-        """The Subtitles section's part of Save (nothing without the section's form)."""
+        """The Subtitles page's part of Save (nothing without its form)."""
         if self._language_tags is None or self._account is None or self._own_key is None:
             return {}
         username, password = self._account.values
@@ -690,37 +1131,171 @@ class SettingsDialog(ctk.CTkToplevel):
             password=changes["opensubtitles_password"],
         )
 
-    def _build_advanced(self, form: _Form) -> None:
-        sites = form.row("Built-in sites")
-        boxes = ctk.CTkFrame(sites, fg_color="transparent")
-        boxes.pack(anchor="w")
+    # -- Movie & show info ---------------------------------------------------------------------
+
+    def _build_info(self) -> _Page:
+        page = self._new_page(SECTION_INFO)
+        box = page.box(TMDB_KEY_LABEL, TMDB_KEY_TEXT)
+        line = box.frame_row()
+        self._tmdb_entry = self._entry(line, self._tmdb_key, show="•")
+        self._tmdb_entry.pack(side="left", fill="x", expand=True)
+        self._tmdb_entry.bind("<Return>", lambda _event: self._check_tmdb_key())
+        self._tmdb_check = primary_button(
+            line, "Check", self._check_tmdb_key, width=_CHECK_BUTTON_WIDTH
+        )
+        self._tmdb_check.pack(side="left", padx=(10, 0))
+        result = box.frame_row(gap=8)
+        self._tmdb_result = text_label(result, "", size=_TEXT_SIZE, wraplength=_BOX_INNER - 200)
+        self._tmdb_dot = text_label(result, "·", size=_TEXT_SIZE, color=theme.TEXT_MUTED)
+        self._tmdb_guide = ctk.CTkLabel(
+            result,
+            text=KEY_GUIDE_LINK,
+            font=theme.font(_TEXT_SIZE, underline=True),
+            text_color=theme.LINK,
+            cursor="hand2",
+        )
+        self._tmdb_guide.bind("<Button-1>", lambda _event: self._open_key_guide())
+        self._tmdb_guide.pack(side="left")
+        self._tmdb_key.trace_add("write", self._on_tmdb_key_edited)
+        return page
+
+    def _check_tmdb_key(self) -> None:
+        key = self._tmdb_key.get().strip()
+        if not key:
+            self._tmdb_entry.focus_set()
+            return
+        running = self._tests.get("tmdb")
+        if running is not None and not running.done():
+            return
+        self._show_key_check(KeyCheck.CHECKING)
+        self._tmdb_check.configure(state="disabled")
+        self._tests["tmdb"] = spawn(self._run_tmdb_check(key), name="settings-tmdb-check")
+
+    async def _run_tmdb_check(self, key: str) -> None:
+        try:
+            works = await self._discovery.check_tmdb_key(key)
+            result = KeyCheck.OK if works else KeyCheck.REJECTED
+        except TMDBError as exc:  # never the key or the URL: only what kind of failure
+            log.info("TMDB key check failed: %s", type(exc).__name__)
+            result = KeyCheck.UNREACHABLE
+        if self.winfo_exists():
+            self._tmdb_check.configure(state="normal")
+            self._show_key_check(result)
+
+    def _show_key_check(self, result: KeyCheck | None) -> None:
+        """The result line before the guide link ("✓ The key works · How do I get…")."""
+        self._tmdb_result.pack_forget()
+        self._tmdb_dot.pack_forget()
+        if result is None:
+            return
+        text, color = key_check_message(result)
+        self._tmdb_result.configure(text=text, text_color=color)
+        self._tmdb_result.pack(side="left", before=self._tmdb_guide)
+        self._tmdb_dot.pack(side="left", padx=8, before=self._tmdb_guide)
+
+    def _on_tmdb_key_edited(self, *_args: object) -> None:
+        """A changed key needs a new check: forget the last result, stop a check in flight."""
+        running = self._tests.get("tmdb")
+        if running is not None and not running.done():
+            running.cancel()
+            self._tmdb_check.configure(state="normal")
+        self._show_key_check(None)
+
+    def _open_key_guide(self) -> None:
+        if self._key_dialog is not None and self._key_dialog.winfo_exists():
+            self._key_dialog.lift()
+            self._key_dialog.focus_force()
+            return
+        self._key_dialog = TmdbKeyDialog(
+            self,
+            settings=self._settings,
+            discovery=self._discovery,
+            on_saved=self._key_saved,
+        )
+
+    def _key_saved(self, key: str) -> None:
+        if self.winfo_exists():
+            self._tmdb_key.set(key)
+            self._show_key_check(KeyCheck.OK)  # the guide only saves a key TMDB accepted
+
+    # -- Looks ---------------------------------------------------------------------------------
+
+    def _build_looks(self) -> _Page:
+        page = self._new_page(SECTION_LOOKS)
+        cards = page.box(CARD_SIZE_LABEL, CARD_SIZE_TIP)
+        cards.add(
+            ctk.CTkSegmentedButton(
+                cards.body,
+                values=[CARD_SIZE_LABELS[size] for size in CardSize],
+                variable=self._card_size,
+                width=260,
+                height=BUTTON_HEIGHT,
+                corner_radius=BUTTON_RADIUS,
+                font=theme.font(DETAIL_SIZE, bold=True),
+                fg_color=theme.SURFACE,
+                selected_color=theme.ACCENT,
+                selected_hover_color=theme.ACCENT_HOVER,
+                unselected_color=theme.SURFACE,
+                unselected_hover_color=theme.CHIP_HOVER,
+                dynamic_resizing=False,
+            ),
+            sticky="w",
+        )
+        week = page.box(WEEK_TITLE, WEEK_TEXT)
+        line = week.frame_row()
+        self._option_menu(line, self._first_day, [d.value for d in Weekday])
+        return page
+
+    # -- Updates -------------------------------------------------------------------------------
+
+    def _build_updates(self) -> _Page:
+        page = self._new_page(SECTION_UPDATES)
+        auto = page.box(AUTO_UPDATE_TITLE, AUTO_UPDATE_TEXT)
+        auto.add(self._checkbox(auto.body, AUTO_UPDATE_SWITCH, self._auto_update), sticky="w")
+        check = page.box(f"Version {self._updates.current}", CHECK_UPDATES_TEXT)
+        line = check.frame_row()
+        self._update_button = primary_button(
+            line, "Check for updates", self._check_updates, width=_UPDATE_BUTTON_WIDTH
+        )
+        self._update_button.pack(side="left", anchor="n")
+        self._update_result = text_label(
+            line, "", size=SMALL_SIZE, wraplength=_BOX_INNER - _UPDATE_BUTTON_WIDTH - 12
+        )
+        self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        return page
+
+    # -- Advanced ------------------------------------------------------------------------------
+
+    def _build_advanced(self) -> _Page:
+        page = self._new_page(SECTION_ADVANCED)
+        sites = page.box(SITES_TITLE, SITES_TEXT)
+        boxes = sites.frame_row()
         for column, (name, label) in enumerate(_BUILT_IN_SITES):
             self._checkbox(boxes, label, self._sources[name]).grid(
                 row=0, column=column, sticky="w", padx=(0, 20)
             )
-        self._hint(sites, "Websites AirGrabber searches by itself")
-        self._build_prowlarr(form)
+        self._build_prowlarr(page)
 
-        excluded = form.row("Skip releases with these words")
-        self._entry(excluded, self._excluded).pack(fill="x")
-        self._hint(excluded, "Separate with commas, for example: cam, telesync")
-        preferred = form.row("Prefer releases from")
-        self._entry(preferred, self._preferred).pack(fill="x")
-        self._hint(preferred, "Release group names, separated with commas")
+        excluded = page.box(EXCLUDED_TITLE, EXCLUDED_TEXT)
+        excluded.add(self._entry(excluded.body, self._excluded))
+        preferred = page.box(PREFERRED_TITLE, PREFERRED_TEXT)
+        preferred.add(self._entry(preferred.body, self._preferred))
+        return page
 
-    def _build_prowlarr(self, form: _Form) -> None:
+    def _build_prowlarr(self, page: _Page) -> None:
         url = self._settings.current.prowlarr_url
         panel = ProwlarrPanel(
-            form.frame,
+            page.frame,
             prowlarr=self._prowlarr,
             use=self._use_prowlarr,
             checkbox=self._checkbox,
-            width=_PANEL_WIDTH,
+            width=_PAGE_WIDTH,
             label_width=_PANEL_LABEL_WIDTH,
             expanded=shows_remote_fields(url),
             on_status=self._prowlarr_status_shown,
         )
-        form.wide(panel, gap=_PANEL_GAP)
+        _paint_background(panel, theme.TAB_BG)  # a box like the others
+        page.add(panel)
         self._prowlarr_panel = panel
         self._prowlarr_url = self._hinted_entry(
             panel.remote_row("URL"), url, "http://192.168.1.x:9696"
@@ -764,17 +1339,18 @@ class SettingsDialog(ctk.CTkToplevel):
         entry.pack(fill="x")
         return entry
 
-    def _hint(self, master: Any, text: str) -> None:
-        text_label(
-            master, text, size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=_FIELD_WIDTH
-        ).pack(anchor="w", pady=(_HINT_GAP, 0))
+    @staticmethod
+    def _word(master: Any, text: str) -> ctk.CTkLabel:
+        return ctk.CTkLabel(master, text=text, font=theme.font(DETAIL_SIZE), text_color=theme.TEXT)
 
-    def _option_menu(self, master: Any, variable: ctk.StringVar, values: list[str]) -> None:
+    def _option_menu(
+        self, master: Any, variable: ctk.StringVar, values: list[str], width: int = 260
+    ) -> None:
         ctk.CTkOptionMenu(
             master,
             variable=variable,
             values=values,
-            width=260,
+            width=width,
             height=BUTTON_HEIGHT,
             corner_radius=BUTTON_RADIUS,
             font=theme.font(DETAIL_SIZE),
@@ -801,24 +1377,25 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
     def _radio(self, master: Any, text: str, mode: DownloadMode) -> ctk.CTkRadioButton:
+        """A download choice; its text is the box's bold name."""
         return ctk.CTkRadioButton(
             master,
             text=text,
             variable=self._mode,
             value=mode.value,
             width=0,
-            height=BUTTON_HEIGHT,
+            height=BUTTON_HEIGHT - 8,
             radiobutton_width=22,
             radiobutton_height=22,
-            font=theme.font(DETAIL_SIZE),
+            font=theme.font(16, bold=True),
             fg_color=theme.ACCENT,
             hover_color=theme.ACCENT_HOVER,
             border_color=theme.EDGE,
-            command=self._show_download_rows,
+            command=self._mode_changed,
         )
 
     def _test_row(
-        self, cell: ctk.CTkFrame, command: Callable[[], None], *, field_width: int = _FIELD_WIDTH
+        self, cell: ctk.CTkFrame, command: Callable[[], None], *, field_width: int
     ) -> tuple[ctk.CTkButton, ctk.CTkLabel]:
         button = primary_button(cell, "Test connection", command, width=_TEST_BUTTON_WIDTH)
         button.pack(side="left", anchor="n")
@@ -828,94 +1405,40 @@ class SettingsDialog(ctk.CTkToplevel):
         result.pack(side="left", padx=(12, 0), fill="x", expand=True)
         return button, result
 
-    # -- General -------------------------------------------------------------------------------
-
-    def _scroll_tab(self, name: str) -> ctk.CTkScrollableFrame:
-        """A tab whose content scrolls when the dialog is shorter than it (small screens)."""
-        frame = ctk.CTkScrollableFrame(
-            self._tabs.add(name),
-            fg_color="transparent",
-            scrollbar_button_color=theme.SURFACE,
-            scrollbar_button_hover_color=theme.EDGE,
-        )
-        frame.pack(fill="both", expand=True)
-        return frame
+    # -- size ----------------------------------------------------------------------------------
 
     def _fit_size(self) -> None:
-        """Fix the dialog at the size of General's tallest state (any download choice, with
-        the Install button or the magnet-only note showing), so it doesn't change between
-        choices or tabs; on a short screen at the screen's height instead, the tabs scrolling."""
+        """Fix the dialog at the size of its tallest page in its tallest state (any download
+        choice, with the Install button, the magnet note and its form, the Subtitles rows), at
+        most _MAX_PAGE_HEIGHT, so it doesn't change between pages or choices; on a short screen
+        at the screen's height instead, the pages scrolling."""
         self._torrent.show(TorrentStatus.MISSING)
         if self._subtitle_rows is not None:
             self._subtitle_rows.grid()  # measured with the Subtitles rows showing
         content = 0
-        for mode in DownloadMode:
-            self._grid_download_rows(download_rows(mode), note="Magnet-only releases …")
-            self.update_idletasks()
-            content = max(content, self._general_form.frame.winfo_reqheight())
+        for section, page in self._pages.items():
+            self._grid_page(section)
+            modes: list[DownloadMode | None] = (
+                list(DownloadMode) if section == SECTION_WHERE else [None]
+            )
+            for mode in modes:
+                if mode is not None:
+                    self._grid_download_rows(download_rows(mode), form_in_folder=True)
+                self.update_idletasks()
+                content = max(content, page.frame.winfo_reqheight())
         self._torrent.show(TorrentStatus.LOOKING)
         self._show_download_rows()
         self._show_subtitle_rows()
+        self._show_section(self._section)
         scaling = ctk.ScalingTracker.get_window_scaling(self)
-        # Let General's scroll area ask for all of its content, then measure the whole dialog.
-        self._general.configure(height=math.ceil(content / scaling) + _TAB_PAD + 8)
+        page_height = min(math.ceil(content / scaling) + _PAGE_BOTTOM, _MAX_PAGE_HEIGHT)
+        self._scroll.configure(height=page_height)
         self.update_idletasks()
         width = math.ceil(self.winfo_reqwidth() / scaling)
         wanted = math.ceil(self.winfo_reqheight() / scaling)
         _screen_width, screen_height = self.wm_maxsize()  # physical pixels
         height = dialog_height(wanted, int(screen_height / scaling))
         self.geometry(f"{width}x{height}")  # CTk scales the size (not the position)
-
-    def _show_download_rows(self) -> None:
-        rows = download_rows(DownloadMode(self._mode.get()))
-        # The remote form is hidden in FOLDER mode, so what it holds now is what Save stores.
-        note = folder_note(self._remote_form.kind, self._remote_form.ready)
-        self._grid_download_rows(rows, note=note)
-        if rows.torrent_status:
-            self._torrent.refresh()  # again each time: a program may have been installed
-
-    def _grid_download_rows(self, rows: DownloadRows, *, note: str | None) -> None:
-        if rows.torrent_status:
-            self._torrent.grid(row=1, column=0, sticky="ew", padx=(_INDENT, 0))
-        else:
-            self._torrent.grid_remove()
-        if rows.remote_form:
-            self._remote_form.grid(
-                row=3, column=0, sticky="ew", padx=(_INDENT, 0), pady=(_REMOTE_GAP, _REMOTE_GAP)
-            )
-        else:
-            self._remote_form.grid_remove()
-        if rows.folder:
-            self._folder_row.grid(row=5, column=0, sticky="ew", padx=(_INDENT, 0), pady=(4, 0))
-        else:
-            self._folder_row.grid_remove()
-        if rows.folder and note:
-            self._folder_note.configure(text=note)
-            self._folder_note.grid(row=6, column=0, sticky="w", padx=(_INDENT, 0), pady=(6, 0))
-        else:
-            self._folder_note.grid_remove()
-
-    def _browse(self) -> None:
-        # Native modal dialog: the event loop (and background tasks) pause until it closes.
-        chosen = filedialog.askdirectory(parent=self, initialdir=self._download_dir.get() or None)
-        if chosen:
-            self._download_dir.set(chosen)
-
-    def _open_key_guide(self) -> None:
-        if self._key_dialog is not None and self._key_dialog.winfo_exists():
-            self._key_dialog.lift()
-            self._key_dialog.focus_force()
-            return
-        self._key_dialog = TmdbKeyDialog(
-            self,
-            settings=self._settings,
-            discovery=self._discovery,
-            on_saved=self._key_saved,
-        )
-
-    def _key_saved(self, key: str) -> None:
-        if self.winfo_exists():
-            self._tmdb_key.set(key)
 
     # -- Prowlarr ------------------------------------------------------------------------------
 
@@ -947,7 +1470,12 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         await self._settings.update(
             download_mode=self._mode.get(),
-            quality=quality_from_name(self._quality.get()),
+            quality_tv=quality_from_name(self._quality_tv.get()),
+            quality_movie=quality_from_name(self._quality_movie.get()),
+            size_tv_min_gb=self._size_tv_min.get(),
+            size_tv_max_gb=self._size_tv_max.get(),
+            size_movie_min_gb=self._size_movie_min.get(),
+            size_movie_max_gb=self._size_movie_max.get(),
             first_day=self._first_day.get(),
             card_size=size_from_label(self._card_size.get()),
             download_dir=download_dir_to_save(
@@ -968,12 +1496,16 @@ class SettingsDialog(ctk.CTkToplevel):
             **self._subtitle_changes(),
         )
 
+    def _show_problem(self, text: str, section: str) -> None:
+        """The error line, and the page with the problem."""
+        self._error.configure(text=text)
+        self._show_section(section)
+
     async def _save(self) -> None:
         self._error.configure(text="")
         problem = self._subtitle_problem()
         if problem is not None:
-            self._error.configure(text=problem)
-            self._tabs.set(TAB_GENERAL)
+            self._show_problem(problem, SECTION_SUBTITLES)
             return
         self._save_button.configure(state="disabled")
         if self._own_key is not None and self._own_key.needs_check:
@@ -981,8 +1513,7 @@ class SettingsDialog(ctk.CTkToplevel):
             if not self.winfo_exists():
                 return
             if problem is not None:
-                self._error.configure(text=f"{OWN_KEY_LABEL}: {problem}")
-                self._tabs.set(TAB_GENERAL)
+                self._show_problem(f"{OWN_KEY_LABEL}: {problem}", SECTION_SUBTITLES)
                 self._subtitles_on.set(True)  # the key's row shows while subtitles are on
                 self._show_subtitle_rows()
                 self._save_button.configure(state="normal")
@@ -991,10 +1522,11 @@ class SettingsDialog(ctk.CTkToplevel):
             await self._store()
         except ValidationError as exc:
             if self.winfo_exists():
-                self._error.configure(text=_describe(exc))
-                self._tabs.set(_first_tab(exc))
+                self._show_problem(_describe(exc), _first_section(exc))
                 if _prowlarr_error(exc):  # the fields may be folded away
                     self._prowlarr_panel.set_expanded(True)
+                if _remote_error(exc) and DownloadMode(self._mode.get()) is DownloadMode.FOLDER:
+                    self._reveal_remote_form()  # the form with the problem shows
                 self._save_button.configure(state="normal")
             return
         if await self._save_startup() and self.winfo_exists():
@@ -1013,8 +1545,7 @@ class SettingsDialog(ctk.CTkToplevel):
         if self.winfo_exists():
             self._startup_shown = result.enabled
             self._start_with_windows.set(result.enabled)
-            self._error.configure(text=result.error)
-            self._tabs.set(TAB_GENERAL)
+            self._show_problem(result.error, SECTION_AUTOMATIC)
             self._save_button.configure(state="normal")
         return False
 
@@ -1022,6 +1553,7 @@ class SettingsDialog(ctk.CTkToplevel):
         """The remote form's Test connection: save everything, then test the program."""
         self._error.configure(text="")
         await self._store()
+        self._refresh_folder_note()
         return await self._remote.test()
 
     def _start_test(self, kind: str, probe: Callable[[], Awaitable[str]]) -> None:
