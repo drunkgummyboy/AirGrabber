@@ -3,18 +3,25 @@ sends every grab there, FOLDER the releases without a .torrent file.
 
 `client()` picks the client for `Settings.remote_kind` on every call, and each client reads the
 address and account from the settings on every operation, so a change in Settings applies at
-once.
+once. `status` / `free_space` are the Downloads page's read-only calls.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 import httpx
 
-from app.models import RemoteKind
+from app.i18n import t
+from app.models import RemoteKind, RemoteStatus
 from app.services.qbittorrent import QBittorrentClient
-from app.services.remote import HttpClients, RemoteClient
+from app.services.remote import (
+    DiskSpace,
+    HttpClients,
+    RemoteClient,
+    RemoteError,
+    RemoteStatusClient,
+)
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
 from app.services.transmission import TransmissionClient
@@ -60,3 +67,21 @@ class RemoteDownloads:
     async def test(self) -> str:
         """Settings' "Test connection": e.g. "qBittorrent v5.0.2". Raises RemoteError."""
         return await self.client().test()
+
+    async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
+        """The tasks of the program Settings names now (see RemoteStatusClient.status).
+        Raises RemoteError."""
+        client = self.client()
+        if not isinstance(client, RemoteStatusClient):
+            raise RemoteError(
+                t("AirGrabber can't read the downloads of {program}.", program=client.kind.program)
+            )
+        return await client.status(hashes)
+
+    async def free_space(self) -> DiskSpace | None:
+        """Free space on that program's download disk, when it reports it. Raises
+        RemoteError."""
+        client = self.client()
+        if not isinstance(client, RemoteStatusClient):
+            return None
+        return await client.free_space()

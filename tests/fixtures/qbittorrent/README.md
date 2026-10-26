@@ -9,3 +9,8 @@ server was called):
   src/webui/api/torrentscontroller.cpp (v5_1_x)
 - `torrents_add_json.json`: the JSON counts `addAction` sets on the master branch (success_count,
   failure_count, pending_count, added_torrent_ids; nothing added = HTTP 409 Conflict)
+- `torrents_info.json`: `GET /api/v2/torrents/info` (wiki "Get torrent list": a JSON array with
+  `hash`, `infohash_v1` (v4.4+), `name`, `progress` 0…1 and `state`, e.g. downloading, queuedDL,
+  pausedDL, stoppedUP (v5 renamed paused* to stopped*), missingFiles), trimmed to a few keys
+- `sync_maindata.json`: `GET /api/v2/sync/maindata` (wiki "Get main data": `server_state` with
+  `free_space_on_disk` in bytes), trimmed

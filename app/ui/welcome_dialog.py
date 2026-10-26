@@ -24,6 +24,7 @@ import customtkinter as ctk
 from pydantic import ValidationError
 
 from app import APP_NAME
+from app.i18n import N_, t
 from app.models import DownloadMode, Settings
 from app.services import DiscoveryService, RemoteDownloads, SettingsService, TorrentAppService
 from app.ui import theme
@@ -59,10 +60,11 @@ from app.ui.tmdb_key_guide import TMDB_HEADING, TMDB_INTRO, KeyAction, TmdbKeyGu
 from app.ui.torrent_app_status import TorrentAppStatus, TorrentStatus
 
 STEP_COUNT = 4
-AIRDATES_HEADING = "Already follow shows on airdates.tv?"
-AIRDATES_INTRO = "Bring your list over, so your calendar is ready right away."
-AIRDATES_IMPORT_HEADING = "Import from airdates.tv"
-WELCOME_TEXT = (
+# Shown through t().
+AIRDATES_HEADING = N_("Already follow shows on airdates.tv?")
+AIRDATES_INTRO = N_("Bring your list over, so your calendar is ready right away.")
+AIRDATES_IMPORT_HEADING = N_("Import from airdates.tv")
+WELCOME_TEXT = N_(
     "Follow your favourite shows, see what's on each day, and download episodes and movies "
     "with one click."
 )
@@ -77,8 +79,8 @@ _CARD_TEXT_WIDTH = CONTENT_WIDTH - 2 * _CARD_PAD_X - _DOT_SIZE - _DOT_GAP
 _FOLDER_BUTTON_WIDTH = 150
 _FOLDER_TEXT_WIDTH = _CARD_TEXT_WIDTH - _FOLDER_BUTTON_WIDTH - 16
 _REMOTE_LABEL_WIDTH = 150
-REMOTE_TITLE = "Send to a torrent program on my NAS or another computer"
-REMOTE_NOTE = "For a NAS or home server (Synology, qBittorrent, Transmission)"
+REMOTE_TITLE = N_("Send to a torrent program on my NAS or another computer")
+REMOTE_NOTE = N_("For a NAS or home server (Synology, qBittorrent, Transmission)")
 
 
 # -- decisions (pure, tested) --------------------------------------------------------------------
@@ -121,18 +123,18 @@ def page_step(page: Page) -> int:
 
 def step_label(step: int) -> str | None:
     """'Step 2 of 4' at the top right of steps 2 to 4; the welcome itself has none."""
-    return f"Step {step} of {STEP_COUNT}" if step >= 2 else None
+    return t("Step {step} of {count}", step=step, count=STEP_COUNT) if step >= 2 else None
 
 
 def nav_buttons(page: Page, *, imported: bool = False) -> tuple[str | None, str | None]:
     """(left, right) texts of the bottom row; the welcome step has its button in the content.
     The import panel's right button is "Skip" until an import is done."""
     if page is Page.AIRDATES_IMPORT:
-        return "Back", "Next" if imported else "Skip"
+        return t("Back"), t("Next") if imported else t("Skip")
     if page in (Page.AIRDATES, Page.DOWNLOAD):
-        return "Back", "Next"
+        return t("Back"), t("Next")
     if page is Page.TMDB:
-        return "Skip for now", "Finish"
+        return t("Skip for now"), t("Finish")
     return None, None
 
 
@@ -305,7 +307,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._mode = DownloadMode.APP  # the welcome's suggestion, whatever is stored
         self._folder = settings.current.download_dir
 
-        self.title(f"Welcome to {APP_NAME}")
+        self.title(t("Welcome to {app}", app=APP_NAME))
         set_window_icon(self)
         self.resizable(False, False)
         self.transient(master)
@@ -352,33 +354,33 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._logo.pack()
         ctk.CTkLabel(
             inner,
-            text=f"Welcome to {APP_NAME}",
+            text=t("Welcome to {app}", app=APP_NAME),
             font=theme.font(HEADING_SIZE, bold=True),
             text_color=theme.TEXT,
         ).pack(pady=(BLOCK_GAP, 0))
         ctk.CTkLabel(
             inner,
-            text=WELCOME_TEXT,
+            text=t(WELCOME_TEXT),
             font=theme.font(BODY_SIZE),
             text_color=theme.TEXT,
             justify="center",
             wraplength=480,
         ).pack(pady=(12, 0))
         primary_button(
-            inner, "Get started", lambda: self._show_page(Page.AIRDATES), width=180
+            inner, t("Get started"), lambda: self._show_page(Page.AIRDATES), width=180
         ).pack(pady=(NAV_GAP, 0))
         return page
 
     def _build_airdates(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, AIRDATES_HEADING, Page.AIRDATES)
-        text_label(page, AIRDATES_INTRO, size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
+        _page_heading(page, t(AIRDATES_HEADING), Page.AIRDATES)
+        text_label(page, t(AIRDATES_INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )
-        self._yes_card = _OptionCard(page, "Yes, import my shows")
+        self._yes_card = _OptionCard(page, t("Yes, import my shows"))
         self._yes_card.pack(fill="x", pady=(BLOCK_GAP, 0))
         self._yes_card.bind_select(lambda: self._select_import(True))
-        self._no_card = _OptionCard(page, "No, I'll add shows myself")
+        self._no_card = _OptionCard(page, t("No, I'll add shows myself"))
         self._no_card.pack(fill="x", pady=(_CARD_GAP, 0))
         self._no_card.bind_select(lambda: self._select_import(False))
         self._select_import(self._import_shows)
@@ -388,7 +390,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self, master: Any, airdates: PreviewFinder, library: ShowImporter
     ) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, AIRDATES_IMPORT_HEADING, Page.AIRDATES_IMPORT)
+        _page_heading(page, t(AIRDATES_IMPORT_HEADING), Page.AIRDATES_IMPORT)
         self._airdates_panel = AirdatesImportPanel(
             page, airdates=airdates, library=library, on_done=self._on_imported
         )
@@ -397,9 +399,12 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_download(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, "How do you want to download?", Page.DOWNLOAD)
+        _page_heading(page, t("How do you want to download?"), Page.DOWNLOAD)
         text_label(
-            page, "You can change this later in Settings.", size=DETAIL_SIZE, color=theme.TEXT_MUTED
+            page,
+            t("You can change this later in Settings."),
+            size=DETAIL_SIZE,
+            color=theme.TEXT_MUTED,
         ).pack(anchor="w", pady=(LINE_GAP, 0))
 
         # The cards scroll when the NAS / other computer form makes them taller than the step.
@@ -415,8 +420,8 @@ class WelcomeDialog(ctk.CTkToplevel):
 
         self._app_card = _OptionCard(
             cards,
-            "Open in my torrent program",
-            "Each download opens in your torrent program by itself. Best for most people.",
+            t("Open in my torrent program"),
+            t("Each download opens in your torrent program by itself. Best for most people."),
         )
         self._app_card.pack(fill="x")
         self._torrent = TorrentAppStatus(
@@ -426,7 +431,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._app_card.show_extra(True)
         self._app_card.bind_select(lambda: self._select_mode(DownloadMode.APP))
 
-        self._remote_card = _OptionCard(cards, REMOTE_TITLE, REMOTE_NOTE)
+        self._remote_card = _OptionCard(cards, t(REMOTE_TITLE), t(REMOTE_NOTE))
         self._remote_card.pack(fill="x", pady=(_CARD_GAP, 0))
         self._remote_form = RemoteProgramForm(
             self._remote_card.extra,
@@ -439,7 +444,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._remote_card.bind_select(lambda: self._select_mode(DownloadMode.REMOTE))
 
         self._folder_card = _OptionCard(
-            cards, "Save to a folder", "For a watch folder, for example on a NAS."
+            cards, t("Save to a folder"), t("For a watch folder, for example on a NAS.")
         )
         self._folder_card.pack(fill="x", pady=(_CARD_GAP, 0))
         folder_row = self._folder_card.extra
@@ -448,7 +453,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._folder_label.pack(side="left")
         self._show_folder()
         secondary_button(
-            folder_row, "Choose folder…", self._choose_folder, width=_FOLDER_BUTTON_WIDTH
+            folder_row, t("Choose folder…"), self._choose_folder, width=_FOLDER_BUTTON_WIDTH
         ).pack(side="right")
         self._folder_card.bind_select(lambda: self._select_mode(DownloadMode.FOLDER))
 
@@ -457,10 +462,10 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_tmdb(self, master: Any, discovery: DiscoveryService) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, TMDB_HEADING, Page.TMDB)
+        _page_heading(page, t(TMDB_HEADING), Page.TMDB)
         text_label(
             page,
-            f"{TMDB_INTRO} You can skip this and do it later.",
+            f"{t(TMDB_INTRO)} {t('You can skip this and do it later.')}",
             size=DETAIL_SIZE,
             color=theme.TEXT_MUTED,
         ).pack(anchor="w", pady=(LINE_GAP, 0))

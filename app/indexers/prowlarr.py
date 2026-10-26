@@ -12,6 +12,7 @@ from datetime import datetime
 import httpx
 from pydantic import Field
 
+from app.i18n import t
 from app.indexers.base import (
     BaseIndexer,
     IndexerError,
@@ -96,7 +97,9 @@ class ProwlarrIndexer(BaseIndexer):
             app_name = payload.get("appName", "Prowlarr")
             if isinstance(version, str) and version and app_name == "Prowlarr":
                 return f"Prowlarr {version}"
-        raise IndexerError("Prowlarr: the URL answered, but not like Prowlarr does; check the URL")
+        raise IndexerError(
+            t("Prowlarr: the URL answered, but not like Prowlarr does; check the URL")
+        )
 
     def web_search_url(self, query: str) -> str | None:
         base = self._base_url()
@@ -113,16 +116,16 @@ class ProwlarrIndexer(BaseIndexer):
         base = self._base_url()
         key = self._api_key().strip()
         if not (base and key):
-            raise IndexerError("Prowlarr is not set up: enter its URL and API key in Settings")
+            raise IndexerError(t("Prowlarr is not set up: enter its URL and API key in Settings"))
         if not (key.isascii() and key.isprintable()):  # e.g. a pasted zero-width space
-            raise IndexerError("Prowlarr API key contains invalid characters")
+            raise IndexerError(t("Prowlarr API key contains invalid characters"))
         return base, {"X-Api-Key": key}
 
     def _status_error(self, path: str, status: int) -> IndexerError:
         if status == 401:
-            return IndexerError("Prowlarr rejected the API key")
+            return IndexerError(t("Prowlarr rejected the API key"))
         if status == 404:
-            return IndexerError(f"Prowlarr: {path} not found (HTTP 404); check the URL")
+            return IndexerError(t("Prowlarr: {path} not found (HTTP 404); check the URL", path=path))
         return super()._status_error(path, status)
 
     def _release(self, raw: object) -> TorrentRelease | None:

@@ -11,6 +11,9 @@ switches) have `theme.BG` as their own background, so the fade turns solid where
 A card is drawn at a `CardScale` (Settings, Card size: app/ui/card_scale.py): every size, gap
 and font below is the XL card's and scales with it; the cover is rendered at the scaled card's
 physical size (and again when Windows' scaling changes, `_set_scaling`).
+
+Switching between light and dark (`_set_appearance_mode`) repaints the canvas and bakes the
+cover again: the face's colours are part of its cache key, so light and dark covers don't mix.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
+from app.i18n import N_, number, t
 from app.ui import theme
 from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TEXT_MIN, TITLE_MIN, CardScale
 from app.ui.download_control import CORNER_RADIUS as ROW_CORNER_RADIUS
@@ -70,9 +74,10 @@ BADGE_HEIGHT = 22
 BADGE_PAD = 8  # inside the pill, left and right of the text
 BADGE_FONT = 12
 
-FOLLOWING_TEXT = "✓ Following"
-TRACK_TEXT = "+ Track"
-MISSING_TEXT = "Not on TVMaze"
+# Shown through t() (`track_look`).
+FOLLOWING_TEXT = N_("✓ Following")
+TRACK_TEXT = N_("+ Track")
+MISSING_TEXT = N_("Not on TVMaze")
 
 _SUPERSAMPLE = 4  # the rounded corners are drawn this much larger, then scaled down
 
@@ -117,7 +122,7 @@ def year_rating_line(year: int | None, rating: float | None) -> str:
     if year:
         parts.append(str(year))
     if rating is not None:
-        parts.append(f"★ {rating:.1f}")
+        parts.append(f"★ {number(rating, '.1f')}")
     return " | ".join(parts)
 
 
@@ -337,30 +342,32 @@ def _placeholder_done(face: CardFace, task: asyncio.Task[Image.Image]) -> None:
 @dataclass(frozen=True, slots=True)
 class TrackLook:
     text: str
-    color: str
-    hover: str
+    color: theme.Color
+    hover: theme.Color
     enabled: bool
-    border: str | None = None  # a 1-unit border in this colour
-    text_color: str | None = None  # None = the button's default; disabled text included
+    border: theme.Color | None = None  # a 1-unit border in this colour
+    text_color: theme.Color | None = None  # None = the button's default; disabled text included
 
 
 def track_look(state: TrackState, busy_text: str) -> TrackLook:
     """idle → "+ Track"; busy → `busy_text`; tracked → "✓ Following" in SUCCESS with a SUCCESS
     border; missing → "Not on TVMaze"."""
     if state == "idle":
-        return TrackLook(TRACK_TEXT, theme.ACCENT, theme.ACCENT_HOVER, enabled=True)
+        return TrackLook(t(TRACK_TEXT), theme.ACCENT, theme.ACCENT_HOVER, enabled=True)
     if state == "busy":
         return TrackLook(busy_text, theme.ACCENT, theme.ACCENT_HOVER, enabled=False)
     if state == "tracked":
         return TrackLook(
-            FOLLOWING_TEXT,
+            t(FOLLOWING_TEXT),
             "transparent",
             theme.ACCENT_HOVER,
             enabled=False,
             border=theme.SUCCESS,
             text_color=theme.SUCCESS,
         )
-    return TrackLook(MISSING_TEXT, theme.DANGER_BUTTON, theme.DANGER_BUTTON_HOVER, enabled=False)
+    return TrackLook(
+        t(MISSING_TEXT), theme.DANGER_BUTTON, theme.DANGER_BUTTON_HOVER, enabled=False
+    )
 
 
 class TrackButton(ctk.CTkButton):
@@ -406,9 +413,9 @@ class TrackButton(ctk.CTkButton):
 # -- the card --------------------------------------------------------------------------------
 
 
-def rgb(widget: tk.Misc, color: str) -> RGB:
-    """`color` (a name or "#rrggbb") as 8-bit RGB."""
-    red, green, blue = widget.winfo_rgb(color)  # 16 bits per channel
+def rgb(widget: tk.Misc, color: theme.Color) -> RGB:
+    """`color` (a name or "#rrggbb"; a pair: the current mode's) as 8-bit RGB."""
+    red, green, blue = widget.winfo_rgb(theme.pick(color))  # 16 bits per channel
     return (red >> 8, green >> 8, blue >> 8)
 
 
@@ -479,17 +486,19 @@ class PosterCard(ctk.CTkFrame):
             self._text_height += self._meta_gap + _linespace(self._meta_font)
 
         # Placed once it has an image; the action rows, created later, stack above it.
-        self._sheet = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=theme.BG)
+        self._sheet = tk.Canvas(
+            self, highlightthickness=0, borderwidth=0, background=theme.pick(theme.BG)
+        )
         self._cover_item = self._sheet.create_image(0, 0, anchor="nw")
         self._title_item = self._sheet.create_text(
-            0, 0, text=self._title_text, fill=theme.TEXT, anchor="s", justify="center"
+            0, 0, text=self._title_text, fill=theme.pick(theme.TEXT), anchor="s", justify="center"
         )
         self._meta_item: int | None = None
-        self._meta_shown = ("", theme.TEXT_MUTED)  # text, colour
+        self._meta_shown: tuple[str, theme.Color] = ("", theme.TEXT_MUTED)  # text, colour
         if with_meta:
             self._meta_item = self._sheet.create_text(0, 0, text="", anchor="n")
             self._set_meta(meta)
-        self._badge: tuple[str, str] | None = None  # text, colour
+        self._badge: tuple[str, theme.Color] | None = None  # text, colour
         self._badge_font = theme.font(scale.font(BADGE_FONT, TEXT_MIN), bold=True)
         self._badge_items: tuple[int, int] | None = None  # pill image, text
         self._badge_photo: ImageTk.PhotoImage | None = None
@@ -544,6 +553,16 @@ class PosterCard(ctk.CTkFrame):
         super()._set_scaling(*args, **kwargs)
         self._apply_scale()
 
+    def _set_appearance_mode(self, mode_string: str) -> None:
+        """Light ↔ dark: CTk repaints the widgets; the canvas, its texts, the badge and the
+        baked cover follow here."""
+        super()._set_appearance_mode(mode_string)
+        self._sheet.configure(background=theme.pick(theme.BG))
+        self._sheet.itemconfigure(self._title_item, fill=theme.pick(theme.TEXT))
+        if self._meta_item is not None:
+            self._sheet.itemconfigure(self._meta_item, fill=theme.pick(self._meta_shown[1]))
+        self._apply_scale()
+
     # -- action row and opening ----------------------------------------------------------------
 
     def _pack_action(self, row: Any) -> None:
@@ -577,24 +596,24 @@ class PosterCard(ctk.CTkFrame):
         return self._meta_shown[0] if self._meta_item is not None else None
 
     @property
-    def meta_color(self) -> str | None:
+    def meta_color(self) -> theme.Color | None:
         return self._meta_shown[1] if self._meta_item is not None else None
 
-    def _set_meta(self, text: str | Sequence[str], color: str = theme.TEXT_MUTED) -> None:
+    def _set_meta(self, text: str | Sequence[str], color: theme.Color = theme.TEXT_MUTED) -> None:
         """Show `text` under the title (the first of several, longest first, that fits; else
         shortened), in `color`. Only on a card with that line (`meta` or `meta_row`)."""
         if self._meta_item is None:
             return
         texts = (text,) if isinstance(text, str) else tuple(text)
         fitted = fit_text(texts, self._room, self._meta_font.measure) if texts else ""
-        self._sheet.itemconfigure(self._meta_item, text=fitted, fill=color)
+        self._sheet.itemconfigure(self._meta_item, text=fitted, fill=theme.pick(color))
         self._meta_shown = (fitted, color)
 
     @property
     def badge_text(self) -> str | None:
         return self._badge[0] if self._badge is not None else None
 
-    def _set_badge(self, text: str | None, color: str = theme.TEXT) -> None:
+    def _set_badge(self, text: str | None, color: theme.Color = theme.TEXT) -> None:
         """A pill with `text` in `color` (outline and text, on `theme.BG`) in the cover's
         top-left corner; None takes it away."""
         self._badge = (text, color) if text else None
@@ -628,7 +647,7 @@ class PosterCard(ctk.CTkFrame):
         canvas.itemconfigure(image_item, image=self._badge_photo)
         canvas.coords(text_item, x + size[0] / 2, y + size[1] / 2)
         canvas.itemconfigure(
-            text_item, text=text, fill=color, font=font.create_scaled_tuple(scaling)
+            text_item, text=text, fill=theme.pick(color), font=font.create_scaled_tuple(scaling)
         )
 
     # -- cover -----------------------------------------------------------------------------------

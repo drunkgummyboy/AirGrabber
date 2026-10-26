@@ -16,6 +16,7 @@ from typing import Literal, TypeVar
 import httpx
 from pydantic import TypeAdapter, ValidationError
 
+from app.i18n import t
 from app.models.domain import Episode, Show
 from app.models.tvmaze import TVMazeScheduleItem, TVMazeSearchResult, TVMazeShow
 
@@ -126,13 +127,15 @@ class TVMazeClient:
                 max_attempts = _FAILED_ATTEMPTS
                 delay = self._backoff(attempt)
             except httpx.RequestError as exc:  # e.g. an undecodable body; retrying won't help
-                raise TVMazeError(f"TVMaze {path}: request failed ({_describe(exc)})") from exc
+                raise TVMazeError(
+                    t("TVMaze {path}: request failed ({error})", path=path, error=_describe(exc))
+                ) from exc
             else:
                 status = response.status_code
                 if response.is_success:
                     return _decode_json(path, response)
                 if status == 404:
-                    raise TVMazeNotFound(f"TVMaze {path}: not found (HTTP 404)")
+                    raise TVMazeNotFound(t("TVMaze {path}: not found (HTTP 404)", path=path))
                 reason = f"HTTP {status}"
                 if status == 429:
                     max_attempts = _RATE_LIMITED_ATTEMPTS
@@ -145,7 +148,12 @@ class TVMazeClient:
                     raise TVMazeError(f"TVMaze {path}: {reason}")
             if attempt >= max_attempts:
                 raise TVMazeError(
-                    f"TVMaze {path}: {reason} (gave up after {attempt} attempts)"
+                    t(
+                        "TVMaze {path}: {reason} (gave up after {n} attempts)",
+                        path=path,
+                        reason=reason,
+                        n=attempt,
+                    )
                 ) from cause
             log.warning(
                 "TVMaze %s: %s; retrying in %.1f s (attempt %d of %d)",
@@ -179,7 +187,7 @@ def _decode_json(path: str, response: httpx.Response) -> object:
     try:
         payload: object = response.json()
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
-        raise TVMazeError(f"TVMaze {path}: response is not valid JSON") from exc
+        raise TVMazeError(t("TVMaze {path}: response is not valid JSON", path=path)) from exc
     return payload
 
 
@@ -194,13 +202,21 @@ def _parse_one(path: str, payload: object, convert: Callable[[object], T]) -> T:
     try:
         return convert(payload)
     except ValidationError as exc:
-        raise TVMazeError(f"TVMaze {path}: unexpected payload ({_summarize(exc)})") from exc
+        raise TVMazeError(
+            t("TVMaze {path}: unexpected payload ({problem})", path=path, problem=_summarize(exc))
+        ) from exc
 
 
 def _parse_items(path: str, payload: object, convert: Callable[[object], T]) -> list[T]:
     """Convert list items one by one so a single malformed entry can't sink the rest."""
     if not isinstance(payload, list):
-        raise TVMazeError(f"TVMaze {path}: expected a JSON list, got {type(payload).__name__}")
+        raise TVMazeError(
+            t(
+                "TVMaze {path}: expected a JSON list, got {kind}",
+                path=path,
+                kind=type(payload).__name__,
+            )
+        )
     parsed: list[T] = []
     for index, item in enumerate(payload):
         try:

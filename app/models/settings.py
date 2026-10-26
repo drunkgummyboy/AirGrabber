@@ -21,6 +21,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.i18n import N_, Language, t
+
 
 class QualityProfile(StrEnum):
     ANY = "Any"
@@ -65,37 +67,38 @@ def remote_ready(kind: RemoteKind, url: str, username: str, password: str) -> bo
     return kind is not RemoteKind.SYNOLOGY or bool(username.strip() and password)
 
 
-# Subtitle languages offered in Settings: OpenSubtitles' code -> plain name, in menu order.
+# Subtitle languages offered in Settings: OpenSubtitles' code -> plain name, in menu order (the
+# names in English; Settings shows them through t()).
 # OpenSubtitles uses ISO 639-1 codes, plus pt-PT / pt-BR and zh-CN / zh-TW.
 SUBTITLE_LANGUAGES: dict[str, str] = {
-    "en": "English",
-    "nl": "Dutch",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "pt-PT": "Portuguese",
-    "pt-BR": "Portuguese (Brazil)",
-    "sv": "Swedish",
-    "da": "Danish",
-    "no": "Norwegian",
-    "fi": "Finnish",
-    "pl": "Polish",
-    "cs": "Czech",
-    "hu": "Hungarian",
-    "ro": "Romanian",
-    "el": "Greek",
-    "tr": "Turkish",
-    "ru": "Russian",
-    "uk": "Ukrainian",
-    "ar": "Arabic",
-    "he": "Hebrew",
-    "hi": "Hindi",
-    "id": "Indonesian",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "zh-CN": "Chinese (simplified)",
-    "zh-TW": "Chinese (traditional)",
+    "en": N_("English"),
+    "nl": N_("Dutch"),
+    "de": N_("German"),
+    "fr": N_("French"),
+    "es": N_("Spanish"),
+    "it": N_("Italian"),
+    "pt-PT": N_("Portuguese"),
+    "pt-BR": N_("Portuguese (Brazil)"),
+    "sv": N_("Swedish"),
+    "da": N_("Danish"),
+    "no": N_("Norwegian"),
+    "fi": N_("Finnish"),
+    "pl": N_("Polish"),
+    "cs": N_("Czech"),
+    "hu": N_("Hungarian"),
+    "ro": N_("Romanian"),
+    "el": N_("Greek"),
+    "tr": N_("Turkish"),
+    "ru": N_("Russian"),
+    "uk": N_("Ukrainian"),
+    "ar": N_("Arabic"),
+    "he": N_("Hebrew"),
+    "hi": N_("Hindi"),
+    "id": N_("Indonesian"),
+    "ja": N_("Japanese"),
+    "ko": N_("Korean"),
+    "zh-CN": N_("Chinese (simplified)"),
+    "zh-TW": N_("Chinese (traditional)"),
 }
 _LANGUAGE_CODES = {code.lower(): code for code in SUBTITLE_LANGUAGES}
 
@@ -144,6 +147,48 @@ class CardSize(StrEnum):
     XL = "xl"
 
 
+class ThemeMode(StrEnum):
+    """AirGrabber's look (Settings → Looks → Theme): like Windows' app mode (the default, also
+    for settings stored before there was a choice), always dark or always light."""
+
+    SYSTEM = "system"
+    DARK = "dark"
+    LIGHT = "light"
+
+
+def _theme_mode(value: Any) -> Any:
+    """Any stored value AirGrabber doesn't know (a newer version's) follows Windows."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return text if text in {mode.value for mode in ThemeMode} else ThemeMode.SYSTEM
+    return value
+
+
+def _language(value: Any) -> Any:
+    """A language this version doesn't know (a newer version's) is English."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return text if text in {language.value for language in Language} else Language.EN
+    return value
+
+
+class TrackedSort(StrEnum):
+    """The order of the My shows grid (app/ui/views/tracked_view.py)."""
+
+    NAME = "name"  # A–Z
+    NEXT_EPISODE = "next_episode"  # the soonest next episode first, shows without one last
+    RECENT = "recent"  # the latest download first, shows never downloaded last
+
+
+class TrackedFilter(StrEnum):
+    """Which shows the My shows grid shows."""
+
+    ALL = "all"
+    MISSING = "missing"  # with missing episodes
+    AUTO = "auto"  # automatic downloads on
+    ENDED = "ended"
+
+
 def _split_csv(value: Any) -> Any:
     if isinstance(value, str):
         return tuple(part.strip().lower() for part in value.split(",") if part.strip())
@@ -163,12 +208,12 @@ def _size_gb(value: Any) -> Any:
     try:
         return float(text)
     except ValueError:
-        raise ValueError("Use a number, like 2.5") from None
+        raise ValueError(t("Use a number, like 2.5")) from None
 
 
 def _positive_size(value: float | None) -> float | None:
     if value is not None and not (math.isfinite(value) and value > 0):
-        raise ValueError("Use a size above 0")
+        raise ValueError(t("Use a size above 0"))
     return value
 
 
@@ -193,7 +238,7 @@ def _normalize_url(value: Any) -> Any:
         return ""
     parts = urlsplit(text)
     if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
-        raise ValueError("Use a full address like https://nas.local:5001")
+        raise ValueError(t("Use a full address like https://nas.local:5001"))
     return text
 
 
@@ -227,6 +272,19 @@ class Settings(BaseModel):
     # The cards' size on every page, the calendar too (app/ui/card_scale.py). A stored size
     # stays as it is.
     card_size: CardSize = CardSize.M
+    # Light, dark or like Windows (app/ui/theme.py); settings stored before there was a choice
+    # follow Windows.
+    theme_mode: Annotated[ThemeMode, BeforeValidator(_theme_mode)] = ThemeMode.SYSTEM
+    # The interface language (app/i18n.py): English for everyone until chosen otherwise. It
+    # takes effect at the next start (main.py applies it before the first window).
+    language: Annotated[Language, BeforeValidator(_language)] = Language.EN
+    # My shows: the grid's order and which shows it shows (the bar under its heading).
+    tracked_sort: TrackedSort = TrackedSort.NAME
+    tracked_filter: TrackedFilter = TrackedFilter.ALL
+    # "Hide what I already have" above the shelves: Discover hides the shows you follow,
+    # Movies the films already downloaded (app/ui/shelf_filter.py).
+    hide_owned_discover: bool = False
+    hide_owned_movies: bool = False
     tmdb_api_key: StoredSecret = SecretStr("")
     excluded_keywords: KeywordList = ("cam", "telesync", "hdcam", "sample")
     preferred_groups: KeywordList = ()
@@ -320,14 +378,14 @@ class Settings(BaseModel):
         name = info.field_name or ""
         low = info.data.get(name.replace("_max_", "_min_"))
         if value is not None and low is not None and value < low:
-            raise ValueError("The first number can't be bigger than the second")
+            raise ValueError(t("The first number can't be bigger than the second"))
         return value
 
     @field_validator("download_dir", mode="before")
     @classmethod
     def _require_folder(cls, value: Any) -> Any:
         if isinstance(value, str) and not value.strip():
-            raise ValueError("Choose a folder")
+            raise ValueError(t("Choose a folder"))
         return value
 
     @field_validator(

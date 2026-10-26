@@ -33,6 +33,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.database import HistoryRepository
+from app.i18n import N_, t
 from app.models import (
     DownloadMode,
     DownloadRecord,
@@ -58,14 +59,16 @@ ITORRENTS_URL = "https://itorrents.org/torrent/{}.torrent"  # hash in UPPERCASE 
 MAX_TORRENT_BYTES = 10 * 1024 * 1024
 MAX_NAME_LENGTH = 120
 TORRENT_CACHE_KEEP = 50  # .torrent files kept in the APP-mode cache folder
-NO_TORRENT_APP = (
+# The messages are raised through t().
+NO_TORRENT_APP = N_(
     "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose "
-    'another option under "When I download" in Settings.'
+    'another option under "Where downloads go" in Settings.'
 )
-NO_REMOTE_FALLBACK = (
+NO_REMOTE_FALLBACK = N_(
     "No .torrent file is available for this release, and no torrent program on a NAS or "
     "another computer is set up in Settings to send its magnet link to."
 )
+NO_LINK = N_("No .torrent file or magnet link is available for this release.")
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -206,11 +209,11 @@ class DownloadService:
         """
         app = await asyncio.to_thread(self._find_app)
         if app is None:
-            raise GrabError(NO_TORRENT_APP)  # before downloading anything
+            raise GrabError(t(NO_TORRENT_APP))  # before downloading anything
         content, magnet, info_hash = await self._obtain(
             release, _magnet_or_none(release.magnet_uri)
         )
-        message = "Opened in your torrent program"
+        message = t("Opened in your torrent program")
         if content is not None:
             path = await self._save_to_cache(content, release.title)
             await self._open(str(path), app)
@@ -221,7 +224,7 @@ class DownloadService:
         if magnet is None and info_hash:
             magnet = build_magnet(info_hash, release.title)
         if magnet is None:
-            raise GrabError("No .torrent file or magnet link is available for this release.")
+            raise GrabError(t(NO_LINK))
         await self._open(magnet, app)
         log.info("Grabbed %r: magnet opened in %s", release.title, app.name)
         return GrabResult(outcome=GrabOutcome.OPENED, message=message), app.name, info_hash
@@ -246,10 +249,11 @@ class DownloadService:
             if magnet is None and info_hash:
                 magnet = build_magnet(info_hash, release.title)
             if magnet is None:
-                raise GrabError("No .torrent file or magnet link is available for this release.")
+                raise GrabError(t(NO_LINK))
             await client.add_magnet(magnet)
             log.info("Grabbed %r: magnet sent to %s", release.title, name)
-        return GrabResult(outcome=GrabOutcome.SENT, message=f"Sent to {name}"), name, info_hash
+        sent = GrabResult(outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=name))
+        return sent, name, info_hash
 
     async def _obtain(
         self, release: TorrentRelease, magnet: str | None
@@ -287,21 +291,28 @@ class DownloadService:
             path = await self._save(content, release.title)
             saved_path = str(path)
             result = GrabResult(
-                outcome=GrabOutcome.SAVED, path=saved_path, message=f"Saved {path.name}"
+                outcome=GrabOutcome.SAVED,
+                path=saved_path,
+                message=t("Saved {name}", name=path.name),
             )
             log.info("Grabbed %r: saved %s", release.title, path)
         elif not self._remote.configured:
-            raise GrabError(NO_REMOTE_FALLBACK)
+            raise GrabError(t(NO_REMOTE_FALLBACK))
         elif magnet is None:
             raise GrabError(
-                "No .torrent file is available for this release, and it has no magnet link to "
-                f"send to {self._remote.kind.program}."
+                t(
+                    "No .torrent file is available for this release, and it has no magnet "
+                    "link to send to {program}.",
+                    program=self._remote.kind.program,
+                )
             )
         else:
             client = self._remote.client()
             saved_path = client.kind.program
             await client.add_magnet(magnet)
-            result = GrabResult(outcome=GrabOutcome.SENT, message=f"Sent to {saved_path}")
+            result = GrabResult(
+                outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=saved_path)
+            )
             log.info("Grabbed %r: magnet sent to %s", release.title, saved_path)
         return result, saved_path, info_hash
 
@@ -311,7 +322,9 @@ class DownloadService:
             await asyncio.to_thread(self._opener, target)
         except OSError as exc:
             reason = exc.strerror or type(exc).__name__
-            raise GrabError(f"Couldn't open this release in {app.name}: {reason}") from None
+            raise GrabError(
+                t("Couldn't open this release in {program}: {reason}", program=app.name, reason=reason)
+            ) from None
 
     async def _save_to_cache(self, content: bytes, title: str) -> Path:
         directory = self._torrent_cache
@@ -319,7 +332,9 @@ class DownloadService:
             return await asyncio.to_thread(_write_torrent, directory, safe_filename(title), content)
         except OSError as exc:
             reason = exc.strerror or type(exc).__name__
-        raise GrabError(f"Can't write the .torrent file to {directory}: {reason}")
+        raise GrabError(
+            t("Can't write the .torrent file to {folder}: {reason}", folder=directory, reason=reason)
+        )
 
     async def _prune_cache(self) -> None:
         try:
@@ -379,20 +394,26 @@ class DownloadService:
             return await asyncio.to_thread(_write_torrent, directory, safe_filename(title), content)
         except OSError as exc:
             reason = exc.strerror or type(exc).__name__
-        raise GrabError(f"Can't write to the download folder {directory}: {reason}")
+        raise GrabError(
+            t("Can't write to the download folder {folder}: {reason}", folder=directory, reason=reason)
+        )
 
 
 def open_with_default_program(target: str) -> None:
     """Open a file or a magnet link with its registered Windows handler. Blocking."""
     startfile = getattr(os, "startfile", None)
     if startfile is None:
-        raise OSError(0, "Opening torrents is only supported on Windows")
+        raise OSError(0, t("Opening torrents is only supported on Windows"))
     startfile(target)
 
 
 def _remote_not_set_up(kind: RemoteKind) -> str:
-    needs = "address, user name and password" if kind is RemoteKind.SYNOLOGY else "address"
-    return f"{kind.program} isn't set up yet: enter its {needs} in Settings."
+    if kind is RemoteKind.SYNOLOGY:
+        return t(
+            "{program} isn't set up yet: enter its address, user name and password in Settings.",
+            program=kind.program,
+        )
+    return t("{program} isn't set up yet: enter its address in Settings.", program=kind.program)
 
 
 def build_magnet(info_hash: str, title: str) -> str:

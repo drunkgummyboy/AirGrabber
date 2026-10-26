@@ -562,7 +562,7 @@ class AppModeTests(DownloadTestCase):
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
         self.assertEqual(str(caught.exception), NO_TORRENT_APP)
-        self.assertIn('under "When I download" in Settings.', NO_TORRENT_APP)
+        self.assertIn('under "Where downloads go" in Settings.', NO_TORRENT_APP)
         self.assertEqual(sum(self.web.requests.values()), 0)
         self.assertEqual(self.opened, [])
         self.assertEqual(await self.history(), [])

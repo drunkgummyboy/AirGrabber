@@ -92,6 +92,17 @@ class FlexGridTests(unittest.TestCase):
         self.assertEqual([self.column_of(child) for child in grid.winfo_children()], [0, 1, 0])
         self.assertEqual(int(grid.grid_columnconfigure(0)["weight"]), 0)
 
+    def test_set_order_shows_some_children_in_another_order(self) -> None:
+        grid = self.grid_with(3)
+        first, second, third = grid.winfo_children()
+        grid.set_order([third, first])
+        grid._regrid(2)  # as a resize does: the order and the hidden child stay
+        self.assertEqual([self.column_of(child) for child in (third, first)], [1, 2])
+        self.assertEqual(second.winfo_manager(), "")  # hidden
+        grid.set_order(None)  # all of them again, as added
+        grid._regrid(2)
+        cells = [(int(child.grid_info()["row"]), self.column_of(child)) for child in (first, second, third)]
+        self.assertEqual(cells, [(0, 1), (0, 2), (1, 1)])
 
 if __name__ == "__main__":
     unittest.main()

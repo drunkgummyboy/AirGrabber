@@ -18,6 +18,7 @@ import sys
 from collections.abc import Callable
 from pathlib import PureWindowsPath
 
+from app.i18n import t
 from app.models import TorrentApp
 
 log = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ async def install_qbittorrent(
     if sys.platform != "win32" or winget is None:
         log.info("qBittorrent install skipped: winget is not available")
         return False
-    report("Installing qBittorrent…")
+    report(t("Installing qBittorrent…"))
     try:
         process = await asyncio.create_subprocess_exec(
             winget,
@@ -163,7 +164,7 @@ async def install_qbittorrent(
     if process.returncode != 0:
         log.info("qBittorrent install failed: winget exit code %s", process.returncode)
         return False
-    report("Checking the installation…")
+    report(t("Checking the installation…"))
     app = await asyncio.to_thread(find)
     if app is None or app.name != QBITTORRENT:
         log.info("winget finished, but qBittorrent is not registered for torrents")

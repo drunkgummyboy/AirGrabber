@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
+from app.i18n import t
 from app.identity import APP_USER_MODEL_ID
 from app.services.powershell import HELPER_TYPE, LOAD_HELPER, helper_env, run_powershell
 
@@ -123,7 +124,7 @@ async def set_enabled(
             link.unlink(missing_ok=True)
         except OSError as exc:
             log.warning("Could not remove the Startup shortcut: %r", exc)
-            raise StartupError("AirGrabber could not be removed from Windows startup.") from exc
+            raise StartupError(t("AirGrabber could not be removed from Windows startup.")) from exc
         log.info("Start with Windows: off")
         return
 
@@ -135,7 +136,7 @@ async def set_enabled(
         folder.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         log.warning("Could not create the Startup folder: %r", exc)
-        raise StartupError("AirGrabber could not be added to Windows startup.") from exc
+        raise StartupError(t("AirGrabber could not be added to Windows startup.")) from exc
     await (write or write_shortcut)(spec)
     log.info("Start with Windows: on")
 
@@ -159,7 +160,7 @@ async def write_shortcut(spec: ShortcutSpec) -> None:
     """Create or overwrite the .lnk through PowerShell's WScript.Shell, with its AppUserModelID.
     Raises StartupError (not when only the AppUserModelID could not be set: that is logged)."""
     script, env = shortcut_command(spec)
-    failed = StartupError("AirGrabber could not be added to Windows startup.")
+    failed = StartupError(t("AirGrabber could not be added to Windows startup."))
     try:
         result = await run_powershell(script, env)
     except OSError as exc:

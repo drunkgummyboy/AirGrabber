@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from app.i18n import N_
 from app.models import CardSize
 
 # The poster card's width per size, in CTk units; XL is the original 192.
@@ -39,8 +40,9 @@ CARD_SIZE_LABELS: dict[CardSize, str] = {
     CardSize.L: "L",
     CardSize.XL: "XL",
 }
-CARD_SIZE_LABEL = "Card size"
-CARD_SIZE_TIP = (
+# Shown through t() (Settings → Looks).
+CARD_SIZE_LABEL = N_("Card size")
+CARD_SIZE_TIP = N_(
     "How big the cards are on the calendar, Movies, Discover, My shows and in search results. "
     "Smaller cards fit more on the screen."
 )

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import customtkinter as ctk
 
+from app.i18n import N_, day_short, month_short, number, t
 from app.models import CalendarEntry, DiscoverShow, Episode, Show, ShowDetails
 from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError
@@ -108,15 +109,20 @@ CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's 
 CC_GAP = 8
 NEAR_DAYS = 6  # an episode airing within this many days is named by its weekday
 
-DOWNLOADED_TEXT = "✓ Downloaded"
-ADDING_TEXT = "Adding…"
-MORE_TEXT = "More"
-NOT_ON_TVMAZE_TEXT = "Couldn't find this show on TVMaze"
-NO_EPISODES_TEXT = "No episodes listed yet."
-UNKNOWN_DATE_TEXT = "TBA"
-
-_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+# Shown through t().
+DOWNLOADED_TEXT = N_("✓ Downloaded")
+ADDING_TEXT = N_("Adding…")
+MORE_TEXT = N_("More")
+NOT_ON_TVMAZE_TEXT = N_("Couldn't find this show on TVMaze")
+NO_EPISODES_TEXT = N_("No episodes listed yet.")
+UNKNOWN_DATE_TEXT = N_("TBA")
+# TVMaze's show statuses in plain words (another status shows as TVMaze writes it).
+_STATUS_NAMES = {
+    "Running": N_("Running"),
+    "Ended": N_("Ended"),
+    "To Be Determined": N_("To Be Determined"),
+    "In Development": N_("In Development"),
+}
 
 
 # -- text and state ----------------------------------------------------------------------------
@@ -131,10 +137,16 @@ def meta_line(show: Show) -> str:
     if show.network:
         parts.append(show.network)
     if show.status:
-        parts.append(show.status)
+        parts.append(show_status(show.status))
     if show.rating is not None:
-        parts.append(f"★ {show.rating:.1f}")
+        parts.append(f"★ {number(show.rating, '.1f')}")
     return " · ".join(parts)
+
+
+def show_status(status: str) -> str:
+    """TVMaze's show status in plain words ("Running" / "Loopt"); another one as it is."""
+    name = _STATUS_NAMES.get(status)
+    return t(name) if name is not None else status
 
 
 def air_day(episode: Episode, now: datetime) -> date | None:
@@ -146,7 +158,7 @@ def air_day(episode: Episode, now: datetime) -> date | None:
 
 def short_date(day: date) -> str:
     """"17 Jan"."""
-    return f"{day.day} {_MONTHS[day.month - 1]}"
+    return f"{day.day} {month_short(day)}"
 
 
 def next_line(episode: Episode | None, now: datetime) -> str | None:
@@ -155,8 +167,9 @@ def next_line(episode: Episode | None, now: datetime) -> str | None:
         return None
     day = air_day(episode, now)
     if day is None:
-        return f"Next: {episode.code}"
-    return f"Next: {episode.code} · {_WEEKDAYS[day.weekday()]} {short_date(day)}"
+        return t("Next: {code}", code=episode.code)
+    when = f"{day_short(day)} {short_date(day)}"
+    return t("Next: {code} · {when}", code=episode.code, when=when)
 
 
 def season_numbers(episodes: Iterable[Episode]) -> list[int]:
@@ -227,9 +240,9 @@ def season_menu_items(missing: Sequence[int], have: Sequence[int]) -> list[tuple
     "Mark as missing again" while some are marked."""
     items: list[tuple[str, SeasonAction]] = []
     if missing:
-        items.append((HAVE_SEASON_TEXT, "mark"))
+        items.append((t(HAVE_SEASON_TEXT), "mark"))
     if have:
-        items.append((MARK_MISSING_TEXT, "unmark"))
+        items.append((t(MARK_MISSING_TEXT), "unmark"))
     return items
 
 
@@ -238,9 +251,9 @@ def upcoming_text(episode: Episode, now: datetime) -> str:
     date ("23 Oct"); "TBA" when unknown."""
     day = air_day(episode, now)
     if day is None:
-        return UNKNOWN_DATE_TEXT
+        return t(UNKNOWN_DATE_TEXT)
     if 0 <= (day - now.date()).days <= NEAR_DAYS:
-        return f"airs {_WEEKDAYS[day.weekday()]}"
+        return t("airs {day}", day=day_short(day))
     return short_date(day)
 
 
@@ -307,7 +320,7 @@ class _EpisodeRow(ctk.CTkFrame):
 
         ctk.CTkLabel(
             self,
-            text=episode.code if episode.number is not None else "Special",
+            text=episode.code if episode.number is not None else t("Special"),
             width=CODE_WIDTH,
             font=theme.font(13),
             text_color=theme.TEXT_MUTED,
@@ -329,7 +342,7 @@ class _EpisodeRow(ctk.CTkFrame):
             text_color=theme.SUCCESS,
             height=24,
         )
-        add_tooltip(self._cc, CREDIT_TEXT)  # the credit OpenSubtitles asks for
+        add_tooltip(self._cc, t(CREDIT_TEXT))  # the credit OpenSubtitles asks for
         name = episode.name
 
         def fit(width: int) -> None:
@@ -380,7 +393,7 @@ class _EpisodeRow(ctk.CTkFrame):
         if state == "downloaded":
             ctk.CTkLabel(
                 self._slot,
-                text=DOWNLOADED_TEXT,
+                text=t(DOWNLOADED_TEXT),
                 height=CONTROL_HEIGHT,
                 corner_radius=CONTROL_HEIGHT // 2,
                 fg_color=theme.GRABBED,
@@ -449,9 +462,9 @@ class _EpisodeRow(ctk.CTkFrame):
             return
         on_mark = self._on_mark
         if mark == "missing":
-            text, color = CHIP_MISSING_TEXT, MISSING_COLOR
+            text, color = t(CHIP_MISSING_TEXT), MISSING_COLOR
         else:
-            text, color = CHIP_HAVE_TEXT, theme.TEXT_MUTED
+            text, color = t(CHIP_HAVE_TEXT), theme.TEXT_MUTED
         button = chip(
             self._mark_slot,
             text,
@@ -464,7 +477,7 @@ class _EpisodeRow(ctk.CTkFrame):
         button.pack(fill="both", expand=True)
         if on_mark is not None:
             button.configure(command=functools.partial(on_mark, episode, mark, button))
-            add_tooltip(button, CHIP_TIP)
+            add_tooltip(button, t(CHIP_TIP))
 
 
 # -- the window --------------------------------------------------------------------------------
@@ -586,7 +599,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         self._summary.grid(row=2, column=0, sticky="w", pady=(12, 0))
         self._more = ctk.CTkLabel(
             info,
-            text=MORE_TEXT,
+            text=t(MORE_TEXT),
             font=theme.font(dialog_kit.SMALL_SIZE, underline=True),
             text_color=theme.LINK,
             cursor="hand2",
@@ -619,12 +632,13 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             corner_radius=CONTROL_RADIUS,
             font=theme.font(CONTROL_FONT_SIZE, bold=True),
             fg_color="transparent",
-            hover_color=theme.ACCENT_HOVER,
+            hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
             border_width=1,
             border_color=theme.EDGE,
             command=self._open_season_menu,
         )
-        add_tooltip(self._season_more, SEASON_MENU_TIP)
+        add_tooltip(self._season_more, t(SEASON_MENU_TIP))
         if self._missing_actions is not None:
             self._missing_button = MissingButton(
                 bar,
@@ -709,7 +723,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         if details.tracked:
             ctk.CTkButton(
                 self._buttons,
-                text=FOLLOWING_TEXT,
+                text=t(FOLLOWING_TEXT),
                 width=140,
                 height=dialog_kit.BUTTON_HEIGHT,
                 corner_radius=dialog_kit.BUTTON_RADIUS,
@@ -724,7 +738,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             self._auto_var.set(details.auto_download)
             self._auto_switch = ctk.CTkSwitch(
                 self._buttons,
-                text=AUTO_SWITCH_TEXT,
+                text=t(AUTO_SWITCH_TEXT),
                 variable=self._auto_var,
                 font=theme.font(14),
                 text_color=auto_switch_color(details.auto_download),
@@ -732,11 +746,11 @@ class ShowDetailsWindow(ctk.CTkToplevel):
                 command=self._auto_toggled,
             )
             self._auto_switch.pack(side="left", padx=(16, 0))
-            add_tooltip(self._auto_switch, AUTO_SWITCH_TIP)
+            add_tooltip(self._auto_switch, t(AUTO_SWITCH_TIP))
         else:
-            track = dialog_kit.primary_button(self._buttons, TRACK_TEXT, self._track)
+            track = dialog_kit.primary_button(self._buttons, t(TRACK_TEXT), self._track)
             if self._tracking:
-                track.configure(text=ADDING_TEXT, state="disabled")
+                track.configure(text=t(ADDING_TEXT), state="disabled")
             track.pack(side="left")
         if imdb_url is not None:
 
@@ -774,7 +788,9 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         except TVMazeError as exc:
             log.warning("Show details of TVMaze show %d: %s", self._show.id, exc)
             if self.winfo_exists() and self._details is None:
-                self._episodes_message(f"Couldn't load the episodes: {exc}", theme.DANGER)
+                self._episodes_message(
+                    t("Couldn't load the episodes: {error}", error=exc), theme.DANGER
+                )
             return
         if self._subtitle_marks is not None:
             self._cc = await self._subtitle_marks(details.show.id)
@@ -798,7 +814,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             self._paint_chips()
         self._show_season()
 
-    def _episodes_message(self, text: str, color: str) -> None:
+    def _episodes_message(self, text: str, color: theme.Color) -> None:
         self._cancel_rows()
         for child in self._episode_list.winfo_children():
             child.destroy()
@@ -816,13 +832,14 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         self._chips = {
             season: ctk.CTkButton(
                 self._chip_grid,
-                text=f"Season {season}",
+                text=t("Season {n}", n=season),
                 width=CHIP_WIDTH,
                 height=CHIP_HEIGHT,
                 corner_radius=CHIP_HEIGHT // 2,
                 font=theme.font(14),
                 fg_color=theme.CHIP,
                 hover_color=theme.CHIP_HOVER,
+                text_color=theme.BUTTON_TEXT,
                 command=lambda s=season: self._select_season(s),
             )
             for season in self._seasons
@@ -832,11 +849,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
 
     def _paint_chips(self) -> None:
         for season, chip in self._chips.items():
-            selected = season == self._season
-            chip.configure(
-                fg_color=theme.ACCENT if selected else theme.CHIP,
-                hover_color=theme.ACCENT_HOVER if selected else theme.CHIP_HOVER,
-            )
+            chip.configure(**theme.choice_colors(season == self._season))
 
     def _select_season(self, season: int) -> None:
         if season != self._season:
@@ -854,7 +867,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             return
         if self._season is None:
             self._paint_season_bar()
-            self._episodes_message(NO_EPISODES_TEXT, theme.TEXT_MUTED)
+            self._episodes_message(t(NO_EPISODES_TEXT), theme.TEXT_MUTED)
             return
         self._paint_season_bar()
         episodes = tuple(season_episodes(details.episodes, self._season))
@@ -949,7 +962,7 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             self._season_bar.pack_forget()
             return
         self._missing_label.configure(
-            text=missing_text(len(missing)) if missing else NOTHING_MISSING_TEXT,
+            text=missing_text(len(missing)) if missing else t(NOTHING_MISSING_TEXT),
             text_color=MISSING_COLOR if missing else theme.TEXT_MUTED,
         )
         self._season_more.pack_forget()
@@ -982,9 +995,11 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             return
         ids = (episode.id,)
         if mark == "missing":
-            item = (HAVE_EPISODE_TEXT, functools.partial(actions.mark_have, details.show, ids))
+            item = (t(HAVE_EPISODE_TEXT), functools.partial(actions.mark_have, details.show, ids))
         else:
-            item = (MARK_MISSING_TEXT, functools.partial(actions.unmark_have, details.show, ids))
+            item = (
+                t(MARK_MISSING_TEXT), functools.partial(actions.unmark_have, details.show, ids)
+            )
         popup_menu(anchor, [item])
 
     def _cancel_rows(self) -> None:
@@ -1006,9 +1021,9 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         try:
             await self._library.track(show.id)
         except TVMazeError as exc:
-            self._report(f"Couldn't track {show.name}: {exc}", 6000)
+            self._report(t("Couldn't track {name}: {error}", name=show.name, error=exc), 6000)
         else:
-            self._report(f"Now tracking {show.name}", 4000)
+            self._report(t("Now tracking {name}", name=show.name), 4000)
         finally:
             self._tracking = False
         # The library's change reloads every details window; this one may be gone by now.
@@ -1026,10 +1041,12 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             await self._library.set_auto_download(show.id, on)
         except Exception:
             log.exception("Switching automatic downloads for TVMaze show %d failed", show.id)
-            state = "on" if on else "off"
-            self._report(
-                f"Could not switch automatic downloads {state} for {show.name}", 8000
+            text = (
+                t("Could not switch automatic downloads on for {name}", name=show.name)
+                if on
+                else t("Could not switch automatic downloads off for {name}", name=show.name)
             )
+            self._report(text, 8000)
             if self.winfo_exists():
                 self.reload()  # shows the switch as it really is
 
@@ -1118,17 +1135,17 @@ class ShowWindows:
         if show.id in self._resolving:
             return
         self._resolving.add(show.id)
-        self._report(f"Opening {show.name}…", 3000)
+        self._report(t("Opening {name}…", name=show.name), 3000)
         self._start(self._open_discover(show), "ShowWindows.open_discover")
 
     async def _open_discover(self, show: DiscoverShow) -> None:
         try:
             match = await self._discovery.resolve(show)
         except NoTVMazeMatch:
-            self._report(NOT_ON_TVMAZE_TEXT, 6000)
+            self._report(t(NOT_ON_TVMAZE_TEXT), 6000)
             return
         except (TMDBError, TVMazeError) as exc:
-            self._report(f"Couldn't open {show.name}: {exc}", 8000)
+            self._report(t("Couldn't open {name}: {error}", name=show.name, error=exc), 8000)
             return
         finally:
             self._resolving.discard(show.id)

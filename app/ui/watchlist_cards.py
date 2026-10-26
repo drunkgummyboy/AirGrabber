@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import customtkinter as ctk
 
+from app.i18n import N_, month_short, t, tn
 from app.models import Movie, WatchlistEntry
 from app.services.watchlist import GIVE_UP_AFTER, available_on, is_out
 from app.ui import theme
@@ -48,11 +49,12 @@ if TYPE_CHECKING:
     from app.services.images import ImageCache
     from app.services.watchlist import WatchlistService
 
-SHELF_TITLE = "📌 My watchlist"
-AUTO_TEXT = "Download when it's out"
-OUT_NOW_TEXT = "Out now"
-WAITING_TEXT = "Waiting for a good copy"
-UNKNOWN_TEXT = "Release date unknown"
+# Shown through t().
+SHELF_TITLE = N_("📌 My watchlist")
+AUTO_TEXT = N_("Download when it's out")
+OUT_NOW_TEXT = N_("Out now")
+WAITING_TEXT = N_("Waiting for a good copy")
+UNKNOWN_TEXT = N_("Release date unknown")
 
 STATUS_SIZE = 12  # font size of the status line
 STATUS_LINES = 2  # the status line's room: "Waiting for a good copy / (searched 2 h ago)"
@@ -74,25 +76,25 @@ BottomRow = Literal["switch", "download"]
 
 def film_count(count: int) -> str:
     """"1 film", "4 films"."""
-    return f"{count} film" if count == 1 else f"{count} films"
+    return tn("{n} film", "{n} films", count)
 
 
 def searched_ago(last_try: datetime, now: datetime) -> str:
     """"just now", "25 min ago", "2 h ago", "1 day ago", "3 days ago"."""
     seconds = max(0.0, (now - last_try).total_seconds())
     if seconds < 60:
-        return "just now"
+        return t("just now")
     if seconds < 3600:
-        return f"{int(seconds // 60)} min ago"
+        return t("{n} min ago", n=int(seconds // 60))
     if seconds < 86400:
-        return f"{int(seconds // 3600)} h ago"
-    days = int(seconds // 86400)
-    return "1 day ago" if days == 1 else f"{days} days ago"
+        return t("{n} h ago", n=int(seconds // 3600))
+    return tn("{n} day ago", "{n} days ago", int(seconds // 86400))
 
 
 def _day(day: date, today: date) -> str:
     """"12 Nov", with the year when it isn't this year's."""
-    return f"{day:%d %b}" if day.year == today.year else f"{day:%d %b %Y}"
+    text = f"{day:%d} {month_short(day)}"
+    return text if day.year == today.year else f"{text} {day:%Y}"
 
 
 def release_text(entry: WatchlistEntry, today: date) -> str:
@@ -100,12 +102,14 @@ def release_text(entry: WatchlistEntry, today: date) -> str:
     release), "In cinemas 12 Nov" (only the cinema release, still ahead), "Expected 31 Dec" (the
     cinema release has been: AirGrabber's own estimate), or "Release date unknown"."""
     if entry.digital_release is not None:
-        return f"Out digitally {_day(entry.digital_release, today)}"
+        return t("Out digitally {date}", date=_day(entry.digital_release, today))
     theatrical = entry.theatrical_release or entry.movie.release_date
     if theatrical is not None and theatrical > today:
-        return f"In cinemas {_day(theatrical, today)}"
+        return t("In cinemas {date}", date=_day(theatrical, today))
     expected = available_on(entry)
-    return f"Expected {_day(expected, today)}" if expected is not None else UNKNOWN_TEXT
+    if expected is None:
+        return t(UNKNOWN_TEXT)
+    return t("Expected {date}", date=_day(expected, today))
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,19 +127,20 @@ def watch_status(entry: WatchlistEntry, today: date, now: datetime) -> WatchStat
     + the switch; out with the switch on → "Waiting for a good copy (searched 2 h ago)" + the
     switch; out with the switch off → "Out now" + Download."""
     if entry.gave_up:
-        text = f"No good copy found in {GIVE_UP_AFTER.days} days"
+        text = t("No good copy found in {days} days", days=GIVE_UP_AFTER.days)
         return WatchStatus(text, "gave_up", chip=False, bottom="download")
     if not is_out(entry, today):
         return WatchStatus(release_text(entry, today), "soon", chip=True, bottom="switch")
     if entry.auto_download:
-        text = WAITING_TEXT
+        text = t(WAITING_TEXT)
         if entry.last_try is not None:
-            text += f" (searched {searched_ago(entry.last_try, now)})"
+            ago = searched_ago(entry.last_try, now)
+            text = t("{status} (searched {ago})", status=text, ago=ago)
         return WatchStatus(text, "waiting", chip=False, bottom="switch")
-    return WatchStatus(OUT_NOW_TEXT, "out", chip=True, bottom="download")
+    return WatchStatus(t(OUT_NOW_TEXT), "out", chip=True, bottom="download")
 
 
-def tone_color(tone: Tone) -> str:
+def tone_color(tone: Tone) -> theme.Color:
     """Amber for what wants the user's attention (out now, given up), muted otherwise."""
     return theme.WARNING if tone in ("out", "gave_up") else theme.TEXT_MUTED
 
@@ -201,7 +206,7 @@ class WatchlistCard(PosterCard):
         self._auto_var = ctk.BooleanVar(value=entry.auto_download)
         switch_w, switch_h = (scale.px(size) for size in SWITCH_SIZE)
         switch_room = text_width(scale) - switch_w - SWITCH_TEXT_GAP - SLACK
-        switch_text = elide_to_width(AUTO_TEXT, switch_room, self._status_font.measure)
+        switch_text = elide_to_width(t(AUTO_TEXT), switch_room, self._status_font.measure)
         self._switch = ctk.CTkSwitch(
             self._bottom,
             text=switch_text,
@@ -212,8 +217,8 @@ class WatchlistCard(PosterCard):
             progress_color=theme.ACCENT,
             command=self._auto_toggled,
         )
-        if switch_text != AUTO_TEXT:  # shortened on a small card: the tip says it in full
-            add_tooltip(self._switch, AUTO_TEXT)
+        if switch_text != t(AUTO_TEXT):  # shortened on a small card: the tip says it in full
+            add_tooltip(self._switch, t(AUTO_TEXT))
         self._control = DownloadControl(
             self._bottom,
             item=movie,
@@ -345,7 +350,7 @@ class WatchlistShelf(ctk.CTkFrame):
         heading = ctk.CTkFrame(self, fg_color="transparent")
         heading.pack(anchor="w", padx=10, pady=(0, 10))
         ctk.CTkLabel(
-            heading, text=SHELF_TITLE, font=theme.font(18, bold=True), text_color=theme.TEXT
+            heading, text=t(SHELF_TITLE), font=theme.font(18, bold=True), text_color=theme.TEXT
         ).pack(side="left")
         self._count = ctk.CTkLabel(
             heading, text="", font=theme.font(14), text_color=theme.TEXT_MUTED

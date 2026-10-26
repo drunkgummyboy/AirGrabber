@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 # Stdlib-only imports up here: the third-party packages may not be installed until ensure_requirements().
 from app.bootstrap import ensure_requirements
 from app.config import AppPaths, configure_logging
+from app.i18n import set_language, t
 from app.identity import set_process_app_id
 from app.single_instance import InstanceLock
 
@@ -83,6 +84,9 @@ def _run(paths: AppPaths, instance: InstanceLock, *, start_hidden: bool) -> int:
     restart = False
     try:
         services = loop.run_until_complete(Services.create(paths))
+        # The interface language for this run, before the first window builds its texts
+        # (switching it in Settings takes a restart).
+        set_language(services.settings.current.language)
         window = MainWindow(services, start_hidden=start_hidden, show_requests=instance.show_requested)
         _fix_start_menu_shortcut_soon(loop)
         window.async_mainloop(event_loop=loop)  # returns once the window is closed for good (Quit)
@@ -177,7 +181,10 @@ def _show_fatal_error(paths: AppPaths) -> None:
         root.withdraw()
         messagebox.showerror(
             "AirGrabber",
-            f"AirGrabber hit an unrecoverable error.\n\nDetails are in:\n{paths.logs / 'airgrabber.log'}",
+            t(
+                "AirGrabber hit an unrecoverable error.\n\nDetails are in:\n{path}",
+                path=paths.logs / "airgrabber.log",
+            ),
         )
         root.destroy()
     except Exception:

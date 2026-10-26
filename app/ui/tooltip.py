@@ -6,7 +6,8 @@ the frame its own Enter/Leave as the pointer crosses into or out of any of them)
 on leave, on any click and when the widget is destroyed; one tip is on screen at a time. It
 never takes focus or clicks: it sits next to the widget, never under the pointer.
 
-All tips share one borderless window per Tk root, shown and withdrawn as needed.
+All tips share one borderless window per Tk root, shown and withdrawn as needed (made again
+after a switch between light and dark).
 """
 
 from __future__ import annotations
@@ -189,18 +190,21 @@ def _bind_clicks(widget: tk.Misc) -> None:
 
 
 class _TipWindow:
-    """A borderless, always-on-top window with a rounded SURFACE box and one line of text."""
+    """A borderless, always-on-top window with a rounded SURFACE box and one line of text, in
+    the colours of the mode it was made in."""
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
+        self._dark = theme.is_dark()
         # The window's own colour is keyed out (where supported), leaving the rounded box.
-        top = tk.Toplevel(root, bg=theme.BG, takefocus=False)
+        bg = theme.pick(theme.BG)
+        top = tk.Toplevel(root, bg=bg, takefocus=False)
         top.withdraw()
         top.overrideredirect(True)
         try:
             top.attributes("-topmost", True)
             if sys.platform == "win32":
-                top.attributes("-transparentcolor", theme.BG)
+                top.attributes("-transparentcolor", bg)
         except tk.TclError:
             pass
         box = ctk.CTkFrame(
@@ -218,8 +222,13 @@ class _TipWindow:
         self._top = top
 
     def belongs_to(self, root: tk.Tk) -> bool:
+        """Whether this window serves `root` as things are now (still there, same mode)."""
         try:
-            return self._root is root and bool(self._top.winfo_exists())
+            return (
+                self._root is root
+                and self._dark == theme.is_dark()
+                and bool(self._top.winfo_exists())
+            )
         except tk.TclError:
             return False
 

@@ -1,5 +1,10 @@
 """Weekly episode calendar: tracked episodes from SQL, plus one suggested show per day.
 
+Missing episodes (`LibraryService.missing_between`: aired, not downloaded, not marked "I
+already have this") get the cards' amber mark. Several episodes of one show on one day share a
+stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
+unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
+
 The top bar, in one line: the visible dates, ◀ Today ▶, and on the right the number of weeks
 (1–5) and the 💡 Suggestions toggle; on a window too narrow for one line the right-hand
 controls move to a second line. The cards follow Settings → Card size (`card_scale`).
@@ -9,13 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any, Literal
 
 import customtkinter as ctk
 
-from app.models import CalendarEntry, Settings, Weekday
+from app.i18n import N_, day_short, month_short, t
+from app.models import CalendarEntry, Settings
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import RECENT_DAYS, calendar_range
 from app.ui import theme
@@ -26,6 +32,7 @@ from app.ui.calendar_cards import (
     OpenShow,
     SuggestionCard,
 )
+from app.ui.calendar_stack import CompactStackCard, FoldKey, Stack, StackCard, stack_entries
 from app.ui.card_scale import FULL, CardScale
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK
@@ -38,9 +45,10 @@ log = logging.getLogger(__name__)
 CardStyle = Literal["full", "compact"]
 
 WEEK_COUNTS = tuple(range(1, 6))  # the choices of Settings.weeks_to_show
-WEEKS_TIP = "How many weeks to show"
-SUGGESTIONS_TEXT = "💡 Suggestions"
-SUGGESTIONS_TIP = (
+# Shown through t().
+WEEKS_TIP = N_("How many weeks to show")
+SUGGESTIONS_TEXT = N_("💡 Suggestions")
+SUGGESTIONS_TIP = N_(
     "Also show one popular episode a day from a show you don't follow yet. "
     "Click + Track on it to start following that show."
 )
@@ -67,19 +75,9 @@ TODAY_BORDER_WIDTH = 2
 PILL_PAD_X = 10  # the "Today" pill's padding around its text
 PILL_PAD_Y = 2
 
-_MONTHS = (
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-)  # fmt: skip
-_WEEKDAYS = tuple(weekday.value[:3] for weekday in Weekday)  # "Mon" … "Sun", by date.weekday()
-
-
-def _short_month(day: date) -> str:
-    return _MONTHS[day.month - 1][:3]
-
-
 def _day_month(day: date) -> str:
-    return f"{day.day} {_short_month(day)}"
+    """ "12 Oct" / "12 okt"."""
+    return f"{day.day} {month_short(day)}"
 
 
 def range_label(start: date, end: date) -> str:
@@ -122,7 +120,7 @@ def suggestions_look(shown: bool) -> dict[str, Any]:
             "fg_color": theme.ACCENT,
             "hover_color": theme.ACCENT_HOVER,
             "border_color": theme.ACCENT,
-            "text_color": theme.TEXT,
+            "text_color": theme.ON_COLOR,
         }
     return {
         "fg_color": "transparent",
@@ -133,9 +131,10 @@ def suggestions_look(shown: bool) -> dict[str, Any]:
 
 
 def day_label(day: date) -> str:
-    """A day cell's header: "Mon 12", with the month on its first day: "Mon 1 Nov"."""
-    text = f"{_WEEKDAYS[day.weekday()]} {day.day}"
-    return f"{text} {_MONTHS[day.month - 1][:3]}" if day.day == 1 else text
+    """A day cell's header: "Mon 12", with the month on its first day: "Mon 1 Nov" (in Dutch
+    "ma 12", "ma 1 nov")."""
+    text = f"{day_short(day)} {day.day}"
+    return f"{text} {month_short(day)}" if day.day == 1 else text
 
 
 def card_style(day: date, *, today: date) -> CardStyle:
@@ -210,14 +209,15 @@ def _cell_header(cell: ctk.CTkFrame, day: date, *, is_today: bool) -> ctk.CTkFra
         anchor="w",
     ).pack(side="left")
     if is_today:
+        today = t("Today")
         ctk.CTkLabel(
             header,
-            text="Today",
+            text=today,
             font=pill_font,
             text_color=theme.TEXT,
             fg_color=theme.ACCENT,
             corner_radius=6,
-            width=round(pill_font.measure("Today")) + 2 * PILL_PAD_X,
+            width=round(pill_font.measure(today)) + 2 * PILL_PAD_X,
             height=height,
         ).pack(side="right")
     return header
@@ -228,7 +228,7 @@ class CalendarView(BaseView):
     them (unless suggestions are switched off); ◀ / Today / ▶ move through the weeks.
 
     `card_scale`: the card size (Settings), read at every load. `on_open_show`: what a click on
-    a card's poster or name (compact cards: their ⓘ) does, the show's window."""
+    a card's poster or name (suggestions included) does, the show's window."""
 
     def __init__(
         self,
@@ -254,6 +254,7 @@ class CalendarView(BaseView):
         self._weeks: ctk.CTkFrame | None = None  # the grid of day cells, rebuilt on every load
         self._rendered_for: date | None = None  # the "today" of the last load
         self._offset = 0  # weeks from the current one; this session only
+        self._unfolded: set[FoldKey] = set()  # the stack cards unfolded; this session only
         self._suggestions_shown = settings.current.show_suggestions  # the toggle's state
 
         self.grid_columnconfigure(0, weight=1)
@@ -287,13 +288,13 @@ class CalendarView(BaseView):
         )
         self._range.pack(side="left")
         _nav_button(
-            left, "◀", NAV_HEIGHT, lambda: self._go_to(self._offset - 1), "Previous week"
+            left, "◀", NAV_HEIGHT, lambda: self._go_to(self._offset - 1), t("Previous week")
         ).pack(side="left", padx=(RANGE_GAP, 0))
-        _nav_button(left, "Today", TODAY_WIDTH, lambda: self._go_to(0)).pack(
+        _nav_button(left, t("Today"), TODAY_WIDTH, lambda: self._go_to(0)).pack(
             side="left", padx=NAV_GAP
         )
         _nav_button(
-            left, "▶", NAV_HEIGHT, lambda: self._go_to(self._offset + 1), "Next week"
+            left, "▶", NAV_HEIGHT, lambda: self._go_to(self._offset + 1), t("Next week")
         ).pack(side="left")
         self._left = left
         self._note = ctk.CTkLabel(
@@ -311,20 +312,21 @@ class CalendarView(BaseView):
             corner_radius=NAV_RADIUS,
             font=theme.font(NAV_FONT_SIZE, bold=True),
             fg_color=theme.SURFACE,
-            selected_color=theme.ACCENT,
-            selected_hover_color=theme.ACCENT_HOVER,
+            selected_color=theme.SELECTED,
+            selected_hover_color=theme.SELECTED_HOVER,
             unselected_color=theme.SURFACE,
             unselected_hover_color=theme.CHIP_HOVER,
+            text_color=theme.BUTTON_TEXT,
             dynamic_resizing=False,
             command=self._save_weeks,
         )
         self._week_count.pack(side="left")
-        add_tooltip(self._week_count, WEEKS_TIP)
+        add_tooltip(self._week_count, t(WEEKS_TIP))
         toggle_font = theme.font(NAV_FONT_SIZE)
         self._suggestions_toggle = ctk.CTkButton(
             right,
-            text=SUGGESTIONS_TEXT,
-            width=round(toggle_font.measure(SUGGESTIONS_TEXT)) + 2 * TOGGLE_PAD_X,
+            text=t(SUGGESTIONS_TEXT),
+            width=round(toggle_font.measure(t(SUGGESTIONS_TEXT))) + 2 * TOGGLE_PAD_X,
             height=NAV_HEIGHT,
             corner_radius=NAV_RADIUS,
             border_width=1,
@@ -332,7 +334,7 @@ class CalendarView(BaseView):
             command=self._toggle_suggestions,
         )
         self._suggestions_toggle.pack(side="left", padx=(CONTROL_GAP, 0))
-        add_tooltip(self._suggestions_toggle, SUGGESTIONS_TIP)
+        add_tooltip(self._suggestions_toggle, t(SUGGESTIONS_TIP))
         self._right = right
         self._wrapped: bool | None = None
         self._place_right(wrapped=False)
@@ -405,21 +407,28 @@ class CalendarView(BaseView):
         self._range.configure(text=range_label(start, end))
 
         entries = await self._library.calendar(start, end)
+        missing = await self._library.missing_between(start, end)
+        had = await self._library.have_between(start, end)
         if not self.winfo_exists():
             return
         cells = await self._render_tracked(
-            _days(start, end), by_day(entries), today=today, scale=scale
+            _days(start, end),
+            by_day(entries),
+            today=today,
+            scale=scale,
+            missing=missing,
+            had=had,
         )
 
         if not prefs.show_suggestions:
             return
-        self._note.configure(text="Finding suggestions…")
+        self._note.configure(text=t("Finding suggestions…"))
         try:
             suggestions = await self._library.suggestions(start, end, per_day=1)
         except Exception:
             log.exception("Couldn't load calendar suggestions for %s – %s", start, end)
             if self.winfo_exists():
-                self._note.configure(text="Couldn't load suggestions")
+                self._note.configure(text=t("Couldn't load suggestions"))
             return
         if not self.winfo_exists():
             return
@@ -435,8 +444,12 @@ class CalendarView(BaseView):
         *,
         today: date,
         scale: CardScale,
+        missing: Collection[int] = frozenset(),
+        had: Collection[int] = frozenset(),
     ) -> dict[date, ctk.CTkFrame]:
-        """Replace the grid: one cell per day with its tracked episodes. Returns the cells.
+        """Replace the grid: one cell per day with its tracked episodes, a show's episodes of
+        one day on one stack card (`missing`: the ids of the episodes that get the amber mark;
+        `had`: those marked "I already have this"). Returns the cells.
 
         Yields to the event loop after each day: a whole week of poster cards takes Tk ~250 ms
         to draw. Cancelled at a yield, it leaves a partial grid in `self._weeks` for the next
@@ -468,28 +481,77 @@ class CalendarView(BaseView):
             cells[day] = cell
 
             style = card_style(day, today=today)
-            for entry in tracked.get(day, ()):
-                card: ctk.CTkFrame
-                if style == "full":
-                    card = EpisodeCard(
-                        cell,
-                        entry,
-                        images=self._images,
-                        actions=self._episode_actions,
-                        scale=scale,
-                        on_open_show=self._on_open_show,
-                    )
-                else:
-                    card = CompactEpisodeCard(
-                        cell,
-                        entry,
-                        actions=self._episode_actions,
-                        scale=scale,
-                        on_open_show=self._on_open_show,
-                    )
+            for group in stack_entries(tracked.get(day, ())):
+                card = self._episode_card(
+                    cell, group, style=style, scale=scale, missing=missing, had=had
+                )
                 card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()
         return cells
+
+    def _episode_card(
+        self,
+        cell: ctk.CTkFrame,
+        group: Sequence[CalendarEntry],
+        *,
+        style: CardStyle,
+        scale: CardScale,
+        missing: Collection[int],
+        had: Collection[int],
+    ) -> ctk.CTkFrame:
+        """The card of one show's episodes of the day: a single episode's card, or a stack
+        card for more."""
+        marked = any(entry.episode.id in missing for entry in group)
+        if len(group) == 1:
+            entry = group[0]
+            if style == "full":
+                return EpisodeCard(
+                    cell,
+                    entry,
+                    images=self._images,
+                    actions=self._episode_actions,
+                    scale=scale,
+                    on_open_show=self._on_open_show,
+                    missing=marked,
+                )
+            return CompactEpisodeCard(
+                cell,
+                entry,
+                actions=self._episode_actions,
+                scale=scale,
+                on_open_show=self._on_open_show,
+                missing=marked,
+            )
+        stack = Stack(tuple(group))
+        if style == "full":
+            key = stack.fold_key
+            return StackCard(
+                cell,
+                stack,
+                images=self._images,
+                actions=self._episode_actions,
+                scale=scale,
+                on_open_show=self._on_open_show,
+                missing=marked,
+                had=had,
+                unfolded=key in self._unfolded,
+                on_fold=lambda unfolded: self._remember_fold(key, unfolded),
+            )
+        return CompactStackCard(
+            cell,
+            stack,
+            actions=self._episode_actions,
+            scale=scale,
+            on_open_show=self._on_open_show,
+            missing=marked,
+            had=had,
+        )
+
+    def _remember_fold(self, key: FoldKey, unfolded: bool) -> None:
+        if unfolded:
+            self._unfolded.add(key)
+        else:
+            self._unfolded.discard(key)
 
     async def _render_suggestions(
         self,
@@ -505,6 +567,11 @@ class CalendarView(BaseView):
             if cell is None:
                 continue
             SuggestionCard(
-                cell, entry, library=self._library, status=self._status, scale=scale
+                cell,
+                entry,
+                library=self._library,
+                status=self._status,
+                scale=scale,
+                on_open_show=self._on_open_show,
             ).pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()

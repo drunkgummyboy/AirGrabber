@@ -85,6 +85,7 @@ class QuickDownloadTests(unittest.IsolatedAsyncioTestCase):
                 release_title=full_hd.title,
                 quality="1080p",
                 seeders=40,
+                size_bytes=1200 * MIB,  # the Download button's "Picked 1080p · 1.2 GB" tip
                 grab=SAVED,
             ),
         )

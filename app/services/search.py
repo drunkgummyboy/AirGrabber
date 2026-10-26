@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.i18n import N_, t
 from app.indexers import BaseIndexer, EztvIndexer, IndexerError, ProwlarrIndexer
 from app.indexers.base import text_queries
 from app.models import (
@@ -75,7 +76,7 @@ _PROFILE_KEYS = {
     QualityProfile.UHD: "2160p",
     QualityProfile.HEVC: "x265",
 }
-_UNAVAILABLE = "not available for this search"
+_UNAVAILABLE = N_("not available for this search")  # through t(), as the other reasons
 
 
 # --- queries ----------------------------------------------------------------------------------
@@ -435,20 +436,20 @@ def quality_key(profile: QualityProfile) -> str:
 def _skip_reason(indexer: BaseIndexer, request: SearchRequest, settings: Settings) -> str | None:
     """Why `indexer` sits this search out, or None when it searches."""
     if indexer.name.casefold() in {name.casefold() for name in settings.disabled_indexers}:
-        return "disabled in Settings"
+        return t("disabled in Settings")
     if indexer.supports(request):
         return None
     if request.kind not in indexer.kinds:
         if indexer.kinds == {SearchKind.MOVIE}:
-            return "movies only"
+            return t("movies only")
         if SearchKind.MOVIE not in indexer.kinds:
-            return "TV only"
-        return _UNAVAILABLE
+            return t("TV only")
+        return t(_UNAVAILABLE)
     if isinstance(indexer, ProwlarrIndexer):
-        return "not configured"
+        return t("not configured")
     if isinstance(indexer, EztvIndexer) and not request.imdb_id:
-        return "needs an IMDb id"
-    return _UNAVAILABLE
+        return t("needs an IMDb id")
+    return t(_UNAVAILABLE)
 
 
 def _partition(
@@ -598,10 +599,10 @@ class TorrentSearchService:
         except Exception as exc:
             if isinstance(exc, TimeoutError) and deadline.expired():
                 log.warning("%s search timed out after %g s", indexer.label, limit)
-                failure = "timed out"
+                failure = t("timed out")
             else:
                 log.exception("%s search failed unexpectedly", indexer.label)
-                failure = "unexpected error"
+                failure = t("unexpected error")
         else:
             state = IndexerState.FOUND if releases else IndexerState.EMPTY
             return status.model_copy(update={"state": state, "count": len(releases)}), releases
@@ -612,4 +613,4 @@ class TorrentSearchService:
         for indexer in self._indexers:
             if isinstance(indexer, ProwlarrIndexer):
                 return await indexer.test()
-        raise IndexerError("Prowlarr is not available")
+        raise IndexerError(t("Prowlarr is not available"))

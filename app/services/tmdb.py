@@ -20,6 +20,7 @@ from typing import TypeVar
 import httpx
 from pydantic import ValidationError
 
+from app.i18n import t
 from app.models.domain import DiscoverShow, Movie, MovieDetails, TVDetails
 from app.models.tmdb import TMDBMovieDetails, TMDBMovieItem, TMDBTVDetails, TMDBTVItem
 
@@ -157,7 +158,7 @@ class TMDBClient:
             error_name = type(exc).__name__
         # Raised out here so no httpx exception (which may carry the URL) becomes the context.
         if response is None:
-            raise TMDBError(f"TMDB {path}: request failed ({error_name})")
+            raise TMDBError(t("TMDB {path}: request failed ({error})", path=path, error=error_name))
         if response.status_code == 401:
             return False
         if not response.is_success:
@@ -179,9 +180,9 @@ class TMDBClient:
         """
         key = self._api_key().strip()
         if not key:
-            raise TMDBNotConfigured("TMDB API key is not set")
+            raise TMDBNotConfigured(t("TMDB API key is not set"))
         if not (key.isascii() and key.isprintable()):  # e.g. a pasted zero-width space
-            raise TMDBAuthError("TMDB API key contains invalid characters")
+            raise TMDBAuthError(t("TMDB API key contains invalid characters"))
         auth_query, headers = _auth(key)
         query = {**params, "language": self._language, **auth_query}
         url = self.BASE_URL + path
@@ -201,7 +202,9 @@ class TMDBClient:
                 retryable = False
             if response is None:
                 if not retryable:
-                    raise TMDBError(f"TMDB {path}: request failed ({error_name})") from None
+                    raise TMDBError(
+                        t("TMDB {path}: request failed ({error})", path=path, error=error_name)
+                    ) from None
                 reason = error_name
                 max_attempts = _FAILED_ATTEMPTS
                 delay = self._backoff(attempt)
@@ -210,9 +213,9 @@ class TMDBClient:
                 if response.is_success:
                     return _decode_json(path, response)
                 if status == 401:
-                    raise TMDBAuthError(f"TMDB rejected the API key (HTTP 401 on {path})")
+                    raise TMDBAuthError(t("TMDB rejected the API key (HTTP 401 on {path})", path=path))
                 if status == 404:
-                    raise TMDBNotFound(f"TMDB {path}: not found (HTTP 404)")
+                    raise TMDBNotFound(t("TMDB {path}: not found (HTTP 404)", path=path))
                 reason = f"HTTP {status}"
                 if status == 429:
                     max_attempts = _RATE_LIMITED_ATTEMPTS
@@ -225,7 +228,12 @@ class TMDBClient:
                     raise TMDBError(f"TMDB {path}: {reason}")
             if attempt >= max_attempts:
                 raise TMDBError(
-                    f"TMDB {path}: {reason} (gave up after {attempt} attempts)"
+                    t(
+                        "TMDB {path}: {reason} (gave up after {n} attempts)",
+                        path=path,
+                        reason=reason,
+                        n=attempt,
+                    )
                 ) from None
             log.warning(
                 "TMDB %s: %s; retrying in %.1f s (attempt %d of %d)",
@@ -264,7 +272,7 @@ def _decode_json(path: str, response: httpx.Response) -> object:
     except ValueError:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
         pass
     # Raised out here so the decode error (which holds the whole body) isn't its context.
-    raise TMDBError(f"TMDB {path}: response is not valid JSON")
+    raise TMDBError(t("TMDB {path}: response is not valid JSON", path=path))
 
 
 def _summarize(exc: ValidationError) -> str:
@@ -280,14 +288,14 @@ def _parse_one(path: str, payload: object, convert: Callable[[object], T]) -> T:
     except ValidationError as exc:
         problem = _summarize(exc)
     # Deliberately not chained: a ValidationError's str() quotes the input payload.
-    raise TMDBError(f"TMDB {path}: unexpected payload ({problem})")
+    raise TMDBError(t("TMDB {path}: unexpected payload ({problem})", path=path, problem=problem))
 
 
 def _parse_results(path: str, payload: object, convert: Callable[[object], T]) -> list[T]:
     """Convert a page's `results` one by one so a single malformed entry can't sink the rest."""
     results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(results, list):
-        raise TMDBError(f"TMDB {path}: expected an object with a 'results' list")
+        raise TMDBError(t("TMDB {path}: expected an object with a 'results' list", path=path))
     parsed: list[T] = []
     for index, item in enumerate(results):
         try:

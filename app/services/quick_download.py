@@ -17,6 +17,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
+from app.i18n import t, tn
 from app.models import (
     GrabTarget,
     IndexerState,
@@ -130,7 +131,7 @@ class QuickDownloadService:
             len(releases),
         )
         if progress is not None:
-            progress("Grabbing the best one…")
+            progress(t("Grabbing the best one…"))
         grab = await self._downloads.grab(best, target)
         log.info("One-click %s: %s", label, grab.outcome.value)
         return QuickDownloadResult(
@@ -138,6 +139,7 @@ class QuickDownloadService:
             release_title=best.title,
             quality=quality,
             seeders=best.seeders,
+            size_bytes=best.size_bytes or None,  # 0 = the source didn't say
             grab=grab,
         )
 
@@ -157,11 +159,16 @@ class QuickDownloadService:
                                 status.state is IndexerState.SEARCHING
                                 for status in update.statuses
                             )
-                            sources = "source" if waiting == 1 else "sources"
-                            progress(
-                                f"Searching… {len(releases)} found"
-                                + (f", {waiting} {sources} still searching" if waiting else "")
+                            still = (
+                                tn(
+                                    ", {n} source still searching",
+                                    ", {n} sources still searching",
+                                    waiting,
+                                )
+                                if waiting
+                                else ""
                             )
+                            progress(t("Searching… {n} found", n=len(releases)) + still)
         except TimeoutError:
             if not deadline.expired():
                 raise

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import tkinter as tk
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.i18n import t
 from app.ui import theme
 from app.ui.branding import set_window_icon
 from app.ui.tasks import spawn
@@ -28,6 +29,31 @@ def destroy_tree(widget: Any) -> None:
     """
     widget.tk.call("destroy", str(widget))
     widget.destroy()
+
+
+class Tabview(ctk.CTkTabview):
+    """A CTkTabview whose tab pages keep their (light, dark) colour pair.
+
+    CTk gives the pages only the current mode's colour, and what sits on them inherits that
+    one colour as its background (a transparent frame inside a scrolling page, a card's
+    rounded corners): after a switch between light and dark it would keep the old one.
+    """
+
+    def _page_color(self) -> theme.Color:
+        color: theme.Color = self._fg_color if self._fg_color != "transparent" else self._bg_color
+        return color
+
+    def _create_tab(self) -> ctk.CTkFrame:
+        tab: ctk.CTkFrame = super()._create_tab()
+        tab.configure(fg_color=self._page_color(), bg_color=self._page_color())
+        return tab
+
+    def _draw(self, no_color_updates: bool = False) -> None:
+        super()._draw(no_color_updates)
+        color = self._page_color()
+        for tab in getattr(self, "_tab_dict", {}).values():  # none yet while CTk builds it
+            if tab.cget("fg_color") != color:
+                tab.configure(fg_color=color, bg_color=color)
 
 
 class MessagePanel(ctk.CTkFrame):
@@ -99,7 +125,7 @@ class FlexGrid(ctk.CTkFrame):
     stretching margin columns share the rest. Without it, the columns start at the left.
 
     Children are re-flowed on resize only when the column count changes. Call `relayout()`
-    after adding or removing children.
+    after adding or removing children. `set_order` shows some of them in another order.
     """
 
     def __init__(
@@ -120,6 +146,7 @@ class FlexGrid(ctk.CTkFrame):
         self.center = center
         self._current_cols = 0
         self._configured_cols = 0  # the grid columns `_configure_columns` last set up
+        self._order: list[Any] | None = None  # set_order's children; None = all, as added
         self.bind("<Configure>", self._on_resize, add="+")
 
     def _slot(self) -> float:
@@ -154,9 +181,26 @@ class FlexGrid(ctk.CTkFrame):
             self.grid_columnconfigure(column, minsize=slot)
         self._configured_cols = cols
 
+    def set_order(self, children: Sequence[Any] | None) -> None:
+        """Show only `children` (its own), in this order, and hide the others; None shows them
+        all again in the order they were added. Re-flows at once."""
+        self._order = list(children) if children is not None else None
+        self.relayout()
+
+    def _shown(self) -> list[Any]:
+        children: list[Any] = self.winfo_children()
+        if self._order is None:
+            return children
+        shown = [child for child in self._order if child.winfo_exists()]
+        keep = set(shown)
+        for child in children:
+            if child not in keep:
+                child.grid_remove()
+        return shown
+
     def _regrid(self, cols: int) -> None:
         self._configure_columns(cols)
-        for idx, child in enumerate(self.winfo_children()):
+        for idx, child in enumerate(self._shown()):
             row, column = flex_cell(idx, cols, center=self.center)
             child.grid(row=row, column=column, padx=self.pad_x, pady=self.pad_y, sticky="nw")
 
@@ -271,7 +315,7 @@ def show_info(master: ctk.CTk | ctk.CTkToplevel, title: str, message: str) -> No
     ).pack(anchor="w")
     ctk.CTkButton(
         body,
-        text="OK",
+        text=t("OK"),
         width=100,
         fg_color=theme.ACCENT,
         hover_color=theme.ACCENT_HOVER,

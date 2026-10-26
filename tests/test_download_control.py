@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import gc
+import time
+import tkinter as tk
 import unittest
 from datetime import UTC, date, datetime, timedelta
+
+import customtkinter as ctk
 
 from app.models import (
     CalendarEntry,
@@ -13,7 +18,9 @@ from app.models import (
     MediaType,
     Movie,
     MovieDetails,
+    QualityProfile,
     QuickDownloadResult,
+    Settings,
     Show,
 )
 from app.ui import theme
@@ -22,22 +29,33 @@ from app.ui.download_control import (
     CHOOSE_TEXT,
     DOWNLOAD_SHORT,
     DOWNLOAD_TEXT,
+    DOWNLOAD_TIP,
     GRABBED_TEXT,
+    LOOKS_FOR_QUALITY,
     WORKING_SHORT,
     WORKING_TEXT,
     Base,
+    DownloadActions,
+    DownloadControl,
     DownloadStates,
     Phase,
     RunState,
     already_downloaded_text,
     control_look,
+    control_tip,
     download_status_text,
     episode_key,
     fit_text,
+    gb_text,
+    grabbed_state,
+    looks_for_text,
     movie_key,
     nothing_found_text,
     outcome_text,
+    picked_text,
+    size_range_text,
 )
+from app.ui import tooltip
 from app.ui.media_cards import movie_base
 
 DOWNLOAD = Base("download")
@@ -215,6 +233,157 @@ class StatusTextTests(unittest.TestCase):
             download_status_text("Dune (2025)", result),
             "Dune (2025) · 1 seeder · Saved Severance.S02E01.torrent",
         )
+
+
+class HoverTipTests(unittest.TestCase):
+    GIB = 1024**3
+
+    def test_looks_for_the_series_or_the_movie_settings(self) -> None:
+        settings = Settings(
+            quality_tv="720p",
+            size_tv_min_gb=0.5,
+            size_tv_max_gb="1,5",
+            quality_movie="1080p",
+            size_movie_min_gb=2.5,
+            size_movie_max_gb=4,
+        )
+        self.assertEqual(looks_for_text(settings, MediaType.TV), "Looks for HD (720p), 0.5–1.5 GB")
+        self.assertEqual(
+            looks_for_text(settings, MediaType.MOVIE), "Looks for Full HD (1080p), 2.5–4 GB"
+        )
+
+    def test_without_a_size_range_just_the_quality(self) -> None:
+        self.assertEqual(looks_for_text(Settings(), MediaType.MOVIE), "Looks for Full HD (1080p)")
+        settings = Settings(quality_tv="Any", quality_movie="x265", size_movie_max_gb=3)
+        self.assertEqual(looks_for_text(settings, MediaType.TV), "Looks for any quality")
+        self.assertEqual(
+            looks_for_text(settings, MediaType.MOVIE),
+            "Looks for smaller files (1080p x265), up to 3 GB",
+        )
+
+    def test_size_ranges(self) -> None:
+        self.assertEqual(size_range_text(2.5, 4.0), "2.5–4 GB")
+        self.assertEqual(size_range_text(2.5, None), "at least 2.5 GB")
+        self.assertEqual(size_range_text(None, 10.0), "up to 10 GB")
+        self.assertEqual(size_range_text(3.0, 3.0), "3 GB")
+        self.assertIsNone(size_range_text(None, None))
+
+    def test_quality_names_match_settings(self) -> None:
+        from app.ui.settings_dialog import QUALITY_NAMES
+
+        self.assertEqual(set(LOOKS_FOR_QUALITY), set(QualityProfile))
+        for profile, name in LOOKS_FOR_QUALITY.items():
+            with self.subTest(profile):
+                self.assertEqual(name.casefold(), QUALITY_NAMES[profile].casefold())
+
+    def test_picked(self) -> None:
+        self.assertEqual(gb_text(round(2.8 * self.GIB)), "2.8")
+        self.assertEqual(gb_text(4 * self.GIB), "4")
+        self.assertEqual(gb_text(round(0.34 * self.GIB)), "0.3")
+        self.assertEqual(gb_text(round(0.05 * self.GIB)), "0.05")
+        self.assertEqual(gb_text(round(0.75 * self.GIB)), "0.8")
+        self.assertEqual(picked_text("1080p", round(2.8 * self.GIB)), "Picked 1080p · 2.8 GB")
+        self.assertEqual(picked_text("720p", None), "Picked 720p")
+        self.assertEqual(picked_text(None, 4 * self.GIB), "Picked 4 GB")
+        self.assertEqual(picked_text(None, None), "")
+
+    def test_grabbed_state_keeps_what_was_picked(self) -> None:
+        grab = GrabResult(outcome=GrabOutcome.SENT, message="Sent to qBittorrent")
+        result = QuickDownloadResult(
+            found=True, release_title="x", quality="1080p", size_bytes=3 * self.GIB, grab=grab
+        )
+        state = grabbed_state(result)
+        self.assertEqual(
+            state, RunState(Phase.DONE, GrabOutcome.SENT, quality="1080p", size_bytes=3 * self.GIB)
+        )
+        # The look is the same as before: only the tip knows more.
+        self.assertEqual(control_look(DOWNLOAD, state), control_look(DOWNLOAD, done(GrabOutcome.SENT)))
+
+    def test_tip(self) -> None:
+        looks_for = "Looks for Full HD (1080p)"
+        idle = control_look(DOWNLOAD, None)
+        self.assertEqual(control_tip(idle, None, looks_for, shortened=False), looks_for)
+        self.assertEqual(
+            control_tip(idle, None, looks_for, shortened=True), f"{DOWNLOAD_TIP} · {looks_for}"
+        )
+        self.assertEqual(control_tip(idle, None, "", shortened=True), DOWNLOAD_TIP)
+        self.assertEqual(control_tip(idle, None, "", shortened=False), "")
+        picked = RunState(Phase.DONE, GrabOutcome.SAVED, quality="720p", size_bytes=self.GIB)
+        self.assertEqual(
+            control_tip(control_look(DOWNLOAD, picked), picked, looks_for, shortened=False),
+            "Picked 720p · 1 GB",
+        )
+        # Already downloaded, nothing found, working, a disabled button: no tip.
+        for base, state in (
+            (DOWNLOAD, RunState(Phase.DONE)),
+            (DOWNLOAD, NOTHING),
+            (DOWNLOAD, WORKING),
+            (Base("grabbed"), None),
+            (Base("unavailable", "Not Aired"), None),
+        ):
+            with self.subTest(base=base, state=state):
+                look = control_look(base, state)
+                self.assertEqual(control_tip(look, state, looks_for, shortened=False), "")
+
+    def test_states_read_the_settings_when_asked(self) -> None:
+        current = Settings(quality_tv="2160p")
+        states = DownloadStates(settings=lambda: current)
+        self.assertEqual(states.looks_for(episode_key(1, 1, 1)), "Looks for 4K (2160p)")
+        self.assertEqual(states.looks_for(movie_key(1)), "Looks for Full HD (1080p)")
+        current = Settings(quality_tv="720p")
+        self.assertEqual(states.looks_for(episode_key(1, 1, 1)), "Looks for HD (720p)")
+        self.assertEqual(DownloadStates().looks_for(movie_key(1)), "")
+
+
+class HoverTipWidgetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = ctk.CTk()
+        except tk.TclError as exc:  # no display
+            self.skipTest(f"Tk unavailable: {exc}")
+        # Tk only delivers Enter/Leave to mapped widgets: show the root, invisible and off-screen.
+        self.root.attributes("-alpha", 0.0)
+        self.root.geometry("300x100+-3000+-3000")
+        self.addCleanup(self._destroy_root)
+
+    def _destroy_root(self) -> None:
+        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.after_cancel(job)
+        self.root.destroy()
+        gc.collect()
+
+    def pump(self, ms: int) -> None:
+        end = time.monotonic() + ms / 1000
+        while time.monotonic() < end:
+            self.root.update()
+            time.sleep(0.01)
+
+    def test_the_tip_follows_settings_and_the_run(self) -> None:
+        current = Settings(quality_movie="720p", size_movie_max_gb=2)
+        states = DownloadStates(settings=lambda: current)
+        actions: DownloadActions[int] = DownloadActions(
+            download=lambda _item: None, choose=lambda _item: None, states=states
+        )
+        key = movie_key(5)
+        control = DownloadControl(self.root, item=5, key=key, base=DOWNLOAD, actions=actions)
+        control.pack()
+        self.root.update()
+        tip = control._main_tip
+        self.assertEqual(tip.text, "Looks for HD (720p), up to 2 GB")
+        current = Settings(quality_movie="2160p")  # changed in Settings since
+        control._main.event_generate("<Enter>")
+        self.assertEqual(tip.text, "Looks for 4K (2160p)")
+        self.pump(tooltip.DELAY_MS + 200)
+        self.assertTrue(tip.visible)  # shown with the new text
+        assert tooltip._manager._window is not None
+        self.assertEqual(tooltip._manager._window._label.cget("text"), "Looks for 4K (2160p)")
+        control._main.event_generate("<Leave>")
+        self.root.update()
+        states.set(key, WORKING)
+        self.assertEqual(tip.text, "")
+        states.set(key, RunState(Phase.DONE, GrabOutcome.OPENED, quality="2160p", size_bytes=None))
+        self.assertEqual(tip.text, "Picked 2160p")
+        tip.hide()
 
 
 if __name__ == "__main__":

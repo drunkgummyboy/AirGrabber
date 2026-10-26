@@ -87,6 +87,7 @@ class TMDBTVItem(_Wire):
     vote_count: int | None = None
     popularity: float | None = None
     origin_country: list[str] = Field(default_factory=list)
+    genre_ids: list[int] = Field(default_factory=list)
 
     def to_discover_show(self) -> DiscoverShow:
         return DiscoverShow(
@@ -101,6 +102,7 @@ class TMDBTVItem(_Wire):
             vote_count=self.vote_count or 0,
             popularity=self.popularity or 0.0,
             origin_country=tuple(self.origin_country),
+            genre_ids=tuple(self.genre_ids),
         )
 
 

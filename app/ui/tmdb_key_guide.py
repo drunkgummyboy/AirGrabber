@@ -16,6 +16,7 @@ from typing import Any
 
 import customtkinter as ctk
 
+from app.i18n import N_, t
 from app.services import DiscoveryService, SettingsService
 from app.services.tmdb import TMDBError
 from app.ui import theme
@@ -44,8 +45,9 @@ log = logging.getLogger(__name__)
 SIGNUP_URL = "https://www.themoviedb.org/signup"
 API_KEY_URL = "https://www.themoviedb.org/settings/api"
 
-TMDB_HEADING = "Movies and Discover"
-TMDB_INTRO = (
+# Shown through t().
+TMDB_HEADING = N_("Movies and Discover")
+TMDB_INTRO = N_(
     "These pages need a free key from The Movie Database. It takes about two minutes."
 )
 
@@ -62,21 +64,21 @@ class KeyCheck(Enum):
     UNREACHABLE = "unreachable"  # no answer, or an unexpected one
 
 
-def key_check_message(result: KeyCheck) -> tuple[str, str]:
+def key_check_message(result: KeyCheck) -> tuple[str, theme.Color]:
     """(text, colour) of the result line under the key entry."""
     if result is KeyCheck.OK:
-        return "✓ The key works", theme.SUCCESS
+        return t("✓ The key works"), theme.SUCCESS
     if result is KeyCheck.REJECTED:
         return (
-            'That key didn\'t work. Check that you copied the "API Key" (not the long token).',
+            t('That key didn\'t work. Check that you copied the "API Key" (not the long token).'),
             theme.DANGER,
         )
     if result is KeyCheck.UNREACHABLE:
         return (
-            "Couldn't reach The Movie Database. Check your internet connection and try again.",
+            t("Couldn't reach The Movie Database. Check your internet connection and try again."),
             theme.DANGER,
         )
-    return "Checking…", theme.TEXT_MUTED
+    return t("Checking…"), theme.TEXT_MUTED
 
 
 class KeyAction(Enum):
@@ -118,14 +120,14 @@ class TmdbKeyGuide(ctk.CTkFrame):
         self._key = tk.StringVar(master=self)
 
         self.grid_columnconfigure(1, weight=1)
-        self._step_row(0, "Create a free account", None, ("Open sign-up", SIGNUP_URL))
+        self._step_row(0, t("Create a free account"), None, (t("Open sign-up"), SIGNUP_URL))
         self._step_row(
             1,
-            "Ask for an API key",
-            'Choose "Developer"; the app details can be anything',
-            ("Open API page", API_KEY_URL),
+            t("Ask for an API key"),
+            t('Choose "Developer"; the app details can be anything'),
+            (t("Open API page"), API_KEY_URL),
         )
-        self._step_row(2, 'Copy the "API Key" and paste it below', None, None)
+        self._step_row(2, t('Copy the "API Key" and paste it below'), None, None)
 
         self._entry = ctk.CTkEntry(
             self,
@@ -139,7 +141,7 @@ class TmdbKeyGuide(ctk.CTkFrame):
         self._entry.grid(row=3, column=1, sticky="ew", pady=(16, 0))
         self._entry.bind("<Return>", lambda _event: self._check())
         self._check_button = primary_button(
-            self, "Check", self._check, width=_SIDE_BUTTON_WIDTH
+            self, t("Check"), self._check, width=_SIDE_BUTTON_WIDTH
         )
         self._check_button.grid(row=3, column=2, sticky="e", padx=(16, 0), pady=(16, 0))
         self._result = text_label(self, "", size=DETAIL_SIZE, wraplength=CONTENT_WIDTH - 40)
@@ -268,7 +270,7 @@ class TmdbKeyDialog(ctk.CTkToplevel):
         # Settings is modal too: give it its grab back when this dialog closes.
         self._previous_grab = _grabbing_window(master)
 
-        self.title("TMDB API key")
+        self.title(t("TMDB API key"))
         set_window_icon(self)
         self.resizable(False, False)
         self.transient(master)
@@ -277,8 +279,8 @@ class TmdbKeyDialog(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         # Holds the content width.
         ctk.CTkFrame(body, width=CONTENT_WIDTH, height=1, fg_color="transparent").pack()
-        heading_row(body, TMDB_HEADING).pack(fill="x")
-        text_label(body, TMDB_INTRO, size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
+        heading_row(body, t(TMDB_HEADING)).pack(fill="x")
+        text_label(body, t(TMDB_INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )
         self._guide = TmdbKeyGuide(body, discovery=discovery)
@@ -286,8 +288,8 @@ class TmdbKeyDialog(ctk.CTkToplevel):
 
         nav = ctk.CTkFrame(body, fg_color="transparent")
         nav.pack(fill="x", pady=(NAV_GAP, 0))
-        secondary_button(nav, "Cancel", self.destroy).pack(side="left")
-        self._save_button = primary_button(nav, "Save", self._save)
+        secondary_button(nav, t("Cancel"), self.destroy).pack(side="left")
+        self._save_button = primary_button(nav, t("Save"), self._save)
         self._save_button.pack(side="right")
 
         self.bind("<Escape>", lambda _event: self.destroy())

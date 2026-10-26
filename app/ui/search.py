@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.i18n import t
 from app.models import Movie, Show, ShowSearchResult
 from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
@@ -219,7 +220,8 @@ class SearchSuggestions:
                 font=font,
                 height=_ROW_HEIGHT,
                 fg_color="transparent",
-                hover_color=theme.ACCENT_HOVER,
+                hover_color=theme.HOVER,
+                text_color=theme.BUTTON_TEXT,
                 anchor="w",
                 corner_radius=0,
                 command=lambda name=target: self._choose(name),
@@ -325,7 +327,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._on_open_show = on_open_show
         self._cards: dict[int, SearchShowCard] = {}
 
-        self.title(f"Search Results: {query}")
+        self.title(t("Search Results: {query}", query=query))
         set_window_icon(self)
         self.transient(master)
         # CTkToplevel only applies its dark Windows title bar reliably from resizable().
@@ -335,15 +337,16 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._body.pack(fill="both", expand=True, padx=20, pady=20)
         # One section per media type, each with its own loading bar until its search is done.
-        self._shows_section = self._section("📺 TV Shows")
+        self._shows_section = self._section(t("📺 TV Shows"))
         self._shows_loading: LoadingBar | None = self._loading_bar(self._shows_section)
-        self._movies_section = self._section("🎬 Movies")
+        self._movies_section = self._section(t("🎬 Movies"))
         self._movies_loading: LoadingBar | None = self._loading_bar(self._movies_section)
 
         self._searches: list[asyncio.Task[None]] = [
             spawn(self._load_shows(), name="SearchResultsWindow.load_shows"),
             spawn(self._load_movies(), name="SearchResultsWindow.load_movies"),
         ]
+        self.bind("<Escape>", lambda _event: self.destroy())
         # CTkToplevel can open behind its parent on Windows; raise it once it is mapped.
         self.after(150, self._activate)
 
@@ -393,13 +396,15 @@ class SearchResultsWindow(ctk.CTkToplevel):
         except TVMazeError as exc:
             if self.winfo_exists():
                 self._clear_shows_loading()
-                self._message(self._shows_section, f"Couldn't reach TVMaze: {exc}", theme.DANGER)
+                self._message(
+                    self._shows_section, t("Couldn't reach TVMaze: {error}", error=exc), theme.DANGER
+                )
             return
         if not self.winfo_exists():
             return
         self._clear_shows_loading()
         if not results:
-            self._message(self._shows_section, "No TV shows found.", "gray50")
+            self._message(self._shows_section, t("No TV shows found."), theme.TEXT_QUIET)
             return
         item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
         grid = FlexGrid(self._shows_section, item_width=item_width, pad_x=8, pad_y=10)
@@ -422,13 +427,18 @@ class SearchResultsWindow(ctk.CTkToplevel):
             self._shows_loading = None
 
     def _message(
-        self, section: ctk.CTkFrame, text: str, color: str, *, settings_button: bool = False
+        self,
+        section: ctk.CTkFrame,
+        text: str,
+        color: theme.Color,
+        *,
+        settings_button: bool = False,
     ) -> None:
         ctk.CTkLabel(section, text=text, text_color=color, anchor="w").pack(fill="x", pady=(10, 0))
         if settings_button:
             ctk.CTkButton(
                 section,
-                text="Open Settings",
+                text=t("Open Settings"),
                 width=120,
                 height=30,
                 fg_color=theme.ACCENT,
@@ -450,7 +460,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
             return
         self._clear_movies_loading()
         if not movies:
-            self._message(self._movies_section, "No movies found.", "gray50")
+            self._message(self._movies_section, t("No movies found."), theme.TEXT_QUIET)
             return
         item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
         grid = FlexGrid(self._movies_section, item_width=item_width, pad_x=8, pad_y=10)
@@ -470,13 +480,13 @@ class SearchResultsWindow(ctk.CTkToplevel):
     def _movie_error(self, exc: TMDBError) -> None:
         section = self._movies_section
         if isinstance(exc, TMDBNotConfigured):
-            text = "Add a TMDB API key in ⚙ Settings to search movies."
-            self._message(section, text, "gray50", settings_button=True)
+            text = t("Add a TMDB API key in ⚙ Settings to search movies.")
+            self._message(section, text, theme.TEXT_QUIET, settings_button=True)
         elif isinstance(exc, TMDBAuthError):
-            text = "TMDB rejected the API key — check it in ⚙ Settings."
-            self._message(section, text, "gray50", settings_button=True)
+            text = t("TMDB rejected the API key — check it in ⚙ Settings.")
+            self._message(section, text, theme.TEXT_QUIET, settings_button=True)
         else:
-            self._message(section, f"Couldn't reach TMDB: {exc}", theme.DANGER)
+            self._message(section, t("Couldn't reach TMDB: {error}", error=exc), theme.DANGER)
 
     def _clear_movies_loading(self) -> None:
         if self._movies_loading is not None:
@@ -494,10 +504,10 @@ class SearchResultsWindow(ctk.CTkToplevel):
             await self._library.track(show.id)
         except TVMazeError as exc:
             self._set_card_state(show, "idle")
-            self._report(f"Couldn't track {show.name}: {exc}", 6000)
+            self._report(t("Couldn't track {name}: {error}", name=show.name, error=exc), 6000)
             return
         self._set_card_state(show, "tracked")
-        self._report(f"Now tracking {show.name}", 4000)
+        self._report(t("Now tracking {name}", name=show.name), 4000)
 
     def _set_card_state(self, show: Show, state: TrackState) -> None:
         card = self._cards.get(show.id)

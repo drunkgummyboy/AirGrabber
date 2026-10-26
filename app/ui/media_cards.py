@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 import customtkinter as ctk
 
+from app.i18n import month_short, t
 from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
 from app.services.tmdb import TMDBError
 from app.ui import theme
@@ -40,8 +41,6 @@ log = logging.getLogger(__name__)
 
 D = TypeVar("D")
 
-# Room the compact calendar cards' text keeps clear on the right for their ⓘ.
-IMDB_ICON_ROOM = 28
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
 # TMDB's poster widths, smallest first ("original" beyond them).
 TMDB_POSTER_WIDTHS = (92, 154, 185, 342, 500, 780)
@@ -54,8 +53,10 @@ def format_runtime(minutes: int) -> str:
     """"2h 25m", "2h" or "45m"."""
     hours, rest = divmod(minutes, 60)
     if not hours:
-        return f"{rest}m"
-    return f"{hours}h {rest}m" if rest else f"{hours}h"
+        return t("{minutes}m", minutes=rest)
+    if rest:
+        return t("{hours}h {minutes}m", hours=hours, minutes=rest)
+    return t("{hours}h", hours=hours)
 
 
 def tmdb_rating(vote_average: float, vote_count: int) -> float | None:
@@ -79,11 +80,11 @@ def movie_action(movie: Movie, details: MovieDetails | None, today: date) -> tup
     digital = details.digital_release if details else None
     if digital is not None:
         if digital <= today:
-            return "Search / Grab", True
-        return f"Digital {digital:%d %b}", False
+            return t("Search / Grab"), True
+        return t("Digital {date}", date=f"{digital:%d} {month_short(digital)}"), False
     if movie.release_date is None or movie.release_date > today:
-        return "Not Released", False
-    return "Search / Grab", True
+        return t("Not Released"), False
+    return t("Search / Grab"), True
 
 
 def imdb_search_url(movie: Movie) -> str:
@@ -216,7 +217,7 @@ class DiscoverShowCard(_TmdbCard):
         self._on_track = on_track
         self._on_open_show = on_open_show
         self._track_button = TrackButton(
-            self, busy_text="Finding…", command=self._track, scale=scale
+            self, busy_text=t("Finding…"), command=self._track, scale=scale
         )
         self._pack_action(self._track_button)
         self.set_track_state("tracked" if is_tracked else "idle")

@@ -21,6 +21,7 @@ from typing import Annotated, ClassVar, TypeVar
 import httpx
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
+from app.i18n import t, tn
 from app.models.domain import SearchKind, SearchRequest, TorrentRelease
 
 log = logging.getLogger(__name__)
@@ -181,15 +182,22 @@ class BaseIndexer(ABC):
                 retryable = False
             if response is None:
                 if not retryable:
-                    raise IndexerError(f"{self.label}: request to {path} failed ({error_name})")
-                reason = f"no response from {path} ({error_name})"
+                    raise IndexerError(
+                        t(
+                            "{label}: request to {path} failed ({error})",
+                            label=self.label,
+                            path=path,
+                            error=error_name,
+                        )
+                    )
+                reason = t("no response from {path} ({error})", path=path, error=error_name)
                 max_attempts = failed_attempts
                 delay = self._backoff(attempt)
             else:
                 status = response.status_code
                 if response.is_success:
                     return self._decode_json(path, response)
-                reason = f"{path} answered HTTP {status}"
+                reason = t("{path} answered HTTP {status}", path=path, status=status)
                 if status == 429:
                     max_attempts = _RATE_LIMITED_ATTEMPTS
                     retry_after = _retry_after(response)
@@ -200,8 +208,15 @@ class BaseIndexer(ABC):
                 else:
                     raise self._status_error(path, status)
             if attempt >= max_attempts:
-                attempts = f"{attempt} attempt{'' if attempt == 1 else 's'}"
-                raise IndexerError(f"{self.label}: {reason}; gave up after {attempts}")
+                attempts = tn("{n} attempt", "{n} attempts", attempt)
+                raise IndexerError(
+                    t(
+                        "{label}: {reason}; gave up after {attempts}",
+                        label=self.label,
+                        reason=reason,
+                        attempts=attempts,
+                    )
+                )
             log.warning(
                 "%s: %s; retrying in %.1f s (attempt %d of %d)",
                 self.label, reason, delay, attempt + 1, max_attempts,
@@ -210,7 +225,9 @@ class BaseIndexer(ABC):
 
     def _status_error(self, path: str, status: int) -> IndexerError:
         """The error for a 4xx answer other than 429 (which is never retried)."""
-        return IndexerError(f"{self.label}: {path} answered HTTP {status}")
+        return IndexerError(
+            t("{label}: {path} answered HTTP {status}", label=self.label, path=path, status=status)
+        )
 
     def _backoff(self, attempt: int) -> float:
         """Exponential delay after the `attempt`-th (1-based) failed attempt."""
@@ -222,10 +239,19 @@ class BaseIndexer(ABC):
         except ValueError:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
             pass
         # Raised out here so the decode error (which holds the whole body) isn't its context.
-        raise IndexerError(f"{self.label}: {path} did not answer with valid JSON")
+        raise IndexerError(
+            t("{label}: {path} did not answer with valid JSON", label=self.label, path=path)
+        )
 
     def _unexpected(self, path: str, detail: str) -> IndexerError:
-        return IndexerError(f"{self.label}: unexpected answer from {path} ({detail})")
+        return IndexerError(
+            t(
+                "{label}: unexpected answer from {path} ({detail})",
+                label=self.label,
+                path=path,
+                detail=detail,
+            )
+        )
 
     def _parse_items(
         self, path: str, items: object, convert: Callable[[object], T | None]

@@ -6,15 +6,16 @@ import asyncio
 import logging
 import time
 import tkinter as tk
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from types import TracebackType
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import customtkinter as ctk
 from async_tkinter_loop.mixins import AsyncCTk
 
 from app import APP_NAME, __version__
+from app.i18n import N_, month_short, number, t
 from app.models import (
     AutoDownloaded,
     AutoError,
@@ -48,15 +49,21 @@ from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.branding import load_logo, set_window_icon
 from app.ui.card_scale import CardScale
+from app.ui.downloads_button import DownloadsButton
 from app.ui.download_control import (
+    BatchKey,
+    BatchState,
+    BatchStep,
     DownloadActions,
     DownloadKey,
     DownloadStates,
     Phase,
     RunState,
     already_downloaded_text,
+    download_in_turn,
     download_status_text,
     episode_key,
+    grabbed_state,
     movie_key,
     nothing_found_text,
 )
@@ -83,7 +90,11 @@ from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.tray import TrayHost
 from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, TrackedView
+from app.ui.views.downloads_view import DownloadsView
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action
+from app.ui.whats_new_dialog import WhatsNewDialog
+from app.ui.widgets import Tabview
+from app.whats_new import WhatsNew, whats_new
 
 log = logging.getLogger(__name__)
 
@@ -93,8 +104,8 @@ _DOWNLOAD_STATUS_MS = 10_000  # how long a one-click download's result stays in 
 _DETAILS_WAIT_S = 5.0  # a one-click movie download waits this long for TMDB details (IMDb id)
 _UPDATE_STATUS_MS = 10_000  # how long "… is ready" / "Updated to …" stay in the status bar
 # The update badges' hover tips.
-UPDATE_TIP = "Open Settings to update"
-RESTART_TIP = "Installs the downloaded update and restarts AirGrabber"
+UPDATE_TIP = N_("Open Settings to update")
+RESTART_TIP = N_("Installs the downloaded update and restarts AirGrabber")
 # Settings no page shows (connections, how downloads are handed over, the first-run marker,
 # updates): changing only these (as the automatic Prowlarr setup, the welcome and every start
 # do) leaves the pages as they are.
@@ -123,6 +134,16 @@ _OFF_PAGE_SETTINGS = frozenset(
         "opensubtitles_username",
         "opensubtitles_password",
         "opensubtitles_own_key",
+        # My shows' sort and filter: that page re-arranges its own cards.
+        "tracked_sort",
+        "tracked_filter",
+        # Discover's and Movies' "Hide what I already have": the page re-filters itself.
+        "hide_owned_discover",
+        "hide_owned_movies",
+        # Light / dark: every widget repaints itself (theme.apply_appearance).
+        "theme_mode",
+        # The language: it takes effect at the next start (Settings offers "Restart now").
+        "language",
     }
 )
 
@@ -136,27 +157,39 @@ def settings_affect_pages(previous: Settings, updated: Settings) -> bool:
     )
 
 
+# Widget classes the user types in: F5 leaves them alone (Ctrl+F still goes to the search box).
+_TEXT_INPUT_CLASSES = frozenset({"Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox"})
+
+
+def typing_in(widget: Any) -> bool:
+    """Whether `widget` (a key event's) is a text field the user may be typing in."""
+    try:
+        return str(widget.winfo_class()) in _TEXT_INPUT_CLASSES
+    except (AttributeError, tk.TclError):
+        return False  # no widget tkinter knows
+
+
 def subtitle_status_text(problem: SubtitleProblem) -> str:
     """The status-bar line for a subtitle problem (already plain words, no URLs or secrets)."""
-    return f"⚠ Subtitles: {problem.message}"
+    return t("⚠ Subtitles: {message}", message=problem.message)
 
 
 def prowlarr_setup_message(result: ProwlarrSetupResult) -> str | None:
     """The status-bar text for what the automatic Prowlarr setup did; None when it did nothing."""
     added = ", ".join(result.added)
     if result.connected and added:
-        return f"Connected to Prowlarr on this PC · added {added} to your sites"
+        return t("Connected to Prowlarr on this PC · added {sites} to your sites", sites=added)
     if result.connected:
-        return "Connected to Prowlarr on this PC"
+        return t("Connected to Prowlarr on this PC")
     if added:
-        return f"Prowlarr: added {added} to your sites"
+        return t("Prowlarr: added {sites} to your sites", sites=added)
     return None
 
 
 def update_notice(last_run_version: str, running: str) -> str | None:
     """The status-bar text after an update: the version that ran last differs from this one."""
     if last_run_version and last_run_version != running:
-        return f"Updated to v{running}"
+        return t("Updated to v{version}", version=running)
     return None
 
 
@@ -176,34 +209,39 @@ class AutoNotice(NamedTuple):
 
 def auto_notice(event: AutoEvent) -> AutoNotice:
     if isinstance(event, AutoDownloaded):
-        body = f"{event.quality} · picked automatically" if event.quality else "Picked automatically"
+        body = (
+            t("{quality} · picked automatically", quality=event.quality)
+            if event.quality
+            else t("Picked automatically")
+        )
         return AutoNotice(
-            title=f"{event.label} is downloading",
+            title=t("{label} is downloading", label=event.label),
             body=body,
-            status=f"{event.label} · downloading (picked automatically)",
+            status=t("{label} · downloading (picked automatically)", label=event.label),
         )
     if isinstance(event, AutoGaveUp):
-        title = f"Couldn't find {event.label}"
-        body = (
-            f"No good download turned up in {GIVE_UP_AFTER.days} days. "
-            "Choose one yourself from the calendar."
+        title = t("Couldn't find {label}", label=event.label)
+        body = t(
+            "No good download turned up in {days} days. Choose one yourself from the calendar.",
+            days=GIVE_UP_AFTER.days,
         )
         return AutoNotice(title=title, body=body, status=f"{title}. {body}")
     if isinstance(event, AutoMovieDownloaded):
-        how = "picked automatically from your watchlist"
+        how = t("picked automatically from your watchlist")
         return AutoNotice(
-            title=f"Downloaded {event.title}",
+            title=t("Downloaded {title}", title=event.title),
             body=f"{event.quality} · {how}" if event.quality else how.capitalize(),
-            status=f"Downloaded {event.title} ({how})",
+            status=t("Downloaded {title} ({how})", title=event.title, how=how),
         )
     if isinstance(event, AutoMovieGaveUp):
-        title = f"Couldn't find {event.title}"
-        body = (
-            f"No good download turned up in {MOVIE_GIVE_UP_AFTER.days} days. "
-            "Choose one yourself from your watchlist on the Movies page."
+        title = t("Couldn't find {label}", label=event.title)
+        body = t(
+            "No good download turned up in {days} days. "
+            "Choose one yourself from your watchlist on the Movies page.",
+            days=MOVIE_GIVE_UP_AFTER.days,
         )
         return AutoNotice(title=title, body=body, status=f"{title}. {body}")
-    title = "Automatic download didn't work"
+    title = t("Automatic download didn't work")
     return AutoNotice(title=title, body=event.message, status=f"{title}: {event.message}")
 
 
@@ -234,6 +272,13 @@ class AutoNoticeThrottle:
 class Mode(StrEnum):
     SERIES = "Series"
     MOVIES = "Movies"
+    DOWNLOADS = "Downloads"  # the header's ⬇ button; the Series / Movies switch leads back
+
+
+# The header's switch: each mode's button text (translated where shown).
+_MODE_LABELS = {Mode.SERIES: N_("Series"), Mode.MOVIES: N_("Movies")}
+# The Series tabs' texts. CTkTabview names a tab by its text, so they key the views translated.
+_CALENDAR, _DISCOVER, _TRACKED = N_("Calendar"), N_("Discover"), N_("Tracked")
 
 
 class MainWindow(AsyncCTk, ctk.CTk):
@@ -246,7 +291,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         start_hidden: bool = False,
         show_requests: Callable[[], bool] | None = None,
     ) -> None:
-        theme.apply_appearance()
+        theme.apply_appearance(services.settings.current.theme_mode)
         super().__init__(fg_color=theme.BG)
         self._services = services
         self._mode: Mode | None = None
@@ -260,12 +305,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._update_task: asyncio.Task[None] | None = None
         self.restart_requested = False  # read by main.py once the window has closed
         # One-click downloads: their state per title, shared by every card that shows it.
-        self._download_states = DownloadStates()
+        # The Download buttons' hover tip says what a download looks for (Settings → Quality).
+        self._download_states = DownloadStates(settings=lambda: services.settings.current)
         self._download_tasks: set[asyncio.Task[None]] = set()
         self._episode_actions: DownloadActions[CalendarEntry] = DownloadActions(
             download=self._download_episode,
             choose=self._search_episode,
             states=self._download_states,
+            download_all=self._download_episodes,  # the calendar's stack cards
         )
         self._movie_actions: DownloadActions[Movie] = DownloadActions(
             download=self._download_movie, choose=self._grab_movie, states=self._download_states
@@ -292,7 +339,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             subtitles_changed=self._on_subtitles_saved,
         )
 
-        self.title(f"{APP_NAME} — Track your shows. Grab your movies.")
+        self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))
         set_window_icon(self)
         self._place(1650, 900)
         self.minsize(1220, 640)  # narrowest width at which the centred header still fits
@@ -302,6 +349,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._build_header()
         self._build_pages()
         self._build_status_bar()
+        self._bind_shortcuts()
+        self._whats_new_binding: str | None = None  # waiting for the window to open (tray start)
 
         on_task_error(self._report_task_error)
         self._settings_seen = services.settings.current
@@ -381,16 +430,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._mode_buttons = {
             mode: ctk.CTkButton(
                 nav,
-                text=mode.value,
+                text=t(_MODE_LABELS[mode]),
                 width=90,
                 height=30,
                 corner_radius=6,
                 fg_color="transparent",
                 hover_color=theme.SURFACE,
+                text_color=theme.BUTTON_TEXT,
                 font=theme.font(14, bold=True),
                 command=lambda m=mode: self._select_mode(m),
             )
-            for mode in Mode
+            for mode in (Mode.SERIES, Mode.MOVIES)
         }
         self._mode_buttons[Mode.SERIES].grid(row=0, column=0, padx=15)
         # The name stands in until the logo has loaded; the row is logo-tall from the start.
@@ -408,7 +458,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         tools.grid(row=0, column=2, sticky="e")
         self._search = ctk.CTkEntry(
             tools,
-            placeholder_text="Search shows & movies…",
+            placeholder_text=t("Search shows & movies…"),
             placeholder_text_color=theme.TEXT_MUTED,
             width=260,
             height=40,
@@ -431,14 +481,22 @@ class MainWindow(AsyncCTk, ctk.CTk):
             height=40,
             corner_radius=10,
             fg_color=theme.SURFACE,
-            hover_color=theme.ACCENT_HOVER,
+            hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
             border_width=1,
             border_color=theme.EDGE,
             font=theme.font(18),
             command=self._on_search,
         )
         search_button.pack(side="left", padx=(0, 15))
-        add_tooltip(search_button, "Search")
+        add_tooltip(search_button, t("Search"))
+        self._downloads_button = DownloadsButton(
+            tools,
+            downloads=self._services.download_status,
+            command=lambda: self._select_mode(Mode.DOWNLOADS),
+            report=self._report,
+        )
+        self._downloads_button.pack(side="left", padx=(0, 5))
         settings_button = ctk.CTkButton(
             tools,
             text="⚙",
@@ -447,32 +505,34 @@ class MainWindow(AsyncCTk, ctk.CTk):
             corner_radius=10,
             fg_color="transparent",
             hover_color=theme.SURFACE,
+            text_color=theme.BUTTON_TEXT,
             font=theme.font(26),
             command=self._open_settings,
         )
         settings_button.pack(side="left")
-        add_tooltip(settings_button, "Settings")
+        add_tooltip(settings_button, t("Settings"))
 
     def _build_pages(self) -> None:
         library, settings = self._services.library, self._services.settings
         images, discovery = self._services.images, self._services.discovery
-        self._series_tabs = ctk.CTkTabview(
+        self._series_tabs = Tabview(
             self,
             corner_radius=15,
             border_width=1,
             fg_color=theme.TAB_BG,
             border_color=theme.EDGE,
             segmented_button_fg_color=theme.SURFACE,
-            segmented_button_selected_color=theme.ACCENT,
-            segmented_button_selected_hover_color=theme.ACCENT_HOVER,
+            segmented_button_selected_color=theme.SELECTED,
+            segmented_button_selected_hover_color=theme.SELECTED_HOVER,
             segmented_button_unselected_color=theme.SURFACE,
             segmented_button_font=theme.font(16, bold=True),
+            text_color=theme.BUTTON_TEXT,
             command=self._on_tab_changed,
         )
         tabs = self._series_tabs
         self._series_views: dict[str, BaseView] = {
-            "Calendar": CalendarView(
-                tabs.add("Calendar"),
+            t(_CALENDAR): CalendarView(
+                tabs.add(t(_CALENDAR)),
                 library=library,
                 settings=settings,
                 images=images,
@@ -481,18 +541,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 card_scale=self._card_scale,
                 on_open_show=self._show_windows.open_show,
             ),
-            "Discover": DiscoverView(
-                tabs.add("Discover"),
+            t(_DISCOVER): DiscoverView(
+                tabs.add(t(_DISCOVER)),
                 discovery=discovery,
                 images=images,
                 status=self.set_status,
+                settings=settings,
                 on_open_settings=self._open_settings,
                 on_open_show=self._show_windows.open_discover,
                 card_scale=self._card_scale,
             ),
-            "Tracked": TrackedView(
-                tabs.add("Tracked"),
+            t(_TRACKED): TrackedView(
+                tabs.add(t(_TRACKED)),
                 library=library,
+                settings=settings,
                 airdates=self._services.airdates,
                 images=images,
                 status=self.set_status,
@@ -509,10 +571,19 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=discovery,
             images=images,
             status=self.set_status,
+            settings=settings,
             on_open_settings=self._open_settings,
             movie_actions=self._movie_actions,
             watchlist=self._services.watchlist,
             card_scale=self._card_scale,
+        )
+        self._downloads_view = DownloadsView(
+            self,
+            downloads=self._services.download_status,
+            settings=settings,
+            images=images,
+            discovery=discovery,
+            on_open_show=self._show_windows.open_show,
         )
 
     def _card_scale(self) -> CardScale:
@@ -544,6 +615,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
         # Its problems arrive in _on_subtitle_event.
         spawn(self._services.subtitles.run_periodic(), name="subtitles")
+        # The Downloads page's progress and the header badge (they listen to it themselves).
+        spawn(self._services.download_status.run_periodic(), name="download-status")
         spawn(self._services.images.prune(), name="poster-prune")
         spawn(self._load_logo(), name="logo")
         spawn(self._note_version(), name="version-notice")
@@ -611,13 +684,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
             return
         self._mode = mode
         for button_mode, button in self._mode_buttons.items():
-            button.configure(fg_color=theme.ACCENT if button_mode is mode else "transparent")
-        if mode is Mode.SERIES:
-            self._movie_view.grid_remove()
-            self._series_tabs.grid(row=1, column=0, sticky="nsew", padx=15, pady=5)
-        else:
-            self._series_tabs.grid_remove()
-            self._movie_view.grid(row=1, column=0, sticky="nsew", padx=15, pady=5)
+            selected = button_mode is mode
+            button.configure(
+                fg_color=theme.ACCENT if selected else "transparent",
+                text_color=theme.ON_ACCENT if selected else theme.BUTTON_TEXT,
+            )
+        self._downloads_button.set_selected(mode is Mode.DOWNLOADS)
+        pages: dict[Mode, ctk.CTkFrame] = {
+            Mode.SERIES: self._series_tabs,
+            Mode.MOVIES: self._movie_view,
+            Mode.DOWNLOADS: self._downloads_view,
+        }
+        for page_mode, page in pages.items():
+            if page_mode is not mode:
+                page.grid_remove()
+        pages[mode].grid(row=1, column=0, sticky="nsew", padx=15, pady=5)
         self._visible_view().refresh_if_stale()
 
     def _on_tab_changed(self) -> None:
@@ -626,10 +707,36 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _visible_view(self) -> BaseView:
         if self._mode is Mode.MOVIES:
             return self._movie_view
+        if self._mode is Mode.DOWNLOADS:
+            return self._downloads_view
         return self._series_views[self._series_tabs.get()]
+
+    # -- keyboard shortcuts --------------------------------------------------------------------
+
+    def _bind_shortcuts(self) -> None:
+        """In the main window: Ctrl+F = the search box, F5 = refresh the page on screen. Esc is
+        each secondary window's own (show window, search results, dialogs)."""
+        for sequence in ("<Control-f>", "<Control-F>"):
+            self.bind(sequence, self._focus_search)
+        self.bind("<F5>", self._refresh_page)
+
+    def _focus_search(self, _event: tk.Event[Any]) -> str:
+        self._search.focus_set()
+        if self._search.get():  # "" while the placeholder shows
+            self._search.select_range(0, "end")
+            self._search.icursor("end")
+        return "break"
+
+    def _refresh_page(self, event: tk.Event[Any]) -> str | None:
+        if typing_in(event.widget):
+            return None
+        self._visible_view().reload()
+        return "break"
 
     def _on_settings_changed(self, updated: Settings) -> None:
         previous, self._settings_seen = self._settings_seen, updated
+        if updated.theme_mode != previous.theme_mode:
+            theme.apply_appearance(updated.theme_mode)
         if settings_affect_pages(previous, updated):
             self._reload_pages()
 
@@ -676,20 +783,60 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- one-click downloads -------------------------------------------------------------------
 
     def _download_episode(self, entry: CalendarEntry) -> None:
-        show, episode = entry.show, entry.episode
-        if episode.number is None:  # a special: nothing to download by (its card says Search)
+        run = self._episode_run(entry)
+        if run is None:  # a special: nothing to download by (its card says Search)
             self._search_episode(entry)
             return
+        self._start_download(*run)
+
+    def _episode_run(
+        self, entry: CalendarEntry
+    ) -> tuple[DownloadKey, str, Callable[[], Awaitable[QuickDownloadResult]]] | None:
+        """An episode's one-click download: its key, its label and the run (None for a
+        special, which has no number to download by)."""
+        show, episode = entry.show, entry.episode
+        if episode.number is None:
+            return None
         season, number = episode.season, episode.number
         request = self._services.search.episode_request(show, season, number)
         target = GrabTarget(
             media_type=MediaType.TV, media_id=show.id, season=season, episode=number
         )
-        self._start_download(
+        return (
             episode_key(show.id, season, number),
             f"{show.name} {episode.code}",
             lambda: self._services.quick_download.download(request, target),
         )
+
+    def _download_episodes(self, batch: BatchKey, entries: Sequence[CalendarEntry]) -> None:
+        """A calendar stack's "⬇ Download all": its episodes one after another through the
+        one-click download (each with its own state), unless the batch runs already."""
+        states = self._download_states
+        if states.batch(batch) is not None:
+            return
+        steps: list[BatchStep] = []
+        for entry in entries:
+            run = self._episode_run(entry)
+            if run is not None:
+                steps.append((run[0], self._batch_step(*run)))
+        if not steps:
+            return
+        states.set_batch(batch, BatchState(1, len(steps)))  # at once: no second click
+        task = spawn(download_in_turn(states, batch, steps), name="quick-download-all")
+        self._download_tasks.add(task)
+        task.add_done_callback(self._download_tasks.discard)
+
+    def _batch_step(
+        self,
+        key: DownloadKey,
+        label: str,
+        download: Callable[[], Awaitable[QuickDownloadResult]],
+    ) -> Callable[[], Awaitable[bool]]:
+        async def step() -> bool:
+            self._download_states.set(key, RunState(Phase.WORKING))
+            return await self._run_download(key, label, download)
+
+        return step
 
     def _download_movie(self, movie: Movie) -> None:
         async def download() -> QuickDownloadResult:
@@ -721,7 +868,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if self._download_states.is_working(key):
             return
         self._download_states.set(key, RunState(Phase.WORKING))
-        task = spawn(self._run_download(key, label, download), name="quick-download")
+
+        async def run() -> None:
+            await self._run_download(key, label, download)
+
+        task = spawn(run(), name="quick-download")
         self._download_tasks.add(task)
         task.add_done_callback(self._download_tasks.discard)
 
@@ -730,27 +881,30 @@ class MainWindow(AsyncCTk, ctk.CTk):
         key: DownloadKey,
         label: str,
         download: Callable[[], Awaitable[QuickDownloadResult]],
-    ) -> None:
+    ) -> bool:
+        """One one-click download and its outcome; False when the grab failed (a batch then
+        stops)."""
         # The cards may be gone or rebuilt by now: DownloadStates repaints whichever exist.
         try:
             result = await download()
         except (GrabError, DownloadStationError) as exc:
             self._download_states.set(key, None)
             self._report(str(exc), _DOWNLOAD_STATUS_MS)
-            return
+            return False
         except BaseException:
             self._download_states.set(key, None)
             raise  # cancelled, or logged and reported by the task runner
         if result.already_downloaded:  # e.g. grabbed meanwhile from another window
             self._download_states.set(key, RunState(Phase.DONE))
             self._report(already_downloaded_text(label), _DOWNLOAD_STATUS_MS)
-            return
+            return True
         if result.grab is None:
             self._download_states.set(key, RunState(Phase.NOTHING))
             self._report(nothing_found_text(label), _DOWNLOAD_STATUS_MS)
-            return
-        self._download_states.set(key, RunState(Phase.DONE, result.grab.outcome))
+            return True
+        self._download_states.set(key, grabbed_state(result))
         self._report(download_status_text(label, result), _DOWNLOAD_STATUS_MS)
+        return True
 
     # -- missing episodes ----------------------------------------------------------------------
 
@@ -799,7 +953,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         elif result.grab is None:
             states.set(key, RunState(Phase.NOTHING))
         else:
-            states.set(key, RunState(Phase.DONE, result.grab.outcome))
+            states.set(key, grabbed_state(result))
 
     def _mark_have(self, show: Show, episode_ids: tuple[int, ...]) -> None:
         """ "I already have this": the episodes no longer count as missing."""
@@ -864,6 +1018,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             update_info=self._update_info,
             on_update=self._start_update,
             subtitles=self._services.subtitles,
+            on_restart=self.restart,
+            flaresolverr=self._services.flaresolverr,
         )
 
     async def _set_up_prowlarr(self) -> None:
@@ -905,12 +1061,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if not info.available or not self.winfo_exists():
             return
         if not info.installable:
-            self._version_label.configure(text=f"v{__version__} · v{info.latest} on GitHub")
+            self._version_label.configure(
+                text=t("v{current} · v{latest} on GitHub", current=__version__, latest=info.latest)
+            )
         elif self._services.settings.current.auto_update:
             await self._stage_update(info)
         else:
             self._show_update_badge(
-                f"⬆ Update to v{info.latest}", UPDATE_TIP, self._open_settings
+                t("⬆ Update to v{version}", version=info.latest), t(UPDATE_TIP), self._open_settings
             )
 
     async def _stage_update(self, info: UpdateInfo) -> None:
@@ -921,14 +1079,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.warning("Downloading the update failed: %s", exc)
             if self.winfo_exists():  # Settings can still install it
                 self._show_update_badge(
-                f"⬆ Update to v{info.latest}", UPDATE_TIP, self._open_settings
+                t("⬆ Update to v{version}", version=info.latest), t(UPDATE_TIP), self._open_settings
             )
             return
         if not self.winfo_exists() or self._update_task is not None:
             return  # closing, or Settings' "Update to …" is installing it right now
-        self._show_update_badge("⬆ Restart to update", RESTART_TIP, self.restart)
+        self._show_update_badge(t("⬆ Restart to update"), t(RESTART_TIP), self.restart)
         self.set_status(
-            f"AirGrabber {version} is ready. It installs when you close AirGrabber.",
+            t("AirGrabber {version} is ready. It installs when you close AirGrabber.", version=version),
             clear_after_ms=_UPDATE_STATUS_MS,
         )
 
@@ -943,12 +1101,34 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._version_tip.set_text(tip)
 
     async def _note_version(self) -> None:
-        """Show "Updated to v…" on the first start after an update; then remember this version."""
+        """Show "Updated to v…" on the first start after an update, and once "What's new" when
+        the version went up (not on a first run: the welcome shows then); then remember this
+        version."""
         settings = self._services.settings
-        notice = update_notice(settings.current.last_run_version, __version__)
+        last_run, first_run = settings.current.last_run_version, not settings.current.setup_done
+        notice = update_notice(last_run, __version__)
         if notice is not None:
             self.set_status(notice, clear_after_ms=_UPDATE_STATUS_MS)
+        notes = None if first_run else whats_new(last_run, __version__)
         await settings.update(last_run_version=__version__)
+        if notes is not None and self.winfo_exists():
+            self._show_whats_new(notes)
+
+    def _show_whats_new(self, notes: WhatsNew) -> None:
+        """The "What's new" dialog; when started hidden in the tray, once the window opens."""
+        if self.state() in ("normal", "zoomed"):
+            WhatsNewDialog(self, version=notes.version, lines=notes.lines)
+            return
+
+        def on_map(event: tk.Event[Any]) -> None:
+            binding = self._whats_new_binding
+            if event.widget is not self or binding is None:
+                return  # the root's tag also sees its children's <Map>
+            self._whats_new_binding = None
+            tk.Misc.unbind(self, "<Map>", binding)
+            WhatsNewDialog(self, version=notes.version, lines=notes.lines)
+
+        self._whats_new_binding = tk.Misc.bind(self, "<Map>", on_map, add="+")
 
     def _start_update(self) -> None:
         if self._update_task is not None and not self._update_task.done():
@@ -963,9 +1143,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
             version = await self._services.updates.install(progress=self.set_status)
         except UpdateError as exc:
             log.warning("Update failed: %s", exc)
-            self.set_status(f"⚠ Update failed: {exc}", clear_after_ms=15_000)
+            self.set_status(t("⚠ Update failed: {error}", error=exc), clear_after_ms=15_000)
             return
-        self.set_status(f"Updated to v{version}. Restarting…")
+        self.set_status(t("Updated to v{version}. Restarting…", version=version))
         self.after(1200, self.restart)
 
     def restart(self) -> None:
@@ -977,13 +1157,16 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     async def _show_library_summary(self) -> None:
         stats = await self._services.library.stats()
-        synced = (
-            f"last synced {stats.last_synced.astimezone():%d %b %H:%M}"
-            if stats.last_synced
-            else "not synced yet"
-        )
-        self._idle_status = (
-            f"{stats.tracked_shows} tracked shows · {stats.episodes:,} episodes cached · {synced}"
+        if stats.last_synced:
+            when = stats.last_synced.astimezone()
+            synced = t("last synced {date}", date=f"{when:%d} {month_short(when)} {when:%H:%M}")
+        else:
+            synced = t("not synced yet")
+        self._idle_status = t(
+            "{shows} tracked shows · {episodes} episodes cached · {synced}",
+            shows=stats.tracked_shows,
+            episodes=number(stats.episodes, ","),
+            synced=synced,
         )
         if self._status_job is None:
             self._status.configure(text=self._idle_status)
@@ -1000,7 +1183,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _on_sync_progress(self, p: SyncProgress) -> None:
         try:
             self.set_status(
-                f"Syncing library… {p.done}/{p.total}" + (f" · {p.current}" if p.current else "")
+                t("Syncing library… {done}/{total}", done=p.done, total=p.total)
+                + (f" · {p.current}" if p.current else "")
             )
         except tk.TclError:
             pass  # window already destroyed

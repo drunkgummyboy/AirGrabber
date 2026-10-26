@@ -1,5 +1,7 @@
 """Domain models — the only data shapes the UI layer is allowed to consume."""
 
+from app.i18n import Language
+
 from app.models.domain import (
     AirdatesPreview,
     AutoDownloaded,
@@ -58,6 +60,14 @@ from app.models.domain import (
     UpdateInfo,
     WatchlistEntry,
 )
+from app.models.downloads import (
+    DownloadEntry,
+    DownloadsOverview,
+    DownloadState,
+    FreeSpace,
+    RemoteStatus,
+    RemoteTask,
+)
 from app.models.settings import (
     SUBTITLE_LANGUAGES,
     CardSize,
@@ -65,11 +75,19 @@ from app.models.settings import (
     QualityProfile,
     RemoteKind,
     Settings,
+    ThemeMode,
     Weekday,
 )
 
 __all__ = [
+    "DownloadEntry",
+    "DownloadState",
+    "DownloadsOverview",
+    "FreeSpace",
+    "RemoteStatus",
+    "RemoteTask",
     "SUBTITLE_LANGUAGES",
+    "Language",
     "AirdatesPreview",
     "AutoDownloadReport",
     "AutoDownloaded",
@@ -131,5 +149,6 @@ __all__ = [
     "TorrentRelease",
     "UpdateInfo",
     "WatchlistEntry",
+    "ThemeMode",
     "Weekday",
 ]

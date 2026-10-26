@@ -14,7 +14,7 @@ On Windows 10 or 11:
 2. Copy this line, paste it into the blue window (Ctrl+V or right-click) and press **Enter**:
 
    ```
-   irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex
+   irm is.gd/airgrabber | iex
    ```
 
 3. Follow the questions.
@@ -24,7 +24,12 @@ Python yet (the program AirGrabber runs on), the installer adds it for you. It a
 add a free helper program (Prowlarr) that searches more websites; you can say no.
 
 Only paste commands like this from sources you trust. This one downloads AirGrabber's installer,
-[`install.ps1`](install.ps1), from this page; you can read it first.
+[`install.ps1`](install.ps1), from this page; you can read it first. `is.gd/airgrabber` is a short
+link to it; the same command with the full address is:
+
+```
+irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex
+```
 
 ## Update
 

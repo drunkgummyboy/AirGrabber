@@ -46,6 +46,11 @@ class BaseView(ctk.CTkFrame, ABC):
         task.add_done_callback(self._load_finished)
         self._load_task = task
 
+    def reload(self) -> None:
+        """Load again now (F5 in the main window). Pages that cache what they fetch override it
+        to fetch afresh."""
+        self.refresh()
+
     def invalidate(self) -> None:
         """The data behind this view changed: the next `refresh_if_stale()` reloads it."""
         self._stale = True

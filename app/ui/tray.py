@@ -24,6 +24,7 @@ import customtkinter as ctk
 from PIL import Image
 
 from app import APP_NAME
+from app.i18n import N_, t
 from app.services import SettingsService
 from app.ui import theme
 from app.ui.branding import load_logo, set_window_icon
@@ -43,16 +44,17 @@ from app.ui.tasks import spawn
 
 log = logging.getLogger(__name__)
 
-OPEN_LABEL = "Open AirGrabber"
-CHECK_NOW_LABEL = "Check for new episodes now"
-QUIT_LABEL = "Quit"
+# Shown through t().
+OPEN_LABEL = N_("Open AirGrabber")
+CHECK_NOW_LABEL = N_("Check for new episodes now")
+QUIT_LABEL = N_("Quit")
 
-NOTICE_TITLE = "AirGrabber keeps running"
-NOTICE_TEXT = (
+NOTICE_TITLE = N_("AirGrabber keeps running")
+NOTICE_TEXT = N_(
     "It's in the tray next to the clock (click ^ if you don't see it), so new episodes still "
     "download. Right-click its icon and choose Quit to close it completely."
 )
-NOTICE_BUTTON = "Got it"
+NOTICE_BUTTON = N_("Got it")
 
 _IMAGE_PX = 128  # pystray hands Windows an .ico; it picks the size the tray needs from it
 _SHOW_POLL_S = 0.5  # how often a second start's "show the window" is checked for
@@ -123,10 +125,10 @@ class TrayIcon:
         # pystray missing → ImportError: the caller falls back to close = quit.
         pystray = self._backend if self._backend is not None else _import_pystray()
         menu = pystray.Menu(
-            pystray.MenuItem(OPEN_LABEL, self._menu_action(self._on_open), default=True),
-            pystray.MenuItem(CHECK_NOW_LABEL, self._menu_action(self._on_check_now)),
+            pystray.MenuItem(t(OPEN_LABEL), self._menu_action(self._on_open), default=True),
+            pystray.MenuItem(t(CHECK_NOW_LABEL), self._menu_action(self._on_check_now)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(QUIT_LABEL, self._menu_action(self._on_quit)),
+            pystray.MenuItem(t(QUIT_LABEL), self._menu_action(self._on_quit)),
         )
         self._icon = pystray.Icon(APP_NAME, self._image, APP_NAME, menu)
         # A daemon thread: pystray's own setup thread inherits that, so neither can keep the
@@ -364,11 +366,11 @@ class TrayNotice(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         # Holds the content width.
         ctk.CTkFrame(body, width=CONTENT_WIDTH, height=1, fg_color="transparent").pack()
-        heading_row(body, NOTICE_TITLE).pack(fill="x")
-        text_label(body, NOTICE_TEXT).pack(anchor="w", pady=(LINE_GAP, 0))
+        heading_row(body, t(NOTICE_TITLE)).pack(fill="x")
+        text_label(body, t(NOTICE_TEXT)).pack(anchor="w", pady=(LINE_GAP, 0))
         nav = ctk.CTkFrame(body, fg_color="transparent")
         nav.pack(fill="x", pady=(NAV_GAP, 0))
-        primary_button(nav, NOTICE_BUTTON, self._done).pack(side="right")
+        primary_button(nav, t(NOTICE_BUTTON), self._done).pack(side="right")
 
         self.bind("<Return>", lambda _event: self._done())
         self.bind("<Escape>", lambda _event: self._done())

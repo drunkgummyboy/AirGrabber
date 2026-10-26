@@ -15,7 +15,9 @@ from app.models import Settings
 from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportService
 from app.services.auto_download import AutoDownloadService
 from app.services.discovery import DiscoveryService
+from app.services.download_status import DownloadStatusService
 from app.services.downloads import DownloadService
+from app.services.flaresolverr import FlareSolverrService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
 from app.services.missing import MissingDownloadService
@@ -50,7 +52,9 @@ class Services:
         "airdates",
         "auto_download",
         "discovery",
+        "download_status",
         "downloads",
+        "flaresolverr",
         "images",
         "library",
         "missing",
@@ -106,6 +110,8 @@ class Services:
         self.updates = updates
         self.prowlarr_setup = prowlarr_setup
         self.torrent_app = torrent_app  # which torrent program is set up; qBittorrent install
+        # Whether FlareSolverr runs on this PC (the Add FlareSolverr guide's Check).
+        self.flaresolverr = FlareSolverrService(http)
         # Subtitles from OpenSubtitles.com next to the grabbed videos (`run_periodic` from the
         # UI), with the user's own API key when Settings has one, else AirGrabber's shipped key
         # (read on every request, so a changed key applies at once), and the user's optional
@@ -123,6 +129,12 @@ class Services:
             show=db.library.get_show,
             movie_imdb_id=functools.partial(_movie_imdb_id, discovery),
         )
+        # The Downloads page: recent grabs with the torrent program's progress, free space
+        # (`run_periodic` from the UI); looks again soon after every grab.
+        self.download_status = DownloadStatusService(
+            db.history, db.subtitles, settings, remote, show=db.library.get_show
+        )
+        downloads.subscribe(self.download_status.after_grab)
 
     @classmethod
     async def create(cls, paths: AppPaths) -> Services:
@@ -223,7 +235,9 @@ __all__ = [
     "AutoDownloadService",
     "DiscoveryService",
     "DownloadService",
+    "DownloadStatusService",
     "DownloadStationClient",
+    "FlareSolverrService",
     "ImageCache",
     "LibraryService",
     "MissingDownloadService",

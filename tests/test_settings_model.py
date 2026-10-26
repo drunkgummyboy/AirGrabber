@@ -1,6 +1,7 @@
 """Settings model: Prowlarr and remote torrent program fields, URL validation, secret persistence,
 the move from the Download Station (`ds_*`) settings, the quality per kind (moved from the one
-`quality`), the size ranges and the card size default."""
+`quality`), the size ranges, the card size default and the theme (light / dark / like
+Windows)."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from typing import Any
 from pydantic import SecretStr, ValidationError
 
 from app.database import Database
-from app.models import CardSize, DownloadMode, QualityProfile, RemoteKind, Settings
+from app.models import CardSize, DownloadMode, QualityProfile, RemoteKind, Settings, ThemeMode
 
 # Preferences as stored before the Prowlarr / Download Station fields existed.
 OLD_STORED: dict[str, Any] = {
@@ -250,6 +251,26 @@ class QualityAndSizeTests(unittest.TestCase):
         self.assertIs(Settings.model_validate(OLD_STORED).card_size, CardSize.M)
         self.assertIs(Settings.model_validate({"card_size": "xl"}).card_size, CardSize.XL)
 
+    def test_theme_follows_windows_by_default_also_for_older_settings(self) -> None:
+        self.assertIs(Settings().theme_mode, ThemeMode.SYSTEM)
+        self.assertIs(Settings.model_validate(OLD_STORED).theme_mode, ThemeMode.SYSTEM)
+
+    def test_a_stored_theme_stays(self) -> None:
+        for stored, expected in (
+            ("dark", ThemeMode.DARK),
+            ("light", ThemeMode.LIGHT),
+            ("system", ThemeMode.SYSTEM),
+            (" Light ", ThemeMode.LIGHT),
+        ):
+            with self.subTest(stored=stored):
+                self.assertIs(Settings.model_validate({"theme_mode": stored}).theme_mode, expected)
+
+    def test_an_unknown_theme_follows_windows(self) -> None:
+        # A newer version's choice, say: no error, and the other settings stay.
+        loaded = Settings.model_validate({"theme_mode": "sepia", "card_size": "xl"})
+        self.assertIs(loaded.theme_mode, ThemeMode.SYSTEM)
+        self.assertIs(loaded.card_size, CardSize.XL)
+
 
 SIZE_FIELDS = ("size_tv_min_gb", "size_tv_max_gb", "size_movie_min_gb", "size_movie_max_gb")
 
@@ -320,6 +341,7 @@ class SettingsStorageTests(unittest.IsolatedAsyncioTestCase):
             prowlarr_api_key="abc123",
             remote_verify_tls=False,
             disabled_indexers=("yts",),
+            theme_mode=ThemeMode.LIGHT,
         )
         await db.settings.save(settings)
         loaded = await db.settings.load()

@@ -1,7 +1,9 @@
 <#
 AirGrabber installer for Windows 10/11. Open Windows PowerShell (Start, type powershell) and run:
 
-    irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex
+    irm is.gd/airgrabber | iex
+
+(is.gd/airgrabber is a short link to https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1)
 
 (Not via the Run dialog: security software blocks download commands started from Win+R, because
 scam pages ask people to paste them there.)

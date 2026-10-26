@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import customtkinter as ctk
 from PIL import ImageTk
 
+from app.i18n import N_, day_short, month_short, t
 from app.models import DownloadRecord, Episode, Show, ShowActivity
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
@@ -51,13 +52,14 @@ if TYPE_CHECKING:
 
 TVMAZE_MEDIUM_WIDTH = 210  # TVMaze's "medium" posters are 210 x 295
 
-AUTO_SWITCH_TEXT = "Auto"
-AUTO_SWITCH_TIP = (
+# Shown through t().
+AUTO_SWITCH_TEXT = N_("Auto")
+AUTO_SWITCH_TIP = N_(
     "Auto-download: new episodes of this show download by themselves, "
     "about 2 hours after they air."
 )
-IMDB_ITEM_TEXT = "Open on IMDb"
-REMOVE_ITEM_TEXT = "Remove show…"
+IMDB_ITEM_TEXT = N_("Open on IMDb")
+REMOVE_ITEM_TEXT = N_("Remove show…")
 MENU_TEXT = "⋯"
 MENU_TIP = SEASON_MENU_TIP  # "More options"
 # The My shows card's bottom row, at XL: the switch and the round ⋯.
@@ -68,9 +70,6 @@ SWITCH_SIZE = (36, 18)  # CTkSwitch's own default track
 
 _RECENT_GRAB_DAYS = 6  # "today" … six days ago; older grabs aren't mentioned
 _NEAR_DAYS = 6  # a next episode up to this many days away is named by its weekday
-
-_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 CardMenuKey = Literal["imdb", "download_missing", "remove"]
 
@@ -108,9 +107,9 @@ def card_info_line(activity: ShowActivity | None, now: datetime) -> str | None:
         days_ago = (today - grabbed).days
         if 0 <= days_ago <= _RECENT_GRAB_DAYS:
             when = (
-                "today"
+                t("today")
                 if days_ago == 0
-                else "yesterday" if days_ago == 1 else _WEEKDAYS[grabbed.weekday()]
+                else t("yesterday") if days_ago == 1 else day_short(grabbed)
             )
             return f"✓ {_grab_code(grab)} · {when}"
     episode = activity.next_episode
@@ -118,15 +117,13 @@ def card_info_line(activity: ShowActivity | None, now: datetime) -> str | None:
         days_ahead = (day - today).days
         if days_ahead >= 0:
             when = (
-                _WEEKDAYS[day.weekday()]
-                if days_ahead <= _NEAR_DAYS
-                else f"{day.day} {_MONTHS[day.month - 1]}"
+                day_short(day) if days_ahead <= _NEAR_DAYS else f"{day.day} {month_short(day)}"
             )
-            return f"Next: {episode.code} · {when}"
+            return t("Next: {code} · {when}", code=episode.code, when=when)
     return None
 
 
-def run_line(state: MissingRunState | None) -> tuple[tuple[str, ...], str] | None:
+def run_line(state: MissingRunState | None) -> tuple[tuple[str, ...], theme.Color] | None:
     """What a My shows card says instead of its info line while "Download missing" runs for the
     show and for a while after: the texts (longest first, the card shows the first that fits)
     and their colour. "Downloading 2 of 3…" muted; then the outcome: in green with episodes
@@ -156,15 +153,15 @@ def card_menu(
     show…"."""
     items: list[tuple[str, CardMenuKey]] = []
     if has_imdb:
-        items.append((IMDB_ITEM_TEXT, "imdb"))
+        items.append((t(IMDB_ITEM_TEXT), "imdb"))
     if missing > 0 and not working:
         items.append((download_missing_text(missing), "download_missing"))
     if removable:
-        items.append((REMOVE_ITEM_TEXT, "remove"))
+        items.append((t(REMOVE_ITEM_TEXT), "remove"))
     return items
 
 
-def auto_switch_color(on: bool) -> str:
+def auto_switch_color(on: bool) -> theme.Color:
     """The switch label's colour: plain text when on, muted when off."""
     return theme.TEXT if on else theme.TEXT_MUTED
 
@@ -184,7 +181,7 @@ class RoundButton(tk.Canvas):
     """A round button with `text` in it: a 1-unit `edge` ring on `bg`, filled with `hover`
     under the pointer. Drawn on its own canvas, because a CTkButton grows wider than it is
     tall around any text. `size` is in CTk units (diameter); `rescale` follows a change of
-    Windows' scaling."""
+    Windows' scaling, and of light / dark."""
 
     def __init__(
         self,
@@ -194,29 +191,34 @@ class RoundButton(tk.Canvas):
         size: int,
         font: ctk.CTkFont,
         command: Callable[[], None],
-        bg: str = theme.BG,
-        edge: str = theme.EDGE,
-        hover: str = theme.ACCENT_HOVER,
-        text_color: str = theme.TEXT,
+        bg: theme.Color = theme.BG,
+        edge: theme.Color = theme.EDGE,
+        hover: theme.Color = theme.HOVER,
+        text_color: theme.Color = theme.TEXT,
     ) -> None:
-        super().__init__(master, highlightthickness=0, borderwidth=0, background=bg, cursor="hand2")
+        super().__init__(master, highlightthickness=0, borderwidth=0, cursor="hand2")
         self._size = size
         self._font = font
         self._command = command
         self._colors = (bg, edge, hover)
+        self._text_color = text_color
         self._images: tuple[ImageTk.PhotoImage, ImageTk.PhotoImage] | None = None
         self._hovered = False
         self._ring = self.create_image(0, 0, anchor="nw")
-        self._text = self.create_text(0, 0, text=text, fill=text_color, anchor="center")
+        self._text = self.create_text(0, 0, text=text, anchor="center")
         self.bind("<Enter>", lambda _event: self._hover(True), add="+")
         self.bind("<Leave>", lambda _event: self._hover(False), add="+")
         self.bind("<Button-1>", lambda _event: self._command(), add="+")
         self.rescale()
+        theme.on_mode_change(self, self.rescale)
 
     def rescale(self) -> None:
+        """Draw the button at the current scaling, in the current mode's colours."""
         scaling: float = ctk.ScalingTracker.get_widget_scaling(self.master)
         diameter = round(self._size * scaling)
         border = max(1, round(scaling))
+        self.configure(background=theme.pick(self._colors[0]))
+        self.itemconfigure(self._text, fill=theme.pick(self._text_color))
         bg, edge, hover = (rgb(self, color) for color in self._colors)
         self._images = (
             ImageTk.PhotoImage(pill_image((diameter, diameter), border, bg, edge), master=self),
@@ -301,12 +303,12 @@ class ShowCard(PosterCard):
             command=self._open_menu,
         )
         self.menu_button.pack(side="right")
-        add_tooltip(self.menu_button, MENU_TIP)
+        add_tooltip(self.menu_button, t(MENU_TIP))
         if on_auto_download is not None:
             switch_w, switch_h = SWITCH_SIZE
             self._auto_switch = ctk.CTkSwitch(
                 row,
-                text=AUTO_SWITCH_TEXT,
+                text=t(AUTO_SWITCH_TEXT),
                 variable=self._auto_var,
                 switch_width=scale.px(switch_w),
                 switch_height=scale.px(switch_h),
@@ -316,7 +318,7 @@ class ShowCard(PosterCard):
                 command=self._auto_toggled,
             )
             self._auto_switch.pack(side="left")
-            add_tooltip(self._auto_switch, AUTO_SWITCH_TIP)
+            add_tooltip(self._auto_switch, t(AUTO_SWITCH_TIP))
 
         if self._missing > 0:
             self._set_badge(missing_text(self._missing), MISSING_COLOR)
@@ -433,7 +435,7 @@ class SearchShowCard(PosterCard):
         self._show = show
         self._on_track = on_track
         self._track_button = TrackButton(
-            self, busy_text="Adding…", command=self._track, scale=scale
+            self, busy_text=t("Adding…"), command=self._track, scale=scale
         )
         self._pack_action(self._track_button)
         self.set_track_state("tracked" if is_tracked else "idle")

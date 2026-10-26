@@ -361,14 +361,14 @@ _NEXT_EPISODES_SQL = f"""
 """
 
 
-# Per tracked show, how many episodes are missing: the regular numbered episodes (seasons from 1)
-# of its latest season — the highest with such an episode aired (an airstamp up to :now, or
-# without one an air date up to :today) — that aired, aren't downloaded (the episode or its
-# season pack) and aren't marked "I already have this". The SQL twin of
-# app.services.missing.missing_episodes; tests keep the two in step.
-_MISSING_COUNTS_SQL = f"""
+# The tracked shows' missing episodes, as the CTE `missing` (id, show_id, air_date): the regular
+# numbered episodes (seasons from 1) of each show's latest season — the highest with such an
+# episode aired (an airstamp up to :now, or without one an air date up to :today) — that aired,
+# aren't downloaded (the episode or its season pack) and aren't marked "I already have this".
+# The SQL twin of app.services.missing.missing_episodes; tests keep the two in step.
+_MISSING_CTE = f"""
     WITH aired AS (
-        SELECT e.id, e.show_id, e.season, e.number
+        SELECT e.id, e.show_id, e.season, e.number, e.air_date
         FROM episodes AS e
         JOIN tracked_shows AS t ON t.show_id = e.show_id
         WHERE e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
@@ -379,13 +379,22 @@ _MISSING_COUNTS_SQL = f"""
     ),
     latest AS (
         SELECT show_id, MAX(season) AS season FROM aired GROUP BY show_id
+    ),
+    missing AS (
+        SELECT e.id, e.show_id, e.air_date
+        FROM aired AS e
+        JOIN latest AS l ON l.show_id = e.show_id AND l.season = e.season
+        WHERE NOT EXISTS (SELECT 1 FROM have_episodes AS m WHERE m.episode_id = e.id)
+          AND NOT {_IS_DOWNLOADED}
     )
-    SELECT e.show_id, COUNT(*) AS missing
-    FROM aired AS e
-    JOIN latest AS l ON l.show_id = e.show_id AND l.season = e.season
-    WHERE NOT EXISTS (SELECT 1 FROM have_episodes AS m WHERE m.episode_id = e.id)
-      AND NOT {_IS_DOWNLOADED}
-    GROUP BY e.show_id
+"""
+# Per tracked show, how many episodes are missing (My shows' badges).
+_MISSING_COUNTS_SQL = f"""{_MISSING_CTE}
+    SELECT show_id, COUNT(*) AS missing FROM missing GROUP BY show_id
+"""
+# The missing episodes airing between :start and :end (the calendar's amber marks).
+_MISSING_BETWEEN_SQL = f"""{_MISSING_CTE}
+    SELECT id FROM missing WHERE air_date BETWEEN :start AND :end
 """
 
 
@@ -717,6 +726,32 @@ class LibraryRepository:
         )
         return {row["show_id"]: row["missing"] for row in rows}
 
+    async def missing_between(
+        self, start: date, end: date, *, now: datetime, today: date
+    ) -> frozenset[int]:
+        """Ids of the missing episodes (see _MISSING_CTE) airing between `start` and `end`
+        (inclusive): aired by `now` (without an airstamp: by `today`)."""
+        rows = await self._db.fetch_all(
+            _MISSING_BETWEEN_SQL,
+            {
+                "now": _utc(now),
+                "today": today.isoformat(),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+        )
+        return frozenset(row["id"] for row in rows)
+
+    async def have_between(self, start: date, end: date) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) that are marked "I
+        already have this" (the calendar's stack cards)."""
+        rows = await self._db.fetch_all(
+            "SELECT m.episode_id FROM have_episodes AS m "
+            "JOIN episodes AS e ON e.id = m.episode_id WHERE e.air_date BETWEEN ? AND ?",
+            (start.isoformat(), end.isoformat()),
+        )
+        return frozenset(row["episode_id"] for row in rows)
+
     async def have_ids(self, show_id: int) -> frozenset[int]:
         """Ids of the show's episodes marked "I already have this"."""
         rows = await self._db.fetch_all(
@@ -881,6 +916,14 @@ class HistoryRepository:
             (MediaType.MOVIE, movie_id),
         )
         return bool(row and row[0])
+
+    async def movie_ids(self) -> frozenset[int]:
+        """TMDB ids of every film in the history."""
+        rows = await self._db.fetch_all(
+            "SELECT DISTINCT media_id FROM download_history WHERE media_type = ?",
+            (MediaType.MOVIE,),
+        )
+        return frozenset(row["media_id"] for row in rows)
 
     async def recent(self, limit: int = 50) -> list[DownloadRecord]:
         rows = await self._db.fetch_all(
@@ -1215,4 +1258,18 @@ class SubtitleRepository:
         found: dict[tuple[int, int], set[str]] = {}
         for row in rows:
             found.setdefault((row["season"], row["episode"]), set()).add(row["language"])
+        return {key: frozenset(languages) for key, languages in found.items()}
+
+    async def grab_languages(self, history_ids: Iterable[int]) -> dict[int, frozenset[str]]:
+        """Per grab (download history id), the languages of the subtitles saved for its
+        videos (the Downloads page)."""
+        ids = json.dumps(sorted(set(history_ids)))
+        rows = await self._db.fetch_all(
+            "SELECT DISTINCT history_id, language FROM subtitle_files "
+            "WHERE saved_at IS NOT NULL AND history_id IN (SELECT value FROM json_each(?))",
+            (ids,),
+        )
+        found: dict[int, set[str]] = {}
+        for row in rows:
+            found.setdefault(row["history_id"], set()).add(row["language"])
         return {key: frozenset(languages) for key, languages in found.items()}

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import customtkinter as ctk
 from pydantic import ValidationError
 
+from app.i18n import N_, t
 from app.models import RemoteKind, Settings
 from app.models.settings import remote_ready
 from app.services import RemoteError
@@ -44,30 +45,37 @@ ADDRESS_HINTS: dict[RemoteKind, str] = {  # each program's usual port
     RemoteKind.TRANSMISSION: "http://192.168.1.x:9091",
 }
 DESTINATION_HINTS: dict[RemoteKind, str] = {
-    RemoteKind.SYNOLOGY: "video/tv — empty: Download Station's default",
-    RemoteKind.QBITTORRENT: "/downloads/tv — empty: qBittorrent's default",
-    RemoteKind.TRANSMISSION: "/downloads/tv — empty: Transmission's default",
+    RemoteKind.SYNOLOGY: N_("video/tv — empty: Download Station's default"),
+    RemoteKind.QBITTORRENT: N_("/downloads/tv — empty: qBittorrent's default"),
+    RemoteKind.TRANSMISSION: N_("/downloads/tv — empty: Transmission's default"),
 }
-# The form's labels, also for validation errors (Settings uses them too).
+# The form's labels, also for validation errors (Settings uses them too); shown through t(), as
+# the other texts here.
 FIELD_LABELS: dict[str, str] = {
-    "remote_kind": "Program",
-    "remote_url": "Address",
-    "remote_username": "User name",
-    "remote_password": "Password",
-    "remote_destination": "Destination folder",
-    "remote_verify_tls": "Verify the certificate (https)",
+    "remote_kind": N_("Program"),
+    "remote_url": N_("Address"),
+    "remote_username": N_("User name"),
+    "remote_password": N_("Password"),
+    "remote_destination": N_("Destination folder"),
+    "remote_verify_tls": N_("Verify the certificate (https)"),
 }
-TESTING_TEXT = "Saving and testing…"
+TESTING_TEXT = N_("Saving and testing…")
 TEST_BUTTON_WIDTH = 160
 # Settings' folder mode: what happens to a release without a .torrent file (`folder_note`).
-MAGNET_NOTE = "Some releases have no .torrent file, only a magnet link."
-NO_PROGRAM_TEXT = "Those can't be saved to a folder."
-CHANGE_LINK = "Change"
-SET_UP_LINK = "Set up a torrent program to receive them"
+MAGNET_NOTE = N_("Some releases have no .torrent file, only a magnet link.")
+NO_PROGRAM_TEXT = N_("Those can't be saved to a folder.")
+CHANGE_LINK = N_("Change")
+SET_UP_LINK = N_("Set up a torrent program to receive them")
 
 _ROW_GAP = 10
 _LABEL_GAP = 12  # between the label and the field column
-_FIELD_ROWS = ("Program", "Address", "User name", "Password", "Destination folder (optional)")
+_FIELD_ROWS = (
+    N_("Program"),
+    N_("Address"),
+    N_("User name"),
+    N_("Password"),
+    N_("Destination folder (optional)"),
+)
 
 # Saves the form, then tests the connection: e.g. "qBittorrent v5.0.2". Raises RemoteError, or
 # ValidationError when the form doesn't validate.
@@ -125,10 +133,11 @@ def folder_note(kind: RemoteKind, ready: bool, url: str = "") -> FolderNote:
     """Where magnet-only releases go in folder mode: to the remote program when one is set up
     (`ready`; `url` its address), else nowhere."""
     if not ready:
-        return FolderNote(f"{MAGNET_NOTE} {NO_PROGRAM_TEXT}", SET_UP_LINK)
+        return FolderNote(f"{t(MAGNET_NOTE)} {t(NO_PROGRAM_TEXT)}", t(SET_UP_LINK))
     host = remote_host(url)
-    where = f"{kind.program} at {host}" if host else kind.program
-    return FolderNote(f"{MAGNET_NOTE} Those are sent to {where}.", CHANGE_LINK)
+    where = t("{program} at {host}", program=kind.program, host=host) if host else kind.program
+    sent = t("Those are sent to {where}.", where=where)
+    return FolderNote(f"{t(MAGNET_NOTE)} {sent}", t(CHANGE_LINK))
 
 
 def describe_error(error: ValidationError, labels: dict[str, str] = FIELD_LABELS) -> str:
@@ -137,13 +146,13 @@ def describe_error(error: ValidationError, labels: dict[str, str] = FIELD_LABELS
     for item in error.errors():
         label = labels.get(str(item["loc"][0])) if item["loc"] else None
         message = item["msg"].removeprefix("Value error, ")
-        lines.append(f"{label}: {message}" if label else message)
+        lines.append(f"{t(label)}: {message}" if label else message)
     return "\n".join(lines)
 
 
 class ResultLook(NamedTuple):
     text: str
-    color: str
+    color: theme.Color
 
 
 def result_look(description: str | None = None, error: str | None = None) -> ResultLook:
@@ -152,7 +161,7 @@ def result_look(description: str | None = None, error: str | None = None) -> Res
         return ResultLook(f"✗ {error}", theme.DANGER)
     if description is not None:
         return ResultLook(f"✓ {description}", theme.SUCCESS)
-    return ResultLook(TESTING_TEXT, theme.TEXT_MUTED)
+    return ResultLook(t(TESTING_TEXT), theme.TEXT_MUTED)
 
 
 def _alive(widget: tk.Misc) -> bool:
@@ -187,7 +196,7 @@ class RemoteProgramForm(ctk.CTkFrame):
         for row, label in enumerate(_FIELD_ROWS):
             ctk.CTkLabel(
                 self,
-                text=label,
+                text=t(label),
                 height=BUTTON_HEIGHT,
                 font=theme.font(DETAIL_SIZE),
                 text_color=theme.TEXT_MUTED,
@@ -208,20 +217,21 @@ class RemoteProgramForm(ctk.CTkFrame):
             dropdown_font=theme.font(DETAIL_SIZE),
             fg_color=theme.SURFACE,
             button_color=theme.EDGE,
-            button_hover_color=theme.ACCENT_HOVER,
+            button_hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
         )
         self._program.set(program_name(kind))
         self._address = self._entry(1, settings.remote_url, placeholder=ADDRESS_HINTS[kind])
         self._username = self._entry(2, settings.remote_username)
         self._password = self._entry(3, settings.remote_password.get_secret_value(), show="•")
         self._destination = self._entry(
-            4, settings.remote_destination, placeholder=DESTINATION_HINTS[kind]
+            4, settings.remote_destination, placeholder=t(DESTINATION_HINTS[kind])
         )
         self._program.grid(row=0, column=1, sticky="w", pady=self._pady(0))
 
         self._verify = ctk.CTkCheckBox(
             self,
-            text=FIELD_LABELS["remote_verify_tls"],
+            text=t(FIELD_LABELS["remote_verify_tls"]),
             width=0,
             height=BUTTON_HEIGHT,
             checkbox_width=22,
@@ -237,7 +247,7 @@ class RemoteProgramForm(ctk.CTkFrame):
         self._verify.grid(row=5, column=1, sticky="w", pady=self._pady(5))
 
         self._test_button = primary_button(
-            self, "Test connection", self._start_test, width=TEST_BUTTON_WIDTH
+            self, t("Test connection"), self._start_test, width=TEST_BUTTON_WIDTH
         )
         self._test_button.grid(row=6, column=1, sticky="w", pady=self._pady(6))
         self._result = text_label(self, "", size=SMALL_SIZE, wraplength=field_width)
@@ -303,7 +313,7 @@ class RemoteProgramForm(ctk.CTkFrame):
     def _program_changed(self, name: str) -> None:
         kind = kind_from_name(name)
         self._address.configure(placeholder_text=ADDRESS_HINTS[kind])
-        self._destination.configure(placeholder_text=DESTINATION_HINTS[kind])
+        self._destination.configure(placeholder_text=t(DESTINATION_HINTS[kind]))
 
     def _entry(
         self, row: int, value: str, *, placeholder: str | None = None, show: str = ""

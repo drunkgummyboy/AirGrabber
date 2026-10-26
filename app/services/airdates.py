@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 
 import httpx
 
+from app.i18n import N_, t
 from app.models import AirdatesPreview
 from app.services.library import LibraryService
 
@@ -29,7 +30,7 @@ MIN_INTERVAL = 0.3
 TIMEOUT = 10.0
 RETRY_DELAY = 1.0
 
-EXPORT_ERROR = (
+EXPORT_ERROR = N_(  # raised through t()
     "That doesn't look like the text from airdates.tv's \"Export your color selection\"."
 )
 
@@ -64,7 +65,7 @@ def parse_export(text: str) -> list[int]:
         ids = []
     unique = [series_id for series_id in dict.fromkeys(ids) if series_id > 0]
     if not unique:
-        raise AirdatesError(EXPORT_ERROR)
+        raise AirdatesError(t(EXPORT_ERROR))
     return unique
 
 
@@ -138,7 +139,7 @@ class AirdatesClient:
                 reason = type(exc).__name__
             except httpx.RequestError as exc:
                 raise AirdatesError(
-                    f"airdates.tv lookup failed ({type(exc).__name__})"
+                    t("airdates.tv lookup failed ({error})", error=type(exc).__name__)
                 ) from exc
             else:
                 status = response.status_code
@@ -149,11 +150,11 @@ class AirdatesClient:
                     return response
                 reason = f"HTTP {status}"
                 if status < 500:
-                    raise AirdatesError(f"airdates.tv answered {reason}")
+                    raise AirdatesError(t("airdates.tv answered {reason}", reason=reason))
             if attempt == 1:
                 log.warning("airdates.tv lookup failed (%s); retrying once", reason)
                 await self._sleep(RETRY_DELAY)
-        raise AirdatesError(f"airdates.tv could not be reached ({reason})")
+        raise AirdatesError(t("airdates.tv could not be reached ({reason})", reason=reason))
 
     async def _request(self, series_id: int) -> httpx.Response:
         async with self._turn:

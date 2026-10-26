@@ -11,6 +11,7 @@ from typing import Any
 
 import customtkinter as ctk
 
+from app.i18n import t
 from app.services import TorrentAppService
 from app.ui import theme
 from app.ui.dialog_kit import DETAIL_SIZE, link_label, secondary_button, text_label
@@ -32,7 +33,7 @@ class TorrentStatus(Enum):
 @dataclass(frozen=True, slots=True)
 class TorrentLook:
     text: str
-    color: str
+    color: theme.Color
     install_button: bool = False
     download_link: bool = False
 
@@ -40,15 +41,17 @@ class TorrentLook:
 def torrent_look(status: TorrentStatus, name: str = "") -> TorrentLook:
     """The status line under "Open in my torrent program"."""
     if status is TorrentStatus.FOUND:
-        return TorrentLook(f"✓ {name} found", theme.SUCCESS)
+        return TorrentLook(t("✓ {name} found", name=name), theme.SUCCESS)
     if status is TorrentStatus.MISSING:
-        return TorrentLook("No torrent program found", theme.WARNING, install_button=True)
+        return TorrentLook(t("No torrent program found"), theme.WARNING, install_button=True)
     if status is TorrentStatus.INSTALLING:
-        return TorrentLook("Installing… Windows may ask for permission", theme.TEXT_MUTED)
+        return TorrentLook(t("Installing… Windows may ask for permission"), theme.TEXT_MUTED)
     if status is TorrentStatus.INSTALLED:
-        return TorrentLook("✓ qBittorrent installed", theme.SUCCESS)
+        return TorrentLook(t("✓ qBittorrent installed"), theme.SUCCESS)
     if status is TorrentStatus.FAILED:
-        return TorrentLook("Couldn't install it automatically.", theme.DANGER, download_link=True)
+        return TorrentLook(
+            t("Couldn't install it automatically."), theme.DANGER, download_link=True
+        )
     return TorrentLook("", theme.TEXT_MUTED)
 
 
@@ -72,9 +75,9 @@ class TorrentAppStatus(ctk.CTkFrame):
         self._label = text_label(self, "", size=DETAIL_SIZE, wraplength=wraplength)
         self._label.pack(side="left")
         self._install_button = secondary_button(
-            self, "Install qBittorrent", self._install, width=INSTALL_BUTTON_WIDTH
+            self, t("Install qBittorrent"), self._install, width=INSTALL_BUTTON_WIDTH
         )
-        self._get_link = link_label(self, "Get qBittorrent", QBITTORRENT_URL)
+        self._get_link = link_label(self, t("Get qBittorrent"), QBITTORRENT_URL)
 
     @property
     def status(self) -> TorrentStatus:

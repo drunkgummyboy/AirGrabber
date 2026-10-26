@@ -317,6 +317,7 @@ class ListParsingTests(TMDBTestCase):
         self.assertEqual(link_click.first_air_date, date(2021, 4, 30))
         self.assertEqual(link_click.year, 2021)
         self.assertEqual(link_click.origin_country, ("CN",))
+        self.assertEqual(link_click.genre_ids, (16, 10765, 9648, 18))  # TMDB's TV genre ids
         self.assertEqual((link_click.vote_average, link_click.vote_count), (8.2, 134))
         self.assertEqual(link_click.popularity, 54.3771)
         self.assertTrue(link_click.overview.startswith("Using superpowers"))
@@ -432,6 +433,7 @@ class ListParsingTests(TMDBTestCase):
         [show] = await client.trending_tv()
         self.assertEqual((movie.overview, movie.vote_average, movie.genre_ids), ("", 0.0, ()))
         self.assertEqual((show.overview, show.vote_count, show.origin_country), ("", 0, ()))
+        self.assertEqual(show.genre_ids, ())
 
 
 class DetailsParsingTests(TMDBTestCase):

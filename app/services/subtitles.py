@@ -38,6 +38,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.database import SubtitleRepository
+from app.i18n import N_, t
 from app.models import (
     DownloadRecord,
     MediaType,
@@ -95,19 +96,27 @@ SETTINGS_FIELDS = frozenset(
     }
 )
 
-NO_FOLDER_TEXT = "Choose where finished downloads end up (Settings, Subtitles)"
-WRITE_FAILED_TEXT = "Couldn't save subtitles next to the videos. Check that the folder is writable"
+# Raised through t().
+NO_FOLDER_TEXT = N_("Choose where finished downloads end up (Settings, Subtitles)")
+WRITE_FAILED_TEXT = N_(
+    "Couldn't save subtitles next to the videos. Check that the folder is writable"
+)
 
 
 def folder_unreachable_text(folder: str) -> str:
-    return f"Couldn't open {folder}. Check that the folder (or the NAS) is reachable"
+    return t(
+        "Couldn't open {folder}. Check that the folder (or the NAS) is reachable", folder=folder
+    )
 
 
 def quota_text(reset_at: datetime | None) -> str:
     """"Today's subtitle downloads are used up; more after 02:00" (local time)."""
     if reset_at is None:
-        return "Today's subtitle downloads are used up; more tomorrow"
-    return f"Today's subtitle downloads are used up; more after {reset_at.astimezone():%H:%M}"
+        return t("Today's subtitle downloads are used up; more tomorrow")
+    return t(
+        "Today's subtitle downloads are used up; more after {time}",
+        time=f"{reset_at.astimezone():%H:%M}",
+    )
 
 
 def pick(found: Iterable[SubtitleCandidate], language: str) -> SubtitleCandidate | None:
@@ -303,7 +312,7 @@ class SubtitleService:
             return
         folder = settings.subtitles_folder
         if not folder:
-            raise _StopRun(NO_FOLDER_TEXT)
+            raise _StopRun(t(NO_FOLDER_TEXT))
         try:
             scan = await asyncio.to_thread(scan_folder, Path(folder), now=self._wall_clock())
         except OSError:
@@ -541,7 +550,7 @@ class SubtitleService:
         try:
             await asyncio.to_thread(write_new_file, target, content)
         except OSError:
-            raise _StopRun(WRITE_FAILED_TEXT) from None
+            raise _StopRun(t(WRITE_FAILED_TEXT)) from None
         return True  # written now, or a subtitle appeared there meanwhile (kept as it is)
 
     def _quota_used_up(self, reset_at: datetime | None) -> None:

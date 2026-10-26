@@ -87,7 +87,7 @@ def text_label(
     text: str,
     *,
     size: int = BODY_SIZE,
-    color: str = theme.TEXT,
+    color: theme.Color = theme.TEXT,
     wraplength: int = CONTENT_WIDTH,
     bold: bool = False,
 ) -> ctk.CTkLabel:

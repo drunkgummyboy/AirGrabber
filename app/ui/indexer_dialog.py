@@ -52,10 +52,12 @@ from app.services.search import (
 )
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError, TVMazeNotFound
+from app.i18n import N_, number, t, tn
 from app.ui import theme
 from app.ui.branding import set_window_icon
 from app.ui.download_control import outcome_text
 from app.ui.media_cards import format_runtime
+from app.ui.show_details import show_status
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
 from app.ui.tooltip import Tooltip, add_tooltip
@@ -102,7 +104,7 @@ QUALITY_LABELS = {
     "720p": "720P",
     "480p": "480P",
     "x265": "x265",
-    "any": "ANY",
+    "any": N_("ANY"),  # shown through t(), as the other labels (which stay as they are)
 }
 # Columns whose first click sorts biggest first; the others start A→Z / newest first.
 _DESCENDING_FIRST: frozenset[str] = frozenset({"size", "seeds", "leech"})
@@ -120,21 +122,22 @@ _OUTCOME_STATES: dict[GrabOutcome, RowState] = {
     GrabOutcome.SAVED: "saved",
     GrabOutcome.SENT: "sent",
 }
-DOWNLOAD_TEXT = "⬇ Download"
-DOWNLOADING_TEXT = "Downloading…"
-NO_SELECTION_TEXT = "Click a release above to select it"
+# Shown through t().
+DOWNLOAD_TEXT = N_("⬇ Download")
+DOWNLOADING_TEXT = N_("Downloading…")
+NO_SELECTION_TEXT = N_("Click a release above to select it")
 _SIZE_UNITS = ("KB", "MB", "GB", "TB", "PB")
 _UNKNOWN = "—"
 _DETAILS_WAIT = 5.0  # seconds a movie search waits for TMDB details (for the IMDb id)
 
-# (id, heading, width in CTk units, anchor, stretches)
+# (id, heading (shown through t()), width in CTk units, anchor, stretches)
 _COLUMNS: tuple[tuple[ColumnId, str, int, _Anchor, bool], ...] = (
-    ("name", "Name", 320, "w", True),
-    ("size", "Size", 90, "e", False),
-    ("seeds", "Seeds", 70, "center", False),
-    ("leech", "Leech", 70, "center", False),
-    ("source", "Source", 120, "center", False),
-    ("age", "Age", 70, "center", False),
+    ("name", N_("Name"), 320, "w", True),
+    ("size", N_("Size"), 90, "e", False),
+    ("seeds", N_("Seeds"), 70, "center", False),
+    ("leech", N_("Leech"), 70, "center", False),
+    ("source", N_("Source"), 120, "center", False),
+    ("age", N_("Age"), 70, "center", False),
     ("action", "", 50, "center", False),
 )
 _COLUMN_IDS = tuple(column[0] for column in _COLUMNS)
@@ -148,7 +151,7 @@ _POSTER_SIZE = {False: (150, 225), True: (100, 150)}  # by compact
 _TITLE_SIZE = {False: 24, True: 20}
 _HEADER_PAD = {False: 15, True: 8}
 _SELECTOR_HEIGHT = 30  # the tallest selector chip (the VERSION buttons)
-CHIP_TIP = "Open this site's search in your browser"
+CHIP_TIP = N_("Open this site's search in your browser")
 
 
 # -- text --------------------------------------------------------------------------------------
@@ -165,7 +168,7 @@ def format_size(size_bytes: int) -> str:
     while value >= 1024 and unit < len(_SIZE_UNITS) - 1:
         value /= 1024
         unit += 1
-    return f"{value:.2f} {_SIZE_UNITS[unit]}"
+    return f"{number(value, '.2f')} {_SIZE_UNITS[unit]}"
 
 
 def format_age(published: datetime | None, now: datetime) -> str:
@@ -174,11 +177,11 @@ def format_age(published: datetime | None, now: datetime) -> str:
         return _UNKNOWN
     seconds = max(0.0, (now - published).total_seconds())
     if seconds < 3600:
-        return f"{int(seconds // 60)}m"
+        return t("{n}m", n=int(seconds // 60))
     if seconds < 86400:
-        return f"{int(seconds // 3600)}h"
+        return t("{n}h", n=int(seconds // 3600))
     days = int(seconds // 86400)
-    return f"{days}d" if days < 365 else f"{days // 365}y"
+    return t("{n}d", n=days) if days < 365 else t("{n}y", n=days // 365)
 
 
 def release_id(release: TorrentRelease) -> str:
@@ -231,11 +234,11 @@ def next_sort(
 
 def quality_button_text(key: str, count: int) -> str:
     """"1080P (12)", or just "1080P" when nothing matches."""
-    label = QUALITY_LABELS[key]
+    label = t(QUALITY_LABELS[key])
     return f"{label} ({count})" if count > 0 else label
 
 
-def chip_style(status: IndexerStatus) -> tuple[str, str]:
+def chip_style(status: IndexerStatus) -> tuple[str, theme.Color]:
     """An indexer chip's text and colour."""
     label = status.label
     if status.state is IndexerState.FOUND:
@@ -249,13 +252,14 @@ def chip_style(status: IndexerStatus) -> tuple[str, str]:
     return label, theme.PENDING
 
 
+
 def failure_text(statuses: Iterable[IndexerStatus]) -> str:
     """"EZTV: timed out · Bitsearch: …" for the indexers that failed ("" for none)."""
     parts: list[str] = []
     for status in statuses:
         if status.state is not IndexerState.FAILED:
             continue
-        message = status.message or "failed"
+        message = status.message or t("failed")
         if not message.startswith(f"{status.label}:"):  # IndexerError texts already do
             message = f"{status.label}: {message}"
         parts.append(message)
@@ -278,7 +282,7 @@ def selection_detail(release: TorrentRelease) -> str:
     parts = [" ".join(quality)] if quality else []
     if release.size_bytes > 0:
         parts.append(format_size(release.size_bytes))
-    parts.append(f"{release.seeders} seeder" + ("" if release.seeders == 1 else "s"))
+    parts.append(tn("{n} seeder", "{n} seeders", release.seeders))
     return " · ".join(parts)
 
 
@@ -286,15 +290,15 @@ def download_button_text(state: RowState | None) -> str:
     """The selection bar's button: "⬇ Download", "Downloading…" during the grab, then the
     outcome ("✓ Opened", "✓ Saved" or "✓ Sent"). A failed grab offers the download again."""
     if state == "grabbing":
-        return DOWNLOADING_TEXT
+        return t(DOWNLOADING_TEXT)
     if state in _DONE_STATES:
         return outcome_text(GrabOutcome(state))
-    return DOWNLOAD_TEXT
+    return t(DOWNLOAD_TEXT)
 
 
 def episode_title(show: Show, season: int, episode: int | None) -> str:
     if episode is None:
-        return f"{show.name}: Season {season:02d} (Pack)"
+        return t("{show}: Season {season} (Pack)", show=show.name, season=f"{season:02d}")
     return f"{show.name}: S{season:02d}E{episode:02d}"
 
 
@@ -310,7 +314,7 @@ def show_meta(show: Show) -> str:
     if show.genres:
         parts.append(", ".join(show.genres))
     if show.status:
-        parts.append(show.status.upper())
+        parts.append(show_status(show.status).upper())
     return " • ".join(parts)
 
 
@@ -320,9 +324,9 @@ def movie_meta(movie: Movie, details: MovieDetails | None) -> str:
     if movie.year:
         parts.append(str(movie.year))
     if movie.vote_count:
-        parts.append(f"★ {movie.vote_average:.1f}")
+        parts.append(f"★ {number(movie.vote_average, '.1f')}")
     if details is not None and details.certification:
-        parts.append(f"Rated {details.certification}")
+        parts.append(t("Rated {rating}", rating=details.certification))
     if details is not None and details.runtime:
         parts.append(format_runtime(details.runtime))
     return " • ".join(parts)
@@ -331,10 +335,10 @@ def movie_meta(movie: Movie, details: MovieDetails | None) -> str:
 def searching_text(season: int | None, episode: int | None) -> str:
     """The empty table's text while searching; `season` None for a film."""
     if season is None:
-        return "Searching indexers…"
+        return t("Searching indexers…")
     if episode is None:
-        return f"Searching indexers for Season {season:02d} pack…"
-    return f"Searching indexers for S{season:02d}E{episode:02d}…"
+        return t("Searching indexers for Season {season} pack…", season=f"{season:02d}")
+    return t("Searching indexers for {code}…", code=f"S{season:02d}E{episode:02d}")
 
 
 def compact_header(height: float) -> bool:
@@ -344,8 +348,9 @@ def compact_header(height: float) -> bool:
 
 
 def hidden_text(count: int, *, showing: bool) -> str:
-    action = "Hide" if showing else "Show"
-    return f"{count} hidden by name/episode matching or your filters — {action}"
+    if showing:
+        return t("{n} hidden by name/episode matching or your filters — Hide", n=count)
+    return t("{n} hidden by name/episode matching or your filters — Show", n=count)
 
 
 # -- dialog ------------------------------------------------------------------------------------
@@ -445,7 +450,7 @@ class IndexerDialog(ctk.CTkToplevel):
         self._tasks: set[asyncio.Task[Any]] = set()
         self._details_task: asyncio.Task[MovieDetails | None] | None = None
 
-        self.title("Advanced Indexer Interrogation")
+        self.title(t("Advanced Indexer Interrogation"))
         set_window_icon(self)
         self.transient(master)
         # CTkToplevel only applies its dark Windows title bar reliably from resizable().
@@ -535,17 +540,18 @@ class IndexerDialog(ctk.CTkToplevel):
         if isinstance(target, TvTarget):
             ctk.CTkButton(
                 title_row,
-                text="✎ Fix Match",
+                text=t("✎ Fix Match"),
                 width=60,
                 height=20,
                 fg_color="transparent",
                 hover_color=theme.SUGGESTION_BORDER,
+                text_color=theme.BUTTON_TEXT,
                 font=theme.font(10),
                 command=self._fix_match,
             ).pack(side="left", padx=10)
             self._track_button = ctk.CTkButton(
                 title_row,
-                text="+ Track",
+                text=t("+ Track"),
                 width=60,
                 height=20,
                 font=theme.font(10, bold=True),
@@ -557,19 +563,19 @@ class IndexerDialog(ctk.CTkToplevel):
             )
             self._track_button.pack(side="left", padx=5)
             self._meta.configure(text=show_meta(target.show))
-            self._season_row = self._selector_row(info, "SEASON")
-            self._episode_row = self._selector_row(info, "EPISODE")
+            self._season_row = self._selector_row(info, t("SEASON"))
+            self._episode_row = self._selector_row(info, t("EPISODE"))
             self._poster_url = target.show.poster_url_original or target.show.poster_url
         else:
             self._meta.configure(text=movie_meta(target.movie, None))
             self._poster_url = target.movie.poster_url("w342")
         self._update_title()
 
-        versions = self._selector_row(info, "VERSION")
+        versions = self._selector_row(info, t("VERSION"))
         for key in QUALITY_KEYS:
             button = ctk.CTkButton(
                 versions,
-                text=QUALITY_LABELS[key],
+                text=t(QUALITY_LABELS[key]),
                 width=80,
                 height=30,
                 corner_radius=4,
@@ -635,7 +641,7 @@ class IndexerDialog(ctk.CTkToplevel):
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         self._results_title = ctk.CTkLabel(
-            top, text="Torrents", font=theme.font(16, bold=True), text_color=theme.TEXT
+            top, text=t("Torrents"), font=theme.font(16, bold=True), text_color=theme.TEXT
         )
         self._results_title.pack(side="left")
         self._chip_bar = ctk.CTkFrame(top, fg_color="transparent")
@@ -660,9 +666,6 @@ class IndexerDialog(ctk.CTkToplevel):
             )
             if column == "action":
                 tree.heading(column, text=heading, anchor=anchor)
-        tree.tag_configure("preferred", foreground=theme.SECTION_HOT)
-        tree.tag_configure("grabbed", foreground=theme.SUCCESS)
-        tree.tag_configure("hidden", foreground=theme.TEXT_FAINT)
         tree.grid(row=0, column=0, sticky="nsew")
         scrollbar = ctk.CTkScrollbar(table, command=tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -674,6 +677,7 @@ class IndexerDialog(ctk.CTkToplevel):
         # Mouse and keyboard (Up/Down) selection both fill the selection bar.
         tree.bind("<<TreeviewSelect>>", lambda _event: self._paint_selection())
         self._tree = tree
+        self._paint_rows()
         self._update_headings()
         self._build_selection_bar(card)
 
@@ -753,15 +757,15 @@ class IndexerDialog(ctk.CTkToplevel):
         iid = self._selected_iid()
         if iid is None:
             self._selected_name = ""
-            self._bar_caption.configure(text=NO_SELECTION_TEXT)
+            self._bar_caption.configure(text=t(NO_SELECTION_TEXT))
             self._bar_name.pack_forget()
             self._bar_detail.pack_forget()
-            self._download_button.configure(text=DOWNLOAD_TEXT, state="disabled")
+            self._download_button.configure(text=t(DOWNLOAD_TEXT), state="disabled")
             return
         release = self._rows[iid][0]
         state = self._row_states.get(iid)
         self._selected_name = release.title
-        self._bar_caption.configure(text="Selected")
+        self._bar_caption.configure(text=t("Selected"))
         self._paint_name()
         self._bar_detail.configure(text=selection_detail(release))
         if not self._bar_name.winfo_manager():
@@ -773,43 +777,66 @@ class IndexerDialog(ctk.CTkToplevel):
         )
 
     def _style_table(self, scaling: float) -> None:
-        """The dark "AG." ttk styles (Tk fonts and row heights are physical pixels)."""
+        """The "AG." ttk styles in the current mode's colours (Tk fonts and row heights are
+        physical pixels)."""
+        self._table_scaling = scaling
+        pick = theme.pick
+        surface, tab_bg = pick(theme.SURFACE), pick(theme.TAB_BG)
         style = ttk.Style(self)
         if style.theme_use() != "clam":
             style.theme_use("clam")  # the native Windows themes ignore heading colours
         size = -round(_TABLE_FONT_SIZE * scaling)  # negative = pixels, like CTk's own fonts
         style.configure(
             _STYLE,
-            background=theme.SURFACE,
-            fieldbackground=theme.SURFACE,
-            foreground=theme.TEXT_MUTED,
+            background=surface,
+            fieldbackground=surface,
+            foreground=pick(theme.TEXT_MUTED),
             rowheight=round(_ROW_HEIGHT * scaling),
             font=("Consolas", size),
             borderwidth=0,
             relief="flat",
-            bordercolor=theme.SURFACE,
-            lightcolor=theme.SURFACE,
-            darkcolor=theme.SURFACE,
+            bordercolor=surface,
+            lightcolor=surface,
+            darkcolor=surface,
         )
         # Just the rows: no field border around them.
         style.layout(_STYLE, [("Treeview.treearea", {"sticky": "nswe"})])
-        style.map(_STYLE, background=[("selected", theme.ROW_SELECTED)])
+        # The chosen row: clam's own white text only suits the dark row colour.
+        style.map(
+            _STYLE,
+            background=[("selected", pick(theme.ROW_SELECTED))],
+            foreground=[("selected", pick(theme.TEXT))],
+        )
         style.configure(
             f"{_STYLE}.Heading",
-            background=theme.TAB_BG,
-            foreground=theme.ACCENT,
+            background=tab_bg,
+            foreground=pick(theme.ACCENT),
             font=("Consolas", size, "bold"),
             relief="flat",
             borderwidth=0,
-            bordercolor=theme.TAB_BG,
-            lightcolor=theme.TAB_BG,
-            darkcolor=theme.TAB_BG,
+            bordercolor=tab_bg,
+            lightcolor=tab_bg,
+            darkcolor=tab_bg,
         )
         style.map(
             f"{_STYLE}.Heading",
-            background=[("active", theme.TAB_BG)],
+            background=[("active", tab_bg)],
             relief=[("active", "flat"), ("pressed", "flat")],
         )
+
+    def _paint_rows(self) -> None:
+        """The rows' text colours by tag, in the current mode."""
+        tree, pick = self._tree, theme.pick
+        tree.tag_configure("preferred", foreground=pick(theme.SECTION_HOT))
+        tree.tag_configure("grabbed", foreground=pick(theme.SUCCESS))
+        tree.tag_configure("hidden", foreground=pick(theme.TEXT_FAINT))
+
+    def _set_appearance_mode(self, mode_string: str) -> None:
+        """Light <-> dark: CTk repaints its widgets; the table's ttk styles follow here."""
+        super()._set_appearance_mode(mode_string)
+        if hasattr(self, "_tree"):
+            self._style_table(self._table_scaling)
+            self._paint_rows()
 
     def _activate(self) -> None:
         self._activate_job = None
@@ -853,8 +880,9 @@ class IndexerDialog(ctk.CTkToplevel):
     def _paint_track_button(self) -> None:
         tracked = bool(self._is_tracked)
         self._track_button.configure(
-            text="Tracking" if tracked else "+ Track",
+            text=t("Tracking") if tracked else t("+ Track"),
             fg_color="transparent" if tracked else theme.ACCENT,
+            text_color=theme.BUTTON_TEXT if tracked else theme.ON_ACCENT,
             border_width=1 if tracked else 0,
             state="disabled" if self._busy_tracking or self._is_tracked is None else "normal",
         )
@@ -875,11 +903,17 @@ class IndexerDialog(ctk.CTkToplevel):
                 await self._library.untrack(show.id)
         except TVMazeError as exc:
             if self.winfo_exists():
-                self._set_message(f"Couldn't track {show.name}: {exc}", theme.DANGER)
+                self._set_message(
+                    t("Couldn't track {name}: {error}", name=show.name, error=exc), theme.DANGER
+                )
         else:
             self._is_tracked = track
-            done = "Now tracking" if track else "Stopped tracking"
-            self._report(f"{done} {show.name}", 4000)
+            done = (
+                t("Now tracking {name}", name=show.name)
+                if track
+                else t("Stopped tracking {name}", name=show.name)
+            )
+            self._report(done, 4000)
         finally:
             self._busy_tracking = False
             if self.winfo_exists():
@@ -897,7 +931,9 @@ class IndexerDialog(ctk.CTkToplevel):
         finally:
             self._fixing = False
         if show is not None and self.winfo_exists():
-            self._report(f"Now tracking {show.name} (TVMaze {show.id})", 5000)
+            self._report(
+                t("Now tracking {name} (TVMaze {id})", name=show.name, id=show.id), 5000
+            )
             self._on_reopen(TvTarget(show, self._season, self._episode))
 
     async def _track_correct_show(self, old: Show) -> Show | None:
@@ -907,21 +943,23 @@ class IndexerDialog(ctk.CTkToplevel):
         if not answer or not self.winfo_exists():
             return None
         if not (answer.isascii() and answer.isdigit()):
-            self._set_message(f"“{answer}” is not a TVMaze ID (a number).", theme.DANGER)
+            self._set_message(
+                t("“{answer}” is not a TVMaze ID (a number).", answer=answer), theme.DANGER
+            )
             return None
         new_id = int(answer)
         if new_id == old.id:
             return None
-        self._set_message(f"Fetching TVMaze show {new_id}…", theme.TEXT_MUTED)
+        self._set_message(t("Fetching TVMaze show {id}…", id=new_id), theme.TEXT_MUTED)
         try:
             was_tracked = any(entry.show.id == old.id for entry in await self._library.tracked())
             show = await self._library.track(new_id)
             if was_tracked:
                 await self._library.untrack(old.id)
         except TVMazeNotFound:
-            message = f"TVMaze has no show with ID {new_id}."
+            message = t("TVMaze has no show with ID {id}.", id=new_id)
         except TVMazeError as exc:
-            message = f"Couldn't fetch TVMaze show {new_id}: {exc}"
+            message = t("Couldn't fetch TVMaze show {id}: {error}", id=new_id, error=exc)
         else:
             return show
         if self.winfo_exists():
@@ -937,8 +975,8 @@ class IndexerDialog(ctk.CTkToplevel):
 
         dialog = _AnswerDialog(
             on_answer=on_answer,
-            text="Enter the correct TVMaze ID for this show:",
-            title="Fix Match",
+            text=t("Enter the correct TVMaze ID for this show:"),
+            title=t("Fix Match"),
         )
         scaling = ctk.ScalingTracker.get_window_scaling(self)
         x = self.winfo_rootx() + self.winfo_width() // 2 - round(170 * scaling)
@@ -986,7 +1024,7 @@ class IndexerDialog(ctk.CTkToplevel):
         last = max([*numbers, self._episode or 0])
         pack = self._selector_button(
             self._episode_row,
-            "Pack",
+            t("Pack"),
             self._select_pack,
             width=45,
             padx=(3, 8),
@@ -1017,6 +1055,7 @@ class IndexerDialog(ctk.CTkToplevel):
             height=25,
             fg_color=theme.CHIP,
             hover_color=theme.CHIP_HOVER,
+            text_color=theme.BUTTON_TEXT,
             command=command,
             **options,
         )
@@ -1025,10 +1064,7 @@ class IndexerDialog(ctk.CTkToplevel):
 
     @staticmethod
     def _paint(button: ctk.CTkButton, selected: bool) -> None:
-        button.configure(
-            fg_color=theme.ACCENT if selected else theme.CHIP,
-            hover_color=theme.ACCENT_HOVER if selected else theme.CHIP_HOVER,
-        )
+        button.configure(**theme.choice_colors(selected))
 
     def _paint_selectors(self) -> None:
         for season, button in self._season_buttons.items():
@@ -1074,11 +1110,7 @@ class IndexerDialog(ctk.CTkToplevel):
                 continue
             self._quality_painted[key] = look
             text, selected = look
-            button.configure(
-                text=text,
-                fg_color=theme.ACCENT if selected else theme.CHIP,
-                hover_color=theme.ACCENT_HOVER if selected else theme.CHIP_HOVER,
-            )
+            button.configure(text=text, **theme.choice_colors(selected))
 
     # -- searching -----------------------------------------------------------------------------
 
@@ -1170,7 +1202,7 @@ class IndexerDialog(ctk.CTkToplevel):
             elif chip.cget("text") != text or chip.cget("text_color") != color:
                 chip.configure(text=text, text_color=color)
             self._chip_urls[status.name] = status.web_url
-            self._chip_tips[status.name].set_text(CHIP_TIP if status.web_url else "")
+            self._chip_tips[status.name].set_text(t(CHIP_TIP) if status.web_url else "")
 
     def _open_indexer(self, name: str) -> None:
         url = self._chip_urls.get(name)
@@ -1187,7 +1219,11 @@ class IndexerDialog(ctk.CTkToplevel):
         self._paint_quality(counts)
         found = counts[self._quality]
         self._results_title.configure(
-            text=f"Searching… {found} found" if self._searching else f"Torrents ({found})"
+            text=(
+                t("Searching… {n} found", n=found)
+                if self._searching
+                else t("Torrents ({n})", n=found)
+            )
         )
         self._render_rows()
         hidden_releases = update.hidden if update else ()
@@ -1278,14 +1314,14 @@ class IndexerDialog(ctk.CTkToplevel):
             season = self._season if isinstance(self._target, TvTarget) else None
             look = (searching_text(season, self._episode), "bold")
         else:
-            look = ("No matching torrents found.", "normal")
+            look = (t("No matching torrents found."), "normal")
         if look == self._empty_look:
             return
         self._empty_look = look
         text, weight = look
         self._empty.configure(
             text=text,
-            text_color=theme.ACCENT if weight == "bold" else "gray50",
+            text_color=theme.ACCENT if weight == "bold" else theme.TEXT_QUIET,
             font=("Consolas", 12, weight),
         )
         self._empty.place(x=12, y=_ROW_HEIGHT + 12, anchor="nw")
@@ -1300,7 +1336,7 @@ class IndexerDialog(ctk.CTkToplevel):
                 arrow = " ▼" if self._sort_descending else " ▲"
             self._tree.heading(
                 column,
-                text=heading + arrow,
+                text=t(heading) + arrow,
                 anchor=anchor,
                 command=functools.partial(self._sort_by, column),
             )
@@ -1316,7 +1352,7 @@ class IndexerDialog(ctk.CTkToplevel):
         self._show_hidden = not self._show_hidden
         self._render()
 
-    def _set_message(self, text: str, color: str = theme.TEXT_MUTED) -> None:
+    def _set_message(self, text: str, color: theme.Color = theme.TEXT_MUTED) -> None:
         if text:
             self._message.configure(text=text, text_color=color)
             self._message.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
@@ -1390,7 +1426,7 @@ class IndexerDialog(ctk.CTkToplevel):
         await self._load_grabbed()
 
     def _finish_grab(
-        self, iid: str, state: RowState, message: str, color: str, clear_after_ms: int
+        self, iid: str, state: RowState, message: str, color: theme.Color, clear_after_ms: int
     ) -> None:
         self._report(message, clear_after_ms)
         if not self.winfo_exists():

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.i18n import N_, t
 from app.models import Movie
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
@@ -28,27 +29,28 @@ WATCH_ROW_HEIGHT = 30  # a little lower than the Download row, so the cover keep
 WATCH_ROW_GAP = 8  # between the watchlist row and the Download row under it
 FONT_SIZE = 13
 
-ADD_TEXT = "+ Watchlist"
+# Shown through t() (`watch_look`).
+ADD_TEXT = N_("+ Watchlist")
 ADD_SHORT = "+"
-ON_TEXT = "✓ On watchlist"
+ON_TEXT = N_("✓ On watchlist")
 ON_SHORT = "✓"
-ADD_TIP = "Add to your watchlist"
-ON_TIP = "On your watchlist. Click to take it off."
+ADD_TIP = N_("Add to your watchlist")
+ON_TIP = N_("On your watchlist. Click to take it off.")
 
 
 @dataclass(frozen=True, slots=True)
 class WatchLook:
     texts: tuple[str, ...]  # longest first; the first that fits is shown
-    color: str
-    hover: str
+    color: theme.Color
+    hover: theme.Color
     tip: str
 
 
 def watch_look(on_watchlist: bool) -> WatchLook:
     """"+ Watchlist" in the accent colour, or "✓ On watchlist" in the downloaded green."""
     if on_watchlist:
-        return WatchLook((ON_TEXT, ON_SHORT), theme.GRABBED, theme.ACCENT_HOVER, ON_TIP)
-    return WatchLook((ADD_TEXT, ADD_SHORT), theme.ACCENT, theme.ACCENT_HOVER, ADD_TIP)
+        return WatchLook((t(ON_TEXT), ON_SHORT), theme.GRABBED, theme.ACCENT_HOVER, t(ON_TIP))
+    return WatchLook((t(ADD_TEXT), ADD_SHORT), theme.ACCENT, theme.ACCENT_HOVER, t(ADD_TIP))
 
 
 def watch_text(texts: tuple[str, ...], room: float, measure: Measure) -> str:

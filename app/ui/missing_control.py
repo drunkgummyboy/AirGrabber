@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 import customtkinter as ctk
 
+from app.i18n import N_, t, tn
 from app.models import MissingRunReport, Show
 from app.ui import theme
 from app.ui.download_control import CORNER_RADIUS, Action, Look, fit_text
@@ -26,19 +27,20 @@ from app.ui.tooltip import add_tooltip
 MISSING_COLOR = theme.WARNING  # amber: something is missing rather than broken
 OUTCOME_MS = 60_000  # a finished run's outcome stays on its button this long
 
-DOWNLOAD_MISSING_TEXT = "⬇ Download missing"
-DOWNLOAD_MISSING_SHORT = ("⬇ Download", "⬇")
-STARTING_TEXT = "Finding missing episodes…"
-STARTING_SHORT = "Starting…"
-FAILED_TEXT = "Couldn't download"
-NOTHING_MISSING_TEXT = "Nothing missing"
-CHIP_MISSING_TEXT = "Missing"
-CHIP_HAVE_TEXT = "✓ Have it"
-CHIP_TIP = "Options"
-HAVE_EPISODE_TEXT = "I already have this"
-HAVE_SEASON_TEXT = "I already have this season"
-MARK_MISSING_TEXT = "Mark as missing again"
-SEASON_MENU_TIP = "More options"
+# The texts are shown through t().
+DOWNLOAD_MISSING_TEXT = N_("⬇ Download missing")
+DOWNLOAD_MISSING_SHORT = (N_("⬇ Download"), "⬇")
+STARTING_TEXT = N_("Finding missing episodes…")
+STARTING_SHORT = N_("Starting…")
+FAILED_TEXT = N_("Couldn't download")
+NOTHING_MISSING_TEXT = N_("Nothing missing")
+CHIP_MISSING_TEXT = N_("Missing")
+CHIP_HAVE_TEXT = N_("✓ Have it")
+CHIP_TIP = N_("Options")
+HAVE_EPISODE_TEXT = N_("I already have this")
+HAVE_SEASON_TEXT = N_("I already have this season")
+MARK_MISSING_TEXT = N_("Mark as missing again")
+SEASON_MENU_TIP = N_("More options")
 
 
 # -- texts -------------------------------------------------------------------------------------
@@ -46,20 +48,25 @@ SEASON_MENU_TIP = "More options"
 
 def missing_text(count: int) -> str:
     """"3 missing"."""
-    return f"{count} missing"
+    return t("{n} missing", n=count)
 
 
 def download_missing_text(count: int | None = None) -> str:
     """"⬇ Download missing (3)", or without the count "⬇ Download missing"."""
-    return DOWNLOAD_MISSING_TEXT if count is None else f"{DOWNLOAD_MISSING_TEXT} ({count})"
+    text = t(DOWNLOAD_MISSING_TEXT)
+    return text if count is None else f"{text} ({count})"
 
 
 def progress_texts(index: int, total: int) -> tuple[str, ...]:
     """"Downloading 2 of 3…" and shorter forms; before the first episode starts, "Finding
     missing episodes…"."""
     if index <= 0 or total <= 0:
-        return STARTING_TEXT, STARTING_SHORT
-    return f"Downloading {index} of {total}…", f"Getting {index} of {total}…", f"{index} of {total}…"
+        return t(STARTING_TEXT), t(STARTING_SHORT)
+    return (
+        t("Downloading {index} of {total}…", index=index, total=total),
+        t("Getting {index} of {total}…", index=index, total=total),
+        t("{index} of {total}…", index=index, total=total),
+    )
 
 
 def _got(report: MissingRunReport) -> int:
@@ -72,20 +79,24 @@ def outcome_texts(report: MissingRunReport) -> tuple[str, ...]:
     got, missed = _got(report), len(report.not_found)
     if report.error is not None:
         if got:
-            return f"✓ {got} downloaded · stopped", f"✓ {got} · stopped", "Stopped"
-        return FAILED_TEXT, "Failed"
+            return (
+                t("✓ {got} downloaded · stopped", got=got),
+                t("✓ {got} · stopped", got=got),
+                t("Stopped"),
+            )
+        return t(FAILED_TEXT), t("Failed")
     if got and missed:
         return (
-            f"✓ {got} downloaded · {missed} not found yet",
-            f"✓ {got} downloaded · {missed} not found",
-            f"✓ {got} · {missed} not found",
-            f"✓ {got} downloaded",
+            t("✓ {got} downloaded · {missed} not found yet", got=got, missed=missed),
+            t("✓ {got} downloaded · {missed} not found", got=got, missed=missed),
+            t("✓ {got} · {missed} not found", got=got, missed=missed),
+            t("✓ {got} downloaded", got=got),
         )
     if got:
-        return f"✓ {got} downloaded", f"✓ {got}"
+        return t("✓ {got} downloaded", got=got), f"✓ {got}"
     if missed:
-        return f"{missed} not found yet", "Not found yet"
-    return (NOTHING_MISSING_TEXT,)
+        return t("{missed} not found yet", missed=missed), t("Not found yet")
+    return (t(NOTHING_MISSING_TEXT),)
 
 
 def outcome_status_text(show_name: str, report: MissingRunReport) -> str:
@@ -93,24 +104,29 @@ def outcome_status_text(show_name: str, report: MissingRunReport) -> str:
     got, missed = _got(report), len(report.not_found)
     parts: list[str] = []
     if got:
-        parts.append(f"{got} downloaded")
+        parts.append(t("{got} downloaded", got=got))
     if missed:
-        parts.append(f"{missed} not found yet")
+        parts.append(t("{missed} not found yet", missed=missed))
     if report.left_over:
-        parts.append(f"{report.left_over} more missing: download missing again for those")
+        parts.append(
+            t(
+                "{n} more missing: download missing again for those",
+                n=report.left_over,
+            )
+        )
     if report.error is not None:
-        parts.append(f"stopped: {report.error}")
+        parts.append(t("stopped: {error}", error=report.error))
     if not parts:
-        parts.append("nothing missing")
+        parts.append(t("nothing missing"))
     return f"{show_name}: " + " · ".join(parts)
 
 
 def have_status_text(show_name: str, count: int, *, have: bool) -> str:
     """The status bar after "I already have this" / "Mark as missing again"."""
-    episodes = "1 episode" if count == 1 else f"{count} episodes"
+    episodes = tn("{n} episode", "{n} episodes", count)
     if have:
-        return f"{show_name}: {episodes} marked as already had"
-    return f"{show_name}: {episodes} marked as missing again"
+        return t("{show}: {episodes} marked as already had", show=show_name, episodes=episodes)
+    return t("{show}: {episodes} marked as missing again", show=show_name, episodes=episodes)
 
 
 # -- run states --------------------------------------------------------------------------------
@@ -150,7 +166,7 @@ def missing_look(count: int, state: MissingRunState | None, *, with_count: bool)
             )
         if _got(report):
             return Look(
-                "button", text, theme.GRABBED, theme.ACCENT_HOVER, theme.TEXT,
+                "button", text, theme.GRABBED, theme.ACCENT_HOVER, theme.ON_COLOR,
                 action=action, short=tuple(short),
             )
         return Look(
@@ -163,7 +179,7 @@ def missing_look(count: int, state: MissingRunState | None, *, with_count: bool)
         "button",
         download_missing_text(count if with_count else None),
         action="download",
-        short=DOWNLOAD_MISSING_SHORT,
+        short=tuple(t(text) for text in DOWNLOAD_MISSING_SHORT),
     )
 
 
@@ -312,7 +328,7 @@ class MissingButton(ctk.CTkFrame):
                 widget = self._label if look.layout == "label" else self._button
                 widget.pack(fill="both", expand=True)
         if look is not None and look.layout == "button":
-            text_color = look.text_color or theme.TEXT
+            text_color = look.text_color or theme.ON_COLOR
             self._button.configure(
                 fg_color=look.color,
                 hover_color=look.hover,
@@ -360,7 +376,7 @@ class MissingButton(ctk.CTkFrame):
 def chip(
     master: Any,
     text: str,
-    color: str,
+    color: theme.Color,
     *,
     height: int,
     font_size: int,
@@ -416,9 +432,9 @@ def menu_position(
 
 
 class PopupMenu:
-    """A small dark menu of items under a widget, drawn like the rest of the app (Tk's own
-    menus ignore the colours on Windows). Closes on a choice, Escape, a click elsewhere or
-    when its anchor goes. One at a time."""
+    """A small menu of items under a widget, drawn like the rest of the app (Tk's own menus
+    ignore the colours on Windows). Closes on a choice, Escape, a click elsewhere, when its
+    anchor goes or when the app switches between light and dark. One at a time."""
 
     _open: PopupMenu | None = None
 
@@ -428,7 +444,7 @@ class PopupMenu:
         PopupMenu._open = self
         self._closed = False
         self.labels = tuple(label for label, _ in items)
-        top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.EDGE)
+        top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.pick(theme.EDGE))
         top.withdraw()
         top.overrideredirect(True)
         top.attributes("-topmost", True)
@@ -445,13 +461,16 @@ class PopupMenu:
                 anchor="w",
                 font=theme.font(MENU_FONT_SIZE),
                 fg_color="transparent",
-                hover_color=theme.ACCENT,
+                hover_color=theme.MENU_HOVER,
                 text_color=theme.TEXT,
                 command=lambda action=action: self._choose(action),
             )
             button.pack(fill="x", padx=4, pady=(4 if not self.buttons else 0, 0))
             self.buttons.append(button)
-        tk.Frame(box, height=4, bg=theme.SURFACE).pack()  # bottom padding
+        tk.Frame(box, height=4, bg=theme.pick(theme.SURFACE)).pack()  # bottom padding
+        # Closed once the repaint is over: destroying it now would upset CTk's list of widgets
+        # being repainted.
+        theme.on_mode_change(top, lambda: top.nametowidget(".").after_idle(self.close))
         top.bind("<Escape>", lambda _event: self.close())
         top.bind("<FocusOut>", self._on_focus_out)
         self._anchor = anchor
@@ -517,7 +536,7 @@ class PopupMenu:
 
 
 def popup_menu(anchor: tk.Misc, items: Sequence[MenuItem]) -> PopupMenu | None:
-    """A small dark menu of `items` (label, action) under `anchor`; none without items."""
+    """A small menu of `items` (label, action) under `anchor`; none without items."""
     if not items:
         return None
     return PopupMenu(anchor, items)

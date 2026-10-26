@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.i18n import N_, t, tn
 from app.models import SUBTITLE_LANGUAGES, SubtitleAccount, SubtitleQuota
 from app.services.opensubtitles import KeyRejected, OpenSubtitlesError
 from app.ui import theme
@@ -34,37 +35,38 @@ log = logging.getLogger(__name__)
 SIGNUP_URL = "https://www.opensubtitles.com/en/users/sign_up"
 CREDIT_URL = "https://www.opensubtitles.com"
 
-SUBTITLES_HEADING = "Subtitles"
-SUBTITLES_NOTE = "Saved next to your videos, so your player shows them."
-UNAVAILABLE_TEXT = "Subtitles aren't available in this version yet"
+SUBTITLES_HEADING = N_("Subtitles")
+SUBTITLES_NOTE = N_("Saved next to your videos, so your player shows them.")
+UNAVAILABLE_TEXT = N_("Subtitles aren't available in this version yet")
 # Required by OpenSubtitles' terms for free API keys, linking to CREDIT_URL.
-CREDIT_TEXT = "Subtitles provided by OpenSubtitles.com"
-SWITCH_TEXT = "Get subtitles for my downloads"
-FOLDER_LABEL = "Where finished downloads end up"
-FOLDER_HINT = "Your torrent program's download folder"
-ACCOUNT_LABEL = "OpenSubtitles account"
-ACCOUNT_HINT = "Optional: 20 subtitles a day instead of 5."
-SIGN_UP_TEXT = "Create a free account"
-ADD_TEXT = "+ Add"
-SIGN_IN_TEXT = "Sign in"
-OWN_KEY_LABEL = "Own OpenSubtitles key (optional)"
-OWN_KEY_PLACEHOLDER = "Leave empty to use AirGrabber's key"
-OWN_KEY_HINT = "Only needed if you have your own API key from opensubtitles.com"
-CHECK_TEXT = "Check"
-CHECKING_TEXT = "Checking the key…"
-KEY_ACCEPTED_TEXT = "✓ OpenSubtitles accepted the key"
-NO_OWN_KEY_TEXT = "Empty: AirGrabber's own key is used"
-KEY_UNCHECKED_TEXT = "Couldn't check the key right now; it is saved anyway"
+CREDIT_TEXT = N_("Subtitles provided by OpenSubtitles.com")
+SWITCH_TEXT = N_("Get subtitles for my downloads")
+FOLDER_LABEL = N_("Where finished downloads end up")
+FOLDER_HINT = N_("Your torrent program's download folder")
+ACCOUNT_LABEL = N_("OpenSubtitles account")
+ACCOUNT_HINT = N_("Optional: 20 subtitles a day instead of 5.")
+SIGN_UP_TEXT = N_("Create a free account")
+ADD_TEXT = N_("+ Add")
+SIGN_IN_TEXT = N_("Sign in")
+OWN_KEY_LABEL = N_("Own OpenSubtitles key (optional)")
+OWN_KEY_PLACEHOLDER = N_("Leave empty to use AirGrabber's key")
+OWN_KEY_HINT = N_("Only needed if you have your own API key from opensubtitles.com")
+CHECK_TEXT = N_("Check")
+CHECKING_TEXT = N_("Checking the key…")
+KEY_ACCEPTED_TEXT = N_("✓ OpenSubtitles accepted the key")
+NO_OWN_KEY_TEXT = N_("Empty: AirGrabber's own key is used")
+KEY_UNCHECKED_TEXT = N_("Couldn't check the key right now; it is saved anyway")
 
 _TAG_HEIGHT = 30
 _SIDE_BUTTON_WIDTH = 120
 
 
-# -- texts -------------------------------------------------------------------------------------
+# -- texts (the constants above are shown through t()) ------------------------------------------
 
 
 def language_name(code: str) -> str:
-    return SUBTITLE_LANGUAGES.get(code, code)
+    name = SUBTITLE_LANGUAGES.get(code)
+    return t(name) if name is not None else code
 
 
 def addable_languages(chosen: Iterable[str]) -> list[str]:
@@ -90,18 +92,26 @@ def quota_line(quota: SubtitleQuota, now: datetime) -> str | None:
         return None
     if quota.remaining <= 0:
         if quota.reset_at is not None and quota.reset_at > now:
-            return f"No subtitle downloads left today; more after {quota.reset_at.astimezone():%H:%M}"
-        return "No subtitle downloads left today"
-    noun = "download" if quota.remaining == 1 else "downloads"
-    return f"{quota.remaining} subtitle {noun} left today"
+            return t(
+                "No subtitle downloads left today; more after {time}",
+                time=f"{quota.reset_at.astimezone():%H:%M}",
+            )
+        return t("No subtitle downloads left today")
+    return tn(
+        "{n} subtitle download left today", "{n} subtitle downloads left today", quota.remaining
+    )
 
 
 def account_text(account: SubtitleAccount) -> str:
     """The Sign in result: "✓ Signed in · 20 downloads a day, 18 left today"."""
-    parts = [f"{account.allowed_downloads} downloads a day"] if account.allowed_downloads else []
+    parts = (
+        [t("{n} downloads a day", n=account.allowed_downloads)]
+        if account.allowed_downloads
+        else []
+    )
     if account.remaining_downloads is not None:
-        parts.append(f"{account.remaining_downloads} left today")
-    return "✓ Signed in" + (" · " + ", ".join(parts) if parts else "")
+        parts.append(t("{n} left today", n=account.remaining_downloads))
+    return t("✓ Signed in") + (" · " + ", ".join(parts) if parts else "")
 
 
 def subtitle_problem(
@@ -110,13 +120,13 @@ def subtitle_problem(
     """Why Save can't store the subtitle settings as they are; None when they are fine. Nothing
     is required while subtitles are off."""
     if (username.strip() == "") != (password == ""):
-        return "Fill in both the OpenSubtitles user name and password, or neither"
+        return t("Fill in both the OpenSubtitles user name and password, or neither")
     if not enabled:
         return None
     if not languages:
-        return "Choose at least one subtitle language"
+        return t("Choose at least one subtitle language")
     if not folder.strip():
-        return "Choose where finished downloads end up, for subtitles"
+        return t("Choose where finished downloads end up, for subtitles")
     return None
 
 
@@ -188,7 +198,7 @@ class LanguageTags(ctk.CTkFrame):
             ).pack(side="left", padx=(0, 6), pady=2)
         self._add = ctk.CTkButton(
             self,
-            text=ADD_TEXT,
+            text=t(ADD_TEXT),
             height=_TAG_HEIGHT,
             width=0,
             corner_radius=_TAG_HEIGHT // 2,
@@ -228,13 +238,13 @@ class AccountRow(ctk.CTkFrame):
         self._subtitles = subtitles
         self._on_signed_in = on_signed_in
         self._task: asyncio.Task[None] | None = None
-        self.username = self._field("User name", username, pady=0)
-        self.password = self._field("Password", password, pady=8, show="•")
+        self.username = self._field(t("User name"), username, pady=0)
+        self.password = self._field(t("Password"), password, pady=8, show="•")
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", pady=(8, 0))
         self._button = ctk.CTkButton(
             row,
-            text=SIGN_IN_TEXT,
+            text=t(SIGN_IN_TEXT),
             width=_SIDE_BUTTON_WIDTH,
             height=BUTTON_HEIGHT,
             corner_radius=BUTTON_RADIUS,
@@ -274,7 +284,7 @@ class AccountRow(ctk.CTkFrame):
     def result_text(self) -> str:
         return str(self._result.cget("text"))
 
-    def show_result(self, text: str, color: str) -> None:
+    def show_result(self, text: str, color: theme.Color) -> None:
         self._result.configure(text=text, text_color=color)
 
     def sign_in(self) -> None:
@@ -282,9 +292,11 @@ class AccountRow(ctk.CTkFrame):
             return
         username, password = self.values
         if not username or not password:
-            self.show_result("Fill in your OpenSubtitles user name and password", theme.DANGER)
+            self.show_result(
+                t("Fill in your OpenSubtitles user name and password"), theme.DANGER
+            )
             return
-        self.show_result("Signing in…", theme.TEXT_MUTED)
+        self.show_result(t("Signing in…"), theme.TEXT_MUTED)
         self._button.configure(state="disabled")
         self._task = spawn(self._run(username, password), name="opensubtitles-sign-in")
 
@@ -327,7 +339,7 @@ class OwnKeyRow(ctk.CTkFrame):
             height=BUTTON_HEIGHT,
             corner_radius=BUTTON_RADIUS,
             font=theme.font(DETAIL_SIZE),
-            placeholder_text=OWN_KEY_PLACEHOLDER,
+            placeholder_text=t(OWN_KEY_PLACEHOLDER),
             fg_color=theme.SURFACE,
             border_color=theme.EDGE,
             show="•",
@@ -336,13 +348,13 @@ class OwnKeyRow(ctk.CTkFrame):
             self.entry.insert(0, key)
         self.entry.pack(fill="x")
         text_label(
-            self, OWN_KEY_HINT, size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=field_width
+            self, t(OWN_KEY_HINT), size=SMALL_SIZE, color=theme.TEXT_MUTED, wraplength=field_width
         ).pack(anchor="w", pady=(6, 0))
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", pady=(8, 0))
         self._button = ctk.CTkButton(
             row,
-            text=CHECK_TEXT,
+            text=t(CHECK_TEXT),
             width=_SIDE_BUTTON_WIDTH,
             height=BUTTON_HEIGHT,
             corner_radius=BUTTON_RADIUS,
@@ -370,7 +382,7 @@ class OwnKeyRow(ctk.CTkFrame):
     def result_text(self) -> str:
         return str(self._result.cget("text"))
 
-    def show_result(self, text: str, color: str) -> None:
+    def show_result(self, text: str, color: theme.Color) -> None:
         self._result.configure(text=text, text_color=color)
 
     def check(self) -> None:
@@ -378,7 +390,7 @@ class OwnKeyRow(ctk.CTkFrame):
         if self._task is not None and not self._task.done():
             return
         if not self.value:
-            self.show_result(NO_OWN_KEY_TEXT, theme.TEXT_MUTED)
+            self.show_result(t(NO_OWN_KEY_TEXT), theme.TEXT_MUTED)
             return
         self._task = spawn(self._check(), name="opensubtitles-check-key")
 
@@ -392,7 +404,7 @@ class OwnKeyRow(ctk.CTkFrame):
         key = self.value
         if not key or not (force or self.needs_check):
             return None
-        self.show_result(CHECKING_TEXT, theme.TEXT_MUTED)
+        self.show_result(t(CHECKING_TEXT), theme.TEXT_MUTED)
         self._button.configure(state="disabled")
         problem: str | None = None
         try:
@@ -402,10 +414,10 @@ class OwnKeyRow(ctk.CTkFrame):
             text, color = f"✗ {exc}", theme.DANGER
         except OpenSubtitlesError as exc:  # unreachable: the key may well be fine
             log.info("Checking the own OpenSubtitles key: %s", type(exc).__name__)
-            text, color = KEY_UNCHECKED_TEXT, theme.TEXT_MUTED
+            text, color = t(KEY_UNCHECKED_TEXT), theme.TEXT_MUTED
         else:
             self._checked = key
-            text, color = KEY_ACCEPTED_TEXT, theme.SUCCESS
+            text, color = t(KEY_ACCEPTED_TEXT), theme.SUCCESS
         if self.winfo_exists():
             self._button.configure(state="normal")
             self.show_result(text, color)

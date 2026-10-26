@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 import customtkinter as ctk
 
+from app.i18n import N_, t, tn
 from app.models import AirdatesPreview, ImportMatch, ImportResult
 from app.services.airdates import AirdatesError, parse_export
 from app.services.tvmaze import TVMazeError
@@ -32,8 +33,9 @@ from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width
 
 AIRDATES_URL = "https://www.airdates.tv/"
-NETWORK_ERROR = "Couldn't reach airdates.tv. Check your internet connection and try again."
-REVIEW_HINT = "Untick any that don't look right."
+# Shown through t().
+NETWORK_ERROR = N_("Couldn't reach airdates.tv. Check your internet connection and try again.")
+REVIEW_HINT = N_("Untick any that don't look right.")
 
 Progress = Callable[[int, int], None]
 
@@ -67,10 +69,6 @@ class ShowImporter(Protocol):
 # -- texts and decisions (pure, tested) ----------------------------------------------------------
 
 
-def _shows(count: int) -> str:
-    return "show" if count == 1 else "shows"
-
-
 def ticked_by_default(match: ImportMatch) -> bool:
     """Found shows not followed yet start ticked; already-followed ones have no checkbox."""
     return match.found and not match.already_tracked
@@ -85,7 +83,7 @@ def from_note(match: ImportMatch) -> str | None:
     punctuation, else None."""
     if match.show_name is None or _plain(match.source_name) == _plain(match.show_name):
         return None
-    return f' · from "{match.source_name}"'
+    return " · " + t('from "{name}"', name=match.source_name)
 
 
 def total_shows(preview: AirdatesPreview) -> int:
@@ -96,7 +94,7 @@ def review_heading(preview: AirdatesPreview) -> str:
     """'Found 35 of 37 shows': found on TVMaze, of everything in the export."""
     found = sum(match.found for match in preview.matches)
     total = total_shows(preview)
-    return f"Found {found} of {total} {_shows(total)}"
+    return tn("Found {found} of {n} show", "Found {found} of {n} shows", total, found=found)
 
 
 def review_notes(preview: AirdatesPreview) -> list[str]:
@@ -104,11 +102,17 @@ def review_notes(preview: AirdatesPreview) -> list[str]:
     lines: list[str] = []
     missing = [match.source_name for match in preview.matches if not match.found]
     if missing:
-        lines.append("Couldn't find: " + ", ".join(missing))
+        lines.append(t("Couldn't find: {names}", names=", ".join(missing)))
     if unknown := len(preview.unknown_ids):
-        lines.append(f"airdates.tv didn't recognise {unknown} {_shows(unknown)}")
+        lines.append(
+            tn(
+                "airdates.tv didn't recognise {n} show",
+                "airdates.tv didn't recognise {n} shows",
+                unknown,
+            )
+        )
     if preview.failed:
-        lines.append(f"{preview.failed} couldn't be looked up; try again later")
+        lines.append(t("{n} couldn't be looked up; try again later", n=preview.failed))
     return lines
 
 
@@ -120,25 +124,25 @@ def nothing_reached(preview: AirdatesPreview) -> bool:
 def looking_up_text(done: int, total: int) -> str:
     """'Looking up 12 of 37…' from `find`'s progress, which counts two lookups per show."""
     shows = max(1, total // 2)
-    return f"Looking up {min(shows, done // 2 + 1)} of {shows}…"
+    return t("Looking up {done} of {total}…", done=min(shows, done // 2 + 1), total=shows)
 
 
 def importing_text(done: int, total: int) -> str:
-    return f"Importing {min(total, done + 1)} of {total}…"
+    return t("Importing {done} of {total}…", done=min(total, done + 1), total=total)
 
 
 def import_label(ticked: int) -> str:
-    return f"Import {ticked} {_shows(ticked)}"
+    return tn("Import {n} show", "Import {n} shows", ticked)
 
 
 def imported_text(count: int) -> str:
-    return f"Imported {count} {_shows(count)}"
+    return tn("Imported {n} show", "Imported {n} shows", count)
 
 
 def import_notes(result: ImportResult) -> str:
     """A muted line after an import when some shows didn't make it (TVMaze unreachable)."""
     missed = len(result.failed) + len(result.not_found)
-    return f"{missed} couldn't be imported; try again later" if missed else ""
+    return t("{n} couldn't be imported; try again later", n=missed) if missed else ""
 
 
 def _open_airdates() -> None:
@@ -215,10 +219,10 @@ class AirdatesImportPanel(ctk.CTkFrame):
 
         self._number(page, 0, "1")
         text_label(
-            page, "Open airdates.tv in the browser you use for it", wraplength=text_width
+            page, t("Open airdates.tv in the browser you use for it"), wraplength=text_width
         ).grid(row=0, column=1, sticky="w")
         secondary_button(
-            page, "Open airdates.tv", _open_airdates, width=_SIDE_BUTTON_WIDTH
+            page, t("Open airdates.tv"), _open_airdates, width=_SIDE_BUTTON_WIDTH
         ).grid(row=0, column=2, sticky="e", padx=(16, 0))
 
         self._number(page, 1, "2")
@@ -227,16 +231,16 @@ class AirdatesImportPanel(ctk.CTkFrame):
         first = ctk.CTkFrame(step2, fg_color="transparent")
         first.pack(anchor="w")
         for text, color in (
-            ("At the very bottom, click ", theme.TEXT_MUTED),
-            ('"Export your color selection"', theme.TEXT),
+            (t("At the very bottom, click "), theme.TEXT_MUTED),
+            ('"Export your color selection"', theme.TEXT),  # airdates.tv's own (English) words
         ):
             text_label(first, text, color=color, wraplength=0).pack(side="left")
-        text_label(step2, "and copy the text", color=theme.TEXT_MUTED, wraplength=0).pack(
+        text_label(step2, t("and copy the text"), color=theme.TEXT_MUTED, wraplength=0).pack(
             anchor="w"
         )
 
         self._number(page, 2, "3")
-        text_label(page, "Paste it here", wraplength=text_width).grid(
+        text_label(page, t("Paste it here"), wraplength=text_width).grid(
             row=2, column=1, sticky="w", pady=(_ROW_GAP, 0)
         )
 
@@ -252,7 +256,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
         )
         self._text.grid(row=3, column=1, sticky="ew", pady=(10, 0))
         self._find_button = primary_button(
-            page, "Find my shows", self._find, width=_SIDE_BUTTON_WIDTH
+            page, t("Find my shows"), self._find, width=_SIDE_BUTTON_WIDTH
         )
         self._find_button.grid(row=3, column=2, sticky="ne", padx=(16, 0), pady=(10, 0))
         self._paste_status = text_label(
@@ -296,7 +300,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
             self._paste_failed(str(exc))
             return
         except TVMazeError:
-            self._paste_failed(NETWORK_ERROR)
+            self._paste_failed(t(NETWORK_ERROR))
             return
         except BaseException:
             if self.winfo_exists():
@@ -307,7 +311,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
             return
         self._find_button.configure(state="normal")
         if nothing_reached(preview):
-            self._paste_failed(NETWORK_ERROR)
+            self._paste_failed(t(NETWORK_ERROR))
             return
         self._paste_status.configure(text="")
         self.show_review(preview)
@@ -336,7 +340,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
             anchor="w",
         )
         self._heading.grid(row=0, column=0, sticky="w")
-        text_label(page, REVIEW_HINT, size=DETAIL_SIZE, color=theme.TEXT_MUTED).grid(
+        text_label(page, t(REVIEW_HINT), size=DETAIL_SIZE, color=theme.TEXT_MUTED).grid(
             row=1, column=0, sticky="w", pady=(LINE_GAP, 0)
         )
         self._list = ctk.CTkScrollableFrame(
@@ -366,7 +370,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
             status, "", size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=status_width
         )
         self._back_button = secondary_button(
-            bottom, "Back", self._back, width=_SIDE_BUTTON_WIDTH - 50
+            bottom, t("Back"), self._back, width=_SIDE_BUTTON_WIDTH - 50
         )
         self._back_button.grid(row=0, column=1, sticky="e", padx=(16, 0))
         self._import_button = primary_button(
@@ -411,7 +415,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
         texts = ctk.CTkFrame(self._list, fg_color="transparent")
         texts.grid(row=index, column=1, sticky="w", padx=(0, 8), pady=pady)
         if not ticked_by_default(match):  # already following
-            following = f"{match.show_name} · already following"
+            following = t("{name} · already following", name=match.show_name)
             self._row_texts(texts, [(following, theme.TEXT_MUTED)], text_width)
             self._rows.append(_Row(match, None))
             return
@@ -434,7 +438,9 @@ class AirdatesImportPanel(ctk.CTkFrame):
             command=self._update_import_button,
         )
         row.checkbox.grid(row=index, column=0, sticky="w", padx=(10, _ROW_TEXT_GAP), pady=pady)
-        parts = [(match.show_name or match.source_name, theme.TEXT)]
+        parts: list[tuple[str, theme.Color]] = [
+            (match.show_name or match.source_name, theme.TEXT)
+        ]
         if match.year is not None:
             parts.append((f"  {match.year}", theme.TEXT_MUTED))
         if (note := from_note(match)) is not None:
@@ -447,7 +453,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
     def _row_texts(
         self,
         master: ctk.CTkFrame,
-        parts: list[tuple[str, str]],
+        parts: list[tuple[str, theme.Color]],
         width: int,
         *,
         cursor: str = "",

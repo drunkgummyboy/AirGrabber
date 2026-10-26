@@ -34,6 +34,7 @@ import httpx
 
 from app import __version__
 from app.bootstrap import version_tuple
+from app.i18n import t
 from app.models import UpdateInfo
 from app.services.install_info import Registry, ensure_uninstall_entry
 
@@ -105,14 +106,14 @@ class UpdateService:
         try:
             response = await self._http.get(VERSION_URL, headers={"Cache-Control": "no-cache"})
         except httpx.HTTPError as exc:
-            raise UpdateError("Could not reach GitHub.") from exc
+            raise UpdateError(t("Could not reach GitHub.")) from exc
         if response.status_code == 404:
-            raise UpdateError("GitHub doesn't have an AirGrabber 2 version yet.")
+            raise UpdateError(t("GitHub doesn't have an AirGrabber 2 version yet."))
         if response.status_code != 200:
-            raise UpdateError(f"GitHub answered HTTP {response.status_code}.")
+            raise UpdateError(t("GitHub answered HTTP {status}.", status=response.status_code))
         latest = parse_version(response.text)
         if latest is None:
-            raise UpdateError("GitHub doesn't have an AirGrabber 2 version yet.")
+            raise UpdateError(t("GitHub doesn't have an AirGrabber 2 version yet."))
         return UpdateInfo(
             current=self._current,
             latest=latest,
@@ -126,11 +127,11 @@ class UpdateService:
         The running process keeps the old code in memory: restart right after this returns.
         """
         if not self.installable:
-            raise UpdateError("This is a development copy; it is never overwritten by an update.")
+            raise UpdateError(t("This is a development copy; it is never overwritten by an update."))
         report = progress or (lambda _text: None)
-        report("Downloading update…")
+        report(t("Downloading update…"))
         data = await self._download()
-        report("Installing update…")
+        report(t("Installing update…"))
         version = await asyncio.to_thread(install_archive, data, self._dir)
         log.info("Updated from %s to %s", self._current, version)
         return version
@@ -142,7 +143,7 @@ class UpdateService:
         Raises UpdateError, also when the download is not newer than the running version.
         """
         if not self.installable:
-            raise UpdateError("This is a development copy; it is never overwritten by an update.")
+            raise UpdateError(t("This is a development copy; it is never overwritten by an update."))
         data = await self._download()
         try:
             version = await asyncio.to_thread(
@@ -150,7 +151,7 @@ class UpdateService:
             )
         except OSError as exc:
             log.warning("Could not unpack the update: %r", exc)
-            raise UpdateError("Could not unpack the update.") from exc
+            raise UpdateError(t("Could not unpack the update.")) from exc
         log.info("Update %s is ready; it is installed when AirGrabber closes", version)
         return version
 
@@ -165,15 +166,17 @@ class UpdateService:
         try:
             async with self._http.stream("GET", ARCHIVE_URL, timeout=httpx.Timeout(30.0)) as response:
                 if response.status_code != 200:
-                    raise UpdateError(f"Download failed: GitHub answered HTTP {response.status_code}.")
+                    raise UpdateError(
+                        t("Download failed: GitHub answered HTTP {status}.", status=response.status_code)
+                    )
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body += chunk
                     if len(body) > MAX_ARCHIVE_BYTES:
-                        raise UpdateError("Download failed: the archive is unexpectedly large.")
+                        raise UpdateError(t("Download failed: the archive is unexpectedly large."))
                 return bytes(body)
         except httpx.HTTPError as exc:
-            raise UpdateError("Download failed: could not reach GitHub.") from exc
+            raise UpdateError(t("Download failed: could not reach GitHub.")) from exc
 
 
 # Everything below is plain, blocking file-system work on its arguments: it runs in a worker
@@ -206,7 +209,11 @@ def stage_archive(data: bytes, install_dir: Path, *, newer_than: str | None = No
         try:
             if newer_than is not None and not is_newer(version, newer_than):
                 raise UpdateError(
-                    f"The download is version {version}, which is not newer than {newer_than}."
+                    t(
+                        "The download is version {version}, which is not newer than {current}.",
+                        version=version,
+                        current=newer_than,
+                    )
                 )
             (staging / READY_FILE).write_text(version, encoding="utf-8")
         except BaseException:
@@ -272,20 +279,22 @@ def _unpack(data: bytes, install_dir: Path) -> str:
     staging = install_dir / STAGING_DIR
     _remove_tree(staging)
     if staging.exists():
-        raise UpdateError(f"Could not clear the folder {staging}; delete it and try again.")
+        raise UpdateError(
+            t("Could not clear the folder {folder}; delete it and try again.", folder=staging)
+        )
     new = staging / "new"
     try:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 _extract(archive, new)
         except zipfile.BadZipFile as exc:
-            raise UpdateError("The download is not a valid archive.") from exc
+            raise UpdateError(t("The download is not a valid archive.")) from exc
         for entry in APP_ENTRIES:
             if not (new / entry).exists():
-                raise UpdateError(f"The download has no {entry}; nothing was changed.")
+                raise UpdateError(t("The download has no {entry}; nothing was changed.", entry=entry))
         version = _read_version(new / "app" / "__init__.py")
         if version is None:
-            raise UpdateError("The download has no version number; nothing was changed.")
+            raise UpdateError(t("The download has no version number; nothing was changed."))
     except BaseException:
         _remove_tree(staging)
         raise
@@ -318,7 +327,7 @@ def _extract(archive: zipfile.ZipFile, target: Path) -> None:
     names = [info.filename for info in archive.infolist()]
     tops = {name.split("/", 1)[0] for name in names}
     if len(tops) != 1:
-        raise UpdateError("The download has an unexpected layout; nothing was changed.")
+        raise UpdateError(t("The download has an unexpected layout; nothing was changed."))
     root = target.resolve()
     for info in archive.infolist():
         parts = PurePosixPath(info.filename).parts[1:]
@@ -326,7 +335,7 @@ def _extract(archive: zipfile.ZipFile, target: Path) -> None:
             continue
         destination = root.joinpath(*parts).resolve()
         if not destination.is_relative_to(root) or ".." in parts:
-            raise UpdateError("The download contains unsafe paths; nothing was changed.")
+            raise UpdateError(t("The download contains unsafe paths; nothing was changed."))
         if info.is_dir():
             destination.mkdir(parents=True, exist_ok=True)
             continue
@@ -357,11 +366,16 @@ def _swap(new: Path, old: Path, install_dir: Path) -> None:
         except OSError as rollback:
             log.error("Rolling back the update failed: %r", rollback)
             raise UpdateError(
-                "The update failed half-way and could not be undone. "
-                "Reinstall AirGrabber with the install command."
+                t(
+                    "The update failed half-way and could not be undone. "
+                    "Reinstall AirGrabber with the install command."
+                )
             ) from exc
         raise UpdateError(
-            "Could not replace the app files (is another program using them?). Nothing was changed."
+            t(
+                "Could not replace the app files (is another program using them?). "
+                "Nothing was changed."
+            )
         ) from exc
 
 

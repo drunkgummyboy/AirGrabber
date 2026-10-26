@@ -141,6 +141,11 @@ class LibraryService:
         """The stored episodes of a show, by season and number (specials have no number)."""
         return await self._library.episodes(show_id)
 
+    async def downloaded_movie_ids(self) -> frozenset[int]:
+        """TMDB ids of the films in the download history (the Movies page's "Hide what I
+        already have")."""
+        return await self._history.movie_ids()
+
     async def activity(self, *, now: datetime | None = None) -> dict[int, ShowActivity]:
         """Per tracked show id: its latest grab within RECENT_GRAB_WINDOW and its next episode
         (see ShowActivity). Shows with neither are left out. `now`: an aware instant (tests);
@@ -157,6 +162,12 @@ class LibraryService:
             )
             for show_id in sorted((last.keys() | following.keys()) & tracked)
         }
+
+    async def last_downloads(self) -> dict[int, datetime]:
+        """Per show id: when its latest episode or season pack was downloaded, however long ago
+        (My shows' "Recently downloaded" order). Shows never downloaded are left out."""
+        grabs = await self._history.latest_tv_grabs(datetime(1970, 1, 1, tzinfo=UTC))
+        return {record.media_id: record.downloaded_at for record in grabs}
 
     async def show_details(self, show_id: int, *, now: datetime | None = None) -> ShowDetails:
         """A TVMaze show with its episodes, tracked state, downloads and next episode (see
@@ -218,6 +229,20 @@ class LibraryService:
         its time zone decides which day "today" is."""
         now = now if now is not None else datetime.now().astimezone()
         return await self._library.missing_counts(now=now, today=now.date())
+
+    async def missing_between(
+        self, start: date, end: date, *, now: datetime | None = None
+    ) -> frozenset[int]:
+        """Ids of the missing episodes (app.services.missing's rule) airing between `start`
+        and `end`, inclusive: the calendar's amber "Not downloaded yet" marks. `now`: an aware
+        instant (tests); its time zone decides which day "today" is."""
+        now = now if now is not None else datetime.now().astimezone()
+        return await self._library.missing_between(start, end, now=now, today=now.date())
+
+    async def have_between(self, start: date, end: date) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) marked "I already
+        have this": a calendar stack card doesn't count them as still needed."""
+        return await self._library.have_between(start, end)
 
     async def _fetch_show(self, show_id: int) -> tuple[Show, list[Episode]]:
         """The show and its episodes from TVMaze, or from memory when fetched recently."""

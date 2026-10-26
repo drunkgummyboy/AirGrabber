@@ -39,6 +39,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from app.i18n import N_, t
 from app.models import ProwlarrSetupResult, ProwlarrState, ProwlarrStatus
 from app.services.settings import SettingsService
 
@@ -90,8 +91,9 @@ WINGET_COMMAND = (
     "--accept-package-agreements",
     "--accept-source-agreements",
 )
-INSTALLING_TEXT = "Installing… Windows may ask for permission"
-SETTING_UP_TEXT = "Setting up Prowlarr…"
+# Progress texts, reported through t().
+INSTALLING_TEXT = N_("Installing… Windows may ask for permission")
+SETTING_UP_TEXT = N_("Setting up Prowlarr…")
 
 _SEARCHED_CATEGORIES = frozenset({2000, 5000})  # Movies and TV: all AirGrabber ever asks for
 _NEW_APP_PROFILE: dict[str, JsonValue] = {
@@ -432,10 +434,10 @@ class ProwlarrSetupService:
             if progress is not None:
                 progress(text)
 
-        report(INSTALLING_TEXT)
+        report(t(INSTALLING_TEXT))
         if not await self._winget(WINGET_COMMAND):
             return False
-        report(SETTING_UP_TEXT)
+        report(t(SETTING_UP_TEXT))
         local, answering = await self._wait_for_install()
         if local is None:
             log.info("Prowlarr setup: winget finished, but no Prowlarr config appeared")

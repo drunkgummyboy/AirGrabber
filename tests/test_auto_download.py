@@ -551,6 +551,19 @@ class ActivityTests(DatabaseTestCase):
         assert upcoming is not None
         self.assertEqual(upcoming.id, 11)  # airs today: still "next"
 
+    async def test_last_downloads_however_long_ago(self) -> None:
+        """My shows' "Recently downloaded" order: every show's latest grab, old ones too."""
+        await self.add_show(1, [], since=None)
+        await self.add_show(2, [], since=None)
+        await self.add_show(3, [], since=None)
+        await self.grab(1, 1, 1, NOW - timedelta(days=400))
+        await self.grab(1, 1, 2, NOW - timedelta(days=200))  # the latest one wins
+        await self.grab(2, 3, None, NOW - timedelta(hours=1))  # a season pack
+
+        last = await self.library.last_downloads()
+
+        self.assertEqual(last, {1: NOW - timedelta(days=200), 2: NOW - timedelta(hours=1)})
+
 
 class RunTests(DatabaseTestCase):
     async def asyncSetUp(self) -> None:

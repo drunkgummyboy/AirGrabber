@@ -16,7 +16,15 @@ import httpx
 
 from app.config import AppPaths
 from app.database import Database
-from app.models import DiscoverShow, DiscoverShowEntry, MovieDetails, Show, TVDetails
+from app.models import (
+    DiscoverShow,
+    DiscoverShowEntry,
+    DownloadRecord,
+    MediaType,
+    MovieDetails,
+    Show,
+    TVDetails,
+)
 from app.services import Services
 from app.services.discovery import DiscoveryService, NoTVMazeMatch, normalize_title
 from app.services.library import LibraryService
@@ -395,6 +403,21 @@ class MovieDashboardTests(DiscoveryTestCase):
         self.now += timedelta(minutes=30)
         await self.service.movie_dashboard()
         self.assertEqual(self.server.count(*MOVIE_PATHS), 15)
+
+    async def test_downloaded_films_follow_the_history_while_cached(self) -> None:
+        dashboard = await self.service.movie_dashboard()
+        self.assertEqual(dashboard.downloaded, frozenset())
+        film = dashboard.trending[0].id
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=film, release_title="Film.1080p")
+        )
+        # A film that is on no shelf isn't listed.
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="Other.720p")
+        )
+        dashboard = await self.service.movie_dashboard()
+        self.assertEqual(dashboard.downloaded, frozenset({film}))
+        self.assertEqual(self.server.count(MOVIE_TRENDING), 1)  # from the cache
 
     async def test_failed_shelf(self) -> None:
         self.server.failures[MOVIE_TRENDING] = 500

@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from app.i18n import N_, t
 from app.models import DiscoverShow, DiscoverShowEntry
-from app.services import DiscoveryService, ImageCache
+from app.services import DiscoveryService, ImageCache, SettingsService
 from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError
@@ -14,12 +15,18 @@ from app.ui import theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.media_cards import DiscoverShowCard
 from app.ui.poster_card import TrackState
+from app.ui.shelf_filter import TV_GENRES, Genre, genres_of
 from app.ui.views.base import StatusReporter
 from app.ui.views.shelves import Shelf, ShelvesView
 
 
 class DiscoverView(ShelvesView[DiscoverShowEntry]):
-    """TMDB's TV shelves; "+ Track" adds a show to the library through its TVMaze counterpart."""
+    """TMDB's TV shelves; "+ Track" adds a show to the library through its TVMaze counterpart.
+    "Hide what I already have" hides the shows the user follows."""
+
+    _hide_owned_setting = "hide_owned_discover"
+    _hide_owned_tip = N_("Hides the shows you already follow")
+    _all_owned_text = N_("You already follow every show here.")
 
     def __init__(
         self,
@@ -28,6 +35,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         discovery: DiscoveryService,
         images: ImageCache,
         status: StatusReporter,
+        settings: SettingsService,
         on_open_settings: Callable[[], None],
         on_open_show: Callable[[DiscoverShow], None] | None = None,
         card_scale: Callable[[], CardScale] = lambda: FULL,
@@ -39,6 +47,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
             master,
             images=images,
             status=status,
+            settings=settings,
             on_open_settings=on_open_settings,
             card_scale=card_scale,
             **kwargs,
@@ -55,20 +64,28 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         return [
             Shelf(
                 "🔥",
-                "Trending This Week",
+                t("Trending This Week"),
                 theme.SECTION_HOT,
                 dashboard.trending,
                 "trending" in failed,
             ),
-            Shelf("📺", "Currently Airing", theme.TEXT_MUTED, dashboard.on_air, "on_air" in failed),
+            Shelf(
+                "📺", t("Currently Airing"), theme.TEXT_MUTED, dashboard.on_air, "on_air" in failed
+            ),
             Shelf(
                 "🌟",
-                "Upcoming Premieres",
+                t("Upcoming Premieres"),
                 theme.SECTION_NEW,
                 dashboard.premieres,
                 "premieres" in failed,
             ),
         ]
+
+    def _genres(self, item: DiscoverShowEntry) -> frozenset[Genre]:
+        return genres_of(item.show.genre_ids, TV_GENRES)
+
+    def _is_owned(self, item: DiscoverShowEntry) -> bool:
+        return item.is_tracked
 
     def _clear_body(self) -> None:
         super()._clear_body()
@@ -106,13 +123,16 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
             await self._discovery.track(show)
         except NoTVMazeMatch:
             self._set_track_state(show.id, "missing")
-            self._report(f"{show.name} isn't on TVMaze yet", clear_after_ms=6000)
+            self._report(t("{name} isn't on TVMaze yet", name=show.name), clear_after_ms=6000)
         except (TMDBError, TVMazeError) as exc:
             self._set_track_state(show.id, "idle")
-            self._report(f"Couldn't track {show.name}: {exc}", clear_after_ms=8000)
+            self._report(
+                t("Couldn't track {name}: {error}", name=show.name, error=exc),
+                clear_after_ms=8000,
+            )
         else:
             self._set_track_state(show.id, "tracked")
-            self._report(f"Now tracking {show.name}", clear_after_ms=4000)
+            self._report(t("Now tracking {name}", name=show.name), clear_after_ms=4000)
         finally:
             self._tracking.discard(show.id)
 

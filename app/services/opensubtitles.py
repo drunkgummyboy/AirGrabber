@@ -41,6 +41,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app import APP_NAME, __version__
+from app.i18n import N_, t
 from app.models import SubtitleAccount
 from app.models.opensubtitles import (
     OSDownload,
@@ -77,13 +78,15 @@ HASH_CHUNK = 65536
 HASH_MIN_SIZE = 131072  # "9000000000 > filesize > 131072" (Moviehash source codes page)
 HASH_MAX_SIZE = 9_000_000_000
 
-# Plain-words messages (the status bar and Settings show them as they are).
-KEY_REJECTED_TEXT = "OpenSubtitles refused AirGrabber's key. An update of AirGrabber may fix this"
-LOGIN_REJECTED_TEXT = "Wrong OpenSubtitles user name or password"
-UNREACHABLE_TEXT = "Couldn't reach OpenSubtitles. Check your internet connection"
-QUOTA_TEXT = "Today's subtitle downloads are used up"
-NO_KEY_TEXT = "Subtitles aren't available in this version yet"
-OWN_KEY_REJECTED_TEXT = (
+# Plain-words messages (the status bar and Settings show them as they are), raised through t().
+KEY_REJECTED_TEXT = N_(
+    "OpenSubtitles refused AirGrabber's key. An update of AirGrabber may fix this"
+)
+LOGIN_REJECTED_TEXT = N_("Wrong OpenSubtitles user name or password")
+UNREACHABLE_TEXT = N_("Couldn't reach OpenSubtitles. Check your internet connection")
+QUOTA_TEXT = N_("Today's subtitle downloads are used up")
+NO_KEY_TEXT = N_("Subtitles aren't available in this version yet")
+OWN_KEY_REJECTED_TEXT = N_(
     "OpenSubtitles refused your own API key. Check it, or leave it empty to use AirGrabber's key"
 )
 
@@ -230,7 +233,7 @@ class OpenSubtitlesClient:
         key = self._api_key().strip()
         fingerprint = _fingerprint(key, username, password)
         if not retry and fingerprint == self._rejected:
-            raise LoginRejected(LOGIN_REJECTED_TEXT)
+            raise LoginRejected(t(LOGIN_REJECTED_TEXT))
         self._session = None
         login = await self._login(key, username, password, fingerprint)
         account = SubtitleAccount(
@@ -283,7 +286,7 @@ class OpenSubtitlesClient:
         if parts.scheme != "https" or not (
             host == "opensubtitles.com" or host.endswith(".opensubtitles.com")
         ):
-            raise OpenSubtitlesError("OpenSubtitles sent an unexpected download link")
+            raise OpenSubtitlesError(t("OpenSubtitles sent an unexpected download link"))
         response: httpx.Response | None = None
         for attempt in range(1, _ATTEMPTS + 1):
             error_name = ""
@@ -299,14 +302,17 @@ class OpenSubtitlesClient:
             if attempt < _ATTEMPTS:
                 await self._sleep(self._retry_delay * attempt)
         if response is None or response.status_code >= 500:
-            raise Unreachable(UNREACHABLE_TEXT)
+            raise Unreachable(t(UNREACHABLE_TEXT))
         if response.status_code != 200:
             raise OpenSubtitlesError(
-                f"OpenSubtitles didn't hand over the subtitle file (HTTP {response.status_code})"
+                t(
+                    "OpenSubtitles didn't hand over the subtitle file (HTTP {status})",
+                    status=response.status_code,
+                )
             )
         content = response.content
         if not content or len(content) > MAX_SUBTITLE_BYTES:
-            raise OpenSubtitlesError("OpenSubtitles sent an empty or oversized subtitle file")
+            raise OpenSubtitlesError(t("OpenSubtitles sent an empty or oversized subtitle file"))
         return content
 
     # -- internals -------------------------------------------------------------------------------
@@ -368,7 +374,7 @@ class OpenSubtitlesClient:
         try:
             return await self._call(method, path, params, json_body, key, False, rejected)
         except _SessionExpired:
-            raise KeyRejected(rejected) from None
+            raise KeyRejected(t(rejected)) from None
 
     def _rejected_text(self, own: bool | None) -> str:
         if own is None:
@@ -387,9 +393,9 @@ class OpenSubtitlesClient:
     ) -> object:
         api_key = (key if key is not None else self._api_key()).strip()
         if not api_key:
-            raise KeyRejected(NO_KEY_TEXT)
+            raise KeyRejected(t(NO_KEY_TEXT))
         if not (api_key.isascii() and api_key.isprintable()):
-            raise KeyRejected(rejected)
+            raise KeyRejected(t(rejected))
         session = self._session if use_session else None
         host = session.host if session is not None else DEFAULT_HOST
         headers = {
@@ -413,19 +419,21 @@ class OpenSubtitlesClient:
                 if session is not None and _token_refused(response):
                     raise _SessionExpired
                 if status == 401 and path == "/login":
-                    raise LoginRejected(LOGIN_REJECTED_TEXT)
+                    raise LoginRejected(t(LOGIN_REJECTED_TEXT))
                 if status in (401, 403):
-                    raise KeyRejected(rejected)
+                    raise KeyRejected(t(rejected))
                 if status == 406 and path == "/download":
                     raise _quota_exceeded(response)
                 if status != 429 and status < 500:
-                    raise OpenSubtitlesError(f"OpenSubtitles {path}: HTTP {status}")
+                    raise OpenSubtitlesError(
+                        t("OpenSubtitles {path}: HTTP {status}", path=path, status=status)
+                    )
                 reason = f"HTTP {status}"
                 wait = _retry_after(response) if status == 429 else self._retry_delay * attempt
             log.info("OpenSubtitles %s: %s (attempt %d of %d)", path, reason, attempt, _ATTEMPTS)
             if attempt < _ATTEMPTS:
                 await self._sleep(wait)
-        raise Unreachable(UNREACHABLE_TEXT)
+        raise Unreachable(t(UNREACHABLE_TEXT))
 
     async def _send(
         self,
@@ -459,15 +467,17 @@ def _json(response: httpx.Response, path: str) -> object:
         return response.json()
     except ValueError:
         pass
-    raise OpenSubtitlesError(f"OpenSubtitles {path}: the answer wasn't readable")
+    raise OpenSubtitlesError(t("OpenSubtitles {path}: the answer wasn't readable", path=path))
 
 
 def _validate(model: type[M], payload: object, path: str) -> M:
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
-        problem = f"{exc.error_count()} invalid field(s)"
-    raise OpenSubtitlesError(f"OpenSubtitles {path}: unexpected answer ({problem})")
+        count = exc.error_count()
+    raise OpenSubtitlesError(
+        t("OpenSubtitles {path}: unexpected answer ({n} invalid field(s))", path=path, n=count)
+    )
 
 
 def _token_refused(response: httpx.Response) -> bool:
@@ -504,4 +514,4 @@ def _quota_exceeded(response: httpx.Response) -> QuotaExceeded:
         reset_at = OSQuotaAnswer.model_validate(response.json()).reset_time_utc
     except (ValueError, ValidationError):
         pass
-    return QuotaExceeded(QUOTA_TEXT, reset_at)
+    return QuotaExceeded(t(QUOTA_TEXT), reset_at)

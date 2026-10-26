@@ -16,6 +16,7 @@ from app.ui.main_window import (
     auto_notice,
     prowlarr_setup_message,
     settings_affect_pages,
+    typing_in,
     update_notice,
 )
 
@@ -45,6 +46,16 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "opensubtitles_username": "beau",
     "opensubtitles_password": "pw",
     "opensubtitles_own_key": "OWNKEY",
+    # My shows re-arranges its own cards.
+    "tracked_sort": "next_episode",
+    "tracked_filter": "missing",
+    # Discover and Movies re-filter their own shelves.
+    "hide_owned_discover": True,
+    "hide_owned_movies": True,
+    # Light / dark: every widget repaints itself.
+    "theme_mode": "light",
+    # The language takes effect at the next start.
+    "language": "nl",
 }
 
 PAGE_CHANGES: dict[str, Any] = {
@@ -93,6 +104,21 @@ class SettingsAffectPagesTests(unittest.TestCase):
 
     def test_no_change(self) -> None:
         self.assertFalse(settings_affect_pages(Settings(), Settings()))
+
+
+class TypingInTests(unittest.TestCase):
+    """F5 leaves text fields alone."""
+
+    def test_text_fields(self) -> None:
+        for name in ("Entry", "TEntry", "Text", "Spinbox", "TCombobox"):
+            with self.subTest(name):
+                self.assertTrue(typing_in(SimpleNamespace(winfo_class=lambda name=name: name)))
+
+    def test_other_widgets(self) -> None:
+        for name in ("Canvas", "Frame", "Button", "Tk", "Toplevel"):
+            with self.subTest(name):
+                self.assertFalse(typing_in(SimpleNamespace(winfo_class=lambda name=name: name)))
+        self.assertFalse(typing_in(".!ctkframe.!entry"))  # a widget tkinter doesn't know
 
 
 class ProwlarrSetupMessageTests(unittest.TestCase):

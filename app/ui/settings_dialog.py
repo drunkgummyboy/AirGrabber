@@ -18,6 +18,7 @@ from typing import Any, NamedTuple, Protocol
 import customtkinter as ctk
 from pydantic import ValidationError
 
+from app.i18n import N_, Language, capitalized, current_language, day_name, number, t
 from app.indexers import (
     ApibayIndexer,
     BitsearchIndexer,
@@ -26,9 +27,18 @@ from app.indexers import (
     ProwlarrIndexer,
     YtsIndexer,
 )
-from app.models import CardSize, DownloadMode, ProwlarrStatus, QualityProfile, UpdateInfo, Weekday
+from app.models import (
+    CardSize,
+    DownloadMode,
+    ProwlarrStatus,
+    QualityProfile,
+    ThemeMode,
+    UpdateInfo,
+    Weekday,
+)
 from app.services import (
     DiscoveryService,
+    FlareSolverrService,
     ProwlarrSetupService,
     RemoteDownloads,
     SettingsService,
@@ -86,20 +96,22 @@ from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, To
 log = logging.getLogger(__name__)
 
 # -- sections ----------------------------------------------------------------------------------
+# A section's name is its key here and in the tests; the dialog shows it through t(), as every
+# text constant below.
 
-SECTION_WHERE = "Where downloads go"
-SECTION_QUALITY = "Quality"
-SECTION_AUTOMATIC = "Automatic"
-SECTION_SUBTITLES = "Subtitles"
-SECTION_INFO = "Movie & show info"
-SECTION_LOOKS = "Looks"
-SECTION_UPDATES = "Updates"
-SECTION_ADVANCED = "Advanced"
+SECTION_WHERE = N_("Where downloads go")
+SECTION_QUALITY = N_("Quality")
+SECTION_AUTOMATIC = N_("Automatic")
+SECTION_SUBTITLES = N_("Subtitles")
+SECTION_INFO = N_("Movie & show info")
+SECTION_LOOKS = N_("Looks")
+SECTION_UPDATES = N_("Updates")
+SECTION_ADVANCED = N_("Advanced")
 
 # The sidebar: a small group label above each part of the list, then its sections in order.
 SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Downloading", (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES)),
-    ("App", (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_ADVANCED)),
+    (N_("Downloading"), (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES)),
+    (N_("App"), (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_ADVANCED)),
 )
 SECTIONS: tuple[str, ...] = tuple(name for _group, names in SECTION_GROUPS for name in names)
 SECTION_ICONS: dict[str, str] = {
@@ -114,18 +126,18 @@ SECTION_ICONS: dict[str, str] = {
 }
 # Each page's one muted line under its heading (Subtitles uses its own texts).
 SECTION_NOTES: dict[str, str] = {
-    SECTION_WHERE: "What happens when you click Download.",
-    SECTION_QUALITY: (
+    SECTION_WHERE: N_("What happens when you click Download."),
+    SECTION_QUALITY: N_(
         "Which copy AirGrabber picks when you click Download, and for automatic downloads."
     ),
-    SECTION_AUTOMATIC: "What AirGrabber does on its own, without you clicking anything.",
-    SECTION_INFO: (
+    SECTION_AUTOMATIC: N_("What AirGrabber does on its own, without you clicking anything."),
+    SECTION_INFO: N_(
         "The Movies and Discover pages get their lists, posters and release dates from TMDB, "
         "a free film database."
     ),
-    SECTION_LOOKS: "How AirGrabber's pages look.",
-    SECTION_UPDATES: "Getting new versions of AirGrabber.",
-    SECTION_ADVANCED: (
+    SECTION_LOOKS: N_("How AirGrabber's pages look."),
+    SECTION_UPDATES: N_("Getting new versions of AirGrabber."),
+    SECTION_ADVANCED: N_(
         "Where AirGrabber searches, and which releases it skips. Most people never need to "
         "change these."
     ),
@@ -133,59 +145,66 @@ SECTION_NOTES: dict[str, str] = {
 
 # -- texts ---------------------------------------------------------------------------------------
 
-APP_CHOICE = "Open in my torrent program on this PC"
-APP_TEXT = "Each download opens in your torrent program by itself. Best for most people."
-REMOTE_CHOICE = "Send to a torrent program on my NAS or another computer"
-REMOTE_TEXT = "For a NAS or home server (Synology, qBittorrent, Transmission)."
-FOLDER_CHOICE = "Save .torrent files to a folder"
-FOLDER_TEXT = "For a watch folder, for example on a NAS."
+APP_CHOICE = N_("Open in my torrent program on this PC")
+APP_TEXT = N_("Each download opens in your torrent program by itself. Best for most people.")
+REMOTE_CHOICE = N_("Send to a torrent program on my NAS or another computer")
+REMOTE_TEXT = N_("For a NAS or home server (Synology, qBittorrent, Transmission).")
+FOLDER_CHOICE = N_("Save .torrent files to a folder")
+FOLDER_TEXT = N_("For a watch folder, for example on a NAS.")
 
-SERIES_TITLE = "Series"
-SERIES_TEXT = "For one episode. Season packs ignore the size."
-MOVIES_TITLE = "Movies"
-MOVIES_TEXT = "For one film."
-QUALITY_NOTE = (
+SERIES_TITLE = N_("Series")
+SERIES_TEXT = N_("For one episode. Season packs ignore the size.")
+MOVIES_TITLE = N_("Movies")
+MOVIES_TEXT = N_("For one film.")
+QUALITY_NOTE = N_(
     "If nothing matches, AirGrabber takes the closest match: the right quality first, then the "
     "size nearest your range. Leave a size empty for no limit."
 )
 
-BACKGROUND_TITLE = "In the background"
-BACKGROUND_TEXT = "Needed for new episodes to download while the window is closed."
-TRAY_TEXT = "Keep running in the tray when I close the window"
-START_TEXT = "Start AirGrabber when Windows starts"
-NEW_SHOWS_TITLE = "New shows"
-NEW_SHOWS_TEXT = "You can still change this for each show."
-NEW_SHOWS_SWITCH = "Download new episodes for shows I start following"
+BACKGROUND_TITLE = N_("In the background")
+BACKGROUND_TEXT = N_("Needed for new episodes to download while the window is closed.")
+TRAY_TEXT = N_("Keep running in the tray when I close the window")
+START_TEXT = N_("Start AirGrabber when Windows starts")
+NEW_SHOWS_TITLE = N_("New shows")
+NEW_SHOWS_TEXT = N_("You can still change this for each show.")
+NEW_SHOWS_SWITCH = N_("Download new episodes for shows I start following")
 
-SUBTITLE_SWITCH_TITLE = "Automatic subtitles"
-SUBTITLE_SWITCH_TEXT = "AirGrabber looks for subtitles for what you download, every half hour."
-LANGUAGES_TITLE = "Languages"
-LANGUAGES_TEXT = "AirGrabber looks for subtitles in each of these languages."
+SUBTITLE_SWITCH_TITLE = N_("Automatic subtitles")
+SUBTITLE_SWITCH_TEXT = N_("AirGrabber looks for subtitles for what you download, every half hour.")
+LANGUAGES_TITLE = N_("Languages")
+LANGUAGES_TEXT = N_("AirGrabber looks for subtitles in each of these languages.")
 
-TMDB_KEY_LABEL = "TMDB key"
-TMDB_KEY_TEXT = (
+TMDB_KEY_LABEL = N_("TMDB key")
+TMDB_KEY_TEXT = N_(
     "A free code from themoviedb.org that lets AirGrabber ask TMDB for this information. "
     "Without it, the Movies and Discover pages stay empty. Your shows and the Calendar work "
     "without it."
 )
-KEY_GUIDE_LINK = "How do I get a free key?"
+KEY_GUIDE_LINK = N_("How do I get a free key?")
 
-WEEK_TITLE = "Week starts on"
-WEEK_TEXT = "The first day of each week on the Calendar."
+WEEK_TITLE = N_("Week starts on")
+WEEK_TEXT = N_("The first day of each week on the Calendar.")
 
-AUTO_UPDATE_TITLE = "Automatic updates"
-AUTO_UPDATE_TEXT = (
+THEME_TITLE = N_("Theme")
+THEME_TEXT = N_("Light or dark. Follow Windows uses the same look as your other Windows apps.")
+
+LANGUAGE_TITLE = N_("Language")
+LANGUAGE_TEXT = N_("The language of AirGrabber's pages, buttons and messages.")
+RESTART_TEXT = N_("Restart AirGrabber to switch the language")
+
+AUTO_UPDATE_TITLE = N_("Automatic updates")
+AUTO_UPDATE_TEXT = N_(
     "New versions download in the background and are installed when AirGrabber closes."
 )
-AUTO_UPDATE_SWITCH = "Install updates automatically"
-CHECK_UPDATES_TEXT = "Check whether a newer version is out."
+AUTO_UPDATE_SWITCH = N_("Install updates automatically")
+CHECK_UPDATES_TEXT = N_("Check whether a newer version is out.")
 
-SITES_TITLE = "Built-in sites"
-SITES_TEXT = "Websites AirGrabber searches by itself."
-EXCLUDED_TITLE = "Skip releases with these words"
-EXCLUDED_TEXT = "Separate with commas, for example: cam, telesync"
-PREFERRED_TITLE = "Prefer releases from"
-PREFERRED_TEXT = "Release group names, separated with commas"
+SITES_TITLE = N_("Built-in sites")
+SITES_TEXT = N_("Websites AirGrabber searches by itself.")
+EXCLUDED_TITLE = N_("Skip releases with these words")
+EXCLUDED_TEXT = N_("Separate with commas, for example: cam, telesync")
+PREFERRED_TITLE = N_("Prefer releases from")
+PREFERRED_TEXT = N_("Release group names, separated with commas")
 
 # -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
 
@@ -217,6 +236,7 @@ _ROW_GAP = 14  # between two controls in one box
 _TEST_BUTTON_WIDTH = 160
 _UPDATE_BUTTON_WIDTH = 180
 _CHECK_BUTTON_WIDTH = 110
+_RESTART_BUTTON_WIDTH = 150
 _SIZE_ENTRY_WIDTH = 70
 _QUALITY_MENU_WIDTH = 230
 _REMOTE_LABEL_WIDTH = 130
@@ -236,28 +256,74 @@ _PROWLARR_FIELDS = frozenset({"prowlarr_url", "prowlarr_api_key"})
 
 # Plain names for the quality profiles, in menu order. The stored values stay QualityProfile's.
 QUALITY_NAMES: dict[QualityProfile, str] = {
-    QualityProfile.FULL_HD: "Full HD (1080p)",
-    QualityProfile.HD: "HD (720p)",
-    QualityProfile.UHD: "4K (2160p)",
-    QualityProfile.HEVC: "Smaller files (1080p x265)",
-    QualityProfile.ANY: "Any quality",
+    QualityProfile.FULL_HD: N_("Full HD (1080p)"),
+    QualityProfile.HD: N_("HD (720p)"),
+    QualityProfile.UHD: N_("4K (2160p)"),
+    QualityProfile.HEVC: N_("Smaller files (1080p x265)"),
+    QualityProfile.ANY: N_("Any quality"),
 }
 
 
 def quality_name(profile: QualityProfile) -> str:
-    return QUALITY_NAMES[profile]
+    return t(QUALITY_NAMES[profile])
 
 
 def quality_from_name(name: str) -> QualityProfile:
-    for profile, shown in QUALITY_NAMES.items():
-        if shown == name:
+    for profile in QUALITY_NAMES:
+        if quality_name(profile) == name:
             return profile
     raise ValueError(f"unknown quality name: {name!r}")
 
 
+# Plain names for the themes, in the order the Theme box shows them.
+THEME_NAMES: dict[ThemeMode, str] = {
+    ThemeMode.SYSTEM: N_("Follow Windows"),
+    ThemeMode.DARK: N_("Dark"),
+    ThemeMode.LIGHT: N_("Light"),
+}
+
+
+def theme_name(mode: ThemeMode) -> str:
+    return t(THEME_NAMES[mode])
+
+
+def theme_from_name(name: str) -> ThemeMode:
+    for mode in THEME_NAMES:
+        if theme_name(mode) == name:
+            return mode
+    raise ValueError(f"unknown theme name: {name!r}")
+
+
+def weekday_name(day: Weekday) -> str:
+    """The Week starts on menu's name for `day`: "Monday" (its stored value) / "Maandag"."""
+    return capitalized(day_name(day.weekday))
+
+
+def weekday_from_name(name: str) -> Weekday:
+    for day in Weekday:
+        if weekday_name(day) == name:
+            return day
+    raise ValueError(f"unknown weekday name: {name!r}")
+
+
+def language_from_name(name: str) -> Language:
+    """The Language box's choice ("Nederlands") → its Language; names are never translated."""
+    for language in Language:
+        if language.native_name == name:
+            return language
+    raise ValueError(f"unknown language name: {name!r}")
+
+
+def needs_restart(chosen: Language, running: Language) -> bool:
+    """Whether the Language box shows "Restart AirGrabber to switch the language": the language
+    takes effect at the next start."""
+    return chosen is not running
+
+
 def size_text(value: float | None) -> str:
-    """A stored size limit as its entry shows it: "" for no limit, "2.5", "4" (not "4.0")."""
-    return "" if value is None else f"{value:g}"
+    """A stored size limit as its entry shows it: "" for no limit, "2.5", "4" (not "4.0"); with a
+    decimal comma in Dutch ("2,5", which Save reads back)."""
+    return "" if value is None else number(value, "g")
 
 
 class DownloadRows(NamedTuple):
@@ -340,25 +406,28 @@ async def apply_start_with_windows(
     return StartupResult(enabled=shortcut.is_enabled(), error=error)
 
 
+# Shown through t() (`_describe`).
 _FIELD_LABELS = {
-    "download_mode": "Where downloads go",
+    "download_mode": SECTION_WHERE,
     "download_dir": FOLDER_CHOICE,
-    "quality_tv": "Series quality",
-    "quality_movie": "Movies quality",
-    "size_tv_min_gb": "Series size",
-    "size_tv_max_gb": "Series size",
-    "size_movie_min_gb": "Movies size",
-    "size_movie_max_gb": "Movies size",
+    "quality_tv": N_("Series quality"),
+    "quality_movie": N_("Movies quality"),
+    "size_tv_min_gb": N_("Series size"),
+    "size_tv_max_gb": N_("Series size"),
+    "size_movie_min_gb": N_("Movies size"),
+    "size_movie_max_gb": N_("Movies size"),
     "first_day": WEEK_TITLE,
     "card_size": CARD_SIZE_LABEL,
+    "theme_mode": THEME_TITLE,
+    "language": LANGUAGE_TITLE,
     "tmdb_api_key": TMDB_KEY_LABEL,
-    "auto_update": "Updates",
+    "auto_update": SECTION_UPDATES,
     "disabled_indexers": SITES_TITLE,
     "excluded_keywords": EXCLUDED_TITLE,
     "preferred_groups": PREFERRED_TITLE,
-    "prowlarr_url": "Prowlarr URL",
-    "prowlarr_api_key": "Prowlarr API key",
-    "subtitle_languages": "Subtitle languages",
+    "prowlarr_url": N_("Prowlarr URL"),
+    "prowlarr_api_key": N_("Prowlarr API key"),
+    "subtitle_languages": N_("Subtitle languages"),
     "subtitles_folder": FOLDER_LABEL,
     "opensubtitles_username": ACCOUNT_LABEL,
     "opensubtitles_password": ACCOUNT_LABEL,
@@ -387,6 +456,8 @@ _FIELD_SECTIONS: dict[str, str] = {
     "tmdb_api_key": SECTION_INFO,
     "card_size": SECTION_LOOKS,
     "first_day": SECTION_LOOKS,
+    "theme_mode": SECTION_LOOKS,
+    "language": SECTION_LOOKS,
     "auto_update": SECTION_UPDATES,
     "disabled_indexers": SECTION_ADVANCED,
     "excluded_keywords": SECTION_ADVANCED,
@@ -406,7 +477,7 @@ def _describe(error: ValidationError) -> str:
     for item in error.errors():
         label = _FIELD_LABELS.get(str(item["loc"][0])) if item["loc"] else None
         message = item["msg"].removeprefix("Value error, ")
-        lines.append(f"{label}: {message}" if label else message)
+        lines.append(f"{t(label)}: {message}" if label else message)
     return "\n".join(lines)
 
 
@@ -544,7 +615,7 @@ class _SidebarItem(ctk.CTkFrame):
         self._icon.pack(side="left", padx=(_ITEM_PAD[0], _ITEM_PAD[1]))
         self._name = ctk.CTkLabel(
             self,
-            text=section,
+            text=t(section),
             height=_ITEM_HEIGHT,
             anchor="w",
             font=theme.font(DETAIL_SIZE),
@@ -584,6 +655,7 @@ class _SidebarItem(ctk.CTkFrame):
         self._paint()
 
     def _paint(self) -> None:
+        color: theme.Color
         if self._selected:
             color = theme.ROW_SELECTED
         else:
@@ -596,12 +668,12 @@ def sidebar_width() -> int:
     """The sidebar's width (logical): room for the longest section name in bold (the selected
     one), so the pages don't shift when another section is chosen."""
     bold = theme.font(DETAIL_SIZE, bold=True)
-    widest = max(int(bold.measure(section)) for section in SECTIONS)
+    widest = max(int(bold.measure(t(section))) for section in SECTIONS)
     item = sum(_ITEM_PAD) + _ICON_WIDTH + widest + 4  # + a little slack
     return max(_SIDEBAR_WIDTH, item + 2 * _SIDEBAR_PAD)
 
 
-def _paint_background(widget: ctk.CTkFrame, color: str) -> None:
+def _paint_background(widget: ctk.CTkFrame, color: theme.Color) -> None:
     """Give a transparent CTk frame that sits inside a box but belongs to the page (the remote
     form, the Prowlarr panel) the box's colour; its transparent children follow."""
     widget.configure(fg_color=color)
@@ -628,8 +700,11 @@ class SettingsDialog(ctk.CTkToplevel):
         on_update: Callable[[], None] | None = None,
         startup_shortcut: StartupShortcut | None = None,
         subtitles: SubtitleService | None = None,
+        on_restart: Callable[[], None] | None = None,
+        flaresolverr: FlareSolverrService | None = None,
     ) -> None:
-        """`subtitles`: the Subtitles section shows when it is given."""
+        """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
+        AirGrabber (the Language box's "Restart now"; without it only the note shows)."""
         super().__init__(master, fg_color=theme.BG)
         self._subtitles = subtitles
         self._subtitle_rows: ctk.CTkFrame | None = None
@@ -644,13 +719,15 @@ class SettingsDialog(ctk.CTkToplevel):
         self._torrent_app = torrent_app
         self._discovery = discovery
         self._prowlarr = prowlarr
+        self._flaresolverr = flaresolverr  # the Prowlarr panel's "How to add FlareSolverr"
         self._on_update = on_update
+        self._on_restart = on_restart
         self._tests: dict[str, asyncio.Task[None]] = {}
         self._key_dialog: TmdbKeyDialog | None = None
         self._form_in_folder = False  # the remote form opened under the magnet note
         current = settings.current
 
-        self.title("Settings")
+        self.title(t("Settings"))
         set_window_icon(self)
         self.resizable(False, False)
         self.transient(master)
@@ -662,8 +739,10 @@ class SettingsDialog(ctk.CTkToplevel):
         self._size_tv_max = ctk.StringVar(value=size_text(current.size_tv_max_gb))
         self._size_movie_min = ctk.StringVar(value=size_text(current.size_movie_min_gb))
         self._size_movie_max = ctk.StringVar(value=size_text(current.size_movie_max_gb))
-        self._first_day = ctk.StringVar(value=current.first_day.value)
+        self._first_day = ctk.StringVar(value=weekday_name(current.first_day))
         self._card_size = ctk.StringVar(value=CARD_SIZE_LABELS[current.card_size])
+        self._theme_mode = ctk.StringVar(value=theme_name(current.theme_mode))
+        self._language = ctk.StringVar(value=current.language.native_name)
         self._download_dir = ctk.StringVar(value=str(current.download_dir))
         self._tmdb_key = ctk.StringVar(value=current.tmdb_api_key.get_secret_value())
         self._excluded = ctk.StringVar(value=", ".join(current.excluded_keywords))
@@ -700,15 +779,20 @@ class SettingsDialog(ctk.CTkToplevel):
             row=0, column=0, rowspan=2, sticky="nsew", padx=_SIDEBAR_PAD, pady=(_PAGE_TOP, 12)
         )
         # A 1-pixel line between the sidebar and the page (a CTkFrame that thin draws nothing).
-        tk.Frame(body, width=1, background=theme.PANEL_EDGE, highlightthickness=0).grid(
-            row=0, column=1, rowspan=2, sticky="ns"
-        )
+        line = tk.Frame(body, width=1, highlightthickness=0)
+        line.grid(row=0, column=1, rowspan=2, sticky="ns")
+
+        def paint_line() -> None:
+            line.configure(background=theme.pick(theme.PANEL_EDGE))
+
+        paint_line()
+        theme.on_mode_change(line, paint_line)
         self._scroll = ctk.CTkScrollableFrame(
             body,
             width=_PAGE_WIDTH,
             height=200,
             fg_color="transparent",
-            scrollbar_button_color=theme.SURFACE,
+            scrollbar_button_color=theme.SCROLLBAR,
             scrollbar_button_hover_color=theme.EDGE,
         )
         self._scroll.grid(
@@ -735,8 +819,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._error.pack(anchor="w")
         buttons = ctk.CTkFrame(footer, fg_color="transparent")
         buttons.pack(anchor="e", pady=(6, 0))
-        secondary_button(buttons, "Cancel", self.destroy).pack(side="right")
-        self._save_button = primary_button(buttons, "Save", async_command(self._save))
+        secondary_button(buttons, t("Cancel"), self.destroy).pack(side="right")
+        self._save_button = primary_button(buttons, t("Save"), async_command(self._save))
         self._save_button.pack(side="right", padx=(0, 12))
 
         self._pages: dict[str, _Page] = {}
@@ -786,7 +870,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 continue
             ctk.CTkLabel(
                 self._sidebar,
-                text=group.upper(),
+                text=t(group).upper(),
                 font=theme.font(12, bold=True),
                 text_color=theme.TEXT_MUTED,
                 anchor="w",
@@ -813,7 +897,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._pages[section].frame.grid(row=0, column=0, sticky="ew", pady=(0, _PAGE_BOTTOM))
 
     def _new_page(self, section: str, note: str | None = None) -> _Page:
-        return _Page(self._scroll, section, note if note is not None else SECTION_NOTES[section])
+        shown = note if note is not None else SECTION_NOTES[section]
+        return _Page(self._scroll, t(section), t(shown))
 
     # -- Where downloads go ------------------------------------------------------------------
 
@@ -821,8 +906,8 @@ class SettingsDialog(ctk.CTkToplevel):
         page = self._new_page(SECTION_WHERE)
 
         app = page.box()
-        app.add(self._radio(app.body, APP_CHOICE, DownloadMode.APP), gap=0, sticky="w")
-        app.add(app.text(APP_TEXT, indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
+        app.add(self._radio(app.body, t(APP_CHOICE), DownloadMode.APP), gap=0, sticky="w")
+        app.add(app.text(t(APP_TEXT), indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
         self._torrent = TorrentAppStatus(
             app.body,
             torrent_app=self._torrent_app,
@@ -831,18 +916,22 @@ class SettingsDialog(ctk.CTkToplevel):
         self._torrent_row = app.take_row()
 
         remote = page.box()
-        remote.add(self._radio(remote.body, REMOTE_CHOICE, DownloadMode.REMOTE), gap=0, sticky="w")
-        remote.add(remote.text(REMOTE_TEXT, indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
+        remote.add(
+            self._radio(remote.body, t(REMOTE_CHOICE), DownloadMode.REMOTE), gap=0, sticky="w"
+        )
+        remote.add(remote.text(t(REMOTE_TEXT), indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
         self._remote_box = remote
         self._remote_row = remote.take_row()
 
         folder = page.box()
-        folder.add(self._radio(folder.body, FOLDER_CHOICE, DownloadMode.FOLDER), gap=0, sticky="w")
-        folder.add(folder.text(FOLDER_TEXT, indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
+        folder.add(
+            self._radio(folder.body, t(FOLDER_CHOICE), DownloadMode.FOLDER), gap=0, sticky="w"
+        )
+        folder.add(folder.text(t(FOLDER_TEXT), indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
         self._folder_box = folder
         self._folder_row = ctk.CTkFrame(folder.body, fg_color="transparent")
         self._entry(self._folder_row, self._download_dir).pack(side="left", fill="x", expand=True)
-        secondary_button(self._folder_row, "Browse", self._browse, width=110).pack(
+        secondary_button(self._folder_row, t("Browse"), self._browse, width=110).pack(
             side="left", padx=(10, 0)
         )
         self._folder_row_index = folder.take_row()
@@ -964,18 +1053,19 @@ class SettingsDialog(ctk.CTkToplevel):
                 self._size_movie_max,
             ),
         ):
-            box = page.box(title, text)
+            box = page.box(t(title), t(text))
             line = box.frame_row()
-            self._option_menu(line, quality, list(QUALITY_NAMES.values()), _QUALITY_MENU_WIDTH)
-            self._word(line, "between").pack(side="left", padx=(16, 8))
+            names = [quality_name(profile) for profile in QUALITY_NAMES]
+            self._option_menu(line, quality, names, _QUALITY_MENU_WIDTH)
+            self._word(line, t("between")).pack(side="left", padx=(16, 8))
             self._entry(line, low, width=_SIZE_ENTRY_WIDTH).pack(side="left")
-            self._word(line, "and").pack(side="left", padx=8)
+            self._word(line, t("and")).pack(side="left", padx=8)
             self._entry(line, high, width=_SIZE_ENTRY_WIDTH).pack(side="left")
             self._word(line, "GB").pack(side="left", padx=(8, 0))
         page.add(
             text_label(
                 page.frame,
-                QUALITY_NOTE,
+                t(QUALITY_NOTE),
                 size=_TEXT_SIZE,
                 color=theme.TEXT_MUTED,
                 wraplength=_PAGE_WIDTH,
@@ -988,15 +1078,19 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build_automatic(self) -> _Page:
         page = self._new_page(SECTION_AUTOMATIC)
-        background = page.box(BACKGROUND_TITLE, BACKGROUND_TEXT)
-        background.add(self._checkbox(background.body, TRAY_TEXT, self._keep_in_tray), sticky="w")
+        background = page.box(t(BACKGROUND_TITLE), t(BACKGROUND_TEXT))
         background.add(
-            self._checkbox(background.body, START_TEXT, self._start_with_windows),
+            self._checkbox(background.body, t(TRAY_TEXT), self._keep_in_tray), sticky="w"
+        )
+        background.add(
+            self._checkbox(background.body, t(START_TEXT), self._start_with_windows),
             gap=8,
             sticky="w",
         )
-        shows = page.box(NEW_SHOWS_TITLE, NEW_SHOWS_TEXT)
-        shows.add(self._checkbox(shows.body, NEW_SHOWS_SWITCH, self._auto_new_shows), sticky="w")
+        shows = page.box(t(NEW_SHOWS_TITLE), t(NEW_SHOWS_TEXT))
+        shows.add(
+            self._checkbox(shows.body, t(NEW_SHOWS_SWITCH), self._auto_new_shows), sticky="w"
+        )
         return page
 
     # -- Subtitles -----------------------------------------------------------------------------
@@ -1010,11 +1104,11 @@ class SettingsDialog(ctk.CTkToplevel):
             return self._new_page(SECTION_SUBTITLES, UNAVAILABLE_TEXT)
         current = self._settings.current
         page = self._new_page(SECTION_SUBTITLES, SUBTITLES_NOTE)
-        switch = page.box(SUBTITLE_SWITCH_TITLE, SUBTITLE_SWITCH_TEXT)
+        switch = page.box(t(SUBTITLE_SWITCH_TITLE), t(SUBTITLE_SWITCH_TEXT))
         switch.add(
             ctk.CTkSwitch(
                 switch.body,
-                text=SWITCH_TEXT,
+                text=t(SWITCH_TEXT),
                 variable=self._subtitles_on,
                 command=self._show_subtitle_rows,
                 height=BUTTON_HEIGHT,
@@ -1025,7 +1119,9 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         self._quota = switch.text("")
         self._quota_row = switch.take_row()
-        switch.add(link(switch.body, CREDIT_TEXT, CREDIT_URL, size=SMALL_SIZE), gap=8, sticky="w")
+        switch.add(
+            link(switch.body, t(CREDIT_TEXT), CREDIT_URL, size=SMALL_SIZE), gap=8, sticky="w"
+        )
 
         rows = ctk.CTkFrame(page.frame, fg_color="transparent")
         rows.grid_columnconfigure(0, weight=1)
@@ -1033,22 +1129,24 @@ class SettingsDialog(ctk.CTkToplevel):
         self._subtitle_rows = rows
         self._show_quota()
 
-        languages = self._rows_box(rows, LANGUAGES_TITLE, LANGUAGES_TEXT, first=True)
+        languages = self._rows_box(rows, t(LANGUAGES_TITLE), t(LANGUAGES_TEXT), first=True)
         self._language_tags = LanguageTags(languages.body, current.subtitle_languages)
         languages.add(self._language_tags, sticky="w")
 
-        folder = self._rows_box(rows, FOLDER_LABEL, FOLDER_HINT)
+        folder = self._rows_box(rows, t(FOLDER_LABEL), t(FOLDER_HINT))
         line = folder.frame_row()
         self._entry(line, self._subtitles_folder).pack(side="left", fill="x", expand=True)
-        secondary_button(line, "Choose…", self._choose_subtitles_folder, width=110).pack(
+        secondary_button(line, t("Choose…"), self._choose_subtitles_folder, width=110).pack(
             side="left", padx=(10, 0)
         )
 
-        account = self._rows_box(rows, ACCOUNT_LABEL)
+        account = self._rows_box(rows, t(ACCOUNT_LABEL))
         hint = ctk.CTkFrame(account.body, fg_color="transparent")
         account.add(hint, gap=2, sticky="w")
-        text_label(hint, ACCOUNT_HINT, size=_TEXT_SIZE, color=theme.TEXT_MUTED).pack(side="left")
-        link(hint, SIGN_UP_TEXT, SIGNUP_URL, size=_TEXT_SIZE).pack(side="left", padx=(4, 0))
+        text_label(hint, t(ACCOUNT_HINT), size=_TEXT_SIZE, color=theme.TEXT_MUTED).pack(
+            side="left"
+        )
+        link(hint, t(SIGN_UP_TEXT), SIGNUP_URL, size=_TEXT_SIZE).pack(side="left", padx=(4, 0))
         self._account = AccountRow(
             account.body,
             subtitles=subtitles,
@@ -1059,7 +1157,7 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         account.add(self._account)
 
-        own_key = self._rows_box(rows, OWN_KEY_LABEL)
+        own_key = self._rows_box(rows, t(OWN_KEY_LABEL))
         self._own_key = OwnKeyRow(
             own_key.body,
             subtitles=subtitles,
@@ -1135,13 +1233,13 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build_info(self) -> _Page:
         page = self._new_page(SECTION_INFO)
-        box = page.box(TMDB_KEY_LABEL, TMDB_KEY_TEXT)
+        box = page.box(t(TMDB_KEY_LABEL), t(TMDB_KEY_TEXT))
         line = box.frame_row()
         self._tmdb_entry = self._entry(line, self._tmdb_key, show="•")
         self._tmdb_entry.pack(side="left", fill="x", expand=True)
         self._tmdb_entry.bind("<Return>", lambda _event: self._check_tmdb_key())
         self._tmdb_check = primary_button(
-            line, "Check", self._check_tmdb_key, width=_CHECK_BUTTON_WIDTH
+            line, t("Check"), self._check_tmdb_key, width=_CHECK_BUTTON_WIDTH
         )
         self._tmdb_check.pack(side="left", padx=(10, 0))
         result = box.frame_row(gap=8)
@@ -1149,7 +1247,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._tmdb_dot = text_label(result, "·", size=_TEXT_SIZE, color=theme.TEXT_MUTED)
         self._tmdb_guide = ctk.CTkLabel(
             result,
-            text=KEY_GUIDE_LINK,
+            text=t(KEY_GUIDE_LINK),
             font=theme.font(_TEXT_SIZE, underline=True),
             text_color=theme.LINK,
             cursor="hand2",
@@ -1222,40 +1320,71 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build_looks(self) -> _Page:
         page = self._new_page(SECTION_LOOKS)
-        cards = page.box(CARD_SIZE_LABEL, CARD_SIZE_TIP)
+        self._build_language(page)
+        looks = page.box(t(THEME_TITLE), t(THEME_TEXT))
+        themes = [theme_name(mode) for mode in THEME_NAMES]
+        looks.add(self._segmented(looks.body, themes, self._theme_mode, width=360), sticky="w")
+        cards = page.box(t(CARD_SIZE_LABEL), t(CARD_SIZE_TIP))
         cards.add(
-            ctk.CTkSegmentedButton(
-                cards.body,
-                values=[CARD_SIZE_LABELS[size] for size in CardSize],
-                variable=self._card_size,
-                width=260,
-                height=BUTTON_HEIGHT,
-                corner_radius=BUTTON_RADIUS,
-                font=theme.font(DETAIL_SIZE, bold=True),
-                fg_color=theme.SURFACE,
-                selected_color=theme.ACCENT,
-                selected_hover_color=theme.ACCENT_HOVER,
-                unselected_color=theme.SURFACE,
-                unselected_hover_color=theme.CHIP_HOVER,
-                dynamic_resizing=False,
+            self._segmented(
+                cards.body, [CARD_SIZE_LABELS[size] for size in CardSize], self._card_size
             ),
             sticky="w",
         )
-        week = page.box(WEEK_TITLE, WEEK_TEXT)
+        week = page.box(t(WEEK_TITLE), t(WEEK_TEXT))
         line = week.frame_row()
-        self._option_menu(line, self._first_day, [d.value for d in Weekday])
+        self._option_menu(line, self._first_day, [weekday_name(day) for day in Weekday])
         return page
+
+    def _build_language(self, page: _Page) -> None:
+        """The Language box: English / Nederlands, each in its own language. Another language
+        than the one running shows "Restart AirGrabber to switch the language" with Restart now
+        (Save also stores it: it applies at the next start)."""
+        box = page.box(t(LANGUAGE_TITLE), t(LANGUAGE_TEXT))
+        names = [language.native_name for language in Language]
+        box.add(
+            self._segmented(
+                box.body, names, self._language, width=260, command=self._language_changed
+            ),
+            sticky="w",
+        )
+        self._restart_row = box.frame_row()
+        text_label(
+            self._restart_row,
+            t(RESTART_TEXT),
+            size=_TEXT_SIZE,
+            color=theme.WARNING,
+            wraplength=_BOX_INNER - _RESTART_BUTTON_WIDTH - 12,
+        ).pack(side="left", fill="x", expand=True)
+        if self._on_restart is not None:
+            self._restart_button = primary_button(
+                self._restart_row,
+                t("Restart now"),
+                async_command(self._restart_now),
+                width=_RESTART_BUTTON_WIDTH,
+            )
+            self._restart_button.pack(side="right", padx=(12, 0))
+        self._language_changed()
+
+    def _language_changed(self, _name: str | None = None) -> None:
+        chosen = language_from_name(self._language.get())
+        if needs_restart(chosen, current_language()):
+            self._restart_row.grid()
+        else:
+            self._restart_row.grid_remove()
 
     # -- Updates -------------------------------------------------------------------------------
 
     def _build_updates(self) -> _Page:
         page = self._new_page(SECTION_UPDATES)
-        auto = page.box(AUTO_UPDATE_TITLE, AUTO_UPDATE_TEXT)
-        auto.add(self._checkbox(auto.body, AUTO_UPDATE_SWITCH, self._auto_update), sticky="w")
-        check = page.box(f"Version {self._updates.current}", CHECK_UPDATES_TEXT)
+        auto = page.box(t(AUTO_UPDATE_TITLE), t(AUTO_UPDATE_TEXT))
+        auto.add(self._checkbox(auto.body, t(AUTO_UPDATE_SWITCH), self._auto_update), sticky="w")
+        check = page.box(
+            t("Version {version}", version=self._updates.current), t(CHECK_UPDATES_TEXT)
+        )
         line = check.frame_row()
         self._update_button = primary_button(
-            line, "Check for updates", self._check_updates, width=_UPDATE_BUTTON_WIDTH
+            line, t("Check for updates"), self._check_updates, width=_UPDATE_BUTTON_WIDTH
         )
         self._update_button.pack(side="left", anchor="n")
         self._update_result = text_label(
@@ -1268,7 +1397,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build_advanced(self) -> _Page:
         page = self._new_page(SECTION_ADVANCED)
-        sites = page.box(SITES_TITLE, SITES_TEXT)
+        sites = page.box(t(SITES_TITLE), t(SITES_TEXT))
         boxes = sites.frame_row()
         for column, (name, label) in enumerate(_BUILT_IN_SITES):
             self._checkbox(boxes, label, self._sources[name]).grid(
@@ -1276,9 +1405,9 @@ class SettingsDialog(ctk.CTkToplevel):
             )
         self._build_prowlarr(page)
 
-        excluded = page.box(EXCLUDED_TITLE, EXCLUDED_TEXT)
+        excluded = page.box(t(EXCLUDED_TITLE), t(EXCLUDED_TEXT))
         excluded.add(self._entry(excluded.body, self._excluded))
-        preferred = page.box(PREFERRED_TITLE, PREFERRED_TEXT)
+        preferred = page.box(t(PREFERRED_TITLE), t(PREFERRED_TEXT))
         preferred.add(self._entry(preferred.body, self._preferred))
         return page
 
@@ -1293,6 +1422,7 @@ class SettingsDialog(ctk.CTkToplevel):
             label_width=_PANEL_LABEL_WIDTH,
             expanded=shows_remote_fields(url),
             on_status=self._prowlarr_status_shown,
+            flaresolverr=self._flaresolverr,
         )
         _paint_background(panel, theme.TAB_BG)  # a box like the others
         page.add(panel)
@@ -1300,7 +1430,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._prowlarr_url = self._hinted_entry(
             panel.remote_row("URL"), url, "http://192.168.1.x:9696"
         )
-        self._entry(panel.remote_row("API key"), self._prowlarr_key, show="•").pack(fill="x")
+        self._entry(panel.remote_row(t("API key")), self._prowlarr_key, show="•").pack(fill="x")
         self._prowlarr_button, self._prowlarr_result = self._test_row(
             panel.remote_row(""),
             lambda: self._start_test("prowlarr", self._search.test_prowlarr),
@@ -1343,6 +1473,33 @@ class SettingsDialog(ctk.CTkToplevel):
     def _word(master: Any, text: str) -> ctk.CTkLabel:
         return ctk.CTkLabel(master, text=text, font=theme.font(DETAIL_SIZE), text_color=theme.TEXT)
 
+    @staticmethod
+    def _segmented(
+        master: Any,
+        values: list[str],
+        variable: ctk.StringVar,
+        width: int = 260,
+        command: Callable[[str], None] | None = None,
+    ) -> ctk.CTkSegmentedButton:
+        """A row of choices, the chosen one highlighted (Language, Theme, Card size)."""
+        return ctk.CTkSegmentedButton(
+            master,
+            values=values,
+            variable=variable,
+            command=command,
+            width=width,
+            height=BUTTON_HEIGHT,
+            corner_radius=BUTTON_RADIUS,
+            font=theme.font(DETAIL_SIZE, bold=True),
+            fg_color=theme.SURFACE,
+            selected_color=theme.SELECTED,
+            selected_hover_color=theme.SELECTED_HOVER,
+            unselected_color=theme.SURFACE,
+            unselected_hover_color=theme.CHIP_HOVER,
+            text_color=theme.BUTTON_TEXT,
+            dynamic_resizing=False,
+        )
+
     def _option_menu(
         self, master: Any, variable: ctk.StringVar, values: list[str], width: int = 260
     ) -> None:
@@ -1357,7 +1514,8 @@ class SettingsDialog(ctk.CTkToplevel):
             dropdown_font=theme.font(DETAIL_SIZE),
             fg_color=theme.SURFACE,
             button_color=theme.EDGE,
-            button_hover_color=theme.ACCENT_HOVER,
+            button_hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
         ).pack(side="left")
 
     def _checkbox(self, master: Any, text: str, variable: ctk.BooleanVar) -> ctk.CTkCheckBox:
@@ -1397,7 +1555,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def _test_row(
         self, cell: ctk.CTkFrame, command: Callable[[], None], *, field_width: int
     ) -> tuple[ctk.CTkButton, ctk.CTkLabel]:
-        button = primary_button(cell, "Test connection", command, width=_TEST_BUTTON_WIDTH)
+        button = primary_button(cell, t("Test connection"), command, width=_TEST_BUTTON_WIDTH)
         button.pack(side="left", anchor="n")
         result = text_label(
             cell, "", size=SMALL_SIZE, wraplength=field_width - _TEST_BUTTON_WIDTH - 12
@@ -1476,8 +1634,10 @@ class SettingsDialog(ctk.CTkToplevel):
             size_tv_max_gb=self._size_tv_max.get(),
             size_movie_min_gb=self._size_movie_min.get(),
             size_movie_max_gb=self._size_movie_max.get(),
-            first_day=self._first_day.get(),
+            first_day=weekday_from_name(self._first_day.get()),
             card_size=size_from_label(self._card_size.get()),
+            theme_mode=theme_from_name(self._theme_mode.get()),
+            language=language_from_name(self._language.get()),
             download_dir=download_dir_to_save(
                 DownloadMode(self._mode.get()),
                 self._download_dir.get(),
@@ -1502,22 +1662,33 @@ class SettingsDialog(ctk.CTkToplevel):
         self._show_section(section)
 
     async def _save(self) -> None:
+        if await self._save_all() and self.winfo_exists():
+            self.destroy()
+
+    async def _restart_now(self) -> None:
+        """The Language box's Restart now: save like Save, then restart AirGrabber (which
+        closes this dialog with the main window)."""
+        if await self._save_all() and self._on_restart is not None:
+            self._on_restart()
+
+    async def _save_all(self) -> bool:
+        """Check and store the whole form. False (the dialog shows why) when that failed."""
         self._error.configure(text="")
         problem = self._subtitle_problem()
         if problem is not None:
             self._show_problem(problem, SECTION_SUBTITLES)
-            return
+            return False
         self._save_button.configure(state="disabled")
         if self._own_key is not None and self._own_key.needs_check:
             problem = await self._own_key.verify()  # a new own key: does OpenSubtitles take it?
             if not self.winfo_exists():
-                return
+                return False
             if problem is not None:
-                self._show_problem(f"{OWN_KEY_LABEL}: {problem}", SECTION_SUBTITLES)
+                self._show_problem(f"{t(OWN_KEY_LABEL)}: {problem}", SECTION_SUBTITLES)
                 self._subtitles_on.set(True)  # the key's row shows while subtitles are on
                 self._show_subtitle_rows()
                 self._save_button.configure(state="normal")
-                return
+                return False
         try:
             await self._store()
         except ValidationError as exc:
@@ -1528,9 +1699,8 @@ class SettingsDialog(ctk.CTkToplevel):
                 if _remote_error(exc) and DownloadMode(self._mode.get()) is DownloadMode.FOLDER:
                     self._reveal_remote_form()  # the form with the problem shows
                 self._save_button.configure(state="normal")
-            return
-        if await self._save_startup() and self.winfo_exists():
-            self.destroy()
+            return False
+        return await self._save_startup()
 
     async def _save_startup(self) -> bool:
         """Add or remove the Startup shortcut when its box changed, and store its real state.
@@ -1562,7 +1732,7 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         button, result = self._prowlarr_button, self._prowlarr_result
         self._error.configure(text="")
-        result.configure(text="Saving and testing…", text_color=theme.TEXT_MUTED)
+        result.configure(text=t("Saving and testing…"), text_color=theme.TEXT_MUTED)
         button.configure(state="disabled")
         # After a Prowlarr test the panel reads its status again.
         then = self._prowlarr_panel.refresh if kind == "prowlarr" else None
@@ -1597,7 +1767,7 @@ class SettingsDialog(ctk.CTkToplevel):
         running = self._tests.get("updates")
         if running is not None and not running.done():
             return
-        self._update_result.configure(text="Checking GitHub…", text_color=theme.TEXT_MUTED)
+        self._update_result.configure(text=t("Checking GitHub…"), text_color=theme.TEXT_MUTED)
         self._update_button.configure(state="disabled")
         self._tests["updates"] = spawn(self._run_update_check(), name="settings-update-check")
 
@@ -1616,20 +1786,26 @@ class SettingsDialog(ctk.CTkToplevel):
     def _show_update(self, info: UpdateInfo) -> None:
         if not info.available:
             self._update_result.configure(
-                text="✓ You have the latest version.", text_color=theme.SUCCESS
+                text=t("✓ You have the latest version."), text_color=theme.SUCCESS
             )
         elif not info.installable:
             self._update_result.configure(
-                text=f"{info.latest} is on GitHub. This development copy is not updated in place.",
+                text=t(
+                    "{version} is on GitHub. This development copy is not updated in place.",
+                    version=info.latest,
+                ),
                 text_color=theme.TEXT_MUTED,
             )
         else:
             self._update_result.configure(
-                text=f"Version {info.latest} is available. AirGrabber restarts to finish.",
+                text=t(
+                    "Version {version} is available. AirGrabber restarts to finish.",
+                    version=info.latest,
+                ),
                 text_color=theme.TEXT_MUTED,
             )
             self._update_button.configure(
-                text=f"Update to {info.latest}", command=self._start_update
+                text=t("Update to {version}", version=info.latest), command=self._start_update
             )
 
     def _start_update(self) -> None:

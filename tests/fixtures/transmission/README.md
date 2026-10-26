@@ -9,3 +9,8 @@ https://github.com/transmission/transmission/blob/4.0.x/docs/rpc-spec.md
   reports a bad .torrent
 - 409 + X-Transmission-Session-Id (section 2.3.1) and Basic auth (2.3.3) are answered by the fake
   server in tests/test_transmission.py
+- `torrent_get.json`: `torrent-get` (section 3.3: `torrents` with the asked `fields`; `status`
+  0 stopped … 4 downloading … 6 seeding (3.3 table), `error` 0 ok / 1 tracker warning / 2 tracker
+  error / 3 local error, `percentDone` 0…1, `isFinished`)
+- `free_space.json`: `free-space` (section 4.4: `path`, `size-bytes`, and `total_size` from
+  Transmission 4.0)

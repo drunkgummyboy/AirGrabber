@@ -219,6 +219,7 @@ class DiscoverShow(DomainModel):
     vote_count: int = 0
     popularity: float = 0.0
     origin_country: tuple[str, ...] = ()
+    genre_ids: tuple[int, ...] = ()  # TMDB's TV genre ids (not the same as its film ones)
 
     @property
     def year(self) -> int | None:
@@ -257,6 +258,7 @@ class MovieDashboard(DomainModel):
     trending: tuple[Movie, ...] = ()
     upcoming: tuple[Movie, ...] = ()
     failed: tuple[str, ...] = ()  # names of the shelves that couldn't be loaded
+    downloaded: frozenset[int] = frozenset()  # TMDB ids of its films in the download history
 
 
 class SearchKind(StrEnum):
@@ -446,6 +448,7 @@ class QuickDownloadResult(DomainModel):
     release_title: str | None = None
     quality: str | None = None  # the picked release's resolution ("1080p"), when its title says
     seeders: int | None = None
+    size_bytes: int | None = None  # the picked release's size, when its source tells
     grab: GrabResult | None = None
 
 

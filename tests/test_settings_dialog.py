@@ -17,7 +17,14 @@ from unittest import mock
 import customtkinter as ctk
 from pydantic import ValidationError
 
-from app.models import DownloadMode, ProwlarrState, ProwlarrStatus, QualityProfile, Settings
+from app.models import (
+    DownloadMode,
+    ProwlarrState,
+    ProwlarrStatus,
+    QualityProfile,
+    Settings,
+    ThemeMode,
+)
 from app.services import SettingsService
 from app.services.tmdb import TMDBError
 from app.ui import theme
@@ -37,6 +44,9 @@ from app.ui.settings_dialog import (
     SECTION_WHERE,
     SECTIONS,
     SERIES_TEXT,
+    THEME_NAMES,
+    THEME_TEXT,
+    THEME_TITLE,
     TMDB_KEY_LABEL,
     TMDB_KEY_TEXT,
     DownloadRows,
@@ -51,6 +61,8 @@ from app.ui.settings_dialog import (
     section_for_field,
     sidebar_width,
     size_text,
+    theme_from_name,
+    theme_name,
 )
 
 
@@ -100,6 +112,21 @@ class QualityNameTests(unittest.TestCase):
             quality_from_name("1080p")
 
 
+class ThemeNameTests(unittest.TestCase):
+    def test_follow_windows_first_then_dark_and_light(self) -> None:
+        self.assertEqual(list(THEME_NAMES.values()), ["Follow Windows", "Dark", "Light"])
+        self.assertEqual(list(THEME_NAMES), list(ThemeMode))
+
+    def test_round_trip(self) -> None:
+        for mode in ThemeMode:
+            with self.subTest(mode=mode):
+                self.assertIs(theme_from_name(theme_name(mode)), mode)
+
+    def test_unknown_name(self) -> None:
+        with self.assertRaises(ValueError):
+            theme_from_name("Sepia")
+
+
 class SizeTextTests(unittest.TestCase):
     def test_what_the_entries_show(self) -> None:
         self.assertEqual(size_text(None), "")
@@ -143,6 +170,7 @@ class SectionTests(unittest.TestCase):
             "tmdb_api_key": SECTION_INFO,
             "card_size": SECTION_LOOKS,
             "first_day": SECTION_LOOKS,
+            "theme_mode": SECTION_LOOKS,
             "auto_update": SECTION_UPDATES,
             "prowlarr_url": SECTION_ADVANCED,
             "excluded_keywords": SECTION_ADVANCED,
@@ -480,6 +508,20 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         await dialog._save()
         self.assertEqual(settings.current.card_size.value, "xl")
         self.assertEqual(settings.current.first_day.value, "Sunday")
+
+    async def test_the_theme_box_comes_first_on_looks(self) -> None:
+        dialog, settings = self.dialog()
+        self.assertEqual(dialog._theme_mode.get(), "Follow Windows")  # the default
+        texts = labels(dialog.page(SECTION_LOOKS))
+        self.assertLess(texts.index(THEME_TITLE), texts.index("Card size"))
+        self.assertIn(THEME_TEXT, texts)
+        dialog._theme_mode.set("Light")
+        await dialog._save()
+        self.assertIs(settings.current.theme_mode, ThemeMode.LIGHT)
+
+    async def test_a_stored_theme_shows(self) -> None:
+        dialog, _settings = self.dialog(theme_mode=ThemeMode.DARK)
+        self.assertEqual(dialog._theme_mode.get(), "Dark")
 
     async def test_updates_page_shows_the_version(self) -> None:
         dialog, settings = self.dialog(auto_update=True)
