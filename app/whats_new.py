@@ -14,6 +14,23 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "2.0.7": (
+        N_("An episode now counts as missing one day after it airs; until then it's marked New."),
+        N_(
+            "Quieter download buttons: ⬇ Auto picks the best copy, ☰ Choose… lets you pick, "
+            "↻ Again downloads it again."
+        ),
+        N_("Get subtitles yourself with CC ▾, and choose when and which kind in Settings → Subtitles."),
+        N_("The Downloads page can filter, clear finished downloads and open a download's folder."),
+        N_(
+            "Installing qBittorrent and Prowlarr works when the Microsoft Store can't be reached, "
+            "or says why it didn't."
+        ),
+        N_(
+            "The airdates.tv import finds more shows and names any it couldn't add; right-click "
+            "a text box to paste."
+        ),
+    ),
     "2.0.6": (
         N_(
             "New installs come with qBittorrent: downloads start without a pop-up, and the "

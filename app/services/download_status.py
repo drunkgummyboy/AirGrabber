@@ -19,6 +19,12 @@ qBittorrent / Transmission report. Below LOW_SPACE_BYTES, or below LOW_SPACE_FRA
 also below LOW_SPACE_CAP_BYTES (a big disk with plenty of room never warns), the space is
 low: the page shows a banner and `subscribe_space` listeners hear it at most once a day.
 
+The page can take grabs off its list ("Clear finished", "Remove from list": `clear`): marked in
+the database (HistoryRepository.clear), never deleted from the history and never their files.
+`locate` finds a grab's video in "Where finished downloads end up" (app/services/
+subtitle_files.py's scan, in a thread with a time limit, kept LOCATE_TTL_S) for "Open the folder"
+(`open_folder`).
+
 Nothing here logs a URL, magnet, password or release object; RemoteError texts are plain words.
 """
 
@@ -35,7 +41,8 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, NamedTuple
+from pathlib import Path
+from typing import Any, Literal, NamedTuple
 
 from app.database import HistoryRepository, SubtitleRepository
 from app.i18n import t
@@ -58,7 +65,7 @@ from app.services.downloads import safe_filename
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
-from app.services.subtitle_files import normalize
+from app.services.subtitle_files import FolderScan, grab_files, normalize, scan_folder
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +85,7 @@ GIB = 1024**3
 LOW_SPACE_BYTES = 20 * GIB
 LOW_SPACE_CAP_BYTES = 100 * GIB  # the 5 % rule only counts below this much free
 _DRIVE_REMOTE = 4  # GetDriveTypeW: a network drive
+LOCATE_TTL_S = 60.0  # a scan of the finished-downloads folder serves "Open the folder" this long
 
 REMOTE_PROGRAMS = frozenset(kind.program for kind in RemoteKind)
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d\d(?!\d)")
@@ -95,6 +103,25 @@ class DiskUsage(NamedTuple):
 
 
 DiskUsageReader = Callable[[str], DiskUsage]
+FolderScanner = Callable[[str], FolderScan]
+
+
+class Located(NamedTuple):
+    """Where a grab's video is (`folder`: the folder holding it), or why that isn't known:
+    no finished-downloads folder in Settings, not found there, or the folder out of reach."""
+
+    folder: str | None
+    problem: Literal["", "no_folder", "not_found", "unreachable"] = ""
+
+
+def _scan_folder(folder: str) -> FolderScan:
+    return scan_folder(Path(folder), now=time.time())
+
+
+def video_folder(paths: Sequence[str]) -> str | None:
+    """The folder to open for a grab's videos: the one holding the first (a season pack's
+    episodes share their release folder)."""
+    return os.path.dirname(paths[0]) if paths else None
 
 
 # -- pure rules ------------------------------------------------------------------------------
@@ -268,6 +295,8 @@ class DownloadStatusService:
         show: ShowLookup,
         disk_usage: DiskUsageReader = _read_disk_usage,
         network_path: Callable[[str], bool] = is_network_path,
+        folder_scanner: FolderScanner = _scan_folder,
+        opener: Callable[[str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -278,6 +307,10 @@ class DownloadStatusService:
         self._show = show
         self._disk_usage = disk_usage
         self._network_path = network_path
+        self._folder_scanner = folder_scanner
+        self._opener = opener if opener is not None else _open_folder
+        self._scan: tuple[str, float, FolderScan] | None = None  # (folder, when, scan)
+        self._cleared: set[int] = set()  # taken off this run (a check in flight may list them)
         self._clock = clock
         self._now = now
         self._listeners: list[OverviewListener] = []
@@ -357,8 +390,10 @@ class DownloadStatusService:
         since = self._now() - RECENT
         records = [
             record
-            for record in await self._history.recent(RECENT_LIMIT)
-            if record.downloaded_at >= since and record.id is not None
+            for record in await self._history.listed(RECENT_LIMIT)
+            if record.downloaded_at >= since
+            and record.id is not None
+            and record.id not in self._cleared
         ]
         languages = await self._subtitles.grab_languages(
             record.id for record in records if record.id is not None
@@ -414,6 +449,62 @@ class DownloadStatusService:
                 self._noticed_at = now
                 _tell(self._space_listeners, space)
         return overview
+
+    # -- the page's own actions ------------------------------------------------------------------
+
+    async def clear(self, history_ids: Iterable[int]) -> int:
+        """Take grabs off the page ("Clear finished", "Remove from list"); they stay in the
+        history and their files stay where they are. The listeners hear the shorter list at
+        once. Returns how many were taken off."""
+        ids = {history_id for history_id in history_ids}
+        if not ids:
+            return 0
+        count = await self._history.clear(ids, self._now())
+        self._cleared |= ids
+        log.info("Downloads page: %d grab(s) taken off the list", len(ids))
+        latest = self.latest
+        if latest is not None:
+            entries = tuple(entry for entry in latest.entries if entry.record.id not in ids)
+            self.latest = latest.model_copy(update={"entries": entries})
+            _tell(self._listeners, self.latest)
+        return count
+
+    async def locate(self, entry: DownloadEntry) -> Located:
+        """Where the grab's video is in "Where finished downloads end up" (see the module
+        docstring)."""
+        folder = self._settings.current.subtitles_folder.strip()
+        if not folder:
+            return Located(None, "no_folder")
+        scan = await self._folder_scan(folder)
+        if scan is None:
+            return Located(None, "unreachable")
+        show_name = entry.show.name if entry.show is not None else None
+        files = grab_files(entry.record, scan, show_name=show_name)
+        found = video_folder([video.video.path for video in files.videos])
+        return Located(found, "") if found is not None else Located(None, "not_found")
+
+    async def _folder_scan(self, folder: str) -> FolderScan | None:
+        """The folder's scan (kept LOCATE_TTL_S); None when it is out of reach."""
+        cached, now = self._scan, self._clock()
+        if cached is not None and cached[0] == folder and now - cached[1] < LOCATE_TTL_S:
+            return cached[2]
+        try:
+            async with asyncio.timeout(SPACE_TIMEOUT_S):
+                scan = await asyncio.to_thread(self._folder_scanner, folder)
+        except (OSError, TimeoutError):
+            log.info("Downloads page: the finished-downloads folder can't be read")
+            return None
+        self._scan = (folder, now, scan)
+        return scan
+
+    def open_folder(self, folder: str) -> bool:
+        """Open `folder` in Explorer; False when that failed."""
+        try:
+            self._opener(folder)
+        except OSError:
+            log.info("Downloads page: Explorer couldn't open the folder")
+            return False
+        return True
 
     async def _status(
         self, wanted: Sequence[DownloadRecord]
@@ -508,6 +599,14 @@ class DownloadStatusService:
     def _read_folder(self, folder: str) -> tuple[DiskUsage, bool]:
         """Blocking: the folder's disk usage and whether it is on the network."""
         return self._disk_usage(folder), self._network_path(folder)
+
+
+def _open_folder(folder: str) -> None:
+    """Open a folder in Explorer (the folder's own window, not a file in it)."""
+    startfile = getattr(os, "startfile", None)
+    if startfile is None:
+        raise OSError(0, "Opening folders is only supported on Windows")
+    startfile(folder)
 
 
 def _subscribe[T](listeners: list[T], listener: T) -> Callable[[], None]:

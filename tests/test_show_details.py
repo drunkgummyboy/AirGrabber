@@ -7,16 +7,23 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 from app.models import Episode, Show, ShowDetails
 from app.ui.show_details import (
-    aired_text,
     collapsed_summary,
+    date_text,
     default_season,
     episode_row_state,
+    mark_color,
+    mark_slot_width,
+    mark_text,
     meta_line,
+    new_text,
     next_line,
+    row_mark,
     season_episodes,
+    season_marks,
     season_numbers,
     upcoming_text,
 )
+from app.ui import theme
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)  # a Sunday
 
@@ -145,15 +152,73 @@ class RowStateTests(unittest.TestCase):
         self.assertEqual(episode_row_state(later, downloaded=True, now=NOW), "upcoming")
         self.assertEqual(episode_row_state(episode(2, 1, 2), downloaded=False, now=NOW), "upcoming")
 
-    def test_upcoming_text(self) -> None:
-        self.assertEqual(upcoming_text(episode(1, 1, 1, air_date=date(2026, 10, 22)), NOW), "airs Thu")
-        self.assertEqual(upcoming_text(episode(1, 1, 1, air_date=date(2026, 10, 24)), NOW), "airs Sat")
-        self.assertEqual(upcoming_text(episode(1, 1, 1, air_date=date(2026, 10, 25)), NOW), "25 Oct")
-        self.assertEqual(upcoming_text(episode(1, 1, 1), NOW), "TBA")
+    def test_upcoming_text_counts_the_days(self) -> None:
+        def text(day: date) -> str:
+            return upcoming_text(episode(1, 1, 1, air_date=day), NOW)
 
-    def test_aired_text(self) -> None:
-        self.assertEqual(aired_text(episode(1, 1, 1, air_date=date(2026, 1, 17)), NOW), "17 Jan")
-        self.assertEqual(aired_text(episode(1, 1, 1, air_date=date(2026, 10, 25)), NOW), "")
+        self.assertEqual(text(date(2026, 10, 18)), "airs today")
+        self.assertEqual(text(date(2026, 10, 19)), "airs tomorrow")
+        self.assertEqual(text(date(2026, 10, 25)), "airs in 7 days")
+        self.assertEqual(text(date(2027, 1, 1)), "airs in 75 days")
+        self.assertEqual(upcoming_text(episode(1, 1, 1), NOW), "")  # the date column says TBA
+        later_today = episode(1, 1, 1, airs=NOW + timedelta(hours=3))
+        self.assertEqual(upcoming_text(later_today, NOW), "airs today")
+
+    def test_date_text_aired_or_not(self) -> None:
+        self.assertEqual(date_text(episode(1, 1, 1, air_date=date(2026, 1, 17)), NOW), "17 Jan")
+        self.assertEqual(date_text(episode(1, 1, 1, air_date=date(2026, 10, 25)), NOW), "25 Oct")
+        self.assertEqual(date_text(episode(1, 1, 1), NOW), "TBA")
+
+
+class MarkTests(unittest.TestCase):
+    """The latest season's chips: amber Missing, blue New (aired less than a day ago), muted
+    ✓ Have it."""
+
+    def details(self) -> ShowDetails:
+        return ShowDetails(
+            show=show(),
+            episodes=(
+                episode(1, 1, 1, airs=NOW - 3 * timedelta(days=1)),
+                episode(2, 1, 2, airs=NOW - timedelta(hours=3)),
+                episode(3, 1, 3, airs=NOW - 2 * timedelta(days=1)),
+                episode(4, 1, 4, airs=NOW + timedelta(days=1)),
+            ),
+            tracked=True,
+            latest_season=1,
+            missing=frozenset({1}),
+            new=frozenset({2}),
+            have=frozenset({3}),
+        )
+
+    def test_row_marks(self) -> None:
+        details = self.details()
+        marks = [row_mark(details, e) for e in details.episodes]
+        self.assertEqual(marks, ["missing", "new", "have", None])
+        self.assertEqual(season_marks(details, 1), ([1], [3]))  # new ones aren't missing
+
+    def test_new_text_today_or_yesterday(self) -> None:
+        self.assertEqual(new_text(episode(1, 1, 1, airs=NOW - timedelta(hours=3)), NOW), "New · aired today")
+        late_yesterday = episode(1, 1, 1, airs=NOW - timedelta(hours=14))  # 22:00 the day before
+        self.assertEqual(new_text(late_yesterday, NOW), "New · aired yesterday")
+        self.assertEqual(new_text(episode(1, 1, 1, air_date=NOW.date()), NOW), "New · aired today")
+        # The day in `now`'s time zone: 22:00 UTC on the 17th is the 18th in Amsterdam.
+        amsterdam = NOW.astimezone(timezone(timedelta(hours=2)))
+        self.assertEqual(new_text(late_yesterday, amsterdam), "New · aired today")
+        self.assertEqual(new_text(episode(1, 1, 1), NOW), "New")
+
+    def test_texts_and_colours(self) -> None:
+        aired = episode(1, 1, 1, airs=NOW - timedelta(hours=1))
+        self.assertEqual(mark_text("missing", aired, NOW), "Missing")
+        self.assertEqual(mark_text("have", aired, NOW), "✓ Have it")
+        self.assertEqual(mark_text("new", aired, NOW), "New · aired today")
+        self.assertEqual(mark_color("missing"), theme.WARNING)
+        self.assertEqual(mark_color("new"), theme.LINK)
+        self.assertEqual(mark_color("have"), theme.TEXT_MUTED)
+
+    def test_the_chip_slot_fits_the_longest_text(self) -> None:
+        width = mark_slot_width(lambda text: 7.0 * len(text))
+        self.assertEqual(width, 7 * len("New · aired yesterday") + 24)
+        self.assertEqual(mark_slot_width(lambda text: 1.0), 92)  # never below MARK_WIDTH
 
 
 class SummaryTests(unittest.TestCase):

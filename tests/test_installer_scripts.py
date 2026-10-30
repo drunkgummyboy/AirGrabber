@@ -132,6 +132,15 @@ foreach ($path in @($env:AG_INSTALLER, $env:AG_UNINSTALLER)) {
         # Windows PowerShell 5.1 reads a script file without a BOM in the ANSI code page.
         self.assertTrue(INSTALLER.read_bytes().isascii())
 
+    def test_every_winget_install_uses_wingets_own_source(self) -> None:
+        # Without it a failing Microsoft Store source (e.g. its certificate check) made winget
+        # ask which source to use instead of installing Python / qBittorrent / Prowlarr.
+        text = INSTALLER.read_text(encoding="ascii")
+        installs = [line for line in text.splitlines() if "$winget.Source install" in line]
+        self.assertEqual(len(installs), 3)
+        for line in installs:
+            self.assertIn(" --exact --source winget ", line)
+
 
 @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
 class InstallerShortcutTests(unittest.TestCase):

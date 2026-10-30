@@ -390,6 +390,31 @@ class SettingsSectionTests(TkTestCase):
         self.assertTrue(rows.grid_info())
         self.assertEqual(dialog._quota.cget("text"), "18 subtitle downloads left today")
 
+    async def test_the_choices_are_greyed_while_the_switch_is_off(self) -> None:
+        dialog, _settings = self.dialog()
+        texts = self.texts(dialog.page(SECTION_SUBTITLES))
+        self.assertIn("Get subtitles", texts)
+        self.assertIn("AirGrabber finds subtitles for what you download on OpenSubtitles.com.", texts)
+        self.assertNotIn("Automatic subtitles", texts)
+        self.assertEqual(len(dialog._subtitle_choices), 4)  # When, Hearing impaired, For, Languages
+        tags = dialog._language_tags
+        assert tags is not None
+
+        def states() -> set[str]:
+            found = {str(widget.cget("state")) for widget in tags.winfo_children()}
+            for box, _set_enabled in dialog._subtitle_choices[:3]:
+                found |= {
+                    str(child.cget("state"))
+                    for child in box.body.winfo_children()
+                    if isinstance(child, ctk.CTkSegmentedButton)
+                }
+            return found
+
+        self.assertEqual(states(), {"disabled"})
+        dialog._subtitles_on.set(True)
+        dialog._show_subtitle_rows()
+        self.assertEqual(states(), {"normal"})
+
     async def test_the_credit_line_and_the_sign_up_link(self) -> None:
         dialog, _settings = self.dialog()
         texts = self.texts(dialog.page(SECTION_SUBTITLES))
@@ -543,7 +568,7 @@ class EpisodeRowMarkTests(TkTestCase):
     async def test_downloaded_rows_show_the_mark(self) -> None:
         row = self.row("downloaded", "CC EN NL")
         self.assertEqual(row.cc, "CC EN NL")
-        self.assertEqual(row._cc.cget("text"), "CC EN NL")
+        self.assertEqual(row.cc_control.mark_label.cget("text"), "CC EN NL")  # no CC ▾ here
 
     async def test_other_rows_never_do(self) -> None:
         self.assertEqual(self.row("downloadable", "CC EN").cc, "")

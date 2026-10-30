@@ -1,7 +1,8 @@
 """Weekly episode calendar: tracked episodes from SQL, plus one suggested show per day.
 
-Missing episodes (`LibraryService.missing_between`: aired, not downloaded, not marked "I
-already have this") get the cards' amber mark. Several episodes of one show on one day share a
+Missing episodes (`LibraryService.missing_between`: aired at least a day ago, not downloaded,
+not marked "I already have this") get the cards' amber mark; new ones (`new_between`: aired
+less than a day ago) a quiet blue "New" note. Several episodes of one show on one day share a
 stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
 unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
 
@@ -408,6 +409,7 @@ class CalendarView(BaseView):
 
         entries = await self._library.calendar(start, end)
         missing = await self._library.missing_between(start, end)
+        new = await self._library.new_between(start, end)
         had = await self._library.have_between(start, end)
         if not self.winfo_exists():
             return
@@ -418,6 +420,7 @@ class CalendarView(BaseView):
             scale=scale,
             missing=missing,
             had=had,
+            new=new,
         )
 
         if not prefs.show_suggestions:
@@ -446,10 +449,12 @@ class CalendarView(BaseView):
         scale: CardScale,
         missing: Collection[int] = frozenset(),
         had: Collection[int] = frozenset(),
+        new: Collection[int] = frozenset(),
     ) -> dict[date, ctk.CTkFrame]:
         """Replace the grid: one cell per day with its tracked episodes, a show's episodes of
         one day on one stack card (`missing`: the ids of the episodes that get the amber mark;
-        `had`: those marked "I already have this"). Returns the cells.
+        `had`: those marked "I already have this"; `new`: those aired less than a day ago, a
+        blue "New" note). Returns the cells.
 
         Yields to the event loop after each day: a whole week of poster cards takes Tk ~250 ms
         to draw. Cancelled at a yield, it leaves a partial grid in `self._weeks` for the next
@@ -483,7 +488,7 @@ class CalendarView(BaseView):
             style = card_style(day, today=today)
             for group in stack_entries(tracked.get(day, ())):
                 card = self._episode_card(
-                    cell, group, style=style, scale=scale, missing=missing, had=had
+                    cell, group, style=style, scale=scale, missing=missing, had=had, new=new
                 )
                 card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()
@@ -498,10 +503,12 @@ class CalendarView(BaseView):
         scale: CardScale,
         missing: Collection[int],
         had: Collection[int],
+        new: Collection[int] = frozenset(),
     ) -> ctk.CTkFrame:
         """The card of one show's episodes of the day: a single episode's card, or a stack
         card for more."""
         marked = any(entry.episode.id in missing for entry in group)
+        fresh = any(entry.episode.id in new for entry in group)
         if len(group) == 1:
             entry = group[0]
             if style == "full":
@@ -513,6 +520,7 @@ class CalendarView(BaseView):
                     scale=scale,
                     on_open_show=self._on_open_show,
                     missing=marked,
+                    new=fresh,
                 )
             return CompactEpisodeCard(
                 cell,
@@ -521,6 +529,7 @@ class CalendarView(BaseView):
                 scale=scale,
                 on_open_show=self._on_open_show,
                 missing=marked,
+                new=fresh,
             )
         stack = Stack(tuple(group))
         if style == "full":
@@ -536,6 +545,7 @@ class CalendarView(BaseView):
                 had=had,
                 unfolded=key in self._unfolded,
                 on_fold=lambda unfolded: self._remember_fold(key, unfolded),
+                new=new,
             )
         return CompactStackCard(
             cell,
@@ -545,6 +555,7 @@ class CalendarView(BaseView):
             on_open_show=self._on_open_show,
             missing=marked,
             had=had,
+            new=new,
         )
 
     def _remember_fold(self, key: FoldKey, unfolded: bool) -> None:

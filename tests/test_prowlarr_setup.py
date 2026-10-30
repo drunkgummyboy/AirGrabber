@@ -983,6 +983,8 @@ class InstallTests(SetupTestCase):
                 "--id",
                 "TeamProwlarr.Prowlarr",
                 "--exact",
+                "--source",
+                "winget",
                 "--silent",
                 "--accept-package-agreements",
                 "--accept-source-agreements",

@@ -92,14 +92,20 @@ class QuickDownloadService:
                 del self._target_locks[key]
 
     async def download(
-        self, request: SearchRequest, target: GrabTarget, progress: Progress | None = None
+        self,
+        request: SearchRequest,
+        target: GrabTarget,
+        progress: Progress | None = None,
+        *,
+        again: bool = False,
     ) -> QuickDownloadResult:
         """Search every source for `request`, pick the best release (`pick_best`) and grab it
         for `target`.
 
         One download per target at a time: a call for a target already being downloaded waits
         for that one. A target in the download history by then (or from before) is not searched
-        again: `already_downloaded=True` and nothing is grabbed.
+        again: `already_downloaded=True` and nothing is grabbed; unless `again` (the user asked
+        to download it again: ↻ Again → Auto).
 
         The search runs to completion, but after `timeout` seconds in all the pick is made from
         whatever has arrived. Nothing suitable: `found=False` and nothing is grabbed. Grab
@@ -108,9 +114,11 @@ class QuickDownloadService:
         """
         label = request_label(request)
         async with self._target_lock(target):
-            if await self._downloads.has_grabbed(target):
+            if not again and await self._downloads.has_grabbed(target):
                 log.info("One-click %s: already downloaded, not searching again", label)
                 return QuickDownloadResult(found=False, already_downloaded=True)
+            if again:
+                log.info("One-click %s: downloading again, as asked", label)
             return await self._search_and_grab(request, target, label, progress)
 
     async def _search_and_grab(

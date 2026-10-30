@@ -82,11 +82,15 @@ _ADD_TIMEOUT = httpx.Timeout(90.0, connect=5.0)  # Prowlarr tests the site befor
 _INSTALL_BUDGET_S = 90.0  # after winget: Prowlarr's service writes config.xml, then starts
 
 # `winget install` for Prowlarr's official installer (a Windows service, data in ProgramData).
+# `--source winget`: only winget's own catalogue (a failing Microsoft Store source would make
+# winget ask which source to use instead of installing).
 WINGET_COMMAND = (
     "install",
     "--id",
     "TeamProwlarr.Prowlarr",
     "--exact",
+    "--source",
+    "winget",
     "--silent",
     "--accept-package-agreements",
     "--accept-source-agreements",

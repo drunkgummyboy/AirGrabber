@@ -67,6 +67,16 @@ SUBTITLES_MIGRATION = """
     ) STRICT;
 """
 
+# v7: the Downloads page's "Clear finished" and "Remove from list": a grab taken off the page. Only
+# the page reads it: the grab stays in the history (downloaded marks, subtitles, "Download
+# missing") and its files are never touched. A mark goes with its grab. Self-contained.
+CLEARED_MIGRATION = """
+    CREATE TABLE cleared_downloads (
+        history_id INTEGER PRIMARY KEY REFERENCES download_history (id) ON DELETE CASCADE,
+        cleared_at TEXT    NOT NULL                         -- UTC ISO-8601
+    ) STRICT;
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -208,6 +218,8 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     # v6: subtitles; see SUBTITLES_MIGRATION above.
     SUBTITLES_MIGRATION,
+    # v7: grabs taken off the Downloads page; see CLEARED_MIGRATION above.
+    CLEARED_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -363,12 +375,15 @@ _NEXT_EPISODES_SQL = f"""
 
 # The tracked shows' missing episodes, as the CTE `missing` (id, show_id, air_date): the regular
 # numbered episodes (seasons from 1) of each show's latest season — the highest with such an
-# episode aired (an airstamp up to :now, or without one an air date up to :today) — that aired,
-# aren't downloaded (the episode or its season pack) and aren't marked "I already have this".
-# The SQL twin of app.services.missing.missing_episodes; tests keep the two in step.
+# episode aired (an airstamp up to :now, or without one an air date up to :today) — that aren't
+# downloaded (the episode or its season pack), aren't marked "I already have this" (together the
+# CTE `pending`) and aired long enough ago (an airstamp up to :missing_by, or without one an air
+# date up to :missing_day; app.services.missing.missing_cutoffs). `pending` minus `missing` are
+# the "new" episodes. The SQL twin of app.services.missing.missing_episodes / new_episodes;
+# tests keep them in step.
 _MISSING_CTE = f"""
     WITH aired AS (
-        SELECT e.id, e.show_id, e.season, e.number, e.air_date
+        SELECT e.id, e.show_id, e.season, e.number, e.air_date, e.airstamp
         FROM episodes AS e
         JOIN tracked_shows AS t ON t.show_id = e.show_id
         WHERE e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
@@ -380,12 +395,18 @@ _MISSING_CTE = f"""
     latest AS (
         SELECT show_id, MAX(season) AS season FROM aired GROUP BY show_id
     ),
-    missing AS (
-        SELECT e.id, e.show_id, e.air_date
+    pending AS (
+        SELECT e.id, e.show_id, e.air_date, e.airstamp
         FROM aired AS e
         JOIN latest AS l ON l.show_id = e.show_id AND l.season = e.season
         WHERE NOT EXISTS (SELECT 1 FROM have_episodes AS m WHERE m.episode_id = e.id)
           AND NOT {_IS_DOWNLOADED}
+    ),
+    missing AS (
+        SELECT id, show_id, air_date
+        FROM pending
+        WHERE (airstamp IS NOT NULL AND julianday(airstamp) <= julianday(:missing_by))
+           OR (airstamp IS NULL AND air_date <= :missing_day)
     )
 """
 # Per tracked show, how many episodes are missing (My shows' badges).
@@ -396,6 +417,23 @@ _MISSING_COUNTS_SQL = f"""{_MISSING_CTE}
 _MISSING_BETWEEN_SQL = f"""{_MISSING_CTE}
     SELECT id FROM missing WHERE air_date BETWEEN :start AND :end
 """
+# The new episodes (aired, not yet missing) airing between :start and :end (the calendar's blue
+# "New" notes).
+_NEW_BETWEEN_SQL = f"""{_MISSING_CTE}
+    SELECT id FROM pending
+    WHERE air_date BETWEEN :start AND :end AND id NOT IN (SELECT id FROM missing)
+"""
+
+
+def _missing_params(
+    now: datetime, today: date, missing_by: datetime, missing_day: date
+) -> dict[str, str]:
+    return {
+        "now": _utc(now),
+        "today": today.isoformat(),
+        "missing_by": _utc(missing_by),
+        "missing_day": missing_day.isoformat(),
+    }
 
 
 _TRACKED_SQL = f"""
@@ -717,25 +755,56 @@ class LibraryRepository:
         )
         return [Episode.model_validate(_section(row, "ep__")) for row in rows]
 
-    async def missing_counts(self, *, now: datetime, today: date) -> dict[int, int]:
+    async def missing_counts(
+        self, *, now: datetime, today: date, missing_by: datetime, missing_day: date
+    ) -> dict[int, int]:
         """Per tracked show id, how many episodes of its latest season are missing (see
-        _MISSING_COUNTS_SQL): aired by `now` (without an airstamp: by `today`). Shows with
-        none are left out."""
+        _MISSING_CTE): the latest season by what aired by `now` (without an airstamp: by
+        `today`), missing when aired by `missing_by` (without an airstamp: by `missing_day`).
+        Shows with none are left out."""
         rows = await self._db.fetch_all(
-            _MISSING_COUNTS_SQL, {"now": _utc(now), "today": today.isoformat()}
+            _MISSING_COUNTS_SQL, _missing_params(now, today, missing_by, missing_day)
         )
         return {row["show_id"]: row["missing"] for row in rows}
 
     async def missing_between(
-        self, start: date, end: date, *, now: datetime, today: date
+        self,
+        start: date,
+        end: date,
+        *,
+        now: datetime,
+        today: date,
+        missing_by: datetime,
+        missing_day: date,
     ) -> frozenset[int]:
-        """Ids of the missing episodes (see _MISSING_CTE) airing between `start` and `end`
-        (inclusive): aired by `now` (without an airstamp: by `today`)."""
+        """Ids of the missing episodes (see _MISSING_CTE, `missing_counts`) airing between
+        `start` and `end` (inclusive)."""
         rows = await self._db.fetch_all(
             _MISSING_BETWEEN_SQL,
             {
-                "now": _utc(now),
-                "today": today.isoformat(),
+                **_missing_params(now, today, missing_by, missing_day),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+        )
+        return frozenset(row["id"] for row in rows)
+
+    async def new_between(
+        self,
+        start: date,
+        end: date,
+        *,
+        now: datetime,
+        today: date,
+        missing_by: datetime,
+        missing_day: date,
+    ) -> frozenset[int]:
+        """Ids of the new episodes (aired, not downloaded or marked, not yet missing; see
+        _MISSING_CTE) airing between `start` and `end` (inclusive)."""
+        rows = await self._db.fetch_all(
+            _NEW_BETWEEN_SQL,
+            {
+                **_missing_params(now, today, missing_by, missing_day),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
             },
@@ -930,6 +999,29 @@ class HistoryRepository:
             "SELECT * FROM download_history ORDER BY downloaded_at DESC LIMIT ?", (limit,)
         )
         return [DownloadRecord.model_validate(dict(row)) for row in rows]
+
+    async def listed(self, limit: int = 50) -> list[DownloadRecord]:
+        """The newest grabs not taken off the Downloads page (`clear`), newest first."""
+        rows = await self._db.fetch_all(
+            "SELECT h.* FROM download_history AS h "
+            "WHERE NOT EXISTS (SELECT 1 FROM cleared_downloads AS c WHERE c.history_id = h.id) "
+            "ORDER BY h.downloaded_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [DownloadRecord.model_validate(dict(row)) for row in rows]
+
+    async def clear(self, history_ids: Iterable[int], when: datetime) -> int:
+        """Take grabs off the Downloads page ("Clear finished", "Remove from list"): they stay
+        in the history. Unknown ids are ignored. Returns how many were newly taken off."""
+        ids = json.dumps(sorted(set(history_ids)))
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO cleared_downloads (history_id, cleared_at) "
+                "SELECT id, ? FROM download_history WHERE id IN (SELECT value FROM json_each(?)) "
+                "ON CONFLICT (history_id) DO NOTHING",
+                (_utc(when), ids),
+            )
+            return cursor.rowcount
 
     async def latest_tv_grabs(self, since: datetime) -> list[DownloadRecord]:
         """Per TV show, its latest grab at or after `since` (episodes and season packs)."""
@@ -1162,6 +1254,26 @@ class SubtitleRepository:
             grabs.append(SubtitleGrab(record=record, done_languages=tuple(done)))
         return grabs
 
+    async def grabs_of(
+        self, media_type: MediaType, media_id: int, season: int | None, episode: int | None
+    ) -> list[DownloadRecord]:
+        """The grabs of one episode (its own, and packs of its season) or film, newest first
+        (a subtitle asked for by hand)."""
+        if media_type is MediaType.MOVIE:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM download_history WHERE media_type = ? AND media_id = ? "
+                "ORDER BY julianday(downloaded_at) DESC, id DESC",
+                (MediaType.MOVIE, media_id),
+            )
+        else:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM download_history WHERE media_type = ? AND media_id = ? "
+                "AND season = ? AND (episode IS NULL OR episode IS ?) "
+                "ORDER BY julianday(downloaded_at) DESC, id DESC",
+                (MediaType.TV, media_id, season, episode),
+            )
+        return [DownloadRecord.model_validate(dict(row)) for row in rows]
+
     async def files(self, video_paths: Iterable[str]) -> dict[tuple[str, str], SubtitleFile]:
         """The rows of these videos, by (video path, language)."""
         paths = json.dumps(sorted(set(video_paths)))
@@ -1259,6 +1371,15 @@ class SubtitleRepository:
         for row in rows:
             found.setdefault((row["season"], row["episode"]), set()).add(row["language"])
         return {key: frozenset(languages) for key, languages in found.items()}
+
+    async def movie_languages(self, movie_id: int) -> frozenset[str]:
+        """The languages of the subtitles saved for a film (TMDB id)."""
+        rows = await self._db.fetch_all(
+            "SELECT DISTINCT language FROM subtitle_files "
+            "WHERE media_type = ? AND media_id = ? AND saved_at IS NOT NULL",
+            (MediaType.MOVIE, movie_id),
+        )
+        return frozenset(row["language"] for row in rows)
 
     async def grab_languages(self, history_ids: Iterable[int]) -> dict[int, frozenset[str]]:
         """Per grab (download history id), the languages of the subtitles saved for its

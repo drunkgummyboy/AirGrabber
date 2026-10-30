@@ -23,7 +23,13 @@ from app.services.airdates import (
     parse_export,
     parse_show_name,
 )
-from app.services.library import search_name
+from app.services.library import (
+    NameHint,
+    initialism_variants,
+    name_hint,
+    search_name,
+    search_queries,
+)
 from tests.test_library import DRAGON, DUNE, LibraryTestCase, load, show_payload
 
 FIXTURES = Path(__file__).parent / "fixtures" / "airdates"
@@ -314,6 +320,78 @@ class FindMatchesTests(LibraryTestCase):
         self.assertEqual([m.show_id for m in matches], [50, 51, None])
         self.assertEqual(matches[0].source_name, source)  # shown as airdates.tv wrote it
         self.assertEqual(matches[1].source_name, "Grey’s  Anatomy")
+
+    async def test_the_names_the_vm_test_couldnt_find(self) -> None:
+        """TVMaze's own answers (tests/fixtures/tvmaze/search_name_variants.json): nothing for
+        the names as airdates.tv writes them, the show for the name without its bare country /
+        year, or with the initialism dotted."""
+        self.server.searches.update(load("search_name_variants.json")["searches"])
+        names = ["Shameless US", "Agents of S H I E L D", "MacGyver 2016", "The Agency 2024"]
+        matches = await self.service.find_matches(names)
+        self.assertEqual(
+            [(m.source_name, m.show_id, m.show_name, m.year) for m in matches],
+            [
+                ("Shameless US", 150, "Shameless", 2011),
+                ("Agents of S H I E L D", 31, "Marvel's Agents of S.H.I.E.L.D.", 2013),
+                ("MacGyver 2016", 5511, "MacGyver", 2016),
+                ("The Agency 2024", 66840, "The Agency", 2024),
+            ],
+        )
+        # Each: the name as written (nothing), then one more search that finds it.
+        self.assertEqual(self.server.requests["/search/shows"], 8)
+
+    async def test_a_bare_suffix_prefers_that_year_or_country(self) -> None:
+        self.server.searches.update(load("search_name_variants.json")["searches"])
+        matches = await self.service.find_matches(["Shameless UK", "MacGyver 1985", "Shameless AU"])
+        # The UK one; the 1985 one; no Australian one: TVMaze's best hit for the name.
+        self.assertEqual([m.show_id for m in matches], [746, 821, 150])
+
+    async def test_a_year_that_is_part_of_the_name(self) -> None:
+        self.serve_search("Space: 1999", search_hit(60, "Space: 1999", premiered="1975-09-04"))
+        (match,) = await self.service.find_matches(["Space: 1999"])
+        self.assertEqual(match.show_id, 60)
+        self.assertEqual(self.server.requests["/search/shows"], 1)  # its own name: no more
+
+    async def test_dotted_letters_are_also_tried_joined(self) -> None:
+        self.serve_search("SWAT", search_hit(70, "S.W.A.T.", premiered="2017-11-02"))
+        (match,) = await self.service.find_matches(["S.W.A.T."])
+        self.assertEqual(match.show_id, 70)
+
+    def test_name_hints(self) -> None:
+        self.assertEqual(name_hint("Ghosts (2021)"), NameHint("Ghosts", 2021, None, True))
+        self.assertEqual(name_hint("The Office (UK)"), NameHint("The Office", None, "GB", True))
+        self.assertEqual(name_hint("MacGyver 2016"), NameHint("MacGyver", 2016, None, False))
+        self.assertEqual(name_hint("Shameless US"), NameHint("Shameless", None, "US", False))
+        self.assertEqual(name_hint("Utopia AU"), NameHint("Utopia", None, "AU", False))
+        self.assertIsNone(name_hint("House MD"))  # not a country written bare
+        self.assertIsNone(name_hint("1923"))  # the year is the whole name
+        self.assertIsNone(name_hint("Archive 81"))
+        self.assertIsNone(name_hint("This Is Us"))
+        self.assertIsNone(name_hint("Countdown 1234"))  # no plausible year
+
+    def test_initialism_variants(self) -> None:
+        self.assertEqual(
+            initialism_variants("Agents of S H I E L D"),
+            ["Agents of S.H.I.E.L.D.", "Agents of SHIELD"],
+        )
+        self.assertEqual(
+            initialism_variants("Agents of S. H. I. E. L. D."),
+            ["Agents of S.H.I.E.L.D.", "Agents of SHIELD"],
+        )
+        self.assertEqual(initialism_variants("Agents of S.H.I.E.L.D."), ["Agents of SHIELD"])
+        self.assertEqual(initialism_variants("A.P. Bio"), ["AP Bio"])
+        for name in ("I Love Lucy", "Malcolm X", "Mr. Robot", "Severance", "Y: The Last Man"):
+            self.assertEqual(initialism_variants(name), [], name)
+
+    def test_search_queries(self) -> None:
+        self.assertEqual(search_queries("Severance", None), ["Severance"])
+        self.assertEqual(
+            search_queries("Ghosts (2021)", name_hint("Ghosts (2021)")), ["Ghosts", "Ghosts (2021)"]
+        )
+        self.assertEqual(
+            search_queries("S W A T 2017", name_hint("S W A T 2017")),
+            ["S W A T 2017", "S W A T", "S.W.A.T.", "SWAT", "S.W.A.T. 2017", "SWAT 2017"],
+        )
 
     def test_search_name(self) -> None:
         self.assertEqual(

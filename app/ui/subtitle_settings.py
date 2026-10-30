@@ -162,6 +162,7 @@ class LanguageTags(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self._languages = list(languages)
         self._add: ctk.CTkButton | None = None
+        self._enabled = True
         self._paint()
 
     @property
@@ -178,9 +179,16 @@ class LanguageTags(ctk.CTkFrame):
             self._languages.remove(code)
             self._paint()
 
+    def set_enabled(self, enabled: bool) -> None:
+        """Greyed (no adding or removing) while subtitles are off."""
+        if enabled != self._enabled:
+            self._enabled = enabled
+            self._paint()
+
     def _paint(self) -> None:
         for child in self.winfo_children():
             child.destroy()
+        state = "normal" if self._enabled else "disabled"
         for code in self._languages:
             ctk.CTkButton(
                 self,
@@ -194,6 +202,8 @@ class LanguageTags(ctk.CTkFrame):
                 border_width=1,
                 border_color=theme.EDGE,
                 text_color=theme.TEXT,
+                text_color_disabled=theme.TEXT_FAINT,
+                state=state,
                 command=lambda c=code: self.remove(c),
             ).pack(side="left", padx=(0, 6), pady=2)
         self._add = ctk.CTkButton(
@@ -206,6 +216,8 @@ class LanguageTags(ctk.CTkFrame):
             fg_color="transparent",
             hover_color=theme.CHIP_HOVER,
             text_color=theme.LINK,
+            text_color_disabled=theme.TEXT_FAINT,
+            state=state,
             command=self._open_menu,
         )
         self._add.pack(side="left", pady=2)

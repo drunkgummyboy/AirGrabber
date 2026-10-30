@@ -8,8 +8,15 @@ latest). Its missing episodes are the aired regular numbered ones that are neith
 or without one the air date is today or earlier; an episode with neither never counts. Specials
 (no number, or not of type "regular") and season 0 never count.
 
-`missing_episodes` is the rule itself; LibraryRepository.missing_counts is its SQL twin for the
-My shows grid (one query for every tracked show).
+An aired episode only counts as missing once MISSING_AFTER (a day) has passed since it aired
+(`is_overdue`: its airstamp + MISSING_AFTER; without an airstamp, from the day after its air
+date): a copy usually turns up hours after the broadcast. Until then it is "new" (`is_new`):
+not counted, not fetched by "Download missing", a blue "New" chip instead of the amber one. The
+latest season still follows `has_aired`: a new season's first episode makes it the latest at
+once. (The automatic downloads keep their own 2-hour rule, app/services/auto_download.py.)
+
+`missing_episodes` is the rule itself; LibraryRepository.missing_counts / missing_between are
+its SQL twins (one query for every tracked show), handed `missing_cutoffs`.
 
 "Download missing" (`MissingDownloadService.download_missing`) fetches a show's missing episodes
 one at a time, oldest first, at most MAX_PER_RUN, through the one-click Download
@@ -24,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Collection, Iterable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from app.models import (
@@ -47,6 +54,9 @@ log = logging.getLogger(__name__)
 
 MAX_PER_RUN = 25  # episodes one "Download missing" run fetches at most
 REGULAR = "regular"
+# An aired episode counts as missing this long after it aired (before that it is "new").
+MISSING_AFTER = timedelta(hours=24)
+_DAY = timedelta(days=1)
 
 MissingProgressListener = Callable[[MissingProgress], None]
 
@@ -72,6 +82,28 @@ def latest_season(episodes: Iterable[Episode], now: datetime) -> int | None:
     return max(aired, default=None)
 
 
+def missing_cutoffs(now: datetime) -> tuple[datetime, date]:
+    """The latest airstamp, and for an episode without one the latest air date, that counts
+    as missing at `now` (aware; its time zone decides which day "today" is): an airstamp at
+    least MISSING_AFTER ago, an air date at least MISSING_AFTER's whole days (rounded up)
+    before today. The SQL twins take these two."""
+    days = -(-MISSING_AFTER // _DAY)  # a day, rounded up to whole days
+    return now - MISSING_AFTER, now.date() - timedelta(days=days)
+
+
+def is_overdue(episode: Episode, now: datetime) -> bool:
+    """Aired long enough ago to count as missing (see MISSING_AFTER)."""
+    by, day = missing_cutoffs(now)
+    if episode.airstamp is not None:
+        return episode.airstamp <= by
+    return episode.air_date is not None and episode.air_date <= day
+
+
+def is_new(episode: Episode, now: datetime) -> bool:
+    """Aired, but not long enough ago to count as missing."""
+    return episode.has_aired(now) and not is_overdue(episode, now)
+
+
 def _oldest_first(episode: Episode) -> tuple[date, int]:
     return episode.air_date or date.max, episode.number or 0
 
@@ -83,8 +115,9 @@ def missing_episodes(
     have: Collection[int],
     now: datetime,
 ) -> list[Episode]:
-    """The latest season's aired regular numbered episodes whose id is in neither `downloaded`
-    nor `have` (marked "I already have this"), oldest first."""
+    """The latest season's regular numbered episodes that aired at least MISSING_AFTER ago
+    (`is_overdue`) and whose id is in neither `downloaded` nor `have` (marked "I already have
+    this"), oldest first."""
     episodes = list(episodes)
     season = latest_season(episodes, now)
     if season is None:
@@ -95,7 +128,35 @@ def missing_episodes(
             for episode in episodes
             if episode.season == season
             and counts_as_missing_candidate(episode)
-            and episode.has_aired(now)
+            and is_overdue(episode, now)
+            and episode.id not in downloaded
+            and episode.id not in have
+        ),
+        key=_oldest_first,
+    )
+
+
+def new_episodes(
+    episodes: Iterable[Episode],
+    *,
+    downloaded: Collection[int],
+    have: Collection[int],
+    now: datetime,
+) -> list[Episode]:
+    """The latest season's regular numbered episodes that aired, but less than MISSING_AFTER
+    ago (`is_new`), and whose id is in neither `downloaded` nor `have`, oldest first: the
+    ones that become missing once their day has passed."""
+    episodes = list(episodes)
+    season = latest_season(episodes, now)
+    if season is None:
+        return []
+    return sorted(
+        (
+            episode
+            for episode in episodes
+            if episode.season == season
+            and counts_as_missing_candidate(episode)
+            and is_new(episode, now)
             and episode.id not in downloaded
             and episode.id not in have
         ),

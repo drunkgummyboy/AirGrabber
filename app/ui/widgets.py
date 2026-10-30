@@ -9,13 +9,70 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
-from app.i18n import t
+from app.i18n import N_, t
 from app.ui import theme
 from app.ui.branding import set_window_icon
+from app.ui.missing_control import MenuItem, popup_menu
 from app.ui.tasks import spawn
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
+
+# The right-click menu of text fields (shown through t()).
+CUT_TEXT = N_("Cut")
+COPY_TEXT = N_("Copy")
+PASTE_TEXT = N_("Paste")
+SELECT_ALL_TEXT = N_("Select all")
+# Tk's classes of the text fields inside CTkEntry, CTkComboBox and CTkTextbox.
+_TEXT_FIELD_CLASSES = ("Entry", "Text")
+
+
+def install_edit_menus(root: tk.Misc) -> None:
+    """Right-click on any text field (CTkEntry, CTkTextbox, …: their Tk Entry / Text) opens a
+    menu at the pointer with Cut / Copy / Paste / Select all for it (`edit_actions`). Class
+    bindings: once per Tk root (MainWindow), for every window it opens; calling it again
+    changes nothing."""
+    for widget_class in _TEXT_FIELD_CLASSES:
+        root.bind_class(widget_class, "<Button-3>", _open_edit_menu)
+
+
+def _open_edit_menu(event: tk.Event[Any]) -> None:
+    field = event.widget
+    if isinstance(field, (tk.Entry, tk.Text)):
+        field.focus_set()
+        popup_menu(field, edit_actions(field), point=(event.x_root, event.y_root))
+
+
+def _editable(field: tk.Entry | tk.Text) -> bool:
+    try:
+        return str(field.cget("state")) == "normal"
+    except tk.TclError:
+        return False
+
+
+def edit_actions(field: tk.Entry | tk.Text) -> list[MenuItem]:
+    """The right-click menu of `field`: Cut / Copy / Paste / Select all, only Copy and Select
+    all when it can't be edited (disabled or read-only). Each acts as its keyboard shortcut
+    would, once the field has the focus back (after CTkEntry put its placeholder away)."""
+
+    def act(virtual_event: str) -> Callable[[], None]:
+        def run() -> None:
+            if not field.winfo_exists():
+                return
+            field.focus_set()
+            field.after_idle(lambda: field.winfo_exists() and field.event_generate(virtual_event))
+
+        return run
+
+    editable = _editable(field)
+    items: list[MenuItem] = []
+    if editable:
+        items.append((t(CUT_TEXT), act("<<Cut>>")))
+    items.append((t(COPY_TEXT), act("<<Copy>>")))
+    if editable:
+        items.append((t(PASTE_TEXT), act("<<Paste>>")))
+    items.append((t(SELECT_ALL_TEXT), act("<<SelectAll>>")))
+    return items
 
 
 def destroy_tree(widget: Any) -> None:

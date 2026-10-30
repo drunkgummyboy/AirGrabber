@@ -2,7 +2,10 @@
 
 A run (a minute after startup, then every 30 minutes, and soon after the subtitle settings
 change; one at a time) does nothing unless this version ships an OpenSubtitles API key
-(app.services.opensubtitles.APP_API_KEY) and "Get subtitles for my downloads" is on. The user's
+(app.services.opensubtitles.APP_API_KEY) and "Get subtitles for my downloads" is on. It looks
+after the kinds of downloads Settings → Subtitles → For names (series, films or both), and with
+When = "Only when I ask" (`subtitles_mode`) it only notes the subtitles already next to the
+videos and fetches nothing. The user's
 own free OpenSubtitles account is optional: signed in (once per run) the downloads count
 against it (20 a day for a free account), without one against this PC's address (5 a day).
 It takes
@@ -14,9 +17,16 @@ video files. For every video and language without a subtitle yet:
 - else, unless tried within RETRY_AFTER, it searches OpenSubtitles: by the file's moviehash
   first (the best sync), then by IMDb id (a show's id with season and episode; a film's from
   TMDB's details) or, without one, by name. Machine- and AI-translated subtitles are never
-  taken; a moviehash match wins, then not hearing-impaired, then the most downloads. The pick
-  is saved as "<video stem>.<lang>.srt" next to the video (atomic, never over an existing file).
+  taken; a moviehash match wins, then the hearing-impaired choice (Settings: avoid (the
+  default), prefer or either), then the most downloads. The pick is saved as
+  "<video stem>.<lang>.srt" next to the video (atomic, never over an existing file).
 - nothing found counts a try; GIVE_UP_AFTER the first try that video and language are given up.
+
+`fetch_now` does the same for one episode or film at once (the CC menus of the show and film
+windows and the Downloads page, offered while the switch is on: `offer`), in whatever mode,
+for the languages asked: the newest grab of it with its video in the folder, the day's quota
+respected, and the RETRY_AFTER wait and a given-up language only when not `force`d (a request
+by hand may try again at once). Its outcome is a SubtitleFetch.
 
 A grab whose videos all have their languages (or were given up), with nothing of it still
 downloading, is complete and not looked at again until the languages change. When today's
@@ -32,7 +42,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,15 +51,21 @@ from app.database import SubtitleRepository
 from app.i18n import N_, t
 from app.models import (
     DownloadRecord,
+    HearingImpaired,
     MediaType,
     Settings,
     Show,
     SubtitleAccount,
     SubtitleEvent,
+    SubtitleFetch,
+    SubtitleFetchOutcome,
     SubtitleFile,
+    SubtitleOffer,
     SubtitleProblem,
     SubtitleQuota,
     SubtitleRunReport,
+    SubtitlesFor,
+    SubtitlesMode,
     SubtitlesSaved,
 )
 from app.models.opensubtitles import SubtitleCandidate
@@ -90,11 +106,20 @@ SETTINGS_FIELDS = frozenset(
         "subtitles_enabled",
         "subtitle_languages",
         "subtitles_folder",
+        "subtitles_mode",
+        "subtitles_hearing_impaired",
+        "subtitles_for",
         "opensubtitles_username",
         "opensubtitles_password",
         "opensubtitles_own_key",
     }
 )
+# The kinds of downloads each "For" choice fetches subtitles for.
+FOR_KINDS: dict[SubtitlesFor, frozenset[MediaType]] = {
+    SubtitlesFor.BOTH: frozenset({MediaType.TV, MediaType.MOVIE}),
+    SubtitlesFor.SERIES: frozenset({MediaType.TV}),
+    SubtitlesFor.FILMS: frozenset({MediaType.MOVIE}),
+}
 
 # Raised through t().
 NO_FOLDER_TEXT = N_("Choose where finished downloads end up (Settings, Subtitles)")
@@ -119,14 +144,27 @@ def quota_text(reset_at: datetime | None) -> str:
     )
 
 
-def pick(found: Iterable[SubtitleCandidate], language: str) -> SubtitleCandidate | None:
-    """The best subtitle in `language`: a moviehash match first, then not hearing-impaired,
-    then the most downloads. (Machine- and AI-translated ones never reach this.)"""
+def pick(
+    found: Iterable[SubtitleCandidate],
+    language: str,
+    hearing_impaired: HearingImpaired = HearingImpaired.AVOID,
+) -> SubtitleCandidate | None:
+    """The best subtitle in `language`: a moviehash match first, then the hearing-impaired
+    choice (AVOID: one without; PREFER: one with; EITHER: no matter), then the most downloads.
+    (Machine- and AI-translated ones never reach this.)"""
     wanted = language.lower()
     matches = [c for c in found if c.language.lower() == wanted]
     if not matches:
         return None
-    return max(matches, key=lambda c: (c.moviehash_match, not c.hearing_impaired, c.download_count))
+
+    def fits(candidate: SubtitleCandidate) -> bool:
+        if hearing_impaired is HearingImpaired.AVOID:
+            return not candidate.hearing_impaired
+        if hearing_impaired is HearingImpaired.PREFER:
+            return candidate.hearing_impaired
+        return True
+
+    return max(matches, key=lambda c: (c.moviehash_match, fits(c), c.download_count))
 
 
 def _utc_now() -> datetime:
@@ -143,11 +181,13 @@ class _Run:
 
 
 class _StopRun(Exception):
-    """Ends the run: `message` is the SubtitleProblem."""
+    """Ends the run: `message` is the SubtitleProblem (`quota`: today's downloads are used
+    up)."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, quota: bool = False) -> None:
         super().__init__(message)
         self.message = message
+        self.quota = quota
 
 
 class SubtitleService:
@@ -212,6 +252,25 @@ class SubtitleService:
         return self._client.configured
 
     @property
+    def offer(self) -> SubtitleOffer:
+        """Whether subtitles can be asked for by hand: not at all (NONE) without a key in this
+        version, a finished-downloads folder or a language; OFF while Settings' switch ("Get
+        subtitles for my downloads", the master switch) is off; else ON."""
+        settings = self._settings.current
+        if not (
+            self._client.configured
+            and settings.subtitles_folder.strip()
+            and settings.subtitle_languages
+        ):
+            return SubtitleOffer.NONE
+        return SubtitleOffer.ON if settings.subtitles_enabled else SubtitleOffer.OFF
+
+    @property
+    def can_fetch(self) -> bool:
+        """Subtitles can be asked for by hand now (`offer` is ON)."""
+        return self.offer is SubtitleOffer.ON
+
+    @property
     def quota(self) -> SubtitleQuota:
         """Downloads left today, as OpenSubtitles last said (nothing known before a download or
         a sign-in)."""
@@ -226,6 +285,10 @@ class SubtitleService:
     async def show_languages(self, show_id: int) -> dict[tuple[int, int], frozenset[str]]:
         """Per (season, episode) of a TV show, the languages of the subtitles saved for it."""
         return await self._repository.show_languages(show_id)
+
+    async def movie_languages(self, movie_id: int) -> frozenset[str]:
+        """The languages of the subtitles saved for a film (TMDB id)."""
+        return await self._repository.movie_languages(movie_id)
 
     # -- Settings' checks --------------------------------------------------------------------------
 
@@ -303,10 +366,12 @@ class SubtitleService:
         quota = self._quota
         if quota.remaining == 0 and quota.reset_at is not None and now < quota.reset_at:
             return  # nothing can be downloaded before the count starts again
+        kinds = FOR_KINDS[settings.subtitles_for]
         grabs = [
             grab
             for grab in await self._repository.grabs_since(now - LOOKBACK)
-            if not set(languages) <= set(grab.done_languages)
+            if grab.record.media_type in kinds
+            and not set(languages) <= set(grab.done_languages)
         ]
         if not grabs:
             return
@@ -336,6 +401,7 @@ class SubtitleService:
             video.video.path for _record, videos, _incomplete in work for video in videos
         )
         session_ready = False
+        asking = settings.subtitles_mode is SubtitlesMode.ASK  # note what's there, fetch nothing
         for record, videos, incomplete in work:
             complete = bool(videos) and not incomplete
             for video in videos:
@@ -346,14 +412,171 @@ class SubtitleService:
                     continue
                 if not needed:
                     continue
+                if asking:
+                    complete = False
+                    continue
                 if not session_ready:
                     await self._sign_in_saved(settings)
                     session_ready = True
-                done = await self._fetch(record, video, needed, shows, movies, states, run)
+                _saved, done = await self._fetch(
+                    record, video, needed, shows, movies, states, run
+                )
                 if not done:
                     complete = False
             if complete and record.id is not None:
                 await self._repository.mark_grab_done(record.id, languages, self._clock())
+
+    # -- one episode or film, asked for by hand -----------------------------------------------
+
+    async def fetch_now(
+        self,
+        media_type: MediaType,
+        media_id: int,
+        season: int | None,
+        episode: int | None,
+        languages: Sequence[str],
+        *,
+        force: bool = False,
+    ) -> SubtitleFetch:
+        """Fetch `languages` for one episode (a TVMaze show id with season and episode) or
+        film (a TMDB id) now, whatever the When / For settings say (see the module docstring).
+        `force`: try again at once, also a language tried within RETRY_AFTER or given up. Waits
+        for a run in progress; never raises for OpenSubtitles or the folder (the outcome
+        says)."""
+        settings = self._settings.current
+        wanted = list(dict.fromkeys(languages))
+        if not self._client.configured or not wanted:
+            return SubtitleFetch(outcome=SubtitleFetchOutcome.UNAVAILABLE)
+        if not settings.subtitles_folder.strip():
+            return SubtitleFetch(
+                outcome=SubtitleFetchOutcome.UNAVAILABLE, message=t(NO_FOLDER_TEXT)
+            )
+        async with self._run_lock:
+            try:
+                return await self._fetch_now(
+                    settings, media_type, media_id, season, episode, wanted, force=force
+                )
+            except _StopRun as stop:
+                outcome = (
+                    SubtitleFetchOutcome.QUOTA if stop.quota else SubtitleFetchOutcome.PROBLEM
+                )
+                log.info("Subtitles asked for by hand: %s", stop.message)
+                return SubtitleFetch(outcome=outcome, message=stop.message)
+
+    async def _fetch_now(
+        self,
+        settings: Settings,
+        media_type: MediaType,
+        media_id: int,
+        season: int | None,
+        episode: int | None,
+        languages: list[str],
+        *,
+        force: bool,
+    ) -> SubtitleFetch:
+        now = self._clock()
+        quota = self._quota
+        if quota.remaining == 0 and quota.reset_at is not None and now < quota.reset_at:
+            return SubtitleFetch(
+                outcome=SubtitleFetchOutcome.QUOTA, message=quota_text(quota.reset_at)
+            )
+        records = await self._repository.grabs_of(media_type, media_id, season, episode)
+        if not records:
+            return SubtitleFetch(outcome=SubtitleFetchOutcome.NO_GRAB)
+        folder = settings.subtitles_folder
+        try:
+            scan = await asyncio.to_thread(scan_folder, Path(folder), now=self._wall_clock())
+        except OSError:
+            raise _StopRun(folder_unreachable_text(folder)) from None
+        shows: dict[int, Show | None] = {}
+        if media_type is MediaType.TV:
+            shows[media_id] = await self._show(media_id)
+        show = shows.get(media_id)
+        record: DownloadRecord | None = None
+        videos: list[GrabVideo] = []
+        incomplete = False
+        for candidate in records:  # the newest grab with its video in the folder
+            files = grab_files(candidate, scan, show_name=show.name if show else None)
+            incomplete = incomplete or files.incomplete
+            found = [
+                video
+                for video in files.videos
+                if media_type is MediaType.MOVIE
+                or episode is None  # a season pack asked for as a whole (the Downloads page)
+                or (video.season, video.episode) == (season, episode)
+            ]
+            if found:
+                record, videos = candidate, found
+                break
+        if record is None:
+            return SubtitleFetch(
+                outcome=(
+                    SubtitleFetchOutcome.DOWNLOADING
+                    if incomplete
+                    else SubtitleFetchOutcome.NO_VIDEO
+                )
+            )
+
+        states = await self._repository.files(video.video.path for video in videos)
+        there: set[str] = set()
+        saved: set[str] = set()
+        waiting = False
+        movies: dict[int, str | None] = {}
+        run = _Run()
+        session_ready = False
+        noted: list[str] = []  # found next to the video, new to the bookkeeping
+        for video in videos:
+            path = video.video.path
+            needed: list[str] = []
+            for language in languages:
+                if has_subtitle(path, language, scan.subtitles):
+                    known = states.get((path, language))
+                    if known is None or known.saved_at is None:
+                        noted.append(language)
+                    await self._repository.record_saved(
+                        path,
+                        language,
+                        record=record,
+                        season=video.season,
+                        episode=video.episode,
+                        subtitle_path=subtitle_path(path, language),
+                        when=now,
+                    )
+                    there.add(language)
+                    continue
+                state = states.get((path, language))
+                if not force and state is not None and (
+                    state.gave_up
+                    or (state.last_try is not None and now - state.last_try < RETRY_AFTER)
+                ):
+                    waiting = True
+                    continue
+                needed.append(language)
+            if not needed:
+                continue
+            if not session_ready:
+                await self._sign_in_saved(settings)
+                session_ready = True
+            got, _settled = await self._fetch(record, video, needed, shows, movies, states, run)
+            saved.update(got)
+        if noted:  # the marks show them now
+            label = _label(record, videos[0], show)
+            self._emit(SubtitlesSaved(label=label, languages=tuple(noted)))
+        have = there | saved
+        missing = tuple(language for language in languages if language not in have)
+        if not missing:
+            outcome = SubtitleFetchOutcome.SAVED if saved else SubtitleFetchOutcome.ALREADY
+        elif have:
+            outcome = SubtitleFetchOutcome.PARTLY
+        elif waiting and not run.not_found and not run.gave_up:
+            outcome = SubtitleFetchOutcome.WAIT
+        else:
+            outcome = SubtitleFetchOutcome.NOT_FOUND
+        return SubtitleFetch(
+            outcome=outcome,
+            saved=tuple(language for language in languages if language in have),
+            not_found=missing,
+        )
 
     async def _needed(
         self,
@@ -408,9 +631,9 @@ class SubtitleService:
         movies: dict[int, str | None],
         states: dict[tuple[str, str], SubtitleFile],
         run: _Run,
-    ) -> bool:
-        """Search and save `languages` for one video; True when all of them are settled (saved
-        or given up)."""
+    ) -> tuple[list[str], bool]:
+        """Search and save `languages` for one video. Returns the languages saved and whether
+        all of them are settled (saved or given up)."""
         show = shows.get(record.media_id) if record.media_type is MediaType.TV else None
         label = _label(record, video, show)
         path = video.video.path
@@ -418,14 +641,15 @@ class SubtitleService:
             found = await self._search(record, video, languages, show, movies)
         except QuotaExceeded as exc:
             self._quota_used_up(exc.reset_at)
-            raise _StopRun(quota_text(exc.reset_at)) from None
+            raise _StopRun(quota_text(exc.reset_at), quota=True) from None
         except OpenSubtitlesError as exc:
             raise _StopRun(str(exc)) from None
 
         saved: list[str] = []
         settled = True
+        hearing_impaired = self._settings.current.subtitles_hearing_impaired
         for language in languages:
-            choice = pick(found, language)
+            choice = pick(found, language, hearing_impaired)
             if choice is not None and await self._save(path, language, choice):
                 await self._repository.record_saved(
                     path,
@@ -440,7 +664,7 @@ class SubtitleService:
                 run.saved.append(f"{label} ({language.upper()})")
                 if self._quota.remaining is not None and self._quota.remaining <= 0:
                     self._emit_saved(label, saved)
-                    raise _StopRun(quota_text(self._quota.reset_at))
+                    raise _StopRun(quota_text(self._quota.reset_at), quota=True)
                 continue
             state = states.get((path, language))
             now = self._clock()
@@ -463,7 +687,7 @@ class SubtitleService:
                 run.not_found.append(f"{label} ({language.upper()})")
                 settled = False
         self._emit_saved(label, saved)
-        return settled
+        return saved, settled
 
     def _emit_saved(self, label: str, languages: list[str]) -> None:
         if languages:
@@ -528,7 +752,7 @@ class SubtitleService:
             link = await self._client.download_link(choice.file_id)
         except QuotaExceeded as exc:
             self._quota_used_up(exc.reset_at)
-            raise _StopRun(quota_text(exc.reset_at)) from None
+            raise _StopRun(quota_text(exc.reset_at), quota=True) from None
         except OpenSubtitlesError as exc:
             if not _is_one_off(exc):
                 raise _StopRun(str(exc)) from None

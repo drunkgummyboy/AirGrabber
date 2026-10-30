@@ -24,6 +24,7 @@ from app.models import (
     AutoMovieDownloaded,
     AutoMovieGaveUp,
     CalendarEntry,
+    DownloadEntry,
     GrabTarget,
     MediaType,
     MissingProgress,
@@ -87,16 +88,19 @@ from app.ui.movie_details import MovieWindows
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
+from app.ui.subtitle_control import OUTCOME_MS as SUBTITLE_OUTCOME_MS
+from app.ui.subtitle_control import WORKING as SUBTITLES_WORKING
+from app.ui.subtitle_control import SubtitleActions, SubtitleRuns, fetch_run
 from app.ui.subtitle_settings import subtitle_mark
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import QBITTORRENT
 from app.ui.tray import TrayHost
 from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, TrackedView
-from app.ui.views.downloads_view import DownloadsView
+from app.ui.views.downloads_view import DownloadsView, PageActions
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action, first_run_defaults
 from app.ui.whats_new_dialog import WhatsNewDialog
-from app.ui.widgets import Tabview
+from app.ui.widgets import Tabview, install_edit_menus
 from app.whats_new import WhatsNew, whats_new
 
 log = logging.getLogger(__name__)
@@ -134,6 +138,9 @@ _OFF_PAGE_SETTINGS = frozenset(
         "subtitles_enabled",
         "subtitle_languages",
         "subtitles_folder",
+        "subtitles_mode",
+        "subtitles_hearing_impaired",
+        "subtitles_for",
         "opensubtitles_username",
         "opensubtitles_password",
         "opensubtitles_own_key",
@@ -316,9 +323,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
             choose=self._search_episode,
             states=self._download_states,
             download_all=self._download_episodes,  # the calendar's stack cards
+            download_again=self._download_episode_again,  # ↻ Again (show window)
         )
         self._movie_actions: DownloadActions[Movie] = DownloadActions(
-            download=self._download_movie, choose=self._grab_movie, states=self._download_states
+            download=self._download_movie,
+            choose=self._grab_movie,
+            states=self._download_states,
+            download_again=self._download_movie_again,  # ↻ Again (film window)
+        )
+        # Subtitles asked for by hand (CC ▾): their state per title, shared by every view.
+        self._subtitle_runs = SubtitleRuns()
+        self._subtitle_actions = SubtitleActions(
+            offer=lambda: services.subtitles.offer,
+            languages=lambda: services.settings.current.subtitle_languages,
+            fetch=self._fetch_subtitles,
+            runs=self._subtitle_runs,
         )
         # "Download missing": its run state per show, shared by every button that shows it.
         self._missing_runs = MissingRuns()
@@ -340,6 +359,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
             subtitles_changed=self._on_subtitles_saved,
+            subtitle_actions=self._subtitle_actions,
         )
         # The film info windows (one per film), opened from the film cards.
         self._movie_windows = MovieWindows(
@@ -348,6 +368,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=services.discovery,
             watchlist=services.watchlist,
             actions=self._movie_actions,
+            downloaded=self._film_downloaded,
+            downloads_changed=services.downloads.subscribe,
+            subtitle_actions=self._subtitle_actions,
+            subtitle_mark=self._film_subtitle_mark,
+            subtitles_changed=self._on_subtitles_saved,
         )
 
         self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))
@@ -361,6 +386,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._build_pages()
         self._build_status_bar()
         self._bind_shortcuts()
+        install_edit_menus(self)  # right-click Cut / Copy / Paste in every text field
         self._whats_new_binding: str | None = None  # waiting for the window to open (tray start)
 
         on_task_error(self._report_task_error)
@@ -600,6 +626,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=discovery,
             on_open_show=self._show_windows.open_show,
             on_open_film=self._movie_windows.open_movie_id,
+            actions=PageActions(again=self._download_entry_again, subtitles=self._subtitle_actions),
         )
 
     def _card_scale(self) -> CardScale:
@@ -686,6 +713,42 @@ class MainWindow(AsyncCTk, ctk.CTk):
         order = self._services.settings.current.subtitle_languages
         return {key: subtitle_mark(languages, order) for key, languages in found.items()}
 
+    async def _film_subtitle_mark(self, movie_id: int) -> str:
+        """A film window's "CC EN NL" mark ("" without saved subtitles)."""
+        found = await self._services.subtitles.movie_languages(movie_id)
+        return subtitle_mark(found, self._services.settings.current.subtitle_languages)
+
+    async def _film_downloaded(self, movie_id: int) -> bool:
+        """Whether a film is in the download history (its window's ✓ Downloaded)."""
+        return movie_id in await self._services.library.downloaded_movie_ids()
+
+    def _fetch_subtitles(self, key: DownloadKey, languages: tuple[str, ...]) -> None:
+        """A CC menu's request: fetch the title's subtitles now (forced: a request by hand
+        may try again at once); every view of the title follows its state."""
+        runs = self._subtitle_runs
+        if runs.is_working(key) or not languages:
+            return
+        runs.set(key, SUBTITLES_WORKING)
+        media_type, media_id, season, episode = key
+
+        async def run() -> None:
+            try:
+                result = await self._services.subtitles.fetch_now(
+                    media_type, media_id, season, episode, languages, force=True
+                )
+            except BaseException:
+                runs.set(key, None)
+                raise  # cancelled, or logged and reported by the task runner
+            state = fetch_run(result)
+            runs.set(key, state)
+            self._services.download_status.after_grab()  # the Downloads page's "Subtitles EN"
+            if state is not None:
+                self.after(SUBTITLE_OUTCOME_MS, lambda: runs.expire(key, state))
+
+        task = spawn(run(), name="subtitles-now")
+        self._download_tasks.add(task)
+        task.add_done_callback(self._download_tasks.discard)
+
     async def _load_logo(self) -> None:
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
         logo = await asyncio.to_thread(load_logo, round(_LOGO_HEIGHT * scaling))
@@ -753,6 +816,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         previous, self._settings_seen = self._settings_seen, updated
         if updated.theme_mode != previous.theme_mode:
             theme.apply_appearance(updated.theme_mode)
+        self._subtitle_runs.refresh()  # the CC buttons: offered, greyed or gone
         if settings_affect_pages(previous, updated):
             self._reload_pages()
 
@@ -806,24 +870,72 @@ class MainWindow(AsyncCTk, ctk.CTk):
             return
         self._start_download(*run)
 
+    def _download_episode_again(self, entry: CalendarEntry) -> None:
+        """↻ Again → Auto: the one-click download of an episode downloaded before."""
+        run = self._episode_run(entry, again=True)
+        if run is None:
+            self._search_episode(entry)
+            return
+        self._start_download(*run)
+
     def _episode_run(
-        self, entry: CalendarEntry
+        self, entry: CalendarEntry, *, again: bool = False
     ) -> tuple[DownloadKey, str, Callable[[], Awaitable[QuickDownloadResult]]] | None:
         """An episode's one-click download: its key, its label and the run (None for a
-        special, which has no number to download by)."""
+        special, which has no number to download by). `again`: also when downloaded before."""
         show, episode = entry.show, entry.episode
         if episode.number is None:
             return None
-        season, number = episode.season, episode.number
-        request = self._services.search.episode_request(show, season, number)
+        return self._tv_run(show, episode.season, episode.number, again=again)
+
+    def _tv_run(
+        self, show: Show, season: int, number: int | None, *, again: bool = False
+    ) -> tuple[DownloadKey, str, Callable[[], Awaitable[QuickDownloadResult]]]:
+        """The one-click download of an episode (`number` None: its season's pack)."""
+        search = self._services.search
+        if number is None:
+            request = search.season_request(show, season)
+            label = f"{show.name} S{season:02d}"
+        else:
+            request = search.episode_request(show, season, number)
+            label = f"{show.name} S{season:02d}E{number:02d}"
         target = GrabTarget(
             media_type=MediaType.TV, media_id=show.id, season=season, episode=number
         )
         return (
             episode_key(show.id, season, number),
-            f"{show.name} {episode.code}",
-            lambda: self._services.quick_download.download(request, target),
+            label,
+            lambda: self._services.quick_download.download(request, target, again=again),
         )
+
+    def _download_entry_again(self, entry: DownloadEntry, auto: bool) -> None:
+        """The Downloads page's "Download again…": ⬇ Auto (`auto`) or ☰ Choose…."""
+        record = entry.record
+        if record.media_type is MediaType.TV:
+            show = entry.show
+            if show is None or record.season is None:
+                return
+            if auto:
+                self._start_download(*self._tv_run(show, record.season, record.episode, again=True))
+            else:
+                self._open_indexer_dialog(TvTarget(show, record.season, record.episode))
+            return
+        spawn(self._film_again(record.media_id, entry.title, auto), name="download-again")
+
+    async def _film_again(self, movie_id: int, title: str, auto: bool) -> None:
+        """A film known by its TMDB id downloaded again (or its search window), once TMDB
+        has described it."""
+        try:
+            async with asyncio.timeout(_DETAILS_WAIT_S):
+                movie = await self._services.discovery.movie(movie_id)
+        except (TMDBError, TimeoutError) as exc:
+            log.info("Film %d: no TMDB description to download it again: %s", movie_id, exc)
+            self._report(t("Couldn't look up {title} on TMDB", title=title), _DOWNLOAD_STATUS_MS)
+            return
+        if auto:
+            self._download_movie_again(movie)
+        else:
+            self._grab_movie(movie)
 
     def _download_episodes(self, batch: BatchKey, entries: Sequence[CalendarEntry]) -> None:
         """A calendar stack's "⬇ Download all": its episodes one after another through the
@@ -855,14 +967,18 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
         return step
 
-    def _download_movie(self, movie: Movie) -> None:
+    def _download_movie(self, movie: Movie, *, again: bool = False) -> None:
         async def download() -> QuickDownloadResult:
             details = await self._movie_details(movie)
             request = self._services.search.movie_request(movie, details)
             target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie.id)
-            return await self._services.quick_download.download(request, target)
+            return await self._services.quick_download.download(request, target, again=again)
 
         self._start_download(movie_key(movie.id), movie_title(movie), download)
+
+    def _download_movie_again(self, movie: Movie) -> None:
+        """↻ Again → Auto: the one-click download of a film downloaded before."""
+        self._download_movie(movie, again=True)
 
     async def _movie_details(self, movie: Movie) -> MovieDetails | None:
         """The film's TMDB details (for its IMDb id), as the search window waits for them."""

@@ -6,11 +6,13 @@ Every change goes through SettingsService, which validates first."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
 from tkinter import filedialog
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
@@ -30,9 +32,12 @@ from app.indexers import (
 from app.models import (
     CardSize,
     DownloadMode,
+    HearingImpaired,
     ProwlarrStatus,
     QualityProfile,
     Settings,
+    SubtitlesFor,
+    SubtitlesMode,
     ThemeMode,
     UpdateInfo,
     Weekday,
@@ -177,10 +182,19 @@ NEW_SHOWS_TITLE = N_("New shows")
 NEW_SHOWS_TEXT = N_("You can still change this for each show.")
 NEW_SHOWS_SWITCH = N_("Download new episodes for shows I start following")
 
-SUBTITLE_SWITCH_TITLE = N_("Automatic subtitles")
-SUBTITLE_SWITCH_TEXT = N_("AirGrabber looks for subtitles for what you download, every half hour.")
+SUBTITLE_SWITCH_TITLE = N_("Get subtitles")
+SUBTITLE_SWITCH_TEXT = N_("AirGrabber finds subtitles for what you download on OpenSubtitles.com.")
 LANGUAGES_TITLE = N_("Languages")
 LANGUAGES_TEXT = N_("AirGrabber looks for subtitles in each of these languages.")
+WHEN_TITLE = N_("When")
+WHEN_TEXT = N_(
+    "Automatically searches every half hour after a download. Only when I ask: use CC ▾ in a "
+    "show's or film's window, or on the Downloads page."
+)
+HEARING_TITLE = N_("Hearing impaired")
+HEARING_TEXT = N_('Subtitles that also describe sounds ("[door slams]").')
+FOR_TITLE = N_("For")
+FOR_TEXT = N_("Which downloads get subtitles automatically.")
 
 TMDB_KEY_LABEL = N_("TMDB key")
 TMDB_KEY_TEXT = N_(
@@ -302,6 +316,41 @@ def theme_from_name(name: str) -> ThemeMode:
         if theme_name(mode) == name:
             return mode
     raise ValueError(f"unknown theme name: {name!r}")
+
+
+# Settings → Subtitles' three choices, in the order their boxes show them.
+SUBTITLES_MODE_NAMES: dict[SubtitlesMode, str] = {
+    SubtitlesMode.AUTO: N_("Automatically"),
+    SubtitlesMode.ASK: N_("Only when I ask"),
+}
+HEARING_NAMES: dict[HearingImpaired, str] = {
+    HearingImpaired.AVOID: N_("Avoid"),
+    HearingImpaired.PREFER: N_("Prefer"),
+    HearingImpaired.EITHER: N_("Either"),
+}
+SUBTITLES_FOR_NAMES: dict[SubtitlesFor, str] = {
+    SubtitlesFor.BOTH: N_("Series and films"),
+    SubtitlesFor.SERIES: N_("Only series"),
+    SubtitlesFor.FILMS: N_("Only films"),
+}
+
+
+def choice_name[E: StrEnum](names: Mapping[E, str], value: E) -> str:
+    """A choice's shown name (translated)."""
+    return t(names[value])
+
+
+def choice_from_name[E: StrEnum](names: Mapping[E, str], name: str, default: E) -> E:
+    """The choice a shown name stands for; `default` for an unknown one."""
+    for value, text in names.items():
+        if t(text) == name:
+            return value
+    return default
+
+
+def segment_width(values: Sequence[str], measure: Callable[[str], float]) -> int:
+    """A row of choices just wide enough for its names (at least 260)."""
+    return max(260, sum(round(measure(value)) + 36 for value in values))
 
 
 def weekday_name(day: Weekday) -> str:
@@ -473,6 +522,9 @@ _FIELD_SECTIONS: dict[str, str] = {
     "subtitles_enabled": SECTION_SUBTITLES,
     "subtitle_languages": SECTION_SUBTITLES,
     "subtitles_folder": SECTION_SUBTITLES,
+    "subtitles_mode": SECTION_SUBTITLES,
+    "subtitles_hearing_impaired": SECTION_SUBTITLES,
+    "subtitles_for": SECTION_SUBTITLES,
     "opensubtitles_username": SECTION_SUBTITLES,
     "opensubtitles_password": SECTION_SUBTITLES,
     "opensubtitles_own_key": SECTION_SUBTITLES,
@@ -543,20 +595,27 @@ class _Box:
         self.body.pack(fill="both", expand=True, padx=_BOX_PAD_X, pady=_BOX_PAD_Y)
         self.body.grid_columnconfigure(0, weight=1)
         self._next_row = 0
+        self._labels: list[tuple[ctk.CTkLabel, theme.Color]] = []  # greyed by `set_enabled`
         if title is not None:
-            self.add(
-                ctk.CTkLabel(
-                    self.body,
-                    text=title,
-                    font=theme.font(16, bold=True),
-                    text_color=theme.TEXT,
-                    anchor="w",
-                ),
-                gap=0,
-                sticky="w",
+            heading = ctk.CTkLabel(
+                self.body,
+                text=title,
+                font=theme.font(16, bold=True),
+                text_color=theme.TEXT,
+                anchor="w",
             )
+            self.add(heading, gap=0, sticky="w")
+            self._labels.append((heading, theme.TEXT))
         if text is not None:
-            self.add(self.text(text), gap=2, sticky="w")
+            line = self.text(text)
+            self.add(line, gap=2, sticky="w")
+            self._labels.append((line, theme.TEXT_MUTED))
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Its name and explanation in their colours, or greyed (its controls are disabled by
+        the caller)."""
+        for label, color in self._labels:
+            label.configure(text_color=color if enabled else theme.TEXT_FAINT)
 
     def text(self, text: str, *, indent: int = 0) -> ctk.CTkLabel:
         """A muted explanation line in this box (not placed yet)."""
@@ -702,6 +761,10 @@ def _paint_background(widget: ctk.CTkFrame, color: theme.Color) -> None:
     widget.configure(fg_color=color)
 
 
+def _set_state(widget: ctk.CTkSegmentedButton, enabled: bool) -> None:
+    widget.configure(state="normal" if enabled else "disabled")
+
+
 # -- the dialog --------------------------------------------------------------------------------
 
 
@@ -739,6 +802,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._preview_task: asyncio.Task[None] | None = None
         self._subtitles = subtitles
         self._subtitle_rows: ctk.CTkFrame | None = None
+        # The When / Hearing impaired / For / Languages boxes, greyed while subtitles are off.
+        self._subtitle_choices: list[tuple[_Box, Callable[[bool], None]]] = []
         self._language_tags: LanguageTags | None = None
         self._account: AccountRow | None = None
         self._own_key: OwnKeyRow | None = None
@@ -795,6 +860,15 @@ class SettingsDialog(ctk.CTkToplevel):
         self._auto_new_shows = ctk.BooleanVar(value=current.auto_download_new_shows)
         self._subtitles_on = ctk.BooleanVar(value=current.subtitles_enabled)
         self._subtitles_folder = ctk.StringVar(value=current.subtitles_folder)
+        self._subtitles_mode = ctk.StringVar(
+            value=choice_name(SUBTITLES_MODE_NAMES, current.subtitles_mode)
+        )
+        self._subtitles_hearing = ctk.StringVar(
+            value=choice_name(HEARING_NAMES, current.subtitles_hearing_impaired)
+        )
+        self._subtitles_for = ctk.StringVar(
+            value=choice_name(SUBTITLES_FOR_NAMES, current.subtitles_for)
+        )
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True)
@@ -1156,10 +1230,11 @@ class SettingsDialog(ctk.CTkToplevel):
     # -- Subtitles -----------------------------------------------------------------------------
 
     def _build_subtitles(self, subtitles: SubtitleService) -> _Page:
-        """The Subtitles page: the switch (with today's downloads left, when known) and the
-        credit line, and while it is on the languages, the finished-downloads folder, the
-        OpenSubtitles account and the own key. Without an API key in this version: one quiet
-        line instead."""
+        """The Subtitles page: the switch, subtitles' master switch (with today's downloads
+        left, when known), and the credit line; When, Hearing impaired, For and the languages,
+        greyed while it is off; while it is on the finished-downloads folder, the OpenSubtitles
+        account and the own key. Without an API key in this version: one quiet line
+        instead."""
         if not subtitles.available:
             return self._new_page(SECTION_SUBTITLES, UNAVAILABLE_TEXT)
         current = self._settings.current
@@ -1183,15 +1258,33 @@ class SettingsDialog(ctk.CTkToplevel):
             link(switch.body, t(CREDIT_TEXT), CREDIT_URL, size=SMALL_SIZE), gap=8, sticky="w"
         )
 
+        choices_rows = ctk.CTkFrame(page.frame, fg_color="transparent")
+        choices_rows.grid_columnconfigure(0, weight=1)
+        page.add(choices_rows, gap=0)
         rows = ctk.CTkFrame(page.frame, fg_color="transparent")
         rows.grid_columnconfigure(0, weight=1)
         page.add(rows, gap=0)
         self._subtitle_rows = rows
         self._show_quota()
 
-        languages = self._rows_box(rows, t(LANGUAGES_TITLE), t(LANGUAGES_TEXT), first=True)
+        measure = theme.font(DETAIL_SIZE, bold=True).measure
+        choices: tuple[tuple[str, str, Mapping[Any, str], ctk.StringVar], ...] = (
+            (WHEN_TITLE, WHEN_TEXT, SUBTITLES_MODE_NAMES, self._subtitles_mode),
+            (HEARING_TITLE, HEARING_TEXT, HEARING_NAMES, self._subtitles_hearing),
+            (FOR_TITLE, FOR_TEXT, SUBTITLES_FOR_NAMES, self._subtitles_for),
+        )
+        for title, text, names, variable in choices:
+            box = self._rows_box(choices_rows, t(title), t(text))
+            values = [t(name) for name in names.values()]
+            segmented = self._segmented(
+                box.body, values, variable, width=segment_width(values, measure)
+            )
+            box.add(segmented, sticky="w")
+            self._subtitle_choices.append((box, functools.partial(_set_state, segmented)))
+        languages = self._rows_box(choices_rows, t(LANGUAGES_TITLE), t(LANGUAGES_TEXT))
         self._language_tags = LanguageTags(languages.body, current.subtitle_languages)
         languages.add(self._language_tags, sticky="w")
+        self._subtitle_choices.append((languages, self._language_tags.set_enabled))
 
         folder = self._rows_box(rows, t(FOLDER_LABEL), t(FOLDER_HINT))
         line = folder.frame_row()
@@ -1229,18 +1322,22 @@ class SettingsDialog(ctk.CTkToplevel):
         return page
 
     @staticmethod
-    def _rows_box(
-        rows: ctk.CTkFrame, title: str, text: str | None = None, *, first: bool = False
-    ) -> _Box:
-        """A box of the Subtitles rows that show while subtitles are on."""
+    def _rows_box(rows: ctk.CTkFrame, title: str, text: str | None = None) -> _Box:
+        """A box of the Subtitles rows below the switch."""
         box = _Box(rows, title, text)
         box.frame.grid(row=len(rows.grid_slaves()), column=0, sticky="ew", pady=(_BOX_GAP, 0))
         return box
 
     def _show_subtitle_rows(self) -> None:
+        """Follow the switch: the choices greyed or not, the folder / account / own key rows
+        shown or not."""
         if self._subtitle_rows is None:
             return
-        if self._subtitles_on.get():
+        on = self._subtitles_on.get()
+        for box, set_enabled in self._subtitle_choices:
+            box.set_enabled(on)
+            set_enabled(on)
+        if on:
             self._subtitle_rows.grid()
         else:
             self._subtitle_rows.grid_remove()
@@ -1272,6 +1369,15 @@ class SettingsDialog(ctk.CTkToplevel):
             "subtitles_enabled": self._subtitles_on.get(),
             "subtitle_languages": self._language_tags.languages,
             "subtitles_folder": self._subtitles_folder.get(),
+            "subtitles_mode": choice_from_name(
+                SUBTITLES_MODE_NAMES, self._subtitles_mode.get(), SubtitlesMode.AUTO
+            ),
+            "subtitles_hearing_impaired": choice_from_name(
+                HEARING_NAMES, self._subtitles_hearing.get(), HearingImpaired.AVOID
+            ),
+            "subtitles_for": choice_from_name(
+                SUBTITLES_FOR_NAMES, self._subtitles_for.get(), SubtitlesFor.BOTH
+            ),
             "opensubtitles_username": username,
             "opensubtitles_password": password,
             "opensubtitles_own_key": self._own_key.value,

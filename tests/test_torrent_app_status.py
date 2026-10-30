@@ -1,6 +1,7 @@
 """The torrent-program status line with qBittorrent: found and set up ("installed and ready"),
 found but still with its pop-up (the "Set up qBittorrent for AirGrabber" button), setting up,
-waiting for qBittorrent to close, failing; installing it from here sets it up too; and the
+waiting for qBittorrent to close, failing; installing it from here sets it up too (a failed
+install says why, with "Try again" where it helps); and the
 "AirGrabber look in qBittorrent" switch (shown once set up, not over a theme of the user's own;
 switching waits for qBittorrent to close). A fake TorrentAppService; nothing is installed or
 changed on this PC."""
@@ -16,16 +17,23 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.models import QBittorrentSetupResult, QBittorrentState, TorrentApp
+from app.models import (
+    QBittorrentInstallResult,
+    QBittorrentSetupResult,
+    QBittorrentState,
+    TorrentApp,
+)
 from app.ui import theme
 from app.ui import torrent_app_status as tas
 from app.ui.torrent_app_status import (
     LOOK_SWITCH_TEXT,
+    INSTALL_PROBLEM_TEXTS,
     LOOK_WAITING_TEXT,
     SETUP_BUTTON_TEXT,
     TorrentAppStatus,
     TorrentStatus,
     found_status,
+    install_reason,
     look_line,
     setup_status,
     torrent_look,
@@ -74,6 +82,25 @@ class LookTests(unittest.TestCase):
         self.assertFalse(torrent_look(TorrentStatus.FOUND, "Deluge").setup_button)
         self.assertEqual(SETUP_BUTTON_TEXT, "Set up qBittorrent for AirGrabber (no pop-up for each download)")
 
+    def test_why_an_install_failed(self) -> None:
+        failed = torrent_look(TorrentStatus.FAILED, problem=QBittorrentInstallResult.DECLINED)
+        self.assertEqual((failed.text, failed.color), ("Couldn't install it automatically.", theme.DANGER))
+        self.assertTrue(failed.download_link and failed.retry_button)
+        self.assertEqual(
+            failed.reason, "Windows asked for permission and didn't get it. Try again and choose Yes."
+        )
+        # Every problem has its words; only winget missing and a blocking policy get no retry.
+        problems = set(QBittorrentInstallResult) - {QBittorrentInstallResult.INSTALLED}
+        self.assertEqual(set(INSTALL_PROBLEM_TEXTS), problems)
+        no_retry = {p for p in problems if not install_reason(p)[1]}
+        self.assertEqual(
+            no_retry, {QBittorrentInstallResult.NO_WINGET, QBittorrentInstallResult.BLOCKED}
+        )
+        self.assertEqual(install_reason(None), ("", False))
+        self.assertEqual(install_reason(QBittorrentInstallResult.INSTALLED), ("", False))
+        plain = torrent_look(TorrentStatus.FAILED)  # no reason known: the line alone
+        self.assertEqual((plain.reason, plain.retry_button), ("", False))
+
 
 class FakeTorrentApp:
     """TorrentAppService: `app` found, qBittorrent's `state`, setup answers in turn; AirGrabber's
@@ -84,14 +111,20 @@ class FakeTorrentApp:
         app: TorrentApp | None,
         state: QBittorrentState | None = None,
         answers: list[QBittorrentSetupResult] | None = None,
-        installed: bool = True,
+        installed: bool | QBittorrentInstallResult = True,
         look: bool | None = None,
         look_answers: list[QBittorrentSetupResult] | None = None,
     ) -> None:
         self.app = app
         self.state = state
         self.answers = list(answers or [QBittorrentSetupResult.DONE])
-        self.installed = installed
+        # One answer, or a list answered in turn (the last one repeats).
+        self.installs: list[QBittorrentInstallResult] = (
+            [QBittorrentInstallResult.INSTALLED if installed else QBittorrentInstallResult.FAILED]
+            if isinstance(installed, bool)
+            else [installed]
+        )
+        self.install_calls = 0
         self.setups = 0
         self.look = look
         self.look_answers = list(look_answers or [QBittorrentSetupResult.DONE])
@@ -113,10 +146,12 @@ class FakeTorrentApp:
     async def qbittorrent_state(self) -> QBittorrentState | None:
         return self.state
 
-    async def install_qbittorrent(self) -> bool:
-        if self.installed:
+    async def install_qbittorrent(self) -> QBittorrentInstallResult:
+        self.install_calls += 1
+        answer = self.installs.pop(0) if len(self.installs) > 1 else self.installs[0]
+        if answer.installed:
             self.app = QBIT
-        return self.installed
+        return answer
 
     async def set_up_qbittorrent(self) -> QBittorrentSetupResult:
         self.setups += 1
@@ -201,6 +236,41 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         widget._install_button.invoke()
         await self.until(lambda: widget.status is TorrentStatus.READY)
         self.assertEqual(service.setups, 1)
+
+    async def test_a_failed_install_says_why_and_tries_again(self) -> None:
+        service = FakeTorrentApp(None, installed=QBittorrentInstallResult.OFFLINE)
+        widget = self.status(service)
+        widget.refresh()
+        await self.until(lambda: widget.status is TorrentStatus.MISSING)
+        self.assertFalse(widget._reason_row.winfo_manager())
+        widget._install_button.invoke()
+        await self.until(lambda: widget.status is TorrentStatus.FAILED)
+        self.assertIs(widget.install_problem, QBittorrentInstallResult.OFFLINE)
+        self.assertEqual(widget._label.cget("text"), "Couldn't install it automatically.")
+        self.assertTrue(widget._get_link.winfo_manager())  # "Get qBittorrent" stays
+        self.assertTrue(widget._reason_row.winfo_manager())
+        self.assertEqual(
+            widget._reason.cget("text"),
+            "Windows couldn't download it. Check your internet connection, then try again.",
+        )
+        self.assertTrue(widget._retry_button.winfo_manager())
+        service.installs = [QBittorrentInstallResult.INSTALLED]
+        widget._retry_button.invoke()
+        await self.until(lambda: widget.status is TorrentStatus.READY)
+        self.assertEqual(service.install_calls, 2)
+        self.assertFalse(widget._reason_row.winfo_manager())
+        self.assertIsNone(widget.install_problem)
+
+    async def test_without_winget_only_the_website_helps(self) -> None:
+        service = FakeTorrentApp(None, installed=QBittorrentInstallResult.NO_WINGET)
+        widget = self.status(service)
+        widget.refresh()
+        await self.until(lambda: widget.status is TorrentStatus.MISSING)
+        widget._install_button.invoke()
+        await self.until(lambda: widget.status is TorrentStatus.FAILED)
+        self.assertIn("winget", widget._reason.cget("text"))
+        self.assertFalse(widget._retry_button.winfo_manager())
+        self.assertTrue(widget._get_link.winfo_manager())
 
     async def test_another_program_has_no_button(self) -> None:
         widget = self.status(FakeTorrentApp(TorrentApp(name="Deluge")))

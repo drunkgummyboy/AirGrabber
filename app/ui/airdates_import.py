@@ -3,6 +3,8 @@
 AirdatesImportPanel is shared by the first-run welcome (step 2) and the Import Shows dialog's
 "From airdates.tv" tab. It previews through `services.airdates` and imports the ticked TVMaze
 ids through `LibraryService.import_shows`; its host learns the outcome through `on_done(count)`.
+Shows that couldn't be imported (TVMaze unreachable) are named under the result, with "Try
+again" for just those. A "Paste" button beside the paste box pastes what was copied.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import tkinter as tk
 import webbrowser
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from typing import Any, Protocol
 
 import customtkinter as ctk
@@ -30,12 +32,13 @@ from app.ui.dialog_kit import (
     text_label,
 )
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width
+from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines
 
 AIRDATES_URL = "https://www.airdates.tv/"
 # Shown through t().
 NETWORK_ERROR = N_("Couldn't reach airdates.tv. Check your internet connection and try again.")
 REVIEW_HINT = N_("Untick any that don't look right.")
+NOTHING_TO_PASTE = N_("Nothing to paste yet: copy the text on airdates.tv first.")
 
 Progress = Callable[[int, int], None]
 
@@ -48,6 +51,9 @@ _PASTE_HEIGHT = 84  # about three lines of DETAIL_SIZE text
 _CHECKBOX_SIZE = 22
 _ROW_TEXT_GAP = 10
 _LIST_INSET = 44  # list padding, its scrollbar and the checkbox column
+_PASTE_BUTTON_WIDTH = 100
+_PASTE_BUTTON_HEIGHT = 32
+_DETAIL_LINES = 2  # the "Couldn't import: …" line wraps to at most this many lines
 
 
 class PreviewFinder(Protocol):
@@ -139,10 +145,26 @@ def imported_text(count: int) -> str:
     return tn("Imported {n} show", "Imported {n} shows", count)
 
 
-def import_notes(result: ImportResult) -> str:
-    """A muted line after an import when some shows didn't make it (TVMaze unreachable)."""
-    missed = len(result.failed) + len(result.not_found)
-    return t("{n} couldn't be imported; try again later", n=missed) if missed else ""
+def missed_entries(result: ImportResult) -> list[str]:
+    """The entries (TVMaze ids) an import didn't add: lookups that failed, then unknown ids."""
+    return [*result.failed, *result.not_found]
+
+
+def import_notes(result: ImportResult, names: Mapping[str, str] | None = None) -> str:
+    """A muted line after an import naming the shows that didn't make it (TVMaze unreachable):
+    "Couldn't import: Fargo — try again later". `names` maps the imported entries (TVMaze ids)
+    to the names shown; an entry without one shows as it is."""
+    missed = missed_entries(result)
+    if not missed:
+        return ""
+    known = names or {}
+    shown = ", ".join(known.get(entry, entry) for entry in missed)
+    return t("Couldn't import: {names} — try again later", names=shown)
+
+
+def retry_ids(result: ImportResult) -> list[int]:
+    """The TVMaze ids "Try again" imports: the ones this import didn't add."""
+    return [int(entry) for entry in missed_entries(result) if entry.isascii() and entry.isdigit()]
 
 
 def _open_airdates() -> None:
@@ -197,6 +219,8 @@ class AirdatesImportPanel(ctk.CTkFrame):
         self._list_height = list_height
         self._rows: list[_Row] = []
         self._task: asyncio.Task[None] | None = None
+        self._imported = 0  # shows added since the review showed, "Try again" included
+        self._retry_ids: list[int] = []
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -243,6 +267,11 @@ class AirdatesImportPanel(ctk.CTkFrame):
         text_label(page, t("Paste it here"), wraplength=text_width).grid(
             row=2, column=1, sticky="w", pady=(_ROW_GAP, 0)
         )
+        self._paste_button = secondary_button(
+            page, t("Paste"), self.paste, width=_PASTE_BUTTON_WIDTH
+        )
+        self._paste_button.configure(height=_PASTE_BUTTON_HEIGHT)
+        self._paste_button.grid(row=2, column=2, sticky="se", padx=(16, 0), pady=(_ROW_GAP, 0))
 
         self._text = ctk.CTkTextbox(
             page,
@@ -277,6 +306,24 @@ class AirdatesImportPanel(ctk.CTkFrame):
 
     def focus_paste(self) -> None:
         self._text.focus_set()
+
+    def paste(self) -> None:
+        """The Paste button: what was copied goes into the box at the cursor (replacing a
+        selection), as Ctrl+V does; with nothing copied, a line says so."""
+        try:
+            copied = self.clipboard_get()
+        except tk.TclError:  # an empty clipboard, or no text on it
+            copied = ""
+        if not copied.strip():
+            self._paste_status.configure(text=t(NOTHING_TO_PASTE), text_color=theme.WARNING)
+            return
+        box = self._text
+        if box.tag_ranges("sel"):
+            box.delete("sel.first", "sel.last")
+        box.insert("insert", copied)
+        box.see("insert")
+        box.focus_set()
+        self._paste_status.configure(text="")
 
     def _find(self) -> None:
         if self._task is not None and not self._task.done():
@@ -377,6 +424,11 @@ class AirdatesImportPanel(ctk.CTkFrame):
             bottom, import_label(0), self._import, width=_SIDE_BUTTON_WIDTH
         )
         self._import_button.grid(row=0, column=2, sticky="e", padx=(10, 0))
+        # In the Import button's place once some shows couldn't be imported: just those again.
+        self._retry_button = primary_button(
+            bottom, t("Try again"), self._retry, width=_SIDE_BUTTON_WIDTH
+        )
+        self._status_width = status_width
         return page
 
     def show_review(self, preview: AirdatesPreview) -> None:
@@ -403,6 +455,9 @@ class AirdatesImportPanel(ctk.CTkFrame):
         self._review_status.configure(text="")
         self._review_detail.configure(text="")
         self._review_detail.pack_forget()
+        self._imported = 0
+        self._retry_ids = []
+        self._retry_button.grid_remove()
         self._back_button.configure(state="normal")
         self._import_button.grid()
         self._update_import_button()
@@ -514,10 +569,28 @@ class AirdatesImportPanel(ctk.CTkFrame):
         ids = self.ticked_ids()
         if not ids or (self._task is not None and not self._task.done()):
             return
+        self._imported = 0
         self._start(self._run_import(ids), "airdates-import")
+
+    def _retry(self) -> None:
+        """Try again: import just the shows the last import didn't add."""
+        ids = list(self._retry_ids)
+        if not ids or (self._task is not None and not self._task.done()):
+            return
+        self._start(self._run_import(ids), "airdates-import-retry")
+
+    def show_names(self) -> dict[str, str]:
+        """The review's shows by the entry `import_shows` gets for them (the TVMaze id)."""
+        return {
+            str(row.match.show_id): row.match.show_name or row.match.source_name
+            for row in self._rows
+            if row.match.show_id is not None
+        }
 
     async def _run_import(self, ids: list[int]) -> None:
         self._set_review_busy(True)
+        self._retry_button.grid_remove()
+        self._review_detail.pack_forget()
         self._review_status.configure(
             text=importing_text(0, len(ids)), text_color=theme.TEXT_MUTED
         )
@@ -529,18 +602,29 @@ class AirdatesImportPanel(ctk.CTkFrame):
             if self.winfo_exists():
                 self._set_review_busy(False)
                 self._review_status.configure(text="")
+                if self._retry_ids:  # a "Try again" that didn't finish: it can be tried again
+                    self._import_button.grid_remove()
+                    self._retry_button.grid()
             raise
         if not self.winfo_exists():
             return
-        count = len(result.added)
+        self._imported += len(result.added)
+        self._retry_ids = retry_ids(result)
         self._back_button.configure(state="normal")
         self._import_button.grid_remove()
-        self._review_status.configure(text=imported_text(count), text_color=theme.SUCCESS)
-        if detail := import_notes(result):
-            self._review_detail.configure(text=detail)
+        self._review_status.configure(
+            text=imported_text(self._imported), text_color=theme.SUCCESS
+        )
+        if detail := import_notes(result, self.show_names()):
+            measure = theme.font(DETAIL_SIZE).measure
+            fitted = fit_to_lines(detail, self._status_width - SLACK, _DETAIL_LINES, measure)
+            self._review_detail.configure(text=fitted)
             self._review_detail.pack(anchor="w")
+        if self._retry_ids:
+            self._retry_button.configure(state="normal")
+            self._retry_button.grid(row=0, column=2, sticky="e", padx=(10, 0))
         if self._on_done is not None:
-            self._on_done(count)
+            self._on_done(self._imported)
 
     def _import_progress(self, done: int, total: int) -> None:
         if self.winfo_exists():
@@ -550,6 +634,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
         state = "disabled" if busy else "normal"
         self._back_button.configure(state=state)
         self._import_button.configure(state=state)
+        self._retry_button.configure(state=state)
         for row in self._rows:
             if row.checkbox is not None:
                 row.checkbox.configure(state=state)

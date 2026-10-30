@@ -408,6 +408,20 @@ def chip(
 
 MenuItem = tuple[str, Callable[[], None]]
 
+
+@dataclass(frozen=True, slots=True)
+class MenuEntry:
+    """A popup menu item that can be greyed out: `action` None = not available now, `tip`
+    says why (or what it does)."""
+
+    label: str
+    action: Callable[[], None] | None
+    tip: str = ""
+
+
+def _entry(item: MenuItem | MenuEntry) -> MenuEntry:
+    return item if isinstance(item, MenuEntry) else MenuEntry(item[0], item[1])
+
 MENU_ITEM_HEIGHT = 34
 MENU_FONT_SIZE = 14
 MENU_MIN_WIDTH = 200
@@ -431,6 +445,20 @@ def menu_position(
     return x, y
 
 
+def point_position(
+    point: tuple[int, int], size: tuple[int, int], bounds: tuple[int, int, int, int]
+) -> tuple[int, int]:
+    """Where a right-click menu of `size` goes for the pointer at `point`: its top-left corner
+    there, left of / above the pointer where it would leave `bounds` (x, y, width, height).
+    All in screen pixels."""
+    px, py = point
+    width, height = size
+    bx, by, bw, bh = bounds
+    x = px if px + width <= bx + bw else max(bx, px - width)
+    y = py if py + height <= by + bh else max(by, py - height)
+    return x, y
+
+
 class PopupMenu:
     """A small menu of items under a widget, drawn like the rest of the app (Tk's own menus
     ignore the colours on Windows). Closes on a choice, Escape, a click elsewhere, when its
@@ -438,12 +466,20 @@ class PopupMenu:
 
     _open: PopupMenu | None = None
 
-    def __init__(self, anchor: tk.Misc, items: Sequence[MenuItem]) -> None:
+    def __init__(
+        self,
+        anchor: tk.Misc,
+        items: Sequence[MenuItem | MenuEntry],
+        *,
+        point: tuple[int, int] | None = None,
+    ) -> None:
+        """`point`: open at the pointer (screen pixels) instead of under `anchor`."""
         if PopupMenu._open is not None:
             PopupMenu._open.close()
         PopupMenu._open = self
         self._closed = False
-        self.labels = tuple(label for label, _ in items)
+        entries = [_entry(item) for item in items]
+        self.labels = tuple(entry.label for entry in entries)
         top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.pick(theme.EDGE))
         top.withdraw()
         top.overrideredirect(True)
@@ -451,10 +487,11 @@ class PopupMenu:
         box = ctk.CTkFrame(top, fg_color=theme.SURFACE, corner_radius=0)
         box.pack(fill="both", expand=True, padx=1, pady=1)
         self.buttons: list[ctk.CTkButton] = []
-        for label, action in items:
+        for entry in entries:
+            action = entry.action
             button = ctk.CTkButton(
                 box,
-                text=label,
+                text=entry.label,
                 width=MENU_MIN_WIDTH,
                 height=MENU_ITEM_HEIGHT,
                 corner_radius=0,
@@ -463,9 +500,13 @@ class PopupMenu:
                 fg_color="transparent",
                 hover_color=theme.MENU_HOVER,
                 text_color=theme.TEXT,
-                command=lambda action=action: self._choose(action),
+                text_color_disabled=theme.TEXT_FAINT,
+                state="normal" if action is not None else "disabled",
+                command=(lambda action=action: self._choose(action)) if action else None,
             )
             button.pack(fill="x", padx=4, pady=(4 if not self.buttons else 0, 0))
+            if entry.tip:
+                add_tooltip(button, entry.tip)
             self.buttons.append(button)
         tk.Frame(box, height=4, bg=theme.pick(theme.SURFACE)).pack()  # bottom padding
         # Closed once the repaint is over: destroying it now would upset CTk's list of widgets
@@ -479,11 +520,16 @@ class PopupMenu:
         # The anchor's window bounds the menu: winfo_* are all in the same (physical) pixels,
         # unlike wm_maxsize() of a new window.
         window = anchor.winfo_toplevel()
-        x, y = menu_position(
-            (anchor.winfo_rootx(), anchor.winfo_rooty(), anchor.winfo_width(), anchor.winfo_height()),
-            (top.winfo_reqwidth(), top.winfo_reqheight()),
-            (window.winfo_rootx(), window.winfo_rooty(), window.winfo_width(), window.winfo_height()),
-        )
+        size = (top.winfo_reqwidth(), top.winfo_reqheight())
+        bounds = (window.winfo_rootx(), window.winfo_rooty(), window.winfo_width(), window.winfo_height())
+        if point is not None:
+            x, y = point_position(point, size, bounds)
+        else:
+            x, y = menu_position(
+                (anchor.winfo_rootx(), anchor.winfo_rooty(), anchor.winfo_width(), anchor.winfo_height()),
+                size,
+                bounds,
+            )
         top.geometry(f"+{x}+{y}")
         top.deiconify()
         top.lift()
@@ -535,8 +581,14 @@ class PopupMenu:
             self.close()
 
 
-def popup_menu(anchor: tk.Misc, items: Sequence[MenuItem]) -> PopupMenu | None:
-    """A small menu of `items` (label, action) under `anchor`; none without items."""
+def popup_menu(
+    anchor: tk.Misc,
+    items: Sequence[MenuItem | MenuEntry],
+    *,
+    point: tuple[int, int] | None = None,
+) -> PopupMenu | None:
+    """A small menu of `items` ((label, action) or a MenuEntry, which may be greyed out with a
+    tip) under `anchor`, or at the pointer's `point`; none without items."""
     if not items:
         return None
-    return PopupMenu(anchor, items)
+    return PopupMenu(anchor, items, point=point)

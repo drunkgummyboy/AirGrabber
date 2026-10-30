@@ -24,7 +24,7 @@ import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar
 
 import customtkinter as ctk
 
@@ -279,6 +279,17 @@ def download_status_text(label: str, result: QuickDownloadResult) -> str:
     return " · ".join(parts)
 
 
+class StateView(Protocol):
+    """A widget showing a title's run state: the cards' DownloadControl, the show and film
+    windows' RowActions (app/ui/row_actions.py)."""
+
+    key: DownloadKey
+
+    def repaint(self) -> None: ...
+
+    def winfo_exists(self) -> Any: ...
+
+
 class DownloadStates:
     """The run state of every one-click download by title, and the controls showing them."""
 
@@ -287,7 +298,7 @@ class DownloadStates:
         (without it the tip says nothing about it)."""
         self._states: dict[DownloadKey, RunState] = {}
         self._batches: dict[BatchKey, BatchState] = {}
-        self._controls: dict[DownloadKey, list[DownloadControl[Any]]] = {}
+        self._controls: dict[DownloadKey, list[StateView]] = {}
         self._settings = settings
 
     def get(self, key: DownloadKey) -> RunState | None:
@@ -330,15 +341,15 @@ class DownloadStates:
         for control in self._live(key):
             control.repaint()
 
-    def attach(self, control: DownloadControl[Any]) -> None:
+    def attach(self, control: StateView) -> None:
         self._live(control.key).append(control)
 
-    def detach(self, control: DownloadControl[Any]) -> None:
+    def detach(self, control: StateView) -> None:
         controls = self._controls.get(control.key, [])
         if control in controls:
             controls.remove(control)
 
-    def _live(self, key: DownloadKey) -> list[DownloadControl[Any]]:
+    def _live(self, key: DownloadKey) -> list[StateView]:
         """The title's controls whose widgets still exist (cards go when a page reloads)."""
         live = [control for control in self._controls.get(key, []) if _exists(control)]
         self._controls = {k: v for k, v in self._controls.items() if v and k != key}
@@ -363,6 +374,9 @@ class DownloadActions(Generic[T]):
     # One-click downloads of several titles, one after another, as the batch of the given key
     # (`download_in_turn`); None: not offered.
     download_all: Callable[[BatchKey, Sequence[T]], None] | None = None
+    # A one-click download of a title that was downloaded before (↻ Again → Auto); None: not
+    # offered.
+    download_again: Callable[[T], None] | None = None
 
 
 # One title of a batch: its key and its one-click run, which returns False when the grab

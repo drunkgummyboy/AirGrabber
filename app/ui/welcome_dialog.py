@@ -53,8 +53,10 @@ from app.ui.dialog_kit import (
     NAV_GAP,
     PAD_X,
     PAD_Y,
+    FitScroll,
     activate_later,
     heading_row,
+    max_dialog_height,
     place_over,
     primary_button,
     secondary_button,
@@ -365,18 +367,22 @@ class WelcomeDialog(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
-        # The steps share one cell (the one on top shows); this frame underneath holds the
-        # content width.
-        ctk.CTkFrame(body, width=CONTENT_WIDTH, height=1, fg_color="transparent").grid(
+        # The steps share one cell (the shown one is gridded), which scrolls only when the
+        # screen is too small for the tallest step; this frame underneath holds the content
+        # width.
+        self._steps = FitScroll(body)
+        self._steps.grid(row=0, column=0, sticky="nsew")
+        steps = self._steps
+        ctk.CTkFrame(steps, width=CONTENT_WIDTH, height=1, fg_color="transparent").grid(
             row=0, column=0, sticky="n"
         )
         self._pages = {
-            Page.WELCOME: self._build_welcome(body),
-            Page.AIRDATES: self._build_airdates(body),
-            Page.AIRDATES_IMPORT: self._build_airdates_import(body, airdates, library),
-            Page.DOWNLOAD: self._build_download(body),
-            Page.TMDB: self._build_tmdb(body, discovery),
-            Page.QUICK: self._build_quick(body),
+            Page.WELCOME: self._build_welcome(steps),
+            Page.AIRDATES: self._build_airdates(steps),
+            Page.AIRDATES_IMPORT: self._build_airdates_import(steps, airdates, library),
+            Page.DOWNLOAD: self._build_download(steps),
+            Page.TMDB: self._build_tmdb(steps, discovery),
+            Page.QUICK: self._build_quick(steps),
         }
         for page in self._pages.values():
             page.grid(row=0, column=0, sticky="nsew")
@@ -387,8 +393,8 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._left = secondary_button(nav, "", self._on_left)
         self._right = primary_button(nav, "", self._on_right)
 
-        self._show_page(Page.WELCOME)
         self._keep_tallest_size()
+        self._show_page(Page.WELCOME)
         place_over(self, master)
         activate_later(self)
         self._spawn(self._load_logo(), "welcome-logo")
@@ -537,7 +543,9 @@ class WelcomeDialog(ctk.CTkToplevel):
         """Fix the dialog at its tallest (the downloads step with the torrent program's button and
         the folder row, or the airdates.tv review with every kind of line), so it doesn't change size
         between steps or while a step changes. The download cards' area takes the height of the
-        cards with the NAS / other computer form folded; with the form open they scroll."""
+        cards with the NAS / other computer form folded; with the form open they scroll. On a
+        screen too small for that (`max_dialog_height`) the dialog is as tall as it allows and a
+        step taller than its room scrolls, with the scrollbar's room kept beside every step."""
         self._torrent.show(TorrentStatus.SETUP_NEEDED)  # its tallest: the line and a button
         self._remote_card.show_extra(False)
         self._folder_card.show_extra(True)
@@ -548,8 +556,18 @@ class WelcomeDialog(ctk.CTkToplevel):
         cards = math.ceil(self._download_cards.winfo_reqheight() / scaling)
         self._download_cards.configure(height=cards)
         self.update_idletasks()
-        width = math.ceil(self.winfo_reqwidth() / scaling)
+        steps = self._steps  # every step gridded: as tall as the tallest
+        tallest = math.ceil(steps.content_height() / scaling)
+        steps.configure(width=math.ceil(steps.winfo_reqwidth() / scaling), height=tallest)
+        self.update_idletasks()
         height = math.ceil(self.winfo_reqheight() / scaling)
+        room = max_dialog_height(self.master, scaling)
+        if height > room:
+            steps.configure(height=max(1, tallest - (height - room)))
+            steps.reserve_bar()
+            self.update_idletasks()
+            height = room
+        width = steps.width_needed(scaling) + 2 * PAD_X
         self._torrent.show(TorrentStatus.LOOKING)
         self._select_mode(self._mode)
         self._airdates_panel.show_paste()
@@ -558,7 +576,13 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _show_page(self, page: Page) -> None:
         self._page = page
-        self._pages[page].tkraise()
+        for which, frame in self._pages.items():
+            if which is page:
+                frame.grid(row=0, column=0, sticky="nsew")
+            else:
+                frame.grid_remove()
+        self._steps.to_top()
+        self._steps.refit()
         left, right = nav_buttons(page, imported=self._imported)
         for button, text, side in ((self._left, left, "left"), (self._right, right, "right")):
             if text is None:

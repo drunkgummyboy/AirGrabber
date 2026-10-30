@@ -120,7 +120,12 @@ class TmdbKeyGuide(ctk.CTkFrame):
         self._key = tk.StringVar(master=self)
 
         self.grid_columnconfigure(1, weight=1)
-        self._step_row(0, t("Create a free account"), None, (t("Open sign-up"), SIGNUP_URL))
+        self._step_row(
+            0,
+            t("Create a free account, or sign in if you already have one"),
+            None,
+            (t("Sign up or sign in"), SIGNUP_URL),
+        )
         self._step_row(
             1,
             t("Ask for an API key"),

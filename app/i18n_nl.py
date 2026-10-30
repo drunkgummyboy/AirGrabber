@@ -138,9 +138,8 @@ NL: dict[str, str] = {
     "You can still change this for each show.": "Je kunt dit nog per serie aanpassen.",
     "Download new episodes for shows I start following":
         "Nieuwe afleveringen downloaden van series die ik ga volgen",
-    "Automatic subtitles": "Automatische ondertitels",
-    "AirGrabber looks for subtitles for what you download, every half hour.":
-        "AirGrabber zoekt elk halfuur ondertitels voor wat je downloadt.",
+    "AirGrabber finds subtitles for what you download on OpenSubtitles.com.":
+        "AirGrabber zoekt ondertitels voor wat je downloadt op OpenSubtitles.com.",
     "Languages": "Talen",
     "AirGrabber looks for subtitles in each of these languages.":
         "AirGrabber zoekt ondertitels in elk van deze talen.",
@@ -302,6 +301,25 @@ NL: dict[str, str] = {
         "Sluit qBittorrent om af te ronden: AirGrabber stelt het in zodra het dicht is.",
     "Couldn't change qBittorrent's settings.": "De instellingen van qBittorrent konden niet worden aangepast.",
     "✓ qBittorrent is installed and ready": "✓ qBittorrent is geïnstalleerd en klaar",
+    "Try again": "Opnieuw proberen",
+    "Windows' app installer (winget) isn't on this PC. Get qBittorrent from its website.":
+        "Het installatieprogramma van Windows (winget) staat niet op deze pc. Download qBittorrent van de website.",
+    "Windows couldn't download it. Check your internet connection, then try again.":
+        "Windows kon het niet downloaden. Controleer je internetverbinding en probeer het opnieuw.",
+    "Windows asked for permission and didn't get it. Try again and choose Yes.":
+        "Windows vroeg om toestemming en kreeg die niet. Probeer opnieuw en kies Ja.",
+    "Another installation is still running. Wait until it's done, then try again.":
+        "Er loopt nog een andere installatie. Wacht tot die klaar is en probeer het dan opnieuw.",
+    "The disk is full. Make some room, then try again.":
+        "De schijf is vol. Maak wat ruimte vrij en probeer het opnieuw.",
+    "This PC's settings don't allow installing programs. Ask whoever manages it.":
+        "De instellingen van deze pc staan installeren niet toe. Vraag het aan wie de pc beheert.",
+    "Windows needs a restart first. Restart the PC, then try again.":
+        "Windows moet eerst opnieuw opstarten. Start de pc opnieuw op en probeer het dan nog eens.",
+    "qBittorrent is installed but doesn't open torrents yet. Start it once and choose Yes when it asks.":
+        "qBittorrent is geïnstalleerd maar opent nog geen torrents. Start het één keer en kies Ja als het dat vraagt.",
+    "Try again, or get qBittorrent from its website and install it yourself.":
+        "Probeer opnieuw, of download qBittorrent van de website en installeer het zelf.",
     # app/ui/torrent_app_status.py: AirGrabber's look in qBittorrent
     "AirGrabber look in qBittorrent": "AirGrabber-uiterlijk in qBittorrent",
     "qBittorrent in AirGrabber's colours, light or dark like Windows (qBittorrent 5). AirGrabber changes it while qBittorrent is closed.":
@@ -317,7 +335,9 @@ NL: dict[str, str] = {
         "Die sleutel werkt niet. Kijk na of je de \"API Key\" hebt gekopieerd (niet het lange token).",
     "Couldn't reach The Movie Database. Check your internet connection and try again.":
         "The Movie Database is niet bereikbaar. Controleer je internetverbinding en probeer opnieuw.",
-    "Open sign-up": "Inschrijfpagina",
+    "Create a free account, or sign in if you already have one":
+        "Maak een gratis account aan, of log in als je er al een hebt",
+    "Sign up or sign in": "Registreren of inloggen",
     "Ask for an API key": "Vraag een API-sleutel aan",
     "Choose \"Developer\"; the app details can be anything":
         "Kies \"Developer\"; de app-gegevens mogen van alles zijn",
@@ -529,7 +549,6 @@ NL: dict[str, str] = {
     "To Be Determined": "Nog onzeker",
     "In Development": "In ontwikkeling",
     "Next: {code}": "Volgende: {code}",
-    "airs {day}": "op tv: {day}",
     "Special": "Special",
     "Couldn't load the episodes: {error}": "Kon de afleveringen niet laden: {error}",
     "Season {n}": "Seizoen {n}",
@@ -564,6 +583,89 @@ NL: dict[str, str] = {
     "Travel": "Reizen",
     "War": "Oorlog",
     "Western": "Western",
+    # 2.0.7: app/ui/show_details.py (new episodes, when one airs)
+    "New · aired today": "Nieuw · vandaag",
+    "New · aired yesterday": "Nieuw · gisteren",
+    "New": "Nieuw",
+    "Aired less than a day ago: a copy usually turns up within hours. It counts as missing after a day.":
+        "Minder dan een dag geleden uitgezonden: meestal is er binnen enkele uren een versie. Na een dag telt hij als ontbrekend.",
+    "airs today": "vandaag op tv",
+    "airs tomorrow": "morgen op tv",
+    "airs in {n} day": "over {n} dag op tv",
+    "airs in {n} days": "over {n} dagen op tv",
+    # 2.0.7: app/ui/calendar_stack.py
+    "new": "nieuw",
+    # 2.0.7: app/ui/row_actions.py
+    "⬇ Auto": "⬇ Auto",
+    "Download automatically: AirGrabber picks the best copy":
+        "Automatisch downloaden: AirGrabber kiest de beste versie",
+    "☰ Choose…": "☰ Kiezen…",
+    "Choose a copy yourself from the search results": "Kies zelf een versie uit de zoekresultaten",
+    "↻ Again": "↻ Opnieuw",
+    "Download it again": "Opnieuw downloaden",
+    "⬇ Download again automatically": "⬇ Automatisch opnieuw downloaden",
+    "☰ Choose a copy…": "☰ Zelf een versie kiezen…",
+    "No good copy found": "Geen goede versie gevonden",
+    "None found": "Niets gevonden",
+    # 2.0.7: app/ui/subtitle_control.py
+    "Get subtitles": "Ondertitels ophalen",
+    "Turn on subtitles in Settings → Subtitles": "Zet ondertitels aan in Instellingen → Ondertitels",
+    "Get {language} subtitles": "Ondertitels ophalen: {language}",
+    "Get all my languages": "Al mijn talen ophalen",
+    "Looking for subtitles…": "Ondertitels zoeken…",
+    "Already there": "Al aanwezig",
+    "OpenSubtitles has none for this yet. Try again later.":
+        "OpenSubtitles heeft er nog geen. Probeer het later opnieuw.",
+    "Not found yet: {languages}": "Nog niet gevonden: {languages}",
+    "Video not in the folder": "Video niet in de map",
+    "AirGrabber couldn't find the video in the folder where finished downloads end up (Settings → Subtitles).":
+        "AirGrabber vond de video niet in de map waar voltooide downloads terechtkomen (Instellingen → Ondertitels).",
+    "Still downloading": "Nog bezig met downloaden",
+    "No download found": "Geen download gevonden",
+    "Today's limit reached": "Limiet van vandaag bereikt",
+    "Tried recently": "Net nog geprobeerd",
+    "Couldn't get subtitles": "Kon geen ondertitels ophalen",
+    "Choose the downloads folder first": "Kies eerst de downloadmap",
+    # 2.0.7: app/ui/settings_dialog.py (Subtitles: When, Hearing impaired, For)
+    "When": "Wanneer",
+    "Automatically searches every half hour after a download. Only when I ask: use CC ▾ in a show's or film's window, or on the Downloads page.":
+        "Automatisch zoekt elk halfuur na een download. Alleen als ik het vraag: gebruik CC ▾ in het venster van een serie of film, of op de pagina Downloads.",
+    "Hearing impaired": "Slechthorenden",
+    'Subtitles that also describe sounds ("[door slams]").':
+        'Ondertitels die ook geluiden beschrijven ("[deur slaat dicht]").',
+    "For": "Voor",
+    "Which downloads get subtitles automatically.": "Welke downloads automatisch ondertitels krijgen.",
+    "Automatically": "Automatisch",
+    "Only when I ask": "Alleen als ik het vraag",
+    "Avoid": "Vermijden",
+    "Prefer": "Liefst wel",
+    "Either": "Maakt niet uit",
+    "Series and films": "Series en films",
+    "Only series": "Alleen series",
+    "Only films": "Alleen films",
+    # 2.0.7: app/ui/views/downloads_view.py (filter, Clear finished, the ⋯ menu)
+    "✓ Clear finished": "✓ Voltooide wissen",
+    "Takes the finished downloads off this list. Your files and AirGrabber's history stay.":
+        "Haalt de voltooide downloads van deze lijst. Je bestanden en de geschiedenis van AirGrabber blijven.",
+    "Nothing here right now.": "Hier staat nu niets.",
+    "Open the folder": "Map openen",
+    "Download again…": "Opnieuw downloaden…",
+    "Remove from list": "Van de lijst halen",
+    "Only takes it off this list. Your files stay where they are.":
+        "Haalt hem alleen van deze lijst. Je bestanden blijven waar ze zijn.",
+    "Choose where finished downloads end up first (Settings → Subtitles)":
+        "Kies eerst waar voltooide downloads terechtkomen (Instellingen → Ondertitels)",
+    "Not found in the folder where finished downloads end up":
+        "Niet gevonden in de map waar voltooide downloads terechtkomen",
+    "The folder where finished downloads end up can't be reached":
+        "De map waar voltooide downloads terechtkomen is niet bereikbaar",
+    "AirGrabber doesn't know this show any more": "AirGrabber kent deze serie niet meer",
+    "Subtitles need the folder where finished downloads end up (Settings → Subtitles)":
+        "Ondertitels hebben de map nodig waar voltooide downloads terechtkomen (Instellingen → Ondertitels)",
+    "Finished": "Voltooid",
+    "Problems": "Problemen",
+    # 2.0.7: app/ui/main_window.py
+    "Couldn't look up {title} on TMDB": "Kon {title} niet opzoeken bij TMDB",
     # app/ui/title_info.py
     "Watch trailer": "Trailer bekijken",
     "Add a TMDB key in Settings for posters, trailers and cast":
@@ -648,8 +750,11 @@ NL: dict[str, str] = {
     "Import {n} shows": "Importeer {n} series",
     "Imported {n} show": "{n} serie geïmporteerd",
     "Imported {n} shows": "{n} series geïmporteerd",
-    "{n} couldn't be imported; try again later":
-        "Importeren mislukt voor {n}; probeer later opnieuw",
+    "Couldn't import: {names} — try again later":
+        "Niet geïmporteerd: {names} — probeer het later opnieuw",
+    "Nothing to paste yet: copy the text on airdates.tv first.":
+        "Nog niets om te plakken: kopieer eerst de tekst op airdates.tv.",
+    "Paste": "Plakken",
     "Open airdates.tv in the browser you use for it":
         "Open airdates.tv in de browser die je ervoor gebruikt",
     "Open airdates.tv": "airdates.tv openen",
@@ -658,6 +763,10 @@ NL: dict[str, str] = {
     "Paste it here": "Plak hem hier",
     "Find my shows": "Zoek mijn series",
     "{name} · already following": "{name} · volg je al",
+    # app/ui/widgets.py: the right-click menu of text fields ("Paste" above)
+    "Cut": "Knippen",
+    "Copy": "Kopiëren",
+    "Select all": "Alles selecteren",
     # app/ui/views/calendar_view.py
     "How many weeks to show": "Hoeveel weken je wilt zien",
     "💡 Suggestions": "💡 Suggesties",
@@ -1052,6 +1161,18 @@ NL: dict[str, str] = {
     "Prowlarr: {path} not found (HTTP 404); check the URL":
         "Prowlarr: {path} niet gevonden (HTTP 404); controleer de URL",
     # app/whats_new.py
+    "An episode now counts as missing one day after it airs; until then it's marked New.":
+        "Een aflevering telt nu pas een dag na uitzending als ontbrekend; tot dan staat er Nieuw.",
+    "Quieter download buttons: ⬇ Auto picks the best copy, ☰ Choose… lets you pick, ↻ Again downloads it again.":
+        "Rustigere downloadknoppen: ⬇ Auto kiest de beste versie, ☰ Kiezen… laat je zelf kiezen, ↻ Opnieuw downloadt nog eens.",
+    "Get subtitles yourself with CC ▾, and choose when and which kind in Settings → Subtitles.":
+        "Haal zelf ondertitels op met CC ▾, en kies wanneer en welke soort in Instellingen → Ondertitels.",
+    "The Downloads page can filter, clear finished downloads and open a download's folder.":
+        "De pagina Downloads kan filteren, voltooide downloads wissen en de map van een download openen.",
+    "Installing qBittorrent and Prowlarr works when the Microsoft Store can't be reached, or says why it didn't.":
+        "qBittorrent en Prowlarr installeren lukt ook als de Microsoft Store onbereikbaar is, of AirGrabber zegt waarom niet.",
+    "The airdates.tv import finds more shows and names any it couldn't add; right-click a text box to paste.":
+        "De import van airdates.tv vindt meer series en noemt de series die niet lukten; klik met rechts in een tekstvak om te plakken.",
     "New installs come with qBittorrent: downloads start without a pop-up, and the Downloads page shows their progress.":
         "Nieuwe installaties krijgen qBittorrent erbij: downloads starten zonder pop-up en de pagina Downloads toont hoe ver ze zijn.",
     "Already use qBittorrent? Set it up for AirGrabber in Settings → Where downloads go.":

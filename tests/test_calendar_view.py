@@ -59,11 +59,13 @@ class FakeLibrary:
         suggestions: list[CalendarEntry],
         missing: frozenset[int] = frozenset(),
         had: frozenset[int] = frozenset(),
+        new: frozenset[int] = frozenset(),
     ) -> None:
         self._tracked = tracked
         self._suggestions = suggestions
         self._missing = missing
         self._had = had
+        self._new = new
         self.calendar_calls: list[tuple[date, date]] = []
         self.missing_calls: list[tuple[date, date]] = []
         self.have_calls: list[tuple[date, date]] = []
@@ -80,6 +82,9 @@ class FakeLibrary:
     async def have_between(self, start: date, end: date) -> frozenset[int]:
         self.have_calls.append((start, end))
         return self._had
+
+    async def new_between(self, start: date, end: date) -> frozenset[int]:
+        return self._new
 
     async def suggestions(self, start: date, end: date, *, per_day: int) -> list[CalendarEntry]:
         self.suggestion_calls.append((start, end, per_day))

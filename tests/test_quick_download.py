@@ -199,6 +199,19 @@ class QuickDownloadTests(unittest.IsolatedAsyncioTestCase):
         grabber.grab.assert_not_awaited()
         grabber.has_grabbed.assert_awaited_once_with(TARGET)
 
+    async def test_downloading_again_searches_and_grabs_anyway(self) -> None:
+        indexer = fake("a", result=[release("Severance S02E01 1080p WEB-A", h=1)])
+        grabber = downloads()
+        grabber.has_grabbed.side_effect = None
+        grabber.has_grabbed.return_value = True
+        service = self.service([indexer], grabber)
+        result = await service.download(EPISODE, TARGET, again=True)  # ↻ Again → Auto
+        self.assertTrue(result.found)
+        self.assertFalse(result.already_downloaded)
+        self.assertEqual(len(indexer.requests), 1)
+        grabber.grab.assert_awaited_once()
+        grabber.has_grabbed.assert_not_awaited()
+
     async def test_different_targets_download_side_by_side(self) -> None:
         gate = asyncio.Event()
         indexer = fake("a", gate=gate)

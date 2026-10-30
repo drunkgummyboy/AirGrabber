@@ -32,7 +32,7 @@ from app.models import (
     SyncReport,
     Weekday,
 )
-from app.services.missing import latest_season, missing_episodes
+from app.services.missing import latest_season, missing_cutoffs, missing_episodes, new_episodes
 from app.services.settings import SettingsService
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
@@ -194,6 +194,9 @@ class LibraryService:
             if tracked
             else []
         )
+        new = (
+            new_episodes(episodes, downloaded=downloaded, have=have, now=now) if tracked else []
+        )
         return ShowDetails(
             show=show,
             episodes=tuple(episodes),
@@ -203,6 +206,7 @@ class LibraryService:
             next_episode=next_episode(episodes, now),
             latest_season=latest_season(episodes, now) if tracked else None,
             missing=frozenset(episode.id for episode in missing),
+            new=frozenset(episode.id for episode in new),
             have=have,
         )
 
@@ -228,7 +232,10 @@ class LibraryService:
         query for every show); shows with none are left out. `now`: an aware instant (tests);
         its time zone decides which day "today" is."""
         now = now if now is not None else datetime.now().astimezone()
-        return await self._library.missing_counts(now=now, today=now.date())
+        missing_by, missing_day = missing_cutoffs(now)
+        return await self._library.missing_counts(
+            now=now, today=now.date(), missing_by=missing_by, missing_day=missing_day
+        )
 
     async def missing_between(
         self, start: date, end: date, *, now: datetime | None = None
@@ -237,7 +244,22 @@ class LibraryService:
         and `end`, inclusive: the calendar's amber "Not downloaded yet" marks. `now`: an aware
         instant (tests); its time zone decides which day "today" is."""
         now = now if now is not None else datetime.now().astimezone()
-        return await self._library.missing_between(start, end, now=now, today=now.date())
+        missing_by, missing_day = missing_cutoffs(now)
+        return await self._library.missing_between(
+            start, end, now=now, today=now.date(), missing_by=missing_by, missing_day=missing_day
+        )
+
+    async def new_between(
+        self, start: date, end: date, *, now: datetime | None = None
+    ) -> frozenset[int]:
+        """Ids of the new episodes (aired less than a day ago, not downloaded or marked; see
+        app.services.missing) airing between `start` and `end`, inclusive: the calendar's blue
+        "New" notes. `now`: an aware instant (tests)."""
+        now = now if now is not None else datetime.now().astimezone()
+        missing_by, missing_day = missing_cutoffs(now)
+        return await self._library.new_between(
+            start, end, now=now, today=now.date(), missing_by=missing_by, missing_day=missing_day
+        )
 
     async def have_between(self, start: date, end: date) -> frozenset[int]:
         """Ids of the episodes airing between `start` and `end` (inclusive) marked "I already
@@ -404,26 +426,32 @@ class LibraryService:
     async def _best_hit(self, name: str) -> Show | None:
         """The TVMaze show a name stands for: the best search hit, or None.
 
-        A trailing "(YYYY)" or country "(US)" / "(UK)" is searched without, and the first hit
-        premiering in that year / from that country wins; without such a hit, the best hit does.
-        The name is searched normalised (`search_name`): Unicode dashes, minus signs and curly
-        quotes as their ASCII forms.
+        The name is searched normalised (`search_name`: Unicode dashes, minus signs and curly
+        quotes as their ASCII forms), then as `search_queries` says until one finds something:
+        a trailing "(YYYY)" or "(US)" is searched without it first; a bare year or country at
+        the end ("MacGyver 2016", "Shameless US") after the whole name; letters written apart
+        ("S H I E L D") also as "S.H.I.E.L.D." and "SHIELD". With a year or country, the first
+        hit premiering in that year / from that country wins (a hit named exactly like the
+        whole name wins at once: the year is part of "Space: 1999"); without one, the first
+        query's best hit does. A bracketed name stops at the first query with hits, as before.
         """
         name = search_name(name)
-        hint = _name_hint(name)
-        if hint is None:
-            hits = await self._tvmaze.search_shows(name, limit=1)
-            return hits[0] if hits else None
-        candidates = await self._tvmaze.search_shows_with_country(hint.query)
-        for show, country in candidates:
-            if (hint.year is None or show.year == hint.year) and (
-                hint.country is None or country == hint.country
-            ):
-                return show
-        if candidates:
-            return candidates[0][0]
-        hits = await self._tvmaze.search_shows(name, limit=1)  # perhaps the suffix is the name
-        return hits[0] if hits else None
+        hint = name_hint(name)
+        fallback: Show | None = None
+        for query in search_queries(name, hint):
+            candidates = await self._tvmaze.search_shows_with_country(query)
+            if not candidates:
+                continue
+            if hint is None:
+                return candidates[0][0]
+            for show, country in candidates:
+                if same_name(show.name, name) or hint.fits(show, country):
+                    return show
+            if fallback is None:
+                fallback = candidates[0][0]
+            if hint.bracketed:
+                break
+        return fallback
 
     async def _fetch_and_track(self, show_id: int) -> Show:
         show, episodes = await self._tvmaze.get_show_with_episodes(show_id)
@@ -699,15 +727,31 @@ def downloaded_ids(
     )
 
 
-class _NameHint(NamedTuple):
+class NameHint(NamedTuple):
+    """The year or country a show name ends with, and the name without it."""
+
     query: str  # the name without its suffix
     year: int | None
     country: str | None  # ISO code as TVMaze gives it
+    bracketed: bool = True  # "Ghosts (2021)"; False for a bare "MacGyver 2016"
+
+    def fits(self, show: Show, country: str | None) -> bool:
+        """`show` (from `country`) premiered in the year / comes from the country named."""
+        return (self.year is None or show.year == self.year) and (
+            self.country is None or country == self.country
+        )
 
 
 _SUFFIX = re.compile(r"^(?P<base>.*\S)\s*\((?P<tag>\d{4}|[A-Z]{2})\)$")
+_BARE_SUFFIX = re.compile(r"^(?P<base>.*\S)\s+(?P<tag>\d{4}|[A-Z]{2})$")
+# Countries a name may end with without brackets ("Shameless US"); other capitals at the end
+# ("House MD") stay part of the name.
+_BARE_COUNTRIES = frozenset({"US", "UK", "GB", "AU", "NZ", "CA", "IE", "ZA"})
 # Names other sites use for a country, mapped to TVMaze's ISO 3166-1 code.
 _COUNTRY_ALIASES = {"UK": "GB"}
+# One letter ("S", "S.") and letters with dots ("S.H.I.E.L.D.", "A.P"): parts of an initialism.
+_LETTER = re.compile(r"[A-Za-z]\.?")
+_DOTTED = re.compile(r"(?:[A-Za-z]\.){2,}[A-Za-z]?\.?|(?:[A-Za-z]\.)+[A-Za-z]")
 
 
 _DASHES = re.compile("[‐-―−]")  # hyphens, dashes, the minus sign
@@ -727,16 +771,85 @@ def search_name(name: str) -> str:
     return " ".join(text.split())
 
 
-def _name_hint(name: str) -> _NameHint | None:
-    """The year or country a show name ends with, e.g. "Ghosts (2021)" or "The Office (US)"."""
-    match = _SUFFIX.match(name.strip())
+def name_hint(name: str) -> NameHint | None:
+    """The year or country a show name ends with: in brackets, "Ghosts (2021)" or "The Office
+    (US)" (any two capitals); bare, "MacGyver 2016" or "Shameless US" (_BARE_COUNTRIES only).
+    A year counts from 1900 to 2100."""
+    text = name.strip()
+    bracketed = True
+    match = _SUFFIX.match(text)
     if match is None:
-        return None
+        bracketed = False
+        match = _BARE_SUFFIX.match(text)
+        if match is None or not (match["tag"].isdigit() or match["tag"] in _BARE_COUNTRIES):
+            return None
     base, tag = match["base"], match["tag"]
     if tag.isdigit():
         year = int(tag)
-        return _NameHint(base, year, None) if 1900 <= year <= 2100 else None
-    return _NameHint(base, None, _COUNTRY_ALIASES.get(tag, tag))
+        return NameHint(base, year, None, bracketed) if 1900 <= year <= 2100 else None
+    return NameHint(base, None, _COUNTRY_ALIASES.get(tag, tag), bracketed)
+
+
+def initialism_variants(name: str) -> list[str]:
+    """Other spellings of an initialism in `name`: letters written apart ("Agents of S H I E L
+    D", "S. H. I. E. L. D.") or with dots ("S.H.I.E.L.D.") as "Agents of S.H.I.E.L.D." and
+    "Agents of SHIELD" (TVMaze finds the show by either, not by spaced letters). Empty when
+    `name` has none: one letter alone ("I Love Lucy", "Malcolm X") is no initialism."""
+    tokens = name.split()
+    dotted: list[str] = []
+    joined: list[str] = []
+    found = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        end = index
+        while end < len(tokens) and _LETTER.fullmatch(tokens[end]):
+            end += 1
+        if end - index >= 2:
+            letters = "".join(part.rstrip(".") for part in tokens[index:end])
+        elif _DOTTED.fullmatch(token):
+            letters, end = token.replace(".", ""), index + 1
+        else:
+            dotted.append(token)
+            joined.append(token)
+            index += 1
+            continue
+        dotted.append(".".join(letters) + ".")
+        joined.append(letters)
+        found = True
+        index = end
+    if not found:
+        return []
+    variants = (" ".join(dotted), " ".join(joined))
+    return [variant for variant in dict.fromkeys(variants) if variant != name]
+
+
+def search_queries(name: str, hint: NameHint | None) -> list[str]:
+    """What LibraryService searches for a (normalised) name, in order, each once (ignoring
+    case): the name, or with a year / country `hint` the name without it first when that was in
+    brackets and second when it was bare; then the initialism variants (`initialism_variants`)
+    of the name without the hint and of the whole name."""
+    if hint is None:
+        bases = [name]
+    elif hint.bracketed:
+        bases = [hint.query, name]
+    else:
+        bases = [name, hint.query]
+    sources = [hint.query, name] if hint is not None else [name]
+    variants = [variant for source in sources for variant in initialism_variants(source)]
+    queries: dict[str, str] = {}
+    for query in (*bases, *variants):
+        queries.setdefault(query.casefold(), query)
+    return list(queries.values())
+
+
+def same_name(a: str, b: str) -> bool:
+    """The same name beyond case, spaces and punctuation ("Space: 1999" / "space 1999")."""
+    return _plain_name(a) == _plain_name(b)
+
+
+def _plain_name(name: str) -> str:
+    return "".join(char for char in name.casefold() if char.isalnum())
 
 
 def _match(name: str, show: Show | None, tracked: frozenset[int]) -> ImportMatch:

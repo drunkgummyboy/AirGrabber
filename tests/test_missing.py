@@ -13,6 +13,7 @@ import tkinter as tk
 import unittest
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import customtkinter as ctk
 import httpx
@@ -36,8 +37,13 @@ from app.services.missing import (
     MAX_PER_RUN,
     MissingDownloadService,
     MissingRunBusy,
+    MISSING_AFTER,
+    is_new,
+    is_overdue,
     latest_season,
+    missing_cutoffs,
     missing_episodes,
+    new_episodes,
 )
 from app.services.synology import DownloadStationError
 from app.services.tvmaze import TVMazeClient
@@ -91,6 +97,12 @@ def ids(episodes: list[Episode]) -> list[int]:
     return [episode.id for episode in episodes]
 
 
+def cutoffs(now: datetime) -> dict[str, Any]:
+    """The SQL twins' `missing_by` / `missing_day` for `now` (app.services.missing)."""
+    missing_by, missing_day = missing_cutoffs(now)
+    return {"missing_by": missing_by, "missing_day": missing_day}
+
+
 def missing_ids(
     episodes: list[Episode],
     *,
@@ -100,6 +112,17 @@ def missing_ids(
 ) -> list[int]:
     downloaded = downloaded_ids(episodes, grabs)
     return ids(missing_episodes(episodes, downloaded=downloaded, have=have, now=now))
+
+
+def new_ids(
+    episodes: list[Episode],
+    *,
+    grabs: frozenset[tuple[int, int | None]] = frozenset(),
+    have: frozenset[int] = frozenset(),
+    now: datetime = NOW,
+) -> list[int]:
+    downloaded = downloaded_ids(episodes, grabs)
+    return ids(new_episodes(episodes, downloaded=downloaded, have=have, now=now))
 
 
 # -- the rule ----------------------------------------------------------------------------------
@@ -139,20 +162,67 @@ class LatestSeasonTests(unittest.TestCase):
         episodes = [ep(1, 1, 1, aired=NOW - 7 * DAY), ep(2, 1, 2)]
         self.assertEqual(missing_ids(episodes), [1])
 
-    def test_air_date_without_airstamp_counts_from_that_day(self) -> None:
-        episodes = [ep(1, 1, 1, air_date=NOW.date()), ep(2, 1, 2, air_date=NOW.date() + DAY)]
+    def test_air_date_without_airstamp_counts_from_the_day_after(self) -> None:
+        episodes = [
+            ep(1, 1, 1, air_date=NOW.date() - DAY),
+            ep(2, 1, 2, air_date=NOW.date()),  # aired today: new, not missing yet
+            ep(3, 1, 3, air_date=NOW.date() + DAY),
+        ]
         self.assertEqual(missing_ids(episodes), [1])
+        self.assertEqual(new_ids(episodes), [2])
 
-    def test_the_airstamp_decides_to_the_minute(self) -> None:
-        episodes = [ep(1, 1, 1, aired=NOW), ep(2, 1, 2, aired=NOW + timedelta(minutes=1))]
+    def test_the_airstamp_decides_to_the_minute_a_day_later(self) -> None:
+        episodes = [
+            ep(1, 1, 1, aired=NOW - MISSING_AFTER),
+            ep(2, 1, 2, aired=NOW - MISSING_AFTER + timedelta(minutes=1)),
+            ep(3, 1, 3, aired=NOW),
+            ep(4, 1, 4, aired=NOW + timedelta(minutes=1)),
+        ]
         self.assertEqual(missing_ids(episodes), [1])
+        self.assertEqual(new_ids(episodes), [2, 3])
+        self.assertEqual(missing_ids(episodes, now=NOW + DAY), [1, 2, 3])
 
     def test_nows_time_zone_decides_today_for_air_dates(self) -> None:
-        # 01:00 UTC on the 19th is still the 18th in New York: an air date of the 19th waits.
-        now = datetime(2026, 10, 19, 1, 0, tzinfo=UTC).astimezone(timezone(timedelta(hours=-4)))
+        # 01:00 UTC on the 20th is still the 19th in New York: an air date of the 19th is new
+        # there, missing in UTC.
+        utc = datetime(2026, 10, 20, 1, 0, tzinfo=UTC)
+        new_york = utc.astimezone(timezone(timedelta(hours=-4)))
         episodes = [ep(1, 1, 1, air_date=date(2026, 10, 19))]
-        self.assertEqual(missing_ids(episodes, now=now), [])
-        self.assertEqual(missing_ids(episodes, now=datetime(2026, 10, 19, 1, 0, tzinfo=UTC)), [1])
+        self.assertEqual(missing_ids(episodes, now=new_york), [])
+        self.assertEqual(new_ids(episodes, now=new_york), [1])
+        self.assertEqual(missing_ids(episodes, now=utc), [1])
+        self.assertEqual(new_ids(episodes, now=utc), [])
+
+    def test_an_airstamp_counts_the_same_in_every_time_zone(self) -> None:
+        episodes = [ep(1, 1, 1, aired=NOW - DAY - timedelta(minutes=5))]
+        for hours in (-10, -4, 0, 2, 13):
+            now = NOW.astimezone(timezone(timedelta(hours=hours)))
+            self.assertEqual(missing_ids(episodes, now=now), [1], hours)
+
+    def test_cutoffs_and_overdue(self) -> None:
+        self.assertEqual(MISSING_AFTER, timedelta(hours=24))
+        self.assertEqual(missing_cutoffs(NOW), (NOW - DAY, NOW.date() - DAY))
+        self.assertTrue(is_overdue(ep(1, 1, 1, aired=NOW - DAY), NOW))
+        self.assertFalse(is_overdue(ep(1, 1, 1, aired=NOW - DAY + timedelta(seconds=1)), NOW))
+        self.assertTrue(is_new(ep(1, 1, 1, aired=NOW - timedelta(hours=3)), NOW))
+        self.assertFalse(is_new(ep(1, 1, 1, aired=NOW + timedelta(hours=3)), NOW))  # not aired
+        self.assertFalse(is_new(ep(1, 1, 1), NOW))  # no date at all: neither
+        self.assertFalse(is_overdue(ep(1, 1, 1), NOW))
+
+    def test_a_new_episode_is_neither_missing_nor_new_once_downloaded_or_marked(self) -> None:
+        episodes = [ep(1, 1, 1, aired=NOW - timedelta(hours=2))]
+        self.assertEqual(new_ids(episodes), [1])
+        self.assertEqual(new_ids(episodes, grabs=frozenset({(1, 1)})), [])
+        self.assertEqual(new_ids(episodes, have=frozenset({1})), [])
+
+    def test_a_new_seasons_first_episode_makes_it_the_latest_at_once(self) -> None:
+        episodes = [
+            ep(1, 1, 1, aired=NOW - 20 * DAY),
+            ep(2, 2, 1, aired=NOW - timedelta(hours=1)),
+        ]
+        self.assertEqual(latest_season(episodes, NOW), 2)
+        self.assertEqual(missing_ids(episodes), [])  # season 1 no longer counts; 2 is new
+        self.assertEqual(new_ids(episodes), [2])
 
 
 class MissingEpisodesTests(unittest.TestCase):
@@ -289,7 +359,9 @@ class HaveRepositoryTests(DatabaseTestCase):
         marked = await self.db.library.mark_aired_have(1, now=NOW, today=NOW.date(), when=NOW)
         self.assertEqual(marked, 2)
         self.assertEqual(await self.db.library.have_ids(1), frozenset({11, 13}))
-        self.assertEqual(await self.db.library.missing_counts(now=NOW, today=NOW.date()), {})
+        self.assertEqual(
+            await self.db.library.missing_counts(now=NOW, today=NOW.date(), **cutoffs(NOW)), {}
+        )
 
     async def test_mark_and_unmark(self) -> None:
         await self.add_show(1, [ep(1, 1, 1, aired=NOW), ep(2, 1, 2, aired=NOW)])
@@ -319,7 +391,7 @@ class MissingCountsTests(DatabaseTestCase):
     """The SQL counts agree with the Python rule, show by show."""
 
     async def counts(self, now: datetime = NOW) -> dict[int, int]:
-        return await self.db.library.missing_counts(now=now, today=now.date())
+        return await self.db.library.missing_counts(now=now, today=now.date(), **cutoffs(now))
 
     async def python_counts(self, now: datetime = NOW) -> dict[int, int]:
         result: dict[int, int] = {}
@@ -367,16 +439,41 @@ class MissingCountsTests(DatabaseTestCase):
         await self.add_show(5, [ep(71, 1, 1, aired=NOW - DAY, show_id=5)], tracked=False)
 
         counts = await self.counts()
-        self.assertEqual(counts, {1: 2, 4: 1})
+        self.assertEqual(counts, {1: 2})  # 4's episode aired today: new, not missing yet
         self.assertEqual(counts, await self.python_counts())
+        tomorrow = NOW + DAY  # 4's first is missing now; its second aired today: new
+        self.assertEqual(await self.counts(tomorrow), {1: 2, 4: 1})
+        self.assertEqual(await self.counts(tomorrow), await self.python_counts(tomorrow))
         later = NOW + 40 * DAY  # season 3 of show 1 has aired; show 3's first episode too
         self.assertEqual(await self.counts(later), await self.python_counts(later))
         self.assertEqual((await self.counts(later))[1], 1)
 
     async def test_the_airstamp_boundary_matches(self) -> None:
-        await self.add_show(1, [ep(1, 1, 1, aired=NOW), ep(2, 1, 2, aired=NOW + timedelta(seconds=1))])
+        await self.add_show(
+            1,
+            [
+                ep(1, 1, 1, aired=NOW - MISSING_AFTER),
+                ep(2, 1, 2, aired=NOW - MISSING_AFTER + timedelta(seconds=1)),
+            ],
+        )
         self.assertEqual(await self.counts(), {1: 1})
         self.assertEqual(await self.counts(), await self.python_counts())
+
+    async def test_time_zones_match(self) -> None:
+        # Air dates only: which day "today" is depends on `now`'s time zone, in SQL as in Python.
+        await self.add_show(
+            1,
+            [
+                ep(1, 1, 1, air_date=date(2026, 10, 18)),
+                ep(2, 1, 2, air_date=date(2026, 10, 19)),
+            ],
+        )
+        utc = datetime(2026, 10, 20, 1, 0, tzinfo=UTC)
+        for hours in (-10, -4, 0, 5, 13):
+            now = utc.astimezone(timezone(timedelta(hours=hours)))
+            self.assertEqual(await self.counts(now), await self.python_counts(now), hours)
+        self.assertEqual(await self.counts(utc), {1: 2})
+        self.assertEqual(await self.counts(utc.astimezone(timezone(timedelta(hours=-4)))), {1: 1})
 
 
 # -- the library service ---------------------------------------------------------------------

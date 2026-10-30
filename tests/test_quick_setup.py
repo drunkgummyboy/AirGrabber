@@ -19,7 +19,7 @@ import customtkinter as ctk
 from app.i18n import Language
 from app.models import CardSize, LibraryEntry, QualityProfile, Settings, Show, ThemeMode
 from app.services import SettingsService
-from app.ui import theme
+from app.ui import dialog_kit, theme
 from app.ui.card_preview import (
     CardSizePreview,
     dashed_outline,
@@ -27,6 +27,7 @@ from app.ui.card_preview import (
     preview_room,
 )
 from app.ui.card_scale import CardScale
+from app.ui.dialog_kit import reactivate
 from app.ui.icons import SLIDERS, IconButton, draw_lines, sliders_icon
 from app.ui.poster_card import card_size
 from app.ui.quick_setup import (
@@ -37,7 +38,7 @@ from app.ui.quick_setup import (
     quick_defaults,
     swatch_image,
 )
-from app.ui.settings_dialog import SECTION_LOOKS, SettingsDialog
+from app.ui.settings_dialog import SECTION_LOOKS, SettingsDialog, quality_name
 from app.ui.welcome_dialog import finish_changes
 
 
@@ -46,36 +47,55 @@ class QuickChoiceTests(unittest.TestCase):
         chosen = quick_defaults(Settings())
         self.assertEqual(
             chosen,
-            QuickChoices(ThemeMode.SYSTEM, QualityProfile.FULL_HD, CardSize.M, Language.EN),
+            QuickChoices(
+                ThemeMode.SYSTEM, QualityProfile.FULL_HD, QualityProfile.FULL_HD, CardSize.M, Language.EN
+            ),
         )
 
-    def test_a_quality_or_size_not_offered_stays_unchosen(self) -> None:
-        mixed = Settings(quality_tv="1080p", quality_movie="2160p", card_size="xs")
+    def test_series_and_films_each_keep_their_quality(self) -> None:
+        mixed = Settings(quality_tv="1080p", quality_movie="2160p")
         chosen = quick_defaults(mixed)
-        self.assertIsNone(chosen.quality)
+        self.assertEqual((chosen.quality_tv, chosen.quality_movie), (QualityProfile.FULL_HD, QualityProfile.UHD))
+        self.assertEqual(quick_changes(mixed, chosen), {})
+
+    def test_a_quality_or_size_not_offered_stays_unchosen(self) -> None:
+        mixed = Settings(quality_tv="Any", quality_movie="720p", card_size="xs")
+        chosen = quick_defaults(mixed)
+        self.assertIsNone(chosen.quality_tv)
+        self.assertIs(chosen.quality_movie, QualityProfile.HD)
         self.assertIsNone(chosen.size)
         self.assertEqual(quick_changes(mixed, chosen), {})  # nothing clicked: nothing changes
-        self.assertIsNone(quick_defaults(Settings(quality_tv="Any", quality_movie="Any")).quality)
 
     def test_changes_are_only_what_differs(self) -> None:
         current = Settings(quality_tv="1080p", quality_movie="2160p", size_tv_max_gb=4)
-        chosen = QuickChoices(ThemeMode.DARK, QualityProfile.UHD, CardSize.L, Language.NL)
+        chosen = QuickChoices(
+            ThemeMode.DARK, QualityProfile.UHD, QualityProfile.UHD, CardSize.L, Language.NL
+        )
         changes = quick_changes(current, chosen)
         self.assertEqual(
             changes,
             {
                 "theme_mode": ThemeMode.DARK,
-                "quality_tv": QualityProfile.UHD,  # both get it; the film one had it already
+                "quality_tv": QualityProfile.UHD,  # the film one had it already
                 "card_size": CardSize.L,
                 "language": Language.NL,
             },
+        )
+        separate = QuickChoices(
+            ThemeMode.SYSTEM, QualityProfile.HD, QualityProfile.UHD, CardSize.M, Language.EN
+        )
+        self.assertEqual(
+            quick_changes(Settings(), separate),
+            {"quality_tv": QualityProfile.HD, "quality_movie": QualityProfile.UHD},
         )
         saved = Settings.model_validate({**current.model_dump(), **changes})
         self.assertEqual(saved.size_tv_max_gb, 4.0)  # the sizes stay
         self.assertEqual(quick_changes(current, quick_defaults(current)), {})
 
     def test_the_welcome_saves_both(self) -> None:
-        chosen = QuickChoices(ThemeMode.LIGHT, QualityProfile.HD, CardSize.S, Language.EN)
+        chosen = QuickChoices(
+            ThemeMode.LIGHT, QualityProfile.HD, QualityProfile.HD, CardSize.S, Language.EN
+        )
         changes = {**quick_changes(Settings(), chosen), **finish_changes("key")}
         self.assertEqual(changes["quality_movie"], QualityProfile.HD)
         self.assertTrue(changes["setup_done"])
@@ -229,25 +249,36 @@ class QuickPanelTests(TkTestCase):
     async def test_choices_and_the_live_look(self) -> None:
         panel = QuickSetupPanel(self.root, current=Settings())
         self.assertTrue(panel.look.choices[ThemeMode.SYSTEM].selected)
-        self.assertTrue(panel.quality.choices[QualityProfile.FULL_HD].selected)
+        self.assertTrue(panel.quality_tv.choices[QualityProfile.FULL_HD].selected)
+        self.assertTrue(panel.quality_movie.choices[QualityProfile.FULL_HD].selected)
         self.assertTrue(panel.card_size.choices[CardSize.M].selected)
         with mock.patch.object(theme, "apply_appearance") as apply:
             panel.look.choose(ThemeMode.DARK)
             apply.assert_called_once_with(ThemeMode.DARK)
             panel.revert_look(ThemeMode.SYSTEM)
             apply.assert_called_with(ThemeMode.SYSTEM)
-        panel.quality.choose(QualityProfile.UHD)
+        panel.quality_tv.choose(QualityProfile.UHD)
+        panel.quality_movie.choose(QualityProfile.HD)
         panel.card_size.choose(CardSize.S)
-        self.assertFalse(panel.quality.choices[QualityProfile.FULL_HD].selected)
+        self.assertFalse(panel.quality_tv.choices[QualityProfile.FULL_HD].selected)
+        self.assertTrue(panel.quality_movie.choices[QualityProfile.HD].selected)
         self.assertEqual(
             panel.changes(Settings()),
             {
                 "theme_mode": ThemeMode.DARK,
                 "quality_tv": QualityProfile.UHD,
-                "quality_movie": QualityProfile.UHD,
+                "quality_movie": QualityProfile.HD,
                 "card_size": CardSize.S,
             },
         )
+        self.assertIn("Series", labels(panel))
+        self.assertIn("Movies", labels(panel))
+
+    async def test_the_quality_rows_start_from_settings(self) -> None:
+        panel = QuickSetupPanel(self.root, current=Settings(quality_tv="720p", quality_movie="2160p"))
+        self.assertTrue(panel.quality_tv.choices[QualityProfile.HD].selected)
+        self.assertTrue(panel.quality_movie.choices[QualityProfile.UHD].selected)
+        self.assertEqual(panel.changes(Settings(quality_tv="720p", quality_movie="2160p")), {})
 
     async def test_another_language_offers_a_restart(self) -> None:
         restart = mock.Mock()
@@ -261,6 +292,94 @@ class QuickPanelTests(TkTestCase):
         restart.assert_called_once()
         panel.language.choose(Language.EN)
         self.assertFalse(panel.restart_row.winfo_manager())
+
+
+class ModeSwitchTests(TkTestCase):
+    """A switch between light and dark (Windows: CTk hides and re-shows every window) leaves a
+    dialog on top with the keyboard focus and the grab (app/ui/dialog_kit.py `reactivate`)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # On screen (a hidden main window means "in the tray": nothing is shown then), but
+        # see-through.
+        self.root.attributes("-alpha", 0.0)
+        self.root.geometry("600x400+40+40")
+        self.root.deiconify()
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.settle()  # CTk only re-shows a main window that has been on screen
+
+    def _destroy_root(self) -> None:
+        # Tcl's own cancel: after_cancel() would also delete the callbacks' commands, which the
+        # CTkToplevels that scheduled them delete again when destroyed.
+        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.tk.call("after", "cancel", job)
+        self.root.destroy()
+        gc.collect()
+
+    def dialog(self, master: Any) -> ctk.CTkToplevel:
+        dialog = ctk.CTkToplevel(master)
+        dialog.attributes("-alpha", 0.0)
+        dialog.transient(master)
+        return dialog
+
+    @staticmethod
+    def grab(widget: Any) -> str:
+        """The window with the grab ("" for none)."""
+        return " ".join(str(w) for w in widget.tk.splitlist(widget.tk.call("grab", "current")))
+
+    async def test_a_hidden_dialog_comes_back_with_the_grab(self) -> None:
+        dialog = self.dialog(self.root)
+        await self.settle()
+        dialog.grab_set()
+        dialog.withdraw()  # what the switch left behind
+        reactivate(dialog)
+        self.assertEqual(dialog.wm_state(), "normal")
+        self.assertEqual(self.grab(dialog), str(dialog))
+
+    async def test_a_dialog_over_a_dialog(self) -> None:
+        settings = self.dialog(self.root)
+        quick = self.dialog(settings)
+        await self.settle()
+        quick.grab_set()
+        settings.withdraw()
+        quick.withdraw()
+        reactivate(settings)  # Settings' turn first: shown again, the grab stays with Quick setup's
+        self.assertEqual(settings.wm_state(), "normal")
+        self.assertEqual(self.grab(quick), str(quick))
+        reactivate(quick)
+        self.assertEqual((settings.wm_state(), quick.wm_state()), ("normal", "normal"))
+        self.assertEqual(self.grab(quick), str(quick))
+
+    async def test_nothing_while_the_main_window_is_in_the_tray(self) -> None:
+        dialog = self.dialog(self.root)
+        await self.settle()
+        self.root.withdraw()
+        dialog.withdraw()
+        reactivate(dialog)
+        self.assertEqual(dialog.wm_state(), "withdrawn")
+
+    async def test_choosing_a_look_keeps_quick_setup_on_top(self) -> None:
+        start = "Dark" if ctk.get_appearance_mode() == "Light" else "Light"
+        ctk.set_appearance_mode(start)
+        await self.settle()
+        settings = SettingsService(FakeRepository(), Settings())  # type: ignore[arg-type]
+        quick = QuickSetupDialog(self.root, settings=settings)
+        quick.attributes("-alpha", 0.0)
+        for _ in range(30):  # activate_later: 150 ms
+            await asyncio.sleep(0.01)
+            self.root.update()
+        other = ThemeMode.LIGHT if start == "Dark" else ThemeMode.DARK
+        with mock.patch.object(dialog_kit, "reactivate", wraps=dialog_kit.reactivate) as spy:
+            quick.panel.look.choose(other)  # applies at once: CTk hides and re-shows the windows
+            for _ in range(40):
+                await asyncio.sleep(0.01)
+                self.root.update()
+        spy.assert_called_with(quick)
+        self.assertEqual(quick.wm_state(), "normal")
+        self.assertEqual(self.grab(quick), str(quick))
+        quick.destroy()
 
 
 class SettingsLooksTests(TkTestCase):
@@ -322,18 +441,20 @@ class SettingsLooksTests(TkTestCase):
         assert quick is not None
         with mock.patch.object(theme, "apply_appearance"):
             quick.panel.look.choose(ThemeMode.LIGHT)
-        quick.panel.quality.choose(QualityProfile.HD)
+        quick.panel.quality_tv.choose(QualityProfile.HD)
+        quick.panel.quality_movie.choose(QualityProfile.UHD)
         quick.panel.card_size.choose(CardSize.L)
         self.assertTrue(await quick.save())
         current = settings.current
         self.assertEqual(
             (current.theme_mode, current.quality_tv, current.quality_movie, current.card_size),
-            (ThemeMode.LIGHT, QualityProfile.HD, QualityProfile.HD, CardSize.L),
+            (ThemeMode.LIGHT, QualityProfile.HD, QualityProfile.UHD, CardSize.L),
         )
         self.assertFalse(quick.winfo_exists())
         # Settings shows them, so its own Save keeps them.
         self.assertEqual(dialog._theme_mode.get(), "Light")
-        self.assertEqual(dialog._quality_movie.get(), "HD (720p)")
+        self.assertEqual(dialog._quality_tv.get(), quality_name(QualityProfile.HD))
+        self.assertEqual(dialog._quality_movie.get(), quality_name(QualityProfile.UHD))
         self.assertEqual(dialog._card_size.get(), "L")
         await dialog._save()
         self.assertIs(settings.current.quality_tv, QualityProfile.HD)

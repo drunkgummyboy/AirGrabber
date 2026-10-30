@@ -4,24 +4,34 @@ already have this" in a range (`have_between`, the stack cards)."""
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from app.services.library import downloaded_ids
-from app.services.missing import missing_episodes
-from tests.test_missing import DAY, NOW, DatabaseTestCase, ServiceTestCase, ep
+from app.services.missing import missing_episodes, new_episodes
+from tests.test_missing import DAY, NOW, DatabaseTestCase, ServiceTestCase, cutoffs, ep
 
 
 class MissingBetweenTests(DatabaseTestCase):
     async def between(self, start: date, end: date, now: datetime = NOW) -> frozenset[int]:
-        return await self.db.library.missing_between(start, end, now=now, today=now.date())
+        return await self.db.library.missing_between(
+            start, end, now=now, today=now.date(), **cutoffs(now)
+        )
 
-    async def python_between(self, start: date, end: date, now: datetime = NOW) -> frozenset[int]:
+    async def new_between(self, start: date, end: date, now: datetime = NOW) -> frozenset[int]:
+        return await self.db.library.new_between(
+            start, end, now=now, today=now.date(), **cutoffs(now)
+        )
+
+    async def python_between(
+        self, start: date, end: date, now: datetime = NOW, *, new: bool = False
+    ) -> frozenset[int]:
+        rule = new_episodes if new else missing_episodes
         found: set[int] = set()
         for show_id in await self.db.library.tracked_ids():
             episodes = await self.db.library.episodes(show_id)
             downloaded = downloaded_ids(episodes, await self.db.history.show_grabs(show_id))
             have = await self.db.library.have_ids(show_id)
-            for episode in missing_episodes(episodes, downloaded=downloaded, have=have, now=now):
+            for episode in rule(episodes, downloaded=downloaded, have=have, now=now):
                 if episode.air_date is not None and start <= episode.air_date <= end:
                     found.add(episode.id)
         return frozenset(found)
@@ -57,15 +67,39 @@ class MissingBetweenTests(DatabaseTestCase):
         await self.add_show(4, [ep(71, 1, 1, aired=NOW - DAY, show_id=4)], tracked=False)
 
         start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
-        self.assertEqual(await self.between(start, end), {21, 24, 61})
+        # 61 aired today (an air date only): new, not missing yet.
+        self.assertEqual(await self.between(start, end), {21, 24})
         self.assertEqual(await self.between(start, end), await self.python_between(start, end))
+        self.assertEqual(await self.new_between(start, end), {61})
+        self.assertEqual(
+            await self.new_between(start, end), await self.python_between(start, end, new=True)
+        )
         # Only the range's days.
-        self.assertEqual(await self.between(NOW.date() - DAY, NOW.date()), {24, 61})
+        self.assertEqual(await self.between(NOW.date() - DAY, NOW.date()), {24})
         later = NOW + 4 * DAY  # season 3 has aired: season 2 is no longer the latest
         self.assertEqual(await self.between(start, end, later), {31, 61, 62})
-        self.assertEqual(
-            await self.between(start, end, later), await self.python_between(start, end, later)
-        )
+        self.assertEqual(await self.new_between(start, end, later), frozenset())
+        just_aired = NOW + 3 * DAY + timedelta(hours=2)  # season 3's first: new
+        self.assertEqual(await self.between(start, end, just_aired), {61, 62})
+        self.assertEqual(await self.new_between(start, end, just_aired), {31})
+        for when in (later, just_aired, NOW + DAY, NOW + 5 * DAY):
+            self.assertEqual(
+                await self.between(start, end, when), await self.python_between(start, end, when)
+            )
+            self.assertEqual(
+                await self.new_between(start, end, when),
+                await self.python_between(start, end, when, new=True),
+            )
+
+    async def test_new_turns_missing_after_a_day(self) -> None:
+        aired = NOW - timedelta(hours=20)
+        await self.add_show(1, [ep(1, 1, 1, aired=aired)])
+        start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
+        self.assertEqual(await self.between(start, end), frozenset())
+        self.assertEqual(await self.new_between(start, end), {1})
+        four_hours_later = NOW + timedelta(hours=4)
+        self.assertEqual(await self.between(start, end, four_hours_later), {1})
+        self.assertEqual(await self.new_between(start, end, four_hours_later), frozenset())
 
 
 class LibraryMissingBetweenTests(ServiceTestCase):

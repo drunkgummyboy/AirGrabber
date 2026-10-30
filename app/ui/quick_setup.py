@@ -1,12 +1,12 @@
 """Quick setup ("Make it yours"): the most important choices on one page, each one click.
 
 Look (Like Windows / Dark / Light, each with a small swatch; applies at once), download quality
-(Smaller files = 720p / Recommended = 1080p / Best picture = 2160p, for series and films alike;
-the sizes stay), card size (Small = S / Medium = M / Large = L) and language (English /
-Nederlands; another language than the running one needs a restart: "Restart now", or it
-applies at the next start). What is chosen first is what Settings has now; a quality or card
-size Settings has that isn't offered here (4K for films only, XS) is left unchosen, and stays
-unless one is clicked.
+in two rows, Series and Movies (Smaller files = 720p / Recommended = 1080p / Best picture =
+2160p each: `quality_tv` and `quality_movie`; the sizes stay), card size (Small = S / Medium =
+M / Large = L) and language (English / Nederlands; another language than the running one
+needs a restart: "Restart now", or it applies at the next start). What is chosen first is what
+Settings has now; a quality or card size Settings has that isn't offered here ("Any", XS) is
+left unchosen, and stays unless one is clicked.
 
 `QuickSetupPanel` is the page: the welcome's last step (app/ui/welcome_dialog.py) and the small
 `QuickSetupDialog` from Settings → Looks → Quick setup. The host saves `quick_changes`.
@@ -15,6 +15,7 @@ unless one is clicked.
 from __future__ import annotations
 
 import functools
+import math
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -39,8 +40,10 @@ from app.ui.dialog_kit import (
     PAD_X,
     PAD_Y,
     SMALL_SIZE,
+    FitScroll,
     activate_later,
     heading_row,
+    max_dialog_height,
     place_over,
     primary_button,
     secondary_button,
@@ -55,6 +58,8 @@ HEADING = N_("Make it yours")
 INTRO = N_("You can change all of this later in Settings.")
 LOOK_TITLE = N_("Look")
 QUALITY_TITLE = N_("Download quality")
+SERIES_ROW = N_("Series")  # the quality rows' names
+MOVIES_ROW = N_("Movies")
 LANGUAGE_TITLE = N_("Language")
 RESTART_TEXT = N_("Restart AirGrabber to switch the language")
 OPEN_TEXT = N_("Quick setup")  # Settings → Looks: the box and its button
@@ -83,6 +88,7 @@ QUESTION_GAP = 10  # between two questions
 CHOICE_WIDTH = 132
 CHOICE_GAP = 8
 CHOICE_PAD_Y = 6
+ROW_GAP = 8  # between two rows of one question
 SWATCH_SIZE = (46, 28)
 SWATCH_RADIUS = 6
 _RESTART_BUTTON_WIDTH = 150
@@ -97,37 +103,39 @@ class QuickChoices:
     """What the page has chosen: None = nothing chosen (Settings keeps its value)."""
 
     look: ThemeMode
-    quality: QualityProfile | None
+    quality_tv: QualityProfile | None  # series
+    quality_movie: QualityProfile | None  # films
     size: CardSize | None
     language: Language
 
 
+def _offered(quality: QualityProfile) -> QualityProfile | None:
+    return quality if quality in {offered for offered, _name, _note in QUALITIES} else None
+
+
 def quick_defaults(current: Settings) -> QuickChoices:
-    """What the page starts with: Settings' values, a quality only when series and films have
-    the same one of the three, a card size only when it is S, M or L."""
-    offered_qualities = {quality for quality, _name, _note in QUALITIES}
-    quality = current.quality_tv
-    same = quality == current.quality_movie and quality in offered_qualities
+    """What the page starts with: Settings' values, the series' and the films' quality each
+    when it is one of the three, a card size only when it is S, M or L."""
     size = current.card_size if current.card_size in {s for s, _n, _l in SIZES} else None
     return QuickChoices(
         look=current.theme_mode,
-        quality=quality if same else None,
+        quality_tv=_offered(current.quality_tv),
+        quality_movie=_offered(current.quality_movie),
         size=size,
         language=current.language,
     )
 
 
 def quick_changes(current: Settings, chosen: QuickChoices) -> dict[str, Any]:
-    """The settings to save for `chosen` (only what differs from `current`): a quality goes to
-    both `quality_tv` and `quality_movie`; the size ranges are left alone."""
+    """The settings to save for `chosen` (only what differs from `current`): the series'
+    quality as `quality_tv`, the films' as `quality_movie`; the size ranges are left alone."""
     changes: dict[str, Any] = {}
     if chosen.look != current.theme_mode:
         changes["theme_mode"] = chosen.look
-    if chosen.quality is not None:
-        if chosen.quality != current.quality_tv:
-            changes["quality_tv"] = chosen.quality
-        if chosen.quality != current.quality_movie:
-            changes["quality_movie"] = chosen.quality
+    if chosen.quality_tv is not None and chosen.quality_tv != current.quality_tv:
+        changes["quality_tv"] = chosen.quality_tv
+    if chosen.quality_movie is not None and chosen.quality_movie != current.quality_movie:
+        changes["quality_movie"] = chosen.quality_movie
     if chosen.size is not None and chosen.size != current.card_size:
         changes["card_size"] = chosen.size
     if chosen.language != current.language:
@@ -221,33 +229,74 @@ class _Choice(ctk.CTkFrame):
         )
 
 
-class _Question(ctk.CTkFrame, Generic[V]):
-    """A titled box of choices; `on_choose(value)` when one is clicked."""
+class _Question(ctk.CTkFrame):
+    """A titled box of one or more rows of choices (`add_row`)."""
 
-    def __init__(
-        self,
-        master: Any,
-        title: str,
-        options: Sequence[tuple[V, str, str, ctk.CTkImage | None]],
-        chosen: V | None,
-        on_choose: Callable[[V], None],
-    ) -> None:
+    def __init__(self, master: Any, title: str) -> None:
         super().__init__(
             master, fg_color=theme.TAB_BG, border_width=1, border_color=theme.PANEL_EDGE,
             corner_radius=10,
         )
-        self._on_choose = on_choose
         ctk.CTkLabel(
             self, text=title, font=theme.font(15, bold=True), text_color=theme.TEXT, anchor="w"
         ).pack(fill="x", padx=QUESTION_PAD_X, pady=(QUESTION_PAD_Y, 6))
-        self.row = ctk.CTkFrame(self, fg_color="transparent")
-        self.row.pack(fill="x", padx=QUESTION_PAD_X, pady=(0, QUESTION_PAD_Y))
+        self._body = ctk.CTkFrame(self, fg_color="transparent")
+        self._body.pack(fill="x", padx=QUESTION_PAD_X, pady=(0, QUESTION_PAD_Y))
+        self._rows = 0
+
+    def add_row(
+        self,
+        options: Sequence[tuple[V, str, str, ctk.CTkImage | None]],
+        chosen: V | None,
+        on_choose: Callable[[V], None],
+        *,
+        label: str = "",
+        label_width: int = 0,
+    ) -> _Choices[V]:
+        row = _Choices(self._body, options, chosen, on_choose, label=label, label_width=label_width)
+        row.pack(fill="x", pady=(ROW_GAP if self._rows else 0, 0))
+        self._rows += 1
+        return row
+
+
+class _Choices(ctk.CTkFrame, Generic[V]):
+    """One row of choices, with its name first when it has a `label` (the quality's Series /
+    Movies); `on_choose(value)` when one is clicked."""
+
+    def __init__(
+        self,
+        master: Any,
+        options: Sequence[tuple[V, str, str, ctk.CTkImage | None]],
+        chosen: V | None,
+        on_choose: Callable[[V], None],
+        *,
+        label: str = "",
+        label_width: int = 0,
+    ) -> None:
+        super().__init__(master, fg_color="transparent")
+        self._on_choose = on_choose
+        first = 0
+        if label:
+            ctk.CTkLabel(
+                self,
+                text=label,
+                font=theme.font(14),
+                text_color=theme.TEXT,
+                anchor="w",
+                width=label_width,
+            ).grid(row=0, column=0, sticky="w", padx=(0, CHOICE_GAP))
+            first = 1
         self.choices: dict[V, _Choice] = {}
         for index, (value, name, note, swatch) in enumerate(options):
             choice = _Choice(
-                self.row, name, note, swatch=swatch, command=functools.partial(self.choose, value)
+                self, name, note, swatch=swatch, command=functools.partial(self.choose, value)
             )
-            choice.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else CHOICE_GAP, 0))
+            choice.grid(
+                row=0,
+                column=first + index,
+                sticky="nsew",
+                padx=(0 if index == 0 else CHOICE_GAP, 0),
+            )
             self.choices[value] = choice
         self.value: V | None = None
         self._mark(chosen)
@@ -291,29 +340,39 @@ class QuickSetupPanel(ctk.CTkFrame):
             )
             self._swatches.append(image)
             looks.append((look, t(name), "", image))
-        self.look = _Question(self, t(LOOK_TITLE), looks, self._chosen.look, self._look_chosen)
-        self.quality = _Question(
-            self,
-            t(QUALITY_TITLE),
-            [(quality, t(name), t(note), None) for quality, name, note in QUALITIES],
-            self._chosen.quality,
-            lambda value: self._set_choice(quality=value),
+        look_box = _Question(self, t(LOOK_TITLE))
+        self.look = look_box.add_row(looks, self._chosen.look, self._look_chosen)
+        quality_box = _Question(self, t(QUALITY_TITLE))
+        qualities = [(quality, t(name), t(note), None) for quality, name, note in QUALITIES]
+        measure = theme.font(14).measure
+        label_width = max(measure(t(SERIES_ROW)), measure(t(MOVIES_ROW))) + 4
+        self.quality_tv = quality_box.add_row(
+            qualities,
+            self._chosen.quality_tv,
+            lambda value: self._set_choice(quality_tv=value),
+            label=t(SERIES_ROW),
+            label_width=label_width,
         )
-        self.card_size = _Question(
-            self,
-            t(CARD_SIZE_LABEL),
+        self.quality_movie = quality_box.add_row(
+            qualities,
+            self._chosen.quality_movie,
+            lambda value: self._set_choice(quality_movie=value),
+            label=t(MOVIES_ROW),
+            label_width=label_width,
+        )
+        size_box = _Question(self, t(CARD_SIZE_LABEL))
+        self.card_size = size_box.add_row(
             [(size, t(name), t(note) if note else "", None) for size, name, note in SIZES],
             self._chosen.size,
             lambda value: self._set_choice(size=value),
         )
-        self.language = _Question(
-            self,
-            t(LANGUAGE_TITLE),
+        language_box = _Question(self, t(LANGUAGE_TITLE))
+        self.language = language_box.add_row(
             [(language, language.native_name, "", None) for language in Language],
             self._chosen.language,
             self._language_chosen,
         )
-        questions: tuple[ctk.CTkFrame, ...] = (self.look, self.quality, self.card_size, self.language)
+        questions = (look_box, quality_box, size_box, language_box)
         for index, question in enumerate(questions):
             question.pack(fill="x", pady=(0 if index == 0 else QUESTION_GAP, 0))
 
@@ -393,12 +452,17 @@ class QuickSetupDialog(ctk.CTkToplevel):
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
-        heading_row(body, t(HEADING)).pack(fill="x")
-        text_label(body, t(INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
+        # Scrolls only on a screen too small for it (`_fit_screen`); Save and Cancel stay.
+        self._scroll = FitScroll(body, follow=True)
+        self._scroll.pack(fill="both", expand=True)
+        content = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        content.grid(row=0, column=0, sticky="nsew")
+        heading_row(content, t(HEADING)).pack(fill="x")
+        text_label(content, t(INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 16)
         )
         restart = async_command(self._save_and_restart) if on_restart is not None else None
-        self.panel = QuickSetupPanel(body, current=settings.current, on_restart=restart)
+        self.panel = QuickSetupPanel(content, current=settings.current, on_restart=restart)
         self.panel.pack(fill="x")
         buttons = ctk.CTkFrame(body, fg_color="transparent", height=BUTTON_HEIGHT)
         buttons.pack(fill="x", pady=(NAV_GAP - 8, 0))
@@ -407,8 +471,30 @@ class QuickSetupDialog(ctk.CTkToplevel):
         self.save_button.pack(side="right", padx=(0, 12))
 
         self.bind("<Escape>", lambda _event: self.cancel())
+        self._fit_screen()
         place_over(self, master)
         activate_later(self)
+
+    def _fit_screen(self) -> None:
+        """At most as tall as the screen allows (`max_dialog_height`): the content (measured
+        at its tallest, with the language note) scrolls above Save and Cancel when it needs
+        more. Where it fits, the dialog grows and shrinks with its content as before."""
+        scroll = self._scroll
+        self.update_idletasks()
+        scaling = ctk.ScalingTracker.get_window_scaling(self)
+        scroll.configure(width=math.ceil(scroll.winfo_reqwidth() / scaling))
+        self.panel.show_restart(always=True)
+        self.update_idletasks()
+        scroll.refit()  # as tall as the content
+        self.update_idletasks()
+        tallest = scroll.content_height()
+        around = self.winfo_reqheight() - tallest  # heading … buttons, physical pixels
+        limit = math.floor(max_dialog_height(self.master, scaling) * scaling) - around
+        if tallest > limit:
+            scroll.reserve_bar()
+        self.panel.show_restart()
+        self.update_idletasks()
+        scroll.set_limit(limit)
 
     async def save(self) -> bool:
         """Store the choices; False (the dialog stays) when that failed."""

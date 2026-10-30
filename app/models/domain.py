@@ -453,10 +453,12 @@ class ShowDetails(DomainModel):
     downloaded: frozenset[int] = frozenset()
     next_episode: Episode | None = None  # the first numbered episode still to air
     # Tracked shows only (see app.services.missing): the latest season (the highest with an
-    # aired regular numbered episode), its aired episodes not downloaded and not marked "I
-    # already have this" (ids), and every episode marked so (ids, any season).
+    # aired regular numbered episode), its episodes not downloaded and not marked "I already
+    # have this" (ids) that aired at least a day ago (`missing`) or less (`new`), and every
+    # episode marked so (ids, any season).
     latest_season: int | None = None
     missing: frozenset[int] = frozenset()
+    new: frozenset[int] = frozenset()
     have: frozenset[int] = frozenset()
 
     def is_downloaded(self, episode: Episode) -> bool:
@@ -464,6 +466,10 @@ class ShowDetails(DomainModel):
 
     def is_missing(self, episode: Episode) -> bool:
         return episode.id in self.missing
+
+    def is_new(self, episode: Episode) -> bool:
+        """Aired less than a day ago and not downloaded or marked: not missing yet."""
+        return episode.id in self.new
 
     def has_it(self, episode: Episode) -> bool:
         """Marked "I already have this"."""
@@ -657,6 +663,41 @@ class SubtitleRunReport(DomainModel):
     problem: str | None = None  # the SubtitleProblem that stopped (or skipped) the run
 
 
+class SubtitleFetchOutcome(StrEnum):
+    """How a subtitle request for one episode or film went (SubtitleService.fetch_now)."""
+
+    SAVED = "saved"  # every language asked for is there now (some may have been there already)
+    PARTLY = "partly"  # some saved or there, the others not found yet
+    ALREADY = "already"  # every language asked for was there already
+    NOT_FOUND = "not_found"  # OpenSubtitles has none yet
+    NO_VIDEO = "no_video"  # the video isn't in the finished-downloads folder
+    DOWNLOADING = "downloading"  # the video is still being downloaded
+    NO_GRAB = "no_grab"  # AirGrabber has no download of it
+    QUOTA = "quota"  # today's downloads are used up (`message` says until when)
+    WAIT = "wait"  # tried within the retry time (only when not forced)
+    PROBLEM = "problem"  # key, account, connection or folder (`message`, plain words)
+    UNAVAILABLE = "unavailable"  # no API key in this version, or no finished-downloads folder
+
+
+class SubtitleOffer(StrEnum):
+    """Whether subtitles can be asked for by hand (the CC ▾ buttons; SubtitleService.offer)."""
+
+    NONE = "none"  # no API key in this version, no finished-downloads folder or no language
+    OFF = "off"  # Settings → Subtitles' switch is off: the buttons show, greyed
+    ON = "on"
+
+
+class SubtitleFetch(DomainModel):
+    """What a subtitle request for one episode or film did: the languages saved now (or found
+    next to the video), those not found yet, and for QUOTA / PROBLEM a plain message without
+    URLs or secrets."""
+
+    outcome: SubtitleFetchOutcome
+    saved: tuple[str, ...] = ()
+    not_found: tuple[str, ...] = ()
+    message: str = ""
+
+
 class WatchlistEntry(DomainModel):
     """A film on the user's watchlist: the TMDB list data it was saved with (enough to draw its
     card offline), its release dates as TMDB's details last said, and the automatic downloads'
@@ -700,6 +741,26 @@ class QBittorrentSetupResult(StrEnum):
     ALREADY = "already"  # nothing to change: no pop-up already
     RUNNING = "running"  # qBittorrent runs: nothing changed (close it and try again)
     FAILED = "failed"  # the file couldn't be read or written
+
+
+class QBittorrentInstallResult(StrEnum):
+    """How installing qBittorrent with winget went: installed, or why not (from winget's exit
+    code; its output is never read)."""
+
+    INSTALLED = "installed"  # winget installed it and Windows opens torrents with it
+    NO_WINGET = "no_winget"  # Windows' app installer (winget) is missing or wouldn't start
+    OFFLINE = "offline"  # the download failed: no internet, a proxy or a certificate problem
+    DECLINED = "declined"  # Windows' permission prompt was answered No
+    BUSY = "busy"  # another installation was running
+    NO_SPACE = "no_space"  # the disk is full
+    BLOCKED = "blocked"  # the PC's policies don't allow installing it
+    RESTART = "restart"  # Windows needs a restart first
+    NOT_LINKED = "not_linked"  # qBittorrent is there, but Windows doesn't open torrents with it
+    FAILED = "failed"  # anything else
+
+    @property
+    def installed(self) -> bool:
+        return self is QBittorrentInstallResult.INSTALLED
 
 
 class IndexerState(StrEnum):

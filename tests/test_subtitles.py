@@ -517,7 +517,7 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
         version = await db.fetch_one("PRAGMA user_version")
         assert version is not None
-        self.assertEqual(version[0], 6)
+        self.assertEqual(version[0], len(MIGRATIONS))
         self.assertIsNotNone(await db.library.get_show(1))
         tables = {row["name"]: row["strict"] for row in await db.fetch_all("PRAGMA table_list")}
         self.assertEqual((tables["subtitle_files"], tables["subtitle_grabs"]), (1, 1))

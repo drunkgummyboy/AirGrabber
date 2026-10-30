@@ -4,9 +4,10 @@ All three are drawn at the page's `CardScale` (Settings → Card size). The full
 baked images are in app/ui/calendar_face.py; the compact and suggestion cards keep their look,
 only their fonts follow the card size (never below the readable minimums).
 
-A missing episode (app.services.missing's rule: aired, not downloaded, not marked "I already
-have this"; the view hands the cards `missing`) gets an amber left edge and an amber "Not
-downloaded yet" under its code, on the full and the compact cards alike. Clicking a show's
+A missing episode (app.services.missing's rule: aired at least a day ago, not downloaded, not
+marked "I already have this"; the view hands the cards `missing`) gets an amber left edge and
+an amber "Not downloaded yet" under its code, on the full and the compact cards alike; a new
+one (aired less than a day ago, `new`) only a quiet blue "New" there. Clicking a show's
 name (full cards: also the poster) opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
@@ -90,6 +91,13 @@ MISSING_TIP = N_(
     "Aired, but not downloaded yet. Already have it? Mark it in the show's window."
 )
 CHOOSE_TIP = N_("Nothing good enough was found. Choose a download yourself.")
+# A new episode's quiet note (aired less than a day ago: not missing yet).
+NEW_NOTE_TEXT = N_("New")
+NEW_NOTE_TIP = N_(
+    "Aired less than a day ago: a copy usually turns up within hours. It counts as missing "
+    "after a day."
+)
+NEW_COLOR = theme.LINK
 WORKING_ICON = "…"
 GRABBED_ICON = "✓"
 # A full card's width before its first layout (for where the Download row starts meanwhile).
@@ -211,8 +219,14 @@ def missing_note(room: float, measure: Measure) -> str:
     return fit_text([t(text) for text in MISSING_TEXTS], room, measure)
 
 
+def new_note(room: float, measure: Measure) -> str:
+    """A new episode's blue note ("New"), elided to `room`."""
+    return elide_to_width(t(NEW_NOTE_TEXT), room, measure)
+
+
 def compact_height(missing: bool) -> int:
-    """A compact card's height: the slim line, and the amber note for a missing episode."""
+    """A compact card's height: the slim line, and the note line of a missing (or new)
+    episode."""
     return 2 * SLIM_PAD_Y + SLIM_LINE + (NOTE_HEIGHT if missing else 0)
 
 
@@ -284,7 +298,8 @@ class EpisodeCard(ctk.CTkFrame):
     left side and fades into the card; the show's name, the episode code and the bottom row
     (a muted "Not aired", else the Download row) sit on the right, over the faded part.
     Clicking the poster or the name opens the show's window (`on_open_show`). A `missing`
-    episode gets an amber left edge and the amber note under its code.
+    episode gets an amber left edge and the amber note under its code, a `new` one the blue
+    "New" note.
 
     Everything but the Download row is drawn on one canvas (see app/ui/calendar_face.py): the
     baked poster piece and right cap, the stretch between them, and the texts. Switching
@@ -304,8 +319,11 @@ class EpisodeCard(ctk.CTkFrame):
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
         missing: bool = False,
+        new: bool = False,
     ) -> None:
-        layout = self._card_layout(scale, missing)
+        self._missing = missing
+        self._new = new and not missing
+        layout = self._card_layout(scale, missing or self._new)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
@@ -347,7 +365,6 @@ class EpisodeCard(ctk.CTkFrame):
         self._note = canvas.create_text(0, 0, anchor="nw", text="")
         self._status = canvas.create_text(0, 0, anchor="w", text="")
         self._paint_canvas()
-        self._missing = missing
 
         if on_open_show is not None:
             canvas.tag_bind("open", "<Button-1>", self._open)
@@ -368,7 +385,7 @@ class EpisodeCard(ctk.CTkFrame):
     # -- what a stack card does differently ----------------------------------------------------
 
     def _card_layout(self, scale: CardScale, missing: bool) -> EpisodeLayout:
-        """The card's sizes (a missing episode has room for its amber note)."""
+        """The card's sizes (a missing or new episode has room for its note)."""
         return episode_layout(scale, linespace=_font_linespace, note=missing)
 
     def _card_height(self, layout: EpisodeLayout) -> int:
@@ -403,7 +420,7 @@ class EpisodeCard(ctk.CTkFrame):
             canvas.itemconfigure(edge, fill=pick(theme.EDGE))
         canvas.itemconfigure(self._title, fill=pick(theme.TEXT))
         canvas.itemconfigure(self._code, fill=pick(theme.TEXT_MUTED))
-        canvas.itemconfigure(self._note, fill=pick(MISSING_COLOR))
+        canvas.itemconfigure(self._note, fill=pick(NEW_COLOR if self._new else MISSING_COLOR))
         canvas.itemconfigure(self._status, fill=pick(theme.TEXT_MUTED))
 
     def _set_appearance_mode(self, mode_string: str) -> None:
@@ -520,9 +537,10 @@ class EpisodeCard(ctk.CTkFrame):
         if layout.note:
             box = canvas.bbox(self._code)
             code_bottom = box[3] if box else code_y
+            note = new_note if self._new else missing_note
             canvas.itemconfigure(
                 self._note,
-                text=missing_note(room, self._code_font.measure),
+                text=note(room, self._code_font.measure),
                 font=self._code_font.create_scaled_tuple(scaling),
             )
             canvas.coords(self._note, x, code_bottom + round(layout.code_gap * scaling))
@@ -739,7 +757,8 @@ class SlimDownload(ctk.CTkFrame):
 class CompactEpisodeCard(ctk.CTkFrame):
     """A tracked episode on one slim line (older days): the show's name and the episode code,
     then small buttons (SlimDownload). A `missing` episode adds the amber note under the line
-    and an amber bar on the card's left edge. Clicking the name opens the show's window
+    and an amber bar on the card's left edge, a `new` one only the blue "New" note. Clicking
+    the name opens the show's window
     (`on_open_show`); a right-click anywhere opens the search window, as the ⋯ does."""
 
     def __init__(
@@ -751,8 +770,10 @@ class CompactEpisodeCard(ctk.CTkFrame):
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
         missing: bool = False,
+        new: bool = False,
     ) -> None:
-        height = compact_height(missing)
+        new = new and not missing
+        height = compact_height(missing or new)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
@@ -797,17 +818,18 @@ class CompactEpisodeCard(ctk.CTkFrame):
 
         self.note: ctk.CTkLabel | None = None
         note_font = theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN))
-        if missing:
+        if missing or new:
             self.note = ctk.CTkLabel(
                 self,
-                text=t(MISSING_TEXTS[0]),
+                text=t(NEW_NOTE_TEXT) if new else t(MISSING_TEXTS[0]),
                 font=note_font,
-                text_color=MISSING_COLOR,
+                text_color=NEW_COLOR if new else MISSING_COLOR,
                 height=NOTE_HEIGHT,
                 anchor="w",
             )
             self.note.pack(side="top", anchor="w", padx=SLIM_PAD_X)
-            add_tooltip(self.note, t(MISSING_TIP))
+            add_tooltip(self.note, t(NEW_NOTE_TIP) if new else t(MISSING_TIP))
+        note_text = new_note if new else missing_note
 
         line_width: float | None = None  # unscaled, once laid out
 
@@ -818,7 +840,7 @@ class CompactEpisodeCard(ctk.CTkFrame):
             room = slim_name_room(line_width, code_width, self.buttons.width_units)
             self.name_label.configure(text=elide_to_width(show.name, room, name_font.measure))
             if self.note is not None:
-                self.note.configure(text=missing_note(line_width - SLACK, note_font.measure))
+                self.note.configure(text=note_text(line_width - SLACK, note_font.measure))
 
         def resized(event: Any) -> None:
             nonlocal line_width

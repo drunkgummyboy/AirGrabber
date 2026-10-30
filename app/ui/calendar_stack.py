@@ -42,14 +42,12 @@ from app.i18n import N_, t, tn
 from app.models import CalendarEntry, Episode, Show
 from app.ui import theme
 from app.ui.calendar_cards import (
-    _CODE_SIZE,
-    _ICON_RADIUS,
-    _ICON_SIZE,
-    _NAME_SIZE,
-    _NOTE_SIZE,
     GRABBED_ICON,
     MISSING_TEXTS,
     MISSING_TIP,
+    NEW_COLOR,
+    NEW_NOTE_TEXT,
+    NEW_NOTE_TIP,
     NOTE_HEIGHT,
     SLIM_BUTTONS_GAP,
     SLIM_CODE_GAP,
@@ -60,6 +58,11 @@ from app.ui.calendar_cards import (
     SLIM_PAD_Y,
     SLIM_RADIUS,
     WORKING_ICON,
+    _CODE_SIZE,
+    _ICON_RADIUS,
+    _ICON_SIZE,
+    _NAME_SIZE,
+    _NOTE_SIZE,
     EpisodeActions,
     EpisodeCard,
     IconLook,
@@ -73,6 +76,7 @@ from app.ui.calendar_cards import (
     buttons_width,
     compact_height,
     missing_note,
+    new_note,
 )
 from app.ui.calendar_face import (
     MARK_WIDTH,
@@ -113,7 +117,7 @@ if TYPE_CHECKING:
 
 FoldKey = tuple[int, date]  # (show id, air date): which stacks are unfolded
 StateOf = Callable[[DownloadKey], RunState | None]  # a title's one-click run state
-RowState = Literal["not_aired", "downloaded", "have", "needed"]
+RowState = Literal["not_aired", "downloaded", "have", "new", "needed"]
 
 # The texts are shown through t().
 DOWNLOAD_ALL_TEXT = N_("⬇ Download all ({n})")
@@ -122,6 +126,7 @@ ROW_TEXTS: dict[RowState, str] = {
     "not_aired": N_("not aired"),
     "downloaded": N_("✓ downloaded"),
     "have": N_("✓ have it"),
+    "new": N_("new"),
     "needed": N_("still needed"),
 }
 FOLDED_ARROW = "▾"
@@ -216,16 +221,33 @@ def range_text(episodes: Sequence[Episode]) -> str:
     return ", ".join(parts)
 
 
-def row_state(entry: CalendarEntry, state: RunState | None, had: Collection[int]) -> RowState:
+def row_state(
+    entry: CalendarEntry,
+    state: RunState | None,
+    had: Collection[int],
+    new: Collection[int] = frozenset(),
+) -> RowState:
     """An episode's state in its unfolded row: not aired; downloaded (before, or by a run that
-    just finished); marked "I already have this" (`had`: episode ids); else still needed."""
+    just finished); marked "I already have this" (`had`: episode ids); aired less than a day
+    ago (`new`: episode ids; a quiet blue "new", not missing yet); else still needed."""
     if not entry.episode.has_aired():
         return "not_aired"
     if entry.is_downloaded or (state is not None and state.phase is Phase.DONE):
         return "downloaded"
     if entry.episode.id in had:
         return "have"
+    if entry.episode.id in new:
+        return "new"
     return "needed"
+
+
+def row_color(kind: RowState) -> theme.Color:
+    """Amber for still needed, blue for new, else muted."""
+    if kind == "needed":
+        return MISSING_COLOR
+    if kind == "new":
+        return NEW_COLOR
+    return theme.TEXT_MUTED
 
 
 def row_text(kind: RowState) -> str:
@@ -236,8 +258,8 @@ def row_text(kind: RowState) -> str:
 def needed_entries(
     entries: Iterable[CalendarEntry], state_of: StateOf, had: Collection[int]
 ) -> tuple[CalendarEntry, ...]:
-    """The episodes "⬇ Download all" fetches: still needed, with a number to download by (a
-    special is searched for in its own row)."""
+    """The episodes "⬇ Download all" fetches: still needed (new ones too), with a number to
+    download by (a special is searched for in its own row)."""
     return tuple(
         entry
         for entry in entries
@@ -473,10 +495,12 @@ class StackCard(EpisodeCard):
         had: Collection[int] = frozenset(),
         unfolded: bool = False,
         on_fold: Callable[[bool], None] | None = None,
+        new: Collection[int] = frozenset(),
     ) -> None:
         # What the overridden steps of EpisodeCard's set-up read.
         self._stack = stack
         self._had = frozenset(had)
+        self._new_ids = frozenset(new)
         self._unfolded = unfolded
         self._scale = scale
         self._rows: list[_EpisodeRow] = []
@@ -704,12 +728,12 @@ class StackCard(EpisodeCard):
                 row.code, text=elide_to_width(code, code_room, measure), font=code_font
             )
             canvas.coords(row.code, x, y + round(EPISODE_LINE * scaling / 2))
-            kind = row_state(row.entry, states.get(entry_key(row.entry)), self._had)
+            kind = row_state(row.entry, states.get(entry_key(row.entry)), self._had, self._new_ids)
             canvas.itemconfigure(
                 row.state,
                 text=elide_to_width(row_text(kind), room, self._row_font.measure),
                 font=state_font,
-                fill=theme.pick(MISSING_COLOR if kind == "needed" else theme.TEXT_MUTED),
+                fill=theme.pick(row_color(kind)),
             )
             canvas.coords(row.state, x, y + round(EPISODE_LINE * scaling))
             row.buttons.place(relx=1.0, x=-right, y=row_top, anchor="ne")
@@ -740,8 +764,10 @@ class CompactStackCard(ctk.CTkFrame):
         on_open_show: OpenShow | None = None,
         missing: bool = False,
         had: Collection[int] = frozenset(),
+        new: Collection[int] = frozenset(),
     ) -> None:
-        height = compact_height(missing)
+        any_new = not missing and any(entry.episode.id in new for entry in stack.entries)
+        height = compact_height(missing or any_new)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
@@ -813,17 +839,18 @@ class CompactStackCard(ctk.CTkFrame):
 
         self.note: ctk.CTkLabel | None = None
         note_font = theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN))
-        if missing:
+        if missing or any_new:
             self.note = ctk.CTkLabel(
                 self,
-                text=t(MISSING_TEXTS[0]),
+                text=t(NEW_NOTE_TEXT) if any_new else t(MISSING_TEXTS[0]),
                 font=note_font,
-                text_color=MISSING_COLOR,
+                text_color=NEW_COLOR if any_new else MISSING_COLOR,
                 height=NOTE_HEIGHT,
                 anchor="w",
             )
             self.note.pack(side="top", anchor="w", padx=SLIM_PAD_X)
-            add_tooltip(self.note, t(MISSING_TIP))
+            add_tooltip(self.note, t(NEW_NOTE_TIP) if any_new else t(MISSING_TIP))
+        note_text = new_note if any_new else missing_note
 
         line_width: float | None = None  # unscaled, once laid out
 
@@ -841,7 +868,7 @@ class CompactStackCard(ctk.CTkFrame):
                 text=elide_to_width(range_label, range_room, code_font.measure)
             )
             if self.note is not None:
-                self.note.configure(text=missing_note(line_width - SLACK, note_font.measure))
+                self.note.configure(text=note_text(line_width - SLACK, note_font.measure))
 
         def resized(event: Any) -> None:
             nonlocal line_width

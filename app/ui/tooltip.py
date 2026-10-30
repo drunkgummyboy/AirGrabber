@@ -270,7 +270,13 @@ def _screen_rect(widget: tk.Misc, rect: Rect) -> Rect:
     return 0, 0, width, height
 
 
-def _monitor_rect(x: int, y: int) -> Rect | None:
+def work_area(x: int, y: int) -> Rect | None:
+    """The work area (the screen less the taskbar) of the monitor nearest to the point, in
+    physical pixels (left, top, right, bottom); None off Windows or when Windows won't say."""
+    return _monitor_rect(x, y, work=True)
+
+
+def _monitor_rect(x: int, y: int, *, work: bool = False) -> Rect | None:
     if sys.platform != "win32":
         return None
     import ctypes
@@ -296,5 +302,5 @@ def _monitor_rect(x: int, y: int) -> Rect | None:
             return None
     except (AttributeError, OSError):
         return None
-    r = info.rcMonitor
+    r = info.rcWork if work else info.rcMonitor
     return int(r.left), int(r.top), int(r.right), int(r.bottom)

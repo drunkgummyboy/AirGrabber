@@ -1,6 +1,8 @@
 """The film info window: the shared info look (app/ui/title_info.py: the backdrop with "▶ Watch
-trailer", the poster, title, meta line, genres, synopsis, cast) with a film's actions: the
-one-click ⬇ Download with ⋯ (the search window), the watchlist button and IMDb.
+trailer", the poster, title, meta line, genres, synopsis, cast) with a film's actions: ⬇ Auto
+(the one-click download) and ☰ Choose… (the search window), or once downloaded ✓ Downloaded
+with ↻ Again and the subtitles' CC ▾ (app/ui/row_actions.py, app/ui/subtitle_control.py); the
+watchlist button and IMDb.
 
 Opened from the film cards' cover and title (the Movies page, the watchlist shelf, search
 results); one window per film (`MovieWindows` raises the open one). It shows what the card
@@ -15,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import webbrowser
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +28,8 @@ from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.ui import theme
 from app.ui.download_control import CORNER_RADIUS as CONTROL_RADIUS
 from app.ui.download_control import FONT_SIZE as CONTROL_FONT_SIZE
-from app.ui.download_control import ROW_HEIGHT, DownloadActions, DownloadControl, movie_key
+from app.ui.download_control import ROW_HEIGHT, DownloadActions, movie_key
+from app.ui.download_control import Base
 from app.ui.media_cards import (
     format_runtime,
     imdb_search_url,
@@ -34,7 +37,9 @@ from app.ui.media_cards import (
     tmdb_poster_size,
     tmdb_rating,
 )
+from app.ui.row_actions import RowActions
 from app.ui.shelf_filter import MOVIE_GENRES, Genre, genre_name, genres_of
+from app.ui.subtitle_control import CCControl, SubtitleActions
 from app.ui.tasks import spawn
 from app.ui.title_info import (
     BUTTON_GAP,
@@ -51,7 +56,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DOWNLOAD_WIDTH = 220  # the ⬇ Download row with its ⋯
+Listener = Callable[[], None]
+Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
+
 WATCHLIST_WIDTH = 170
 IMDB_WIDTH = 90
 OPEN_WAIT_S = 5.0  # a film known only by its id waits this long for TMDB's description
@@ -111,7 +118,13 @@ class MovieDetailsWindow(TitleInfoWindow):
         watchlist: WatchlistService,
         actions: DownloadActions[Movie],
         today: Callable[[], date] = date.today,
+        downloaded: Callable[[int], Awaitable[bool]] | None = None,
+        subtitle_actions: SubtitleActions | None = None,
+        subtitle_mark: Callable[[int], Awaitable[str]] | None = None,
     ) -> None:
+        """`downloaded(tmdb_id)`: whether the film is in the download history (✓ Downloaded
+        and its subtitles); `subtitle_actions` / `subtitle_mark(tmdb_id)`: its CC ▾ menu and
+        the subtitles saved for it ("CC EN NL")."""
         super().__init__(
             master,
             title=movie.title,
@@ -121,23 +134,30 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._movie = movie
         self._discovery = discovery
         self._today = today
+        self._downloaded_lookup = downloaded
+        self._subtitle_mark = subtitle_mark
+        self._is_downloaded = False
         self._details: MovieDetails | None = None
         self._extras: TitleExtras | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        self._state_task: asyncio.Task[None] | None = None
 
-        slot = ctk.CTkFrame(
-            self.buttons, fg_color="transparent", width=DOWNLOAD_WIDTH, height=ROW_HEIGHT
-        )
-        slot.pack_propagate(False)
-        slot.pack(side="left")
-        self.download = DownloadControl(
-            slot,
+        # As wide as what it shows (⬇ Auto + ☰ Choose…, ✓ Downloaded + ↻ Again, …).
+        self.download = RowActions(
+            self.buttons,
             item=movie,
             key=movie_key(movie.id),
             base=movie_base(movie, None, today()),
             actions=actions,
+            height=ROW_HEIGHT,
+            align="left",
         )
-        self.download.pack(fill="both", expand=True)
+        self.download.pack(side="left")
+        # The subtitles of a downloaded film (CC ▾), right of the download controls.
+        self.cc_control = CCControl(
+            self.buttons, key=movie_key(movie.id), actions=subtitle_actions, height=ROW_HEIGHT
+        )
+        self.cc_control.show("", shown=False)
         self.watch_button = WatchlistButton(
             self.buttons,
             movie=movie,
@@ -166,6 +186,38 @@ class MovieDetailsWindow(TitleInfoWindow):
         self.masthead.reserve_hero(discovery.has_tmdb_key)
         self._start(self._load_details(), "MovieDetailsWindow.details")
         self._start(self._load_extras(), "MovieDetailsWindow.extras")
+        self.refresh_state()
+
+    def refresh_state(self) -> None:
+        """Ask again whether the film was downloaded and which subtitles it has (a grab, or
+        subtitles saved)."""
+        if self._downloaded_lookup is None:
+            return
+        if self._state_task is not None and not self._state_task.done():
+            self._state_task.cancel()
+        self._state_task = spawn(self._load_state(), name="MovieDetailsWindow.state")
+        self._tasks.add(self._state_task)
+        self._state_task.add_done_callback(self._tasks.discard)
+
+    async def _load_state(self) -> None:
+        lookup = self._downloaded_lookup
+        assert lookup is not None
+        downloaded = await lookup(self._movie.id)
+        mark = ""
+        if downloaded and self._subtitle_mark is not None:
+            mark = await self._subtitle_mark(self._movie.id)
+        if not self.winfo_exists():
+            return
+        self._is_downloaded = downloaded
+        self.download.set_base(self.download_base(), downloaded=downloaded)
+        self.cc_control.show(mark, shown=downloaded)
+        if self.cc_control.has_content and not self.cc_control.winfo_manager():
+            self.cc_control.pack(side="left", padx=(BUTTON_GAP, 0), after=self.download)
+        elif not self.cc_control.has_content and self.cc_control.winfo_manager():
+            self.cc_control.pack_forget()
+
+    def download_base(self) -> Base:
+        return movie_base(self._movie, self._details, self._today())
 
     @property
     def imdb_url(self) -> str:
@@ -200,7 +252,7 @@ class MovieDetailsWindow(TitleInfoWindow):
         if not self.winfo_exists():
             return
         self._details = details
-        self.download.set_base(movie_base(self._movie, details, self._today()))
+        self.download.set_base(self.download_base(), downloaded=self._is_downloaded)
         self._paint()
 
     async def _load_extras(self) -> None:
@@ -251,13 +303,34 @@ class MovieWindows:
         discovery: DiscoveryService,
         watchlist: WatchlistService,
         actions: DownloadActions[Movie],
+        downloaded: Callable[[int], Awaitable[bool]] | None = None,
+        downloads_changed: Subscribe | None = None,
+        subtitle_actions: SubtitleActions | None = None,
+        subtitle_mark: Callable[[int], Awaitable[str]] | None = None,
+        subtitles_changed: Subscribe | None = None,
     ) -> None:
+        """`downloaded` / `downloads_changed`: whether a film is in the download history and
+        when that changes; `subtitle_actions`, `subtitle_mark` / `subtitles_changed`: a
+        downloaded film's CC ▾ and its saved subtitles (see MovieDetailsWindow)."""
         self._master = master
         self._images = images
         self._discovery = discovery
         self._watchlist = watchlist
         self._actions = actions
+        self._downloaded = downloaded
+        self._subtitle_actions = subtitle_actions
+        self._subtitle_mark = subtitle_mark
         self._windows: dict[int, MovieDetailsWindow] = {}
+        self._unsubscribe = [
+            subscribe(self.refresh_all)
+            for subscribe in (downloads_changed, subtitles_changed)
+            if subscribe is not None
+        ]
+
+    def refresh_all(self) -> None:
+        """Every open window asks again whether its film was downloaded, and its subtitles."""
+        for window in self._live().values():
+            window.refresh_state()
 
     async def open_movie_id(self, movie_id: int) -> bool:
         """Open (or raise) the window of a film known only by its TMDB id (a grab on the
@@ -290,10 +363,16 @@ class MovieWindows:
             discovery=self._discovery,
             watchlist=self._watchlist,
             actions=self._actions,
+            downloaded=self._downloaded,
+            subtitle_actions=self._subtitle_actions,
+            subtitle_mark=self._subtitle_mark,
         )
 
     def close(self) -> None:
-        """Close every window (the main window is closing)."""
+        """Stop listening and close every window (the main window is closing)."""
+        for unsubscribe in self._unsubscribe:
+            unsubscribe()
+        self._unsubscribe = []
         for window in self._live().values():
             window.destroy()
         self._windows = {}

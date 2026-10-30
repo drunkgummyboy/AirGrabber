@@ -100,7 +100,12 @@ class FakeQuickDownload(QuickDownloadService):
         return [request_label(request) for request, _ in self.calls]
 
     async def download(
-        self, request: SearchRequest, target: GrabTarget, progress: Progress | None = None
+        self,
+        request: SearchRequest,
+        target: GrabTarget,
+        progress: Progress | None = None,
+        *,
+        again: bool = False,
     ) -> QuickDownloadResult:
         self.calls.append((request, target))
         self.active += 1

@@ -208,7 +208,7 @@ function Install-Python {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         # Out-Host: winget's output must not become part of this function's return value.
-        & $winget.Source install --id Python.Python.3.13 --exact --scope user --silent `
+        & $winget.Source install --id Python.Python.3.13 --exact --source winget --scope user --silent `
             --accept-package-agreements --accept-source-agreements | Out-Host
         $python = Find-Python
         if ($python) { return $python }
@@ -629,7 +629,7 @@ function Install-ProwlarrIfWanted {
     if ($winget) {
         try {
             # Machine scope: Windows shows a UAC prompt for the Prowlarr service.
-            & $winget.Source install --id TeamProwlarr.Prowlarr --exact --silent `
+            & $winget.Source install --id TeamProwlarr.Prowlarr --exact --source winget --silent `
                 --accept-package-agreements --accept-source-agreements | Out-Host
             $ok = ($LASTEXITCODE -eq 0)
         } catch {
@@ -738,7 +738,7 @@ function Install-QBittorrentIfNeeded([string]$Python) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         try {
-            & $winget.Source install --id qBittorrent.qBittorrent --exact --silent `
+            & $winget.Source install --id qBittorrent.qBittorrent --exact --source winget --silent `
                 --accept-package-agreements --accept-source-agreements | Out-Host
             $installed = ($LASTEXITCODE -eq 0)
         } catch {

@@ -1,7 +1,8 @@
 """The series info window: the shared info look (app/ui/title_info.py: the backdrop with the
 trailer, the poster, title, meta line, genres, synopsis, track state, the cast), then the show's
-episodes by season, each with its download state (✓ Downloaded, the one-click Download row, or
-when it airs).
+episodes by season, each with its download state (✓ Downloaded with ↻ Again, ⬇ Auto with ☰
+Choose…: app/ui/row_actions.py; or when it airs) and, once downloaded, its subtitles (CC ▾:
+app/ui/subtitle_control.py).
 
 Not modal; one window per show (`ShowWindows` raises the open one). It works for any TVMaze
 show, tracked or not: `LibraryService.show_details` reads a tracked show from the library and
@@ -49,7 +50,6 @@ from app.ui.download_control import (
 from app.ui.download_control import (
     Base,
     DownloadActions,
-    DownloadControl,
     episode_key,
 )
 from app.ui.missing_control import (
@@ -70,9 +70,12 @@ from app.ui.missing_control import (
     popup_menu,
 )
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
-from app.ui.subtitle_settings import CREDIT_TEXT
+from app.ui.row_actions import FONT_SIZE as ACTIONS_FONT_SIZE
+from app.ui.row_actions import RowActions
+from app.ui.row_actions import slot_width as actions_slot_width
+from app.ui.subtitle_control import CCControl, SubtitleActions
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
+from app.ui.text_fit import SLACK, Measure, elide_to_width, unscaled_width
 from app.ui.title_info import (
     SUMMARY_LINES,
     TitleInfoWindow,
@@ -91,7 +94,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 RowState = Literal["downloaded", "downloadable", "upcoming"]
-Mark = Literal["missing", "have"]  # the latest season's amber "Missing" / muted "✓ Have it"
+# The latest season's amber "Missing" / blue "New · aired today" / muted "✓ Have it".
+Mark = Literal["missing", "new", "have"]
 Listener = Callable[[], None]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
 # Per (season, episode) of a show (TVMaze id), its subtitle mark ("CC EN NL").
@@ -105,17 +109,26 @@ CHIP_HEIGHT = 32
 EPISODE_ROW_HEIGHT = 52
 CODE_WIDTH = 72
 DATE_WIDTH = 64
-SLOT_WIDTH = 200  # the row's right side: ✓ Downloaded, the Download row, or when it airs
-MARK_WIDTH = 92  # the latest season's "Missing" / "✓ Have it" chip, left of that
+SLOT_WIDTH = 200  # the row's right side (at least): its download controls, or when it airs
+MARK_WIDTH = 92  # the latest season's chip, left of that (at least; `mark_slot_width`)
+MARK_PAD = 12  # left and right of a chip's text
 MARK_HEIGHT = 26
 MISSING_BUTTON_WIDTH = 300  # the season bar's "⬇ Download missing (3)"
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
 CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's title
 CC_GAP = 8
-NEAR_DAYS = 6  # an episode airing within this many days is named by its weekday
+NEW_COLOR = theme.LINK  # a quiet blue: aired, a copy is on its way, nothing is missing yet
 
 # Shown through t().
-DOWNLOADED_TEXT = N_("✓ Downloaded")
+NEW_TODAY_TEXT = N_("New · aired today")
+NEW_YESTERDAY_TEXT = N_("New · aired yesterday")
+NEW_TEXT = N_("New")
+NEW_TIP = N_(
+    "Aired less than a day ago: a copy usually turns up within hours. It counts as missing "
+    "after a day."
+)
+AIRS_TODAY_TEXT = N_("airs today")
+AIRS_TOMORROW_TEXT = N_("airs tomorrow")
 ADDING_TEXT = N_("Adding…")
 NOT_ON_TVMAZE_TEXT = N_("Couldn't find this show on TVMaze")
 NO_EPISODES_TEXT = N_("No episodes listed yet.")
@@ -262,12 +275,14 @@ def episode_row_state(episode: Episode, *, downloaded: bool, now: datetime) -> R
 
 def row_mark(details: ShowDetails, episode: Episode) -> Mark | None:
     """The chip a row of a tracked show's latest season gets: "missing" (see
-    app.services.missing), "have" (marked "I already have this" and not downloaded), else
-    None. Older seasons never get one."""
+    app.services.missing), "new" (aired less than a day ago, not missing yet), "have" (marked
+    "I already have this" and not downloaded), else None. Older seasons never get one."""
     if not details.tracked or episode.season != details.latest_season:
         return None
     if details.is_missing(episode):
         return "missing"
+    if details.is_new(episode):
+        return "new"
     if details.has_it(episode) and not details.is_downloaded(episode):
         return "have"
     return None
@@ -298,24 +313,62 @@ def season_menu_items(missing: Sequence[int], have: Sequence[int]) -> list[tuple
     return items
 
 
+def new_text(episode: Episode, now: datetime) -> str:
+    """A new episode's blue chip: "New · aired today", "New · aired yesterday" (in `now`'s
+    time zone), else just "New"."""
+    day = air_day(episode, now)
+    days = (now.date() - day).days if day is not None else None
+    if days == 0:
+        return t(NEW_TODAY_TEXT)
+    if days == 1:
+        return t(NEW_YESTERDAY_TEXT)
+    return t(NEW_TEXT)
+
+
+def mark_text(mark: Mark, episode: Episode, now: datetime) -> str:
+    """The chip's text: "Missing", "✓ Have it" or "New · aired today"."""
+    if mark == "missing":
+        return t(CHIP_MISSING_TEXT)
+    if mark == "have":
+        return t(CHIP_HAVE_TEXT)
+    return new_text(episode, now)
+
+
+def mark_color(mark: Mark) -> theme.Color:
+    """Amber for missing, blue for new, muted for "✓ Have it"."""
+    if mark == "missing":
+        return MISSING_COLOR
+    if mark == "new":
+        return NEW_COLOR
+    return theme.TEXT_MUTED
+
+
+def mark_slot_width(measure: Measure) -> int:
+    """The chips' slot (logical units, in the current language): room for the widest of
+    "Missing", "✓ Have it" and the new chips, so a season's rows stay aligned."""
+    texts = (CHIP_MISSING_TEXT, CHIP_HAVE_TEXT, NEW_TODAY_TEXT, NEW_YESTERDAY_TEXT, NEW_TEXT)
+    widest = max(round(measure(t(text))) for text in texts)
+    return max(MARK_WIDTH, widest + 2 * MARK_PAD)
+
+
 def upcoming_text(episode: Episode, now: datetime) -> str:
-    """When an episode still to air airs: "airs Thu" within the next NEAR_DAYS days, else its
-    date ("23 Oct"); "TBA" when unknown."""
+    """When an episode still to air airs, counted in days from today: "airs today", "airs
+    tomorrow", "airs in 7 days"; "" when unknown (the date column says "TBA")."""
     day = air_day(episode, now)
     if day is None:
-        return t(UNKNOWN_DATE_TEXT)
-    if 0 <= (day - now.date()).days <= NEAR_DAYS:
-        return t("airs {day}", day=day_short(day))
-    return short_date(day)
-
-
-def aired_text(episode: Episode, now: datetime) -> str:
-    """The row's muted air date ("17 Jan") for an aired episode; "" for one still to air (its
-    date is on the right then)."""
-    if not episode.has_aired(now):
         return ""
+    days = (day - now.date()).days
+    if days <= 0:
+        return t(AIRS_TODAY_TEXT)
+    if days == 1:
+        return t(AIRS_TOMORROW_TEXT)
+    return tn("airs in {n} day", "airs in {n} days", days)
+
+
+def date_text(episode: Episode, now: datetime) -> str:
+    """The row's muted date ("17 Jan"), aired or not; "TBA" when unknown."""
     day = air_day(episode, now)
-    return short_date(day) if day is not None else ""
+    return short_date(day) if day is not None else t(UNKNOWN_DATE_TEXT)
 
 
 _exists = exists
@@ -325,9 +378,11 @@ _exists = exists
 
 
 class _EpisodeRow(ctk.CTkFrame):
-    """"S02E01  Title  17 Jan" with its state on the right: ✓ Downloaded, the Download row (⬇
-    Download + ⋯), or when it airs. In a tracked show's latest season, a chip left of that:
-    amber "Missing" or muted "✓ Have it", each opening a menu (`on_mark`)."""
+    """"S02E01  Title  17 Jan" with its state on the right: ⬇ Auto + ☰ Choose…, ✓ Downloaded +
+    ↻ Again (app/ui/row_actions.py), or when it airs ("airs in 7 days"). A downloaded row (and
+    its ✓) opens ↻ Again's menu when clicked; beside its title the subtitles (CC ▾, app/ui/
+    subtitle_control.py). In a tracked show's latest season, a chip left of that: amber
+    "Missing", blue "New · aired today" or muted "✓ Have it", each opening a menu (`on_mark`)."""
 
     def __init__(
         self,
@@ -341,30 +396,37 @@ class _EpisodeRow(ctk.CTkFrame):
         marks_shown: bool = False,
         on_mark: Callable[[Episode, Mark, Any], None] | None = None,
         cc: str = "",
+        subtitles: SubtitleActions | None = None,
+        slot_width: int = SLOT_WIDTH,
+        mark_width: int = MARK_WIDTH,
     ) -> None:
         super().__init__(
             master, fg_color=theme.SURFACE, corner_radius=8, height=EPISODE_ROW_HEIGHT
         )
-        self._cc_text = ""
         self._holder_width = 0  # physical px, from the title holder's last <Configure>
+        self._fit_job: str | None = None
         self.grid_propagate(False)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self._actions = actions
         self._on_mark = on_mark
+        self._mark_width = mark_width
         self._state: RowState | None = None
-        self._mark: tuple[Mark | None, bool] | None = None
+        self._mark: tuple[Mark | None, bool, str] | None = None
         self._mark_slot: ctk.CTkFrame | None = None
+        self.row_actions: RowActions[CalendarEntry] | None = None
+        self._upcoming: ctk.CTkLabel | None = None
         episode = entry.episode
 
-        ctk.CTkLabel(
+        code = ctk.CTkLabel(
             self,
             text=episode.code if episode.number is not None else t("Special"),
             width=CODE_WIDTH,
             font=theme.font(13),
             text_color=theme.TEXT_MUTED,
             anchor="w",
-        ).grid(row=0, column=0, padx=(14, 6), sticky="w")
+        )
+        code.grid(row=0, column=0, padx=(14, 6), sticky="w")
         holder = ctk.CTkFrame(self, fg_color="transparent", height=24)
         holder.grid(row=0, column=1, sticky="ew")
         holder.pack_propagate(False)
@@ -373,23 +435,22 @@ class _EpisodeRow(ctk.CTkFrame):
             holder, text="", font=title_font, text_color=theme.TEXT, anchor="w", height=24
         )
         title.pack(side="left", fill="x", expand=True)
-        # "CC EN NL" right of the title once subtitles were saved (downloaded rows only).
-        self._cc = ctk.CTkLabel(
+        # The subtitles right of the title (downloaded rows only): CC ▾ or the plain mark.
+        self.cc_control = CCControl(
             holder,
-            text="",
-            font=theme.font(CC_FONT_SIZE, bold=True),
-            text_color=theme.SUCCESS,
-            height=24,
+            key=episode_key(entry.show.id, episode.season, episode.number),
+            actions=subtitles if episode.number is not None else None,
+            on_change=self._cc_changed,
         )
-        add_tooltip(self._cc, t(CREDIT_TEXT))  # the credit OpenSubtitles asks for
         name = episode.name
 
         def fit(width: int) -> None:
             if width > 1:
                 self._holder_width = width
                 room = unscaled_width(holder, width) - SLACK
-                if self._cc_text:
-                    room -= unscaled_width(holder, self._cc.winfo_reqwidth()) + CC_GAP
+                if self.cc_control.winfo_manager():
+                    cc_width = self.cc_control.winfo_reqwidth()
+                    room -= unscaled_width(holder, cc_width) + CC_GAP
                 title.configure(text=elide_to_width(name, room, title_font.measure))
 
         self._fit_title = fit
@@ -401,10 +462,13 @@ class _EpisodeRow(ctk.CTkFrame):
         )
         self._date.grid(row=0, column=2, padx=(8, 12), sticky="e")
         self._slot = ctk.CTkFrame(
-            self, fg_color="transparent", width=SLOT_WIDTH, height=CONTROL_HEIGHT
+            self, fg_color="transparent", width=slot_width, height=CONTROL_HEIGHT
         )
         self._slot.pack_propagate(False)
-        self._slot.grid(row=0, column=4, padx=(0, 8))
+        self._slot.grid(row=0, column=4, padx=(0, 10))
+        # A downloaded row opens ↻ Again's menu wherever it is clicked (not on its buttons).
+        for widget in (self, code, holder, title, self._date):
+            widget.bind("<Button-1>", self._row_clicked, add="+")
         self.set_state(entry, state, now, mark=mark, marks_shown=marks_shown, cc=cc)
 
     def set_state(
@@ -420,44 +484,56 @@ class _EpisodeRow(ctk.CTkFrame):
         """Show `state` on the right and `mark`'s chip (in a slot kept while `marks_shown`, so
         the season's rows stay aligned), and `cc` ("CC EN NL") beside the title of a
         downloaded row; nothing changes when they already show."""
-        self._set_mark(entry.episode, mark, marks_shown)
-        self._set_cc(cc if state == "downloaded" else "")
+        episode = entry.episode
+        self._set_mark(episode, mark, marks_shown, now)
+        self.cc_control.show(cc, shown=state == "downloaded" and episode.number is not None)
+        self._date.configure(text=date_text(episode, now))
         if state == self._state:
+            if state == "upcoming" and self._upcoming is not None:
+                self._upcoming.configure(text=upcoming_text(episode, now))
             return
         self._state = state
-        for child in self._slot.winfo_children():
-            child.destroy()
-        episode = entry.episode
-        self._date.configure(text=aired_text(episode, now))
-        if state == "downloaded":
-            ctk.CTkLabel(
-                self._slot,
-                text=t(DOWNLOADED_TEXT),
-                height=CONTROL_HEIGHT,
-                corner_radius=CONTROL_HEIGHT // 2,
-                fg_color=theme.GRABBED,
-                text_color=theme.TEXT,
-                font=theme.font(CONTROL_FONT_SIZE, bold=True),
-            ).pack(fill="both", expand=True)
-        elif state == "downloadable":
-            # A special has no number to download by: its row opens the search window.
-            base = Base("search") if episode.number is None else Base("download")
-            DownloadControl(
+        downloaded = state == "downloaded"
+        cursor = "hand2" if downloaded else ""
+        for widget in (self, self._title, self._date):
+            widget.configure(cursor=cursor)
+        if state == "upcoming":
+            if self.row_actions is not None:
+                self.row_actions.destroy()
+                self.row_actions = None
+            if self._upcoming is None:
+                self._upcoming = ctk.CTkLabel(
+                    self._slot,
+                    text="",
+                    height=CONTROL_HEIGHT,
+                    font=theme.font(14),
+                    text_color=theme.TEXT_MUTED,
+                    anchor="e",
+                )
+                self._upcoming.pack(fill="both", expand=True, padx=(0, 6))
+            self._upcoming.configure(text=upcoming_text(episode, now))
+            return
+        if self._upcoming is not None:
+            self._upcoming.destroy()
+            self._upcoming = None
+        # A special has no number to download by: its row opens the search window.
+        base = Base("search") if episode.number is None else Base("download")
+        if self.row_actions is None:
+            self.row_actions = RowActions(
                 self._slot,
                 item=entry,
                 key=episode_key(entry.show.id, episode.season, episode.number),
                 base=base,
                 actions=self._actions,
-            ).pack(fill="both", expand=True)
+                downloaded=downloaded,
+            )
+            self.row_actions.pack(side="right", fill="x", expand=True)
         else:
-            ctk.CTkLabel(
-                self._slot,
-                text=upcoming_text(episode, now),
-                height=CONTROL_HEIGHT,
-                font=theme.font(14),
-                text_color=theme.TEXT_MUTED,
-                anchor="e",
-            ).pack(fill="both", expand=True, padx=(0, 6))
+            self.row_actions.set_base(base, downloaded=downloaded)
+
+    @property
+    def state(self) -> RowState | None:
+        return self._state
 
     @property
     def mark(self) -> Mark | None:
@@ -465,25 +541,39 @@ class _EpisodeRow(ctk.CTkFrame):
 
     @property
     def cc(self) -> str:
-        """The subtitle mark showing ("CC EN NL"), "" for none."""
-        return self._cc_text
+        """The subtitle mark showing ("CC EN NL"), "" for none (or a row not downloaded)."""
+        return self.cc_control.mark if self.cc_control.has_content else ""
 
-    def _set_cc(self, text: str) -> None:
-        if text == self._cc_text:
-            return
-        self._cc_text = text
-        if text:
-            self._cc.configure(text=text)
-            self._cc.pack(side="right", padx=(CC_GAP, 0), before=self._title)
-        else:
-            self._cc.pack_forget()
-        if self._holder_width:
-            self._fit_title(self._holder_width)
+    def _row_clicked(self, _event: Any = None) -> None:
+        if self._state == "downloaded" and self.row_actions is not None:
+            self.row_actions.open_again()
 
-    def _set_mark(self, episode: Episode, mark: Mark | None, marks_shown: bool) -> None:
-        if (mark, marks_shown) == self._mark:
+    def _cc_changed(self) -> None:
+        """The subtitles beside the title changed: show or hide them, then fit the title
+        again once laid out."""
+        cc = self.cc_control
+        if cc.has_content:
+            if not cc.winfo_manager():
+                cc.pack(side="right", padx=(CC_GAP, 0), before=self._title)
+        elif cc.winfo_manager():
+            cc.pack_forget()
+        if self._fit_job is not None or not self._holder_width:
             return
-        self._mark = (mark, marks_shown)
+
+        def refit() -> None:
+            self._fit_job = None
+            if self._holder_width:
+                self._fit_title(self._holder_width)
+
+        self._fit_job = self.after_idle(refit)
+
+    def _set_mark(
+        self, episode: Episode, mark: Mark | None, marks_shown: bool, now: datetime
+    ) -> None:
+        text = mark_text(mark, episode, now) if mark is not None else ""
+        if (mark, marks_shown, text) == self._mark:
+            return
+        self._mark = (mark, marks_shown, text)
         if not marks_shown and mark is None:
             if self._mark_slot is not None:
                 self._mark_slot.destroy()
@@ -491,7 +581,7 @@ class _EpisodeRow(ctk.CTkFrame):
             return
         if self._mark_slot is None:
             self._mark_slot = ctk.CTkFrame(
-                self, fg_color="transparent", width=MARK_WIDTH, height=MARK_HEIGHT
+                self, fg_color="transparent", width=self._mark_width, height=MARK_HEIGHT
             )
             self._mark_slot.pack_propagate(False)
             self._mark_slot.grid(row=0, column=3, padx=(0, 8))
@@ -500,23 +590,28 @@ class _EpisodeRow(ctk.CTkFrame):
         if mark is None:
             return
         on_mark = self._on_mark
-        if mark == "missing":
-            text, color = t(CHIP_MISSING_TEXT), MISSING_COLOR
-        else:
-            text, color = t(CHIP_HAVE_TEXT), theme.TEXT_MUTED
         button = chip(
             self._mark_slot,
             text,
-            color,
+            mark_color(mark),
             height=MARK_HEIGHT,
             font_size=13,
-            width=MARK_WIDTH,
+            width=self._mark_width,
             clickable=on_mark is not None,
         )
         button.pack(fill="both", expand=True)
         if on_mark is not None:
             button.configure(command=functools.partial(on_mark, episode, mark, button))
-            add_tooltip(button, t(CHIP_TIP))
+            add_tooltip(button, t(NEW_TIP) if mark == "new" else t(CHIP_TIP))
+
+    def destroy(self) -> None:
+        if self._fit_job is not None:
+            try:
+                self.after_cancel(self._fit_job)
+            except tk.TclError:
+                pass
+            self._fit_job = None
+        super().destroy()
 
 
 # -- the window --------------------------------------------------------------------------------
@@ -538,10 +633,12 @@ class ShowDetailsWindow(TitleInfoWindow):
         missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
         discovery: DiscoveryService | None = None,
+        subtitle_actions: SubtitleActions | None = None,
     ) -> None:
         """`subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
         without it no row gets one. `discovery`: the TMDB extras (backdrop, trailer, cast);
-        without it the window shows only what TVMaze knows."""
+        without it the window shows only what TVMaze knows. `subtitle_actions`: the downloaded
+        rows' CC ▾ menus (without it only the marks)."""
         super().__init__(
             master,
             title=show.name,
@@ -553,7 +650,13 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._extras: TitleExtras | None = None
         self._extras_task: asyncio.Task[None] | None = None
         self._subtitle_marks = subtitle_marks
+        self._subtitle_actions = subtitle_actions
         self._cc: Mapping[tuple[int, int], str] = {}
+        # The rows' slots, wide enough for their texts in the current language.
+        self._slot_width = max(
+            SLOT_WIDTH, actions_slot_width(theme.font(ACTIONS_FONT_SIZE, bold=True).measure)
+        )
+        self._mark_width = mark_slot_width(theme.font(13, bold=True).measure)
         self._missing_actions = missing_actions
         self._missing_button: MissingButton | None = None
         self._library = library
@@ -869,6 +972,9 @@ class ShowDetailsWindow(TitleInfoWindow):
                     marks_shown=marks_shown,
                     on_mark=on_mark,
                     cc=self._cc_for(episode),
+                    subtitles=self._subtitle_actions,
+                    slot_width=self._slot_width,
+                    mark_width=self._mark_width,
                 )
                 row.pack(fill="x", pady=3)
                 self._rows[episode.id] = row
@@ -947,7 +1053,7 @@ class ShowDetailsWindow(TitleInfoWindow):
         if details is None or actions is None:
             return
         ids = (episode.id,)
-        if mark == "missing":
+        if mark in ("missing", "new"):
             item = (t(HAVE_EPISODE_TEXT), functools.partial(actions.mark_have, details.show, ids))
         else:
             item = (
@@ -1043,12 +1149,14 @@ class ShowWindows:
         missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
         subtitles_changed: Subscribe | None = None,
+        subtitle_actions: SubtitleActions | None = None,
     ) -> None:
         """`subtitle_marks` / `subtitles_changed`: the rows' "CC EN NL" marks and when they
-        change (subtitles saved)."""
+        change (subtitles saved); `subtitle_actions`: their CC ▾ menus."""
         self._master = master
         self._missing_actions = missing_actions
         self._subtitle_marks = subtitle_marks
+        self._subtitle_actions = subtitle_actions
         self._library = library
         self._discovery = discovery
         self._images = images
@@ -1077,6 +1185,7 @@ class ShowWindows:
             missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
             discovery=self._discovery,
+            subtitle_actions=self._subtitle_actions,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

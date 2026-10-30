@@ -1,4 +1,5 @@
-"""Torrent program detection (fake registry) and the qBittorrent install (patched winget)."""
+"""Torrent program detection (fake registry) and the qBittorrent install (patched winget): the
+command (winget's own source only), and why a failed install failed, from winget's exit code."""
 
 from __future__ import annotations
 
@@ -9,14 +10,17 @@ import sys
 import unittest
 from unittest import mock
 
-from app.models import TorrentApp
+from app.models import QBittorrentInstallResult, TorrentApp
 from app.services.torrent_app import (
     TorrentAppService,
     command_executable,
     find_torrent_app,
     friendly_name,
+    install_problem,
     install_qbittorrent,
 )
+
+Result = QBittorrentInstallResult
 
 QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
 QBIT_COMMAND = f'"{QBIT_EXE}" "%1"'
@@ -160,7 +164,8 @@ class InstallTests(unittest.IsolatedAsyncioTestCase):
         spawn = self.patch_winget(0)
         steps: list[str] = []
         installed = await install_qbittorrent(steps.append, lambda: TorrentApp(name="qBittorrent"))
-        self.assertTrue(installed)
+        self.assertIs(installed, Result.INSTALLED)
+        self.assertTrue(installed.installed)
         args = spawn.await_args
         assert args is not None
         self.assertEqual(
@@ -171,6 +176,8 @@ class InstallTests(unittest.IsolatedAsyncioTestCase):
                 "--id",
                 "qBittorrent.qBittorrent",
                 "--exact",
+                "--source",  # winget's own catalogue only: a failing Microsoft Store source
+                "winget",  # made winget ask which source to use instead of installing
                 "--silent",
                 "--accept-package-agreements",
                 "--accept-source-agreements",
@@ -184,30 +191,52 @@ class InstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exit_zero_but_not_detected(self) -> None:
         self.patch_winget(0)
-        self.assertFalse(await install_qbittorrent(None, lambda: None))
+        self.assertIs(await install_qbittorrent(None, lambda: None), Result.NOT_LINKED)
 
     async def test_non_zero_exit_fails_and_logs_the_code_only(self) -> None:
         self.patch_winget(-1978335212)
         find = mock.Mock(return_value=TorrentApp(name="qBittorrent"))
         with self.assertLogs("app.services.torrent_app", "INFO") as logs:
-            self.assertFalse(await install_qbittorrent(None, find))
+            result = await install_qbittorrent(None, find)
+        self.assertIs(result, Result.FAILED)
+        self.assertFalse(result.installed)
         self.assertIn("-1978335212", "\n".join(logs.output))
         find.assert_not_called()
 
+    async def test_the_reason_comes_from_the_exit_code(self) -> None:
+        # The msstore certificate failure of the 2.0.6 VM test, as Windows reports it unsigned.
+        self.patch_winget(0x8A15005E)
+        find = mock.Mock(return_value=TorrentApp(name="qBittorrent"))
+        self.assertIs(await install_qbittorrent(None, find), Result.OFFLINE)
+        find.assert_not_called()
+
+    async def test_there_already_looks_at_the_registry(self) -> None:
+        self.patch_winget(-1978335189)  # UPDATE_NOT_APPLICABLE: qBittorrent is installed
+        self.assertIs(
+            await install_qbittorrent(None, lambda: TorrentApp(name="qBittorrent")),
+            Result.INSTALLED,
+        )
+        self.assertIs(
+            await install_qbittorrent(None, lambda: TorrentApp(name="Deluge")), Result.NOT_LINKED
+        )
+
     async def test_winget_missing(self) -> None:
         spawn = self.patch_winget(0, path=None)
-        self.assertFalse(await install_qbittorrent())
+        self.assertIs(await install_qbittorrent(), Result.NO_WINGET)
         spawn.assert_not_awaited()
 
     async def test_winget_cannot_start(self) -> None:
         self.patch_winget(None)
-        self.assertFalse(await install_qbittorrent(None, lambda: TorrentApp(name="qBittorrent")))
+        self.assertIs(
+            await install_qbittorrent(None, lambda: TorrentApp(name="qBittorrent")),
+            Result.NO_WINGET,
+        )
 
     async def test_service_wraps_find_and_install(self) -> None:
         self.patch_winget(0)
         service = TorrentAppService(lambda: TorrentApp(name="qBittorrent"))
         self.assertEqual(await service.find(), TorrentApp(name="qBittorrent"))
-        self.assertTrue(await service.install_qbittorrent())
+        self.assertIs(await service.install_qbittorrent(), Result.INSTALLED)
 
     async def test_cancellation_kills_winget(self) -> None:
         gate = asyncio.Event()
@@ -237,6 +266,35 @@ class InstallTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertTrue(SlowProcess.killed)
+
+
+class InstallProblemTests(unittest.TestCase):
+    def test_exit_codes(self) -> None:
+        cases = {
+            0x8A150008: Result.OFFLINE,  # DOWNLOAD_FAILED
+            -1978335224: Result.OFFLINE,  # the same, signed
+            0x8A15004B: Result.OFFLINE,  # FAILED_TO_OPEN_ALL_SOURCES
+            0x80072EE7: Result.OFFLINE,  # name not resolved
+            0x8A150107: Result.OFFLINE,  # INSTALL_NO_NETWORK
+            0x8A15010C: Result.DECLINED,  # INSTALL_CANCELLED_BY_USER
+            0x800704C7: Result.DECLINED,  # ERROR_CANCELLED
+            0x8A150102: Result.BUSY,  # INSTALL_IN_PROGRESS
+            1618: Result.BUSY,  # ERROR_INSTALL_ALREADY_RUNNING
+            0x8A150105: Result.NO_SPACE,
+            0x8A15010F: Result.BLOCKED,
+            0x8A15003A: Result.BLOCKED,
+            0x8A15010A: Result.RESTART,
+            0x8A150014: Result.FAILED,  # NO_APPLICATIONS_FOUND
+            0x8A150016: Result.FAILED,  # MULTIPLE_APPLICATIONS_FOUND
+            1: Result.FAILED,
+        }
+        for code, problem in cases.items():
+            with self.subTest(code=hex(code & 0xFFFFFFFF)):
+                self.assertIs(install_problem(code), problem)
+
+    def test_success_and_there_already_need_a_look(self) -> None:
+        for code in (0, 0x8A15002B, -1978335189, 0x8A150061, 0x8A15010D, 0x8A15010E):
+            self.assertIsNone(install_problem(code))
 
 
 if __name__ == "__main__":

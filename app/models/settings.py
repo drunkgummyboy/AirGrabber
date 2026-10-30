@@ -189,6 +189,42 @@ class TrackedFilter(StrEnum):
     ENDED = "ended"
 
 
+class SubtitlesMode(StrEnum):
+    """When subtitles are fetched (Settings → Subtitles → When)."""
+
+    AUTO = "auto"  # the periodic runs fetch them for every new download (the default)
+    ASK = "ask"  # only when asked (the CC menus); the runs still note subtitles already there
+
+
+class HearingImpaired(StrEnum):
+    """Subtitles that also describe sounds: which to pick when OpenSubtitles has both."""
+
+    AVOID = "avoid"  # the default (and the rule before there was a choice)
+    PREFER = "prefer"
+    EITHER = "either"  # whichever fits best otherwise
+
+
+class SubtitlesFor(StrEnum):
+    """Which downloads the periodic runs fetch subtitles for (asking still works for both)."""
+
+    BOTH = "both"
+    SERIES = "series"
+    FILMS = "films"
+
+
+def _known[E: StrEnum](kind: type[E], default: E) -> Any:
+    """A before-validator: a stored value this version doesn't know (a newer version's) is
+    `default`."""
+
+    def check(value: Any) -> Any:
+        if isinstance(value, str):
+            text = value.strip().lower()
+            return text if text in {member.value for member in kind} else default
+        return value
+
+    return BeforeValidator(check)
+
+
 def _split_csv(value: Any) -> Any:
     if isinstance(value, str):
         return tuple(part.strip().lower() for part in value.split(",") if part.strip())
@@ -324,6 +360,17 @@ class Settings(BaseModel):
     # Where the torrent program puts finished downloads ("" = not chosen); a UNC path such as
     # \\NAS\video works too.
     subtitles_folder: str = ""
+    # When (automatically / only when asked), which hearing-impaired subtitles, and for which
+    # downloads (app/services/subtitles.py). Unknown stored values fall back to the defaults.
+    subtitles_mode: Annotated[SubtitlesMode, _known(SubtitlesMode, SubtitlesMode.AUTO)] = (
+        SubtitlesMode.AUTO
+    )
+    subtitles_hearing_impaired: Annotated[
+        HearingImpaired, _known(HearingImpaired, HearingImpaired.AVOID)
+    ] = HearingImpaired.AVOID
+    subtitles_for: Annotated[SubtitlesFor, _known(SubtitlesFor, SubtitlesFor.BOTH)] = (
+        SubtitlesFor.BOTH
+    )
     # The user's own OpenSubtitles account, optional (downloads count against it; AirGrabber's
     # API key is shipped with the app). The password only ever travels in the body of the login
     # POST; the session token lives in memory. An `opensubtitles_api_key` stored by an earlier

@@ -17,8 +17,9 @@ on that canvas, below the line where the fade turns solid. A switch between ligh
 another Windows scaling, bakes them again. Without a TMDB key (or while nothing is known yet)
 there is no backdrop: the poster and the text start at the top.
 
-The whole window scrolls; it opens at most WINDOW_WIDTH × WINDOW_HEIGHT and never larger than
-the screen less SCREEN_MARGIN (1366 × 768 at 150 %: about 830 × 430).
+The whole window scrolls; it opens about HEIGHT_SHARE (85 %) of the work area's height and up
+to WINDOW_WIDTH wide, centred on the screen it opens on, never larger than that screen's work
+area less SCREEN_MARGIN (`window_size`); nothing about its size is remembered.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from app.ui.branding import set_window_icon
 from app.ui.poster_card import rgb
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, break_lines, fit_to_lines, unscaled_width
+from app.ui.tooltip import work_area
 from app.ui.widgets import FlexGrid
 
 if TYPE_CHECKING:
@@ -54,9 +56,9 @@ log = logging.getLogger(__name__)
 RGB = tuple[int, int, int]
 
 # Logical (unscaled) CTk units.
-WINDOW_WIDTH = 860
-WINDOW_HEIGHT = 680
-SCREEN_MARGIN = 80  # the window stays this much smaller than the screen
+WINDOW_WIDTH = 1400  # at most
+HEIGHT_SHARE = 0.85  # of the work area's height
+SCREEN_MARGIN = 80  # the window stays at least this much narrower than the work area
 MIN_WIDTH = 560
 MIN_HEIGHT = 360
 PAD_X = dialog_kit.PAD_X
@@ -231,6 +233,17 @@ def masthead_layout(width: int, scaling: float, *, hero: bool) -> MastheadLayout
         text_width=max(1, width - text_x - pad_x),
         pill_centre=(width // 2, round(hero_height * PILL_TOP)),
     )
+
+
+def window_size(work_width: float, work_height: float) -> tuple[int, int]:
+    """The info window's size in CTk units for a work area of this size (CTk units): about
+    HEIGHT_SHARE of its height and up to WINDOW_WIDTH wide, never wider than the area less
+    SCREEN_MARGIN nor taller than the area; at least the minimum size where the area allows."""
+    width = min(WINDOW_WIDTH, int(work_width) - SCREEN_MARGIN)
+    height = round(work_height * HEIGHT_SHARE)
+    width = min(max(width, MIN_WIDTH), int(work_width))
+    height = min(max(height, MIN_HEIGHT), int(work_height))
+    return max(1, width), max(1, height)
 
 
 # -- baked images (pure; the big ones run in ImageCache's worker thread) -----------------------
@@ -870,17 +883,20 @@ class TitleInfoWindow(ctk.CTkToplevel):
     # -- layout ------------------------------------------------------------------------------
 
     def _place_over(self, master: ctk.CTk) -> None:
-        """Centre over `master`, at most the screen less SCREEN_MARGIN (see MainWindow._place
-        for the DPI math)."""
+        """Open at `window_size` on the work area of the screen `master` is on, centred there
+        (CTk scales the size but not the position: see MainWindow._place)."""
         scaling = ctk.ScalingTracker.get_window_scaling(self)
-        screen_w, screen_h = self.wm_maxsize()
-        width = max(1, min(WINDOW_WIDTH, int(screen_w / scaling) - SCREEN_MARGIN))
-        height = max(1, min(WINDOW_HEIGHT, int(screen_h / scaling) - SCREEN_MARGIN))
+        centre_x = master.winfo_rootx() + master.winfo_width() // 2
+        centre_y = master.winfo_rooty() + master.winfo_height() // 2
+        area = work_area(centre_x, centre_y)
+        if area is None:  # off Windows: the primary screen, physical pixels
+            screen_w, screen_h = self.wm_maxsize()
+            area = (0, 0, screen_w, screen_h)
+        left, top, right, bottom = area
+        width, height = window_size((right - left) / scaling, (bottom - top) / scaling)
         width_px, height_px = round(width * scaling), round(height * scaling)
-        x = master.winfo_rootx() + (master.winfo_width() - width_px) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - height_px) // 2
-        x = min(max(0, x), max(0, screen_w - width_px))
-        y = min(max(0, y), max(0, screen_h - height_px))
+        x = left + max(0, (right - left - width_px) // 2)
+        y = top + max(0, (bottom - top - height_px) // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build_text(self, info: ctk.CTkFrame, title: str) -> None:
