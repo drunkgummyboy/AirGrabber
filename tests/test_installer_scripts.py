@@ -1,8 +1,10 @@
 """install.ps1 and app/uninstall.ps1 in Windows PowerShell 5.1: both parse, the installer's
 shortcuts carry AirGrabber's AppUserModelID, the installer sets up winget when it is missing (found /
 registered / downloaded / given up, with Get-Command, Add-AppxPackage and Invoke-WebRequest stubbed),
-its Prowlarr and failure windows say and do what they should, and the uninstaller removes this
-install's shortcuts (the Startup one with its `--tray` included) and nobody else's.
+its Prowlarr and failure windows say and do what they should, it installs and sets up qBittorrent
+only when Windows has no torrent program (registry, winget and AirGrabber's own Python stubbed),
+and the uninstaller removes this install's shortcuts (the Startup one with its `--tray` included)
+and nobody else's.
 
 The scripts' functions are loaded from their syntax trees, so their main bodies never run; the
 shortcuts and downloads live in a temporary folder, and no window is shown (the tests run
@@ -27,6 +29,9 @@ from typing import Any
 from app.identity import APP_USER_MODEL_ID
 from app.services.app_identity import first_argument
 from app.services.powershell import NO_WINDOW, powershell_exe
+from app.services.qbittorrent_setup import EXIT_CODES
+from app.services.torrent_app import WINGET_COMMAND, command_executable
+from app.models import QBittorrentSetupResult
 
 PROJECT = Path(__file__).resolve().parents[1]
 INSTALLER = PROJECT / "install.ps1"
@@ -108,6 +113,20 @@ foreach ($path in @($env:AG_INSTALLER, $env:AG_UNINSTALLER)) {
         self.assertEqual(lines[0], "version 5")
         # No `exit` in either: under `irm | iex` it would close the user's PowerShell window.
         self.assertEqual(lines[1:], ["install.ps1 errors 0 exits 0", "uninstall.ps1 errors 0 exits 0"])
+
+    def test_the_language_parser_accepts_both(self) -> None:
+        # The full parser (what `irm | iex` runs through), on the files; nothing is executed.
+        script = """
+$ErrorActionPreference = 'Stop'
+foreach ($path in @($env:AG_INSTALLER, $env:AG_UNINSTALLER)) {
+    $tokens = $null; $errors = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+    (Split-Path -Leaf $path) + ' ' + $errors.Count + ' ' + $PSVersionTable.PSVersion.Major
+    foreach ($e in $errors) { '  ' + $e.Message + ' (line ' + $e.Extent.StartLineNumber + ')' }
+}
+"""
+        output = _powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_UNINSTALLER": str(UNINSTALLER)})
+        self.assertEqual(output.splitlines(), ["install.ps1 0 5", "uninstall.ps1 0 5"])
 
     def test_the_installer_is_ascii(self) -> None:
         # Windows PowerShell 5.1 reads a script file without a BOM in the ANSI code page.
@@ -498,6 +517,245 @@ $result = [pscustomobject]@{
         main = source[source.rindex("try {\n    Install-AirGrabber") :]
         self.assertIn("$shown = Show-FailureDialog $failure", main)
         self.assertIn("if (-not $shown) {\n        try { $null = Read-Host 'Press Enter to close' } catch { }", main)
+
+_QBIT_FUNCTIONS = (
+    "Write-Step", "Get-RegistryString", "Get-OpenCommandExe", "Find-TorrentApp", "Get-QBittorrentPlan",
+    "Install-QBittorrentIfNeeded",
+)  # fmt: skip
+_CLASSES = "Registry::HKEY_CLASSES_ROOT"
+_MAGNET_CHOICE = r"HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\magnet\UserChoice"
+_TORRENT_CHOICE = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.torrent\UserChoice"
+_INSTALL_DIR = r"C:\Users\Alex\AppData\Local\Programs\AirGrabber"
+_QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
+
+# Find-TorrentApp per scenario against a stubbed registry ("path|value name" -> string); the
+# programs' files are real ones in a temporary folder.
+_FIND_SCENARIOS = """
+function Get-RegistryString([string]$Path, [string]$Name) {
+    $property = $global:AgScenario.registry.PSObject.Properties[$Path + '|' + $Name]
+    if ($property) { return [string]$property.Value }
+    return $null
+}
+$results = New-Object System.Collections.Generic.List[object]
+foreach ($scenario in (ConvertFrom-Json $env:AG_SCENARIOS)) {
+    $global:AgScenario = $scenario
+    $results.Add([pscustomobject]@{ name = [string]$scenario.name; found = [string](Find-TorrentApp) })
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $results.ToArray() -Compress))
+"""
+
+# Install-QBittorrentIfNeeded per scenario: Find-TorrentApp answers in turn, winget and
+# AirGrabber's Python are stub functions that log their arguments and set an exit code.
+_INSTALL_SCENARIOS = """
+function Find-TorrentApp {
+    $answer = $null
+    if ($global:AgFinds.Count -gt 0) { $answer = $global:AgFinds[0]; $global:AgFinds.RemoveAt(0) }
+    if ($answer) { return $answer }
+    return $null
+}
+function Get-Command { if ($global:AgScenario.winget -ne $null) { [pscustomobject]@{ Source = 'Fake-Winget' } } }
+function Fake-Winget { $global:AgLog.Add('winget ' + ($args -join ' ')); $global:LASTEXITCODE = [int]$global:AgScenario.winget }
+function Fake-Python { $global:AgLog.Add('python ' + ($args -join ' ')); $global:LASTEXITCODE = [int]$global:AgScenario.python }
+$InstallDir = $env:AG_INSTALL_DIR
+$results = New-Object System.Collections.Generic.List[object]
+foreach ($scenario in (ConvertFrom-Json $env:AG_SCENARIOS)) {
+    $global:AgScenario = $scenario
+    $global:AgFinds = New-Object System.Collections.Generic.List[string]
+    foreach ($answer in @($scenario.finds)) { $global:AgFinds.Add([string]$answer) }
+    $global:AgLog = New-Object System.Collections.Generic.List[string]
+    $NoQBittorrent = [switch][bool]$scenario.declined
+    $records = @(Install-QBittorrentIfNeeded 'Fake-Python' 6>&1)
+    $results.Add([pscustomobject]@{
+        name = [string]$scenario.name
+        host = [string[]]@($records | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
+            ForEach-Object { [string]$_.MessageData })
+        log = [string[]]$global:AgLog.ToArray()
+    })
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $results.ToArray() -Depth 4 -Compress))
+"""
+
+_INSTALL_LINE = "==> Installing qBittorrent, the free program AirGrabber downloads with (Windows may ask for permission)"
+_READY = "    qBittorrent is installed and ready: downloads start without a pop-up."
+_NOT_INSTALLED = "qBittorrent couldn't be installed automatically. AirGrabber offers it again when it starts."
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
+class InstallerQBittorrentTests(unittest.TestCase):
+    """qBittorrent in the installer: only when Windows has no program for torrents, fully
+    automatic (no question window), set up by AirGrabber's `--setup-qbittorrent`, never failing
+    the AirGrabber install."""
+
+    results: dict[str, dict[str, Any]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        base = {"finds": [], "winget": 0, "python": 0, "declined": False}
+        scenarios = [
+            {**base, "name": "installed"},
+            {**base, "name": "present", "finds": [r"C:\Program Files\Deluge\deluge.exe"]},
+            {**base, "name": "declined", "declined": True},
+            {**base, "name": "running", "python": EXIT_CODES[QBittorrentSetupResult.RUNNING]},
+            {**base, "name": "setup_failed", "python": EXIT_CODES[QBittorrentSetupResult.FAILED]},
+            {**base, "name": "winget_failed", "winget": 1},
+            {**base, "name": "no_winget", "winget": None},
+            # qBittorrent was on the PC without the torrent links: winget has nothing to do.
+            {**base, "name": "there_but_not_linked", "winget": -1978335189, "finds": ["", _QBIT_EXE]},
+        ]
+        output = _powershell(
+            _load_installer(_QBIT_FUNCTIONS) + _INSTALL_SCENARIOS,
+            {"AG_INSTALLER": str(INSTALLER), "AG_SCENARIOS": json.dumps(scenarios), "AG_INSTALL_DIR": _INSTALL_DIR},
+        )
+        cls.results = {result["name"]: result for result in _json_line(output)}
+
+    def test_installs_and_sets_up_qbittorrent_without_asking(self) -> None:
+        result = self.results["installed"]
+        self.assertEqual(
+            result["log"],
+            [
+                "winget " + " ".join(WINGET_COMMAND),  # the same command as the app's Install
+                rf"python {_INSTALL_DIR}\main.py --setup-qbittorrent",
+            ],
+        )
+        self.assertEqual(result["host"], [_INSTALL_LINE, _READY])
+
+    def test_a_torrent_program_already_there_is_left_alone(self) -> None:
+        result = self.results["present"]
+        self.assertEqual(result["log"], [])
+        self.assertEqual(result["host"], ["    A torrent program is already installed; AirGrabber uses it."])
+
+    def test_no_qbittorrent_skips_it(self) -> None:
+        self.assertEqual((self.results["declined"]["log"], self.results["declined"]["host"]), ([], []))
+
+    def test_qbittorrent_running_or_a_failed_setup_is_said_plainly(self) -> None:
+        running = self.results["running"]
+        self.assertEqual(len(running["log"]), 2)
+        self.assertEqual(
+            running["host"][-1],
+            "    qBittorrent is installed. Close qBittorrent, then set it up in AirGrabber (Settings, "
+            "Where downloads go).",
+        )
+        self.assertEqual(
+            self.results["setup_failed"]["host"][-1],
+            "    qBittorrent is installed. Set it up in AirGrabber (Settings, Where downloads go).",
+        )
+
+    def test_a_failed_install_carries_on(self) -> None:
+        failed = self.results["winget_failed"]
+        self.assertEqual(failed["log"], ["winget " + " ".join(WINGET_COMMAND)])  # no setup
+        self.assertEqual(failed["host"], [_INSTALL_LINE, _NOT_INSTALLED])
+        no_winget = self.results["no_winget"]
+        self.assertEqual((no_winget["log"], no_winget["host"]), ([], [_INSTALL_LINE, _NOT_INSTALLED]))
+
+    def test_qbittorrent_there_already_is_set_up(self) -> None:
+        result = self.results["there_but_not_linked"]
+        self.assertEqual(result["log"][-1], rf"python {_INSTALL_DIR}\main.py --setup-qbittorrent")
+        self.assertEqual(result["host"][-1], _READY)
+
+    def test_plan(self) -> None:
+        script = _load_installer(_QBIT_FUNCTIONS) + """
+$plans = @()
+foreach ($case in @(@($false, $false), @($true, $false), @($false, $true), @($true, $true))) {
+    $plans += Get-QBittorrentPlan $case[0] $case[1]
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $plans -Compress))
+"""
+        plans = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER)}))
+        # (a torrent program found, -NoQBittorrent) -> plan
+        self.assertEqual(plans, ["install", "present", "skip", "skip"])
+
+    def test_it_runs_after_python_and_the_app_and_before_prowlarr(self) -> None:
+        source = INSTALLER.read_text(encoding="ascii")
+        body = source[source.index("function Install-AirGrabber {") :]
+        self.assertLess(body.index("    Install-App\n"), body.index("Install-QBittorrentIfNeeded $python"))
+        self.assertLess(body.index("-r (Join-Path $InstallDir 'requirements.txt')"), body.index("Install-QBittorrentIfNeeded"))
+        self.assertLess(body.index("Install-QBittorrentIfNeeded"), body.index("Install-ProwlarrIfWanted"))
+        self.assertIn("[switch]$NoQBittorrent", source)
+        self.assertIn("-NoQBittorrent skips that", source)  # documented in the header
+
+    def test_finds_the_torrent_program_like_the_app(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            qbit = Path(temp, "qBittorrent", "qbittorrent.exe")
+            deluge = Path(temp, "Deluge", "deluge.exe")
+            for exe in (qbit, deluge):
+                exe.parent.mkdir()
+                exe.write_bytes(b"stub")
+            missing = Path(temp, "Gone", "utorrent.exe")
+            magnet = rf"{_CLASSES}\magnet\shell\open\command|"
+            scenarios = [
+                {"name": "none", "registry": {}},
+                {"name": "magnet", "registry": {magnet: f'"{qbit}" "%1"'}},
+                {
+                    "name": "user_choice_first",
+                    "registry": {
+                        f"{_MAGNET_CHOICE}|ProgId": "Deluge.Magnet",
+                        rf"{_CLASSES}\Deluge.Magnet\shell\open\command|": f'"{deluge}" "%1"',
+                        magnet: f'"{qbit}" "%1"',
+                    },
+                },
+                {
+                    "name": "missing_then_torrent_file",
+                    "registry": {
+                        magnet: f'"{missing}" "%1"',
+                        rf"{_CLASSES}\.torrent|": "qBittorrent.File.Torrent",
+                        rf"{_CLASSES}\qBittorrent.File.Torrent\shell\open\command|": f"{qbit} %1",
+                    },
+                },
+                {
+                    "name": "torrent_user_choice",
+                    "registry": {
+                        f"{_TORRENT_CHOICE}|ProgId": "Applications\\deluge.exe",
+                        rf"{_CLASSES}\Applications\deluge.exe\shell\open\command|": f'"{deluge}" "%1"',
+                    },
+                },
+                {"name": "only_missing", "registry": {magnet: f'"{missing}" "%1"'}},
+            ]
+            output = _powershell(
+                _load_installer(_QBIT_FUNCTIONS) + _FIND_SCENARIOS,
+                {"AG_INSTALLER": str(INSTALLER), "AG_SCENARIOS": json.dumps(scenarios)},
+            )
+            found = {result["name"]: result["found"] for result in _json_line(output)}
+        self.assertEqual(
+            found,
+            {
+                "none": "",
+                "magnet": str(qbit),
+                "user_choice_first": str(deluge),
+                "missing_then_torrent_file": str(qbit),
+                "torrent_user_choice": str(deluge),
+                "only_missing": "",
+            },
+        )
+
+    def test_reads_the_program_from_an_open_command_like_the_app(self) -> None:
+        commands = [
+            f'"{_QBIT_EXE}" "%1"',
+            r"C:\Program Files\qBittorrent\qbittorrent.exe %1",
+            r'%ProgramFiles%\Deluge\deluge.exe "%1"',
+            r"C:\Tools\tixati.exe",
+            "rundll32 url.dll,FileProtocolHandler %1",
+        ]
+        script = _load_installer(_QBIT_FUNCTIONS) + """
+$exes = @(foreach ($command in (ConvertFrom-Json $env:AG_COMMANDS)) { [string](Get-OpenCommandExe $command) })
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $exes -Compress))
+"""
+        exes = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_COMMANDS": json.dumps(commands)}))
+        self.assertEqual(exes, [command_executable(command) for command in commands])
+
+    def test_reads_a_registry_string_or_nothing(self) -> None:
+        # Read-only: a value every Windows has, and keys that don't exist.
+        script = _load_installer(_QBIT_FUNCTIONS) + """
+$values = @(
+    [string](Get-RegistryString 'Registry::HKEY_CLASSES_ROOT\\.txt' ''),
+    [string](Get-RegistryString 'Registry::HKEY_CLASSES_ROOT\\AirGrabber.NoSuchKey' ''),
+    [string](Get-RegistryString 'HKCU:\\Software\\AirGrabber-NoSuchKey' 'ProgId')
+)
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $values -Compress))
+"""
+        txt, missing_class, missing_user = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER)}))
+        self.assertTrue(txt)
+        self.assertEqual((missing_class, missing_user), ("", ""))
+
 
 @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
 class UninstallerShortcutTests(unittest.TestCase):

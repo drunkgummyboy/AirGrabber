@@ -44,6 +44,18 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   items, ttk, Pillow-baked images) takes `theme.pick(token)` and repaints on a switch
   (`theme.on_mode_change`, or the CTk widget's own `_set_appearance_mode`). Tabs: `widgets.Tabview`.
 - Never call live APIs from tests: use `httpx.MockTransport` and `tests/fixtures/`.
+- qBittorrent's settings file (`%APPDATA%\qBittorrent\qBittorrent.ini`) is changed only by
+  `app/services/qbittorrent_setup.py`: just the "Add new torrent" dialog keys (and its look's and
+  Web UI's keys, below), only while qBittorrent isn't running, the original backed up once; never
+  accept its legal notice for the user. install.ps1 installs qBittorrent only when Windows has no
+  torrent program (`-NoQBittorrent` skips it) and sets it up through `main.py --setup-qbittorrent`.
+  The Web UI for AirGrabber (`app/services/qbittorrent_webui.py`, both key sets: `[Preferences]
+  WebUI\…` for 4.2–5.2, `[WebUI]` for 5.3+): on, 127.0.0.1 only, a free port, user `airgrabber`, a
+  PBKDF2 password, LocalHostAuth on; never over a Web UI of the user's own. AirGrabber is pointed at
+  it (REMOTE, `app/services/qbittorrent_local.py`) only from APP mode, its own, or a new install —
+  never over a NAS / folder the user chose — and starts qBittorrent when that one isn't running.
+  The generated password is `remote_password`: never logged. Tests use temporary files, a fake
+  process check, fake starters and ports; never start qBittorrent.
 - The TMDB v3 key travels as a URL parameter and Prowlarr's `TorrentRelease.download_url` embeds its
   API key: never log request URLs or release objects, never put `str(httpx_exc)` in messages, and keep
   the `httpx`/`httpcore` loggers at WARNING (`app/config.py`). DSM passwords go in POST bodies only.

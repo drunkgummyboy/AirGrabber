@@ -48,8 +48,11 @@ class MovieView(ShelvesView[Movie]):
         movie_actions: DownloadActions[Movie],
         watchlist: WatchlistService,
         card_scale: Callable[[], CardScale] = lambda: FULL,
+        on_open_movie: Callable[[Movie], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        """`on_open_movie`: what a click on a film card's cover or title does (its info
+        window)."""
         super().__init__(
             master,
             images=images,
@@ -62,6 +65,7 @@ class MovieView(ShelvesView[Movie]):
         self._discovery = discovery
         self._movie_actions = movie_actions  # the cards' Download and ⋯ buttons
         self._watchlist = watchlist
+        self._on_open_movie = on_open_movie
         self._downloaded: frozenset[int] = frozenset()  # the last load's films in the history
         self.watchlist_shelf = WatchlistShelf(
             self._body,
@@ -69,6 +73,7 @@ class MovieView(ShelvesView[Movie]):
             images=images,
             actions=movie_actions,
             card_scale=card_scale,
+            on_open=on_open_movie,
         )
 
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -141,4 +146,5 @@ class MovieView(ShelvesView[Movie]):
             actions=self._movie_actions,
             watchlist=self._watchlist,
             scale=self._scale,
+            on_open=self._on_open_movie,
         )

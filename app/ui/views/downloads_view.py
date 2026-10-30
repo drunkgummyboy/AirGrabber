@@ -5,8 +5,8 @@ can't be reached, and an amber banner when the downloads' disk is almost full.
 
 The data comes from DownloadStatusService, which checks every 10 s while this page is on screen
 (`<Map>` / `<Unmap>`) and tells the page about every new overview; rows are updated in place
-while the list of grabs stays the same. A row opens the show's window (an episode) or the film
-on IMDb.
+while the list of grabs stays the same. A row opens the show's window (an episode) or the film's
+info window (`on_open_film`; on IMDb when TMDB can't describe the film, or without it).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import asyncio
 import logging
 import tkinter as tk
 import webbrowser
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -196,9 +196,13 @@ class DownloadsView(BaseView):
         images: ImageCache,
         discovery: DiscoveryService,
         on_open_show: Callable[[Show], None],
+        on_open_film: Callable[[int], Awaitable[bool]] | None = None,
         **kwargs: Any,
     ) -> None:
+        """`on_open_film(tmdb_id)`: opens a film's info window; False when it couldn't (the
+        row then opens the film on IMDb)."""
         super().__init__(master, **kwargs)
+        self._on_open_film = on_open_film
         self._downloads = downloads
         self._settings = settings
         self._images = images
@@ -326,7 +330,10 @@ class DownloadsView(BaseView):
         self._open_task = spawn(self._open_film(entry), name="DownloadsView.open_film")
 
     async def _open_film(self, entry: DownloadEntry) -> None:
-        """The film on IMDb: its page when TMDB knows its IMDb id, else IMDb's search."""
+        """The film's info window; else the film on IMDb: its page when TMDB knows its IMDb
+        id, else IMDb's search."""
+        if self._on_open_film is not None and await self._on_open_film(entry.record.media_id):
+            return
         url = imdb_find_url(entry.title)
         try:
             async with asyncio.timeout(_DETAILS_WAIT_S):

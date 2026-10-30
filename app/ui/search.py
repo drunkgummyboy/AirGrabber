@@ -288,7 +288,8 @@ class SearchSuggestions:
 
 class SearchResultsWindow(ctk.CTkToplevel):
     """Results for `query` (not modal): TVMaze shows with a "+ Track" button (a click on a
-    show's cover calls `on_open_show`), then TMDB movies.
+    show's cover calls `on_open_show`), then TMDB movies (a click on a film's cover or title
+    calls `on_open_movie`).
 
     Both searches run at once; each section renders as soon as its own search is done. The cards
     are drawn at `card_scale`, the card size when the window opened: a window already open
@@ -312,8 +313,10 @@ class SearchResultsWindow(ctk.CTkToplevel):
         on_open_settings: Callable[[], None],
         on_open_show: Callable[[Show], None] | None = None,
         card_scale: CardScale = FULL,
+        on_open_movie: Callable[[Movie], None] | None = None,
     ) -> None:
-        """`on_open_show`: what a click on a show card's cover does (the show details)."""
+        """`on_open_show`: what a click on a show card's cover does (the show details).
+        `on_open_movie`: the same for a film card (the film's info window)."""
         super().__init__(master, fg_color=theme.BG)
         self._scale = card_scale
         self._library = library
@@ -325,6 +328,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._watchlist = watchlist  # the movie cards' watchlist buttons
         self._on_open_settings = on_open_settings
         self._on_open_show = on_open_show
+        self._on_open_movie = on_open_movie
         self._cards: dict[int, SearchShowCard] = {}
 
         self.title(t("Search Results: {query}", query=query))
@@ -474,6 +478,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 actions=self._movie_actions,
                 watchlist=self._watchlist,
                 scale=self._scale,
+                on_open=self._on_open_movie,
             )
         grid.relayout()
 

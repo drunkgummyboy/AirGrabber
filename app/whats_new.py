@@ -14,6 +14,28 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "2.0.6": (
+        N_(
+            "New installs come with qBittorrent: downloads start without a pop-up, and the "
+            "Downloads page shows their progress."
+        ),
+        N_(
+            "Already use qBittorrent? Set it up for AirGrabber in Settings → Where downloads go."
+        ),
+        N_(
+            "qBittorrent gets AirGrabber's look (light or dark like Windows) when set up; switch "
+            "it in Settings → Where downloads go."
+        ),
+        N_(
+            "Click a series or film for its new info screen: a big picture, the trailer, the "
+            "cast and the full story."
+        ),
+        N_("Settings → Looks shows a real card at the size you pick."),
+        N_(
+            "Quick setup chooses the look, download quality, card size and language in one go "
+            "(Settings → Looks)."
+        ),
+    ),
     "2.0.5": (
         N_(
             "My shows can be sorted (A–Z, next episode, latest download) and filtered (missing "

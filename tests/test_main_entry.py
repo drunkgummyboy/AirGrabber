@@ -1,4 +1,5 @@
-"""main.py's command line: `--tray` starts with only the tray icon showing."""
+"""main.py's command line: `--tray` starts with only the tray icon showing; `--setup-qbittorrent`
+only sets qBittorrent up."""
 
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ class ParseOptionsTests(unittest.TestCase):
             ("--tray",): Options(tray=True),
             ("--tray", "--something-newer"): Options(tray=True),  # unknown ones are ignored
             ("stray",): Options(tray=False),
+            # install.ps1, right after installing qBittorrent (tests/test_qbittorrent_setup.py).
+            ("--setup-qbittorrent",): Options(setup_qbittorrent=True),
         }
         for argv, expected in cases.items():
             with self.subTest(argv=argv):

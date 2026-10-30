@@ -82,16 +82,19 @@ from app.ui.indexer_dialog import (
     TvTarget,
     movie_title,
 )
+from app.ui.icons import IconButton, sliders_icon
+from app.ui.movie_details import MovieWindows
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
 from app.ui.subtitle_settings import subtitle_mark
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
+from app.ui.torrent_app_status import QBITTORRENT
 from app.ui.tray import TrayHost
 from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, TrackedView
 from app.ui.views.downloads_view import DownloadsView
-from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action
+from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action, first_run_defaults
 from app.ui.whats_new_dialog import WhatsNewDialog
 from app.ui.widgets import Tabview
 from app.whats_new import WhatsNew, whats_new
@@ -338,6 +341,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
             subtitle_marks=self._subtitle_marks,
             subtitles_changed=self._on_subtitles_saved,
         )
+        # The film info windows (one per film), opened from the film cards.
+        self._movie_windows = MovieWindows(
+            self,
+            images=services.images,
+            discovery=services.discovery,
+            watchlist=services.watchlist,
+            actions=self._movie_actions,
+        )
 
         self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))
         set_window_icon(self)
@@ -385,6 +396,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def destroy(self) -> None:
         self._suggestions.destroy()
         self._show_windows.close()
+        self._movie_windows.close()
         if self._results_window is not None and self._results_window.winfo_exists():
             self._results_window.destroy()
         self._results_window = None
@@ -497,19 +509,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
             report=self._report,
         )
         self._downloads_button.pack(side="left", padx=(0, 5))
-        settings_button = ctk.CTkButton(
+        # A drawn "sliders" icon in a soft square button like the search button's.
+        settings_button = IconButton(
             tools,
-            text="⚙",
+            draw=sliders_icon,
             width=40,
             height=40,
             corner_radius=10,
-            fg_color="transparent",
-            hover_color=theme.SURFACE,
-            text_color=theme.BUTTON_TEXT,
-            font=theme.font(26),
+            fg_color=theme.SURFACE,
+            hover_color=theme.HOVER,
+            border_width=1,
+            border_color=theme.EDGE,
             command=self._open_settings,
         )
         settings_button.pack(side="left")
+        self._settings_button = settings_button
         add_tooltip(settings_button, t("Settings"))
 
     def _build_pages(self) -> None:
@@ -576,6 +590,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             movie_actions=self._movie_actions,
             watchlist=self._services.watchlist,
             card_scale=self._card_scale,
+            on_open_movie=self._movie_windows.open_movie,
         )
         self._downloads_view = DownloadsView(
             self,
@@ -584,6 +599,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             images=images,
             discovery=discovery,
             on_open_show=self._show_windows.open_show,
+            on_open_film=self._movie_windows.open_movie_id,
         )
 
     def _card_scale(self) -> CardScale:
@@ -770,6 +786,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_open_settings=self._open_settings,
             on_open_show=self._show_windows.open_show,
             card_scale=self._card_scale(),
+            on_open_movie=self._movie_windows.open_movie,
         )
 
     def _search_episode(self, entry: CalendarEntry) -> None:
@@ -1019,7 +1036,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_update=self._start_update,
             subtitles=self._services.subtitles,
             on_restart=self.restart,
-            flaresolverr=self._services.flaresolverr,
+            images=self._services.images,
+            library=self._services.library,
         )
 
     async def _set_up_prowlarr(self) -> None:
@@ -1028,7 +1046,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self.set_status(message, clear_after_ms=10_000)
 
     async def _first_run(self) -> None:
-        """The welcome for a new library; a library from before it just records it as done."""
+        """The welcome for a new library; a library from before it just records it as done.
+        A new library with qBittorrent as the torrent program (install.ps1 installs it when there
+        is none) first gets "Open in my torrent program" and qBittorrent's save folder
+        (`first_run_defaults`)."""
         settings = self._services.settings
         if settings.current.setup_done:
             return
@@ -1037,6 +1058,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if action is FirstRun.MARK_DONE:
             await settings.update(setup_done=True)
         elif action is FirstRun.WELCOME and self.winfo_exists():
+            torrent_app = self._services.torrent_app
+            app = await torrent_app.find()
+            qbittorrent = app is not None and app.name == QBITTORRENT
+            state = await torrent_app.qbittorrent_state() if qbittorrent else None
+            if changes := first_run_defaults(settings.current, app, state):
+                await settings.update(**changes)
+            if not self.winfo_exists():
+                return
             # A key saved there reloads the TMDB pages through _on_settings_changed.
             WelcomeDialog(
                 self,
@@ -1046,6 +1075,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 airdates=self._services.airdates,
                 library=self._services.library,
                 remote=self._services.remote,
+                on_restart=self.restart,
             )
 
     # -- updates -----------------------------------------------------------------------------

@@ -1,0 +1,61 @@
+{
+ "adult": false,
+ "backdrop_path": "/madeup_movie_info_nl_1.jpg",
+ "belongs_to_collection": null,
+ "budget": 42000000,
+ "genres": [
+  {
+   "id": 18,
+   "name": "Drama"
+  },
+  {
+   "id": 9648,
+   "name": "Mysterie"
+  },
+  {
+   "id": 53,
+   "name": "Thriller"
+  }
+ ],
+ "homepage": "",
+ "id": 4242,
+ "imdb_id": "tt9900042",
+ "origin_country": [
+  "GB"
+ ],
+ "original_language": "en",
+ "original_title": "Harbour Lights",
+ "overview": "Wanneer de vuurtoren van een vergeten kustdorp weer gaat branden, ontdekt havenmeester Ida Marlowe dat iemand haar schepen de verkeerde kant op stuurt.",
+ "popularity": 41.27,
+ "poster_path": "/madeup_movie_info_nl_2.jpg",
+ "production_companies": [
+  {
+   "id": 90001,
+   "logo_path": null,
+   "name": "Tidewater Pictures",
+   "origin_country": "GB"
+  }
+ ],
+ "production_countries": [
+  {
+   "iso_3166_1": "GB",
+   "name": "United Kingdom"
+  }
+ ],
+ "release_date": "2026-08-14",
+ "revenue": 0,
+ "runtime": 128,
+ "spoken_languages": [
+  {
+   "english_name": "English",
+   "iso_639_1": "en",
+   "name": "English"
+  }
+ ],
+ "status": "Released",
+ "tagline": "",
+ "title": "Harbour Lights",
+ "video": false,
+ "vote_average": 7.4,
+ "vote_count": 312
+}

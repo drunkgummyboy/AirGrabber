@@ -1,5 +1,8 @@
 """The torrent program on this PC: which one Windows opens magnets / .torrent files with,
-and a one-click qBittorrent install through winget.
+a one-click qBittorrent install through winget, and qBittorrent set up for AirGrabber (no "Add
+new torrent" pop-up for each download, and AirGrabber's look: app/services/qbittorrent_setup.py;
+its Web UI for AirGrabber: app/services/qbittorrent_local.py), and qbittorrent.exe's path
+(`qbittorrent_executable`, for starting it).
 
 Detection only reads the registry (stdlib `winreg`, read access). The reader is injectable so
 tests never touch the real registry. On other platforms nothing is detected or installed.
@@ -19,7 +22,10 @@ from collections.abc import Callable
 from pathlib import PureWindowsPath
 
 from app.i18n import t
-from app.models import TorrentApp
+from app.models import QBittorrentSetupResult, QBittorrentState, TorrentApp
+from app.services import qbittorrent_local
+from app.services.qbittorrent_setup import QBittorrentSetup
+from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +35,7 @@ RegistryReader = Callable[[str, str, str], str | None]
 ExistsCheck = Callable[[str], bool]
 
 QBITTORRENT = "qBittorrent"
+# install.ps1's Install-QBittorrentIfNeeded runs the same winget command: keep the two in step.
 WINGET_COMMAND = (
     "install",
     "--id",
@@ -78,6 +85,22 @@ def find_torrent_app(
         exe = command_executable(command)
         if exe and exists(exe):
             return TorrentApp(name=friendly_name(exe))
+    return None
+
+
+def qbittorrent_executable(
+    read: RegistryReader | None = None, exists: ExistsCheck = os.path.isfile
+) -> str | None:
+    """qbittorrent.exe's path, from the same registry entries as `find_torrent_app` (the first
+    of them that opens with qBittorrent), so AirGrabber can start it. Blocking."""
+    if read is None:
+        if sys.platform != "win32":
+            return None
+        read = _read_registry
+    for command in _candidate_commands(read):
+        exe = command_executable(command)
+        if exe and friendly_name(exe) == QBITTORRENT and exists(exe):
+            return exe
     return None
 
 
@@ -174,13 +197,21 @@ async def install_qbittorrent(
 
 
 class TorrentAppService:
-    """What the UI uses: which torrent program is set up, and installing qBittorrent."""
+    """What the UI uses: which torrent program is set up, installing qBittorrent, and setting
+    qBittorrent up for AirGrabber (its settings file: `qbittorrent`, injectable for tests; with
+    `settings`, the setup also turns its Web UI on and points AirGrabber at it when it may:
+    app/services/qbittorrent_local.py)."""
 
     def __init__(
         self,
         find: Callable[[], TorrentApp | None] = find_torrent_app,
+        qbittorrent: QBittorrentSetup | None = None,
+        *,
+        settings: SettingsService | None = None,
     ) -> None:
         self._find = find
+        self._qbittorrent = qbittorrent if qbittorrent is not None else QBittorrentSetup()
+        self._settings = settings
 
     async def find(self) -> TorrentApp | None:
         return await asyncio.to_thread(self._find)
@@ -189,3 +220,41 @@ class TorrentAppService:
         self, progress: Callable[[str], None] | None = None
     ) -> bool:
         return await install_qbittorrent(progress, self._find)
+
+    async def qbittorrent_state(self) -> QBittorrentState | None:
+        """qBittorrent's settings file (set up for AirGrabber or not, its save folder); None
+        when it can't be read."""
+        try:
+            return await asyncio.to_thread(self._qbittorrent.state)
+        except OSError as exc:
+            log.info("qBittorrent's settings couldn't be read (%s)", type(exc).__name__)
+            return None
+
+    async def set_up_qbittorrent(self) -> QBittorrentSetupResult:
+        """Turn qBittorrent's "Add new torrent" pop-up off and give it AirGrabber's look when it
+        has no theme yet (not while qBittorrent runs); with settings, also its Web UI for
+        AirGrabber (a first run that isn't done yet counts as a new install)."""
+        if self._settings is None:
+            return await asyncio.to_thread(self._qbittorrent.set_up)
+        fresh = not self._settings.current.setup_done
+        return await qbittorrent_local.set_up_qbittorrent(
+            self._qbittorrent, self._settings, fresh=fresh
+        )
+
+    async def qbittorrent_look(self) -> bool | None:
+        """Whether qBittorrent has AirGrabber's look on; None when there's nothing to switch
+        (a theme of the user's own in use) or the settings can't be read."""
+        try:
+            return await asyncio.to_thread(self._qbittorrent.look)
+        except OSError as exc:
+            log.info("qBittorrent's settings couldn't be read (%s)", type(exc).__name__)
+            return None
+
+    async def set_qbittorrent_look(self, on: bool) -> QBittorrentSetupResult:
+        """Turn AirGrabber's look in qBittorrent on or off (not while qBittorrent runs)."""
+        return await asyncio.to_thread(self._qbittorrent.set_look, on)
+
+    async def refresh_qbittorrent_theme(self) -> None:
+        """Bring AirGrabber's copy of its qBittorrent theme up to date after an update (once
+        per start; only when qBittorrent was given the look before)."""
+        await asyncio.to_thread(self._qbittorrent.refresh_theme)

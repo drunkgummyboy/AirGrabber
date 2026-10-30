@@ -1,0 +1,54 @@
+{
+ "adult": false,
+ "backdrop_path": "/madeup_tv_info_nl_1.jpg",
+ "created_by": [],
+ "episode_run_time": [
+  48
+ ],
+ "first_air_date": "2024-01-11",
+ "genres": [
+  {
+   "id": 18,
+   "name": "Drama"
+  },
+  {
+   "id": 80,
+   "name": "Misdaad"
+  }
+ ],
+ "homepage": "",
+ "id": 7171,
+ "in_production": true,
+ "languages": [
+  "en"
+ ],
+ "last_air_date": "2026-10-16",
+ "name": "The Quiet Orchard",
+ "networks": [
+  {
+   "id": 99001,
+   "logo_path": null,
+   "name": "Northwind TV",
+   "origin_country": "US"
+  }
+ ],
+ "number_of_episodes": 18,
+ "number_of_seasons": 2,
+ "origin_country": [
+  "US"
+ ],
+ "original_language": "en",
+ "original_name": "The Quiet Orchard",
+ "overview": "",
+ "popularity": 55.1,
+ "poster_path": "/madeup_tv_info_nl_2.jpg",
+ "production_companies": [],
+ "production_countries": [],
+ "seasons": [],
+ "spoken_languages": [],
+ "status": "Returning Series",
+ "tagline": "",
+ "type": "Scripted",
+ "vote_average": 8.1,
+ "vote_count": 640
+}

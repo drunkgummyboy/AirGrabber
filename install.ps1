@@ -14,6 +14,12 @@ packages, adds Start menu and desktop shortcuts, registers it under Windows' "In
 (current user; uninstaller: app\uninstall.ps1) and starts it. Running it again reinstalls the latest
 version. Your library and settings live in %LOCALAPPDATA%\AirGrabber and are never touched.
 
+When Windows has no program for magnet links and .torrent files yet, it installs qBittorrent (the
+free program AirGrabber downloads with; Windows may ask for permission) and sets it up for
+AirGrabber, so downloads start without a pop-up for each one: -NoQBittorrent skips that. A torrent
+program that is already there is left alone, and a failed qBittorrent install doesn't stop the
+AirGrabber install (AirGrabber offers qBittorrent again when it starts).
+
 It also offers to install Prowlarr (more torrent sites; needs administrator permission) in a small
 window unless it is already there: -Prowlarr installs it without asking, -NoProwlarr skips it (and
 wins over -Prowlarr). When the install fails, a window says so as well as the console.
@@ -28,7 +34,8 @@ param(
     [switch]$NoShortcuts,
     [switch]$NoLaunch,
     [switch]$Prowlarr,
-    [switch]$NoProwlarr
+    [switch]$NoProwlarr,
+    [switch]$NoQBittorrent
 )
 
 $Repo = 'drunkgummyboy/AirGrabber'
@@ -114,10 +121,11 @@ function Install-WingetFromGitHub {
 }
 
 function Initialize-Winget {
-    # Makes sure winget is there (it installs Python and Prowlarr): registers the App Installer that
-    # comes with Windows but may not be set up yet (common on a new Windows 11), else downloads it
-    # from Microsoft. Never fails the install: without winget, Python comes from python.org and
-    # Prowlarr shows where to get it. Returns 'found', 'registered', 'downloaded' or 'failed'.
+    # Makes sure winget is there (it installs Python, qBittorrent and Prowlarr): registers the App
+    # Installer that comes with Windows but may not be set up yet (common on a new Windows 11), else
+    # downloads it from Microsoft. Never fails the install: without winget, Python comes from
+    # python.org, AirGrabber offers qBittorrent again and Prowlarr shows where to get it. Returns
+    # 'found', 'registered', 'downloaded' or 'failed'.
     $ErrorActionPreference = 'Stop'  # every failure below lands in a catch
     try {
         Add-WindowsAppsToPath
@@ -650,12 +658,124 @@ function Install-ProwlarrIfWanted {
     }
 }
 
+function Get-RegistryString([string]$Path, [string]$Name) {
+    # A registry string value ('' = the key's default value), trimmed; $null when it isn't there.
+    # $Path like 'HKCU:\Software\...' or 'Registry::HKEY_CLASSES_ROOT\...' (5.1 has no HKCR: drive).
+    try {
+        $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+        $value = $key.GetValue($Name)
+        if ($value -is [string] -and $value.Trim()) { return $value.Trim() }
+    } catch {
+        Write-Verbose ('No registry value at ' + $Path + ': ' + $_.Exception.Message)
+    }
+    return $null
+}
+
+function Get-OpenCommandExe([string]$Command) {
+    # The program in a shell open command such as '"C:\...\qbittorrent.exe" "%1"'; keep in step
+    # with app/services/torrent_app.py (command_executable).
+    $text = [Environment]::ExpandEnvironmentVariables($Command)
+    if ($text -match '^\s*"([^"]+)"') { return $Matches[1].Trim() }
+    if ($text -match '^\s*(.+?\.exe)(?=\s|$)') { return $Matches[1].Trim() }
+    $parts = @($text.Trim() -split '\s+')
+    if ($parts.Count -gt 0 -and $parts[0]) { return $parts[0] }
+    return $null
+}
+
+function Find-TorrentApp {
+    # The program Windows opens magnet links (else .torrent files) with, when it exists; $null when
+    # there is none. The same lookups as app/services/torrent_app.py (find_torrent_app).
+    $classes = 'Registry::HKEY_CLASSES_ROOT'
+    $open = 'shell\open\command'
+    $commands = New-Object System.Collections.Generic.List[string]
+    $progId = Get-RegistryString 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\magnet\UserChoice' 'ProgId'
+    if ($progId) { $commands.Add((Get-RegistryString "$classes\$progId\$open" '')) }
+    $commands.Add((Get-RegistryString "HKCU:\Software\Classes\magnet\$open" ''))
+    $commands.Add((Get-RegistryString "$classes\magnet\$open" ''))
+    $progId = Get-RegistryString 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.torrent\UserChoice' 'ProgId'
+    if ($progId) { $commands.Add((Get-RegistryString "$classes\$progId\$open" '')) }
+    $progId = Get-RegistryString "$classes\.torrent" ''
+    if ($progId) { $commands.Add((Get-RegistryString "$classes\$progId\$open" '')) }
+    foreach ($command in $commands) {
+        if (-not $command) { continue }
+        $exe = Get-OpenCommandExe $command
+        try {
+            if ($exe -and (Test-Path -LiteralPath $exe -PathType Leaf)) { return $exe }
+        } catch {
+            Write-Verbose ('Not a usable program path: ' + $exe)
+        }
+    }
+    return $null
+}
+
+function Get-QBittorrentPlan([bool]$HasTorrentApp, [bool]$Declined) {
+    # What to do about qBittorrent: 'skip' (-NoQBittorrent), 'present' (Windows already opens
+    # torrents with a program, which is left alone) or 'install'.
+    if ($Declined) { return 'skip' }
+    if ($HasTorrentApp) { return 'present' }
+    return 'install'
+}
+
+function Install-QBittorrentIfNeeded([string]$Python) {
+    # qBittorrent, the free program AirGrabber downloads with, when Windows has no program for
+    # magnet links and .torrent files: installed with winget (the same command as
+    # app/services/torrent_app.py WINGET_COMMAND), then set up for AirGrabber by AirGrabber itself
+    # (main.py --setup-qbittorrent: no "Add new torrent" pop-up for each download; exit code 0 =
+    # done, 3 = qBittorrent was running). Never fails the AirGrabber install: AirGrabber's welcome
+    # offers qBittorrent again, and Settings sets it up.
+    $ErrorActionPreference = 'Continue'  # see Test-Python
+    $app = $null
+    try { $app = Find-TorrentApp } catch { $app = $null }
+    $plan = Get-QBittorrentPlan ([bool]$app) $NoQBittorrent.IsPresent
+    if ($plan -eq 'skip') { return }
+    if ($plan -eq 'present') {
+        Write-Host '    A torrent program is already installed; AirGrabber uses it.'
+        return
+    }
+
+    Write-Step 'Installing qBittorrent, the free program AirGrabber downloads with (Windows may ask for permission)'
+    $installed = $false
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($winget) {
+        try {
+            & $winget.Source install --id qBittorrent.qBittorrent --exact --silent `
+                --accept-package-agreements --accept-source-agreements | Out-Host
+            $installed = ($LASTEXITCODE -eq 0)
+        } catch {
+            $installed = $false
+        }
+        if (-not $installed) {
+            # E.g. qBittorrent was there already but not set for torrents: winget had nothing to do.
+            try { $installed = [bool](Find-TorrentApp) } catch { $installed = $false }
+        }
+    }
+    if (-not $installed) {
+        Write-Host "qBittorrent couldn't be installed automatically. AirGrabber offers it again when it starts." -ForegroundColor Yellow
+        return
+    }
+
+    $code = 1
+    try {
+        & $Python (Join-Path $InstallDir 'main.py') --setup-qbittorrent 2>$null | Out-Host
+        $code = $LASTEXITCODE
+    } catch {
+        $code = 1
+    }
+    if ($code -eq 0) {
+        Write-Host '    qBittorrent is installed and ready: downloads start without a pop-up.'
+    } elseif ($code -eq 3) {
+        Write-Host '    qBittorrent is installed. Close qBittorrent, then set it up in AirGrabber (Settings, Where downloads go).' -ForegroundColor Yellow
+    } else {
+        Write-Host '    qBittorrent is installed. Set it up in AirGrabber (Settings, Where downloads go).' -ForegroundColor Yellow
+    }
+}
+
 function Install-AirGrabber {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest crawls with a progress bar in 5.1
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-    # winget installs Python and Prowlarr below; both have a fallback without it.
+    # winget installs Python, qBittorrent and Prowlarr below; each has a fallback without it.
     $null = Initialize-Winget
 
     Write-Step 'Checking for Python'
@@ -669,6 +789,7 @@ function Install-AirGrabber {
     & $python -m pip install --disable-pip-version-check --no-input --quiet --no-warn-script-location -r (Join-Path $InstallDir 'requirements.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Some parts AirGrabber needs could not be installed (see the messages above). Check your internet connection and try again.' }
 
+    Install-QBittorrentIfNeeded $python
     Install-ProwlarrIfWanted
 
     $pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'

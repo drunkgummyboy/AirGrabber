@@ -1,8 +1,7 @@
 """Settings → Advanced: the Prowlarr panel. A status line (connected / not running / not
 installed …), "Install Prowlarr" when it is missing, "Use Prowlarr", "Open Prowlarr", and a link
 that shows the fields for a Prowlarr on another computer (rows from `remote_row`, filled by the
-Settings dialog). With a Prowlarr on this PC it also shows a line about FlareSolverr and the
-"How to add FlareSolverr" link (app/ui/flaresolverr_guide.py)."""
+Settings dialog)."""
 
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ import customtkinter as ctk
 
 from app.i18n import N_, t, tn
 from app.models import ProwlarrState, ProwlarrStatus
-from app.services import FlareSolverrService, ProwlarrSetupService
+from app.services import ProwlarrSetupService
 from app.services.prowlarr_setup import INSTALLING_TEXT, on_this_pc
 from app.ui import theme
 from app.ui.dialog_kit import (
@@ -30,7 +29,6 @@ from app.ui.dialog_kit import (
     secondary_button,
     text_label,
 )
-from app.ui.flaresolverr_guide import PANEL_LINK, PANEL_TIP, FlareSolverrDialog
 from app.ui.tasks import spawn
 
 PROWLARR_URL = "https://prowlarr.com"
@@ -64,7 +62,6 @@ class ProwlarrLook:
     open_button: bool = False  # "Open Prowlarr"
     install_button: bool = False  # "Install Prowlarr" and its note
     get_link: bool = False  # "Get Prowlarr" (prowlarr.com) after a failed install
-    flaresolverr_tip: bool = False  # the FlareSolverr line and "How to add FlareSolverr"
 
 
 CHECKING = ProwlarrLook(N_("Checking…"), theme.TEXT_MUTED)
@@ -81,9 +78,7 @@ def prowlarr_look(status: ProwlarrStatus) -> ProwlarrLook:
         text = t("✓ Connected to Prowlarr on this PC")
         if status.sites is not None:
             text += f" · {site_count(status.sites)}"
-        return ProwlarrLook(
-            text, theme.SUCCESS, open_button=can_open, flaresolverr_tip=True
-        )
+        return ProwlarrLook(text, theme.SUCCESS, open_button=can_open)
     if state is ProwlarrState.CONNECTED_REMOTE:
         return ProwlarrLook(
             t("✓ Connected to Prowlarr at {address}", address=host_port(status.address)),
@@ -145,11 +140,9 @@ class ProwlarrPanel(ctk.CTkFrame):
         label_width: int,
         expanded: bool,
         on_status: Callable[[ProwlarrStatus], None] | None = None,
-        flaresolverr: FlareSolverrService | None = None,
     ) -> None:
         """`width` is the panel's outer width; `label_width` the label column of the
-        "another computer" rows (logical units). Without `flaresolverr` the FlareSolverr line
-        never shows."""
+        "another computer" rows (logical units)."""
         super().__init__(
             master,
             fg_color="transparent",
@@ -159,8 +152,6 @@ class ProwlarrPanel(ctk.CTkFrame):
         )
         self._prowlarr = prowlarr
         self._on_status = on_status
-        self._flaresolverr = flaresolverr
-        self._flaresolverr_dialog: FlareSolverrDialog | None = None
         self._address = ""
         self._expanded = False
         self._installing = False
@@ -216,24 +207,6 @@ class ProwlarrPanel(ctk.CTkFrame):
         )
         self._toggle.bind("<Button-1>", lambda _event: self.set_expanded(not self._expanded))
         self._toggle.grid(row=0, column=2, sticky="w", padx=(_CONTROL_GAP, 0))
-
-        self._flaresolverr_row = ctk.CTkFrame(body, fg_color="transparent")
-        text_label(
-            self._flaresolverr_row,
-            t(PANEL_TIP),
-            size=DETAIL_SIZE,
-            color=theme.TEXT_MUTED,
-            wraplength=inner,
-        ).pack(anchor="w")
-        flaresolverr_link = ctk.CTkLabel(
-            self._flaresolverr_row,
-            text=t(PANEL_LINK),
-            font=theme.font(DETAIL_SIZE, underline=True),
-            text_color=theme.LINK,
-            cursor="hand2",
-        )
-        flaresolverr_link.bind("<Button-1>", lambda _event: self._open_flaresolverr_guide())
-        flaresolverr_link.pack(anchor="w", pady=(4, 0))
 
         self.remote = ctk.CTkFrame(body, fg_color="transparent")
         # Plain Tk grid options are not DPI-scaled by CTk.
@@ -297,10 +270,6 @@ class ProwlarrPanel(ctk.CTkFrame):
             self._open_button.grid(row=0, column=1, sticky="w", padx=(_CONTROL_GAP, 0))
         else:
             self._open_button.grid_remove()
-        if look.flaresolverr_tip and self._flaresolverr is not None:
-            self._flaresolverr_row.grid(row=5, column=0, sticky="ew", pady=(_REMOTE_GAP, 0))
-        else:
-            self._flaresolverr_row.grid_remove()
 
     # -- status and install --------------------------------------------------------------------
 
@@ -355,20 +324,6 @@ class ProwlarrPanel(ctk.CTkFrame):
     def _open(self) -> None:
         if self._address:
             webbrowser.open(self._address)
-
-    def _open_flaresolverr_guide(self) -> None:
-        if self._flaresolverr is None:
-            return
-        dialog = self._flaresolverr_dialog
-        if dialog is not None and dialog.winfo_exists():
-            dialog.lift()
-            dialog.focus_force()
-            return
-        self._flaresolverr_dialog = FlareSolverrDialog(
-            self.winfo_toplevel(),
-            flaresolverr=self._flaresolverr,
-            open_prowlarr=self._open if self._address else None,
-        )
 
     def destroy(self) -> None:
         if self._status_task is not None:

@@ -1,7 +1,7 @@
 """Cards for TMDB titles: films on the Movies page and in search results, shows on the Discover
 tab. Both are tall poster cards (`PosterCard`): films with the one-click Download row, shows with
-"+ Track". Clicking a film's cover opens it on IMDb; a show's calls `on_open_show`, or opens the
-show on IMDb without one.
+"+ Track". Clicking a film's cover or title calls `on_open` (its info window), or opens it on
+IMDb without one; a show's calls `on_open_show`, or opens the show on IMDb without one.
 
 A film's card also carries the watchlist button (`WatchlistButton`); the watchlist shelf's own
 cards are in `watchlist_cards`.
@@ -140,8 +140,9 @@ def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
 class MovieCard(_TmdbCard):
     """A film: year and rating, the watchlist button ("+ Watchlist" / "✓ On watchlist") and a
     Download row ("⬇ Download" and "⋯" for the search window) that unlocks once the film is out
-    digitally. Clicking the cover opens the film on IMDb: its own page once the details name it,
-    IMDb's search until then."""
+    digitally. Clicking the cover or the title calls `on_open(movie)` (the film's info window);
+    without it, it opens the film on IMDb: its own page once the details name it, IMDb's search
+    until then."""
 
     def __init__(
         self,
@@ -153,6 +154,7 @@ class MovieCard(_TmdbCard):
         actions: DownloadActions[Movie],
         watchlist: WatchlistService,
         scale: CardScale = FULL,
+        on_open: Callable[[Movie], None] | None = None,
     ) -> None:
         gap = scale.px(WATCH_ROW_GAP)
         super().__init__(
@@ -177,7 +179,10 @@ class MovieCard(_TmdbCard):
         self._pack_action(self._control)
         self.watch_button = WatchlistButton(self, movie=movie, watchlist=watchlist, scale=scale)
         self._pack_above_action(self.watch_button, gap)
-        self._set_open(self._open_imdb)
+        if on_open is not None:
+            self._set_open(lambda: on_open(movie))
+        else:
+            self._set_open(self._open_imdb)
         self._load_details(details, movie.id, self._show_details)
 
     def _show_details(self, details: MovieDetails) -> None:

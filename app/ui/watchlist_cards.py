@@ -8,7 +8,8 @@ TMDB key.
 A `WatchlistCard` shows, under the title, the film's status (`watch_status`) beside a narrow
 "✓" watchlist button (a click takes the film off the list), and at the bottom either the
 "Download when it's out" switch or, for a film that is out and not looked for automatically
-(or given up on), the usual ⬇ Download + ⋯ row.
+(or given up on), the usual ⬇ Download + ⋯ row. Its cover and title open the film's info
+window (`on_open`; on IMDb without one).
 
 The cards are drawn at the page's `CardScale` (Settings, Card size); the shelf rebuilds its grid
 when the size changed since it was built.
@@ -172,6 +173,7 @@ class WatchlistCard(PosterCard):
         today: Callable[[], date] = date.today,
         now: Callable[[], datetime] = _utc_now,
         scale: CardScale = FULL,
+        on_open: Callable[[Movie], None] | None = None,
     ) -> None:
         movie = entry.movie
         self._status_font = theme.font(scale.font(STATUS_SIZE, SMALL_TEXT_MIN))
@@ -252,7 +254,10 @@ class WatchlistCard(PosterCard):
         )
         self._status_label.pack(side="left", anchor="nw")
 
-        self._set_open(self._open_imdb)
+        if on_open is not None:
+            self._set_open(lambda: on_open(movie))
+        else:
+            self._set_open(self._open_imdb)
         self._paint()
 
     @property
@@ -334,9 +339,12 @@ class WatchlistShelf(ctk.CTkFrame):
         actions: DownloadActions[Movie],
         pady: tuple[int, int] = (0, 25),
         card_scale: Callable[[], CardScale] = lambda: FULL,
+        on_open: Callable[[Movie], None] | None = None,
     ) -> None:
-        """`card_scale`: the card size to draw the cards at, read at every rebuild."""
+        """`card_scale`: the card size to draw the cards at, read at every rebuild. `on_open`:
+        what a click on a card's cover or title does (the film's info window)."""
         super().__init__(master, fg_color="transparent")
+        self._on_open = on_open
         self._watchlist = watchlist
         self._images = images
         self._actions = actions
@@ -406,6 +414,7 @@ class WatchlistShelf(ctk.CTkFrame):
                 watchlist=self._watchlist,
                 actions=self._actions,
                 scale=scale,
+                on_open=self._on_open,
             )
         self._order = [entry.movie_id for entry in entries]
         grid.relayout()

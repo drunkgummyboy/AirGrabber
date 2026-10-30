@@ -32,13 +32,15 @@ from app.models import (
     DownloadMode,
     ProwlarrStatus,
     QualityProfile,
+    Settings,
     ThemeMode,
     UpdateInfo,
     Weekday,
 )
 from app.services import (
     DiscoveryService,
-    FlareSolverrService,
+    ImageCache,
+    LibraryService,
     ProwlarrSetupService,
     RemoteDownloads,
     SettingsService,
@@ -49,10 +51,12 @@ from app.services import (
     UpdateService,
 )
 from app.services import startup
+from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.branding import set_window_icon
+from app.ui.card_preview import CardSizePreview
 from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
 from app.ui.dialog_kit import (
     BUTTON_HEIGHT,
@@ -67,6 +71,8 @@ from app.ui.dialog_kit import (
     text_label,
 )
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
+from app.ui.quick_setup import OPEN_TEXT as QUICK_SETUP_TEXT
+from app.ui.quick_setup import QuickSetupDialog
 from app.ui.remote_program_form import FIELD_LABELS as REMOTE_LABELS
 from app.ui.remote_program_form import FolderNote, RemoteProgramForm, folder_note
 from app.ui.subtitle_settings import (
@@ -149,6 +155,8 @@ APP_CHOICE = N_("Open in my torrent program on this PC")
 APP_TEXT = N_("Each download opens in your torrent program by itself. Best for most people.")
 REMOTE_CHOICE = N_("Send to a torrent program on my NAS or another computer")
 REMOTE_TEXT = N_("For a NAS or home server (Synology, qBittorrent, Transmission).")
+# Under REMOTE_TEXT while the program is the qBittorrent on this PC that AirGrabber set up.
+LOCAL_QBITTORRENT_TEXT = N_("qBittorrent on this PC (set up by AirGrabber)")
 FOLDER_CHOICE = N_("Save .torrent files to a folder")
 FOLDER_TEXT = N_("For a watch folder, for example on a NAS.")
 
@@ -184,6 +192,8 @@ KEY_GUIDE_LINK = N_("How do I get a free key?")
 
 WEEK_TITLE = N_("Week starts on")
 WEEK_TEXT = N_("The first day of each week on the Calendar.")
+
+QUICK_SETUP_NOTE = N_("Look, download quality, card size and language, each with one click.")
 
 THEME_TITLE = N_("Theme")
 THEME_TEXT = N_("Light or dark. Follow Windows uses the same look as your other Windows apps.")
@@ -339,6 +349,19 @@ def download_rows(mode: DownloadMode) -> DownloadRows:
         torrent_status=mode is DownloadMode.APP,
         remote_form=mode is DownloadMode.REMOTE,
         folder=mode is DownloadMode.FOLDER,
+    )
+
+
+def download_settings(settings: Settings) -> tuple[Any, ...]:
+    """The stored download choice and remote program, for noticing a change made elsewhere."""
+    return (
+        settings.download_mode,
+        settings.remote_kind,
+        settings.remote_url,
+        settings.remote_username,
+        settings.remote_password,  # SecretStr compares the passwords themselves
+        settings.remote_destination,
+        settings.remote_verify_tls,
     )
 
 
@@ -701,11 +724,19 @@ class SettingsDialog(ctk.CTkToplevel):
         startup_shortcut: StartupShortcut | None = None,
         subtitles: SubtitleService | None = None,
         on_restart: Callable[[], None] | None = None,
-        flaresolverr: FlareSolverrService | None = None,
+        images: ImageCache | None = None,
+        library: LibraryService | None = None,
     ) -> None:
         """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
-        AirGrabber (the Language box's "Restart now"; without it only the note shows)."""
+        AirGrabber (the Language box's "Restart now"; without it only the note shows).
+        `images`: the Card size box's preview card (none without it); `library`: a followed
+        show's poster for it (the placeholder card without one)."""
         super().__init__(master, fg_color=theme.BG)
+        self._images = images
+        self._library = library
+        self._card_preview: CardSizePreview | None = None
+        self._quick_dialog: QuickSetupDialog | None = None
+        self._preview_task: asyncio.Task[None] | None = None
         self._subtitles = subtitles
         self._subtitle_rows: ctk.CTkFrame | None = None
         self._language_tags: LanguageTags | None = None
@@ -719,7 +750,6 @@ class SettingsDialog(ctk.CTkToplevel):
         self._torrent_app = torrent_app
         self._discovery = discovery
         self._prowlarr = prowlarr
-        self._flaresolverr = flaresolverr  # the Prowlarr panel's "How to add FlareSolverr"
         self._on_update = on_update
         self._on_restart = on_restart
         self._tests: dict[str, asyncio.Task[None]] = {}
@@ -920,6 +950,8 @@ class SettingsDialog(ctk.CTkToplevel):
             self._radio(remote.body, t(REMOTE_CHOICE), DownloadMode.REMOTE), gap=0, sticky="w"
         )
         remote.add(remote.text(t(REMOTE_TEXT), indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
+        self._local_line = remote.text(t(LOCAL_QBITTORRENT_TEXT), indent=_INDENT)
+        self._local_row = remote.take_row()
         self._remote_box = remote
         self._remote_row = remote.take_row()
 
@@ -961,7 +993,35 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         self._remote_form.configure(corner_radius=0)
         _paint_background(self._remote_form, theme.TAB_BG)
+        self._show_local_line(self._settings.current)
+        # qBittorrent's setup button can point AirGrabber at qBittorrent's Web UI while this
+        # dialog is open: the choice and the form then show that, so Save doesn't undo it.
+        self._download_shown = download_settings(self._settings.current)
+        self._storing = False
+        self._stop_listening = self._settings.subscribe(self._settings_changed)
         return page
+
+    def _show_local_line(self, settings: Settings) -> None:
+        if set_up_by_airgrabber(settings):
+            self._local_line.grid(
+                row=self._local_row, column=0, sticky="w", padx=(_INDENT, 0), pady=(2, 0)
+            )
+        else:
+            self._local_line.grid_remove()
+
+    def _settings_changed(self, updated: Settings) -> None:
+        """Settings stored elsewhere: show a changed download choice and remote program."""
+        if not self.winfo_exists():
+            return
+        self._show_local_line(updated)
+        shown = download_settings(updated)
+        if self._storing or shown == self._download_shown:
+            return
+        self._download_shown = shown
+        self._mode.set(updated.download_mode.value)
+        self._form_in_folder = False
+        self._remote_form.load(updated)
+        self._show_download_rows()
 
     def _mode_changed(self) -> None:
         self._form_in_folder = False
@@ -1320,6 +1380,12 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build_looks(self) -> _Page:
         page = self._new_page(SECTION_LOOKS)
+        # The most important choices of every section on one page (also the welcome's last step).
+        quick = page.box(t(QUICK_SETUP_TEXT), t(QUICK_SETUP_NOTE))
+        line = quick.frame_row()
+        secondary_button(line, t(QUICK_SETUP_TEXT), self._open_quick_setup, width=180).pack(
+            side="left"
+        )
         self._build_language(page)
         looks = page.box(t(THEME_TITLE), t(THEME_TEXT))
         themes = [theme_name(mode) for mode in THEME_NAMES]
@@ -1331,10 +1397,64 @@ class SettingsDialog(ctk.CTkToplevel):
             ),
             sticky="w",
         )
+        if self._images is not None:
+            # A real card at the chosen size, and the saved size's outline beside it.
+            saved = self._settings.current.card_size
+            self._card_preview = CardSizePreview(
+                cards.body, images=self._images, chosen=saved, saved=saved
+            )
+            cards.add(self._card_preview, sticky="w")
+            self._card_size.trace_add("write", lambda *_args: self._card_size_changed())
+            if self._library is not None:
+                self._preview_task = spawn(self._preview_show(self._library), name="card-preview")
         week = page.box(t(WEEK_TITLE), t(WEEK_TEXT))
         line = week.frame_row()
         self._option_menu(line, self._first_day, [weekday_name(day) for day in Weekday])
         return page
+
+    def _card_size_changed(self) -> None:
+        if self._card_preview is None:
+            return
+        try:
+            chosen = size_from_label(self._card_size.get())
+        except ValueError:
+            return
+        self._card_preview.show(chosen, self._settings.current.card_size)
+
+    async def _preview_show(self, library: LibraryService) -> None:
+        """The first followed show with a poster for the preview card (its poster is most
+        likely in the poster cache already)."""
+        entries = await library.tracked()
+        show = next((entry.show for entry in entries if entry.show.poster_url), None)
+        if show is not None and self._card_preview is not None and self.winfo_exists():
+            self._card_preview.use_show(show)
+
+    # -- Quick setup ---------------------------------------------------------------------------
+
+    def _open_quick_setup(self) -> None:
+        """Quick setup on its own over Settings; what it saves shows here at once, so Save
+        keeps it."""
+        if self._quick_dialog is not None and self._quick_dialog.winfo_exists():
+            self._quick_dialog.lift()
+            return
+        restart = async_command(self._restart_now) if self._on_restart is not None else None
+        self._quick_dialog = QuickSetupDialog(
+            self, settings=self._settings, on_saved=self._quick_saved, on_restart=restart
+        )
+
+    def _quick_saved(self) -> None:
+        """Show what Quick setup saved (look, quality, card size, language)."""
+        if not self.winfo_exists():
+            return
+        current = self._settings.current
+        self._theme_mode.set(theme_name(current.theme_mode))
+        self._quality_tv.set(quality_name(current.quality_tv))
+        self._quality_movie.set(quality_name(current.quality_movie))
+        self._card_size.set(CARD_SIZE_LABELS[current.card_size])
+        self._language.set(current.language.native_name)
+        self._language_changed()
+        if self._card_preview is not None:
+            self._card_preview.show(current.card_size, current.card_size)
 
     def _build_language(self, page: _Page) -> None:
         """The Language box: English / Nederlands, each in its own language. Another language
@@ -1422,7 +1542,6 @@ class SettingsDialog(ctk.CTkToplevel):
             label_width=_PANEL_LABEL_WIDTH,
             expanded=shows_remote_fields(url),
             on_status=self._prowlarr_status_shown,
-            flaresolverr=self._flaresolverr,
         )
         _paint_background(panel, theme.TAB_BG)  # a box like the others
         page.add(panel)
@@ -1567,10 +1686,10 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _fit_size(self) -> None:
         """Fix the dialog at the size of its tallest page in its tallest state (any download
-        choice, with the Install button, the magnet note and its form, the Subtitles rows), at
+        choice, with the program's button, the magnet note and its form, the Subtitles rows), at
         most _MAX_PAGE_HEIGHT, so it doesn't change between pages or choices; on a short screen
         at the screen's height instead, the pages scrolling."""
-        self._torrent.show(TorrentStatus.MISSING)
+        self._torrent.show(TorrentStatus.SETUP_NEEDED)  # its tallest: the line and a button
         if self._subtitle_rows is not None:
             self._subtitle_rows.grid()  # measured with the Subtitles rows showing
         content = 0
@@ -1626,6 +1745,14 @@ class SettingsDialog(ctk.CTkToplevel):
             use_prowlarr=self._use_prowlarr.get(),
             unknown=self._unknown_disabled,
         )
+        self._storing = True  # its own change: the form shows it already
+        try:
+            await self._store_fields(disabled)
+        finally:
+            self._storing = False
+        self._download_shown = download_settings(self._settings.current)
+
+    async def _store_fields(self, disabled: tuple[str, ...]) -> None:
         await self._settings.update(
             download_mode=self._mode.get(),
             quality_tv=quality_from_name(self._quality_tv.get()),
@@ -1813,7 +1940,12 @@ class SettingsDialog(ctk.CTkToplevel):
             self._on_update()
 
     def destroy(self) -> None:
+        stop_listening = getattr(self, "_stop_listening", None)
+        if stop_listening is not None:
+            stop_listening()
         for task in self._tests.values():
             task.cancel()
         self._tests.clear()
+        if self._preview_task is not None:
+            self._preview_task.cancel()
         super().destroy()

@@ -45,10 +45,7 @@ class ProwlarrLookTests(unittest.TestCase):
         self.assertEqual(
             prowlarr_look(status(ProwlarrState.CONNECTED_LOCAL, sites=5, address=BASE)),
             ProwlarrLook(
-                "✓ Connected to Prowlarr on this PC · 5 sites",
-                theme.SUCCESS,
-                open_button=True,
-                flaresolverr_tip=True,
+                "✓ Connected to Prowlarr on this PC · 5 sites", theme.SUCCESS, open_button=True
             ),
         )
         one = prowlarr_look(status(ProwlarrState.CONNECTED_LOCAL, sites=1, address=BASE))
@@ -96,12 +93,6 @@ class ProwlarrLookTests(unittest.TestCase):
                 look = prowlarr_look(status(state, address=BASE))
                 self.assertEqual(look.install_button, state is ProwlarrState.NOT_INSTALLED)
                 self.assertFalse(look.get_link)
-
-    def test_only_a_prowlarr_on_this_pc_shows_the_flaresolverr_line(self) -> None:
-        for state in ProwlarrState:
-            with self.subTest(state=state):
-                look = prowlarr_look(status(state, address=BASE))
-                self.assertEqual(look.flaresolverr_tip, state is ProwlarrState.CONNECTED_LOCAL)
 
     def test_transient_looks(self) -> None:
         self.assertEqual(CHECKING, ProwlarrLook("Checking…", theme.TEXT_MUTED))
@@ -228,7 +219,7 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
             dialog.destroy()
 
     async def dialog(
-        self, prowlarr: FakeProwlarr, flaresolverr: Any = None, **values: Any
+        self, prowlarr: FakeProwlarr, **values: Any
     ) -> tuple[SettingsDialog, SettingsService]:
         settings = SettingsService(
             FakeSettingsRepository(),  # type: ignore[arg-type]
@@ -244,7 +235,6 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
             discovery=mock.MagicMock(),
             prowlarr=prowlarr,  # type: ignore[arg-type]
             startup_shortcut=FakeShortcut(),
-            flaresolverr=flaresolverr,
         )
         self.addCleanup(self._close, dialog)
         task = dialog._prowlarr_panel._status_task
@@ -262,19 +252,6 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(panel._open_button.winfo_manager())
         self.assertFalse(panel._install_row.winfo_manager())
         self.assertFalse(panel.expanded)  # a Prowlarr on this PC: the fields stay folded
-
-    async def test_the_flaresolverr_line(self) -> None:
-        answer = status(ProwlarrState.CONNECTED_LOCAL, sites=5, address=BASE)
-        dialog, _settings = await self.dialog(
-            FakeProwlarr(answer), flaresolverr=mock.MagicMock(), prowlarr_url=BASE
-        )
-        self.assertTrue(dialog._prowlarr_panel._flaresolverr_row.winfo_manager())
-        without, _settings = await self.dialog(FakeProwlarr(answer), prowlarr_url=BASE)
-        self.assertFalse(without._prowlarr_panel._flaresolverr_row.winfo_manager())
-        missing, _settings = await self.dialog(
-            FakeProwlarr(status(ProwlarrState.NOT_INSTALLED)), flaresolverr=mock.MagicMock()
-        )
-        self.assertFalse(missing._prowlarr_panel._flaresolverr_row.winfo_manager())
 
     async def test_fields_start_open_for_another_computer(self) -> None:
         answer = status(ProwlarrState.CONNECTED_REMOTE, address="http://nas.local:9696")

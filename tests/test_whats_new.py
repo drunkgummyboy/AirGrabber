@@ -89,6 +89,13 @@ class WhatsNewWindowTests(unittest.TestCase):
         self.assertIn("What's new in AirGrabber 2.0.5", texts)
         for line in ("One.", "Two.", "Three."):
             self.assertIn(line, texts)
+        # Tk delivers a generated key press to the window with the keyboard focus, which Windows
+        # withholds while another program is in front (a desktop in use while the tests run).
+        self.assertTrue(dialog.bind("<Escape>"))
+        dialog.focus_force()
+        self.root.update()
+        if dialog.focus_get() is None:
+            self.skipTest("no keyboard focus for the test window")
         dialog.event_generate("<Escape>")
         self.root.update()
         self.assertEqual(self.dialogs(), [])

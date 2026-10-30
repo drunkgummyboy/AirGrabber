@@ -48,13 +48,17 @@ def details(*episodes: Episode, next_episode: Episode | None = None) -> ShowDeta
 
 
 class MetaLineTests(unittest.TestCase):
+    """Year · network · seasons · rating · status (the info window's order)."""
+
     def test_everything_known(self) -> None:
         full = show(premiered="2022-02-18", network="Apple TV", status="Running", rating=8.4)
-        self.assertEqual(meta_line(full), "2022 · Apple TV · Running · ★ 8.4")
+        self.assertEqual(meta_line(full, 3), "2022 · Apple TV · 3 seasons · ★ 8.4 · Running")
+        self.assertEqual(meta_line(full, 1), "2022 · Apple TV · 1 season · ★ 8.4 · Running")
 
     def test_unknown_parts_are_left_out(self) -> None:
-        self.assertEqual(meta_line(show(status="Ended", rating=7.0)), "Ended · ★ 7.0")
+        self.assertEqual(meta_line(show(status="Ended", rating=7.0)), "★ 7.0 · Ended")
         self.assertEqual(meta_line(show(premiered="2022-02-18")), "2022")
+        self.assertEqual(meta_line(show(), 0), "")
         self.assertEqual(meta_line(show()), "")
 
 

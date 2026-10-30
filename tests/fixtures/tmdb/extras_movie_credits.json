@@ -1,0 +1,19 @@
+{
+ "id": 4242,
+ "cast": [
+  {"adult": false, "gender": 1, "id": 7000001, "known_for_department": "Acting", "name": "Maren Holloway", "original_name": "Maren Holloway", "popularity": 21.4, "profile_path": "/madeup_movie_credits_1.jpg", "cast_id": 1, "character": "Ida Marlowe", "credit_id": "64f0b1000000000000000001", "order": 0},
+  {"adult": false, "gender": 2, "id": 7000002, "known_for_department": "Acting", "name": "Tobias Wren", "original_name": "Tobias Wren", "popularity": 17.9, "profile_path": "/madeup_movie_credits_2.jpg", "cast_id": 2, "character": "Constable Pike", "credit_id": "64f0b1000000000000000002", "order": 1},
+  {"adult": false, "gender": 1, "id": 7000003, "known_for_department": "Acting", "name": "Odile Banerjee", "original_name": "Odile Banerjee", "popularity": 12.0, "profile_path": null, "cast_id": 3, "character": "The Keeper", "credit_id": "64f0b1000000000000000003", "order": 2},
+  {"adult": false, "gender": 2, "id": 7000004, "known_for_department": "Acting", "name": "Casimir Achterberg", "original_name": "Casimir Achterberg", "popularity": 9.3, "profile_path": "/madeup_movie_credits_3.jpg", "cast_id": 4, "character": "Harbourmaster Vos", "credit_id": "64f0b1000000000000000004", "order": 3},
+  {"adult": false, "gender": 1, "id": 7000005, "known_for_department": "Acting", "name": "Lena Oyelaran", "original_name": "Lena Oyelaran", "popularity": 8.8, "profile_path": "/madeup_movie_credits_4.jpg", "cast_id": 5, "character": "", "credit_id": "64f0b1000000000000000005", "order": 4},
+  {"adult": false, "gender": 2, "id": 7000006, "known_for_department": "Acting", "name": "Fintan Galloway", "original_name": "Fintan Galloway", "popularity": 7.1, "profile_path": null, "cast_id": 6, "character": "Ferryman", "credit_id": "64f0b1000000000000000006", "order": 5},
+  {"adult": false, "gender": 1, "id": 7000007, "known_for_department": "Acting", "name": "Saskia Delacroix-Ng", "original_name": "Saskia Delacroix-Ng", "popularity": 6.5, "profile_path": "/madeup_movie_credits_5.jpg", "cast_id": 7, "character": "Young Ida", "credit_id": "64f0b1000000000000000007", "order": 6},
+  {"adult": false, "gender": 2, "id": 7000008, "known_for_department": "Acting", "name": "Bram", "original_name": "Bram", "popularity": 5.0, "profile_path": null, "cast_id": 8, "character": "Fisherman (voice)", "credit_id": "64f0b1000000000000000008", "order": 7},
+  {"adult": false, "gender": 0, "id": 7000009, "known_for_department": "Acting", "name": "", "original_name": "", "popularity": 0.1, "profile_path": null, "cast_id": 9, "character": "Nameless", "credit_id": "64f0b1000000000000000009", "order": 8},
+  {"adult": false, "gender": 2, "id": 7000010, "known_for_department": "Acting", "name": "Ruben Okafor", "original_name": "Ruben Okafor", "popularity": 4.2, "profile_path": null, "cast_id": 10, "character": "Dock Worker", "credit_id": "64f0b1000000000000000010", "order": 9},
+  {"adult": false, "gender": 1, "id": 7000011, "known_for_department": "Acting", "name": "Wilhelmina Strand", "original_name": "Wilhelmina Strand", "popularity": 3.9, "profile_path": null, "cast_id": 11, "character": "Innkeeper", "credit_id": "64f0b1000000000000000011", "order": 10}
+ ],
+ "crew": [
+  {"adult": false, "gender": 2, "id": 7100001, "known_for_department": "Directing", "name": "Anselm Fairweather", "original_name": "Anselm Fairweather", "popularity": 3.1, "profile_path": null, "credit_id": "64f0b2000000000000000001", "department": "Directing", "job": "Director"}
+ ]
+}

@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable, Mapping
+import re
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import TypeVar
 
@@ -21,8 +22,28 @@ import httpx
 from pydantic import ValidationError
 
 from app.i18n import t
-from app.models.domain import DiscoverShow, Movie, MovieDetails, TVDetails
-from app.models.tmdb import TMDBMovieDetails, TMDBMovieItem, TMDBTVDetails, TMDBTVItem
+from app.models.domain import (
+    CastMember,
+    DiscoverShow,
+    MediaType,
+    Movie,
+    MovieDetails,
+    TitleInfo,
+    TVDetails,
+    Video,
+)
+from app.models.tmdb import (
+    TMDBAggregateCredits,
+    TMDBCredits,
+    TMDBFindResults,
+    TMDBMovieDetails,
+    TMDBMovieInfo,
+    TMDBMovieItem,
+    TMDBTVDetails,
+    TMDBTVInfo,
+    TMDBTVItem,
+    TMDBVideos,
+)
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +54,7 @@ _RATE_LIMITED_ATTEMPTS = 4
 _FAILED_ATTEMPTS = 3
 # v4 "API Read Access Tokens" are JWTs; anything else is a v3 API key.
 _V4_TOKEN_PREFIX = "eyJ"
+_IMDB_ID = re.compile(r"tt\d{1,10}")
 
 
 class TMDBError(Exception):
@@ -135,6 +157,66 @@ class TMDBClient:
         payload = await self._get_json(path, {"append_to_response": "external_ids"})
         return _parse_one(path, payload, _tv_details)
 
+    async def movie(self, movie_id: int) -> Movie:
+        """A film as TMDB's lists describe it (title, release date, poster, overview, rating),
+        from its details: for a film known only by its id (a grab in the download history)."""
+        path = f"/movie/{movie_id}"
+        payload = await self._get_json(path, {})
+        return _parse_one(path, payload, _movie)
+
+    @property
+    def configured(self) -> bool:
+        """Whether a key is set (not whether TMDB accepts it)."""
+        return bool(self._api_key().strip())
+
+    async def movie_info(self, movie_id: int, *, language: str | None = None) -> TitleInfo:
+        """A film's overview, genres, images, runtime, status and rating in `language` (an
+        IETF tag such as "nl-NL"; None = the client's). TMDB leaves the overview empty when it
+        has none in that language."""
+        path = f"/movie/{movie_id}"
+        payload = await self._get_json(path, {}, language=language)
+        return _parse_one(path, payload, lambda raw: TMDBMovieInfo.model_validate(raw).to_info())
+
+    async def tv_info(self, tv_id: int, *, language: str | None = None) -> TitleInfo:
+        """A show's overview, genres, images, seasons, status and rating in `language`."""
+        path = f"/tv/{tv_id}"
+        payload = await self._get_json(path, {}, language=language)
+        return _parse_one(path, payload, lambda raw: TMDBTVInfo.model_validate(raw).to_info())
+
+    async def videos(
+        self, kind: MediaType, item_id: int, *, languages: Sequence[str] = ()
+    ) -> list[Video]:
+        """A film's or show's videos (trailers, teasers, clips), in `languages` (ISO 639-1
+        codes) and those without a language; without `languages`, TMDB's default."""
+        path = f"/{kind.value}/{item_id}/videos"
+        params = {"include_video_language": ",".join((*languages, "null"))} if languages else {}
+        payload = await self._get_json(path, params)
+        return _parse_one(path, payload, lambda raw: TMDBVideos.model_validate(raw).to_videos())
+
+    async def cast(self, kind: MediaType, item_id: int) -> list[CastMember]:
+        """A film's cast in billing order (/credits), or a show's whole run's cast, the most
+        seen first (/aggregate_credits)."""
+        if kind is MediaType.MOVIE:
+            path = f"/movie/{item_id}/credits"
+            payload = await self._get_json(path, {})
+            return _parse_one(path, payload, lambda raw: TMDBCredits.model_validate(raw).to_cast())
+        path = f"/tv/{item_id}/aggregate_credits"
+        payload = await self._get_json(path, {})
+        return _parse_one(
+            path, payload, lambda raw: TMDBAggregateCredits.model_validate(raw).to_cast()
+        )
+
+    async def find_tv(self, imdb_id: str) -> int | None:
+        """The TMDB id of the show with this IMDb id ("tt…"); None when TMDB knows none (or
+        the id isn't one: nothing is asked then)."""
+        if not _IMDB_ID.fullmatch(imdb_id):
+            return None
+        path = f"/find/{imdb_id}"
+        payload = await self._get_json(path, {"external_source": "imdb_id"})
+        return _parse_one(
+            path, payload, lambda raw: TMDBFindResults.model_validate(raw).first_tv_id()
+        )
+
     async def check_key(self, key: str) -> bool:
         """Whether TMDB accepts `key` (a v3 API key or a v4 read access token), whatever key the
         client is configured with.
@@ -170,8 +252,10 @@ class TMDBClient:
     ) -> list[T]:
         return _parse_results(path, await self._get_json(path, params), convert)
 
-    async def _get_json(self, path: str, params: Mapping[str, str]) -> object:
-        """GET `path` and decode its JSON body.
+    async def _get_json(
+        self, path: str, params: Mapping[str, str], *, language: str | None = None
+    ) -> object:
+        """GET `path` and decode its JSON body (in `language`; None = the client's).
 
         429 is retried up to 4 attempts in all, 5xx and transport errors up to 3; attempts are
         counted together and the limit of the latest failure applies. The semaphore is held only
@@ -184,7 +268,7 @@ class TMDBClient:
         if not (key.isascii() and key.isprintable()):  # e.g. a pasted zero-width space
             raise TMDBAuthError(t("TMDB API key contains invalid characters"))
         auth_query, headers = _auth(key)
-        query = {**params, "language": self._language, **auth_query}
+        query = {**params, "language": language or self._language, **auth_query}
         url = self.BASE_URL + path
         attempt = 0
         while True:

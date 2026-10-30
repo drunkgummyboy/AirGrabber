@@ -40,10 +40,12 @@ class DownloadsButton(ctk.CTkFrame):
             width=40,
             height=40,
             corner_radius=10,
-            fg_color="transparent",
-            hover_color=theme.SURFACE,
+            fg_color=theme.SURFACE,  # framed like the search and settings buttons beside it
+            hover_color=theme.HOVER,
+            border_width=1,
+            border_color=theme.EDGE,
             text_color=theme.BUTTON_TEXT,
-            font=theme.font(24),
+            font=theme.font(20),
             command=command,
         )
         self._button.pack()
@@ -65,7 +67,7 @@ class DownloadsButton(ctk.CTkFrame):
     def set_selected(self, selected: bool) -> None:
         """Highlighted like the Series / Movies switch while the Downloads page shows."""
         self._button.configure(
-            fg_color=theme.ACCENT if selected else "transparent",
+            fg_color=theme.ACCENT if selected else theme.SURFACE,
             text_color=theme.ON_ACCENT if selected else theme.BUTTON_TEXT,
         )
 

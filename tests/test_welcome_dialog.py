@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from app.database import Database
-from app.models import DownloadMode, Settings
+from app.models import DownloadMode, QBittorrentState, RemoteKind, Settings, TorrentApp
 from app.services import SettingsService
 from app.ui import theme
 from app.ui.tmdb_key_guide import KeyAction, KeyCheck, key_action, key_check_message
@@ -19,6 +19,7 @@ from app.ui.welcome_dialog import (
     elide_path,
     finish_changes,
     first_run_action,
+    first_run_defaults,
     nav_buttons,
     next_page,
     page_step,
@@ -49,26 +50,71 @@ class FirstRunActionTests(unittest.TestCase):
         self.assertFalse(Settings.model_validate({"quality": "1080p"}).setup_done)
 
 
+class FirstRunDefaultsTests(unittest.TestCase):
+    """A new install with qBittorrent (install.ps1 installs it when there is no torrent program)
+    starts in "Open in my torrent program" with qBittorrent's save folder."""
+
+    QBIT = TorrentApp(name="qBittorrent")
+    STATE = QBittorrentState(exists=True, quiet=True, save_path=r"D:\Torrents")
+
+    def test_qbittorrent_gets_app_mode_and_its_save_folder(self) -> None:
+        self.assertEqual(
+            first_run_defaults(Settings(), self.QBIT, self.STATE),
+            {"download_mode": DownloadMode.APP, "subtitles_folder": r"D:\Torrents"},
+        )
+        # Never run yet: qBittorrent's default, the Downloads folder.
+        fresh = QBittorrentState(exists=False, quiet=False, save_path=r"C:\Users\Alex\Downloads")
+        self.assertEqual(
+            first_run_defaults(Settings(), self.QBIT, fresh)["subtitles_folder"],
+            r"C:\Users\Alex\Downloads",
+        )
+
+    def test_a_filled_in_folder_stays(self) -> None:
+        current = Settings(subtitles_folder=r"\\nas\video")
+        self.assertEqual(
+            first_run_defaults(current, self.QBIT, self.STATE), {"download_mode": DownloadMode.APP}
+        )
+        # Unreadable settings file: only the mode.
+        self.assertEqual(
+            first_run_defaults(Settings(), self.QBIT, None), {"download_mode": DownloadMode.APP}
+        )
+
+    def test_nothing_without_qbittorrent(self) -> None:
+        self.assertEqual(first_run_defaults(Settings(), None, None), {})
+        self.assertEqual(first_run_defaults(Settings(), TorrentApp(name="Deluge"), None), {})
+
+    def test_a_nas_set_up_already_is_left_alone(self) -> None:
+        remote = Settings(download_mode=DownloadMode.REMOTE)
+        self.assertEqual(first_run_defaults(remote, self.QBIT, self.STATE), {})
+        configured = Settings(
+            remote_kind=RemoteKind.TRANSMISSION, remote_url="http://192.168.1.20:9091"
+        )
+        self.assertEqual(first_run_defaults(configured, self.QBIT, self.STATE), {})
+
+
 class StepTests(unittest.TestCase):
     def test_step_labels(self) -> None:
         self.assertIsNone(step_label(1))
-        self.assertEqual(step_label(2), "Step 2 of 4")
-        self.assertEqual(step_label(3), "Step 3 of 4")
-        self.assertEqual(step_label(4), "Step 4 of 4")
+        self.assertEqual(step_label(2), "Step 2 of 5")
+        self.assertEqual(step_label(3), "Step 3 of 5")
+        self.assertEqual(step_label(4), "Step 4 of 5")
+        self.assertEqual(step_label(5), "Step 5 of 5")
 
     def test_pages_and_their_steps(self) -> None:
         self.assertEqual(
-            [page_step(page) for page in Page], [1, 2, 2, 3, 4]
+            [page_step(page) for page in Page], [1, 2, 2, 3, 4, 5]
         )  # the import panel is still step 2
-        self.assertEqual(step_label(page_step(Page.AIRDATES_IMPORT)), "Step 2 of 4")
-        self.assertEqual(step_label(page_step(Page.DOWNLOAD)), "Step 3 of 4")
-        self.assertEqual(step_label(page_step(Page.TMDB)), "Step 4 of 4")
+        self.assertEqual(step_label(page_step(Page.AIRDATES_IMPORT)), "Step 2 of 5")
+        self.assertEqual(step_label(page_step(Page.DOWNLOAD)), "Step 3 of 5")
+        self.assertEqual(step_label(page_step(Page.TMDB)), "Step 4 of 5")
+        self.assertEqual(step_label(page_step(Page.QUICK)), "Step 5 of 5")
 
     def test_nav_buttons(self) -> None:
         self.assertEqual(nav_buttons(Page.WELCOME), (None, None))  # "Get started" in the content
         self.assertEqual(nav_buttons(Page.AIRDATES), ("Back", "Next"))
         self.assertEqual(nav_buttons(Page.DOWNLOAD), ("Back", "Next"))
-        self.assertEqual(nav_buttons(Page.TMDB), ("Skip for now", "Finish"))
+        self.assertEqual(nav_buttons(Page.TMDB), ("Skip for now", "Next"))
+        self.assertEqual(nav_buttons(Page.QUICK), ("Back", "Finish"))
 
     def test_import_panel_skips_until_imported(self) -> None:
         self.assertEqual(nav_buttons(Page.AIRDATES_IMPORT), ("Back", "Skip"))
@@ -83,7 +129,9 @@ class StepTests(unittest.TestCase):
         self.assertIs(page, Page.AIRDATES_IMPORT)
         page = next_page(page, import_shows=True)
         self.assertIs(page, Page.DOWNLOAD)
-        self.assertIs(next_page(page, import_shows=True), Page.TMDB)
+        page = next_page(page, import_shows=True)
+        self.assertIs(page, Page.TMDB)
+        self.assertIs(next_page(page, import_shows=True), Page.QUICK)
 
     def test_no_goes_straight_to_downloads(self) -> None:
         self.assertIs(next_page(Page.AIRDATES, import_shows=False), Page.DOWNLOAD)
@@ -94,6 +142,7 @@ class StepTests(unittest.TestCase):
         self.assertIs(previous_page(Page.AIRDATES_IMPORT, import_shows=True), Page.AIRDATES)
         self.assertIs(previous_page(Page.DOWNLOAD, import_shows=True), Page.AIRDATES_IMPORT)
         self.assertIs(previous_page(Page.DOWNLOAD, import_shows=False), Page.AIRDATES)
+        self.assertIs(previous_page(Page.QUICK, import_shows=False), Page.TMDB)
 
 
 class ChangesTests(unittest.TestCase):

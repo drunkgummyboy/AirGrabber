@@ -2,6 +2,11 @@
 window, run the async Tk loop.
 
 `--tray` starts with only the tray icon showing (the Start-with-Windows shortcut passes it).
+`--setup-qbittorrent` only sets qBittorrent up for AirGrabber (no "Add new torrent" pop-up for
+each download, AirGrabber's look; app/services/qbittorrent_setup.py) and exits: install.ps1 runs it right after it
+installed qBittorrent. On a new AirGrabber install it also turns qBittorrent's Web UI on (this PC only)
+and points AirGrabber at it (app/services/qbittorrent_local.py). No window; the exit code says how
+it went (`EXIT_CODES` there).
 """
 
 from __future__ import annotations
@@ -33,20 +38,25 @@ _background_tasks: set[asyncio.Task[Any]] = set()  # strong references until the
 @dataclass(frozen=True, slots=True)
 class Options:
     tray: bool = False  # start hidden: only the tray icon shows
+    setup_qbittorrent: bool = False  # only set qBittorrent up for AirGrabber, then exit
 
 
 def parse_options(argv: Sequence[str]) -> Options:
     """The command line; anything unknown is ignored (pythonw.exe has no console to complain on)."""
     parser = argparse.ArgumentParser(prog="AirGrabber", add_help=False)
     parser.add_argument("--tray", action="store_true")
+    parser.add_argument("--setup-qbittorrent", action="store_true")
     namespace, _unknown = parser.parse_known_args(list(argv))
-    return Options(tray=bool(namespace.tray))
+    return Options(tray=bool(namespace.tray), setup_qbittorrent=bool(namespace.setup_qbittorrent))
 
 
 def main() -> int:
     options = parse_options(sys.argv[1:])
     paths = AppPaths.default().ensure()
     configure_logging(paths)
+    if options.setup_qbittorrent:
+        # Not the app: no single-instance lock (AirGrabber may be running) and no window.
+        return _setup_qbittorrent(paths)
     log.info("=== AirGrabber starting (data: %s) ===", paths.root)
     # Its own name and icon on notifications and its own taskbar group (app/identity.py), not
     # Python's: before any window (the package check's included) or the tray icon exists.
@@ -110,6 +120,22 @@ def _run(paths: AppPaths, instance: InstanceLock, *, start_hidden: bool) -> int:
         if restart:
             instance.release()  # else the new copy would find this one still running
             _relaunch()
+
+
+def _setup_qbittorrent(paths: AppPaths) -> int:
+    """`--setup-qbittorrent` (install.ps1): turn qBittorrent's "Add new torrent" pop-up off and give
+    it AirGrabber's look (its theme copied into the data folder) unless qBittorrent runs; on a new
+    install also its Web UI for AirGrabber. Never raises; the exit code says how it went."""
+    log.info("=== AirGrabber: setting qBittorrent up ===")
+    try:
+        if not ensure_requirements(paths):
+            return 1
+        from app.services.qbittorrent_setup import run_setup
+
+        return run_setup(data_dir=paths.root)
+    except Exception:
+        log.exception("Setting qBittorrent up failed")
+        return 1
 
 
 def _fix_start_menu_shortcut_soon(loop: asyncio.AbstractEventLoop) -> None:

@@ -1,0 +1,175 @@
+/*
+ * AirGrabber's look for qBittorrent (made for AirGrabber; see README.md).
+ *
+ * One style sheet for light and dark. qBittorrent applies it once, whatever Windows' mode, so
+ * backgrounds and text come from the palette (palette(...)): in qBittorrent 5 that palette
+ * follows Windows' light or dark mode. Only AirGrabber's accents are fixed colours, chosen to
+ * read on both: slate blue #4E6A85 (and see-through tints of it) and the green hover #427839.
+ * No images, no fonts, and nothing for combo boxes, spin boxes, check boxes or scroll bars, so
+ * every dialog keeps working as qBittorrent drew it.
+ */
+
+/* Lists and tables: the accent for the selected row, a faint slate-blue stripe on every other
+   row (see-through, so it suits a light and a dark background). */
+QAbstractItemView {
+    selection-background-color: #4E6A85;
+    selection-color: #FFFFFF;
+    alternate-background-color: rgba(78, 106, 133, 0.10);
+}
+
+/* The torrent list: a slate-blue edge, as AirGrabber's cards have. */
+TransferListWidget {
+    border: 1px solid rgba(78, 106, 133, 0.60);
+}
+
+QHeaderView::section {
+    background-color: palette(window);
+    border: none;
+    border-right: 1px solid rgba(78, 106, 133, 0.35);
+    border-bottom: 1px solid rgba(78, 106, 133, 0.70);
+    padding: 3px 6px;
+}
+
+/* Buttons: rounded with a slate-blue edge; a dialog's default button (OK) and a pressed one
+   (also the chosen tab under the torrent list) filled with the accent; green on hover like
+   AirGrabber's own buttons. */
+QPushButton {
+    background-color: palette(button);
+    border: 1px solid rgba(78, 106, 133, 0.70);
+    border-radius: 6px;
+    padding: 4px 14px;
+}
+
+QPushButton:hover {
+    background-color: rgba(78, 106, 133, 0.25);
+    border-color: #4E6A85;
+}
+
+QPushButton:pressed,
+QPushButton:checked,
+QPushButton:default {
+    background-color: #4E6A85;
+    border-color: #4E6A85;
+    color: #FFFFFF;
+}
+
+QPushButton:default:hover {
+    background-color: #427839;
+    border-color: #427839;
+}
+
+QPushButton:disabled {
+    background-color: palette(window);
+    border-color: rgba(78, 106, 133, 0.35);
+    color: #7D8792;
+}
+
+/* Flat buttons (the status bar's speed and connection buttons) stay flat. */
+QPushButton:flat {
+    background-color: transparent;
+    border: 1px solid transparent;
+}
+
+QPushButton:flat:hover {
+    background-color: rgba(78, 106, 133, 0.25);
+}
+
+QStatusBar {
+    border-top: 1px solid rgba(78, 106, 133, 0.45);
+}
+
+QStatusBar QPushButton {
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+/* The toolbar: rounded hover and pressed states for its buttons. */
+QToolBar {
+    background-color: palette(window);
+    border: none;
+    border-bottom: 1px solid rgba(78, 106, 133, 0.45);
+    padding: 3px 4px;
+    spacing: 4px;
+}
+
+QToolBar QToolButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+QToolBar QToolButton:hover {
+    background-color: rgba(78, 106, 133, 0.25);
+    border-color: #4E6A85;
+}
+
+QToolBar QToolButton:pressed,
+QToolBar QToolButton:checked {
+    background-color: #4E6A85;
+    border-color: #4E6A85;
+    color: #FFFFFF;
+}
+
+QToolBar::separator {
+    background-color: rgba(78, 106, 133, 0.45);
+    width: 1px;
+    margin: 4px 6px;
+}
+
+/* Text boxes (the torrent search box among them): rounded, slate-blue edge. */
+QLineEdit {
+    background-color: palette(base);
+    border: 1px solid rgba(78, 106, 133, 0.70);
+    border-radius: 6px;
+    padding: 3px 6px;
+    selection-background-color: #4E6A85;
+    selection-color: #FFFFFF;
+}
+
+QLineEdit:focus {
+    border-color: #4E6A85;
+}
+
+QLineEdit:disabled {
+    background-color: palette(window);
+    border-color: rgba(78, 106, 133, 0.35);
+}
+
+/* ...but not the text part inside a combo box or spin box, nor a list's rename box. */
+QComboBox QLineEdit,
+QAbstractSpinBox QLineEdit {
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 0px;
+}
+
+QAbstractItemView QLineEdit {
+    border-radius: 0px;
+    padding: 0px 2px;
+}
+
+/* Tabs (Transfers, Search, RSS, Execution log): rounded chips, the chosen one in the accent. */
+QTabBar::tab {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 4px 12px;
+    margin: 2px;
+}
+
+QTabBar::tab:hover {
+    background-color: rgba(78, 106, 133, 0.25);
+}
+
+QTabBar::tab:selected {
+    background-color: #4E6A85;
+    border-color: #4E6A85;
+    color: #FFFFFF;
+}
+
+QTabWidget::pane {
+    border: 1px solid rgba(78, 106, 133, 0.60);
+    border-radius: 6px;
+}

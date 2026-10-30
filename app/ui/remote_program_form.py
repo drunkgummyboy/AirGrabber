@@ -286,6 +286,27 @@ class RemoteProgramForm(ctk.CTkFrame):
     def show_result(self, look: ResultLook) -> None:
         self._result.configure(text=look.text, text_color=look.color)
 
+    def load(self, settings: Settings) -> None:
+        """Show `settings`' `remote_*` values instead (they changed elsewhere, e.g. qBittorrent's
+        setup pointed AirGrabber at its Web UI)."""
+        name = program_name(settings.remote_kind)
+        self._program.set(name)
+        self._program_changed(name)
+        for entry, value in (
+            (self._address, settings.remote_url),
+            (self._username, settings.remote_username),
+            (self._password, settings.remote_password.get_secret_value()),
+            (self._destination, settings.remote_destination),
+        ):
+            entry.delete(0, "end")  # shows the hint again when empty
+            if value:
+                entry.insert(0, value)
+        if settings.remote_verify_tls:
+            self._verify.select()
+        else:
+            self._verify.deselect()
+        self.show_result(result_look())
+
     # -- test ----------------------------------------------------------------------------------
 
     def _start_test(self) -> None:

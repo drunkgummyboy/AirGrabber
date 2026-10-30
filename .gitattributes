@@ -1,2 +1,5 @@
 # Store text files with LF line endings; binaries (png, ico, exe) are detected and left alone.
 * text=auto
+# qBittorrent settings files as qBittorrent writes them on Windows (CRLF): kept byte for byte,
+# tests/test_qbittorrent_setup.py checks that every untouched byte stays.
+tests/fixtures/qbittorrent/*.ini -text

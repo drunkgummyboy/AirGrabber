@@ -1,9 +1,15 @@
-"""The show details window: a TV show's poster, summary, track state and its episodes by season,
-each with its download state (✓ Downloaded, the one-click Download row, or when it airs).
+"""The series info window: the shared info look (app/ui/title_info.py: the backdrop with the
+trailer, the poster, title, meta line, genres, synopsis, track state, the cast), then the show's
+episodes by season, each with its download state (✓ Downloaded, the one-click Download row, or
+when it airs).
 
 Not modal; one window per show (`ShowWindows` raises the open one). It works for any TVMaze
 show, tracked or not: `LibraryService.show_details` reads a tracked show from the library and
-fetches any other from TVMaze. TMDB shows (Discover) are matched to TVMaze first.
+fetches any other from TVMaze. TMDB shows (Discover) are matched to TVMaze first. The backdrop,
+the trailer, the cast and the synopsis and genres in the app's language come from the show's
+TMDB counterpart (`DiscoveryService.show_extras`); without one the poster stands in, blurred,
+for the backdrop and TVMaze's summary is the synopsis; without a TMDB key there is no backdrop
+and a plain hint says what a key adds.
 """
 
 from __future__ import annotations
@@ -19,13 +25,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import customtkinter as ctk
 
-from app.i18n import N_, day_short, month_short, number, t
-from app.models import CalendarEntry, DiscoverShow, Episode, Show, ShowDetails
+from app.i18n import N_, day_short, month_short, t, tn
+from app.models import CalendarEntry, DiscoverShow, Episode, Show, ShowDetails, TitleExtras
 from app.services.discovery import NoTVMazeMatch
-from app.services.tmdb import TMDBError
+from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
 from app.ui import dialog_kit, theme
-from app.ui.branding import set_window_icon
 from app.ui.cards import (
     AUTO_SWITCH_TEXT,
     AUTO_SWITCH_TIP,
@@ -67,9 +72,17 @@ from app.ui.missing_control import (
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
 from app.ui.subtitle_settings import CREDIT_TEXT
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines, unscaled_width
+from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
+from app.ui.title_info import (
+    SUMMARY_LINES,
+    TitleInfoWindow,
+    collapsed_summary,
+    exists,
+    join_meta,
+    rating_text,
+)
 from app.ui.tooltip import add_tooltip
-from app.ui.widgets import FlexGrid, LoadingBar, PosterImage
+from app.ui.widgets import FlexGrid, LoadingBar
 
 if TYPE_CHECKING:
     from app.services import DiscoveryService, ImageCache, LibraryService
@@ -84,17 +97,9 @@ Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe 
 # Per (season, episode) of a show (TVMaze id), its subtitle mark ("CC EN NL").
 SubtitleMarks = Callable[[int], Awaitable[Mapping[tuple[int, int], str]]]
 
+__all__ = ["SUMMARY_LINES", "ShowDetailsWindow", "ShowWindows", "collapsed_summary"]
+
 # Logical (unscaled) CTk units.
-WINDOW_WIDTH = 860
-WINDOW_HEIGHT = 680
-SCREEN_MARGIN = 80  # the window stays this much smaller than the screen
-MIN_WIDTH = 560
-MIN_HEIGHT = 360
-POSTER_WIDTH = 160
-POSTER_HEIGHT = 240
-POSTER_GAP = 24  # between the poster and the text beside it
-SCROLLBAR_ROOM = 24  # the scroll frame's scrollbar, for the first guess at the text's width
-SUMMARY_LINES = 6  # collapsed; "More" shows the rest
 CHIP_WIDTH = 96
 CHIP_HEIGHT = 32
 EPISODE_ROW_HEIGHT = 52
@@ -112,7 +117,6 @@ NEAR_DAYS = 6  # an episode airing within this many days is named by its weekday
 # Shown through t().
 DOWNLOADED_TEXT = N_("✓ Downloaded")
 ADDING_TEXT = N_("Adding…")
-MORE_TEXT = N_("More")
 NOT_ON_TVMAZE_TEXT = N_("Couldn't find this show on TVMaze")
 NO_EPISODES_TEXT = N_("No episodes listed yet.")
 UNKNOWN_DATE_TEXT = N_("TBA")
@@ -125,22 +129,70 @@ _STATUS_NAMES = {
 }
 
 
+# TVMaze's genres in plain words (another genre shows as TVMaze writes it).
+_GENRE_NAMES = {
+    "Action": N_("Action"),
+    "Adult": N_("Adult"),
+    "Adventure": N_("Adventure"),
+    "Anime": N_("Anime"),
+    "Children": N_("Children"),
+    "Comedy": N_("Comedy"),
+    "Crime": N_("Crime"),
+    "DIY": N_("DIY"),
+    "Drama": N_("Drama"),
+    "Espionage": N_("Espionage"),
+    "Family": N_("Family"),
+    "Fantasy": N_("Fantasy"),
+    "Food": N_("Food"),
+    "History": N_("History"),
+    "Horror": N_("Horror"),
+    "Legal": N_("Legal"),
+    "Medical": N_("Medical"),
+    "Music": N_("Music"),
+    "Mystery": N_("Mystery"),
+    "Nature": N_("Nature"),
+    "Romance": N_("Romance"),
+    "Science-Fiction": N_("Science fiction"),
+    "Sports": N_("Sports"),
+    "Supernatural": N_("Supernatural"),
+    "Thriller": N_("Thriller"),
+    "Travel": N_("Travel"),
+    "War": N_("War"),
+    "Western": N_("Western"),
+}
+
+
 # -- text and state ----------------------------------------------------------------------------
 
 
-def meta_line(show: Show) -> str:
-    """"2022 · Apple TV · Running · ★ 8.4": year, network or streaming service, status and
-    rating, each left out when unknown ("" for none)."""
-    parts: list[str] = []
-    if show.year:
-        parts.append(str(show.year))
-    if show.network:
-        parts.append(show.network)
-    if show.status:
-        parts.append(show_status(show.status))
-    if show.rating is not None:
-        parts.append(f"★ {number(show.rating, '.1f')}")
-    return " · ".join(parts)
+def meta_line(show: Show, seasons: int | None = None) -> str:
+    """"2022 · Apple TV · 3 seasons · ★ 8.4 · Running": year, network or streaming service,
+    the number of seasons, rating and status, each left out when unknown ("" for none)."""
+    return join_meta(
+        (
+            str(show.year) if show.year else None,
+            show.network,
+            tn("{n} season", "{n} seasons", seasons) if seasons else None,
+            rating_text(show.rating),
+            show_status(show.status) if show.status else None,
+        )
+    )
+
+
+def genre_names(show: Show, extras: TitleExtras | None) -> tuple[str, ...]:
+    """The genre pills: TMDB's (in the app's language) when known, else TVMaze's in plain
+    words."""
+    if extras is not None and extras.info.genres:
+        return extras.info.genres
+    return tuple(t(name) if (name := _GENRE_NAMES.get(genre)) else genre for genre in show.genres)
+
+
+def synopsis(show: Show, extras: TitleExtras | None) -> str:
+    """TMDB's overview (in the app's language, else English) when it has one, else TVMaze's
+    summary."""
+    if extras is not None and extras.info.overview:
+        return extras.info.overview
+    return show.summary
 
 
 def show_status(status: str) -> str:
@@ -266,20 +318,7 @@ def aired_text(episode: Episode, now: datetime) -> str:
     return short_date(day) if day is not None else ""
 
 
-def collapsed_summary(
-    text: str, width: float, measure: Callable[[str], float]
-) -> tuple[str, bool]:
-    """The summary wrapped into at most SUMMARY_LINES lines of `width`, and whether that cut it
-    short (then "More" shows the rest)."""
-    fitted = fit_to_lines(text, width, SUMMARY_LINES, measure)
-    return fitted, fitted != text
-
-
-def _exists(widget: Any) -> bool:
-    try:
-        return bool(widget.winfo_exists())
-    except tk.TclError:  # the whole interpreter is gone
-        return False
+_exists = exists
 
 
 # -- one episode row ---------------------------------------------------------------------------
@@ -483,9 +522,9 @@ class _EpisodeRow(ctk.CTkFrame):
 # -- the window --------------------------------------------------------------------------------
 
 
-class ShowDetailsWindow(ctk.CTkToplevel):
-    """A TVMaze show's details (not modal); `reload()` refetches them (library or downloads
-    changed). Opened through `ShowWindows`."""
+class ShowDetailsWindow(TitleInfoWindow):
+    """A TVMaze show's info window (not modal); `reload()` refetches its details (library or
+    downloads changed). Opened through `ShowWindows`."""
 
     def __init__(
         self,
@@ -498,11 +537,21 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         episode_actions: DownloadActions[CalendarEntry],
         missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
+        discovery: DiscoveryService | None = None,
     ) -> None:
         """`subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
-        without it no row gets one."""
-        super().__init__(master, fg_color=theme.BG)
+        without it no row gets one. `discovery`: the TMDB extras (backdrop, trailer, cast);
+        without it the window shows only what TVMaze knows."""
+        super().__init__(
+            master,
+            title=show.name,
+            images=images,
+            poster=lambda width: tvmaze_poster_url(show, width),
+        )
         self._show = show
+        self._discovery = discovery
+        self._extras: TitleExtras | None = None
+        self._extras_task: asyncio.Task[None] | None = None
         self._subtitle_marks = subtitle_marks
         self._cc: Mapping[tuple[int, int], str] = {}
         self._missing_actions = missing_actions
@@ -523,98 +572,28 @@ class ShowDetailsWindow(ctk.CTkToplevel):
         self._buttons_look: tuple[bool, bool, bool, str | None] | None = None
         self._auto_var = ctk.BooleanVar(value=False)
         self._auto_switch: ctk.CTkSwitch | None = None
-        self._summary_expanded = False
-        self._text_width = float(
-            WINDOW_WIDTH - 2 * dialog_kit.PAD_X - POSTER_WIDTH - POSTER_GAP - SCROLLBAR_ROOM
-        )
+        self._buttons = self.buttons
 
-        self.title(show.name)
-        set_window_icon(self)
-        self.transient(master)
-        # CTkToplevel only applies its dark Windows title bar reliably from resizable().
-        self.resizable(True, True)
-        self.minsize(MIN_WIDTH, MIN_HEIGHT)
-        self._place_over(master)
-
-        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True)
-        content = ctk.CTkFrame(body, fg_color="transparent")
-        content.pack(fill="x", padx=dialog_kit.PAD_X, pady=dialog_kit.PAD_Y)
-        self._build_header(content)
+        content = self.content
         self._chip_grid = FlexGrid(
             content, item_width=CHIP_WIDTH, pad_x=4, pad_y=4, center=False
         )
-        self._chip_grid.pack(fill="x", pady=(dialog_kit.BLOCK_GAP, 0))
+        self._chip_grid.pack(fill="x")
         self._season_bar = self._build_season_bar(content)
         self._episode_list = ctk.CTkFrame(content, fg_color="transparent")
         self._episode_list.pack(fill="x", pady=(12, 0))
         LoadingBar(self._episode_list).pack(fill="x", pady=(8, 0))
+        self._paint_header(show, None)
 
-        self.bind("<Escape>", lambda _event: self.destroy())
         self.reload()
-        # CTkToplevel can open behind its parent on Windows; raise it once it is mapped.
-        self._activate_job: str | None = self.after(150, self._activate)
+        if discovery is not None:
+            # The backdrop's room stays while the extras may still bring one.
+            self.masthead.reserve_hero(discovery.has_tmdb_key)
+            self._extras_task = spawn(self._load_extras(discovery), name="ShowDetailsWindow.extras")
+        else:
+            self._show_extras(None)
 
     # -- layout ------------------------------------------------------------------------------
-
-    def _place_over(self, master: ctk.CTk) -> None:
-        """Centre over `master`, at most the screen less SCREEN_MARGIN (see MainWindow._place
-        for the DPI math)."""
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        screen_w, screen_h = self.wm_maxsize()
-        width = max(1, min(WINDOW_WIDTH, int(screen_w / scaling) - SCREEN_MARGIN))
-        height = max(1, min(WINDOW_HEIGHT, int(screen_h / scaling) - SCREEN_MARGIN))
-        width_px, height_px = round(width * scaling), round(height * scaling)
-        x = master.winfo_rootx() + (master.winfo_width() - width_px) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - height_px) // 2
-        x = min(max(0, x), max(0, screen_w - width_px))
-        y = min(max(0, y), max(0, screen_h - height_px))
-        self.geometry(f"{width}x{height}+{x}+{y}")
-
-    def _build_header(self, master: Any) -> None:
-        show = self._show
-        header = ctk.CTkFrame(master, fg_color="transparent")
-        header.pack(fill="x")
-        header.grid_columnconfigure(1, weight=1)
-        self._poster = PosterImage(
-            header, width=POSTER_WIDTH, height=POSTER_HEIGHT, corner_radius=8
-        )
-        self._poster.grid(row=0, column=0, sticky="nw", padx=(0, POSTER_GAP))
-        scaling: float = ctk.ScalingTracker.get_widget_scaling(self)
-        self._poster.show(self._images, tvmaze_poster_url(show, round(POSTER_WIDTH * scaling)))
-
-        info = ctk.CTkFrame(header, fg_color="transparent")
-        info.grid(row=0, column=1, sticky="nsew")
-        info.grid_columnconfigure(0, weight=1)
-        self._name = dialog_kit.text_label(
-            info, show.name, size=dialog_kit.HEADING_SIZE, bold=True
-        )
-        self._name.grid(row=0, column=0, sticky="w")
-        self._meta = dialog_kit.text_label(
-            info, "", size=dialog_kit.DETAIL_SIZE, color=theme.TEXT_MUTED
-        )
-        self._meta.grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self._summary_font = theme.font(dialog_kit.DETAIL_SIZE)
-        self._summary = dialog_kit.text_label(info, "", size=dialog_kit.DETAIL_SIZE)
-        self._summary.grid(row=2, column=0, sticky="w", pady=(12, 0))
-        self._more = ctk.CTkLabel(
-            info,
-            text=t(MORE_TEXT),
-            font=theme.font(dialog_kit.SMALL_SIZE, underline=True),
-            text_color=theme.LINK,
-            cursor="hand2",
-            height=20,
-        )
-        self._more.grid(row=3, column=0, sticky="w", pady=(2, 0))
-        self._more.bind("<Button-1>", lambda _event: self._expand_summary())
-        self._next = dialog_kit.text_label(
-            info, "", size=dialog_kit.DETAIL_SIZE, color=theme.TEXT_MUTED
-        )
-        self._next.grid(row=4, column=0, sticky="w", pady=(10, 0))
-        self._buttons = ctk.CTkFrame(info, fg_color="transparent")
-        self._buttons.grid(row=5, column=0, sticky="w", pady=(16, 0))
-        info.bind("<Configure>", self._on_info_resize)
-        self._paint_header(show, None)
 
     def _build_season_bar(self, master: Any) -> ctk.CTkFrame:
         """"3 missing" + "⬇ Download missing (3)" + ⋯, above the latest season's rows (packed
@@ -652,62 +631,49 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             )
         return bar
 
-    def _on_info_resize(self, event: Any) -> None:
-        if event.width <= 1:
-            return
-        width = unscaled_width(self, event.width)
-        if abs(width - self._text_width) < 1:
-            return
-        self._text_width = width
-        self._fit_text()
-
-    def _fit_text(self) -> None:
-        """Wrap the name, meta line and summary at the text column's width; the summary at most
-        SUMMARY_LINES lines until "More" is clicked."""
-        width = max(1.0, self._text_width - SLACK)
-        wrap = max(1, round(width))
-        self._name.configure(wraplength=wrap)
-        self._meta.configure(wraplength=wrap)
-        self._next.configure(wraplength=wrap)
-        summary = self._show.summary.strip()
-        if not summary:
-            self._summary.grid_remove()
-            self._more.grid_remove()
-            return
-        if self._summary_expanded:
-            text, cut = summary, False
-        else:
-            text, cut = collapsed_summary(summary, width, self._summary_font.measure)
-        self._summary.configure(text=text, wraplength=wrap)
-        self._summary.grid()
-        if cut:
-            self._more.grid()
-        else:
-            self._more.grid_remove()
-
-    def _expand_summary(self) -> None:
-        self._summary_expanded = True
-        self._fit_text()
-
     def _paint_header(self, show: Show, details: ShowDetails | None) -> None:
         self._show = show
-        self.title(show.name)
-        self._name.configure(text=show.name)
-        meta = meta_line(show)
-        self._meta.configure(text=meta)
-        if meta:
-            self._meta.grid()
-        else:
-            self._meta.grid_remove()
-        line = next_line(details.next_episode, _now()) if details is not None else None
-        self._next.configure(text=line or "")
-        if line:
-            self._next.grid()
-        else:
-            self._next.grid_remove()
-        self._fit_text()
+        self._set_name(show.name)
+        seasons = len(season_numbers(details.episodes)) if details is not None else None
+        self._set_meta(meta_line(show, seasons or None))
+        self.set_genres(genre_names(show, self._extras))
+        self._set_summary(synopsis(show, self._extras))
+        self._set_note(next_line(details.next_episode, _now()) if details is not None else None)
         if details is not None:
             self._paint_buttons(details)
+
+    # -- TMDB's extras -----------------------------------------------------------------------
+
+    async def _load_extras(self, discovery: DiscoveryService) -> None:
+        try:
+            extras = await discovery.show_extras(self._show)
+        except TMDBNotConfigured:
+            if self.winfo_exists():
+                self.masthead.set_hero(None)
+                self.show_hint(True)
+            return
+        except TMDBError as exc:
+            log.info("No TMDB extras for TVMaze show %d: %s", self._show.id, exc)
+            extras = None
+        if self.winfo_exists():
+            self._show_extras(extras)
+
+    def _show_extras(self, extras: TitleExtras | None) -> None:
+        """The backdrop (TMDB's, else the poster blurred, else none), the trailer, the cast,
+        and the synopsis and genres in the app's language."""
+        self._extras = extras
+        scaling: float = ctk.ScalingTracker.get_widget_scaling(self)
+        backdrop = extras.info.backdrop_url(self.backdrop_size()) if extras is not None else None
+        if backdrop is not None:
+            self.masthead.set_hero(backdrop)
+        elif self._discovery is not None and self._discovery.has_tmdb_key:
+            self.masthead.set_hero(tvmaze_poster_url(self._show, round(210 * scaling)), blur=True)
+        else:
+            self.masthead.set_hero(None)
+        trailer = extras.trailer if extras is not None else None
+        self.masthead.set_trailer(trailer.watch_url if trailer is not None else None)
+        self.show_cast(extras.cast if extras is not None else ())
+        self._paint_header(self._show, self._details)
 
     def _paint_buttons(self, details: ShowDetails) -> None:
         """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
@@ -760,19 +726,6 @@ class ShowDetailsWindow(ctk.CTkToplevel):
             dialog_kit.secondary_button(self._buttons, "IMDb", open_imdb, width=90).pack(
                 side="left", padx=(16, 0)
             )
-
-    def _activate(self) -> None:
-        self._activate_job = None
-        if self.winfo_exists():
-            self.lift()
-            self.focus_force()
-
-    def raise_window(self) -> None:
-        """Bring the window to the front (also from minimised)."""
-        if self.state() == "iconic":
-            self.deiconify()
-        self.lift()
-        self.focus_force()
 
     # -- loading -----------------------------------------------------------------------------
 
@@ -1060,13 +1013,9 @@ class ShowDetailsWindow(ctk.CTkToplevel):
     def destroy(self) -> None:
         if self._load_task is not None:
             self._load_task.cancel()
+        if self._extras_task is not None:
+            self._extras_task.cancel()
         self._cancel_rows()
-        if self._activate_job is not None:
-            try:
-                self.after_cancel(self._activate_job)
-            except tk.TclError:
-                pass
-            self._activate_job = None
         super().destroy()
 
 
@@ -1127,6 +1076,7 @@ class ShowWindows:
             episode_actions=self._episode_actions,
             missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
+            discovery=self._discovery,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

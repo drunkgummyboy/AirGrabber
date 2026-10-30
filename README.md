@@ -20,8 +20,17 @@ On Windows 10 or 11:
 3. Follow the questions.
 
 AirGrabber then appears in the Start menu and on your desktop, and opens by itself. If you don't have
-Python yet (the program AirGrabber runs on), the installer adds it for you. It also asks whether to
-add a free helper program (Prowlarr) that searches more websites; you can say no.
+Python yet (the program AirGrabber runs on), the installer adds it for you. If you have no torrent
+program yet, it also installs qBittorrent (the free program AirGrabber downloads with) and sets it up
+so downloads start with one click, without a pop-up for each one; a torrent program you already have
+is left alone. It also asks whether to add a free helper program (Prowlarr) that searches more
+websites; you can say no.
+
+To install without qBittorrent, use this line instead:
+
+```
+& ([scriptblock]::Create((irm is.gd/airgrabber))) -NoQBittorrent
+```
 
 Only paste commands like this from sources you trust. This one downloads AirGrabber's installer,
 [`install.ps1`](install.ps1), from this page; you can read it first. `is.gd/airgrabber` is a short
@@ -39,8 +48,15 @@ You can also check under ⚙ Settings → **Check for updates**. Your library an
 ## Uninstall
 
 Open Windows **Settings → Apps → Installed apps**, find **AirGrabber** and choose **Uninstall**.
-It asks whether to also delete your library and settings. Python and helper programs (like Prowlarr)
-stay installed; remove them the same way if you no longer need them.
+
+Windows then asks whether to **also delete your library and settings** (your followed shows,
+download history and settings):
+
+- Answer **No** to keep them. If you install AirGrabber again later, everything is still there.
+- Answer **Yes** only if you want them gone for good.
+
+Python and helper programs (like qBittorrent and Prowlarr) stay installed; remove them the same
+way if you no longer need them.
 
 ## AirGrabber 1.x
 

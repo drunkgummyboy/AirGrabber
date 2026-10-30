@@ -189,6 +189,9 @@ class Movie(DomainModel):
     def poster_url(self, size: str = "w342") -> str | None:
         return f"{TMDB_IMAGE_BASE}{size}{self.poster_path}" if self.poster_path else None
 
+    def backdrop_url(self, size: str = "w1280") -> str | None:
+        return f"{TMDB_IMAGE_BASE}{size}{self.backdrop_path}" if self.backdrop_path else None
+
 
 class MovieDetails(DomainModel):
     """Per-film extras from TMDB's details endpoint; release data is for one region."""
@@ -237,6 +240,64 @@ class TVDetails(DomainModel):
     number_of_seasons: int | None = None
     imdb_id: ImdbId = None
     tvdb_id: int | None = None
+
+
+class TitleInfo(DomainModel):
+    """A film's or show's TMDB details in one language: what the info window shows of it."""
+
+    id: int  # TMDB id
+    overview: str = ""  # "" when TMDB has none in that language
+    genres: tuple[str, ...] = ()  # TMDB's names, in that language
+    backdrop_path: str | None = None
+    poster_path: str | None = None
+    runtime: int | None = None  # minutes (films)
+    seasons: int | None = None  # series
+    status: str | None = None  # "Released", "Post Production", "Returning Series", ...
+    original_language: str | None = None  # ISO 639-1
+    vote_average: float = 0.0
+    vote_count: int = 0
+
+    def backdrop_url(self, size: str = "w1280") -> str | None:
+        return f"{TMDB_IMAGE_BASE}{size}{self.backdrop_path}" if self.backdrop_path else None
+
+
+class Video(DomainModel):
+    """A film's or show's video as TMDB lists it (trailers, teasers, clips)."""
+
+    key: str  # the site's own id (YouTube's video id)
+    site: str = ""  # "YouTube", "Vimeo"
+    type: str = ""  # "Trailer", "Teaser", "Clip", "Featurette", ...
+    official: bool = False
+    language: str | None = None  # ISO 639-1; None when TMDB names none
+    name: str = ""
+    published_at: UtcDatetime | None = None
+
+    @property
+    def watch_url(self) -> str | None:
+        """Its page on YouTube; None on another site."""
+        if self.site.casefold() != "youtube":
+            return None
+        return f"https://www.youtube.com/watch?v={quote(self.key, safe='')}"
+
+
+class CastMember(DomainModel):
+    """One actor of a film's or show's cast (TMDB credits), the first billed first."""
+
+    name: str
+    character: str = ""  # the part they play ("" when TMDB names none)
+    profile_path: str | None = None  # their photo
+
+    def photo_url(self, size: str = "w185") -> str | None:
+        return f"{TMDB_IMAGE_BASE}{size}{self.profile_path}" if self.profile_path else None
+
+
+class TitleExtras(DomainModel):
+    """What the info window adds from TMDB: the details in the app's language, the trailer to
+    offer, and the first billed actors."""
+
+    info: TitleInfo
+    trailer: Video | None = None
+    cast: tuple[CastMember, ...] = ()
 
 
 class DiscoverShowEntry(DomainModel):
@@ -622,6 +683,23 @@ class TorrentApp(DomainModel):
     """The torrent program Windows opens magnet links / .torrent files with."""
 
     name: str  # friendly name, e.g. "qBittorrent"
+
+
+class QBittorrentState(DomainModel):
+    """qBittorrent's settings file as AirGrabber reads it (app/services/qbittorrent_setup.py)."""
+
+    exists: bool  # the settings file is there (qBittorrent ran, or was set up, before)
+    quiet: bool  # no "Add new torrent" pop-up for each download: set up for AirGrabber
+    save_path: str  # its default save folder, as a Windows path
+
+
+class QBittorrentSetupResult(StrEnum):
+    """What turning qBittorrent's "Add new torrent" pop-up off did."""
+
+    DONE = "done"  # the settings file was changed
+    ALREADY = "already"  # nothing to change: no pop-up already
+    RUNNING = "running"  # qBittorrent runs: nothing changed (close it and try again)
+    FAILED = "failed"  # the file couldn't be read or written
 
 
 class IndexerState(StrEnum):

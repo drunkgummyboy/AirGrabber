@@ -13,7 +13,15 @@ from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from app.models.domain import DiscoverShow, Movie, MovieDetails, TVDetails
+from app.models.domain import (
+    CastMember,
+    DiscoverShow,
+    Movie,
+    MovieDetails,
+    TitleInfo,
+    TVDetails,
+    Video,
+)
 from app.models.types import OptionalDate
 
 
@@ -181,6 +189,178 @@ class TMDBTVDetails(_Wire):
             imdb_id=self.external_ids.imdb_id,
             tvdb_id=self.external_ids.tvdb_id,
         )
+
+
+class TMDBGenre(_Wire):
+    name: str = ""
+
+
+def _genre_names(genres: Sequence[TMDBGenre]) -> tuple[str, ...]:
+    return tuple(name for genre in genres if (name := genre.name.strip()))
+
+
+class TMDBMovieInfo(_Wire):
+    """/movie/{id}?language=…: what the info window shows (overview and genres in that
+    language)."""
+
+    id: int
+    overview: str | None = None
+    genres: list[TMDBGenre] = Field(default_factory=list)
+    backdrop_path: str | None = None
+    poster_path: str | None = None
+    runtime: int | None = None
+    status: str | None = None
+    original_language: str | None = None
+    vote_average: float | None = None
+    vote_count: int | None = None
+
+    def to_info(self) -> TitleInfo:
+        return TitleInfo(
+            id=self.id,
+            overview=(self.overview or "").strip(),
+            genres=_genre_names(self.genres),
+            backdrop_path=self.backdrop_path or None,
+            poster_path=self.poster_path or None,
+            runtime=self.runtime or None,  # TMDB reports 0 when unknown
+            status=self.status or None,
+            original_language=self.original_language or None,
+            vote_average=self.vote_average or 0.0,
+            vote_count=self.vote_count or 0,
+        )
+
+
+class TMDBTVInfo(_Wire):
+    """/tv/{id}?language=…: what the info window shows of a show."""
+
+    id: int
+    overview: str | None = None
+    genres: list[TMDBGenre] = Field(default_factory=list)
+    backdrop_path: str | None = None
+    poster_path: str | None = None
+    number_of_seasons: int | None = None
+    status: str | None = None
+    original_language: str | None = None
+    vote_average: float | None = None
+    vote_count: int | None = None
+
+    def to_info(self) -> TitleInfo:
+        return TitleInfo(
+            id=self.id,
+            overview=(self.overview or "").strip(),
+            genres=_genre_names(self.genres),
+            backdrop_path=self.backdrop_path or None,
+            poster_path=self.poster_path or None,
+            seasons=self.number_of_seasons or None,
+            status=self.status or None,
+            original_language=self.original_language or None,
+            vote_average=self.vote_average or 0.0,
+            vote_count=self.vote_count or 0,
+        )
+
+
+class TMDBVideo(_Wire):
+    """One entry of /movie/{id}/videos or /tv/{id}/videos."""
+
+    key: str = ""
+    site: str = ""
+    type: str = ""
+    official: bool = False
+    iso_639_1: str | None = None
+    name: str = ""
+    published_at: _OptionalDatetime = None
+
+    def to_video(self) -> Video | None:
+        """None for an entry without a key (nothing to open)."""
+        key = self.key.strip()
+        if not key:
+            return None
+        return Video(
+            key=key,
+            site=self.site,
+            type=self.type,
+            official=self.official,
+            language=(self.iso_639_1 or "").strip().lower() or None,
+            name=self.name,
+            published_at=self.published_at,
+        )
+
+
+class TMDBVideos(_Wire):
+    results: list[TMDBVideo] = Field(default_factory=list)
+
+    def to_videos(self) -> list[Video]:
+        return [video for item in self.results if (video := item.to_video()) is not None]
+
+
+class TMDBCastCredit(_Wire):
+    """A cast entry of /movie/{id}/credits."""
+
+    name: str = ""
+    character: str | None = None
+    profile_path: str | None = None
+
+    def to_member(self) -> CastMember | None:
+        name = self.name.strip()
+        if not name:
+            return None
+        return CastMember(
+            name=name,
+            character=(self.character or "").strip(),
+            profile_path=self.profile_path or None,
+        )
+
+
+class TMDBCredits(_Wire):
+    """/movie/{id}/credits (the cast in billing order)."""
+
+    cast: list[TMDBCastCredit] = Field(default_factory=list)
+
+    def to_cast(self) -> list[CastMember]:
+        return [member for item in self.cast if (member := item.to_member()) is not None]
+
+
+class TMDBRole(_Wire):
+    character: str | None = None
+    episode_count: int | None = None
+
+
+class TMDBAggregateCast(_Wire):
+    """A cast entry of /tv/{id}/aggregate_credits: one actor with every part they played."""
+
+    name: str = ""
+    profile_path: str | None = None
+    roles: list[TMDBRole] = Field(default_factory=list)
+
+    def to_member(self) -> CastMember | None:
+        name = self.name.strip()
+        if not name:
+            return None
+        # The part they played most (the first such when tied).
+        named = [role for role in self.roles if (role.character or "").strip()]
+        main = max(named, key=lambda role: role.episode_count or 0, default=None)
+        return CastMember(
+            name=name,
+            character=(main.character or "").strip() if main is not None else "",
+            profile_path=self.profile_path or None,
+        )
+
+
+class TMDBAggregateCredits(_Wire):
+    """/tv/{id}/aggregate_credits (the whole run's cast, the most seen first)."""
+
+    cast: list[TMDBAggregateCast] = Field(default_factory=list)
+
+    def to_cast(self) -> list[CastMember]:
+        return [member for item in self.cast if (member := item.to_member()) is not None]
+
+
+class TMDBFindResults(_Wire):
+    """/find/{external_id}: what TMDB knows under another site's id (only shows are used)."""
+
+    tv_results: list[TMDBTVItem] = Field(default_factory=list)
+
+    def first_tv_id(self) -> int | None:
+        return self.tv_results[0].id if self.tv_results else None
 
 
 def _earliest(releases: Sequence[TMDBReleaseDate], release_type: ReleaseType) -> date | None:

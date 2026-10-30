@@ -1,0 +1,50 @@
+{
+ "id": 7171,
+ "cast": [
+  {
+   "adult": false,
+   "gender": 1,
+   "id": 7200001,
+   "known_for_department": "Acting",
+   "name": "Henrietta Saal",
+   "original_name": "Henrietta Saal",
+   "popularity": 30.2,
+   "profile_path": "/madeup_tv_aggregate_credits_1.jpg",
+   "roles": [
+    {"credit_id": "65a0c1000000000000000001", "character": "Judge Amsel", "episode_count": 18}
+   ],
+   "total_episode_count": 18,
+   "order": 0
+  },
+  {
+   "adult": false,
+   "gender": 2,
+   "id": 7200002,
+   "known_for_department": "Acting",
+   "name": "Pieter van Loon",
+   "original_name": "Pieter van Loon",
+   "popularity": 22.0,
+   "profile_path": null,
+   "roles": [
+    {"credit_id": "65a0c1000000000000000002", "character": "Young Mattias", "episode_count": 2},
+    {"credit_id": "65a0c1000000000000000003", "character": "Mattias Brede", "episode_count": 15}
+   ],
+   "total_episode_count": 17,
+   "order": 1
+  },
+  {
+   "adult": false,
+   "gender": 1,
+   "id": 7200003,
+   "known_for_department": "Acting",
+   "name": "Ama Kingsley",
+   "original_name": "Ama Kingsley",
+   "popularity": 14.6,
+   "profile_path": "/madeup_tv_aggregate_credits_2.jpg",
+   "roles": [],
+   "total_episode_count": 9,
+   "order": 2
+  }
+ ],
+ "crew": []
+}

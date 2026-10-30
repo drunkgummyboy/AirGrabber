@@ -17,11 +17,13 @@ from app.services.auto_download import AutoDownloadService
 from app.services.discovery import DiscoveryService
 from app.services.download_status import DownloadStatusService
 from app.services.downloads import DownloadService
-from app.services.flaresolverr import FlareSolverrService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
 from app.services.missing import MissingDownloadService
 from app.services.prowlarr_setup import ProwlarrSetupService
+from app.services.qbittorrent_local import QBittorrentStarter
+from app.services.qbittorrent_setup import QBittorrentSetup
+from app.services.qbittorrent_theme import ThemeFolder
 from app.services.quick_download import QuickDownloadService
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
@@ -32,7 +34,7 @@ from app.services.settings import SettingsService
 from app.services.subtitles import SubtitleService
 from app.services.synology import DownloadStationClient
 from app.services.tmdb import TMDBClient, TMDBError
-from app.services.torrent_app import TorrentAppService
+from app.services.torrent_app import TorrentAppService, qbittorrent_executable
 from app.services.tvmaze import TVMazeClient
 from app.services.updates import UpdateError, UpdateService
 from app.services.watchlist import WatchlistService
@@ -54,7 +56,6 @@ class Services:
         "discovery",
         "download_status",
         "downloads",
-        "flaresolverr",
         "images",
         "library",
         "missing",
@@ -110,8 +111,6 @@ class Services:
         self.updates = updates
         self.prowlarr_setup = prowlarr_setup
         self.torrent_app = torrent_app  # which torrent program is set up; qBittorrent install
-        # Whether FlareSolverr runs on this PC (the Add FlareSolverr guide's Check).
-        self.flaresolverr = FlareSolverrService(http)
         # Subtitles from OpenSubtitles.com next to the grabbed videos (`run_periodic` from the
         # UI), with the user's own API key when Settings has one, else AirGrabber's shipped key
         # (read on every request, so a changed key applies at once), and the user's optional
@@ -157,8 +156,11 @@ class Services:
             discovery = DiscoveryService(tmdb, tvmaze, library)
             _clear_discovery_on_key_change(settings, discovery)
             images = ImageCache(http, paths.posters)
-            # Reads the program, its address and account from the settings on every call.
-            remote = RemoteDownloads(settings)
+            # Reads the program, its address and account from the settings on every call; starts
+            # the qBittorrent on this PC that AirGrabber set up when it isn't running.
+            remote = RemoteDownloads(
+                settings, starter=QBittorrentStarter(find_exe=qbittorrent_executable)
+            )
             downloads = DownloadService(http, db.history, settings, remote, paths.torrents)
             # The Prowlarr address and key are read from the settings on every call.
             search = TorrentSearchService(
@@ -182,9 +184,15 @@ class Services:
                 UpdateService(http),
                 # Connects a Prowlarr on this PC and adds public sites to it (once).
                 ProwlarrSetupService(http, settings),
-                TorrentAppService(),
+                # qBittorrent's setup, with AirGrabber's copy of its qBittorrent theme; it may
+                # point AirGrabber at qBittorrent's Web UI (the settings).
+                TorrentAppService(
+                    qbittorrent=QBittorrentSetup(theme=ThemeFolder.in_data_dir(paths.root)),
+                    settings=settings,
+                ),
             )
             await services.watchlist.load()
+            await services.torrent_app.refresh_qbittorrent_theme()  # after an update: new files
             cleanup.pop_all()
         return services
 
@@ -237,7 +245,6 @@ __all__ = [
     "DownloadService",
     "DownloadStatusService",
     "DownloadStationClient",
-    "FlareSolverrService",
     "ImageCache",
     "LibraryService",
     "MissingDownloadService",

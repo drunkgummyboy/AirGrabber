@@ -1,0 +1,89 @@
+{
+ "id": 4242,
+ "results": [
+  {
+   "iso_639_1": "en",
+   "iso_3166_1": "US",
+   "name": "Harbour Lights | Teaser",
+   "key": "teaserKey01",
+   "site": "YouTube",
+   "size": 1080,
+   "type": "Teaser",
+   "official": true,
+   "published_at": "2026-03-02T16:00:00.000Z",
+   "id": "64f0a1b2c3d4e5f600000001"
+  },
+  {
+   "iso_639_1": "nl",
+   "iso_3166_1": "NL",
+   "name": "Harbour Lights - trailer (fan-ondertiteld)",
+   "key": "fanNlKey002",
+   "site": "YouTube",
+   "size": 720,
+   "type": "Trailer",
+   "official": false,
+   "published_at": "2026-07-01T09:00:00.000Z",
+   "id": "64f0a1b2c3d4e5f600000002"
+  },
+  {
+   "iso_639_1": "en",
+   "iso_3166_1": "US",
+   "name": "Harbour Lights | Official Trailer",
+   "key": "officialEn3",
+   "site": "YouTube",
+   "size": 2160,
+   "type": "Trailer",
+   "official": true,
+   "published_at": "2026-05-20T15:00:12.000Z",
+   "id": "64f0a1b2c3d4e5f600000003"
+  },
+  {
+   "iso_639_1": "nl",
+   "iso_3166_1": "NL",
+   "name": "Harbour Lights | Officiële trailer",
+   "key": "officialNl4",
+   "site": "YouTube",
+   "size": 1080,
+   "type": "Trailer",
+   "official": true,
+   "published_at": "2026-05-22T08:30:00.000Z",
+   "id": "64f0a1b2c3d4e5f600000004"
+  },
+  {
+   "iso_639_1": "en",
+   "iso_3166_1": "US",
+   "name": "Harbour Lights | Trailer",
+   "key": "381999701",
+   "site": "Vimeo",
+   "size": 1080,
+   "type": "Trailer",
+   "official": true,
+   "published_at": "2026-06-01T12:00:00.000Z",
+   "id": "64f0a1b2c3d4e5f600000005"
+  },
+  {
+   "iso_639_1": "en",
+   "iso_3166_1": "US",
+   "name": "Behind the lighthouse",
+   "key": "featureKey6",
+   "site": "YouTube",
+   "size": 1080,
+   "type": "Featurette",
+   "official": true,
+   "published_at": "2026-08-01T12:00:00.000Z",
+   "id": "64f0a1b2c3d4e5f600000006"
+  },
+  {
+   "iso_639_1": "en",
+   "iso_3166_1": "US",
+   "name": "Broken entry without a key",
+   "key": "",
+   "site": "YouTube",
+   "size": 1080,
+   "type": "Trailer",
+   "official": true,
+   "published_at": "2026-09-01T12:00:00.000Z",
+   "id": "64f0a1b2c3d4e5f600000007"
+  }
+ ]
+}

@@ -120,6 +120,7 @@ NL: dict[str, str] = {
         "Naar een torrentprogramma op mijn NAS of andere pc",
     "For a NAS or home server (Synology, qBittorrent, Transmission).":
         "Voor een NAS of thuisserver (Synology, qBittorrent, Transmission).",
+    "qBittorrent on this PC (set up by AirGrabber)": "qBittorrent op deze pc (ingesteld door AirGrabber)",
     "Save .torrent files to a folder": ".torrent-bestanden in een map opslaan",
     "For a watch folder, for example on a NAS.": "Voor een bewaakte map, bijvoorbeeld op een NAS.",
     "For one episode. Season packs ignore the size.":
@@ -157,6 +158,8 @@ NL: dict[str, str] = {
         "De taal van de pagina's, knoppen en meldingen van AirGrabber.",
     "Restart AirGrabber to switch the language": "Herstart AirGrabber om van taal te wisselen",
     "Restart now": "Nu herstarten",
+    "Look, download quality, card size and language, each with one click.":
+        "Uiterlijk, downloadkwaliteit, kaartgrootte en taal, elk met één klik.",
     "Automatic updates": "Automatische updates",
     "New versions download in the background and are installed when AirGrabber closes.":
         "Nieuwe versies worden op de achtergrond gedownload en geïnstalleerd als AirGrabber sluit.",
@@ -292,26 +295,19 @@ NL: dict[str, str] = {
     "✓ qBittorrent installed": "✓ qBittorrent geïnstalleerd",
     "Install qBittorrent": "qBittorrent installeren",
     "Get qBittorrent": "qBittorrent downloaden",
-    # app/ui/flaresolverr_guide.py
-    "Add FlareSolverr": "FlareSolverr toevoegen",
-    "Some sites ask for a robot check first. FlareSolverr, a free helper, can let Prowlarr reach them.":
-        "Sommige sites vragen eerst om een robotcontrole. FlareSolverr, een gratis hulpje, kan Prowlarr er toch bij laten.",
-    "How to add FlareSolverr": "Zo voeg je FlareSolverr toe",
-    "Download FlareSolverr for Windows: open its download page and get flaresolverr_windows_x64.zip.":
-        "Download FlareSolverr voor Windows: open de downloadpagina en haal flaresolverr_windows_x64.zip op.",
-    "Unzip it, for example to your Documents, and double-click flaresolverr.exe. A black window opens: leave it open while you use AirGrabber.":
-        "Pak het uit, bijvoorbeeld in je Documenten, en dubbelklik op flaresolverr.exe. Er opent een zwart venster: laat dat open zolang je AirGrabber gebruikt.",
-    "Windows may warn you because it's a downloaded program. Choose \"More info\" and then \"Run anyway\" only if you trust it.":
-        "Windows kan je waarschuwen omdat het een gedownload programma is. Kies \"Meer informatie\" en dan \"Toch uitvoeren\" alleen als je het vertrouwt.",
-    "Check that it's running:": "Controleer of het draait:",
-    "In Prowlarr, go to Settings → Indexers, click + under Indexer Proxies and choose FlareSolverr. Type flaresolverr under Tags and http://localhost:8191/ under Host, then Test and Save.":
-        "Ga in Prowlarr naar \"Settings\" → \"Indexers\", klik op + onder \"Indexer Proxies\" en kies FlareSolverr. Typ flaresolverr bij \"Tags\" en http://localhost:8191/ bij \"Host\", en klik dan op \"Test\" en \"Save\".",
-    "Then open each site that shows a robot-check error in Prowlarr, add the tag flaresolverr, and save.":
-        "Open daarna in Prowlarr elke site met een foutmelding over een robotcontrole, voeg de tag flaresolverr toe en klik op \"Save\".",
-    "Open the download page": "Downloadpagina openen",
-    "✓ FlareSolverr is running": "✓ FlareSolverr draait",
-    "FlareSolverr isn't running on this PC yet.": "FlareSolverr draait nog niet op deze pc.",
-    "Close": "Sluiten",
+    "Set up qBittorrent for AirGrabber (no pop-up for each download)":
+        "qBittorrent instellen voor AirGrabber (geen pop-up per download)",
+    "Setting up qBittorrent…": "qBittorrent instellen…",
+    "Close qBittorrent to finish: AirGrabber sets it up as soon as it's closed.":
+        "Sluit qBittorrent om af te ronden: AirGrabber stelt het in zodra het dicht is.",
+    "Couldn't change qBittorrent's settings.": "De instellingen van qBittorrent konden niet worden aangepast.",
+    "✓ qBittorrent is installed and ready": "✓ qBittorrent is geïnstalleerd en klaar",
+    # app/ui/torrent_app_status.py: AirGrabber's look in qBittorrent
+    "AirGrabber look in qBittorrent": "AirGrabber-uiterlijk in qBittorrent",
+    "qBittorrent in AirGrabber's colours, light or dark like Windows (qBittorrent 5). AirGrabber changes it while qBittorrent is closed.":
+        "qBittorrent in de kleuren van AirGrabber, licht of donker zoals Windows (qBittorrent 5). AirGrabber past het aan terwijl qBittorrent dicht is.",
+    "Close qBittorrent to finish: AirGrabber changes its look as soon as it's closed.":
+        "Sluit qBittorrent om af te ronden: AirGrabber past het uiterlijk aan zodra het dicht is.",
     # app/ui/tmdb_key_guide.py
     "Movies and Discover": "Films en Ontdekken",
     "These pages need a free key from The Movie Database. It takes about two minutes.":
@@ -543,6 +539,42 @@ NL: dict[str, str] = {
         "Kon automatisch downloaden niet uitzetten voor {name}",
     "Opening {name}…": "{name} openen…",
     "Couldn't open {name}: {error}": "Kon {name} niet openen: {error}",
+    "{n} season": "{n} seizoen",
+    "{n} seasons": "{n} seizoenen",
+    "Adult": "Volwassenen",
+    "Adventure": "Avontuur",
+    "Anime": "Anime",
+    "Children": "Kinderen",
+    "DIY": "Doe-het-zelf",
+    "Espionage": "Spionage",
+    "Family": "Familie",
+    "Fantasy": "Fantasy",
+    "Food": "Eten",
+    "History": "Geschiedenis",
+    "Legal": "Juridisch",
+    "Medical": "Medisch",
+    "Music": "Muziek",
+    "Mystery": "Mysterie",
+    "Nature": "Natuur",
+    "Romance": "Romantiek",
+    "Science fiction": "Sciencefiction",
+    "Sports": "Sport",
+    "Supernatural": "Bovennatuurlijk",
+    "Thriller": "Thriller",
+    "Travel": "Reizen",
+    "War": "Oorlog",
+    "Western": "Western",
+    # app/ui/title_info.py
+    "Watch trailer": "Trailer bekijken",
+    "Add a TMDB key in Settings for posters, trailers and cast":
+        "Vul een TMDB-sleutel in bij Instellingen voor posters, trailers en de cast",
+    "Rumoured": "Gerucht",
+    "Planned": "Gepland",
+    "In production": "In productie",
+    "Post-production": "In postproductie",
+    "Cancelled": "Geannuleerd",
+    "Out digitally since {date}": "Digitaal uit sinds {date}",
+    "Out digitally on {date}": "Digitaal uit op {date}",
     # app/ui/tray.py
     "Open AirGrabber": "AirGrabber openen",
     "Check for new episodes now": "Nu naar nieuwe afleveringen kijken",
@@ -576,6 +608,28 @@ NL: dict[str, str] = {
     "Save to a folder": "In een map opslaan",
     "Choose folder…": "Map kiezen…",
     "You can skip this and do it later.": "Je kunt dit overslaan en later doen.",
+    # app/ui/quick_setup.py
+    "Make it yours": "Maak het van jou",
+    "You can change all of this later in Settings.":
+        "Je kunt dit allemaal later nog wijzigen in Instellingen.",
+    "Look": "Uiterlijk",
+    "Download quality": "Downloadkwaliteit",
+    "Quick setup": "Snel instellen",
+    "Like Windows": "Zoals Windows",
+    "Smaller files": "Kleinere bestanden",
+    "720p · saves space": "720p · spaart ruimte",
+    "Recommended": "Aanbevolen",
+    "1080p · Full HD": "1080p · Full HD",
+    "Best picture": "Beste beeld",
+    "2160p (4K) · big files": "2160p (4K) · grote bestanden",
+    "Small": "Klein",
+    "more on screen": "meer op het scherm",
+    "Medium": "Middel",
+    "Large": "Groot",
+    "bigger posters": "grotere posters",
+    # app/ui/card_preview.py
+    "Your show": "Jouw serie",
+    "{size} (now)": "{size} (nu)",
     # app/ui/airdates_import.py
     "Couldn't reach airdates.tv. Check your internet connection and try again.":
         "airdates.tv is niet bereikbaar. Controleer je internetverbinding en probeer opnieuw.",
@@ -662,11 +716,9 @@ NL: dict[str, str] = {
     "Not found in {program}": "Niet gevonden in {program}",
     "Not found": "Niet gevonden",
     "Status unknown": "Status onbekend",
-    "Sent to {program}": "Naar {program} gestuurd",
     "Sent to your torrent program": "Naar je torrentprogramma gestuurd",
     "Saved to folder": "In map opgeslagen",
     "Opened in {program}": "Geopend in {program}",
-    "Opened in your torrent program": "Geopend in je torrentprogramma",
     "Today {time}": "Vandaag {time}",
     "Yesterday {time}": "Gisteren {time}",
     "Subtitles {languages}": "Ondertitels {languages}",
@@ -727,6 +779,8 @@ NL: dict[str, str] = {
     "No .torrent file or magnet link is available for this release.":
         "Er is geen .torrent-bestand of magnetlink voor deze release.",
     "Saved {name}": "{name} opgeslagen",
+    "Sent to {program}": "Naar {program} gestuurd",
+    "Opened in your torrent program": "Geopend in je torrentprogramma",
     "No .torrent file is available for this release, and it has no magnet link to send to {program}.":
         "Er is geen .torrent-bestand voor deze release, en ook geen magnetlink om naar {program} te sturen.",
     "Couldn't open this release in {program}: {reason}":
@@ -949,6 +1003,13 @@ NL: dict[str, str] = {
     # app/services/torrent_app.py
     "Installing qBittorrent…": "qBittorrent installeren…",
     "Checking the installation…": "De installatie controleren…",
+    # app/services/qbittorrent_local.py
+    "qBittorrent isn't running, and AirGrabber couldn't start it. Start qBittorrent, then try again.":
+        "qBittorrent draait niet en AirGrabber kon het niet starten. Start qBittorrent en probeer het dan opnieuw.",
+    "qBittorrent didn't start in time. Try again in a moment.":
+        "qBittorrent startte niet op tijd. Probeer het zo meteen opnieuw.",
+    "qBittorrent is waiting for you: accept its notice in its window, then try again.":
+        "qBittorrent wacht op je: accepteer de melding in het venster van qBittorrent en probeer het dan opnieuw.",
     # app/services/quick_download.py
     "Grabbing the best one…": "De beste downloaden…",
     ", {n} source still searching": ", {n} bron zoekt nog",
@@ -991,6 +1052,18 @@ NL: dict[str, str] = {
     "Prowlarr: {path} not found (HTTP 404); check the URL":
         "Prowlarr: {path} niet gevonden (HTTP 404); controleer de URL",
     # app/whats_new.py
+    "New installs come with qBittorrent: downloads start without a pop-up, and the Downloads page shows their progress.":
+        "Nieuwe installaties krijgen qBittorrent erbij: downloads starten zonder pop-up en de pagina Downloads toont hoe ver ze zijn.",
+    "Already use qBittorrent? Set it up for AirGrabber in Settings → Where downloads go.":
+        "Gebruik je qBittorrent al? Stel het in voor AirGrabber via Instellingen → Waar downloads naartoe gaan.",
+    "qBittorrent gets AirGrabber's look (light or dark like Windows) when set up; switch it in Settings → Where downloads go.":
+        "qBittorrent krijgt het uiterlijk van AirGrabber (licht of donker zoals Windows) als AirGrabber het instelt; aan of uit via Instellingen → Waar downloads naartoe gaan.",
+    "Click a series or film for its new info screen: a big picture, the trailer, the cast and the full story.":
+        "Klik op een serie of film voor het nieuwe infoscherm: een grote foto, de trailer, de cast en het hele verhaal.",
+    "Settings → Looks shows a real card at the size you pick.":
+        "Instellingen → Uiterlijk toont een echte kaart op de grootte die je kiest.",
+    "Quick setup chooses the look, download quality, card size and language in one go (Settings → Looks).":
+        "Snel instellen kiest het uiterlijk, de downloadkwaliteit, de kaartgrootte en de taal in één keer (Instellingen → Uiterlijk).",
     "My shows can be sorted (A–Z, next episode, latest download) and filtered (missing episodes, Auto on, ended).":
         "Mijn series kun je sorteren (A–Z, volgende aflevering, laatste download) en filteren (ontbrekende afleveringen, Auto aan, afgelopen).",
     "A new Downloads page shows how far along your downloads are on your NAS.":

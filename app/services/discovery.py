@@ -1,8 +1,10 @@
-"""TMDB discovery: TV and movie dashboards, cached details, and tracking TMDB shows via TVMaze.
+"""TMDB discovery: TV and movie dashboards, cached details, the info window's extras (the details
+in the app's language, the trailer and the cast), and tracking TMDB shows via TVMaze.
 
-Everything is cached in memory only: TMDB's lists for DASHBOARD_TTL, details for DETAILS_TTL.
-A TMDB show is tracked through its TVMaze counterpart, found by IMDb id, then TheTVDB id, then
-by name + first-air year.
+Everything is cached in memory only: TMDB's lists for DASHBOARD_TTL, details and extras for
+DETAILS_TTL. A TMDB show is tracked through its TVMaze counterpart, found by IMDb id, then
+TheTVDB id, then by name + first-air year; a TVMaze show's TMDB counterpart (for its extras) is
+the one it was matched from, else TMDB's by its IMDb id.
 """
 
 from __future__ import annotations
@@ -12,20 +14,26 @@ import functools
 import logging
 import unicodedata
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Generic, TypeVar
 
+from app.i18n import is_dutch, t
 from app.models import (
+    CastMember,
     DiscoverShow,
     DiscoverShowEntry,
+    MediaType,
     Movie,
     MovieDashboard,
     MovieDetails,
     Show,
+    TitleExtras,
+    TitleInfo,
     TVDashboard,
     TVDetails,
+    Video,
 )
 from app.services.library import LibraryService
 from app.services.tmdb import TMDBAuthError, TMDBClient, TMDBError, TMDBNotConfigured
@@ -48,8 +56,36 @@ UPCOMING_AHEAD = timedelta(days=21)
 DIGITAL_PAGES = 2
 # TVMaze search hits checked for a name + year match when no external id resolves.
 TRACK_SEARCH_LIMIT = 5
+CAST_LIMIT = 8  # the info window's cast row
+ENGLISH = "en-US"  # TMDB's language for what the app's own language has no text for
 
 _IGNORED_WORDS = frozenset({"the", "and", "&"})
+
+
+def _optional(
+    result: list[CastMember] | BaseException, kind: MediaType, item_id: int, what: str
+) -> list[CastMember]:
+    """A gathered extra, or none when it failed with a TMDBError that concerns only it
+    (logged); a missing or rejected key, cancellation and bugs propagate."""
+    if not isinstance(result, BaseException):
+        return result
+    if _is_fatal(result):
+        raise result
+    log.info("TMDB %s %d: no %s: %s", kind.value, item_id, what, result)
+    return []
+
+
+async def _optional_call(
+    call: Awaitable[T], kind: MediaType, item_id: int, what: str
+) -> T | None:
+    """`call`'s result, or None when it fails with a TMDBError that concerns only it."""
+    try:
+        return await call
+    except TMDBError as exc:
+        if _is_fatal(exc):
+            raise
+        log.info("TMDB %s %d: no %s: %s", kind.value, item_id, what, exc)
+        return None
 
 
 class NoTVMazeMatch(Exception):
@@ -80,6 +116,36 @@ def _first_failure(results: Iterable[object]) -> BaseException | None:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def tmdb_language() -> str:
+    """The language the info window asks TMDB for: the app's ("nl-NL" while Dutch is on)."""
+    return "nl-NL" if is_dutch() else ENGLISH
+
+
+def trailer_languages() -> tuple[str, ...]:
+    """The trailer languages preferred, best first (ISO 639-1): Dutch, then English while
+    Dutch is on; else English."""
+    return ("nl", "en") if is_dutch() else ("en",)
+
+
+def pick_trailer(videos: Iterable[Video], languages: Sequence[str]) -> Video | None:
+    """The trailer the info window offers: a YouTube video of type Trailer; official ones
+    first, then by language (`languages` best first, then any other), then the newest. None
+    when there is no such video."""
+    candidates = [
+        video
+        for video in videos
+        if video.site.casefold() == "youtube" and video.type.casefold() == "trailer"
+    ]
+
+    def rank(video: Video) -> tuple[bool, int, float]:
+        language = (video.language or "").casefold()
+        by_language = languages.index(language) if language in languages else len(languages)
+        published = video.published_at.timestamp() if video.published_at is not None else 0.0
+        return (not video.official, by_language, -published)
+
+    return min(candidates, key=rank, default=None)
 
 
 def _is_fresh(stored_at: datetime, now: datetime, ttl: timedelta) -> bool:
@@ -183,6 +249,14 @@ class DiscoveryService:
         self._generation = 0
         self._movie_details = _DetailsCache("tmdb-movie", tmdb.movie_details, DETAILS_TTL, clock)
         self._tv_details = _DetailsCache("tmdb-tv", tmdb.tv_details, DETAILS_TTL, clock)
+        # The info window's extras by TMDB id (in the app's language, which is fixed per run).
+        self._movies = _DetailsCache("tmdb-movie-item", tmdb.movie, DETAILS_TTL, clock)
+        self._movie_extras = _DetailsCache(
+            "tmdb-movie-extras", self._fetch_movie_extras, DETAILS_TTL, clock
+        )
+        self._tv_extras = _DetailsCache("tmdb-tv-extras", self._fetch_tv_extras, DETAILS_TTL, clock)
+        # TVMaze id → its TMDB id by IMDb id (None: TMDB knows none), for a show's extras.
+        self._tmdb_ids: dict[int, _Entry[int | None]] = {}
         # TMDB id → TVMaze id of every show matched through resolve() (and so track()): flags
         # it as tracked even when the two services spell its name differently.
         self._tracked_via_tmdb: dict[int, int] = {}
@@ -194,6 +268,10 @@ class DiscoveryService:
         self._generation += 1
         self._movie_details.clear()
         self._tv_details.clear()
+        self._movies.clear()
+        self._movie_extras.clear()
+        self._tv_extras.clear()
+        self._tmdb_ids.clear()
 
     # -- dashboards ----------------------------------------------------------------------------
 
@@ -371,6 +449,94 @@ class DiscoveryService:
     async def tv_details(self, tv_id: int) -> TVDetails:
         """TMDB's details of a show; cached for DETAILS_TTL, concurrent calls share one fetch."""
         return await self._tv_details.get(tv_id)
+
+    # -- the info window's extras --------------------------------------------------------------
+
+    @property
+    def has_tmdb_key(self) -> bool:
+        """Whether a TMDB key is set (not whether TMDB accepts it)."""
+        return self._tmdb.configured
+
+    async def movie(self, movie_id: int) -> Movie:
+        """A film by its TMDB id, as the cards know films (title, year, poster, overview,
+        rating); cached for DETAILS_TTL. TMDB errors propagate."""
+        return await self._movies.get(movie_id)
+
+    async def movie_extras(self, movie_id: int) -> TitleExtras:
+        """A film's details in the app's language (the overview in English where TMDB has none
+        in it), its trailer (`pick_trailer`) and its first CAST_LIMIT actors; cached for
+        DETAILS_TTL, concurrent calls share one fetch.
+
+        Raises TMDBNotConfigured without a key and TMDBAuthError for a rejected one; another
+        TMDBError when the details can't be read (a failing trailer or cast request only leaves
+        those out)."""
+        return await self._movie_extras.get(movie_id)
+
+    async def show_extras(self, show: Show) -> TitleExtras | None:
+        """A TVMaze show's extras (see `movie_extras`) from its TMDB counterpart: the one it was
+        matched from on Discover, else TMDB's show with its IMDb id. None when there is none.
+
+        Raises TMDBNotConfigured without a key, whatever the show."""
+        if not self._tmdb.configured:
+            raise TMDBNotConfigured(t("TMDB API key is not set"))
+        tmdb_id = await self._tmdb_id_of(show)
+        return None if tmdb_id is None else await self._tv_extras.get(tmdb_id)
+
+    async def _tmdb_id_of(self, show: Show) -> int | None:
+        for matched_tmdb_id, tvmaze_id in self._tracked_via_tmdb.items():
+            if tvmaze_id == show.id:
+                return matched_tmdb_id
+        if not show.imdb_id:
+            return None
+        cached = self._tmdb_ids.get(show.id)
+        if cached is not None and _is_fresh(cached.stored_at, self._clock(), DETAILS_TTL):
+            return cached.value
+        generation = self._generation
+        tmdb_id = await self._tmdb.find_tv(show.imdb_id)
+        if generation == self._generation:  # not cleared meanwhile
+            self._tmdb_ids[show.id] = _Entry(tmdb_id, self._clock())
+        return tmdb_id
+
+    async def _fetch_movie_extras(self, movie_id: int) -> TitleExtras:
+        return await self._fetch_extras(MediaType.MOVIE, movie_id)
+
+    async def _fetch_tv_extras(self, tv_id: int) -> TitleExtras:
+        return await self._fetch_extras(MediaType.TV, tv_id)
+
+    async def _fetch_extras(self, kind: MediaType, item_id: int) -> TitleExtras:
+        """The details and the cast at once, then the videos (in the preferred languages and
+        the title's own); the overview again in English when the app's language has none."""
+        language = tmdb_language()
+        info_result, cast_result = await asyncio.gather(
+            self._info(kind, item_id, language),
+            self._tmdb.cast(kind, item_id),
+            return_exceptions=True,
+        )
+        if isinstance(info_result, BaseException):
+            raise info_result
+        info = info_result
+        cast = _optional(cast_result, kind, item_id, "cast")
+        if not info.overview and language != ENGLISH:
+            english = await _optional_call(
+                self._info(kind, item_id, ENGLISH), kind, item_id, "English overview"
+            )
+            if english is not None and english.overview:
+                info = info.model_copy(update={"overview": english.overview})
+        preferred = trailer_languages()
+        asked = [code for code in dict.fromkeys((*preferred, info.original_language or "")) if code]
+        videos = await _optional_call(
+            self._tmdb.videos(kind, item_id, languages=asked), kind, item_id, "videos"
+        )
+        return TitleExtras(
+            info=info,
+            trailer=pick_trailer(videos or (), preferred),
+            cast=tuple(cast[:CAST_LIMIT]),
+        )
+
+    def _info(self, kind: MediaType, item_id: int, language: str) -> Awaitable[TitleInfo]:
+        if kind is MediaType.MOVIE:
+            return self._tmdb.movie_info(item_id, language=language)
+        return self._tmdb.tv_info(item_id, language=language)
 
     async def search_movies(self, query: str, *, limit: int = 12) -> list[Movie]:
         return await self._tmdb.search_movies(query, limit=limit)
