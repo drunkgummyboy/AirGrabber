@@ -1,7 +1,8 @@
 """The torrent-program status line with qBittorrent: found and set up ("installed and ready"),
 found but still with its pop-up (the "Set up qBittorrent for AirGrabber" button), setting up,
 waiting for qBittorrent to close, failing; installing it from here sets it up too (a failed
-install says why, with "Try again" where it helps); and the
+install says why, with "Try again" where it helps; an installed qBittorrent that Windows won't
+open torrents with points to Windows' Default apps instead of the website); and the
 "AirGrabber look in qBittorrent" switch (shown once set up, not over a theme of the user's own;
 switching waits for qBittorrent to close). A fake TorrentAppService; nothing is installed or
 changed on this PC."""
@@ -26,6 +27,7 @@ from app.models import (
 from app.ui import theme
 from app.ui import torrent_app_status as tas
 from app.ui.torrent_app_status import (
+    DEFAULT_APPS_URL,
     LOOK_SWITCH_TEXT,
     INSTALL_PROBLEM_TEXTS,
     LOOK_WAITING_TEXT,
@@ -100,6 +102,23 @@ class LookTests(unittest.TestCase):
         self.assertEqual(install_reason(QBittorrentInstallResult.INSTALLED), ("", False))
         plain = torrent_look(TorrentStatus.FAILED)  # no reason known: the line alone
         self.assertEqual((plain.reason, plain.retry_button), ("", False))
+
+    def test_installed_but_not_linked_points_to_default_apps(self) -> None:
+        look = torrent_look(TorrentStatus.FAILED, problem=QBittorrentInstallResult.NOT_LINKED)
+        self.assertEqual(
+            (look.text, look.color),
+            ("Windows doesn't open torrents with qBittorrent yet.", theme.DANGER),
+        )
+        self.assertTrue(look.default_apps_link and look.retry_button)
+        self.assertFalse(look.download_link)  # it is installed: no website
+        self.assertEqual(
+            look.reason,
+            "In Default apps, choose qBittorrent for .torrent and MAGNET, then click Try again.",
+        )
+        self.assertNotIn("Yes", look.reason)  # qBittorrent 5 never asks
+        self.assertEqual(DEFAULT_APPS_URL, "ms-settings:defaultapps?registeredAppMachine=qBittorrent")
+        other = torrent_look(TorrentStatus.FAILED, problem=QBittorrentInstallResult.OFFLINE)
+        self.assertFalse(other.default_apps_link)
 
 
 class FakeTorrentApp:
@@ -260,6 +279,24 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.install_calls, 2)
         self.assertFalse(widget._reason_row.winfo_manager())
         self.assertIsNone(widget.install_problem)
+
+    async def test_not_linked_offers_default_apps_and_try_again(self) -> None:
+        service = FakeTorrentApp(None, installed=QBittorrentInstallResult.NOT_LINKED)
+        widget = self.status(service)
+        widget.refresh()
+        await self.until(lambda: widget.status is TorrentStatus.MISSING)
+        widget._install_button.invoke()
+        await self.until(lambda: widget.status is TorrentStatus.FAILED)
+        self.assertEqual(
+            widget._label.cget("text"), "Windows doesn't open torrents with qBittorrent yet."
+        )
+        self.assertTrue(widget._apps_link.winfo_manager())
+        self.assertFalse(widget._get_link.winfo_manager())
+        self.assertTrue(widget._retry_button.winfo_manager())
+        service.installs = [QBittorrentInstallResult.INSTALLED]
+        widget._retry_button.invoke()
+        await self.until(lambda: widget.status is TorrentStatus.READY)
+        self.assertFalse(widget._apps_link.winfo_manager())
 
     async def test_without_winget_only_the_website_helps(self) -> None:
         service = FakeTorrentApp(None, installed=QBittorrentInstallResult.NO_WINGET)

@@ -79,8 +79,8 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(ids(EntryFilter.FINISHED), [4, 8])
         self.assertEqual(ids(EntryFilter.PROBLEMS), [5, 6])
 
-    def test_clear_finished_takes_the_ready_ones(self) -> None:
-        self.assertEqual(finished_ids(ENTRIES), [4, 8])
+    def test_clear_finished_takes_the_ready_and_the_gone_ones(self) -> None:
+        self.assertEqual(finished_ids(ENTRIES), [4, 6, 8])
         self.assertEqual(finished_ids(ENTRIES[:3]), [])
 
     def test_names(self) -> None:
@@ -329,7 +329,7 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row.entry.record.id for row in page._rows], [5, 6])
         page._clear_finished()
         await self.settle()
-        self.assertEqual(self.cleared, [[4, 8]])
+        self.assertEqual(self.cleared, [[4, 6, 8]])  # the ready ones and the gone one
         # Nothing finished: the button rests.
         self.status.publish(DownloadsOverview(entries=ENTRIES[:3], checked_at=NOW))
         page.set_filter(EntryFilter.FINISHED)

@@ -316,8 +316,10 @@ NL: dict[str, str] = {
         "De instellingen van deze pc staan installeren niet toe. Vraag het aan wie de pc beheert.",
     "Windows needs a restart first. Restart the PC, then try again.":
         "Windows moet eerst opnieuw opstarten. Start de pc opnieuw op en probeer het dan nog eens.",
-    "qBittorrent is installed but doesn't open torrents yet. Start it once and choose Yes when it asks.":
-        "qBittorrent is geïnstalleerd maar opent nog geen torrents. Start het één keer en kies Ja als het dat vraagt.",
+    "Windows doesn't open torrents with qBittorrent yet.": "Windows opent torrents nog niet met qBittorrent.",
+    "Open Default apps": "Standaard-apps openen",
+    "In Default apps, choose qBittorrent for .torrent and MAGNET, then click Try again.":
+        "Kies in Standaard-apps qBittorrent voor .torrent en MAGNET en klik dan op Opnieuw proberen.",
     "Try again, or get qBittorrent from its website and install it yourself.":
         "Probeer opnieuw, of download qBittorrent van de website en installeer het zelf.",
     # app/ui/torrent_app_status.py: AirGrabber's look in qBittorrent
@@ -645,8 +647,8 @@ NL: dict[str, str] = {
     "Only films": "Alleen films",
     # 2.0.7: app/ui/views/downloads_view.py (filter, Clear finished, the ⋯ menu)
     "✓ Clear finished": "✓ Voltooide wissen",
-    "Takes the finished downloads off this list. Your files and AirGrabber's history stay.":
-        "Haalt de voltooide downloads van deze lijst. Je bestanden en de geschiedenis van AirGrabber blijven.",
+    "Takes finished downloads, and ones your torrent program no longer has, off this list. Your files and AirGrabber's history stay.":
+        "Haalt voltooide downloads, en downloads die je torrentprogramma niet meer heeft, van deze lijst. Je bestanden en de geschiedenis van AirGrabber blijven.",
     "Nothing here right now.": "Hier staat nu niets.",
     "Open the folder": "Map openen",
     "Download again…": "Opnieuw downloaden…",
@@ -1161,6 +1163,12 @@ NL: dict[str, str] = {
     "Prowlarr: {path} not found (HTTP 404); check the URL":
         "Prowlarr: {path} niet gevonden (HTTP 404); controleer de URL",
     # app/whats_new.py
+    "After installing qBittorrent, AirGrabber now sets Windows to open downloads with it, so you don't have to.":
+        "Na het installeren van qBittorrent laat AirGrabber Windows downloads er nu zelf mee openen.",
+    "AirGrabber never does this when you already use another torrent program.":
+        "AirGrabber doet dit nooit als je al een ander torrentprogramma gebruikt.",
+    "\"Clear finished\" also clears downloads your torrent program no longer has.":
+        "\"Voltooide wissen\" wist ook downloads die je torrentprogramma niet meer heeft.",
     "An episode now counts as missing one day after it airs; until then it's marked New.":
         "Een aflevering telt nu pas een dag na uitzending als ontbrekend; tot dan staat er Nieuw.",
     "Quieter download buttons: ⬇ Auto picks the best copy, ☰ Choose… lets you pick, ↻ Again downloads it again.":

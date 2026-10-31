@@ -14,6 +14,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "2.0.8": (
+        N_(
+            "After installing qBittorrent, AirGrabber now sets Windows to open downloads with it, "
+            "so you don't have to."
+        ),
+        N_("AirGrabber never does this when you already use another torrent program."),
+        N_("\"Clear finished\" also clears downloads your torrent program no longer has."),
+    ),
     "2.0.7": (
         N_("An episode now counts as missing one day after it airs; until then it's marked New."),
         N_(

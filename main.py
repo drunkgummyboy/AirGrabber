@@ -5,8 +5,10 @@ window, run the async Tk loop.
 `--setup-qbittorrent` only sets qBittorrent up for AirGrabber (no "Add new torrent" pop-up for
 each download, AirGrabber's look; app/services/qbittorrent_setup.py) and exits: install.ps1 runs it right after it
 installed qBittorrent. On a new AirGrabber install it also turns qBittorrent's Web UI on (this PC only)
-and points AirGrabber at it (app/services/qbittorrent_local.py). No window; the exit code says how
-it went (`EXIT_CODES` there).
+and points AirGrabber at it (app/services/qbittorrent_local.py). First it makes Windows open magnet
+links and .torrent files with qBittorrent when no other torrent program is set (its installer
+doesn't; app/services/torrent_app.py). No window; the exit code says how it went (`EXIT_CODES`
+there).
 """
 
 from __future__ import annotations
@@ -123,15 +125,19 @@ def _run(paths: AppPaths, instance: InstanceLock, *, start_hidden: bool) -> int:
 
 
 def _setup_qbittorrent(paths: AppPaths) -> int:
-    """`--setup-qbittorrent` (install.ps1): turn qBittorrent's "Add new torrent" pop-up off and give
-    it AirGrabber's look (its theme copied into the data folder) unless qBittorrent runs; on a new
-    install also its Web UI for AirGrabber. Never raises; the exit code says how it went."""
+    """`--setup-qbittorrent` (install.ps1): make Windows open magnet links and .torrent files with
+    qBittorrent when no other torrent program is set (its installer doesn't), turn its "Add new
+    torrent" pop-up off and give it AirGrabber's look (its theme copied into the data folder)
+    unless qBittorrent runs; on a new install also its Web UI for AirGrabber. Never raises; the
+    exit code says how the setup went (linking never changes it)."""
     log.info("=== AirGrabber: setting qBittorrent up ===")
     try:
         if not ensure_requirements(paths):
             return 1
         from app.services.qbittorrent_setup import run_setup
+        from app.services.torrent_app import link_after_install
 
+        link_after_install()  # never raises
         return run_setup(data_dir=paths.root)
     except Exception:
         log.exception("Setting qBittorrent up failed")

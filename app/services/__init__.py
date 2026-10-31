@@ -34,7 +34,11 @@ from app.services.settings import SettingsService
 from app.services.subtitles import SubtitleService
 from app.services.synology import DownloadStationClient
 from app.services.tmdb import TMDBClient, TMDBError
-from app.services.torrent_app import TorrentAppService, qbittorrent_executable
+from app.services.torrent_app import (
+    QBittorrentLinker,
+    TorrentAppService,
+    qbittorrent_executable,
+)
 from app.services.tvmaze import TVMazeClient
 from app.services.updates import UpdateError, UpdateService
 from app.services.watchlist import WatchlistService
@@ -185,10 +189,12 @@ class Services:
                 # Connects a Prowlarr on this PC and adds public sites to it (once).
                 ProwlarrSetupService(http, settings),
                 # qBittorrent's setup, with AirGrabber's copy of its qBittorrent theme; it may
-                # point AirGrabber at qBittorrent's Web UI (the settings).
+                # point AirGrabber at qBittorrent's Web UI (the settings), and links an
+                # installed qBittorrent for torrents when nothing else is set (the linker).
                 TorrentAppService(
                     qbittorrent=QBittorrentSetup(theme=ThemeFolder.in_data_dir(paths.root)),
                     settings=settings,
+                    linker=QBittorrentLinker(),
                 ),
             )
             await services.watchlist.load()

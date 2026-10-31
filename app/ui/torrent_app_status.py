@@ -6,8 +6,11 @@ download, app/services/qbittorrent_setup.py): "✓ qBittorrent is installed and 
 else a "Set up qBittorrent for AirGrabber" button. An "Install qBittorrent" from here sets it up
 right after installing; when installing fails, a line under it says why in plain words (from
 winget's exit code: no internet, the permission prompt declined, ...) with the next step, and
-"Try again" where trying again can help ("Get qBittorrent" stays beside the failure). qBittorrent's settings only change while it is closed: while it runs, the
-line asks to close it and the setup tries again every few seconds.
+"Try again" where trying again can help ("Get qBittorrent" stays beside the failure). When
+qBittorrent is installed but Windows still won't open torrents with it (AirGrabber links it itself
+where it may: app/services/torrent_app.py), the line says so with a link to Windows' Default apps
+page for qBittorrent instead. qBittorrent's settings only change while it is closed: while it
+runs, the line asks to close it and the setup tries again every few seconds.
 
 Once qBittorrent is set up, an "AirGrabber look in qBittorrent" switch shows under the line (the
 setup turns that look on when qBittorrent has no theme yet; not shown while a theme of the user's
@@ -46,6 +49,9 @@ from app.ui.tooltip import add_tooltip
 
 QBITTORRENT = "qBittorrent"  # TorrentApp.name of qBittorrent (app/services/torrent_app.py)
 QBITTORRENT_URL = "https://www.qbittorrent.org/download"
+# Windows' Default apps page for qBittorrent (the name its installer registers under
+# RegisteredApplications); Windows versions without that page open Default apps itself.
+DEFAULT_APPS_URL = "ms-settings:defaultapps?registeredAppMachine=qBittorrent"
 INSTALL_BUTTON_WIDTH = 170
 RETRY_BUTTON_WIDTH = 120  # at least; wider when "Try again" needs it
 # Shown through t().
@@ -81,8 +87,7 @@ INSTALL_PROBLEM_TEXTS: dict[QBittorrentInstallResult, str] = {
         "Windows needs a restart first. Restart the PC, then try again."
     ),
     QBittorrentInstallResult.NOT_LINKED: N_(
-        "qBittorrent is installed but doesn't open torrents yet. Start it once and choose Yes "
-        "when it asks."
+        "In Default apps, choose qBittorrent for .torrent and MAGNET, then click Try again."
     ),
     QBittorrentInstallResult.FAILED: N_(
         "Try again, or get qBittorrent from its website and install it yourself."
@@ -113,6 +118,7 @@ class TorrentLook:
     color: theme.Color
     install_button: bool = False
     download_link: bool = False
+    default_apps_link: bool = False  # Windows' Default apps page, for qBittorrent
     setup_button: bool = False
     reason: str = ""  # under the line: why installing failed, and what to do
     retry_button: bool = False  # "Try again" beside the reason
@@ -140,6 +146,14 @@ def torrent_look(
         return TorrentLook(t("✓ qBittorrent installed"), theme.SUCCESS)
     if status is TorrentStatus.FAILED:
         reason, retry = install_reason(problem)
+        if problem is QBittorrentInstallResult.NOT_LINKED:
+            return TorrentLook(
+                t("Windows doesn't open torrents with qBittorrent yet."),
+                theme.DANGER,
+                default_apps_link=True,
+                reason=reason,
+                retry_button=retry,
+            )
         return TorrentLook(
             t("Couldn't install it automatically."),
             theme.DANGER,
@@ -206,7 +220,8 @@ def _alive(widget: tk.Misc) -> bool:
 
 class TorrentAppStatus(ctk.CTkFrame):
     """The status text, plus "Install qBittorrent" when none was found (or a "Get qBittorrent"
-    link when installing failed, and under it why, with "Try again" where it can help), and
+    link when installing failed, and under it why, with "Try again" where it can help; "Open
+    Default apps" instead when qBittorrent is there but Windows won't open torrents with it), and
     under it "Set up qBittorrent for AirGrabber" while
     qBittorrent still opens a pop-up for each download, or once it is set up the "AirGrabber
     look in qBittorrent" switch. `refresh()` looks for the program (again)."""
@@ -230,6 +245,7 @@ class TorrentAppStatus(ctk.CTkFrame):
             line, t("Install qBittorrent"), self._install, width=INSTALL_BUTTON_WIDTH
         )
         self._get_link = link_label(line, t("Get qBittorrent"), QBITTORRENT_URL)
+        self._apps_link = link_label(line, t("Open Default apps"), DEFAULT_APPS_URL)
         self._reason_row = ctk.CTkFrame(self, fg_color="transparent")
         retry_text = t("Try again")
         retry_width = max(RETRY_BUTTON_WIDTH, math.ceil(theme.font(15).measure(retry_text)) + 32)
@@ -400,6 +416,10 @@ class TorrentAppStatus(ctk.CTkFrame):
             self._get_link.pack(side="left", padx=(12, 0))
         else:
             self._get_link.pack_forget()
+        if look.default_apps_link:
+            self._apps_link.pack(side="left", padx=(12, 0))
+        else:
+            self._apps_link.pack_forget()
         if look.reason:
             self._reason.configure(text=look.reason)
             self._reason_row.pack(fill="x", pady=(10, 0), after=self._line)

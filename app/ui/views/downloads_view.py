@@ -9,10 +9,10 @@ while the list of grabs stays the same. A row opens the show's window (an episod
 info window (`on_open_film`; on IMDb when TMDB can't describe the film, or without it).
 
 At the top a filter (All / Downloading / Finished / Problems, `entry_group`; kept for the
-session) and "✓ Clear finished", which takes the finished grabs off the list (never out of the
-history, never their files: DownloadStatusService.clear). Each row has a ⋯ menu (`row_menu`):
-Open the folder (once its video is found in "Where finished downloads end up", else greyed
-with the reason as tip), Download again… (⬇ Auto / ☰ Choose…), Get subtitles (the CC menu of
+session) and "✓ Clear finished", which takes the finished grabs off the list, and those the
+program no longer has (never out of the history, never their files: DownloadStatusService.clear).
+Each row has a ⋯ menu (`row_menu`): Open the folder (once its video is found in "Where finished
+downloads end up", else greyed with the reason as tip), Download again… (⬇ Auto / ☰ Choose…), Get subtitles (the CC menu of
 app/ui/subtitle_control.py; its progress shows in the row) and Remove from list.
 """
 
@@ -69,7 +69,8 @@ PROGRESS_HINT = N_(
 )
 CLEAR_TEXT = N_("✓ Clear finished")
 CLEAR_TIP = N_(
-    "Takes the finished downloads off this list. Your files and AirGrabber's history stay."
+    "Takes finished downloads, and ones your torrent program no longer has, off this list. Your "
+    "files and AirGrabber's history stay."
 )
 MENU_TIP = N_("More options")
 NO_MATCH_TEXT = N_("Nothing here right now.")
@@ -145,12 +146,16 @@ def filter_entries(
     return tuple(entry for entry in entries if entry_group(entry.state) is chosen)
 
 
+_CLEARABLE = frozenset({DownloadState.READY, DownloadState.NOT_FOUND})
+
+
 def finished_ids(entries: Iterable[DownloadEntry]) -> list[int]:
-    """The history ids "✓ Clear finished" takes off the list: the ready grabs."""
+    """The history ids "✓ Clear finished" takes off the list: the ready grabs, and those the
+    program no longer has (mostly finished ones it has removed)."""
     return [
         entry.record.id
         for entry in entries
-        if entry.state is DownloadState.READY and entry.record.id is not None
+        if entry.state in _CLEARABLE and entry.record.id is not None
     ]
 
 
