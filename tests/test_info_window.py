@@ -20,6 +20,7 @@ from app import i18n
 from app.i18n import Language
 from app.models import (
     CastMember,
+    InfoLayout,
     Movie,
     MovieDetails,
     Show,
@@ -38,11 +39,19 @@ from app.ui.movie_details import (
 from app.ui.show_details import genre_names, synopsis
 from app.ui.title_info import (
     HERO_HEIGHT,
+    NBSP,
     NO_KEY_HINT,
     POSTER_GAP,
-    POSTER_OVERLAP,
+    POSTER_HEIGHT,
     POSTER_WIDTH,
+    SIDE_BAND,
+    SIDE_LEFT_WIDTH,
+    SIDE_OVERLAP,
+    SIDE_PAD,
+    SIDE_POSTER_GAP,
+    SIDE_POSTER_HEIGHT,
     TEXT_RISE,
+    CastList,
     FramedPoster,
     backdrop_size,
     compose_hero,
@@ -172,11 +181,14 @@ class SeriesTextTests(unittest.TestCase):
 
 
 class LayoutTests(unittest.TestCase):
-    def test_with_a_backdrop_the_poster_overlaps_it(self) -> None:
-        layout = masthead_layout(1245, 1.5, hero=True)
+    def test_tabs_the_poster_and_the_title_start_level_under_the_backdrop(self) -> None:
+        layout = masthead_layout(1245, 1.5, hero=True, layout=InfoLayout.TABS)
         self.assertEqual(layout.hero_height, round(HERO_HEIGHT * 1.5))
-        self.assertEqual(layout.poster[1], layout.hero_height - round(POSTER_OVERLAP * 1.5))
+        # About 230 units of backdrop above where the text starts.
         self.assertEqual(layout.text[1], layout.hero_height - round(TEXT_RISE * 1.5))
+        self.assertEqual(HERO_HEIGHT - TEXT_RISE, 230)
+        self.assertEqual(layout.poster[1], layout.text[1])  # the poster's top is the title's
+        self.assertEqual(layout.poster_size, (round(POSTER_WIDTH * 1.5), round(POSTER_HEIGHT * 1.5)))
         self.assertEqual(layout.text[0], layout.poster[0] + round((POSTER_WIDTH + POSTER_GAP) * 1.5))
         self.assertEqual(layout.text_width, 1245 - layout.text[0] - layout.poster[0])
         self.assertEqual(layout.pill_centre[0], 1245 // 2)
@@ -185,6 +197,19 @@ class LayoutTests(unittest.TestCase):
         layout = masthead_layout(860, 1.0, hero=False)
         self.assertEqual(layout.hero_height, 0)
         self.assertEqual(layout.poster[1], layout.text[1])
+
+    def test_side_the_poster_reaches_into_the_band_and_the_title_starts_under_it(self) -> None:
+        layout = masthead_layout(1800, 1.5, hero=True, layout=InfoLayout.SIDE)
+        self.assertEqual(layout.hero_height, round(SIDE_BAND * 1.5))
+        self.assertEqual(layout.poster, (round(SIDE_PAD * 1.5), layout.hero_height - round(SIDE_OVERLAP * 1.5)))
+        poster_bottom = layout.poster[1] + round(SIDE_POSTER_HEIGHT * 1.5)
+        self.assertEqual(layout.text, (layout.poster[0], poster_bottom + round(SIDE_POSTER_GAP * 1.5)))
+        self.assertEqual(layout.text_width, round(SIDE_LEFT_WIDTH * 1.5) - 2 * round(SIDE_PAD * 1.5))
+        self.assertEqual(layout.pill_centre[0], 900)  # centred on the band
+        self.assertLess(layout.pill_centre[1], layout.hero_height)
+        bare = masthead_layout(1800, 1.5, hero=False, layout=InfoLayout.SIDE)
+        self.assertEqual(bare.hero_height, 0)
+        self.assertGreater(bare.poster[1], 0)
 
 
 class ImageTests(unittest.TestCase):
@@ -336,13 +361,14 @@ class FilmWindowTests(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         window = self.window(windows)
         self.assertEqual(window.title(), "Harbour Lights")
-        texts = labels(window)
+        texts = [text.replace(NBSP, " ") for text in labels(window)]  # the meta line's
         self.assertIn("Harbour Lights", texts)
         self.assertIn("2026 · 2h 8m · ★ 7.6", texts)
         self.assertEqual(window.genres.names, ("Drama", "Mysterie"))
         self.assertEqual(window.summary_text, INFO.overview)
         self.assertTrue(window.masthead.hero_shown)
         self.assertEqual(window.masthead.trailer_url, "https://www.youtube.com/watch?v=officialNl4")
+        assert isinstance(window.cast, CastList)  # "side", the default
         self.assertEqual([entry.member.name for entry in window.cast.entries], ["Maren Holloway", "Bram"])
         self.assertIn("MH", texts)  # initials until (or without) a photo
         self.assertFalse(window.hint_shown)
@@ -370,6 +396,7 @@ class FilmWindowTests(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         window = self.window(windows)
         self.assertIsNone(window.masthead.trailer_url)
+        assert window.cast is not None
         self.assertEqual(window.cast.entries, [])
         self.assertFalse(window.cast.winfo_manager())
 

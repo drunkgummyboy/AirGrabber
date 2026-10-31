@@ -1,15 +1,18 @@
 """The film info window: the shared info look (app/ui/title_info.py: the backdrop with "▶ Watch
 trailer", the poster, title, meta line, genres, synopsis, cast) with a film's actions: ⬇ Auto
-(the one-click download) and ☰ Choose… (the search window), or once downloaded ✓ Downloaded
-with ↻ Again and the subtitles' CC ▾ (app/ui/row_actions.py, app/ui/subtitle_control.py); the
-watchlist button and IMDb.
+(the one-click download) and ☰ Choose… (its releases), or once downloaded ✓ Downloaded with
+↻ Again and the subtitles' CC ▾ (app/ui/row_actions.py, app/ui/subtitle_control.py); the
+watchlist button and IMDb. Its releases (app/ui/release_panel.py) are searched as soon as the
+window opens: beside the info ("side") or in the Releases tab ("tabs"), which says how many
+there are ("Releases (18)").
 
 Opened from the film cards' cover and title (the Movies page, the watchlist shelf, search
-results); one window per film (`MovieWindows` raises the open one). It shows what the card
-knew at once (TMDB's list data, in English), then TMDB's details (runtime, digital release,
-IMDb id) and the extras in the app's language (`DiscoveryService.movie_extras`). Without a
-TMDB key it keeps the card's data (the poster still loads: TMDB's pictures need no key), has
-no backdrop, trailer or cast, and a plain hint says what a key adds.
+results) and from every "☰ Choose…" of a film (on its releases); one window per film
+(`MovieWindows` raises the open one). It shows what the card knew at once (TMDB's list data,
+in English), then TMDB's details (runtime, digital release, IMDb id) and the extras in the
+app's language (`DiscoveryService.movie_extras`). Without a TMDB key it keeps the card's data
+(the poster still loads: TMDB's pictures need no key), has no backdrop, trailer or cast, and a
+plain hint says what a key adds.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
-from app.models import Movie, MovieDetails, TitleExtras
+from app.models import InfoLayout, Movie, MovieDetails, TitleExtras
 from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.ui import theme
 from app.ui.download_control import CORNER_RADIUS as CONTROL_RADIUS
@@ -37,12 +40,12 @@ from app.ui.media_cards import (
     tmdb_poster_size,
     tmdb_rating,
 )
+from app.ui.release_panel import MovieTarget, PanelServices, ReleasePanel
 from app.ui.row_actions import RowActions
 from app.ui.shelf_filter import MOVIE_GENRES, Genre, genre_name, genres_of
 from app.ui.subtitle_control import CCControl, SubtitleActions
 from app.ui.tasks import spawn
 from app.ui.title_info import (
-    BUTTON_GAP,
     TitleInfoWindow,
     exists,
     join_meta,
@@ -62,6 +65,11 @@ Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe 
 WATCHLIST_WIDTH = 170
 IMDB_WIDTH = 90
 OPEN_WAIT_S = 5.0  # a film known only by its id waits this long for TMDB's description
+
+
+def movie_title(movie: Movie) -> str:
+    """"Dune (2021)": a one-click download's label."""
+    return f"{movie.title} ({movie.year})" if movie.year else movie.title
 
 
 def movie_meta_line(
@@ -121,15 +129,20 @@ class MovieDetailsWindow(TitleInfoWindow):
         downloaded: Callable[[int], Awaitable[bool]] | None = None,
         subtitle_actions: SubtitleActions | None = None,
         subtitle_mark: Callable[[int], Awaitable[str]] | None = None,
+        layout: InfoLayout = InfoLayout.SIDE,
+        releases: PanelServices | None = None,
     ) -> None:
         """`downloaded(tmdb_id)`: whether the film is in the download history (✓ Downloaded
         and its subtitles); `subtitle_actions` / `subtitle_mark(tmdb_id)`: its CC ▾ menu and
-        the subtitles saved for it ("CC EN NL")."""
+        the subtitles saved for it ("CC EN NL"). `releases`: what its releases panel works
+        with (without it there is none)."""
         super().__init__(
             master,
             title=movie.title,
             images=images,
             poster=lambda width: movie.poster_url(tmdb_poster_size(width)),
+            layout=layout,
+            releases=releases,
         )
         self._movie = movie
         self._discovery = discovery
@@ -152,7 +165,6 @@ class MovieDetailsWindow(TitleInfoWindow):
             height=ROW_HEIGHT,
             align="left",
         )
-        self.download.pack(side="left")
         # The subtitles of a downloaded film (CC ▾), right of the download controls.
         self.cc_control = CCControl(
             self.buttons, key=movie_key(movie.id), actions=subtitle_actions, height=ROW_HEIGHT
@@ -165,9 +177,8 @@ class MovieDetailsWindow(TitleInfoWindow):
             width=WATCHLIST_WIDTH,
             height=ROW_HEIGHT,
         )
-        self.watch_button.pack(side="left", padx=(BUTTON_GAP, 0))
         # As tall as the Download row beside it, outlined like its ⋯.
-        ctk.CTkButton(
+        self.imdb_button = ctk.CTkButton(
             self.buttons,
             text="IMDb",
             width=IMDB_WIDTH,
@@ -180,13 +191,29 @@ class MovieDetailsWindow(TitleInfoWindow):
             border_width=1,
             border_color=theme.EDGE,
             command=self._open_imdb,
-        ).pack(side="left", padx=(BUTTON_GAP, 0))
+        )
+        self._show_buttons()
         self._paint()
 
         self.masthead.reserve_hero(discovery.has_tmdb_key)
         self._start(self._load_details(), "MovieDetailsWindow.details")
         self._start(self._load_extras(), "MovieDetailsWindow.extras")
         self.refresh_state()
+        # Its releases are searched right away.
+        self.open_releases(MovieTarget(movie), reveal=False)
+
+    def show_releases(self) -> ReleasePanel | None:
+        """On its releases ("☰ Choose…"): "tabs" chooses the Releases tab and scrolls to it."""
+        panel = self.open_releases(MovieTarget(self._movie))
+        if panel is not None:
+            panel.focus_table()
+        return panel
+
+    def _show_buttons(self) -> None:
+        """⬇ Auto + ☰ Choose… (or ✓ Downloaded + ↻ Again), CC ▾ while it has something to
+        show, the watchlist button, IMDb."""
+        cc = [self.cc_control] if self.cc_control.has_content else []
+        self.buttons.set_items([self.download, *cc, self.watch_button, self.imdb_button])
 
     def refresh_state(self) -> None:
         """Ask again whether the film was downloaded and which subtitles it has (a grab, or
@@ -211,10 +238,7 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._is_downloaded = downloaded
         self.download.set_base(self.download_base(), downloaded=downloaded)
         self.cc_control.show(mark, shown=downloaded)
-        if self.cc_control.has_content and not self.cc_control.winfo_manager():
-            self.cc_control.pack(side="left", padx=(BUTTON_GAP, 0), after=self.download)
-        elif not self.cc_control.has_content and self.cc_control.winfo_manager():
-            self.cc_control.pack_forget()
+        self._show_buttons()
 
     def download_base(self) -> Base:
         return movie_base(self._movie, self._details, self._today())
@@ -308,10 +332,12 @@ class MovieWindows:
         subtitle_actions: SubtitleActions | None = None,
         subtitle_mark: Callable[[int], Awaitable[str]] | None = None,
         subtitles_changed: Subscribe | None = None,
+        releases: PanelServices | None = None,
     ) -> None:
         """`downloaded` / `downloads_changed`: whether a film is in the download history and
         when that changes; `subtitle_actions`, `subtitle_mark` / `subtitles_changed`: a
-        downloaded film's CC ▾ and its saved subtitles (see MovieDetailsWindow)."""
+        downloaded film's CC ▾ and its saved subtitles (see MovieDetailsWindow). `releases`:
+        the releases panels' services; its settings say the layout a new window opens in."""
         self._master = master
         self._images = images
         self._discovery = discovery
@@ -320,6 +346,7 @@ class MovieWindows:
         self._downloaded = downloaded
         self._subtitle_actions = subtitle_actions
         self._subtitle_mark = subtitle_mark
+        self._releases = releases
         self._windows: dict[int, MovieDetailsWindow] = {}
         self._unsubscribe = [
             subscribe(self.refresh_all)
@@ -332,13 +359,22 @@ class MovieWindows:
         for window in self._live().values():
             window.refresh_state()
 
-    async def open_movie_id(self, movie_id: int) -> bool:
+    def layout(self) -> InfoLayout:
+        """The layout a window opens in now (Settings)."""
+        if self._releases is None:
+            return InfoLayout.SIDE
+        layout: InfoLayout = self._releases.settings.current.info_layout
+        return layout
+
+    async def open_movie_id(self, movie_id: int, *, releases: bool = False) -> bool:
         """Open (or raise) the window of a film known only by its TMDB id (a grab on the
-        Downloads page), once TMDB has described it. False when TMDB can't (no key, offline,
-        too slow): the caller falls back to IMDb."""
+        Downloads page), once TMDB has described it; `releases`: on its releases. False when
+        TMDB can't (no key, offline, too slow): the caller falls back to IMDb or says so."""
         window = self._live().get(movie_id)
         if window is not None:
             window.raise_window()
+            if releases:
+                window.show_releases()
             return True
         try:
             async with asyncio.timeout(OPEN_WAIT_S):
@@ -347,16 +383,21 @@ class MovieWindows:
             log.info("Film %d: no TMDB description to open its window: %s", movie_id, exc)
             return False
         if exists(self._master):
-            self.open_movie(movie)
+            self.open_movie(movie, releases=releases)
         return True
 
-    def open_movie(self, movie: Movie) -> None:
-        """Open the film's window, or raise it."""
+    def open_movie(self, movie: Movie, *, releases: bool = False) -> None:
+        """Open the film's window, or raise it; `releases`: on its releases ("☰ Choose…")."""
         window = self._live().get(movie.id)
-        if window is not None:
+        if window is None:
+            window = self._windows[movie.id] = self._new_window(movie)
+        else:
             window.raise_window()
-            return
-        self._windows[movie.id] = MovieDetailsWindow(
+        if releases:
+            window.show_releases()
+
+    def _new_window(self, movie: Movie) -> MovieDetailsWindow:
+        return MovieDetailsWindow(
             self._master,
             movie,
             images=self._images,
@@ -366,6 +407,8 @@ class MovieWindows:
             downloaded=self._downloaded,
             subtitle_actions=self._subtitle_actions,
             subtitle_mark=self._subtitle_mark,
+            layout=self.layout(),
+            releases=self._releases,
         )
 
     def close(self) -> None:

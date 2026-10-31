@@ -38,6 +38,7 @@ from app.ui.airdates_import import (
     PreviewFinder,
     ShowImporter,
 )
+from app.ui.borderless import make_borderless
 from app.ui.branding import load_logo, set_window_icon
 from app.ui.quick_setup import HEADING as QUICK_HEADING
 from app.ui.quick_setup import INTRO as QUICK_INTRO
@@ -46,6 +47,7 @@ from app.ui.dialog_kit import (
     BLOCK_GAP,
     BODY_SIZE,
     BUTTON_HEIGHT,
+    CLOSE_CLEARANCE,
     CONTENT_WIDTH,
     DETAIL_SIZE,
     HEADING_SIZE,
@@ -255,8 +257,11 @@ def finish_changes(checked_key: str | None) -> dict[str, Any]:
     return changes
 
 
-def _page_heading(page: ctk.CTkFrame, title: str, which: Page) -> None:
-    heading_row(page, title, step_label(page_step(which))).pack(fill="x")
+def _page_heading(page: ctk.CTkFrame, title: str, which: Page) -> ctk.CTkFrame:
+    """A step's heading with "Step N of 3", clear of the close button."""
+    row = heading_row(page, title, step_label(page_step(which)), right_room=CLOSE_CLEARANCE)
+    row.pack(fill="x")
+    return row
 
 
 # -- widgets -------------------------------------------------------------------------------------
@@ -341,8 +346,8 @@ class WelcomeDialog(ctk.CTkToplevel):
         remote: RemoteDownloads | None = None,  # None: one reading `settings` (main_window.py)
         on_restart: Callable[[], None] | None = None,
     ) -> None:
-        """`on_restart`: restarts AirGrabber (Quick setup's "Restart now" for another language;
-        without it the language applies at the next start)."""
+        """`on_restart`: restarts AirGrabber (Quick setup's "Restart now" for another language
+        or accent colour; without it they apply at the next start)."""
         super().__init__(master, fg_color=theme.BG)
         self._on_restart = on_restart
         self._skip_key = False  # Skip for now on step 4: Finish saves no key
@@ -356,6 +361,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._imported = False  # an airdates.tv import finished
         self._mode = DownloadMode.APP  # the welcome's suggestion, whatever is stored
         self._folder = settings.current.download_dir
+        self._headings: list[ctk.CTkFrame] = []  # the steps' headings (the window drags by them)
 
         self.title(t("Welcome to {app}", app=APP_NAME))
         set_window_icon(self)
@@ -393,6 +399,8 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._left = secondary_button(nav, "", self._on_left)
         self._right = primary_button(nav, "", self._on_right)
 
+        # No Escape; the ✕ (and Alt+F4) call `_close`: done with what was chosen so far.
+        self.borderless = make_borderless(self, drag_widgets=(self, body, nav, *self._headings))
         self._keep_tallest_size()
         self._show_page(Page.WELCOME)
         place_over(self, master)
@@ -428,7 +436,7 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_airdates(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, t(AIRDATES_HEADING), Page.AIRDATES)
+        self._headings.append(_page_heading(page, t(AIRDATES_HEADING), Page.AIRDATES))
         text_label(page, t(AIRDATES_INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )
@@ -445,7 +453,8 @@ class WelcomeDialog(ctk.CTkToplevel):
         self, master: Any, airdates: PreviewFinder, library: ShowImporter
     ) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, t(AIRDATES_IMPORT_HEADING), Page.AIRDATES_IMPORT)
+        heading = _page_heading(page, t(AIRDATES_IMPORT_HEADING), Page.AIRDATES_IMPORT)
+        self._headings.append(heading)
         self._airdates_panel = AirdatesImportPanel(
             page, airdates=airdates, library=library, on_done=self._on_imported
         )
@@ -454,7 +463,8 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_download(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, t("How do you want to download?"), Page.DOWNLOAD)
+        heading = _page_heading(page, t("How do you want to download?"), Page.DOWNLOAD)
+        self._headings.append(heading)
         text_label(
             page,
             t("You can change this later in Settings."),
@@ -517,7 +527,7 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_tmdb(self, master: Any, discovery: DiscoveryService) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, t(TMDB_HEADING), Page.TMDB)
+        self._headings.append(_page_heading(page, t(TMDB_HEADING), Page.TMDB))
         text_label(
             page,
             f"{t(TMDB_INTRO)} {t('You can skip this and do it later.')}",
@@ -530,7 +540,7 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _build_quick(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
-        _page_heading(page, t(QUICK_HEADING), Page.QUICK)
+        self._headings.append(_page_heading(page, t(QUICK_HEADING), Page.QUICK))
         text_label(page, t(QUICK_INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )
@@ -685,7 +695,7 @@ class WelcomeDialog(ctk.CTkToplevel):
             self._show_page(Page.QUICK)
 
     def _close(self) -> None:
-        """The window's X: done, with whatever was chosen so far."""
+        """The round ✕ (or Alt+F4): done, with whatever was chosen so far."""
         self._finish()
 
     def _final_changes(self) -> dict[str, Any]:

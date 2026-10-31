@@ -1,5 +1,5 @@
 """The "What's new in AirGrabber 2.0.5" dialog, shown once on the first start after an update
-(notes in app/whats_new.py). OK, Enter, Escape and the X close it."""
+(notes in app/whats_new.py). OK, Enter, Escape and the round ✕ close it."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.ui import theme
+from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.dialog_kit import (
     BODY_SIZE,
+    CLOSE_CLEARANCE,
     CONTENT_WIDTH,
     LINE_GAP,
     NAV_GAP,
@@ -44,7 +46,8 @@ class WhatsNewDialog(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         # Holds the content width.
         ctk.CTkFrame(body, width=CONTENT_WIDTH, height=1, fg_color="transparent").pack()
-        heading_row(body, title).pack(fill="x")
+        heading = heading_row(body, title, right_room=CLOSE_CLEARANCE)
+        heading.pack(fill="x")
         notes = ctk.CTkFrame(body, fg_color="transparent")
         notes.pack(fill="x", pady=(LINE_GAP * 2, 0))
         notes.grid_columnconfigure(1, weight=1)
@@ -69,5 +72,6 @@ class WhatsNewDialog(ctk.CTkToplevel):
 
         self.bind("<Return>", lambda _event: self.destroy())
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.borderless = make_borderless(self, drag_widgets=(self, body, heading, notes))
         place_over(self, master)
         activate_later(self)

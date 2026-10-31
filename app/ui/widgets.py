@@ -11,7 +11,9 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.ui import theme
+from app.ui.borderless import clearance, make_borderless
 from app.ui.branding import set_window_icon
+from app.ui.dialog_kit import LINE_GAP, activate_later, heading_row, place_over
 from app.ui.missing_control import MenuItem, popup_menu
 from app.ui.tasks import spawn
 
@@ -88,13 +90,180 @@ def destroy_tree(widget: Any) -> None:
     widget.destroy()
 
 
+UNDERLINE_BAR = 44  # the "underline" look's tab row: the names, the accent line, the thin line
+UNDERLINE_PAGE_GAP = 10  # between that row and the page
+UNDERLINE_LEFT = 5  # the first name's left margin (the main window's pages sit 15 in)
+UNDERLINE_TAB_GAP = 26  # between two names
+UNDERLINE_MARK = 3  # the accent line under the chosen name
+UNDERLINE_FONT_SIZE = 15
+
+
+class UnderlineTabs(ctk.CTkFrame):
+    """The "underline" look's tab row: the names left-aligned on the page's background, the
+    chosen one in TEXT with an ACCENT line under it, the others muted (TEXT under the pointer),
+    a thin line under them all. A click calls `on_select(name)`."""
+
+    def __init__(self, master: Any, *, on_select: Callable[[str], None]) -> None:
+        super().__init__(master, fg_color="transparent", corner_radius=0, height=UNDERLINE_BAR)
+        self._on_select = on_select
+        self._names: list[str] = []
+        self._current = ""
+        self._labels: dict[str, ctk.CTkLabel] = {}
+        self._marks: dict[str, ctk.CTkFrame] = {}
+        # The thin line: a plain frame (a CTkFrame this thin draws nothing), one physical pixel
+        # per scaling step, repainted on a switch between light and dark.
+        scaling = float(ctk.ScalingTracker.get_widget_scaling(self))
+        self._line = tk.Frame(
+            self,
+            height=max(1, round(scaling)),
+            background=theme.pick(theme.PANEL_EDGE),
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        theme.on_mode_change(
+            self._line, lambda: self._line.configure(background=theme.pick(theme.PANEL_EDGE))
+        )
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._names)
+
+    @property
+    def current(self) -> str:
+        return self._current
+
+    def set_names(self, names: Sequence[str], current: str) -> None:
+        """Show `names` (in order) with `current` chosen; rebuilt only when they changed."""
+        if list(names) != self._names:
+            for widget in (*self._labels.values(), *self._marks.values()):
+                widget.destroy()
+            self._labels, self._marks = {}, {}
+            self.grid_columnconfigure(len(self._names), weight=0)  # the old spare column
+            self._names = list(names)
+            for column, name in enumerate(self._names):
+                label = ctk.CTkLabel(
+                    self,
+                    text=name,
+                    height=UNDERLINE_BAR - UNDERLINE_MARK - 1,
+                    font=theme.font(UNDERLINE_FONT_SIZE, bold=True),
+                    cursor="hand2",
+                )
+                left = UNDERLINE_LEFT if column == 0 else 0
+                label.grid(row=0, column=column, sticky="sw", padx=(left, UNDERLINE_TAB_GAP))
+                label.bind("<Button-1>", lambda _event, n=name: self._on_select(n))
+                label.bind("<Enter>", lambda _event, n=name: self._hover(n, True))
+                label.bind("<Leave>", lambda _event, n=name: self._hover(n, False))
+                mark = ctk.CTkFrame(
+                    self, width=1, height=UNDERLINE_MARK, corner_radius=1, fg_color="transparent"
+                )
+                mark.grid(row=1, column=column, sticky="ew", padx=(left, UNDERLINE_TAB_GAP))
+                self._labels[name], self._marks[name] = label, mark
+            self.grid_columnconfigure(len(self._names), weight=1)
+            self._line.grid(row=2, column=0, columnspan=len(self._names) + 1, sticky="ew")
+        self.select(current)
+
+    def select(self, name: str) -> None:
+        """Mark `name` as chosen (the accent colour read now)."""
+        self._current = name
+        for each, label in self._labels.items():
+            chosen = each == name
+            label.configure(text_color=theme.TEXT if chosen else theme.TEXT_MUTED)
+            self._marks[each].configure(fg_color=theme.ACCENT if chosen else "transparent")
+
+    def _hover(self, name: str, inside: bool) -> None:
+        label = self._labels.get(name)
+        if label is not None and name != self._current:
+            label.configure(text_color=theme.TEXT if inside else theme.TEXT_MUTED)
+
+
 class Tabview(ctk.CTkTabview):
     """A CTkTabview whose tab pages keep their (light, dark) colour pair.
 
     CTk gives the pages only the current mode's colour, and what sits on them inherits that
     one colour as its background (a transparent frame inside a scrolling page, a card's
     rounded corners): after a switch between light and dark it would keep the old one.
+
+    `look="underline"` (the main window's pages): instead of CTk's segmented button over a
+    rounded box, the tab names sit left-aligned in a row of their own (`UnderlineTabs`) with an
+    accent line under the chosen one, and the pages have no box around them (BG, no border).
+    The default "segmented" look is CTk's own (the info window, Import Shows).
     """
+
+    def __init__(self, master: Any, *, look: str = "segmented", **kwargs: Any) -> None:
+        self._look = look
+        self._underline: UnderlineTabs | None = None
+        if look == "underline":
+            kwargs.setdefault("corner_radius", 0)
+            kwargs.setdefault("border_width", 0)
+            kwargs.setdefault("fg_color", theme.BG)
+        super().__init__(master, **kwargs)
+        if look == "underline":
+            self._underline = UnderlineTabs(self, on_select=self._tab_clicked)
+            self._underline.grid(row=0, column=0, sticky="nsew")
+
+    @property
+    def underline(self) -> UnderlineTabs | None:
+        """The "underline" look's tab row (None in the segmented look)."""
+        return self._underline
+
+    def _configure_grid(self) -> None:
+        if getattr(self, "_look", "segmented") != "underline":
+            super()._configure_grid()
+            return
+        self.grid_rowconfigure(0, weight=0, minsize=self._apply_widget_scaling(UNDERLINE_BAR))
+        self.grid_rowconfigure((1, 2), weight=0, minsize=0)
+        self.grid_rowconfigure(3, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+    def _set_grid_canvas(self) -> None:
+        if getattr(self, "_look", "segmented") != "underline":
+            super()._set_grid_canvas()
+            return
+        self._canvas.grid(row=3, column=0, sticky="nsew")
+
+    def _set_grid_segmented_button(self) -> None:
+        if getattr(self, "_look", "segmented") != "underline":
+            super()._set_grid_segmented_button()
+
+    def _set_grid_current_tab(self) -> None:
+        if self._look != "underline":
+            super()._set_grid_current_tab()
+            return
+        self._tab_dict[self._current_name].grid(
+            row=3,
+            column=0,
+            sticky="nsew",
+            pady=(self._apply_widget_scaling(UNDERLINE_PAGE_GAP), 0),
+        )
+
+    def _sync_underline(self) -> None:
+        if self._underline is not None:
+            self._underline.set_names(self._name_list, self._current_name)
+
+    def _tab_clicked(self, name: str) -> None:
+        """A tab name in the underline row: as a click on CTk's segmented button."""
+        if name == self._current_name or name not in self._tab_dict:
+            return
+        self._segmented_button.set(name)
+        self._segmented_button_callback(name)
+        self._sync_underline()
+
+    def insert(self, index: int, name: str) -> ctk.CTkFrame:
+        tab: ctk.CTkFrame = super().insert(index, name)
+        self._sync_underline()
+        return tab
+
+    def set(self, name: str) -> None:
+        super().set(name)
+        self._sync_underline()
+
+    def delete(self, name: str) -> None:
+        super().delete(name)
+        self._sync_underline()
+
+    def rename(self, old_name: str, new_name: str) -> None:
+        super().rename(old_name, new_name)
+        self._sync_underline()
 
     def _page_color(self) -> theme.Color:
         color: theme.Color = self._fg_color if self._fg_color != "transparent" else self._bg_color
@@ -352,8 +521,13 @@ class LoadingBar(ctk.CTkProgressBar):
         super().destroy()
 
 
+_INFO_PAD_X = 25
+_INFO_PAD_Y = 20
+
+
 def show_info(master: ctk.CTk | ctk.CTkToplevel, title: str, message: str) -> None:
-    """A small modal message box with an OK button, centred over `master`."""
+    """A small modal message box: `title` as its heading (it has no title bar), the message
+    and an OK button, over `master`."""
     dialog = ctk.CTkToplevel(master, fg_color=theme.BG)
     dialog.title(title)
     set_window_icon(dialog)
@@ -361,7 +535,9 @@ def show_info(master: ctk.CTk | ctk.CTkToplevel, title: str, message: str) -> No
     dialog.transient(master)
 
     body = ctk.CTkFrame(dialog, fg_color="transparent")
-    body.pack(fill="both", expand=True, padx=25, pady=20)
+    body.pack(fill="both", expand=True, padx=_INFO_PAD_X, pady=_INFO_PAD_Y)
+    heading = heading_row(body, title, right_room=clearance(_INFO_PAD_X))
+    heading.pack(fill="x", pady=(0, LINE_GAP))
     ctk.CTkLabel(
         body,
         text=message,
@@ -382,16 +558,6 @@ def show_info(master: ctk.CTk | ctk.CTkToplevel, title: str, message: str) -> No
     dialog.bind("<Escape>", lambda _event: dialog.destroy())
     dialog.bind("<Return>", lambda _event: dialog.destroy())
 
-    dialog.update_idletasks()
-    x = master.winfo_rootx() + (master.winfo_width() - dialog.winfo_reqwidth()) // 2
-    y = master.winfo_rooty() + (master.winfo_height() - dialog.winfo_reqheight()) // 3
-    dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
-
-    def activate() -> None:
-        # CTkToplevel can open behind its parent on Windows; raise and grab once it is mapped.
-        if dialog.winfo_exists():
-            dialog.lift()
-            dialog.focus_force()
-            dialog.grab_set()
-
-    dialog.after(150, activate)
+    make_borderless(dialog, drag_widgets=(dialog, body, heading))
+    place_over(dialog, master)
+    activate_later(dialog)

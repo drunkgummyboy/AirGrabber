@@ -365,7 +365,7 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
 
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a copy…"))
+        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a release…"))
         menu.buttons[0].invoke()
         self.assertEqual(self.again, [(4, True)])
         items[2].action()  # Get subtitles opens the language menu

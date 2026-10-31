@@ -103,8 +103,8 @@ NL: dict[str, str] = {
     "Downloading": "Downloaden",
     "App": "App",
     "What happens when you click Download.": "Wat er gebeurt als je op Downloaden klikt.",
-    "Which copy AirGrabber picks when you click Download, and for automatic downloads.":
-        "Welke versie AirGrabber kiest als je op Downloaden klikt, en bij automatische downloads.",
+    "Which release AirGrabber picks when you click Download, and for automatic downloads.":
+        "Welke release AirGrabber kiest als je op Downloaden klikt, en bij automatische downloads.",
     "What AirGrabber does on its own, without you clicking anything.":
         "Wat AirGrabber zelf doet, zonder dat je ergens op klikt.",
     "The Movies and Discover pages get their lists, posters and release dates from TMDB, a free film database.":
@@ -157,6 +157,18 @@ NL: dict[str, str] = {
         "De taal van de pagina's, knoppen en meldingen van AirGrabber.",
     "Restart AirGrabber to switch the language": "Herstart AirGrabber om van taal te wisselen",
     "Restart now": "Nu herstarten",
+    "Accent colour": "Accentkleur",
+    "The colour of buttons, chosen items and links.":
+        "De kleur van knoppen, gekozen onderdelen en links.",
+    "Applies after a restart": "Geldt na een herstart",
+    "Info window layout": "Indeling infovenster",
+    "Where a film's or series' info window shows its releases.":
+        "Waar het infovenster van een film of serie de releases toont.",
+    "Side by side": "Naast elkaar",
+    "Tabs": "Tabbladen",
+    "Spotlight": "Spotlight",
+    "Move the spotlight to the next title by itself":
+        "Spotlight wisselt vanzelf naar de volgende titel",
     "Look, download quality, card size and language, each with one click.":
         "Uiterlijk, downloadkwaliteit, kaartgrootte en taal, elk met één klik.",
     "Automatic updates": "Automatische updates",
@@ -350,8 +362,19 @@ NL: dict[str, str] = {
     "Card size": "Kaartgrootte",
     "How big the cards are on the calendar, Movies, Discover, My shows and in search results. Smaller cards fit more on the screen.":
         "Hoe groot de kaarten zijn in de kalender, Films, Ontdekken, Mijn series en de zoekresultaten. Met kleinere kaarten past er meer op het scherm.",
-    # app/ui/downloads_button.py
+    # app/ui/spotlight_band.py
     "Downloads": "Downloads",
+    # app/ui/spotlight.py
+    "Trending": "Populair",
+    "New to stream": "Net digitaal uit",
+    "Tonight": "Vanavond",
+    "Tomorrow": "Morgen",
+    "{show} — {code} “{name}”": "{show} — {code} ‘{name}’",
+    "{n} episode today": "{n} aflevering vandaag",
+    "{n} episodes today": "{n} afleveringen vandaag",
+    "{n} episode in the next 7 days": "{n} aflevering in de komende 7 dagen",
+    "{n} episodes in the next 7 days": "{n} afleveringen in de komende 7 dagen",
+    "{n} downloading": "{n} aan het downloaden",
     # app/ui/import_dialog.py
     "Show names": "Namen van series",
     "From airdates.tv": "Van airdates.tv",
@@ -362,6 +385,9 @@ NL: dict[str, str] = {
     "Enter at least one show.": "Vul minstens één serie in.",
     # app/ui/whats_new_dialog.py
     "OK": "OK",
+    # app/ui/borderless.py: the pop-ups' round ✕
+    "Close (Esc)": "Sluiten (Esc)",
+    "Close": "Sluiten",
     # app/ui/watchlist_button.py
     "+ Watchlist": "+ Kijklijst",
     "✓ On watchlist": "✓ Op kijklijst",
@@ -514,7 +540,7 @@ NL: dict[str, str] = {
     "📌 My watchlist": "📌 Mijn kijklijst",
     "Download when it's out": "Downloaden zodra uit",
     "Out now": "Nu uit",
-    "Waiting for a good copy": "Wacht op een goede versie",
+    "Waiting for a good release": "Wacht op een goede release",
     "Release date unknown": "Releasedatum onbekend",
     "{n} film": "{n} film",
     "{n} films": "{n} films",
@@ -526,7 +552,7 @@ NL: dict[str, str] = {
     "Out digitally {date}": "Digitaal op {date}",
     "In cinemas {date}": "In de bioscoop {date}",
     "Expected {date}": "Verwacht {date}",
-    "No good copy found in {days} days": "Geen goede versie gevonden in {days} dagen",
+    "No good release found in {days} days": "Geen goede release gevonden in {days} dagen",
     "{status} (searched {ago})": "{status} ({ago} gezocht)",
     # app/ui/search.py
     "Search Results: {query}": "Zoekresultaten: {query}",
@@ -589,8 +615,8 @@ NL: dict[str, str] = {
     "New · aired today": "Nieuw · vandaag",
     "New · aired yesterday": "Nieuw · gisteren",
     "New": "Nieuw",
-    "Aired less than a day ago: a copy usually turns up within hours. It counts as missing after a day.":
-        "Minder dan een dag geleden uitgezonden: meestal is er binnen enkele uren een versie. Na een dag telt hij als ontbrekend.",
+    "Aired less than a day ago: a release usually turns up within hours. It counts as missing after a day.":
+        "Minder dan een dag geleden uitgezonden: meestal is er binnen enkele uren een release. Na een dag telt hij als ontbrekend.",
     "airs today": "vandaag op tv",
     "airs tomorrow": "morgen op tv",
     "airs in {n} day": "over {n} dag op tv",
@@ -599,15 +625,15 @@ NL: dict[str, str] = {
     "new": "nieuw",
     # 2.0.7: app/ui/row_actions.py
     "⬇ Auto": "⬇ Auto",
-    "Download automatically: AirGrabber picks the best copy":
-        "Automatisch downloaden: AirGrabber kiest de beste versie",
+    "Download automatically: AirGrabber picks the best release":
+        "Automatisch downloaden: AirGrabber kiest de beste release",
     "☰ Choose…": "☰ Kiezen…",
-    "Choose a copy yourself from the search results": "Kies zelf een versie uit de zoekresultaten",
+    "Choose a release yourself from the search results": "Kies zelf een release uit de zoekresultaten",
     "↻ Again": "↻ Opnieuw",
     "Download it again": "Opnieuw downloaden",
     "⬇ Download again automatically": "⬇ Automatisch opnieuw downloaden",
-    "☰ Choose a copy…": "☰ Zelf een versie kiezen…",
-    "No good copy found": "Geen goede versie gevonden",
+    "☰ Choose a release…": "☰ Zelf een release kiezen…",
+    "No good release found": "Geen goede release gevonden",
     "None found": "Niets gevonden",
     # 2.0.7: app/ui/subtitle_control.py
     "Get subtitles": "Ondertitels ophalen",
@@ -679,6 +705,13 @@ NL: dict[str, str] = {
     "Cancelled": "Geannuleerd",
     "Out digitally since {date}": "Digitaal uit sinds {date}",
     "Out digitally on {date}": "Digitaal uit op {date}",
+    "Episodes": "Afleveringen",
+    "Cast": "Cast",
+    "← Episodes": "← Afleveringen",
+    "Click ☰ Choose… on an episode to see its releases here.":
+        "Klik op ☰ Kiezen… bij een aflevering om de releases hier te zien.",
+    "Releases · {code}": "Releases · {code}",
+    "+{n} more": "+{n} meer",
     # app/ui/tray.py
     "Open AirGrabber": "AirGrabber openen",
     "Check for new episodes now": "Nu naar nieuwe afleveringen kijken",
@@ -720,6 +753,21 @@ NL: dict[str, str] = {
     "Download quality": "Downloadkwaliteit",
     "Quick setup": "Snel instellen",
     "Like Windows": "Zoals Windows",
+    "Restart AirGrabber to switch the accent colour":
+        "Herstart AirGrabber om van accentkleur te wisselen",
+    "Restart AirGrabber to switch the language and the accent colour":
+        "Herstart AirGrabber om van taal en accentkleur te wisselen",
+    # app/ui/palettes.py (the accent colours)
+    "Slate": "Leisteen",
+    "Ocean": "Oceaan",
+    "Petrol": "Petrol",
+    "Teal": "Groenblauw",
+    "Sage": "Salie",
+    "Indigo": "Indigo",
+    "Plum": "Pruim",
+    "Rose": "Roze",
+    "Mocha": "Mokka",
+    "Graphite": "Grafiet",
     "Smaller files": "Kleinere bestanden",
     "720p · saves space": "720p · spaart ruimte",
     "Recommended": "Aanbevolen",
@@ -836,7 +884,7 @@ NL: dict[str, str] = {
     "Your NAS is almost full: {size} free": "Je NAS is bijna vol: nog {size} vrij",
     "Your download drive is almost full: {size} free":
         "Je downloadschijf is bijna vol: nog {size} vrij",
-    # app/ui/indexer_dialog.py
+    # app/ui/release_panel.py
     "ANY": "ALLES",
     "Downloading…": "Downloaden…",
     "Click a release above to select it": "Klik hierboven op een release om hem te kiezen",
@@ -852,8 +900,6 @@ NL: dict[str, str] = {
     "{n}d": "{n}d",
     "{n}y": "{n}j",
     "failed": "mislukt",
-    "{show}: Season {season} (Pack)": "{show}: seizoen {season} (volledig)",
-    "Rated {rating}": "Classificatie {rating}",
     "Searching indexers…": "Bronnen doorzoeken…",
     "Searching indexers for Season {season} pack…":
         "Bronnen doorzoeken naar volledig seizoen {season}…",
@@ -862,15 +908,12 @@ NL: dict[str, str] = {
         "{n} verborgen door de naam-/afleveringscontrole of je filters — Verbergen",
     "{n} hidden by name/episode matching or your filters — Show":
         "{n} verborgen door de naam-/afleveringscontrole of je filters — Tonen",
-    "Advanced Indexer Interrogation": "Uitgebreid zoeken in bronnen",
     "✎ Fix Match": "✎ Koppeling herstellen",
     "SEASON": "SEIZOEN",
     "EPISODE": "AFLEVERING",
     "VERSION": "VERSIE",
-    "Torrents": "Torrents",
+    "Releases": "Releases",
     "Selected": "Gekozen",
-    "Tracking": "Volgend",
-    "Stopped tracking {name}": "Je volgt {name} niet meer",
     "Now tracking {name} (TVMaze {id})": "Je volgt nu {name} (TVMaze {id})",
     "“{answer}” is not a TVMaze ID (a number).": "“{answer}” is geen TVMaze-ID (een getal).",
     "Fetching TVMaze show {id}…": "TVMaze-serie {id} ophalen…",
@@ -880,8 +923,8 @@ NL: dict[str, str] = {
     "Fix Match": "Koppeling herstellen",
     "Pack": "Alles",
     "Searching… {n} found": "Zoeken… {n} gevonden",
-    "Torrents ({n})": "Torrents ({n})",
-    "No matching torrents found.": "Geen passende torrents gevonden.",
+    "Releases ({n})": "Releases ({n})",
+    "No matching releases found.": "Geen passende releases gevonden.",
     # app/services/downloads.py
     "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose another option under \"Where downloads go\" in Settings.":
         "Er is geen torrentprogramma ingesteld op deze pc. Installeer er een, zoals qBittorrent, of kies een andere optie onder \"Waar downloads naartoe gaan\" in Instellingen.",
@@ -1163,6 +1206,18 @@ NL: dict[str, str] = {
     "Prowlarr: {path} not found (HTTP 404); check the URL":
         "Prowlarr: {path} niet gevonden (HTTP 404); controleer de URL",
     # app/whats_new.py
+    "A new top bar with a spotlight on tonight's episodes or new films; click it to open the title.":
+        "Een nieuwe bovenbalk met een spotlight op de afleveringen van vanavond of nieuwe films; klik erop om de titel te openen.",
+    "The info screen and the releases are now one window: pick a release right beside the info.":
+        "Het infoscherm en de releases zijn nu één venster: kies een release direct naast de info.",
+    "Choose how the info screen looks in Settings → Looks: side by side or with tabs.":
+        "Kies in Instellingen → Uiterlijk hoe het infoscherm eruitziet: naast elkaar of met tabbladen.",
+    "Pick one of ten accent colours in Settings → Looks or during setup.":
+        "Kies een van tien accentkleuren in Instellingen → Uiterlijk of tijdens het instellen.",
+    "Pop-up windows lost their title bar: drag them anywhere and close them with the round ✕.":
+        "Pop-upvensters hebben geen titelbalk meer: sleep ze waarheen je wilt en sluit ze met het ronde ✕.",
+    "The calendar fills each week with suggestions up to the height of its busiest day.":
+        "De kalender vult elke week met suggesties tot de hoogte van de drukste dag.",
     "After installing qBittorrent, AirGrabber now sets Windows to open downloads with it, so you don't have to.":
         "Na het installeren van qBittorrent laat AirGrabber Windows downloads er nu zelf mee openen.",
     "AirGrabber never does this when you already use another torrent program.":
@@ -1171,8 +1226,8 @@ NL: dict[str, str] = {
         "\"Voltooide wissen\" wist ook downloads die je torrentprogramma niet meer heeft.",
     "An episode now counts as missing one day after it airs; until then it's marked New.":
         "Een aflevering telt nu pas een dag na uitzending als ontbrekend; tot dan staat er Nieuw.",
-    "Quieter download buttons: ⬇ Auto picks the best copy, ☰ Choose… lets you pick, ↻ Again downloads it again.":
-        "Rustigere downloadknoppen: ⬇ Auto kiest de beste versie, ☰ Kiezen… laat je zelf kiezen, ↻ Opnieuw downloadt nog eens.",
+    "Quieter download buttons: ⬇ Auto picks the best release, ☰ Choose… lets you pick, ↻ Again downloads it again.":
+        "Rustigere downloadknoppen: ⬇ Auto kiest de beste release, ☰ Kiezen… laat je zelf kiezen, ↻ Opnieuw downloadt nog eens.",
     "Get subtitles yourself with CC ▾, and choose when and which kind in Settings → Subtitles.":
         "Haal zelf ondertitels op met CC ▾, en kies wanneer en welke soort in Instellingen → Ondertitels.",
     "The Downloads page can filter, clear finished downloads and open a download's folder.":

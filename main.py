@@ -84,7 +84,7 @@ def main() -> int:
 
 def _run(paths: AppPaths, instance: InstanceLock, *, start_hidden: bool) -> int:
     from app.services import Services
-    from app.ui import tasks
+    from app.ui import tasks, theme
     from app.ui.main_window import MainWindow
 
     # One event loop for everything. aiosqlite/httpx awaitables and Tk callbacks all run on it,
@@ -99,6 +99,9 @@ def _run(paths: AppPaths, instance: InstanceLock, *, start_hidden: bool) -> int:
         # The interface language for this run, before the first window builds its texts
         # (switching it in Settings takes a restart).
         set_language(services.settings.current.language)
+        # The accent colour's palette, likewise before the first widget takes its colours
+        # (app/ui/theme.py; a change in Settings takes a restart too).
+        theme.apply_accent(services.settings.current.accent)
         window = MainWindow(services, start_hidden=start_hidden, show_requests=instance.show_requested)
         _fix_start_menu_shortcut_soon(loop)
         window.async_mainloop(event_loop=loop)  # returns once the window is closed for good (Quit)

@@ -14,6 +14,17 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "2.0.9": (
+        N_(
+            "A new top bar with a spotlight on tonight's episodes or new films; click it to open "
+            "the title."
+        ),
+        N_("The info screen and the releases are now one window: pick a release right beside the info."),
+        N_("Choose how the info screen looks in Settings → Looks: side by side or with tabs."),
+        N_("Pick one of ten accent colours in Settings → Looks or during setup."),
+        N_("Pop-up windows lost their title bar: drag them anywhere and close them with the round ✕."),
+        N_("The calendar fills each week with suggestions up to the height of its busiest day."),
+    ),
     "2.0.8": (
         N_(
             "After installing qBittorrent, AirGrabber now sets Windows to open downloads with it, "
@@ -25,7 +36,7 @@ NOTES: dict[str, tuple[str, ...]] = {
     "2.0.7": (
         N_("An episode now counts as missing one day after it airs; until then it's marked New."),
         N_(
-            "Quieter download buttons: ⬇ Auto picks the best copy, ☰ Choose… lets you pick, "
+            "Quieter download buttons: ⬇ Auto picks the best release, ☰ Choose… lets you pick, "
             "↻ Again downloads it again."
         ),
         N_("Get subtitles yourself with CC ▾, and choose when and which kind in Settings → Subtitles."),

@@ -54,11 +54,11 @@ if TYPE_CHECKING:
 SHELF_TITLE = N_("📌 My watchlist")
 AUTO_TEXT = N_("Download when it's out")
 OUT_NOW_TEXT = N_("Out now")
-WAITING_TEXT = N_("Waiting for a good copy")
+WAITING_TEXT = N_("Waiting for a good release")
 UNKNOWN_TEXT = N_("Release date unknown")
 
 STATUS_SIZE = 12  # font size of the status line
-STATUS_LINES = 2  # the status line's room: "Waiting for a good copy / (searched 2 h ago)"
+STATUS_LINES = 2  # the status line's room: "Waiting for a good release / (searched 2 h ago)"
 STATUS_GAP = 6  # between the status line and the bottom row
 CHIP_HEIGHT = 22
 CHIP_PAD = 8  # inside a chip, left and right
@@ -124,11 +124,11 @@ class WatchStatus:
 
 
 def watch_status(entry: WatchlistEntry, today: date, now: datetime) -> WatchStatus:
-    """Given up → "No good copy found in 30 days" + Download; not out yet → when it comes out
-    + the switch; out with the switch on → "Waiting for a good copy (searched 2 h ago)" + the
+    """Given up → "No good release found in 30 days" + Download; not out yet → when it comes out
+    + the switch; out with the switch on → "Waiting for a good release (searched 2 h ago)" + the
     switch; out with the switch off → "Out now" + Download."""
     if entry.gave_up:
-        text = t("No good copy found in {days} days", days=GIVE_UP_AFTER.days)
+        text = t("No good release found in {days} days", days=GIVE_UP_AFTER.days)
         return WatchStatus(text, "gave_up", chip=False, bottom="download")
     if not is_out(entry, today):
         return WatchStatus(release_text(entry, today), "soon", chip=True, bottom="switch")
@@ -293,7 +293,7 @@ class WatchlistCard(PosterCard):
                 wraplength=0,
             )
         else:
-            # "Waiting for a good copy" / "(searched 2 h ago)": the aside on a line of its own.
+            # "Waiting for a good release" / "(searched 2 h ago)": the aside on a line of its own.
             text = status.text.replace(" (", "\n(")
             text = fit_to_lines(text, room, STATUS_LINES, self._status_font.measure)
             self._status_label.configure(

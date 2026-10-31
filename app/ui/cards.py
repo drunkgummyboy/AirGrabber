@@ -191,16 +191,21 @@ class RoundButton(tk.Canvas):
         size: int,
         font: ctk.CTkFont,
         command: Callable[[], None],
-        bg: theme.Color = theme.BG,
-        edge: theme.Color = theme.EDGE,
-        hover: theme.Color = theme.HOVER,
+        bg: theme.Color | None = None,
+        edge: theme.Color | None = None,
+        hover: theme.Color | None = None,
         text_color: theme.Color = theme.TEXT,
     ) -> None:
+        """`bg`, `edge`, `hover`: BG, EDGE and HOVER when not given (read now: the accent's)."""
         super().__init__(master, highlightthickness=0, borderwidth=0, cursor="hand2")
         self._size = size
         self._font = font
         self._command = command
-        self._colors = (bg, edge, hover)
+        self._colors = (
+            theme.BG if bg is None else bg,
+            theme.EDGE if edge is None else edge,
+            theme.HOVER if hover is None else hover,
+        )
         self._text_color = text_color
         self._images: tuple[ImageTk.PhotoImage, ImageTk.PhotoImage] | None = None
         self._hovered = False

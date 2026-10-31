@@ -27,8 +27,10 @@ from app import APP_NAME
 from app.i18n import N_, t
 from app.services import SettingsService
 from app.ui import theme
+from app.ui.borderless import make_borderless
 from app.ui.branding import load_logo, set_window_icon
 from app.ui.dialog_kit import (
+    CLOSE_CLEARANCE,
     CONTENT_WIDTH,
     LINE_GAP,
     NAV_GAP,
@@ -350,7 +352,7 @@ def _alive(widget: tk.Misc) -> bool:
 
 class TrayNotice(ctk.CTkToplevel):
     """Shown the first time the window closes to the tray: where AirGrabber went and how to quit
-    it. Got it, Enter, Escape and the X all call `on_done` once."""
+    it. Got it, Enter, Escape and the round ✕ all call `on_done` once."""
 
     def __init__(self, master: ctk.CTk, *, on_done: Callable[[], None]) -> None:
         super().__init__(master, fg_color=theme.BG)
@@ -366,7 +368,8 @@ class TrayNotice(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         # Holds the content width.
         ctk.CTkFrame(body, width=CONTENT_WIDTH, height=1, fg_color="transparent").pack()
-        heading_row(body, t(NOTICE_TITLE)).pack(fill="x")
+        heading = heading_row(body, t(NOTICE_TITLE), right_room=CLOSE_CLEARANCE)
+        heading.pack(fill="x")
         text_label(body, t(NOTICE_TEXT)).pack(anchor="w", pady=(LINE_GAP, 0))
         nav = ctk.CTkFrame(body, fg_color="transparent")
         nav.pack(fill="x", pady=(NAV_GAP, 0))
@@ -374,6 +377,8 @@ class TrayNotice(ctk.CTkToplevel):
 
         self.bind("<Return>", lambda _event: self._done())
         self.bind("<Escape>", lambda _event: self._done())
+        # Its ✕ (and Alt+F4) call `_done`.
+        self.borderless = make_borderless(self, drag_widgets=(self, body, heading))
         place_over(self, master)
         activate_later(self)
 

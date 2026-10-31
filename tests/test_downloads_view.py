@@ -1,5 +1,5 @@
-"""The Downloads page and the header's ⬇ button: their texts (state, progress, where, when,
-subtitles, the almost-full banner, the badge) and the widgets on a hidden Tk root."""
+"""The Downloads page: its texts (state, progress, where, when, subtitles, the almost-full
+banner, the badge) and its widgets on a hidden Tk root (the band's ⬇ badge: test_spotlight)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from app.models import (
     MediaType,
     Show,
 )
-from app.ui.downloads_button import DownloadsButton
 from app.ui.views.downloads_view import (
     EMPTY_TITLE,
     PROGRESS_HINT,
@@ -310,32 +309,6 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(True, self.status.visible)
         self.assertEqual(self.status.visible[-1], False)
         self.assertEqual(self.status.listeners, [])
-
-    async def test_button_badge_and_space_notice(self) -> None:
-        reports: list[tuple[str, int]] = []
-        button = DownloadsButton(
-            self.root,
-            downloads=self.status,  # type: ignore[arg-type]
-            command=lambda: None,
-            report=lambda text, ms: reports.append((text, ms)),
-        )
-        button.pack()
-        self.root.update()
-        self.status.publish(DownloadsOverview(entries=(entry(1), entry(2, DownloadState.WAITING))))
-        self.root.update()
-        self.assertEqual(button._badge.cget("text"), "2")
-        self.assertEqual(button._badge.winfo_manager(), "place")
-        self.status.publish(DownloadsOverview(entries=(entry(1, DownloadState.READY, 1.0),)))
-        self.root.update()
-        self.assertEqual(button._badge.winfo_manager(), "")
-        space = FreeSpace(free_bytes=12 * GB, low=True)
-        for listener in self.status.space_listeners:
-            listener(space)
-        self.assertEqual(reports, [("⚠ Your NAS is almost full: 12 GB free", 15_000)])
-        button.set_selected(True)
-        button.destroy()
-        self.assertEqual(self.status.listeners, [])
-        self.assertEqual(self.status.space_listeners, [])
 
 
 if __name__ == "__main__":

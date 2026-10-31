@@ -78,11 +78,14 @@ from app.models.downloads import (
     RemoteStatus,
     RemoteTask,
 )
+from app.models.spotlight import Spotlight, SpotlightItem, SpotlightReason, SpotlightSide
 from app.models.settings import (
     SUBTITLE_LANGUAGES,
+    Accent,
     CardSize,
     DownloadMode,
     HearingImpaired,
+    InfoLayout,
     QualityProfile,
     RemoteKind,
     Settings,
@@ -153,6 +156,10 @@ __all__ = [
     "ShowActivity",
     "ShowDetails",
     "ShowSearchResult",
+    "Spotlight",
+    "SpotlightItem",
+    "SpotlightReason",
+    "SpotlightSide",
     "SubtitleAccount",
     "SubtitleEvent",
     "SubtitleFetch",
@@ -176,5 +183,7 @@ __all__ = [
     "Video",
     "WatchlistEntry",
     "ThemeMode",
+    "Accent",
+    "InfoLayout",
     "Weekday",
 ]

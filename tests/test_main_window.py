@@ -59,6 +59,12 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "theme_mode": "light",
     # The language takes effect at the next start.
     "language": "nl",
+    # The info window's layout: a window reads it when it opens.
+    "info_layout": "tabs",
+    # The spotlight band turning by itself: the band follows it.
+    "spotlight_motion": False,
+    # The accent colour applies at the next start.
+    "accent": "ocean",
 }
 
 PAGE_CHANGES: dict[str, Any] = {

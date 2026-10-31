@@ -44,6 +44,9 @@ DARK_BEFORE = {
     "SECTION_NEW": "#2ECC71",
     "WARNING": "#F39C12",
     "PANEL_EDGE": "gray20",
+    "CLOSE_BUTTON": "gray15",  # CHIP: a pop-up's round close button
+    "CLOSE_BUTTON_HOVER": "#C0392B",  # DANGER_BUTTON
+    "CLOSE_GLYPH": "#A4B2C6",  # TEXT_MUTED
     "CHIP": "gray15",
     "CHIP_HOVER": "gray25",
     "PENDING": "#F1C40F",
@@ -192,6 +195,8 @@ class ContrastTests(unittest.TestCase):
         for text in (theme.TEXT, theme.TEXT_MUTED):
             self.assert_readable(text, theme.ROW_SELECTED)  # the search window's chosen row
         self.assert_readable(theme.NOT_AIRED_TEXT, theme.NOT_AIRED)
+        self.assert_readable(theme.CLOSE_GLYPH, theme.CLOSE_BUTTON)  # a pop-up's round ✕
+        self.assert_readable(theme.ON_COLOR, theme.CLOSE_BUTTON_HOVER)
 
     def test_suggestions(self) -> None:
         for text in (theme.TEXT_DIM, theme.TEXT_MUTED, theme.SUGGESTION_TEXT):
@@ -261,6 +266,19 @@ class ModeChangeTests(unittest.TestCase):
         self.assertIn(callback, ctk.AppearanceModeTracker.callback_list)
         frame.destroy()
         self.assertNotIn(callback, ctk.AppearanceModeTracker.callback_list)
+
+    def test_early_repaints_right_after_its_window(self) -> None:
+        window = ctk.CTkToplevel(self.root)
+        self.addCleanup(window.destroy)
+        late = tk.Frame(window)
+        theme.on_mode_change(late, lambda: None)
+        normal = list(ctk.AppearanceModeTracker.callback_list)
+        theme.on_mode_change(tk.Frame(window), lambda: None, early=True)
+        (callback,) = [c for c in ctk.AppearanceModeTracker.callback_list if c not in normal]
+        callbacks = ctk.AppearanceModeTracker.callback_list
+        own = callbacks.index(window._set_appearance_mode)
+        self.assertEqual(callbacks.index(callback), own + 1)
+        self.assertLess(callbacks.index(callback), callbacks.index(normal[-1]))
 
     def test_a_toplevel_keeps_it_when_a_child_goes(self) -> None:
         top = tk.Toplevel(self.root)

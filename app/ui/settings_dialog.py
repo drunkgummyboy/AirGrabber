@@ -30,9 +30,11 @@ from app.indexers import (
     YtsIndexer,
 )
 from app.models import (
+    Accent,
     CardSize,
     DownloadMode,
     HearingImpaired,
+    InfoLayout,
     ProwlarrStatus,
     QualityProfile,
     Settings,
@@ -60,6 +62,8 @@ from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
 from app.services.tmdb import TMDBError
 from app.ui import theme
+from app.ui.accent_picker import AccentSwatches
+from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM, make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.card_preview import CardSizePreview
 from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
@@ -139,7 +143,7 @@ SECTION_ICONS: dict[str, str] = {
 SECTION_NOTES: dict[str, str] = {
     SECTION_WHERE: N_("What happens when you click Download."),
     SECTION_QUALITY: N_(
-        "Which copy AirGrabber picks when you click Download, and for automatic downloads."
+        "Which release AirGrabber picks when you click Download, and for automatic downloads."
     ),
     SECTION_AUTOMATIC: N_("What AirGrabber does on its own, without you clicking anything."),
     SECTION_INFO: N_(
@@ -211,6 +215,13 @@ QUICK_SETUP_NOTE = N_("Look, download quality, card size and language, each with
 
 THEME_TITLE = N_("Theme")
 THEME_TEXT = N_("Light or dark. Follow Windows uses the same look as your other Windows apps.")
+ACCENT_TITLE = N_("Accent colour")
+ACCENT_TEXT = N_("The colour of buttons, chosen items and links.")
+ACCENT_RESTART_TEXT = N_("Applies after a restart")
+INFO_LAYOUT_TITLE = N_("Info window layout")
+INFO_LAYOUT_TEXT = N_("Where a film's or series' info window shows its releases.")
+SPOTLIGHT_TITLE = N_("Spotlight")
+SPOTLIGHT_SWITCH = N_("Move the spotlight to the next title by itself")
 
 LANGUAGE_TITLE = N_("Language")
 LANGUAGE_TEXT = N_("The language of AirGrabber's pages, buttons and messages.")
@@ -242,7 +253,9 @@ _ITEM_PAD = (8, 4, 10)  # left of the icon, between icon and name, right of the 
 _PAGE_WIDTH = 580
 _PAGE_PAD_LEFT = 22
 _PAGE_PAD_RIGHT = 8  # the scrollbar has its own inset
-_PAGE_TOP = 20
+# The page (and the sidebar, level with it) starts under the close button (no title bar,
+# app/ui/borderless.py): what scrolls never passes under it.
+_PAGE_TOP = CLOSE_ROOM + CLOSE_GAP
 _PAGE_BOTTOM = 20  # under a page's last box
 _MAX_PAGE_HEIGHT = 680  # a taller page scrolls; the dialog stays about as tall as it was
 SCREEN_RESERVE = 80  # left free for the taskbar and the title bar
@@ -316,6 +329,19 @@ def theme_from_name(name: str) -> ThemeMode:
         if theme_name(mode) == name:
             return mode
     raise ValueError(f"unknown theme name: {name!r}")
+
+
+# Settings → Looks → Info window layout, in the order the box shows them.
+INFO_LAYOUT_NAMES: dict[InfoLayout, str] = {
+    InfoLayout.SIDE: N_("Side by side"),
+    InfoLayout.TABS: N_("Tabs"),
+}
+
+
+def accent_needs_restart(chosen: Accent, running: Accent) -> bool:
+    """Whether the Accent colour box shows "Applies after a restart": the colours are set once
+    at startup (theme.apply_accent)."""
+    return chosen is not running
 
 
 # Settings → Subtitles' three choices, in the order their boxes show them.
@@ -491,6 +517,9 @@ _FIELD_LABELS = {
     "first_day": WEEK_TITLE,
     "card_size": CARD_SIZE_LABEL,
     "theme_mode": THEME_TITLE,
+    "accent": ACCENT_TITLE,
+    "info_layout": INFO_LAYOUT_TITLE,
+    "spotlight_motion": SPOTLIGHT_TITLE,
     "language": LANGUAGE_TITLE,
     "tmdb_api_key": TMDB_KEY_LABEL,
     "auto_update": SECTION_UPDATES,
@@ -532,6 +561,9 @@ _FIELD_SECTIONS: dict[str, str] = {
     "card_size": SECTION_LOOKS,
     "first_day": SECTION_LOOKS,
     "theme_mode": SECTION_LOOKS,
+    "accent": SECTION_LOOKS,
+    "info_layout": SECTION_LOOKS,
+    "spotlight_motion": SECTION_LOOKS,
     "language": SECTION_LOOKS,
     "auto_update": SECTION_UPDATES,
     "disabled_indexers": SECTION_ADVANCED,
@@ -837,6 +869,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self._first_day = ctk.StringVar(value=weekday_name(current.first_day))
         self._card_size = ctk.StringVar(value=CARD_SIZE_LABELS[current.card_size])
         self._theme_mode = ctk.StringVar(value=theme_name(current.theme_mode))
+        self._accent_picker: AccentSwatches | None = None  # Looks → Accent colour
+        self._info_layout = ctk.StringVar(
+            value=choice_name(INFO_LAYOUT_NAMES, current.info_layout)
+        )
+        self._spotlight_motion = ctk.BooleanVar(value=current.spotlight_motion)
         self._language = ctk.StringVar(value=current.language.native_name)
         self._download_dir = ctk.StringVar(value=str(current.download_dir))
         self._tmdb_key = ctk.StringVar(value=current.tmdb_api_key.get_secret_value())
@@ -951,6 +988,7 @@ class SettingsDialog(ctk.CTkToplevel):
             self._show_update(update_info)
 
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.borderless = make_borderless(self, drag_widgets=(self, body, self._sidebar))
         self._fit_size()
         place_over(self, master)
         activate_later(self)
@@ -1496,6 +1534,7 @@ class SettingsDialog(ctk.CTkToplevel):
         looks = page.box(t(THEME_TITLE), t(THEME_TEXT))
         themes = [theme_name(mode) for mode in THEME_NAMES]
         looks.add(self._segmented(looks.body, themes, self._theme_mode, width=360), sticky="w")
+        self._build_accent(page)
         cards = page.box(t(CARD_SIZE_LABEL), t(CARD_SIZE_TIP))
         cards.add(
             self._segmented(
@@ -1513,10 +1552,67 @@ class SettingsDialog(ctk.CTkToplevel):
             self._card_size.trace_add("write", lambda *_args: self._card_size_changed())
             if self._library is not None:
                 self._preview_task = spawn(self._preview_show(self._library), name="card-preview")
+        layout = page.box(t(INFO_LAYOUT_TITLE), t(INFO_LAYOUT_TEXT))
+        layouts = [choice_name(INFO_LAYOUT_NAMES, value) for value in INFO_LAYOUT_NAMES]
+        layout.add(self._segmented(layout.body, layouts, self._info_layout), sticky="w")
+        spotlight = page.box(t(SPOTLIGHT_TITLE))
+        spotlight.add(
+            ctk.CTkSwitch(
+                spotlight.body,
+                text=t(SPOTLIGHT_SWITCH),
+                variable=self._spotlight_motion,
+                height=BUTTON_HEIGHT,
+                font=theme.font(DETAIL_SIZE),
+                progress_color=theme.ACCENT,
+            ),
+            sticky="w",
+        )
         week = page.box(t(WEEK_TITLE), t(WEEK_TEXT))
         line = week.frame_row()
         self._option_menu(line, self._first_day, [weekday_name(day) for day in Weekday])
         return page
+
+    def _build_accent(self, page: _Page) -> None:
+        """The Accent colour box: a swatch per palette, the chosen one ringed. Another colour
+        than the one running shows "Applies after a restart" with Restart now (Save also stores
+        it: it applies at the next start)."""
+        box = page.box(t(ACCENT_TITLE), t(ACCENT_TEXT))
+        self._accent_picker = AccentSwatches(
+            box.body,
+            value=self._settings.current.accent,
+            background=theme.TAB_BG,
+            command=lambda _accent: self._accent_changed(),
+        )
+        box.add(self._accent_picker, sticky="w")
+        self._accent_restart_row = box.frame_row()
+        text_label(
+            self._accent_restart_row,
+            t(ACCENT_RESTART_TEXT),
+            size=_TEXT_SIZE,
+            color=theme.WARNING,
+            wraplength=_BOX_INNER - _RESTART_BUTTON_WIDTH - 12,
+        ).pack(side="left", fill="x", expand=True)
+        if self._on_restart is not None:
+            primary_button(
+                self._accent_restart_row,
+                t("Restart now"),
+                async_command(self._restart_now),
+                width=_RESTART_BUTTON_WIDTH,
+            ).pack(side="right", padx=(12, 0))
+        self._accent_changed()
+
+    @property
+    def accent(self) -> Accent:
+        """The accent colour the Accent colour box shows chosen."""
+        if self._accent_picker is None:
+            return self._settings.current.accent
+        return self._accent_picker.value
+
+    def _accent_changed(self) -> None:
+        if accent_needs_restart(self.accent, theme.current_accent()):
+            self._accent_restart_row.grid()
+        else:
+            self._accent_restart_row.grid_remove()
 
     def _card_size_changed(self) -> None:
         if self._card_preview is None:
@@ -1549,11 +1645,14 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
     def _quick_saved(self) -> None:
-        """Show what Quick setup saved (look, quality, card size, language)."""
+        """Show what Quick setup saved (look, accent colour, quality, card size, language)."""
         if not self.winfo_exists():
             return
         current = self._settings.current
         self._theme_mode.set(theme_name(current.theme_mode))
+        if self._accent_picker is not None:
+            self._accent_picker.set(current.accent)
+            self._accent_changed()
         self._quality_tv.set(quality_name(current.quality_tv))
         self._quality_movie.set(quality_name(current.quality_movie))
         self._card_size.set(CARD_SIZE_LABELS[current.card_size])
@@ -1870,6 +1969,11 @@ class SettingsDialog(ctk.CTkToplevel):
             first_day=weekday_from_name(self._first_day.get()),
             card_size=size_from_label(self._card_size.get()),
             theme_mode=theme_from_name(self._theme_mode.get()),
+            accent=self.accent,
+            info_layout=choice_from_name(
+                INFO_LAYOUT_NAMES, self._info_layout.get(), InfoLayout.SIDE
+            ),
+            spotlight_motion=self._spotlight_motion.get(),
             language=language_from_name(self._language.get()),
             download_dir=download_dir_to_save(
                 DownloadMode(self._mode.get()),
@@ -1899,8 +2003,8 @@ class SettingsDialog(ctk.CTkToplevel):
             self.destroy()
 
     async def _restart_now(self) -> None:
-        """The Language box's Restart now: save like Save, then restart AirGrabber (which
-        closes this dialog with the main window)."""
+        """The Language and Accent colour boxes' Restart now: save like Save, then restart
+        AirGrabber (which closes this dialog with the main window)."""
         if await self._save_all() and self._on_restart is not None:
             self._on_restart()
 

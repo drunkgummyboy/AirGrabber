@@ -1,10 +1,13 @@
 """The series info window: the shared info look (app/ui/title_info.py: the backdrop with the
-trailer, the poster, title, meta line, genres, synopsis, track state, the cast), then the show's
+trailer, the poster, title, meta line, genres, synopsis, track state, the cast), and the show's
 episodes by season, each with its download state (✓ Downloaded with ↻ Again, ⬇ Auto with ☰
 Choose…: app/ui/row_actions.py; or when it airs) and, once downloaded, its subtitles (CC ▾:
-app/ui/subtitle_control.py).
+app/ui/subtitle_control.py). "☰ Choose…" shows that episode's releases (app/ui/release_panel.py)
+in this window: in place of the episodes under a "← Episodes" bar ("S03E05 · The Crossing"),
+or in the Releases tab ("Releases · S03E05"), by the layout (Settings' `info_layout`).
 
-Not modal; one window per show (`ShowWindows` raises the open one). It works for any TVMaze
+Not modal; one window per show (`ShowWindows` raises the open one, and every "☰ Choose…" of an
+episode opens its show's window on that episode's releases). It works for any TVMaze
 show, tracked or not: `LibraryService.show_details` reads a tracked show from the library and
 fetches any other from TVMaze. TMDB shows (Discover) are matched to TVMaze first. The backdrop,
 the trailer, the cast and the synopsis and genres in the app's language come from the show's
@@ -27,7 +30,15 @@ from typing import TYPE_CHECKING, Any, Literal
 import customtkinter as ctk
 
 from app.i18n import N_, day_short, month_short, t, tn
-from app.models import CalendarEntry, DiscoverShow, Episode, Show, ShowDetails, TitleExtras
+from app.models import (
+    CalendarEntry,
+    DiscoverShow,
+    Episode,
+    InfoLayout,
+    Show,
+    ShowDetails,
+    TitleExtras,
+)
 from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
@@ -70,6 +81,7 @@ from app.ui.missing_control import (
     popup_menu,
 )
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
+from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
 from app.ui.row_actions import FONT_SIZE as ACTIONS_FONT_SIZE
 from app.ui.row_actions import RowActions
 from app.ui.row_actions import slot_width as actions_slot_width
@@ -83,6 +95,7 @@ from app.ui.title_info import (
     exists,
     join_meta,
     rating_text,
+    target_code,
 )
 from app.ui.tooltip import add_tooltip
 from app.ui.widgets import FlexGrid, LoadingBar
@@ -117,14 +130,13 @@ MISSING_BUTTON_WIDTH = 300  # the season bar's "⬇ Download missing (3)"
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
 CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's title
 CC_GAP = 8
-NEW_COLOR = theme.LINK  # a quiet blue: aired, a copy is on its way, nothing is missing yet
 
 # Shown through t().
 NEW_TODAY_TEXT = N_("New · aired today")
 NEW_YESTERDAY_TEXT = N_("New · aired yesterday")
 NEW_TEXT = N_("New")
 NEW_TIP = N_(
-    "Aired less than a day ago: a copy usually turns up within hours. It counts as missing "
+    "Aired less than a day ago: a release usually turns up within hours. It counts as missing "
     "after a day."
 )
 AIRS_TODAY_TEXT = N_("airs today")
@@ -339,7 +351,7 @@ def mark_color(mark: Mark) -> theme.Color:
     if mark == "missing":
         return MISSING_COLOR
     if mark == "new":
-        return NEW_COLOR
+        return theme.LINK  # a quiet blue: aired, a release is on its way, nothing missing yet
     return theme.TEXT_MUTED
 
 
@@ -363,6 +375,18 @@ def upcoming_text(episode: Episode, now: datetime) -> str:
     if days == 1:
         return t(AIRS_TOMORROW_TEXT)
     return tn("airs in {n} day", "airs in {n} days", days)
+
+
+def episode_label(target: TvTarget, episodes: Iterable[Episode]) -> str:
+    """The "← Episodes" bar's label: "S03E05 · The Crossing" ("S03E05" while its name isn't
+    known), "Season 3 · Pack" for a season pack."""
+    if target.episode is None:
+        return f"{t('Season {n}', n=target.season)} · {t('Pack')}"
+    code = target_code(target)
+    for episode in episodes:
+        if episode.season == target.season and episode.number == target.episode:
+            return f"{code} · {episode.name}" if episode.name else code
+    return code
 
 
 def date_text(episode: Episode, now: datetime) -> str:
@@ -516,7 +540,7 @@ class _EpisodeRow(ctk.CTkFrame):
         if self._upcoming is not None:
             self._upcoming.destroy()
             self._upcoming = None
-        # A special has no number to download by: its row opens the search window.
+        # A special has no number to download by: its row shows its season pack's releases.
         base = Base("search") if episode.number is None else Base("download")
         if self.row_actions is None:
             self.row_actions = RowActions(
@@ -634,16 +658,25 @@ class ShowDetailsWindow(TitleInfoWindow):
         subtitle_marks: SubtitleMarks | None = None,
         discovery: DiscoveryService | None = None,
         subtitle_actions: SubtitleActions | None = None,
+        layout: InfoLayout = InfoLayout.SIDE,
+        releases: PanelServices | None = None,
+        on_fix_match: Callable[[TvTarget], None] | None = None,
     ) -> None:
         """`subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
         without it no row gets one. `discovery`: the TMDB extras (backdrop, trailer, cast);
         without it the window shows only what TVMaze knows. `subtitle_actions`: the downloaded
-        rows' CC ▾ menus (without it only the marks)."""
+        rows' CC ▾ menus (without it only the marks). `releases`: what the releases panel
+        works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
+        "✎ Fix Match" found the right show (its window should open on that target)."""
         super().__init__(
             master,
             title=show.name,
             images=images,
             poster=lambda width: tvmaze_poster_url(show, width),
+            layout=layout,
+            releases=releases,
+            episodes=True,
+            on_fix_match=on_fix_match,
         )
         self._show = show
         self._discovery = discovery
@@ -695,6 +728,21 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._extras_task = spawn(self._load_extras(discovery), name="ShowDetailsWindow.extras")
         else:
             self._show_extras(None)
+
+    # -- releases ----------------------------------------------------------------------------
+
+    def choose(self, target: TvTarget) -> ReleasePanel | None:
+        """"☰ Choose…": `target`'s releases in this window (see TitleInfoWindow.open_releases)."""
+        panel = self.open_releases(target)
+        if panel is not None:
+            panel.focus_table()
+        return panel
+
+    def target_text(self, target: IndexerTarget) -> str:
+        if isinstance(target, TvTarget):
+            details = self._details
+            return episode_label(target, details.episodes if details is not None else ())
+        return super().target_text(target)
 
     # -- layout ------------------------------------------------------------------------------
 
@@ -786,11 +834,10 @@ class ShowDetailsWindow(TitleInfoWindow):
         if look == self._buttons_look:
             return
         self._buttons_look = look
-        for child in self._buttons.winfo_children():
-            child.destroy()
         self._auto_switch = None
+        items: list[Any] = []
         if details.tracked:
-            ctk.CTkButton(
+            following = ctk.CTkButton(
                 self._buttons,
                 text=t(FOLLOWING_TEXT),
                 width=140,
@@ -803,7 +850,8 @@ class ShowDetailsWindow(TitleInfoWindow):
                 text_color_disabled=theme.SUCCESS,
                 font=theme.font(15, bold=True),
                 state="disabled",
-            ).pack(side="left")
+            )
+            items.append(following)
             self._auto_var.set(details.auto_download)
             self._auto_switch = ctk.CTkSwitch(
                 self._buttons,
@@ -814,21 +862,20 @@ class ShowDetailsWindow(TitleInfoWindow):
                 progress_color=theme.ACCENT,
                 command=self._auto_toggled,
             )
-            self._auto_switch.pack(side="left", padx=(16, 0))
+            items.append(self._auto_switch)
             add_tooltip(self._auto_switch, t(AUTO_SWITCH_TIP))
         else:
             track = dialog_kit.primary_button(self._buttons, t(TRACK_TEXT), self._track)
             if self._tracking:
                 track.configure(text=t(ADDING_TEXT), state="disabled")
-            track.pack(side="left")
+            items.append(track)
         if imdb_url is not None:
 
             def open_imdb() -> None:
                 webbrowser.open(imdb_url)
 
-            dialog_kit.secondary_button(self._buttons, "IMDb", open_imdb, width=90).pack(
-                side="left", padx=(16, 0)
-            )
+            items.append(dialog_kit.secondary_button(self._buttons, "IMDb", open_imdb, width=90))
+        self._buttons.set_items(items, destroy_old=True)
 
     # -- loading -----------------------------------------------------------------------------
 
@@ -861,6 +908,8 @@ class ShowDetailsWindow(TitleInfoWindow):
     def _apply(self, details: ShowDetails) -> None:
         self._details = details
         self._paint_header(details.show, details)
+        if self.panel is not None and exists(self.panel):
+            self._paint_releases_title(self.panel.target)  # the episode's name is known now
         seasons = season_numbers(details.episodes)
         if seasons != self._seasons:
             self._seasons = seasons
@@ -1150,9 +1199,11 @@ class ShowWindows:
         subtitle_marks: SubtitleMarks | None = None,
         subtitles_changed: Subscribe | None = None,
         subtitle_actions: SubtitleActions | None = None,
+        releases: PanelServices | None = None,
     ) -> None:
         """`subtitle_marks` / `subtitles_changed`: the rows' "CC EN NL" marks and when they
-        change (subtitles saved); `subtitle_actions`: their CC ▾ menus."""
+        change (subtitles saved); `subtitle_actions`: their CC ▾ menus. `releases`: the
+        releases panels' services; its settings say the layout a new window opens in."""
         self._master = master
         self._missing_actions = missing_actions
         self._subtitle_marks = subtitle_marks
@@ -1162,6 +1213,7 @@ class ShowWindows:
         self._images = images
         self._status = status
         self._episode_actions = episode_actions
+        self._releases = releases
         self._windows: dict[int, ShowDetailsWindow] = {}  # by TVMaze id
         self._resolving: set[int] = set()  # TMDB ids being matched to TVMaze right now
         self._tasks: set[asyncio.Task[None]] = set()
@@ -1169,13 +1221,31 @@ class ShowWindows:
         if subtitles_changed is not None:
             self._unsubscribe.append(subtitles_changed(self.reload_all))
 
-    def open_show(self, show: Show) -> None:
-        """Open the details of a TVMaze show, or raise its window."""
+    def layout(self) -> InfoLayout:
+        """The layout a window opens in now (Settings)."""
+        if self._releases is None:
+            return InfoLayout.SIDE
+        layout: InfoLayout = self._releases.settings.current.info_layout
+        return layout
+
+    def open_show(self, show: Show, *, target: TvTarget | None = None) -> None:
+        """Open the details of a TVMaze show, or raise its window; with `target` (☰ Choose…)
+        on that episode's (or season pack's) releases."""
         window = self._live().get(show.id)
-        if window is not None:
+        if window is None:
+            window = self._windows[show.id] = self._new_window(show)
+        else:
             window.raise_window()
-            return
-        self._windows[show.id] = ShowDetailsWindow(
+        if target is not None:
+            window.choose(target)
+
+    def _fix_match(self, target: TvTarget) -> None:
+        """"✎ Fix Match" in a window's releases found the right show: its window, on the same
+        episode."""
+        self.open_show(target.show, target=target)
+
+    def _new_window(self, show: Show) -> ShowDetailsWindow:
+        return ShowDetailsWindow(
             self._master,
             show,
             library=self._library,
@@ -1186,6 +1256,9 @@ class ShowWindows:
             subtitle_marks=self._subtitle_marks,
             discovery=self._discovery,
             subtitle_actions=self._subtitle_actions,
+            layout=self.layout(),
+            releases=self._releases,
+            on_fix_match=self._fix_match,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

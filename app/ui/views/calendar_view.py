@@ -1,10 +1,14 @@
-"""Weekly episode calendar: tracked episodes from SQL, plus one suggested show per day.
+"""Weekly episode calendar: tracked episodes from SQL, plus suggested shows per day.
 
 Missing episodes (`LibraryService.missing_between`: aired at least a day ago, not downloaded,
 not marked "I already have this") get the cards' amber mark; new ones (`new_between`: aired
 less than a day ago) a quiet blue "New" note. Several episodes of one show on one day share a
 stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
 unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
+
+Suggestions (💡): every day gets its best-ranked one; then each week row's quieter days get
+more, best first, as many as fit within the row's tallest day (`extra_suggestions`), so the
+grid looks fuller without growing.
 
 The top bar, in one line: the visible dates, ◀ Today ▶, and on the right the number of weeks
 (1–5) and the 💡 Suggestions toggle; on a window too narrow for one line the right-hand
@@ -72,6 +76,9 @@ WRAP_GAP = 10  # above the right-hand controls when they wrap to a second line
 CELL_PAD_X = 8
 CELL_PAD_Y = 12
 CARD_GAP = 12  # between the cards of a day
+# Most suggestions a day: the first, plus extras that fill a week's quieter days up to its
+# busiest day's height.
+SUGGESTION_CAP = 8
 TODAY_BORDER_WIDTH = 2
 PILL_PAD_X = 10  # the "Today" pill's padding around its text
 PILL_PAD_Y = 2
@@ -152,10 +159,32 @@ def by_day(entries: Iterable[CalendarEntry]) -> dict[date, list[CalendarEntry]]:
     return days
 
 
-def best_suggestions(suggestions: Iterable[CalendarEntry]) -> dict[date, CalendarEntry]:
-    """Each day's one suggestion: its best-ranked, i.e. the day's first (they arrive best first
-    within each day)."""
-    return {day: entries[0] for day, entries in by_day(suggestions).items()}
+def day_suggestions(
+    suggestions: Iterable[CalendarEntry], *, cap: int = SUGGESTION_CAP
+) -> dict[date, list[CalendarEntry]]:
+    """Each day's suggestions, best-ranked first (they arrive best first within each day), at
+    most `cap` a day and no show twice on one day."""
+    days: dict[date, list[CalendarEntry]] = {}
+    for day, entries in by_day(suggestions).items():
+        picks: list[CalendarEntry] = []
+        seen: set[int] = set()
+        for entry in entries:
+            if entry.show.id in seen or len(picks) >= cap:
+                continue
+            seen.add(entry.show.id)
+            picks.append(entry)
+        days[day] = picks
+    return days
+
+
+def extra_suggestions(used: Sequence[int], target: int, slot: int, *, cap: int) -> list[int]:
+    """How many more suggestions each day of a week row gets: as many `slot`-high cards (a
+    suggestion with its gap) as fit between the day's `used` height (its tracked cards and its
+    first suggestion) and the row's `target` (its tallest day), at most `cap`. The row never
+    grows: a day already at the target gets none. One unit throughout (e.g. physical pixels)."""
+    if slot <= 0 or cap <= 0:
+        return [0 for _ in used]
+    return [min(cap, max(0, (target - height) // slot)) for height in used]
 
 
 def _days(start: date, end: date) -> list[date]:
@@ -427,7 +456,7 @@ class CalendarView(BaseView):
             return
         self._note.configure(text=t("Finding suggestions…"))
         try:
-            suggestions = await self._library.suggestions(start, end, per_day=1)
+            suggestions = await self._library.suggestions(start, end, per_day=SUGGESTION_CAP)
         except Exception:
             log.exception("Couldn't load calendar suggestions for %s – %s", start, end)
             if self.winfo_exists():
@@ -435,7 +464,7 @@ class CalendarView(BaseView):
             return
         if not self.winfo_exists():
             return
-        await self._render_suggestions(cells, best_suggestions(suggestions), scale=scale)
+        await self._render_suggestions(cells, day_suggestions(suggestions), scale=scale)
         self._note.configure(text="")
 
     # -- rendering -----------------------------------------------------------------------------
@@ -567,22 +596,61 @@ class CalendarView(BaseView):
     async def _render_suggestions(
         self,
         cells: Mapping[date, ctk.CTkFrame],
-        picks: Mapping[date, CalendarEntry],
+        picks: Mapping[date, Sequence[CalendarEntry]],
         *,
         scale: CardScale,
     ) -> None:
-        """Each day's suggestion, after its tracked episodes. Yields to the event loop after
-        each card."""
-        for day, entry in picks.items():
-            cell = cells.get(day)
-            if cell is None:
+        """The suggestions, after each day's tracked episodes, a week row at a time: each day's
+        best-ranked one, then the next best on the row's quieter days, as many as fit within
+        the row's tallest day (`extra_suggestions`). Yields to the event loop after each card.
+
+        Heights are compared in physical pixels, as Tk reports them (`winfo_reqheight`, the
+        pack gaps as `pack_info` gives them, both already DPI-scaled by CTk)."""
+        days = list(cells)
+        for first in range(0, len(days), 7):
+            week = days[first : first + 7]
+            slot = 0
+            for day in week:
+                day_picks = picks.get(day, ())
+                if day_picks:
+                    card = self._suggestion_card(cells[day], day_picks[0], scale=scale)
+                    await _yield_to_ui()
+                    if not slot and card.winfo_exists():
+                        card.update_idletasks()
+                        slot = _packed_height(card)
+            if not slot or not all(cells[day].winfo_exists() for day in week):
                 continue
-            SuggestionCard(
-                cell,
-                entry,
-                library=self._library,
-                status=self._status,
-                scale=scale,
-                on_open_show=self._on_open_show,
-            ).pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
-            await _yield_to_ui()
+            cells[week[0]].update_idletasks()
+            used = [cells[day].winfo_reqheight() for day in week]
+            extras = extra_suggestions(used, max(used), slot, cap=SUGGESTION_CAP - 1)
+            for day, count in zip(week, extras):
+                for entry in list(picks.get(day, ()))[1 : 1 + count]:
+                    if not cells[day].winfo_exists():
+                        return
+                    self._suggestion_card(cells[day], entry, scale=scale)
+                    await _yield_to_ui()
+
+    def _suggestion_card(
+        self, cell: ctk.CTkFrame, entry: CalendarEntry, *, scale: CardScale
+    ) -> SuggestionCard:
+        card = SuggestionCard(
+            cell,
+            entry,
+            library=self._library,
+            status=self._status,
+            scale=scale,
+            on_open_show=self._on_open_show,
+        )
+        card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
+        return card
+
+
+def _packed_height(widget: Any) -> int:
+    """The height `widget` adds to its packed parent: its requested height plus its pack gaps
+    above and below, in physical pixels."""
+    pady = widget.pack_info().get("pady", 0)
+    parts = pady if isinstance(pady, (tuple, list)) else str(pady).split()
+    gaps = [int(part) for part in parts]
+    if len(gaps) == 1:
+        gaps *= 2
+    return int(widget.winfo_reqheight()) + sum(gaps)

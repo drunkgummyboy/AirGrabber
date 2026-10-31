@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, Literal, Protocol, TypeVar
 
@@ -137,8 +137,9 @@ class Look:
 
     layout: Literal["split", "button", "label"]
     text: str
-    color: theme.Color = theme.ACCENT
-    hover: theme.Color = theme.ACCENT_HOVER
+    # The accent's, read when the look is made (the palette is set at startup).
+    color: theme.Color = field(default_factory=lambda: theme.ACCENT)
+    hover: theme.Color = field(default_factory=lambda: theme.ACCENT_HOVER)
     text_color: theme.Color | None = None  # None = CTk's default (white)
     action: Action | None = None  # None = disabled
     short: tuple[str, ...] = ()  # shorter texts, in order, for when `text` doesn't fit

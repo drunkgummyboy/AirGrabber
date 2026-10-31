@@ -1,15 +1,16 @@
 """The download controls of the show window's episode rows and the film info window (2.0.7).
 
 Two quiet controls instead of one big filled button: an outlined "⬇ Auto" (the one-click
-download: AirGrabber picks the best copy) and a text-style "☰ Choose…" (the search window, to
-pick a copy yourself), each with a hover tip. A downloaded title shows a green "✓ Downloaded"
-and a quiet "↻ Again", both opening a small menu with the same two again (`again_items`).
+download: AirGrabber picks the best release) and a text-style "☰ Choose…" (the info window's
+releases, to pick one yourself), each with a hover tip. A downloaded title shows a green
+"✓ Downloaded" and a quiet "↻ Again", both opening a small menu with the same two again
+(`again_items`).
 
 The one-click runs keep their state in the main window's DownloadStates (shared with the
 cards' DownloadControl), so a row rebuilt mid-run picks it up: while it works "Finding the best
 one…", once it grabbed the green outcome ("✓ Sent", what it picked as the tip, then "↻ Again"),
-when nothing was good enough an amber "No good copy found" beside "☰ Choose…" outlined in
-amber. `row_look` is the rule; RowActions draws it.
+when nothing was good enough an amber "No good release found" beside "☰ Choose…" outlined
+in amber. `row_look` is the rule; RowActions draws it.
 """
 
 from __future__ import annotations
@@ -52,15 +53,15 @@ LABEL_PAD = 16  # what a status label takes beyond its text (CTk's own padding)
 
 # Shown through t().
 AUTO_TEXT = N_("⬇ Auto")
-AUTO_TIP = N_("Download automatically: AirGrabber picks the best copy")
+AUTO_TIP = N_("Download automatically: AirGrabber picks the best release")
 CHOOSE_TEXT = N_("☰ Choose…")
-CHOOSE_TIP = N_("Choose a copy yourself from the search results")
+CHOOSE_TIP = N_("Choose a release yourself from the search results")
 DOWNLOADED_TEXT = N_("✓ Downloaded")
 AGAIN_TEXT = N_("↻ Again")
 AGAIN_TIP = N_("Download it again")
 AGAIN_AUTO_TEXT = N_("⬇ Download again automatically")
-AGAIN_CHOOSE_TEXT = N_("☰ Choose a copy…")
-NOTHING_TEXT = N_("No good copy found")
+AGAIN_CHOOSE_TEXT = N_("☰ Choose a release…")
+NOTHING_TEXT = N_("No good release found")
 NOTHING_SHORT = N_("None found")
 NOTHING_TIP = N_("Nothing good enough was found. Choose a download yourself.")
 
@@ -131,7 +132,7 @@ def slot_width(measure: Measure) -> int:
 def again_items(
     download_again: Callable[[], None] | None, choose: Callable[[], None]
 ) -> list[MenuItem]:
-    """↻ Again's menu: download again automatically (when offered), choose a copy."""
+    """↻ Again's menu: download again automatically (when offered), choose a release."""
     items: list[MenuItem] = []
     if download_again is not None:
         items.append((t(AGAIN_AUTO_TEXT), download_again))

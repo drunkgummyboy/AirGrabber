@@ -1,7 +1,10 @@
 """Shared look of the roomy setup dialogs (first-run welcome, TMDB key guide): sizes, buttons,
 headings, links, placing a modal dialog over its parent, fully on the screen (and bringing it
 back on top after a switch between light and dark), and FitScroll: what scrolls when a dialog
-is taller than the screen allows (`max_dialog_height`)."""
+is taller than the screen allows (`max_dialog_height`).
+
+The dialogs have no title bar (app/ui/borderless.py): a heading at the top keeps the close
+button's corner free (`heading_row(..., right_room=CLOSE_CLEARANCE)`)."""
 
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from typing import Any
 import customtkinter as ctk
 
 from app.ui import theme
+from app.ui.borderless import clearance
 from app.ui.tooltip import work_area
 
 # Logical (unscaled) CTk units.
@@ -33,7 +37,11 @@ DETAIL_SIZE = 15  # muted lines and descriptions
 SMALL_SIZE = 13  # "Step 2 of 3", hints
 
 SCREEN_MARGIN = 16  # kept free above and below a dialog that is as tall as the screen allows
-WINDOW_FRAME = 40  # a dialog's title bar and borders around its content (Windows 11)
+# A dialog's window around its content: no title bar (app/ui/borderless.py), only Windows'
+# invisible border under it (about 7 units on Windows 11). It was 40 with the title bar.
+WINDOW_FRAME = 12
+# What a heading at the top of a dialog keeps free at its right for the close button.
+CLOSE_CLEARANCE = clearance(PAD_X)
 
 Rect = tuple[int, int, int, int]  # left, top, right, bottom
 
@@ -73,8 +81,11 @@ def secondary_button(
     )
 
 
-def heading_row(master: Any, title: str, step: str | None = None) -> ctk.CTkFrame:
-    """A step's heading, with "Step N of 3" at the top right when `step` is given."""
+def heading_row(
+    master: Any, title: str, step: str | None = None, *, right_room: int = 0
+) -> ctk.CTkFrame:
+    """A step's heading, with "Step N of 3" at the top right when `step` is given. `right_room`
+    (CTk units) stays free at its right: the close button's corner (CLOSE_CLEARANCE)."""
     row = ctk.CTkFrame(master, fg_color="transparent")
     row.grid_columnconfigure(0, weight=1)
     ctk.CTkLabel(
@@ -89,6 +100,10 @@ def heading_row(master: Any, title: str, step: str | None = None) -> ctk.CTkFram
         ctk.CTkLabel(
             row, text=step, font=theme.font(SMALL_SIZE), text_color=theme.TEXT_MUTED
         ).grid(row=0, column=1, sticky="ne", padx=(16, 0))
+    if right_room > 0:
+        ctk.CTkFrame(row, width=right_room, height=1, fg_color="transparent").grid(
+            row=0, column=2
+        )
     return row
 
 
@@ -128,12 +143,13 @@ def link_label(master: Any, text: str, url: str, *, size: int = DETAIL_SIZE) -> 
 
 def fit_height(height: int, area_height: float) -> int:
     """`height` (a dialog's content, CTk units), at most what fits a work area `area_height`
-    tall (CTk units) with the title bar and SCREEN_MARGIN above and below."""
+    tall (CTk units) with the window's frame (WINDOW_FRAME) and SCREEN_MARGIN above and
+    below."""
     return max(1, min(height, int(area_height) - WINDOW_FRAME - 2 * SCREEN_MARGIN))
 
 
 def on_screen(x: int, y: int, width: int, height: int, area: Rect) -> tuple[int, int]:
-    """(x, y) moved as little as needed for a window `width` × `height` (title bar included)
+    """(x, y) moved as little as needed for a window `width` × `height` (its frame included)
     with that top-left corner to lie within `area`; its top-left corner stays on the area
     when the window is larger. Physical pixels."""
     left, top, right, bottom = area

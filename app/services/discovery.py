@@ -482,6 +482,11 @@ class DiscoveryService:
         tmdb_id = await self._tmdb_id_of(show)
         return None if tmdb_id is None else await self._tv_extras.get(tmdb_id)
 
+    async def tv_extras(self, tv_id: int) -> TitleExtras:
+        """A TMDB show's extras by its TMDB id (the spotlight band's trending shows); see
+        `movie_extras`, whose errors it raises too. Shared with `show_extras`' cache."""
+        return await self._tv_extras.get(tv_id)
+
     async def _tmdb_id_of(self, show: Show) -> int | None:
         for matched_tmdb_id, tvmaze_id in self._tracked_via_tmdb.items():
             if tvmaze_id == show.id:

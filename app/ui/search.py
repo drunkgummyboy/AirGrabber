@@ -16,9 +16,11 @@ from app.models import Movie, Show, ShowSearchResult
 from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
+from app.ui.borderless import clearance, make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import SearchShowCard
+from app.ui.dialog_kit import heading_row
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
 from app.ui.poster_card import POSTER_CARD_WIDTH, TrackState
@@ -298,6 +300,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
 
     WIDTH = 1150
     HEIGHT = 800
+    PAD = 20
 
     def __init__(
         self,
@@ -331,15 +334,19 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._on_open_movie = on_open_movie
         self._cards: dict[int, SearchShowCard] = {}
 
-        self.title(t("Search Results: {query}", query=query))
+        title = t("Search Results: {query}", query=query)
+        self.title(title)
         set_window_icon(self)
         self.transient(master)
         # CTkToplevel only applies its dark Windows title bar reliably from resizable().
         self.resizable(True, True)
         self._place_over(master)
 
+        # No title bar: the query shows in the heading, clear of the close button.
+        heading = heading_row(self, title, right_room=clearance(self.PAD))
+        heading.pack(fill="x", padx=self.PAD, pady=(self.PAD, 0))
         self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self._body.pack(fill="both", expand=True, padx=20, pady=20)
+        self._body.pack(fill="both", expand=True, padx=self.PAD, pady=(12, self.PAD))
         # One section per media type, each with its own loading bar until its search is done.
         self._shows_section = self._section(t("📺 TV Shows"))
         self._shows_loading: LoadingBar | None = self._loading_bar(self._shows_section)
@@ -351,6 +358,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
             spawn(self._load_movies(), name="SearchResultsWindow.load_movies"),
         ]
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.borderless = make_borderless(self, drag_widgets=(self, heading))
         # CTkToplevel can open behind its parent on Windows; raise it once it is mapped.
         self.after(150, self._activate)
 

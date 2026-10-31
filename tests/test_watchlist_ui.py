@@ -131,11 +131,11 @@ class WatchStatusTests(unittest.TestCase):
     def test_out_and_looked_for(self) -> None:
         self.assertEqual(
             watch_status(entry(digital_release="2026-10-01"), TODAY, NOW),
-            WatchStatus("Waiting for a good copy", "waiting", chip=False, bottom="switch"),
+            WatchStatus("Waiting for a good release", "waiting", chip=False, bottom="switch"),
         )
         searched = entry(digital_release="2026-10-01", tries=1, last_try=NOW - timedelta(hours=2))
         self.assertEqual(
-            watch_status(searched, TODAY, NOW).text, "Waiting for a good copy (searched 2 h ago)"
+            watch_status(searched, TODAY, NOW).text, "Waiting for a good release (searched 2 h ago)"
         )
 
     def test_out_with_the_switch_off(self) -> None:
@@ -148,7 +148,7 @@ class WatchStatusTests(unittest.TestCase):
         film = entry(digital_release="2026-09-01", gave_up=True, auto_download=False, tries=9)
         self.assertEqual(
             watch_status(film, TODAY, NOW),
-            WatchStatus("No good copy found in 30 days", "gave_up", chip=False, bottom="download"),
+            WatchStatus("No good release found in 30 days", "gave_up", chip=False, bottom="download"),
         )
 
     def test_tones(self) -> None:

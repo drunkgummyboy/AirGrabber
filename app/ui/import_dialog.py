@@ -10,8 +10,17 @@ import customtkinter as ctk
 from app.i18n import N_, t
 from app.ui import theme
 from app.ui.airdates_import import AirdatesImportPanel, PreviewFinder, ShowImporter
+from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
-from app.ui.dialog_kit import CONTENT_WIDTH, PAD_X, PAD_Y, activate_later, place_over
+from app.ui.dialog_kit import (
+    CLOSE_CLEARANCE,
+    CONTENT_WIDTH,
+    PAD_X,
+    PAD_Y,
+    activate_later,
+    heading_row,
+    place_over,
+)
 from app.ui.widgets import Tabview
 
 # The tabs' texts (CTkTabview names a tab by its text: always through t()).
@@ -21,6 +30,7 @@ TAB_AIRDATES = N_("From airdates.tv")
 _TAB_PAD = 24  # around the content inside a tab
 _TABS_WIDTH = CONTENT_WIDTH + 2 * _TAB_PAD
 _TABS_HEIGHT = 560
+_HEADING_GAP = 12  # between the heading and the tabs
 
 
 class ImportShowsDialog(ctk.CTkToplevel):
@@ -38,11 +48,15 @@ class ImportShowsDialog(ctk.CTkToplevel):
         super().__init__(master, fg_color=theme.BG)
         self._on_import = on_import
 
-        self.title(t("Import Shows"))
+        title = t("Import Shows")
+        self.title(title)
         set_window_icon(self)
         self.resizable(False, False)
         self.transient(master)
 
+        # No title bar (app/ui/borderless.py): the title shows as a heading.
+        heading = heading_row(self, title, right_room=CLOSE_CLEARANCE)
+        heading.pack(fill="x", padx=PAD_X, pady=(PAD_Y, 0))
         self._tabs = Tabview(
             self,
             width=_TABS_WIDTH,
@@ -59,7 +73,7 @@ class ImportShowsDialog(ctk.CTkToplevel):
             text_color=theme.BUTTON_TEXT,
             command=self._focus_tab,
         )
-        self._tabs.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
+        self._tabs.pack(fill="both", expand=True, padx=PAD_X, pady=(_HEADING_GAP, PAD_Y))
         self._build_names(self._tabs.add(t(TAB_NAMES)))
         self._panel = AirdatesImportPanel(
             self._tabs.add(t(TAB_AIRDATES)), airdates=airdates, library=library
@@ -68,6 +82,7 @@ class ImportShowsDialog(ctk.CTkToplevel):
         self._tabs.set(t(TAB_NAMES))
 
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.borderless = make_borderless(self, drag_widgets=(self, heading))
         place_over(self, master)
         activate_later(self)
         self.after(200, self._focus_tab)

@@ -20,10 +20,12 @@ from app.i18n import N_, t
 from app.services import DiscoveryService, SettingsService
 from app.services.tmdb import TMDBError
 from app.ui import theme
+from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.dialog_kit import (
     BLOCK_GAP,
     BODY_SIZE,
+    CLOSE_CLEARANCE,
     CONTENT_WIDTH,
     DETAIL_SIZE,
     LINE_GAP,
@@ -284,7 +286,8 @@ class TmdbKeyDialog(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         # Holds the content width.
         ctk.CTkFrame(body, width=CONTENT_WIDTH, height=1, fg_color="transparent").pack()
-        heading_row(body, t(TMDB_HEADING)).pack(fill="x")
+        heading = heading_row(body, t(TMDB_HEADING), right_room=CLOSE_CLEARANCE)
+        heading.pack(fill="x")
         text_label(body, t(TMDB_INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )
@@ -298,6 +301,7 @@ class TmdbKeyDialog(ctk.CTkToplevel):
         self._save_button.pack(side="right")
 
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.borderless = make_borderless(self, drag_widgets=(self, body, heading))
         place_over(self, master)
         activate_later(self)
         self.after(200, self._guide.focus_entry)

@@ -24,6 +24,7 @@ from app.ui.download_control import DownloadActions, DownloadStates
 from app.ui.text_fit import SLACK
 from app.ui.views.calendar_view import (
     RANGE_FONT_SIZE,
+    SUGGESTION_CAP,
     CalendarView,
     range_label,
     range_slot_width,
@@ -205,13 +206,45 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         # Monday: last week too, so the weekend's episodes are still on screen.
         week_end = TODAY + timedelta(days=6)
         self.assertEqual(library.calendar_calls, [(GRID_START, week_end)])
-        self.assertEqual(library.suggestion_calls, [(GRID_START, week_end, 1)])
+        self.assertEqual(library.suggestion_calls, [(GRID_START, week_end, SUGGESTION_CAP)])
         self.assertEqual(self.cards(view, TODAY), ["full", "full", "Show 10"])
         self.assertEqual(self.cards(view, SUNDAY), ["Show 12"])
         self.assertEqual(self.cards(view, GRID_START), ["compact"])
         self.assertEqual(self.cards(view, TODAY + timedelta(days=1)), [])
         self.assertTrue(view._suggestions_shown)
         self.assertEqual(view._range.cget("text"), "12 – 25 Oct")
+
+    async def test_quiet_days_get_more_suggestions_without_a_taller_grid(self) -> None:
+        # Today holds four poster cards; its week's other days only suggestions, many each.
+        tracked = [entry(show_id, TODAY, tracked=True) for show_id in range(1, 5)]
+        quiet = [TODAY + timedelta(days=n) for n in range(1, 7)]
+        suggestions = [
+            entry(day.day * 100 + n, day, tracked=False) for day in quiet for n in range(12)
+        ] + [entry(90 + n, TODAY, tracked=False) for n in range(3)]
+        prefs = Settings(weeks_to_show=1)
+
+        async def grid_height(cap: int) -> tuple[int, CalendarView]:
+            view = self.view(FakeLibrary(tracked, suggestions), FakeSettings(prefs))
+            with mock.patch("app.ui.views.calendar_view.SUGGESTION_CAP", cap):
+                await view.load()
+            assert view._weeks is not None
+            view._weeks.update_idletasks()
+            return view._weeks.winfo_reqheight(), view
+
+        single_height, single = await grid_height(1)
+        for day in quiet:
+            self.assertEqual(len(self.cards(single, day)), 1)
+        filled_height, filled = await grid_height(SUGGESTION_CAP)
+        self.assertEqual(filled_height, single_height)
+        # The busy day keeps its one suggestion; the quiet days get more, best-ranked first.
+        self.assertEqual(self.cards(filled, TODAY), ["full"] * 4 + ["Show 90"])
+        for day in quiet:
+            names = self.cards(filled, day)
+            self.assertGreater(len(names), 1)
+            self.assertLessEqual(len(names), SUGGESTION_CAP)
+            self.assertEqual(names, [f"Show {day.day * 100 + n}" for n in range(len(names))])
+        # Last week's row has no suggestions: nothing to fill.
+        self.assertEqual(self.cards(filled, GRID_START), [])
 
     async def test_missing_episodes_get_the_amber_mark(self) -> None:
         # Show 1 today (a poster card) and show 3 a week ago (a compact card) are missing.

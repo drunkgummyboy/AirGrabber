@@ -156,6 +156,23 @@ class ThemeMode(StrEnum):
     LIGHT = "light"
 
 
+class Accent(StrEnum):
+    """AirGrabber's accent colour (Settings → Looks; the palettes in app/ui/palettes.py): the
+    buttons, chosen items, links and a slight tint of the backgrounds. Slate, the slate blue it
+    always had, is the default. Applied once at startup: a change takes a restart."""
+
+    SLATE = "slate"
+    OCEAN = "ocean"
+    PETROL = "petrol"
+    TEAL = "teal"
+    SAGE = "sage"
+    INDIGO = "indigo"
+    PLUM = "plum"
+    ROSE = "rose"
+    MOCHA = "mocha"
+    GRAPHITE = "graphite"
+
+
 def _theme_mode(value: Any) -> Any:
     """Any stored value AirGrabber doesn't know (a newer version's) follows Windows."""
     if isinstance(value, str):
@@ -210,6 +227,14 @@ class SubtitlesFor(StrEnum):
     BOTH = "both"
     SERIES = "series"
     FILMS = "films"
+
+
+class InfoLayout(StrEnum):
+    """How a film's or series' info window shows its releases (app/ui/title_info.py): beside
+    the info (the default) or in tabs under it. A window reads it when it opens."""
+
+    SIDE = "side"  # the info in a column on the left, the releases (or episodes) on the right
+    TABS = "tabs"  # the info on top, then tabs: (Episodes,) Releases, Cast
 
 
 def _known[E: StrEnum](kind: type[E], default: E) -> Any:
@@ -308,9 +333,17 @@ class Settings(BaseModel):
     # The cards' size on every page, the calendar too (app/ui/card_scale.py). A stored size
     # stays as it is.
     card_size: CardSize = CardSize.M
+    # The info window's layout: the releases beside the info, or in tabs under it. An unknown
+    # stored value (a newer version's) is the default.
+    info_layout: Annotated[InfoLayout, _known(InfoLayout, InfoLayout.SIDE)] = InfoLayout.SIDE
+    # The header's spotlight band moves on to the next title by itself (off: it stays put).
+    spotlight_motion: bool = True
     # Light, dark or like Windows (app/ui/theme.py); settings stored before there was a choice
     # follow Windows.
     theme_mode: Annotated[ThemeMode, BeforeValidator(_theme_mode)] = ThemeMode.SYSTEM
+    # The accent colour (app/ui/palettes.py); applied at startup (main.py), so a change takes a
+    # restart. An unknown stored value (a newer version's) is Slate.
+    accent: Annotated[Accent, _known(Accent, Accent.SLATE)] = Accent.SLATE
     # The interface language (app/i18n.py): English for everyone until chosen otherwise. It
     # takes effect at the next start (main.py applies it before the first window).
     language: Annotated[Language, BeforeValidator(_language)] = Language.EN

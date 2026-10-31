@@ -97,7 +97,7 @@ class RowLookTests(unittest.TestCase):
     def test_nothing_found_is_amber_with_choose(self) -> None:
         look = row_look(Base("download"), RunState(Phase.NOTHING))
         self.assertEqual(look.kind, "nothing")
-        self.assertEqual(look.status, ("No good copy found", "None found"))
+        self.assertEqual(look.status, ("No good release found", "None found"))
         self.assertEqual((look.buttons, look.alert, look.color), (("choose",), True, theme.PENDING))
         # Downloaded meanwhile (the search window): that wins.
         self.assertEqual(row_look(Base("download"), RunState(Phase.NOTHING), downloaded=True).kind, "downloaded")
@@ -117,11 +117,11 @@ class RowLookTests(unittest.TestCase):
     def test_again_menu(self) -> None:
         calls: list[str] = []
         items = again_items(lambda: calls.append("auto"), lambda: calls.append("choose"))
-        self.assertEqual([label for label, _ in items], ["⬇ Download again automatically", "☰ Choose a copy…"])
+        self.assertEqual([label for label, _ in items], ["⬇ Download again automatically", "☰ Choose a release…"])
         for _label, action in items:
             action()
         self.assertEqual(calls, ["auto", "choose"])
-        self.assertEqual([label for label, _ in again_items(None, lambda: None)], ["☰ Choose a copy…"])
+        self.assertEqual([label for label, _ in again_items(None, lambda: None)], ["☰ Choose a release…"])
 
     def test_widths(self) -> None:
         def measure(text: str) -> float:
@@ -263,7 +263,7 @@ class RowActionsWidgetTests(WidgetTestCase):
         row.again.invoke()
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a copy…"))
+        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a release…"))
         menu.buttons[0].invoke()
         self.assertEqual(calls, ["auto", "choose", "again"])
         row.destroy()
@@ -288,7 +288,7 @@ class RowActionsWidgetTests(WidgetTestCase):
         row.open_again()
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(menu.labels, ("☰ Choose a copy…",))
+        self.assertEqual(menu.labels, ("☰ Choose a release…",))
         menu.close()
 
 
@@ -403,7 +403,7 @@ class ShowWindowRowTests(WidgetTestCase):
         row._row_clicked()
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a copy…"))
+        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a release…"))
         menu.close()
         later = EPISODE.model_copy(update={"airstamp": now + timedelta(days=3), "air_date": (now + timedelta(days=3)).date()})
         row.set_state(ENTRY.model_copy(update={"episode": later}), "upcoming", now)
@@ -444,7 +444,7 @@ class CalendarNewTests(unittest.TestCase):
 
 class CalendarCardWidgetTests(WidgetTestCase):
     async def test_a_new_episode_gets_the_blue_note_not_the_amber_bar(self) -> None:
-        from app.ui.calendar_cards import NEW_COLOR, CompactEpisodeCard
+        from app.ui.calendar_cards import CompactEpisodeCard
 
         actions = DownloadActions[CalendarEntry](
             download=lambda item: None, choose=lambda item: None, states=DownloadStates()
@@ -457,6 +457,6 @@ class CalendarCardWidgetTests(WidgetTestCase):
         assert new.note is not None and missing.note is not None
         self.assertIsNone(new.mark)
         self.assertEqual(str(new.note.cget("text")), "New")
-        self.assertEqual(new.note.cget("text_color"), NEW_COLOR)
+        self.assertEqual(new.note.cget("text_color"), theme.LINK)
         self.assertIsNotNone(missing.mark)  # missing wins
         self.assertEqual(str(missing.note.cget("text")), "Not downloaded yet")

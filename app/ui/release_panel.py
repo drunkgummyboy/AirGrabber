@@ -1,10 +1,52 @@
-"""The "Advanced Indexer Interrogation" dialog: search every torrent indexer for one episode,
-season pack or film, filter and sort what they found, and grab a release.
+"""The release search panel: search every torrent indexer for one episode, season pack or film,
+filter and sort the releases they found, and grab one. A frame that lives inside a host window
+(the film / series info window, app/ui/title_info.py), which shows the poster, the title and
+the rest itself.
+
+Public API
+----------
+``ReleasePanel(master, *, target, search, downloads, library, discovery, settings, status,
+on_target_change=None, on_count=None, on_fix_match=None)``
+    A card (SURFACE, with a border) holding: for a series the SEASON and EPISODE chips (with
+    "Pack", and "✎ Fix Match" at the right of the season row), the VERSION chips with their
+    counts, the indexer chips, the progress bar, the results table and the selection bar with
+    its Download button. Building it only builds widgets: nothing is loaded or searched (and no
+    task is started) before ``start()``.
+``panel.start()``
+    Loads the grabbed releases, a show's episodes (for the chips) or a film's TMDB details (its
+    IMDb id, for the search), and searches. Later calls do nothing. Call it once the asyncio
+    loop runs (it spawns tasks).
+``panel.set_target(target)``
+    Another episode, season pack, show or film: the chips follow and, once started, the panel
+    searches again (replacing the running search). The season, episode and Pack chips go
+    through here. An equal target does nothing.
+``panel.target``
+    The current target (read-only).
+``panel.show_message(text, color=theme.TEXT_MUTED)``
+    A host's own message on the panel's message line ("" hides it).
+``panel.focus_table()``
+    Keyboard focus to the results table (Up / Down to select, Enter to grab).
+
+Callbacks (all optional):
+``on_target_change(target)``
+    After every change of target: from the chips or from ``set_target()``.
+``on_count(n)``
+    The number of releases shown for the current version (the results title's number), each
+    time it changes, from ``start()`` on: for a tab title such as "Releases (18)".
+``on_fix_match(target)``
+    Series only: "✎ Fix Match" asked for the right TVMaze id and tracked that show (in place of
+    the old one when that was tracked); `target` is that show at the same season and episode.
+    Without this callback the link isn't shown.
+
+``destroy()`` cancels every task the panel started.
+
+``PanelServices`` bundles what the panel works with, for a host to pass on.
 
 The results table is a ttk.Treeview rather than CTk widgets: a search can return hundreds of
 rows and re-renders on every indexer update, which must stay instant. Rows are keyed by a
 stable id (`release_id`), so updates are applied as a diff and a row's selection and grab state
-survive re-renders.
+survive re-renders. The mouse wheel over the table scrolls just the table (not a scrolling
+window around the panel as well).
 
 Log hygiene: release download links may embed an API key (Prowlarr), so nothing here logs a
 release or a URL.
@@ -26,6 +68,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import customtkinter as ctk
 
+from app.i18n import N_, number, t, tn
 from app.models import (
     Episode,
     GrabOutcome,
@@ -52,21 +95,16 @@ from app.services.search import (
 )
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError, TVMazeNotFound
-from app.i18n import N_, number, t, tn
 from app.ui import theme
-from app.ui.branding import set_window_icon
 from app.ui.download_control import outcome_text
-from app.ui.media_cards import format_runtime
-from app.ui.show_details import show_status
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
 from app.ui.tooltip import Tooltip, add_tooltip
-from app.ui.widgets import LoadingBar, PosterImage
+from app.ui.widgets import LoadingBar
 
 if TYPE_CHECKING:
     from app.services import (
         DownloadService,
-        ImageCache,
         LibraryService,
         SettingsService,
         TorrentSearchService,
@@ -92,6 +130,18 @@ class MovieTarget:
 
 
 IndexerTarget = TvTarget | MovieTarget
+
+
+@dataclass(frozen=True, slots=True)
+class PanelServices:
+    """What a ReleasePanel works with, as a host window passes it on."""
+
+    search: TorrentSearchService
+    downloads: DownloadService
+    library: LibraryService
+    discovery: DiscoveryService
+    settings: SettingsService
+    status: StatusReporter
 
 SortColumn = Literal["name", "size", "seeds", "leech", "source", "age"]
 ColumnId = SortColumn | Literal["action"]
@@ -126,6 +176,7 @@ _OUTCOME_STATES: dict[GrabOutcome, RowState] = {
 DOWNLOAD_TEXT = N_("⬇ Download")
 DOWNLOADING_TEXT = N_("Downloading…")
 NO_SELECTION_TEXT = N_("Click a release above to select it")
+CHIP_TIP = N_("Open this site's search in your browser")
 _SIZE_UNITS = ("KB", "MB", "GB", "TB", "PB")
 _UNKNOWN = "—"
 _DETAILS_WAIT = 5.0  # seconds a movie search waits for TMDB details (for the IMDb id)
@@ -145,13 +196,16 @@ _ACTION_COLUMN = f"#{_COLUMN_IDS.index('action') + 1}"
 _ROW_HEIGHT = 26
 _TABLE_FONT_SIZE = 11
 _STYLE = "AG.Treeview"
-# A dialog shorter than this (CTk units) gets the compact header, so the table keeps its rows.
-COMPACT_BELOW = 700
-_POSTER_SIZE = {False: (150, 225), True: (100, 150)}  # by compact
-_TITLE_SIZE = {False: 24, True: 20}
-_HEADER_PAD = {False: 15, True: 8}
 _SELECTOR_HEIGHT = 30  # the tallest selector chip (the VERSION buttons)
-CHIP_TIP = N_("Open this site's search in your browser")
+
+# The panel's grid rows (column 0); only the table's row stretches.
+_SELECTORS_ROW = 0
+_TOP_ROW = 1  # the results title and the indexer chips
+_LOADING_ROW = 2
+_TABLE_ROW = 3
+_HINT_ROW = 4
+_MESSAGE_ROW = 5
+_BAR_ROW = 6
 
 
 # -- text --------------------------------------------------------------------------------------
@@ -252,7 +306,6 @@ def chip_style(status: IndexerStatus) -> tuple[str, theme.Color]:
     return label, theme.PENDING
 
 
-
 def failure_text(statuses: Iterable[IndexerStatus]) -> str:
     """"EZTV: timed out · Bitsearch: …" for the indexers that failed ("" for none)."""
     parts: list[str] = []
@@ -296,42 +349,6 @@ def download_button_text(state: RowState | None) -> str:
     return t(DOWNLOAD_TEXT)
 
 
-def episode_title(show: Show, season: int, episode: int | None) -> str:
-    if episode is None:
-        return t("{show}: Season {season} (Pack)", show=show.name, season=f"{season:02d}")
-    return f"{show.name}: S{season:02d}E{episode:02d}"
-
-
-def movie_title(movie: Movie) -> str:
-    return f"{movie.title} ({movie.year})" if movie.year else movie.title
-
-
-def show_meta(show: Show) -> str:
-    """"2022 • Drama, Mystery • RUNNING", whichever parts are known."""
-    parts: list[str] = []
-    if show.year:
-        parts.append(str(show.year))
-    if show.genres:
-        parts.append(", ".join(show.genres))
-    if show.status:
-        parts.append(show_status(show.status).upper())
-    return " • ".join(parts)
-
-
-def movie_meta(movie: Movie, details: MovieDetails | None) -> str:
-    """"2024 • ★ 7.3 • Rated PG-13 • 2h 46m", whichever parts are known."""
-    parts: list[str] = []
-    if movie.year:
-        parts.append(str(movie.year))
-    if movie.vote_count:
-        parts.append(f"★ {number(movie.vote_average, '.1f')}")
-    if details is not None and details.certification:
-        parts.append(t("Rated {rating}", rating=details.certification))
-    if details is not None and details.runtime:
-        parts.append(format_runtime(details.runtime))
-    return " • ".join(parts)
-
-
 def searching_text(season: int | None, episode: int | None) -> str:
     """The empty table's text while searching; `season` None for a film."""
     if season is None:
@@ -341,19 +358,19 @@ def searching_text(season: int | None, episode: int | None) -> str:
     return t("Searching indexers for {code}…", code=f"S{season:02d}E{episode:02d}")
 
 
-def compact_header(height: float) -> bool:
-    """Whether a dialog `height` tall (CTk units) gets the compact header: a smaller poster and
-    title and less padding, so the results table keeps room for its rows."""
-    return height < COMPACT_BELOW
-
-
 def hidden_text(count: int, *, showing: bool) -> str:
     if showing:
         return t("{n} hidden by name/episode matching or your filters — Hide", n=count)
     return t("{n} hidden by name/episode matching or your filters — Show", n=count)
 
 
-# -- dialog ------------------------------------------------------------------------------------
+def default_quality(target: IndexerTarget, settings: Settings) -> str:
+    """The VERSION chip a target starts on: the user's quality for films or for series."""
+    profile = settings.quality_movie if isinstance(target, MovieTarget) else settings.quality_tv
+    return quality_key(profile)
+
+
+# -- the panel ---------------------------------------------------------------------------------
 
 
 class _AnswerDialog(ctk.CTkInputDialog):
@@ -374,47 +391,46 @@ class _AnswerDialog(ctk.CTkInputDialog):
             callback(self._user_input)
 
 
-class IndexerDialog(ctk.CTkToplevel):
-    """Searches the torrent indexers for `target` and grabs releases (not modal).
-
-    The main window keeps one open at a time; `on_reopen` asks it to replace this dialog with
-    one for another target (after "Fix Match").
-    """
-
-    WIDTH = 1100
-    HEIGHT = 750
+class ReleasePanel(ctk.CTkFrame):
+    """Searches the torrent indexers for a target and grabs releases (see the module docstring
+    for the API)."""
 
     def __init__(
         self,
-        master: ctk.CTk,
+        master: Any,
         *,
         target: IndexerTarget,
         search: TorrentSearchService,
         downloads: DownloadService,
         library: LibraryService,
         discovery: DiscoveryService,
-        images: ImageCache,
         settings: SettingsService,
         status: StatusReporter,
-        on_reopen: Callable[[IndexerTarget], None],
+        on_target_change: Callable[[IndexerTarget], None] | None = None,
+        on_count: Callable[[int], None] | None = None,
+        on_fix_match: Callable[[TvTarget], None] | None = None,
     ) -> None:
-        super().__init__(master, fg_color=theme.BG)
-        self._target = target
+        super().__init__(
+            master,
+            fg_color=theme.SURFACE,
+            border_width=1,
+            border_color=theme.EDGE,
+            corner_radius=8,
+        )
+        self._target: IndexerTarget = target
         self._search = search
         self._downloads = downloads
         self._library = library
         self._discovery = discovery
         self._settings = settings
         self._status = status
-        self._on_reopen = on_reopen
+        self._on_target_change = on_target_change
+        self._on_count = on_count
+        self._on_fix_match = on_fix_match
 
-        self._season = target.season if isinstance(target, TvTarget) else 0
-        self._episode = target.episode if isinstance(target, TvTarget) else None
+        self._started = False
         self._episodes: list[Episode] = []
-        current = settings.current
-        self._quality = quality_key(
-            current.quality_movie if isinstance(target, MovieTarget) else current.quality_tv
-        )
+        self._quality = default_quality(target, settings.current)
         self._update: SearchUpdate | None = None
         self._searching = False
         self._sort_column: SortColumn = "size"
@@ -425,8 +441,7 @@ class IndexerDialog(ctk.CTkToplevel):
         self._rows: dict[str, tuple[TorrentRelease, bool]] = {}  # id -> (release, hidden)
         self._rendered: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
         self._failures = ""
-        self._is_tracked: bool | None = None
-        self._busy_tracking = False
+        self._count: int | None = None  # what on_count was last told
         self._fixing = False
         self._chips: dict[str, ctk.CTkLabel] = {}
         self._chip_urls: dict[str, str | None] = {}
@@ -437,11 +452,6 @@ class IndexerDialog(ctk.CTkToplevel):
         self._episode_buttons: dict[int | None, ctk.CTkButton] = {}  # None = the Pack button
         self._loading: LoadingBar | None = None
         self._empty_look: tuple[str, str] | None = None
-        self._activate_job: str | None = None
-        self._images = images
-        self._poster: PosterImage | None = None
-        self._poster_url: str | None = None
-        self._compact: bool | None = None  # None until the header is built
         self._selected_name = ""  # the selection bar's release name, before eliding
         self._name_room = 0.0  # the room for it, in CTk units (0 until laid out)
 
@@ -449,129 +459,83 @@ class IndexerDialog(ctk.CTkToplevel):
         self._grab_tasks: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._details_task: asyncio.Task[MovieDetails | None] | None = None
+        self._episodes_task: asyncio.Task[None] | None = None
 
-        self.title(t("Advanced Indexer Interrogation"))
-        set_window_icon(self)
-        self.transient(master)
-        # CTkToplevel only applies its dark Windows title bar reliably from resizable().
-        self.resizable(True, True)
-        self.minsize(900, 600)
-        height = self._place_over(master)
-
-        self._build_header(compact=compact_header(height))
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(_TABLE_ROW, weight=1)
+        self._build_selectors()
         self._build_results()
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.bind("<Configure>", self._on_configure)
-
-        self._start(self._load_grabbed(), "grabbed")
+        self._layout_selectors()
         if isinstance(target, TvTarget):
-            self._start(self._load_episodes(target.show), "episodes")
-            self._start(self._load_tracked(target.show), "tracked")
-        else:
-            self._details_task = self._start(self._load_details(target.movie), "details")
+            self._render_seasons()
+            self._render_episodes()
+
+    # -- public ------------------------------------------------------------------------------
+
+    @property
+    def target(self) -> IndexerTarget:
+        return self._target
+
+    def start(self) -> None:
+        """Load what the chips and the search need, and search (once)."""
+        if self._started:
+            return
+        self._started = True
+        self._start(self._load_grabbed(), "grabbed")
+        self._load_target_data()
         self._start_search()
-        # CTkToplevel can open behind its parent on Windows; raise it once it is mapped.
-        self._activate_job = self.after(150, self._activate)
+
+    def set_target(self, target: IndexerTarget) -> None:
+        """Switch to `target`: the chips follow and, once started, the panel searches again."""
+        if target == self._target:
+            return
+        old, self._target = self._target, target
+        if type(old) is not type(target):
+            self._quality = default_quality(target, self._settings.current)
+            self._layout_selectors()
+        new_subject = not (
+            isinstance(old, TvTarget)
+            and isinstance(target, TvTarget)
+            and old.show.id == target.show.id
+        )
+        if isinstance(target, TvTarget):
+            if new_subject:
+                self._episodes = []
+            same_season = (
+                not new_subject and isinstance(old, TvTarget) and old.season == target.season
+            )
+            if new_subject or target.season not in self._season_buttons:
+                self._render_seasons()
+            if not same_season or target.episode not in self._episode_buttons:
+                self._render_episodes()
+            self._paint_selectors()
+        else:
+            self._clear_tv_selectors()
+        if new_subject and self._started:
+            self._load_target_data()
+        if self._started:
+            self._start_search()
+        if self._on_target_change is not None:
+            self._on_target_change(target)
+
+    def show_message(self, text: str, color: theme.Color = theme.TEXT_MUTED) -> None:
+        """Show `text` on the message line under the table ("" hides it)."""
+        self._set_message(text, color)
+
+    def focus_table(self) -> None:
+        self._tree.focus_set()
 
     # -- layout ------------------------------------------------------------------------------
 
-    def _place_over(self, master: ctk.CTk) -> int:
-        """Centre over `master`, clamped to the screen (see MainWindow._place for the DPI math).
-        Returns the height (CTk units)."""
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        screen_w, screen_h = self.wm_maxsize()
-        width = min(self.WIDTH, int(screen_w / scaling) - 40)
-        height = min(self.HEIGHT, int(screen_h / scaling) - 40)
-        width_px, height_px = round(width * scaling), round(height * scaling)
-        x = master.winfo_rootx() + (master.winfo_width() - width_px) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - height_px) // 2
-        x = min(max(0, x), max(0, screen_w - width_px))
-        y = min(max(0, y), max(0, screen_h - height_px))
-        self.geometry(f"{width}x{height}+{x}+{y}")
-        return height
-
-    def _on_configure(self, event: tk.Event[Any]) -> None:
-        # Bound on the toplevel, so every descendant's <Configure> passes here too.
-        if event.widget is not self or event.height < 50:
-            return
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        self._set_compact(compact_header(event.height / scaling))
-
-    def _set_compact(self, compact: bool) -> None:
-        """Lay the header out full size or compact (see compact_header)."""
-        if compact == self._compact:
-            return
-        self._compact = compact
-        pad = _HEADER_PAD[compact]
-        self._header_card.pack_configure(padx=15, pady=pad)
-        self._header_info.pack_configure(pady=pad, padx=(0, pad))
-        self._title.configure(font=theme.font(_TITLE_SIZE[compact], bold=True))
-        self._meta.pack_configure(pady=(0, 4) if compact else (2, 10))
-        # PosterImage renders at a fixed size: a new one at the new size (the cache has the image).
-        if self._poster is not None:
-            self._poster.destroy()
-        width, height = _POSTER_SIZE[compact]
-        self._poster = PosterImage(self._header_card, width=width, height=height)
-        self._poster.pack(side="left", padx=pad, pady=pad, before=self._header_info)
-        self._poster.show(self._images, self._poster_url)
-
-    def _build_header(self, *, compact: bool) -> None:
-        card = ctk.CTkFrame(
-            self, fg_color=theme.SURFACE, border_width=1, border_color=theme.EDGE, corner_radius=8
+    def _build_selectors(self) -> None:
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.grid(row=_SELECTORS_ROW, column=0, sticky="ew", padx=10, pady=(10, 0))
+        frame.grid_columnconfigure(0, weight=1)
+        self._season_row, self._season_chips = self._selector_row(
+            frame, 0, t("SEASON"), fix_match=self._on_fix_match is not None
         )
-        card.pack(fill="x", padx=15, pady=15)
-        self._header_card = card
-
-        info = ctk.CTkFrame(card, fg_color="transparent")
-        info.pack(side="left", fill="both", expand=True, pady=15, padx=(0, 15))
-        self._header_info = info
-        title_row = ctk.CTkFrame(info, fg_color="transparent")
-        title_row.pack(fill="x")
-        self._title = ctk.CTkLabel(
-            title_row, text="", font=theme.font(24, bold=True), text_color=theme.TEXT, anchor="w"
-        )
-        self._title.pack(side="left")
-        self._meta = ctk.CTkLabel(
-            info, text="", font=theme.font(12), text_color=theme.TEXT_DIM, anchor="w", height=20
-        )
-        self._meta.pack(anchor="w", pady=(2, 10))  # see _set_compact
-
-        target = self._target
-        if isinstance(target, TvTarget):
-            ctk.CTkButton(
-                title_row,
-                text=t("✎ Fix Match"),
-                width=60,
-                height=20,
-                fg_color="transparent",
-                hover_color=theme.SUGGESTION_BORDER,
-                text_color=theme.BUTTON_TEXT,
-                font=theme.font(10),
-                command=self._fix_match,
-            ).pack(side="left", padx=10)
-            self._track_button = ctk.CTkButton(
-                title_row,
-                text=t("+ Track"),
-                width=60,
-                height=20,
-                font=theme.font(10, bold=True),
-                fg_color=theme.ACCENT,
-                hover_color=theme.ACCENT_HOVER,
-                border_color=theme.EDGE,
-                state="disabled",  # until the tracked state is known
-                command=self._toggle_track,
-            )
-            self._track_button.pack(side="left", padx=5)
-            self._meta.configure(text=show_meta(target.show))
-            self._season_row = self._selector_row(info, t("SEASON"))
-            self._episode_row = self._selector_row(info, t("EPISODE"))
-            self._poster_url = target.show.poster_url_original or target.show.poster_url
-        else:
-            self._meta.configure(text=movie_meta(target.movie, None))
-            self._poster_url = target.movie.poster_url("w342")
-        self._update_title()
-
-        versions = self._selector_row(info, t("VERSION"))
+        self._episode_row, self._episode_chips = self._selector_row(frame, 1, t("EPISODE"))
+        versions = self._selector_row(frame, 2, t("VERSION"))[1]
         for key in QUALITY_KEYS:
             button = ctk.CTkButton(
                 versions,
@@ -585,25 +549,47 @@ class IndexerDialog(ctk.CTkToplevel):
             button.pack(side="left", padx=3)
             self._quality_buttons[key] = button
         self._paint_quality({})
-        self._set_compact(compact)
 
-    @staticmethod
-    def _selector_row(master: Any, label: str) -> ctk.CTkScrollableFrame:
-        row = ctk.CTkFrame(master, fg_color="transparent")
-        row.pack(fill="x", pady=2)
+    def _layout_selectors(self) -> None:
+        """The SEASON and EPISODE rows are there for a series only."""
+        for row in (self._season_row, self._episode_row):
+            if isinstance(self._target, TvTarget):
+                row.grid()
+            else:
+                row.grid_remove()
+
+    def _selector_row(
+        self, master: ctk.CTkFrame, row: int, label: str, *, fix_match: bool = False
+    ) -> tuple[ctk.CTkFrame, ctk.CTkScrollableFrame]:
+        """A labelled row of chips (grid `row` of `master`); the "✎ Fix Match" link at its
+        right when `fix_match`. Returns the row and the frame the chips go in."""
+        frame = ctk.CTkFrame(master, fg_color="transparent")
+        frame.grid(row=row, column=0, sticky="ew", pady=2)
         ctk.CTkLabel(
-            row,
+            frame,
             text=label,
             width=70,
             anchor="w",
             font=theme.font(12, bold=True),
             text_color=theme.TEXT_DIM,
         ).pack(side="left")
+        if fix_match:
+            ctk.CTkButton(
+                frame,
+                text=t("✎ Fix Match"),
+                width=60,
+                height=20,
+                fg_color="transparent",
+                hover_color=theme.SUGGESTION_BORDER,
+                text_color=theme.BUTTON_TEXT,
+                font=theme.font(10),
+                command=self._fix_match,
+            ).pack(side="right", padx=(10, 0))
         # Most rows fit, but long-running daily shows can have hundreds of episodes in a
         # season: the scrollbar appears only then (it blends into the card until hovered), so
         # the rows stay chip-high. No corner radius: it would pad the chips.
         scroll = ctk.CTkScrollableFrame(
-            row,
+            frame,
             orientation="horizontal",
             height=_SELECTOR_HEIGHT,
             corner_radius=0,
@@ -612,11 +598,11 @@ class IndexerDialog(ctk.CTkToplevel):
             scrollbar_button_hover_color=theme.EDGE,
         )
         scroll.pack(side="left", fill="x", expand=True)
-        fit = functools.partial(IndexerDialog._fit_scrollbar, scroll)
+        fit = functools.partial(ReleasePanel._fit_scrollbar, scroll)
         scroll.bind("<Configure>", lambda _event: fit(), add="+")
         scroll._parent_canvas.bind("<Configure>", lambda _event: fit(), add="+")
         scroll._scrollbar.grid_remove()
-        return scroll
+        return frame, scroll
 
     @staticmethod
     def _fit_scrollbar(scroll: ctk.CTkScrollableFrame) -> None:
@@ -630,25 +616,19 @@ class IndexerDialog(ctk.CTkToplevel):
             bar.grid_remove()
 
     def _build_results(self) -> None:
-        card = ctk.CTkFrame(
-            self, fg_color=theme.SURFACE, border_width=1, border_color=theme.EDGE, corner_radius=8
-        )
-        card.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(2, weight=1)
-        self._results_card = card
-
-        top = ctk.CTkFrame(card, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.grid(row=_TOP_ROW, column=0, sticky="ew", padx=10, pady=10)
         self._results_title = ctk.CTkLabel(
-            top, text=t("Torrents"), font=theme.font(16, bold=True), text_color=theme.TEXT
+            top, text=t("Releases"), font=theme.font(16, bold=True), text_color=theme.TEXT
         )
         self._results_title.pack(side="left")
-        self._chip_bar = ctk.CTkFrame(top, fg_color="transparent")
+        # 1 x 1 while it holds no chip (a CTkFrame is 200 x 200 by default: the title's row
+        # would stand that tall, gaps above and under it); the chips make it as big as they are.
+        self._chip_bar = ctk.CTkFrame(top, fg_color="transparent", width=1, height=1)
         self._chip_bar.pack(side="right")
 
-        table = ctk.CTkFrame(card, fg_color="transparent", corner_radius=0)
-        table.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 6))
+        table = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        table.grid(row=_TABLE_ROW, column=0, sticky="nsew", padx=10, pady=(0, 6))
         table.grid_columnconfigure(0, weight=1)
         table.grid_rowconfigure(0, weight=1)
         scaling = float(ctk.ScalingTracker.get_widget_scaling(self))
@@ -673,17 +653,18 @@ class IndexerDialog(ctk.CTkToplevel):
         tree.bind("<ButtonRelease-1>", self._on_click)
         tree.bind("<Double-1>", self._on_double_click)
         tree.bind("<Return>", self._on_return)
+        tree.bind("<MouseWheel>", self._on_wheel)
         tree.bind("<KP_Enter>", self._on_return)
         # Mouse and keyboard (Up/Down) selection both fill the selection bar.
         tree.bind("<<TreeviewSelect>>", lambda _event: self._paint_selection())
         self._tree = tree
         self._paint_rows()
         self._update_headings()
-        self._build_selection_bar(card)
+        self._build_selection_bar()
 
         self._empty = ctk.CTkLabel(table, text="", fg_color=theme.SURFACE, anchor="w")
         self._hint = ctk.CTkLabel(
-            card,
+            self,
             text="",
             font=theme.font(11),
             text_color=theme.TEXT_MUTED,
@@ -692,19 +673,19 @@ class IndexerDialog(ctk.CTkToplevel):
             height=20,
         )
         self._hint.bind("<Button-1>", lambda _event: self._toggle_hidden())
-        self._message = ctk.CTkLabel(card, text="", font=theme.font(11), anchor="w", height=20)
+        self._message = ctk.CTkLabel(self, text="", font=theme.font(11), anchor="w", height=20)
 
-    def _build_selection_bar(self, card: ctk.CTkFrame) -> None:
+    def _build_selection_bar(self) -> None:
         """The bar under the table: the selected release and a big Download button. It sits in
         a row without weight, so on a short screen the table shrinks instead of the bar."""
         bar = ctk.CTkFrame(
-            card,
+            self,
             fg_color=theme.ROW_SELECTED,
             border_width=1,
             border_color=theme.EDGE,
             corner_radius=12,
         )
-        bar.grid(row=5, column=0, sticky="ew", padx=10, pady=(14, 10))
+        bar.grid(row=_BAR_ROW, column=0, sticky="ew", padx=10, pady=(14, 10))
         self._download_button = ctk.CTkButton(
             bar,
             text=DOWNLOAD_TEXT,
@@ -838,103 +819,76 @@ class IndexerDialog(ctk.CTkToplevel):
             self._style_table(self._table_scaling)
             self._paint_rows()
 
-    def _activate(self) -> None:
-        self._activate_job = None
-        if self.winfo_exists():
-            self.lift()
-            self.focus_force()
-            self._tree.focus_set()
-
     def _start(self, coro: Coroutine[Any, Any, T], name: str) -> asyncio.Task[T]:
         """Spawn a helper task that destroy() cancels."""
-        task = spawn(coro, name=f"IndexerDialog.{name}")
+        task = spawn(coro, name=f"ReleasePanel.{name}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
 
-    # -- header: title, tracking, fix match ----------------------------------------------------
+    def _report(self, text: str, clear_after_ms: int) -> None:
+        # The status bar belongs to the main window, which may outlive this panel (or not).
+        try:
+            self._status(text, clear_after_ms=clear_after_ms)
+        except tk.TclError:
+            pass
 
-    def _update_title(self) -> None:
+    # -- the target's data: episodes, film details -----------------------------------------------
+
+    def _load_target_data(self) -> None:
+        """Start loading the current target's episodes (a series) or details (a film),
+        replacing a load for an earlier target."""
+        for task in (self._episodes_task, self._details_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._episodes_task = self._details_task = None
         target = self._target
         if isinstance(target, TvTarget):
-            self._title.configure(text=episode_title(target.show, self._season, self._episode))
+            self._episodes_task = self._start(self._load_episodes(target.show), "episodes")
         else:
-            self._title.configure(text=movie_title(target.movie))
+            self._details_task = self._start(self._load_details(target.movie), "details")
 
     async def _load_details(self, movie: Movie) -> MovieDetails | None:
         try:
-            details = await self._discovery.movie_details(movie.id)
+            return await self._discovery.movie_details(movie.id)
         except TMDBError as exc:
             log.info("No TMDB details for %s (TMDB id %d): %s", movie.title, movie.id, exc)
             return None
-        if self.winfo_exists():
-            self._meta.configure(text=movie_meta(movie, details))
-        return details
 
-    async def _load_tracked(self, show: Show) -> None:
-        entries = await self._library.tracked()
-        if self.winfo_exists():
-            self._is_tracked = any(entry.show.id == show.id for entry in entries)
-            self._paint_track_button()
-
-    def _paint_track_button(self) -> None:
-        tracked = bool(self._is_tracked)
-        self._track_button.configure(
-            text=t("Tracking") if tracked else t("+ Track"),
-            fg_color="transparent" if tracked else theme.ACCENT,
-            text_color=theme.BUTTON_TEXT if tracked else theme.ON_ACCENT,
-            border_width=1 if tracked else 0,
-            state="disabled" if self._busy_tracking or self._is_tracked is None else "normal",
-        )
-
-    def _toggle_track(self) -> None:
-        if self._busy_tracking or self._is_tracked is None:
-            return
-        assert isinstance(self._target, TvTarget)
-        self._start(self._set_tracked(self._target.show, not self._is_tracked), "track")
-
-    async def _set_tracked(self, show: Show, track: bool) -> None:
-        self._busy_tracking = True
-        self._paint_track_button()
+    async def _load_episodes(self, show: Show) -> None:
+        episodes: list[Episode] = []
         try:
-            if track:
-                await self._library.track(show.id)
-            else:
-                await self._library.untrack(show.id)
-        except TVMazeError as exc:
-            if self.winfo_exists():
-                self._set_message(
-                    t("Couldn't track {name}: {error}", name=show.name, error=exc), theme.DANGER
-                )
-        else:
-            self._is_tracked = track
-            done = (
-                t("Now tracking {name}", name=show.name)
-                if track
-                else t("Stopped tracking {name}", name=show.name)
-            )
-            self._report(done, 4000)
+            episodes = await self._library.episodes(show.id)
         finally:
-            self._busy_tracking = False
-            if self.winfo_exists():
-                self._paint_track_button()
+            # Also on failure: the selectors then offer the target's own season and episode.
+            target = self._target
+            if (
+                self.winfo_exists()
+                and isinstance(target, TvTarget)
+                and target.show.id == show.id
+            ):
+                self._episodes = episodes
+                self._render_seasons()
+                self._render_episodes()
+
+    # -- fix match -----------------------------------------------------------------------------
 
     def _fix_match(self) -> None:
-        if not self._fixing:
-            self._start(self._run_fix_match(), "fix_match")
+        if not self._fixing and isinstance(self._target, TvTarget):
+            self._start(self._run_fix_match(self._target), "fix_match")
 
-    async def _run_fix_match(self) -> None:
-        assert isinstance(self._target, TvTarget)
+    async def _run_fix_match(self, target: TvTarget) -> None:
         self._fixing = True
         try:
-            show = await self._track_correct_show(self._target.show)
+            show = await self._track_correct_show(target.show)
         finally:
             self._fixing = False
-        if show is not None and self.winfo_exists():
-            self._report(
-                t("Now tracking {name} (TVMaze {id})", name=show.name, id=show.id), 5000
-            )
-            self._on_reopen(TvTarget(show, self._season, self._episode))
+        if show is None or not self.winfo_exists():
+            return
+        self._report(t("Now tracking {name} (TVMaze {id})", name=show.name, id=show.id), 5000)
+        current = self._target
+        if self._on_fix_match is not None and isinstance(current, TvTarget):
+            self._on_fix_match(TvTarget(show, current.season, current.episode))
 
     async def _track_correct_show(self, old: Show) -> Show | None:
         """Ask for the right TVMaze id and track that show in place of `old` (untracking `old`
@@ -978,9 +932,10 @@ class IndexerDialog(ctk.CTkToplevel):
             text=t("Enter the correct TVMaze ID for this show:"),
             title=t("Fix Match"),
         )
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        x = self.winfo_rootx() + self.winfo_width() // 2 - round(170 * scaling)
-        y = self.winfo_rooty() + self.winfo_height() // 3
+        window = self.winfo_toplevel()
+        scaling = ctk.ScalingTracker.get_window_scaling(window)
+        x = window.winfo_rootx() + window.winfo_width() // 2 - round(170 * scaling)
+        y = window.winfo_rooty() + window.winfo_height() // 3
         dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
         try:
             return await answer
@@ -988,42 +943,37 @@ class IndexerDialog(ctk.CTkToplevel):
             if dialog.winfo_exists():
                 dialog.destroy()
 
-    # -- header: selectors ---------------------------------------------------------------------
-
-    async def _load_episodes(self, show: Show) -> None:
-        episodes: list[Episode] = []
-        try:
-            episodes = await self._library.episodes(show.id)
-        finally:
-            # Also on failure: the selectors then offer the target's own season and episode.
-            if self.winfo_exists():
-                self._episodes = episodes
-                self._render_seasons()
-                self._render_episodes()
+    # -- selectors -----------------------------------------------------------------------------
 
     def _render_seasons(self) -> None:
+        target = self._target
+        if not isinstance(target, TvTarget):
+            return
         for button in self._season_buttons.values():
             button.destroy()
-        seasons = sorted({episode.season for episode in self._episodes} | {self._season})
+        seasons = sorted({episode.season for episode in self._episodes} | {target.season})
         self._season_buttons = {
             season: self._selector_button(
-                self._season_row, str(season), functools.partial(self._select_season, season)
+                self._season_chips, str(season), functools.partial(self._select_season, season)
             )
             for season in seasons
         }
         self._paint_selectors()
 
     def _render_episodes(self) -> None:
+        target = self._target
+        if not isinstance(target, TvTarget):
+            return
         for button in self._episode_buttons.values():
             button.destroy()
         numbers = [
             episode.number
             for episode in self._episodes
-            if episode.season == self._season and episode.number is not None
+            if episode.season == target.season and episode.number is not None
         ]
-        last = max([*numbers, self._episode or 0])
+        last = max([*numbers, target.episode or 0])
         pack = self._selector_button(
-            self._episode_row,
+            self._episode_chips,
             t("Pack"),
             self._select_pack,
             width=45,
@@ -1033,10 +983,18 @@ class IndexerDialog(ctk.CTkToplevel):
         buttons: dict[int | None, ctk.CTkButton] = {None: pack}
         for number in range(1, last + 1):
             buttons[number] = self._selector_button(
-                self._episode_row, str(number), functools.partial(self._select_episode, number)
+                self._episode_chips, str(number), functools.partial(self._select_episode, number)
             )
         self._episode_buttons = buttons
         self._paint_selectors()
+
+    def _clear_tv_selectors(self) -> None:
+        """A film: no season or episode chips."""
+        for button in [*self._season_buttons.values(), *self._episode_buttons.values()]:
+            button.destroy()
+        self._season_buttons = {}
+        self._episode_buttons = {}
+        self._episodes = []
 
     @staticmethod
     def _selector_button(
@@ -1067,36 +1025,29 @@ class IndexerDialog(ctk.CTkToplevel):
         button.configure(**theme.choice_colors(selected))
 
     def _paint_selectors(self) -> None:
+        target = self._target
+        if not isinstance(target, TvTarget):
+            return
         for season, button in self._season_buttons.items():
-            self._paint(button, season == self._season)
+            self._paint(button, season == target.season)
         for number, button in self._episode_buttons.items():
-            self._paint(button, number == self._episode)
+            self._paint(button, number == target.episode)
 
     def _select_season(self, season: int) -> None:
-        if season == self._season:
-            return
-        self._season = season
-        if self._episode is not None:
-            self._episode = 1
-        self._render_episodes()
-        self._paint_selectors()
-        self._target_changed()
+        target = self._target
+        if isinstance(target, TvTarget) and season != target.season:
+            episode = None if target.episode is None else 1
+            self.set_target(TvTarget(target.show, season, episode))
 
     def _select_pack(self) -> None:
-        if self._episode is not None:
-            self._episode = None
-            self._paint_selectors()
-            self._target_changed()
+        target = self._target
+        if isinstance(target, TvTarget) and target.episode is not None:
+            self.set_target(TvTarget(target.show, target.season, None))
 
     def _select_episode(self, number: int) -> None:
-        if number != self._episode:
-            self._episode = number
-            self._paint_selectors()
-            self._target_changed()
-
-    def _target_changed(self) -> None:
-        self._update_title()
-        self._start_search()
+        target = self._target
+        if isinstance(target, TvTarget) and number != target.episode:
+            self.set_target(TvTarget(target.show, target.season, number))
 
     def _select_quality(self, key: str) -> None:
         if key != self._quality:
@@ -1124,7 +1075,7 @@ class IndexerDialog(ctk.CTkToplevel):
         self._set_message("")
         self._show_loading(True)
         self._render()
-        self._search_task = spawn(self._run_search(), name="IndexerDialog.search")
+        self._search_task = spawn(self._run_search(), name="ReleasePanel.search")
 
     async def _run_search(self) -> None:
         try:
@@ -1149,9 +1100,9 @@ class IndexerDialog(ctk.CTkToplevel):
         target = self._target
         if isinstance(target, MovieTarget):
             return self._search.movie_request(target.movie, await self._details_within())
-        if self._episode is None:
-            return self._search.season_request(target.show, self._season)
-        return self._search.episode_request(target.show, self._season, self._episode)
+        if target.episode is None:
+            return self._search.season_request(target.show, target.season)
+        return self._search.episode_request(target.show, target.season, target.episode)
 
     async def _details_within(self) -> MovieDetails | None:
         """The film's TMDB details (for its IMDb id) if they arrive within _DETAILS_WAIT."""
@@ -1177,8 +1128,8 @@ class IndexerDialog(ctk.CTkToplevel):
 
     def _show_loading(self, visible: bool) -> None:
         if visible and self._loading is None:
-            self._loading = LoadingBar(self._results_card)
-            self._loading.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+            self._loading = LoadingBar(self)
+            self._loading.grid(row=_LOADING_ROW, column=0, sticky="ew", padx=10, pady=(0, 6))
         elif not visible and self._loading is not None:
             self._loading.destroy()
             self._loading = None
@@ -1222,7 +1173,7 @@ class IndexerDialog(ctk.CTkToplevel):
             text=(
                 t("Searching… {n} found", n=found)
                 if self._searching
-                else t("Torrents ({n})", n=found)
+                else t("Releases ({n})", n=found)
             )
         )
         self._render_rows()
@@ -1230,10 +1181,14 @@ class IndexerDialog(ctk.CTkToplevel):
         hidden = sum(matches_quality(release, self._quality) for release in hidden_releases)
         if hidden:
             self._hint.configure(text=hidden_text(hidden, showing=self._show_hidden))
-            self._hint.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 2))
+            self._hint.grid(row=_HINT_ROW, column=0, sticky="ew", padx=12, pady=(0, 2))
         else:
             self._hint.grid_remove()
         self._render_empty_state()
+        if found != self._count:
+            self._count = found
+            if self._on_count is not None:
+                self._on_count(found)
 
     def _visible_releases(self) -> list[tuple[TorrentRelease, bool]]:
         """(release, hidden) in table order: the matching releases, then (when shown) the
@@ -1311,10 +1266,14 @@ class IndexerDialog(ctk.CTkToplevel):
                 self._empty.place_forget()
             return
         if self._searching:
-            season = self._season if isinstance(self._target, TvTarget) else None
-            look = (searching_text(season, self._episode), "bold")
+            target = self._target
+            if isinstance(target, TvTarget):
+                text = searching_text(target.season, target.episode)
+            else:
+                text = searching_text(None, None)
+            look = (text, "bold")
         else:
-            look = (t("No matching torrents found."), "normal")
+            look = (t("No matching releases found."), "normal")
         if look == self._empty_look:
             return
         self._empty_look = look
@@ -1355,7 +1314,7 @@ class IndexerDialog(ctk.CTkToplevel):
     def _set_message(self, text: str, color: theme.Color = theme.TEXT_MUTED) -> None:
         if text:
             self._message.configure(text=text, text_color=color)
-            self._message.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
+            self._message.grid(row=_MESSAGE_ROW, column=0, sticky="ew", padx=12, pady=(0, 8))
         else:
             self._message.grid_remove()
 
@@ -1375,6 +1334,12 @@ class IndexerDialog(ctk.CTkToplevel):
         if tree.identify_column(event.x) != _ACTION_COLUMN:  # the click already grabbed there
             self._grab(tree.identify_row(event.y))
 
+    def _on_wheel(self, event: tk.Event[Any]) -> str:
+        """Scroll the table only: "break" keeps a scrolling window around the panel still."""
+        steps = int(-event.delta / 120) or (-1 if event.delta > 0 else 1)
+        self._tree.yview_scroll(steps, "units")
+        return "break"
+
     def _on_return(self, _event: tk.Event[Any]) -> None:
         for iid in self._tree.selection():
             self._grab(iid)
@@ -1390,8 +1355,8 @@ class IndexerDialog(ctk.CTkToplevel):
             return GrabTarget(
                 media_type=MediaType.TV,
                 media_id=target.show.id,
-                season=self._season,
-                episode=self._episode,
+                season=target.season,
+                episode=target.episode,
             )
         return GrabTarget(media_type=MediaType.MOVIE, media_id=target.movie.id)
 
@@ -1402,7 +1367,7 @@ class IndexerDialog(ctk.CTkToplevel):
             return
         self._row_states[iid] = "grabbing"
         self._refresh_row(iid)
-        task = spawn(self._run_grab(iid, row[0], self._grab_target()), name="IndexerDialog.grab")
+        task = spawn(self._run_grab(iid, row[0], self._grab_target()), name="ReleasePanel.grab")
         self._grab_tasks[iid] = task
         task.add_done_callback(functools.partial(self._forget_grab, iid))
 
@@ -1441,19 +1406,9 @@ class IndexerDialog(ctk.CTkToplevel):
             self._grabbed = grabbed
             self._render_rows()
 
-    def _report(self, text: str, clear_after_ms: int) -> None:
-        # The status bar belongs to the main window, which may outlive this one (or not).
-        try:
-            self._status(text, clear_after_ms=clear_after_ms)
-        except tk.TclError:
-            pass
-
     # -- teardown ------------------------------------------------------------------------------
 
     def destroy(self) -> None:
-        if self._activate_job is not None:
-            self.after_cancel(self._activate_job)
-            self._activate_job = None
         tasks = [self._search_task, *self._grab_tasks.values(), *self._tasks]
         for task in tasks:
             if task is not None and not task.done():
@@ -1461,6 +1416,7 @@ class IndexerDialog(ctk.CTkToplevel):
         self._search_task = None
         self._grab_tasks = {}
         self._tasks = set()
+        self._episodes_task = self._details_task = None
         if self._loading is not None:
             self._loading.destroy()
             self._loading = None

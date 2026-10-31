@@ -165,10 +165,18 @@ function Test-Python([string]$Exe, [switch]$Tested) {
     $ErrorActionPreference = 'Continue'
     $wanted = 'sys.version_info[:2] == (3, 13)'
     if (-not $Tested) { $wanted = 'sys.version_info >= (3, 13)' }
-    $probe = "import sys, tkinter; print(sys.executable) if $wanted else sys.exit(1)"
+    # The path travels as hex of its UTF-8 bytes: Python and Windows PowerShell 5.1 use different
+    # code pages for a pipe, which garbled user folders like "Juergen" spelt with an umlaut.
+    $probe = "import sys, tkinter; print(sys.executable.encode('utf-8').hex()) if $wanted else sys.exit(1)"
     $real = & $Exe -c $probe 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $real) { return $null }
-    return ($real | Select-Object -Last 1).Trim()
+    $hex = ([string]($real | Select-Object -Last 1)).Trim()
+    if ($hex.Length -eq 0 -or ($hex.Length % 2) -ne 0) { return $null }
+    $bytes = New-Object byte[] ($hex.Length / 2)
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        $bytes[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
+    }
+    return [Text.Encoding]::UTF8.GetString($bytes)
 }
 
 function Find-Python {

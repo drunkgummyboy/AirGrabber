@@ -10,7 +10,7 @@ or without one the air date is today or earlier; an episode with neither never c
 
 An aired episode only counts as missing once MISSING_AFTER (a day) has passed since it aired
 (`is_overdue`: its airstamp + MISSING_AFTER; without an airstamp, from the day after its air
-date): a copy usually turns up hours after the broadcast. Until then it is "new" (`is_new`):
+date): a release usually turns up hours after the broadcast. Until then it is "new" (`is_new`):
 not counted, not fetched by "Download missing", a blue "New" chip instead of the amber one. The
 latest season still follows `has_aired`: a new season's first episode makes it the latest at
 once. (The automatic downloads keep their own 2-hour rule, app/services/auto_download.py.)

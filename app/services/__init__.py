@@ -31,6 +31,7 @@ from app.services.search import TorrentSearchService
 from app.services import opensubtitles
 from app.services.opensubtitles import OpenSubtitlesClient
 from app.services.settings import SettingsService
+from app.services.spotlight import SpotlightService
 from app.services.subtitles import SubtitleService
 from app.services.synology import DownloadStationClient
 from app.services.tmdb import TMDBClient, TMDBError
@@ -68,6 +69,7 @@ class Services:
         "remote",
         "search",
         "settings",
+        "spotlight",
         "subtitles",
         "torrent_app",
         "updates",
@@ -95,6 +97,8 @@ class Services:
         self.library = library
         self.images = images
         self.discovery = discovery
+        # The header's spotlight band: tonight's episodes, trending shows, new films.
+        self.spotlight = SpotlightService(library, discovery)
         self.downloads = downloads
         # The torrent program on a NAS or another computer; also Settings' "Test connection".
         self.remote = remote
@@ -260,6 +264,7 @@ __all__ = [
     "RemoteError",
     "Services",
     "SettingsService",
+    "SpotlightService",
     "SubtitleService",
     "TorrentAppService",
     "TorrentSearchService",

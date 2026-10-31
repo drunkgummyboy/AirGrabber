@@ -14,10 +14,12 @@ from app.ui.main_window import settings_affect_pages
 from app.ui.text_fit import SLACK
 from app.ui.views.calendar_view import (
     WEEK_COUNTS,
-    best_suggestions,
+    SUGGESTION_CAP,
     by_day,
     card_style,
     day_label,
+    day_suggestions,
+    extra_suggestions,
     header_wraps,
     range_label,
     range_slot_width,
@@ -205,15 +207,50 @@ class CardStyleTests(unittest.TestCase):
 
 
 class SuggestionPickTests(unittest.TestCase):
-    def test_one_suggestion_per_day_the_best_ranked(self) -> None:
+    def test_each_days_suggestions_best_ranked_first(self) -> None:
         # Suggestions arrive best first within each day.
         best_monday, second_monday = entry(1, MONDAY), entry(2, MONDAY)
         only_tuesday = entry(3, TUESDAY)
-        picks = best_suggestions([best_monday, second_monday, only_tuesday, entry(4, None)])
-        self.assertEqual(picks, {MONDAY: best_monday, TUESDAY: only_tuesday})
+        picks = day_suggestions([best_monday, second_monday, only_tuesday, entry(4, None)])
+        self.assertEqual(picks, {MONDAY: [best_monday, second_monday], TUESDAY: [only_tuesday]})
+
+    def test_no_show_twice_a_day_and_the_cap(self) -> None:
+        first, again, second, third = entry(1, MONDAY), entry(1, MONDAY), entry(2, MONDAY), entry(
+            3, MONDAY
+        )
+        self.assertEqual(
+            day_suggestions([first, again, second, third], cap=2), {MONDAY: [first, second]}
+        )
+        many = [entry(n, MONDAY) for n in range(1, SUGGESTION_CAP + 5)]
+        self.assertEqual(len(day_suggestions(many)[MONDAY]), SUGGESTION_CAP)
 
     def test_no_suggestions(self) -> None:
-        self.assertEqual(best_suggestions([]), {})
+        self.assertEqual(day_suggestions([]), {})
+
+
+class ExtraSuggestionTests(unittest.TestCase):
+    """How many more suggestions each day of a week row gets (heights in one unit)."""
+
+    def test_quiet_days_fill_up_to_the_busiest_day(self) -> None:
+        # Day 0 is the busy one (the target); a slot is 100.
+        used = [500, 200, 150, 499, 300, 401, 200]
+        self.assertEqual(extra_suggestions(used, 500, 100, cap=7), [0, 3, 3, 0, 2, 0, 3])
+
+    def test_an_even_row_gets_nothing(self) -> None:
+        self.assertEqual(extra_suggestions([120] * 7, 120, 100, cap=7), [0] * 7)
+
+    def test_a_day_at_the_target_gets_nothing(self) -> None:
+        self.assertEqual(extra_suggestions([300, 300, 100], 300, 100, cap=7), [0, 0, 2])
+
+    def test_the_cap(self) -> None:
+        self.assertEqual(extra_suggestions([2000, 100], 2000, 100, cap=7), [0, 7])
+        self.assertEqual(extra_suggestions([2000, 100], 2000, 100, cap=0), [0, 0])
+
+    def test_no_slot_height_adds_nothing(self) -> None:
+        self.assertEqual(extra_suggestions([500, 100], 500, 0, cap=7), [0, 0])
+
+    def test_an_empty_row(self) -> None:
+        self.assertEqual(extra_suggestions([], 0, 100, cap=7), [])
 
     def test_by_day_keeps_the_order_and_drops_undated(self) -> None:
         first, second, other = entry(1, MONDAY), entry(2, MONDAY), entry(3, SUNDAY)

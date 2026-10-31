@@ -7,6 +7,11 @@ colours (IMDb's yellow) are one colour in both modes.
 Plain Tk widgets, canvas items, ttk styles and images baked with Pillow take one colour: they
 `pick` the current mode's colour, and repaint when the mode changes (`on_mode_change`, or a CTk
 widget's own `_set_appearance_mode`).
+
+The accent colour (Settings → Looks → Accent colour, app/ui/palettes.py): the values written
+below are Slate's, the default. `apply_accent` sets another palette's, once at startup before the
+first window (main.py); a change takes a restart. So read the tokens when a widget is made or
+painted (`theme.ACCENT`), never into a module-level copy or a default argument at import time.
 """
 
 from __future__ import annotations
@@ -17,7 +22,8 @@ from typing import Any
 
 import customtkinter as ctk
 
-from app.models import ThemeMode
+from app.models import Accent, ThemeMode
+from app.ui import palettes
 
 Pair = tuple[str, str]  # (light, dark)
 Color = str | Pair  # a colour as CTk takes it: one for both modes, or a pair
@@ -87,6 +93,35 @@ ROW_SELECTED: Pair = ("#D7E3F0", "#2A3A4D")  # selected results-table row
 TEXT_FAINT: Pair = ("#7D8792", "gray40")  # skipped indexers, results hidden by the filters
 TEXT_QUIET: Pair = ("#58636F", "gray50")  # "No movies found." and other empty results
 
+# A pop-up's round ✕ (app/ui/borderless.py): a quiet disc on the window background, red with a
+# white ✕ (ON_COLOR) under the pointer.
+CLOSE_BUTTON = CHIP
+CLOSE_BUTTON_HOVER = DANGER_BUTTON
+CLOSE_GLYPH = TEXT_MUTED
+
+# Slate's accent-dependent tokens as written above: what `apply_accent` derives the other
+# palettes from (and gives back for Slate).
+_SLATE: dict[str, Pair] = {name: globals()[name] for name in palettes.ACCENT_TOKENS}
+_accent = Accent.SLATE
+
+
+def apply_accent(accent: Accent) -> None:
+    """Set the palette of `accent` as the tokens (and PANEL_EDGE / CLOSE_BUTTON, which follow
+    PLACEHOLDER / CHIP). Once at startup, before the first widget is made: what was made before
+    keeps the colours it was given."""
+    global _accent, PANEL_EDGE, CLOSE_BUTTON
+    for name, pair in palettes.tokens(accent, _SLATE).items():
+        globals()[name] = pair
+    PANEL_EDGE = PLACEHOLDER
+    CLOSE_BUTTON = CHIP
+    _accent = accent
+
+
+def current_accent() -> Accent:
+    """The accent colour the tokens have now (the one this run started with)."""
+    return _accent
+
+
 # CTk's own defaults that only suit dark: (widget, option) → the light value; the dark value
 # stays CTk's. White text on the accent reads better than CTk's light grey.
 _LIGHT_DEFAULTS: dict[tuple[str, str], str] = {
@@ -142,10 +177,14 @@ def _tune_ctk_defaults() -> None:
             defaults[option] = [light, current[1]]
 
 
-def on_mode_change(widget: tk.Misc, repaint: Callable[[], object]) -> None:
+def on_mode_change(widget: tk.Misc, repaint: Callable[[], object], *, early: bool = False) -> None:
     """Call `repaint()` after every switch between light and dark while `widget` exists: for
     what CTk doesn't repaint itself (plain Tk widgets, canvas items, ttk styles). `repaint`
-    runs while CTk goes through its widgets: it must not destroy any (schedule that)."""
+    runs while CTk goes through its widgets: it must not destroy any (schedule that).
+
+    CTk repaints in the order things were made, and a big window takes a moment: `early`
+    repaints right after `widget`'s window repaints its own background, rather than after
+    everything made before `widget` (a pop-up's close button, made last)."""
 
     def changed(_mode: str) -> None:
         try:
@@ -154,7 +193,13 @@ def on_mode_change(widget: tk.Misc, repaint: Callable[[], object]) -> None:
         except tk.TclError:
             pass  # gone with its interpreter
 
-    ctk.AppearanceModeTracker.add(changed)
+    callbacks: list[Callable[[str], object]] = ctk.AppearanceModeTracker.callback_list
+    window = widget.winfo_toplevel()
+    own = [i for i, c in enumerate(callbacks) if early and getattr(c, "__self__", None) is window]
+    if own:
+        callbacks.insert(own[0] + 1, changed)
+    else:
+        ctk.AppearanceModeTracker.add(changed)
 
     def gone(event: tk.Event[Any]) -> None:
         if event.widget is widget:  # a Toplevel also hears its children go

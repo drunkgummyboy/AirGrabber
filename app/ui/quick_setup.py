@@ -1,10 +1,12 @@
 """Quick setup ("Make it yours"): the most important choices on one page, each one click.
 
-Look (Like Windows / Dark / Light, each with a small swatch; applies at once), download quality
+Look (Like Windows / Dark / Light, each with a small swatch; applies at once; under it the accent
+colour's round swatches (app/ui/accent_picker.py), which apply at the next start), download quality
 in two rows, Series and Movies (Smaller files = 720p / Recommended = 1080p / Best picture =
 2160p each: `quality_tv` and `quality_movie`; the sizes stay), card size (Small = S / Medium =
 M / Large = L) and language (English / Nederlands; another language than the running one
-needs a restart: "Restart now", or it applies at the next start). What is chosen first is what
+needs a restart, as another accent colour does: "Restart now", or it applies at the next
+start; `restart_text`). What is chosen first is what
 Settings has now; a quality or card size Settings has that isn't offered here ("Any", XS) is
 left unchosen, and stays unless one is clicked.
 
@@ -26,13 +28,16 @@ import customtkinter as ctk
 from PIL import Image, ImageColor, ImageDraw
 
 from app.i18n import N_, Language, current_language, t
-from app.models import CardSize, QualityProfile, Settings, ThemeMode
+from app.models import Accent, CardSize, QualityProfile, Settings, ThemeMode
 from app.services import SettingsService
 from app.ui import theme
+from app.ui.accent_picker import AccentSwatches
+from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.card_scale import CARD_SIZE_LABEL
 from app.ui.dialog_kit import (
     BUTTON_HEIGHT,
+    CLOSE_CLEARANCE,
     CONTENT_WIDTH,
     DETAIL_SIZE,
     LINE_GAP,
@@ -62,6 +67,8 @@ SERIES_ROW = N_("Series")  # the quality rows' names
 MOVIES_ROW = N_("Movies")
 LANGUAGE_TITLE = N_("Language")
 RESTART_TEXT = N_("Restart AirGrabber to switch the language")
+ACCENT_RESTART_TEXT = N_("Restart AirGrabber to switch the accent colour")
+BOTH_RESTART_TEXT = N_("Restart AirGrabber to switch the language and the accent colour")
 OPEN_TEXT = N_("Quick setup")  # Settings → Looks: the box and its button
 
 # (value, name, the small line under it) in the order shown.
@@ -107,6 +114,7 @@ class QuickChoices:
     quality_movie: QualityProfile | None  # films
     size: CardSize | None
     language: Language
+    accent: Accent = Accent.SLATE
 
 
 def _offered(quality: QualityProfile) -> QualityProfile | None:
@@ -119,6 +127,7 @@ def quick_defaults(current: Settings) -> QuickChoices:
     size = current.card_size if current.card_size in {s for s, _n, _l in SIZES} else None
     return QuickChoices(
         look=current.theme_mode,
+        accent=current.accent,
         quality_tv=_offered(current.quality_tv),
         quality_movie=_offered(current.quality_movie),
         size=size,
@@ -132,6 +141,8 @@ def quick_changes(current: Settings, chosen: QuickChoices) -> dict[str, Any]:
     changes: dict[str, Any] = {}
     if chosen.look != current.theme_mode:
         changes["theme_mode"] = chosen.look
+    if chosen.accent != current.accent:
+        changes["accent"] = chosen.accent
     if chosen.quality_tv is not None and chosen.quality_tv != current.quality_tv:
         changes["quality_tv"] = chosen.quality_tv
     if chosen.quality_movie is not None and chosen.quality_movie != current.quality_movie:
@@ -145,6 +156,18 @@ def quick_changes(current: Settings, chosen: QuickChoices) -> dict[str, Any]:
 
 def needs_restart(chosen: Language, running: Language) -> bool:
     return chosen != running
+
+
+def restart_text(language: bool, accent: bool) -> str | None:
+    """The restart note (shown through t()) for another language and / or another accent colour
+    than the running ones; None when neither needs a restart."""
+    if language and accent:
+        return BOTH_RESTART_TEXT
+    if language:
+        return RESTART_TEXT
+    if accent:
+        return ACCENT_RESTART_TEXT
+    return None
 
 
 # -- swatches (baked; the light and dark look's edge each) -------------------------------------
@@ -254,9 +277,18 @@ class _Question(ctk.CTkFrame):
         label_width: int = 0,
     ) -> _Choices[V]:
         row = _Choices(self._body, options, chosen, on_choose, label=label, label_width=label_width)
+        self.add(row)
+        return row
+
+    @property
+    def body(self) -> ctk.CTkFrame:
+        """Where its rows go (`add` places one)."""
+        return self._body
+
+    def add(self, row: Any) -> None:
+        """`row` (a child of `body`) under the rows before it."""
         row.pack(fill="x", pady=(ROW_GAP if self._rows else 0, 0))
         self._rows += 1
-        return row
 
 
 class _Choices(ctk.CTkFrame, Generic[V]):
@@ -342,6 +374,13 @@ class QuickSetupPanel(ctk.CTkFrame):
             looks.append((look, t(name), "", image))
         look_box = _Question(self, t(LOOK_TITLE))
         self.look = look_box.add_row(looks, self._chosen.look, self._look_chosen)
+        self.accent = AccentSwatches(
+            look_box.body,
+            value=self._chosen.accent,
+            background=theme.TAB_BG,
+            command=self._accent_chosen,
+        )
+        look_box.add(self.accent)
         quality_box = _Question(self, t(QUALITY_TITLE))
         qualities = [(quality, t(name), t(note), None) for quality, name, note in QUALITIES]
         measure = theme.font(14).measure
@@ -377,13 +416,14 @@ class QuickSetupPanel(ctk.CTkFrame):
             question.pack(fill="x", pady=(0 if index == 0 else QUESTION_GAP, 0))
 
         self.restart_row = ctk.CTkFrame(self, fg_color="transparent")
-        text_label(
+        self.restart_label = text_label(
             self.restart_row,
             t(RESTART_TEXT),
             size=SMALL_SIZE,
             color=theme.WARNING,
             wraplength=width - (_RESTART_BUTTON_WIDTH + 12 if on_restart is not None else 0),
-        ).pack(side="left", fill="x", expand=True)
+        )
+        self.restart_label.pack(side="left", fill="x", expand=True)
         self.restart_button: ctk.CTkButton | None = None
         if on_restart is not None:
             self.restart_button = primary_button(
@@ -417,10 +457,22 @@ class QuickSetupPanel(ctk.CTkFrame):
         self._set_choice(language=language)
         self.show_restart()
 
+    def _accent_chosen(self, accent: Accent) -> None:
+        self._set_choice(accent=accent)
+        self.show_restart()
+
     def show_restart(self, *, always: bool = False) -> None:
-        """The language note (and Restart now) while another language than the running one is
-        chosen; `always`: also now (the host measures its tallest size)."""
-        if always or needs_restart(self._chosen.language, current_language()):
+        """The restart note (and Restart now) while another language or accent colour than the
+        running one is chosen; `always`: also now, with its longest text (the host measures its
+        tallest size)."""
+        text = restart_text(
+            needs_restart(self._chosen.language, current_language()),
+            self._chosen.accent is not theme.current_accent(),
+        )
+        if always:
+            text = BOTH_RESTART_TEXT
+        if text is not None:
+            self.restart_label.configure(text=t(text))
             self.restart_row.pack(fill="x", pady=(QUESTION_GAP, 0))
         else:
             self.restart_row.pack_forget()
@@ -428,7 +480,7 @@ class QuickSetupPanel(ctk.CTkFrame):
 
 class QuickSetupDialog(ctk.CTkToplevel):
     """Quick setup on its own, from Settings → Looks (modal over Settings). Save stores the
-    choices and calls `on_saved`; Cancel, Esc and the window's X take the look back."""
+    choices and calls `on_saved`; Cancel, Esc and the round ✕ take the look back."""
 
     def __init__(
         self,
@@ -457,7 +509,8 @@ class QuickSetupDialog(ctk.CTkToplevel):
         self._scroll.pack(fill="both", expand=True)
         content = ctk.CTkFrame(self._scroll, fg_color="transparent")
         content.grid(row=0, column=0, sticky="nsew")
-        heading_row(content, t(HEADING)).pack(fill="x")
+        heading = heading_row(content, t(HEADING), right_room=CLOSE_CLEARANCE)
+        heading.pack(fill="x")
         text_label(content, t(INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
             anchor="w", pady=(LINE_GAP, 16)
         )
@@ -471,6 +524,8 @@ class QuickSetupDialog(ctk.CTkToplevel):
         self.save_button.pack(side="right", padx=(0, 12))
 
         self.bind("<Escape>", lambda _event: self.cancel())
+        # Its ✕ (and Alt+F4) call `cancel`.
+        self.borderless = make_borderless(self, drag_widgets=(self, body, heading, buttons))
         self._fit_screen()
         place_over(self, master)
         activate_later(self)

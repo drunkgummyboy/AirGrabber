@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import tkinter as tk
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 
 import customtkinter as ctk
@@ -94,10 +94,9 @@ CHOOSE_TIP = N_("Nothing good enough was found. Choose a download yourself.")
 # A new episode's quiet note (aired less than a day ago: not missing yet).
 NEW_NOTE_TEXT = N_("New")
 NEW_NOTE_TIP = N_(
-    "Aired less than a day ago: a copy usually turns up within hours. It counts as missing "
+    "Aired less than a day ago: a release usually turns up within hours. It counts as missing "
     "after a day."
 )
-NEW_COLOR = theme.LINK
 WORKING_ICON = "…"
 GRABBED_ICON = "✓"
 # A full card's width before its first layout (for where the Download row starts meanwhile).
@@ -243,8 +242,9 @@ class IconLook:
 
     text: str
     tip: str = ""
-    color: theme.Color = theme.ACCENT
-    hover: theme.Color = theme.ACCENT_HOVER
+    # The accent's, read when the look is made (the palette is set at startup).
+    color: theme.Color = field(default_factory=lambda: theme.ACCENT)
+    hover: theme.Color = field(default_factory=lambda: theme.ACCENT_HOVER)
     text_color: theme.Color | None = None  # None = CTk's default (white)
     border: theme.Color | None = None
     action: Action | None = None
@@ -420,7 +420,7 @@ class EpisodeCard(ctk.CTkFrame):
             canvas.itemconfigure(edge, fill=pick(theme.EDGE))
         canvas.itemconfigure(self._title, fill=pick(theme.TEXT))
         canvas.itemconfigure(self._code, fill=pick(theme.TEXT_MUTED))
-        canvas.itemconfigure(self._note, fill=pick(NEW_COLOR if self._new else MISSING_COLOR))
+        canvas.itemconfigure(self._note, fill=pick(theme.LINK if self._new else MISSING_COLOR))
         canvas.itemconfigure(self._status, fill=pick(theme.TEXT_MUTED))
 
     def _set_appearance_mode(self, mode_string: str) -> None:
@@ -823,7 +823,7 @@ class CompactEpisodeCard(ctk.CTkFrame):
                 self,
                 text=t(NEW_NOTE_TEXT) if new else t(MISSING_TEXTS[0]),
                 font=note_font,
-                text_color=NEW_COLOR if new else MISSING_COLOR,
+                text_color=theme.LINK if new else MISSING_COLOR,
                 height=NOTE_HEIGHT,
                 anchor="w",
             )

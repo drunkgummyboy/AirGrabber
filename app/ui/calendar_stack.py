@@ -45,7 +45,6 @@ from app.ui.calendar_cards import (
     GRABBED_ICON,
     MISSING_TEXTS,
     MISSING_TIP,
-    NEW_COLOR,
     NEW_NOTE_TEXT,
     NEW_NOTE_TIP,
     NOTE_HEIGHT,
@@ -132,7 +131,7 @@ ROW_TEXTS: dict[RowState, str] = {
 FOLDED_ARROW = "▾"
 UNFOLDED_ARROW = "▴"
 
-PILL_COLOR = theme.ROW_SELECTED  # the "3 episodes ▾" pill and the compact card's "3" badge
+# The "3 episodes ▾" pill and the compact card's "3" badge are ROW_SELECTED (read when drawn).
 PILL_TEXT_COLOR = theme.BUTTON_TEXT
 # The unfolded rows (XL units; the buttons keep the compact cards' size): the gap under the pill,
 # then per episode a line with its code and small buttons and a line with its state.
@@ -246,7 +245,7 @@ def row_color(kind: RowState) -> theme.Color:
     if kind == "needed":
         return MISSING_COLOR
     if kind == "new":
-        return NEW_COLOR
+        return theme.LINK  # blue: new
     return theme.TEXT_MUTED
 
 
@@ -700,7 +699,7 @@ class StackCard(EpisodeCard):
         )
         canvas.coords(self._pill, x, top)
         canvas.coords(self._pill_text, x + round(PILL_PAD_X * scaling), top + size[1] / 2)
-        face = PillFace(size, _rgb(self, PILL_COLOR))
+        face = PillFace(size, _rgb(self, theme.ROW_SELECTED))
         if face != self._pill_face:
             self._pill_face = face
             if self._pill_task is not None:
@@ -828,7 +827,7 @@ class CompactStackCard(ctk.CTkFrame):
             line,
             text=count,
             font=badge_font,
-            fg_color=PILL_COLOR,
+            fg_color=theme.ROW_SELECTED,
             text_color=PILL_TEXT_COLOR,
             corner_radius=BADGE_RADIUS,
             width=badge_width,
@@ -844,7 +843,7 @@ class CompactStackCard(ctk.CTkFrame):
                 self,
                 text=t(NEW_NOTE_TEXT) if any_new else t(MISSING_TEXTS[0]),
                 font=note_font,
-                text_color=NEW_COLOR if any_new else MISSING_COLOR,
+                text_color=theme.LINK if any_new else MISSING_COLOR,
                 height=NOTE_HEIGHT,
                 anchor="w",
             )

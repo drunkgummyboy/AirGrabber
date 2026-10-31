@@ -839,3 +839,24 @@ foreach ($name in $links.PSObject.Properties.Name) {
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
+class InstallerPythonTests(unittest.TestCase):
+    def test_test_python_keeps_non_ascii_paths_intact(self) -> None:
+        # Python printed its path in one code page and Windows PowerShell 5.1 read it in another,
+        # so a user folder like "Jürgen Smit" came back garbled and the install stopped.
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / "Jürgen Smit" / "venv"
+            subprocess.run(
+                [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                check=True,
+                creationflags=NO_WINDOW,
+            )
+            python = venv / "Scripts" / "python.exe"
+            script = _load_installer(["Test-Python"]) + (
+                "$found = Test-Python $env:AG_PYTHON -Tested\n"
+                "if ($found -eq $env:AG_PYTHON) { 'SAME' } else { 'DIFF' }\n"
+            )
+            output = _powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_PYTHON": str(python)})
+            self.assertEqual(output.strip().splitlines()[-1:], ["SAME"])

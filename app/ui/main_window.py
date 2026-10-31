@@ -1,4 +1,5 @@
-"""The root window: header (mode switch, search, settings), page area and status bar."""
+"""The root window: the spotlight band (mode switch, search, Downloads, settings, tonight's
+episodes), page area and status bar."""
 
 from __future__ import annotations
 
@@ -37,6 +38,8 @@ from app.models import (
     SubtitleEvent,
     SubtitleProblem,
     SubtitlesSaved,
+    SpotlightItem,
+    SpotlightSide,
     SyncProgress,
     UpdateInfo,
 )
@@ -48,9 +51,8 @@ from app.services.downloads import GrabError
 from app.services.synology import DownloadStationError
 from app.services.tmdb import TMDBError
 from app.ui import theme
-from app.ui.branding import load_logo, set_window_icon
+from app.ui.branding import set_window_icon
 from app.ui.card_scale import CardScale
-from app.ui.downloads_button import DownloadsButton
 from app.ui.download_control import (
     BatchKey,
     BatchState,
@@ -76,18 +78,12 @@ from app.ui.missing_control import (
     have_status_text,
     outcome_status_text,
 )
-from app.ui.indexer_dialog import (
-    IndexerDialog,
-    IndexerTarget,
-    MovieTarget,
-    TvTarget,
-    movie_title,
-)
-from app.ui.icons import IconButton, sliders_icon
-from app.ui.movie_details import MovieWindows
+from app.ui.movie_details import MovieWindows, movie_title
+from app.ui.release_panel import PanelServices, TvTarget
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
+from app.ui.spotlight_band import SpotlightBand
 from app.ui.subtitle_control import OUTCOME_MS as SUBTITLE_OUTCOME_MS
 from app.ui.subtitle_control import WORKING as SUBTITLES_WORKING
 from app.ui.subtitle_control import SubtitleActions, SubtitleRuns, fetch_run
@@ -105,7 +101,6 @@ from app.whats_new import WhatsNew, whats_new
 
 log = logging.getLogger(__name__)
 
-_LOGO_HEIGHT = 100  # header logo, as in 1.x
 _UPDATE_CHECK_DELAY_S = 5  # let the pages load first
 _DOWNLOAD_STATUS_MS = 10_000  # how long a one-click download's result stays in the status bar
 _DETAILS_WAIT_S = 5.0  # a one-click movie download waits this long for TMDB details (IMDb id)
@@ -154,6 +149,12 @@ _OFF_PAGE_SETTINGS = frozenset(
         "theme_mode",
         # The language: it takes effect at the next start (Settings offers "Restart now").
         "language",
+        # The info window's layout: a window reads it when it opens.
+        "info_layout",
+        # The spotlight band turning by itself: the band follows it (`set_motion`).
+        "spotlight_motion",
+        # The accent colour: applied at the next start (main.py), like the language.
+        "accent",
     }
 )
 
@@ -282,11 +283,11 @@ class AutoNoticeThrottle:
 class Mode(StrEnum):
     SERIES = "Series"
     MOVIES = "Movies"
-    DOWNLOADS = "Downloads"  # the header's ⬇ button; the Series / Movies switch leads back
+    DOWNLOADS = "Downloads"  # the band's ⬇ button; the Series / Movies switch leads back
 
 
-# The header's switch: each mode's button text (translated where shown).
-_MODE_LABELS = {Mode.SERIES: N_("Series"), Mode.MOVIES: N_("Movies")}
+# The band's switch and the modes it leads to (the Downloads page lights neither part).
+_SIDE_MODES = {SpotlightSide.SERIES: Mode.SERIES, SpotlightSide.MOVIES: Mode.MOVIES}
 # The Series tabs' texts. CTkTabview names a tab by its text, so they key the views translated.
 _CALENDAR, _DISCOVER, _TRACKED = N_("Calendar"), N_("Discover"), N_("Tracked")
 
@@ -309,8 +310,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._status_job: str | None = None
         self._settings_dialog: SettingsDialog | None = None
         self._results_window: SearchResultsWindow | None = None
-        self._indexer_dialog: IndexerDialog | None = None
-        self._logo_image: ctk.CTkImage | None = None
         self._update_info: UpdateInfo | None = None
         self._update_task: asyncio.Task[None] | None = None
         self.restart_requested = False  # read by main.py once the window has closed
@@ -347,7 +346,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
             unmark_have=self._unmark_have,
             runs=self._missing_runs,
         )
-        # The show details windows (one per show), opened from the show cards.
+        # What the info windows' releases panels work with ("☰ Choose…" shows them there).
+        releases = PanelServices(
+            search=services.search,
+            downloads=services.downloads,
+            library=services.library,
+            discovery=services.discovery,
+            settings=services.settings,
+            status=self.set_status,
+        )
+        # The show details windows (one per show), opened from the show cards and from every
+        # episode's "☰ Choose…" (on its releases).
         self._show_windows = ShowWindows(
             self,
             library=services.library,
@@ -360,8 +369,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             subtitle_marks=self._subtitle_marks,
             subtitles_changed=self._on_subtitles_saved,
             subtitle_actions=self._subtitle_actions,
+            releases=releases,
         )
-        # The film info windows (one per film), opened from the film cards.
+        # The film info windows (one per film), opened from the film cards and from every
+        # film's "☰ Choose…" (on its releases).
         self._movie_windows = MovieWindows(
             self,
             images=services.images,
@@ -373,12 +384,13 @@ class MainWindow(AsyncCTk, ctk.CTk):
             subtitle_actions=self._subtitle_actions,
             subtitle_mark=self._film_subtitle_mark,
             subtitles_changed=self._on_subtitles_saved,
+            releases=releases,
         )
 
         self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))
         set_window_icon(self)
         self._place(1650, 900)
-        self.minsize(1220, 640)  # narrowest width at which the centred header still fits
+        self.minsize(1220, 640)  # narrowest width at which the band's top row still fits
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
@@ -426,9 +438,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if self._results_window is not None and self._results_window.winfo_exists():
             self._results_window.destroy()
         self._results_window = None
-        if self._indexer_dialog is not None and self._indexer_dialog.winfo_exists():
-            self._indexer_dialog.destroy()
-        self._indexer_dialog = None
         for task in list(self._download_tasks):
             task.cancel()
         self._unsubscribe_settings()
@@ -459,116 +468,36 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
 
     def _build_header(self) -> None:
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
-        header.grid_columnconfigure((0, 2), weight=1, uniform="header")
-
-        nav = ctk.CTkFrame(header, fg_color="transparent")
-        nav.grid(row=0, column=1)
-        self._mode_buttons = {
-            mode: ctk.CTkButton(
-                nav,
-                text=t(_MODE_LABELS[mode]),
-                width=90,
-                height=30,
-                corner_radius=6,
-                fg_color="transparent",
-                hover_color=theme.SURFACE,
-                text_color=theme.BUTTON_TEXT,
-                font=theme.font(14, bold=True),
-                command=lambda m=mode: self._select_mode(m),
-            )
-            for mode in (Mode.SERIES, Mode.MOVIES)
-        }
-        self._mode_buttons[Mode.SERIES].grid(row=0, column=0, padx=15)
-        # The name stands in until the logo has loaded; the row is logo-tall from the start.
-        self._logo = ctk.CTkLabel(
-            nav,
-            text=APP_NAME,
-            height=_LOGO_HEIGHT,
-            font=theme.font(24, bold=True),
-            text_color=theme.ACCENT,
+        """The spotlight band across the top, edge to edge (app/ui/spotlight_band.py)."""
+        services = self._services
+        self._band = SpotlightBand(
+            self,
+            spotlight=services.spotlight,
+            downloads=services.download_status,
+            images=services.images,
+            motion=services.settings.current.spotlight_motion,
+            on_side=lambda side: self._select_mode(_SIDE_MODES[side]),
+            on_downloads=lambda: self._select_mode(Mode.DOWNLOADS),
+            on_settings=self._open_settings,
+            on_search=self._on_search,
+            on_open=self._open_spotlight,
+            report=self._report,
         )
-        self._logo.grid(row=0, column=1, padx=15)
-        self._mode_buttons[Mode.MOVIES].grid(row=0, column=2, padx=15)
-
-        tools = ctk.CTkFrame(header, fg_color="transparent")
-        tools.grid(row=0, column=2, sticky="e")
-        self._search = ctk.CTkEntry(
-            tools,
-            placeholder_text=t("Search shows & movies…"),
-            placeholder_text_color=theme.TEXT_MUTED,
-            width=260,
-            height=40,
-            fg_color=theme.SURFACE,
-            border_color=theme.EDGE,
-        )
-        self._search.pack(side="left", padx=(0, 5))
-        self._search.bind("<Return>", lambda _event: self._on_search())
+        self._band.grid(row=0, column=0, sticky="ew")
+        self._search = self._band.entry
         self._suggestions = SearchSuggestions(
             self._search,
             root=self,
-            library=self._services.library,
-            discovery=self._services.discovery,
+            library=services.library,
+            discovery=services.discovery,
             on_open=self._open_search_results,
         )
-        search_button = ctk.CTkButton(
-            tools,
-            text="🔍",
-            width=40,
-            height=40,
-            corner_radius=10,
-            fg_color=theme.SURFACE,
-            hover_color=theme.HOVER,
-            text_color=theme.BUTTON_TEXT,
-            border_width=1,
-            border_color=theme.EDGE,
-            font=theme.font(18),
-            command=self._on_search,
-        )
-        search_button.pack(side="left", padx=(0, 15))
-        add_tooltip(search_button, t("Search"))
-        self._downloads_button = DownloadsButton(
-            tools,
-            downloads=self._services.download_status,
-            command=lambda: self._select_mode(Mode.DOWNLOADS),
-            report=self._report,
-        )
-        self._downloads_button.pack(side="left", padx=(0, 5))
-        # A drawn "sliders" icon in a soft square button like the search button's.
-        settings_button = IconButton(
-            tools,
-            draw=sliders_icon,
-            width=40,
-            height=40,
-            corner_radius=10,
-            fg_color=theme.SURFACE,
-            hover_color=theme.HOVER,
-            border_width=1,
-            border_color=theme.EDGE,
-            command=self._open_settings,
-        )
-        settings_button.pack(side="left")
-        self._settings_button = settings_button
-        add_tooltip(settings_button, t("Settings"))
 
     def _build_pages(self) -> None:
         library, settings = self._services.library, self._services.settings
         images, discovery = self._services.images, self._services.discovery
-        self._series_tabs = Tabview(
-            self,
-            corner_radius=15,
-            border_width=1,
-            fg_color=theme.TAB_BG,
-            border_color=theme.EDGE,
-            segmented_button_fg_color=theme.SURFACE,
-            segmented_button_selected_color=theme.SELECTED,
-            segmented_button_selected_hover_color=theme.SELECTED_HOVER,
-            segmented_button_unselected_color=theme.SURFACE,
-            segmented_button_font=theme.font(16, bold=True),
-            text_color=theme.BUTTON_TEXT,
-            command=self._on_tab_changed,
-        )
+        # Underline tabs right under the band (left-aligned, an accent line under the chosen).
+        self._series_tabs = Tabview(self, look="underline", command=self._on_tab_changed)
         tabs = self._series_tabs
         self._series_views: dict[str, BaseView] = {
             t(_CALENDAR): CalendarView(
@@ -661,7 +590,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # The Downloads page's progress and the header badge (they listen to it themselves).
         spawn(self._services.download_status.run_periodic(), name="download-status")
         spawn(self._services.images.prune(), name="poster-prune")
-        spawn(self._load_logo(), name="logo")
+        self._band.start()  # its titles, its pictures and their turning
         spawn(self._note_version(), name="version-notice")
         spawn(self._services.updates.register_install(), name="installed-apps-entry")
         spawn(self._check_for_update(), name="update-check")
@@ -749,26 +678,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._download_tasks.add(task)
         task.add_done_callback(self._download_tasks.discard)
 
-    async def _load_logo(self) -> None:
-        scaling = ctk.ScalingTracker.get_widget_scaling(self)
-        logo = await asyncio.to_thread(load_logo, round(_LOGO_HEIGHT * scaling))
-        if logo is None or not self.winfo_exists():
-            return
-        width = round(logo.width / scaling)
-        self._logo_image = ctk.CTkImage(light_image=logo, dark_image=logo, size=(width, _LOGO_HEIGHT))
-        self._logo.configure(image=self._logo_image, text="")
-
     def _select_mode(self, mode: Mode) -> None:
         if mode is self._mode:
             return
         self._mode = mode
-        for button_mode, button in self._mode_buttons.items():
-            selected = button_mode is mode
-            button.configure(
-                fg_color=theme.ACCENT if selected else "transparent",
-                text_color=theme.ON_ACCENT if selected else theme.BUTTON_TEXT,
-            )
-        self._downloads_button.set_selected(mode is Mode.DOWNLOADS)
+        sides = {side_mode: side for side, side_mode in _SIDE_MODES.items()}
+        self._band.select(sides.get(mode))  # None: the Downloads page (⬇ lit)
         pages: dict[Mode, ctk.CTkFrame] = {
             Mode.SERIES: self._series_tabs,
             Mode.MOVIES: self._movie_view,
@@ -777,11 +692,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
         for page_mode, page in pages.items():
             if page_mode is not mode:
                 page.grid_remove()
-        pages[mode].grid(row=1, column=0, sticky="nsew", padx=15, pady=5)
+        pages[mode].grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._visible_view().refresh_if_stale()
 
     def _on_tab_changed(self) -> None:
         self._visible_view().refresh_if_stale()
+
+    def _open_spotlight(self, item: SpotlightItem) -> None:
+        """A click on the band's title: its info window (a followed show's, a TMDB show's
+        through its TVMaze counterpart, a film's)."""
+        if item.show is not None:
+            self._show_windows.open_show(item.show)
+        elif item.discover_show is not None:
+            self._show_windows.open_discover(item.discover_show)
+        elif item.movie is not None:
+            self._movie_windows.open_movie(item.movie)
 
     def _visible_view(self) -> BaseView:
         if self._mode is Mode.MOVIES:
@@ -816,6 +741,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         previous, self._settings_seen = self._settings_seen, updated
         if updated.theme_mode != previous.theme_mode:
             theme.apply_appearance(updated.theme_mode)
+        if updated.spotlight_motion != previous.spotlight_motion:
+            self._band.set_motion(updated.spotlight_motion)
         self._subtitle_runs.refresh()  # the CC buttons: offered, greyed or gone
         if settings_affect_pages(previous, updated):
             self._reload_pages()
@@ -825,6 +752,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         for view in (*self._series_views.values(), self._movie_view):
             view.invalidate()
         self._visible_view().refresh()
+        self._band.reload()  # tonight's episodes, a new TMDB key's pictures
 
     def _on_search(self) -> None:
         self._suggestions.hide()
@@ -854,12 +782,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
 
     def _search_episode(self, entry: CalendarEntry) -> None:
-        # A special (no episode number) opens on its season's pack.
+        """An episode's "☰ Choose…": its show's info window on the episode's releases (a
+        special, without a number, on its season's pack)."""
         episode = entry.episode
-        self._open_indexer_dialog(TvTarget(entry.show, episode.season, episode.number))
+        target = TvTarget(entry.show, episode.season, episode.number)
+        self._show_windows.open_show(entry.show, target=target)
 
     def _grab_movie(self, movie: Movie) -> None:
-        self._open_indexer_dialog(MovieTarget(movie))
+        """A film's "☰ Choose…": its info window on its releases."""
+        self._movie_windows.open_movie(movie, releases=True)
 
     # -- one-click downloads -------------------------------------------------------------------
 
@@ -918,13 +849,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
             if auto:
                 self._start_download(*self._tv_run(show, record.season, record.episode, again=True))
             else:
-                self._open_indexer_dialog(TvTarget(show, record.season, record.episode))
+                target = TvTarget(show, record.season, record.episode)
+                self._show_windows.open_show(show, target=target)
             return
         spawn(self._film_again(record.media_id, entry.title, auto), name="download-again")
 
     async def _film_again(self, movie_id: int, title: str, auto: bool) -> None:
-        """A film known by its TMDB id downloaded again (or its search window), once TMDB
-        has described it."""
+        """A film known by its TMDB id downloaded again, or its info window on its releases,
+        once TMDB has described it."""
+        if not auto:
+            if not await self._movie_windows.open_movie_id(movie_id, releases=True):
+                self._report(
+                    t("Couldn't look up {title} on TMDB", title=title), _DOWNLOAD_STATUS_MS
+                )
+            return
         try:
             async with asyncio.timeout(_DETAILS_WAIT_S):
                 movie = await self._services.discovery.movie(movie_id)
@@ -932,10 +870,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.info("Film %d: no TMDB description to download it again: %s", movie_id, exc)
             self._report(t("Couldn't look up {title} on TMDB", title=title), _DOWNLOAD_STATUS_MS)
             return
-        if auto:
-            self._download_movie_again(movie)
-        else:
-            self._grab_movie(movie)
+        self._download_movie_again(movie)
 
     def _download_episodes(self, batch: BatchKey, entries: Sequence[CalendarEntry]) -> None:
         """A calendar stack's "⬇ Download all": its episodes one after another through the
@@ -981,7 +916,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._download_movie(movie, again=True)
 
     async def _movie_details(self, movie: Movie) -> MovieDetails | None:
-        """The film's TMDB details (for its IMDb id), as the search window waits for them."""
+        """The film's TMDB details (for its IMDb id), as the releases panel waits for them."""
         try:
             async with asyncio.timeout(_DETAILS_WAIT_S):
                 return await self._services.discovery.movie_details(movie.id)
@@ -1110,24 +1045,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self.set_status(text, clear_after_ms=clear_after_ms)
         except tk.TclError:
             pass  # window already destroyed
-
-    def _open_indexer_dialog(self, target: IndexerTarget) -> None:
-        """One indexer dialog at a time: a new one replaces the previous dialog."""
-        if self._indexer_dialog is not None and self._indexer_dialog.winfo_exists():
-            self._indexer_dialog.destroy()
-        services = self._services
-        self._indexer_dialog = IndexerDialog(
-            self,
-            target=target,
-            search=services.search,
-            downloads=services.downloads,
-            library=services.library,
-            discovery=services.discovery,
-            images=services.images,
-            settings=services.settings,
-            status=self.set_status,
-            on_reopen=self._open_indexer_dialog,
-        )
 
     def _on_library_changed(self) -> None:
         self._reload_pages()
