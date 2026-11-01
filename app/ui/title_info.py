@@ -3,19 +3,22 @@
 (Settings' `info_layout`, read when a window opens):
 
 "side" (InfoLayout.SIDE, the default): a backdrop band across the top (TMDB's backdrop, or the
-poster blurred when TMDB has none) with "▶ Watch trailer" centred on it (it opens on YouTube);
-under it on the left a column with the poster reaching up into the band, then the title, a meta
-line, genre pills, the synopsis (More shows all of it), a muted line the window may use (a
-series' next episode), the actions (wrapping), without a TMDB key a plain hint, and a compact
-cast (three actors, "+N more" unfolds the rest). The column scrolls on its own when it is too
-tall. On the right a film's releases, or a series' episodes (`content`), which "☰ Choose…"
-swaps for that episode's releases under a "← Episodes" bar.
+poster blurred when TMDB has none) with "▶ Watch trailer" centred on it (it plays in app.ui.trailer's window);
+under it on the left a column with the poster, centred, reaching far up into the band, then
+centred under it the title, a meta line, genre pills; left-aligned the synopsis (More shows all
+of it) and a muted line the window may use (a series' next episode); the actions (wrapping,
+centred), without a TMDB key a plain hint, and a compact cast (three actors, "+N more" unfolds
+the rest). The column scrolls on its own when it is too tall. On the right a film's releases,
+or a series' episodes (`content`), which "☰ Choose…" swaps for that episode's releases under a
+"← Episodes" bar. The band fades into the background slowly, all the way down (SIDE_FADE):
+the poster sits over the faded picture, and the right side starts where the fade is solid.
 
 "tabs" (InfoLayout.TABS): a taller backdrop; under it the poster beside the text column, the
 poster's top level with the title's and its bottom with the actions' (the actions sit at the
-bottom of the column; the synopsis gets the lines that fit). Then tabs: "Releases (18)" | "Cast"
-for a film, "Episodes" | "Releases" | "Cast" for a series ("Releases · S03E05" once an episode
-was chosen). The whole window scrolls; the Releases tab is as tall as the window, so its table
+bottom of the column; the synopsis gets the lines that fit). The poster narrows when the text
+beside it would get less than TABS_TEXT_MIN (it is baked again at its new size). Then tabs:
+"Releases (18)" | "Cast" for a film, "Episodes" | "Releases" | "Cast" for a series
+("Releases · S03E05" once an episode was chosen). The whole window scrolls; the Releases tab is as tall as the window, so its table
 fills it once scrolled there. The Cast tab is there while there is a cast.
 
 A film's releases start searching when its window opens; a series' when "☰ Choose…" picks an
@@ -52,12 +55,11 @@ import asyncio
 import logging
 import math
 import tkinter as tk
-import webbrowser
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
@@ -72,6 +74,7 @@ from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvT
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, break_lines, elide_to_width, fit_to_lines, unscaled_width
 from app.ui.tooltip import work_area
+from app.ui.trailer import open_trailer
 from app.ui.widgets import FlexGrid, Tabview
 
 if TYPE_CHECKING:
@@ -101,8 +104,11 @@ POSTER_RADIUS = 10
 POSTER_BORDER = 2
 # "tabs": about 230 units of backdrop above where the poster and the text start.
 HERO_HEIGHT = 246
-POSTER_WIDTH = 176
-POSTER_HEIGHT = 264
+POSTER_WIDTH = 282  # at most; narrower where the text beside it needs the room
+POSTER_HEIGHT = 423
+POSTER_MIN_WIDTH = 120
+POSTER_RATIO = 1.5  # a poster's height to its width
+TABS_TEXT_MIN = 320  # "tabs": the text column beside the poster keeps at least this much
 POSTER_GAP = 24  # between the poster and the text beside it
 PILL_TOP = 0.42  # the trailer button's centre, as a share of the backdrop's height
 TAB_CHROME = 56  # the tab bar and the tab view's margins above and below a page
@@ -110,16 +116,19 @@ TAB_BOTTOM = 12  # under the tab view
 RELEASES_MIN_HEIGHT = 320  # the Releases tab's page at least
 TAB_SETTLE_MS = 150  # after CTk's own 100 ms tidy-up of the pages it doesn't show
 # "side".
-SIDE_BAND = 130  # the backdrop band across the top
+SIDE_BAND = 170  # the backdrop band across the top
 SIDE_STRIP = CLOSE_ROOM  # the band without a backdrop: the close button's corner stays free
 SIDE_LEFT_WIDTH = 320  # the info column
-SIDE_PAD = 20  # the info column's left side
-SIDE_POSTER_WIDTH = 112
-SIDE_POSTER_HEIGHT = 168
-SIDE_OVERLAP = 56  # how far the poster reaches up into the band
+SIDE_PAD = 20  # the info column's left and right side
+SIDE_POSTER_WIDTH = 180  # at most; narrower when the column has less room
+SIDE_POSTER_HEIGHT = 270
+SIDE_OVERLAP = 102  # how far the poster reaches up into the band (it starts 40 % down)
 SIDE_TOP = 20  # without a backdrop the poster starts this far down
 SIDE_POSTER_GAP = 14  # under the poster, above the title
-SIDE_PILL_TOP = 0.45
+SIDE_PILL_TOP = 0.34
+# The band's long, soft fade into the background: (share of its height, share of the
+# background there), a smooth curve through them; all background on its last row.
+SIDE_FADE = ((0.0, 0.05), (0.30, 0.25), (0.58, 0.70), (1.0, 1.0))
 SIDE_SUMMARY_LINES = 4
 SIDE_CAST_SHOWN = 3  # the compact cast's actors before "+N more"
 RIGHT_PAD = 16  # around the right side's content
@@ -158,6 +167,7 @@ _SUPERSAMPLE = 4  # rounded shapes are drawn this much larger, then scaled down
 
 # Shown through t().
 TRAILER_TEXT = N_("Watch trailer")
+OPENING_TRAILER_TEXT = N_("Opening trailer…")  # until the player window shows
 NO_KEY_HINT = N_("Add a TMDB key in Settings for posters, trailers and cast")
 MORE_TEXT = N_("More")
 EPISODES_TAB = N_("Episodes")
@@ -294,29 +304,38 @@ def masthead_layout(
 
     "tabs": with a backdrop, the poster and the text start TEXT_RISE above its lower edge (the
     poster beside the text, their tops level); without one both start at the top, the text
-    column narrower by the close button's clearance. "side": the band is SIDE_BAND tall and the
-    poster reaches SIDE_OVERLAP up into it; without a backdrop the band is a plain SIDE_STRIP
-    (the close button's corner) and the poster starts SIDE_TOP down. The text column starts
-    under the poster."""
+    column narrower by the close button's clearance. The poster is POSTER_WIDTH wide where the
+    text keeps TABS_TEXT_MIN beside it, else narrower (at least POSTER_MIN_WIDTH). "side": the
+    band is SIDE_BAND tall and the poster, centred in the info column (SIDE_POSTER_WIDTH, or
+    the column's room when that is less), reaches SIDE_OVERLAP up into it; without a backdrop
+    the band is a plain SIDE_STRIP (the close button's corner) and the poster starts SIDE_TOP
+    down. The text column starts under the poster."""
 
     def px(units: float) -> int:
         return round(units * scaling)
 
+    def poster(width_px: int, full: tuple[float, float]) -> tuple[int, int]:
+        """`full` (units) when it fits in `width_px`, else as wide as that (2:3)."""
+        if width_px >= px(full[0]):
+            return px(full[0]), px(full[1])
+        return width_px, round(width_px * POSTER_RATIO)
+
     if layout is InfoLayout.SIDE:
         hero_height = px(SIDE_BAND) if hero else 0
         poster_y = hero_height - px(SIDE_OVERLAP) if hero else px(SIDE_TOP)
-        poster_size = (px(SIDE_POSTER_WIDTH), px(SIDE_POSTER_HEIGHT))
+        column = px(SIDE_LEFT_WIDTH)
+        text_width = max(1, column - 2 * px(SIDE_PAD))
+        poster_size = poster(text_width, (SIDE_POSTER_WIDTH, SIDE_POSTER_HEIGHT))
         return MastheadLayout(
             hero_height=hero_height,
-            poster=(px(SIDE_PAD), poster_y),
+            poster=((column - poster_size[0]) // 2, poster_y),
             poster_size=poster_size,
             text=(px(SIDE_PAD), poster_y + poster_size[1] + px(SIDE_POSTER_GAP)),
-            text_width=max(1, px(SIDE_LEFT_WIDTH) - 2 * px(SIDE_PAD)),
+            text_width=text_width,
             pill_centre=(width // 2, round(hero_height * SIDE_PILL_TOP)),
             band_height=hero_height if hero else px(SIDE_STRIP),
         )
     pad_x = px(PAD_X)
-    text_x = pad_x + px(POSTER_WIDTH) + px(POSTER_GAP)
     if hero:
         hero_height = px(HERO_HEIGHT)
         top = hero_height - px(TEXT_RISE)
@@ -325,10 +344,13 @@ def masthead_layout(
         hero_height = 0
         top = px(PAD_Y)
         corner = px(clearance(PAD_X))  # the title stays clear of the close button
+    room = width - 2 * pad_x - px(POSTER_GAP) - corner - px(TABS_TEXT_MIN)
+    poster_size = poster(max(px(POSTER_MIN_WIDTH), room), (POSTER_WIDTH, POSTER_HEIGHT))
+    text_x = pad_x + poster_size[0] + px(POSTER_GAP)
     return MastheadLayout(
         hero_height=hero_height,
         poster=(pad_x, top),
-        poster_size=(px(POSTER_WIDTH), px(POSTER_HEIGHT)),
+        poster_size=poster_size,
         text=(text_x, top),
         text_width=max(1, width - text_x - pad_x - corner),
         pill_centre=(width // 2, round(hero_height * PILL_TOP)),
@@ -357,31 +379,88 @@ def _smooth(x: float) -> float:
     return x * x * (3 - 2 * x)
 
 
+FadeStops = tuple[tuple[int, float], ...]  # (pixel row, share of the background), top down
+
+
+def fade_column(height: int, stops: FadeStops) -> bytes:
+    """The background's share (0–255) on each of `height` pixel rows (at their centres) along
+    `stops`: as the first stop above it, as the last below it, and in between a smooth curve
+    through the stops that never overshoots them (monotone cubic, level at both ends: between
+    two stops alone, a smoothstep)."""
+    points = [stop for index, stop in enumerate(stops) if not index or stop[0] > stops[index - 1][0]]
+    if not points:
+        return bytes(height)
+    xs = [float(x) for x, _ in points]
+    ys = [min(1.0, max(0.0, y)) for _, y in points]
+    slopes = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(len(xs) - 1)]
+    tangents = [0.0] * len(xs)
+    for i in range(1, len(xs) - 1):
+        before, after = slopes[i - 1], slopes[i]
+        if before * after > 0:  # the harmonic mean keeps the curve between the stops
+            tangents[i] = 2 / (1 / before + 1 / after)
+    out = bytearray(height)
+    segment = 0
+    for row in range(height):
+        x = row + 0.5
+        if x <= xs[0]:
+            share = ys[0]
+        elif x >= xs[-1]:
+            share = ys[-1]
+        else:
+            while x > xs[segment + 1]:
+                segment += 1
+            x0, x1 = xs[segment], xs[segment + 1]
+            span = x1 - x0
+            s = (x - x0) / span
+            share = (
+                (2 * s**3 - 3 * s**2 + 1) * ys[segment]
+                + (s**3 - 2 * s**2 + s) * span * tangents[segment]
+                + (-2 * s**3 + 3 * s**2) * ys[segment + 1]
+                + (s**3 - s**2) * span * tangents[segment + 1]
+            )
+        out[row] = round(255 * min(1.0, max(0.0, share)))
+    return bytes(out)
+
+
 @dataclass(frozen=True, slots=True)
 class HeroFace:
     """The backdrop's finish step (ImageCache): fade the picture into `bg` from `fade_from`
-    down to `solid_from` (pixel rows); `blur` > 0 blurs and dims it first (a poster standing
-    in for a backdrop). Hashable: part of the image's cache key."""
+    down to `solid_from` (pixel rows), or, given `stops`, along those (`fade_column`); `blur`
+    > 0 blurs and dims it first (a poster standing in for a backdrop). Hashable: part of the
+    image's cache key."""
 
     bg: RGB
     fade_from: int
     solid_from: int
     blur: float = 0.0
+    stops: FadeStops = ()
 
     def __call__(self, image: Image.Image, /) -> Image.Image:
         return compose_hero(image, self)
 
 
-def hero_face(size: tuple[int, int], bg: RGB, scaling: float, *, blur: bool) -> HeroFace:
-    """The face of a backdrop `size` physical pixels big: solid from TEXT_RISE above its lower
-    edge, where the text starts."""
+def hero_face(
+    size: tuple[int, int],
+    bg: RGB,
+    scaling: float,
+    *,
+    blur: bool,
+    layout: InfoLayout = InfoLayout.TABS,
+) -> HeroFace:
+    """The face of a backdrop `size` physical pixels big. "tabs": clear down to FADE_FROM,
+    then fading until TEXT_RISE above its lower edge, where the text starts. "side": the long
+    SIDE_FADE, all background on its last row (where the content under the band starts)."""
     width, height = size
+    blur_radius = round(width * BLUR_SHARE, 1) if blur else 0.0
+    if layout is InfoLayout.SIDE:
+        last = max(1, height - 1)
+        stops = tuple((round(last * row), share) for row, share in SIDE_FADE)
+        return HeroFace(
+            bg=bg, fade_from=stops[0][0], solid_from=last, blur=blur_radius, stops=stops
+        )
     solid_from = max(1, height - round(TEXT_RISE * scaling))
     return HeroFace(
-        bg=bg,
-        fade_from=round(height * FADE_FROM),
-        solid_from=solid_from,
-        blur=round(width * BLUR_SHARE, 1) if blur else 0.0,
+        bg=bg, fade_from=round(height * FADE_FROM), solid_from=solid_from, blur=blur_radius
     )
 
 
@@ -393,13 +472,18 @@ def compose_hero(image: Image.Image, face: HeroFace) -> Image.Image:
         picture = picture.filter(ImageFilter.GaussianBlur(face.blur))
         picture = Image.blend(picture, background, BLUR_DIM)
     width, height = picture.size
-    span = max(1, face.solid_from - face.fade_from)
-    column = bytes(
-        255 if row >= face.solid_from else round(255 * _smooth((row + 0.5 - face.fade_from) / span))
-        if row >= face.fade_from
-        else 0
-        for row in range(height)
-    )
+    if face.stops:
+        column = fade_column(height, face.stops)
+    else:
+        span = max(1, face.solid_from - face.fade_from)
+        column = bytes(
+            255
+            if row >= face.solid_from
+            else round(255 * _smooth((row + 0.5 - face.fade_from) / span))
+            if row >= face.fade_from
+            else 0
+            for row in range(height)
+        )
     mask = Image.frombytes("L", (1, height), column).resize((width, height), Image.Resampling.NEAREST)
     return Image.composite(background, picture, mask)
 
@@ -548,6 +632,7 @@ class Masthead(tk.Canvas):
         self._hero: _Hero | None = None
         self._hero_room = False  # the backdrop's room is kept (it shows or may still come)
         self._trailer: str | None = None
+        self._pill_label = TRAILER_TEXT  # the pill's text, kept as its N_() key
         self._width = 0  # physical px, from the last <Configure>
         self._layout: MastheadLayout | None = None
         self._hero_photo: ImageTk.PhotoImage | None = None
@@ -560,6 +645,7 @@ class Masthead(tk.Canvas):
         self._hero_task: asyncio.Task[None] | None = None
         self._poster_task: asyncio.Task[None] | None = None
         self._hero_job: str | None = None
+        self._poster_job: str | None = None  # "tabs": the poster baked again at another size
         self._pill_font = theme.font(PILL_FONT_SIZE, bold=True)
         self._probe: ctk.CTkBaseClass | None = None  # a CTk widget that knows the scaling
 
@@ -627,8 +713,12 @@ class Masthead(tk.Canvas):
 
     @property
     def poster_size(self) -> tuple[int, int]:
-        """The poster's size in physical pixels."""
-        return masthead_layout(1, self.scaling, hero=False, layout=self.layout).poster_size
+        """The poster's size in physical pixels ("tabs": at the masthead's width now, before
+        that is known at the widest the window opens)."""
+        if self._layout is not None:
+            return self._layout.poster_size
+        width = self._width if self._width > 1 else round(WINDOW_WIDTH * self.scaling)
+        return masthead_layout(width, self.scaling, hero=False, layout=self.layout).poster_size
 
     def reserve_hero(self, keep: bool) -> None:
         """Keep the backdrop's room (empty until `set_hero`) or give it up."""
@@ -696,6 +786,11 @@ class Masthead(tk.Canvas):
             self.foot.coords(self._foot_poster, x, y - layout.band_height)
         if previous is None:
             self._load_poster()
+        elif previous.poster_size != layout.poster_size:
+            # "tabs": the poster fits the width; baked again once the resizing stops.
+            if self._poster_job is not None:
+                self.after_cancel(self._poster_job)
+            self._poster_job = self.after(150, lambda: self._load_poster(placeholder=False))
         self._place_pill()
         self._fit_height()
 
@@ -743,7 +838,7 @@ class Masthead(tk.Canvas):
             return
         scaling = self.scaling
         font = self._pill_font
-        text_width = font.measure(t(TRAILER_TEXT)) * scaling
+        text_width = font.measure(t(self._pill_label)) * scaling
         left_part = (PILL_PAD_LEFT + PILL_CIRCLE + PILL_TEXT_GAP) * scaling
         width = math.ceil(left_part + text_width + PILL_PAD_RIGHT * scaling)
         height = round(PILL_HEIGHT * scaling)
@@ -763,7 +858,15 @@ class Masthead(tk.Canvas):
 
     def _open_trailer(self) -> None:
         if self._trailer is not None:
-            webbrowser.open(self._trailer)
+            open_trailer(self._trailer, on_state=self._trailer_state)  # app/ui/trailer.py
+
+    def _trailer_state(self, state: str) -> None:
+        """The player's progress on the pill: "Opening trailer…" until its window shows."""
+        if not self.winfo_exists():
+            return
+        self._pill_label = OPENING_TRAILER_TEXT if state == "opening" else TRAILER_TEXT
+        self.itemconfigure(self._pill_text, text=t(self._pill_label))
+        self._place_pill()
 
     # -- images --------------------------------------------------------------------------------
 
@@ -775,7 +878,7 @@ class Masthead(tk.Canvas):
         if layout is None or hero is None or layout.hero_height <= 0 or self._width <= 1:
             return
         size = (self._width, layout.hero_height)
-        face = hero_face(size, rgb(self, theme.BG), self.scaling, blur=hero.blur)
+        face = hero_face(size, rgb(self, theme.BG), self.scaling, blur=hero.blur, layout=self.layout)
         self._hero_task = spawn(self._fetch_hero(hero, size, face), name="Masthead.hero")
 
     async def _fetch_hero(self, hero: _Hero, size: tuple[int, int], face: HeroFace) -> None:
@@ -824,14 +927,17 @@ class Masthead(tk.Canvas):
             edge=rgb(self, theme.PANEL_EDGE),
         )
 
-    def _load_poster(self) -> None:
+    def _load_poster(self, *, placeholder: bool = True) -> None:
+        """Bake the poster at its size now; the placeholder shows meanwhile (`placeholder`;
+        else the poster before, resized only, stays until then)."""
+        self._poster_job = None
         if self._poster_task is not None:
             self._poster_task.cancel()
         size = self.poster_size
         face = self._poster_face()
-        placeholder = frame_poster(None, face, size, rgb(self, theme.PLACEHOLDER))
-        self._show_poster(placeholder)
         url = self._poster_url(size[0])
+        if placeholder or url is None:
+            self._show_poster(frame_poster(None, face, size, rgb(self, theme.PLACEHOLDER)))
         if url is not None:
             self._poster_task = spawn(self._fetch_poster(url, size, face), name="Masthead.poster")
 
@@ -864,11 +970,12 @@ class Masthead(tk.Canvas):
         for task in (self._hero_task, self._poster_task):
             if task is not None:
                 task.cancel()
-        if self._hero_job is not None:
-            try:
-                self.after_cancel(self._hero_job)
-            except tk.TclError:
-                pass
+        for job in (self._hero_job, self._poster_job):
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
         super().destroy()
 
 
@@ -877,14 +984,16 @@ class Masthead(tk.Canvas):
 
 class GenrePills(ctk.CTkFrame):
     """Genre names as small outlined pills, wrapped onto as many rows as `room` (logical
-    units, `set_room`) needs."""
+    units, `set_room`) needs; each row centred with `centre` (then it fills its width)."""
 
-    def __init__(self, master: Any) -> None:
+    def __init__(self, master: Any, *, centre: bool = False) -> None:
         super().__init__(master, fg_color="transparent")
         self._pills: list[ctk.CTkFrame] = []
         self._title_labels: tuple[str, ...] = ()
         self._room = 300.0
         self._font = theme.font(GENRE_FONT_SIZE)
+        self._centre = centre
+        self._rows: list[ctk.CTkFrame] = []  # centred: a frame per row, holding its pills
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -924,7 +1033,11 @@ class GenrePills(ctk.CTkFrame):
 
     def _reflow(self) -> None:
         widths = [self._font.measure(name) + 2 * PILL_GENRE_PAD + 2 for name in self._title_labels]
-        for row, indexes in enumerate(flow_rows(widths, self._room, PILL_GENRE_GAP)):
+        rows = flow_rows(widths, self._room, PILL_GENRE_GAP)
+        if self._centre:
+            self._reflow_centred(rows)
+            return
+        for row, indexes in enumerate(rows):
             for column, index in enumerate(indexes):
                 self._pills[index].grid(
                     row=row,
@@ -934,14 +1047,35 @@ class GenrePills(ctk.CTkFrame):
                     sticky="w",
                 )
 
+    def _reflow_centred(self, rows: list[list[int]]) -> None:
+        while len(self._rows) < len(rows):
+            frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0, height=1)
+            # Under the pills it holds (they are this frame's siblings, made before it).
+            self.tk.call("lower", frame._w)
+            self._rows.append(frame)
+        for pill in self._pills:
+            pill.pack_forget()
+        for index, frame in enumerate(self._rows):
+            if index < len(rows):
+                frame.pack(pady=(0 if index == 0 else PILL_GENRE_GAP, 0))
+            else:
+                frame.pack_forget()
+        for index, row in enumerate(rows):
+            for column, item in enumerate(row):
+                self._pills[item].pack(
+                    in_=self._rows[index], side="left", padx=(0 if column == 0 else PILL_GENRE_GAP, 0)
+                )
+
 
 class FlowRow(ctk.CTkFrame):
     """The actions: widgets (children of this frame) side by side, wrapping onto another row
-    when `room` (CTk units, `set_room`) runs out. `set_items` says which show, in order."""
+    when `room` (CTk units, `set_room`) runs out; each row centred with `centre` (then it fills
+    its width). `set_items` says which show, in order."""
 
-    def __init__(self, master: Any, *, gap: int = BUTTON_GAP) -> None:
+    def __init__(self, master: Any, *, gap: int = BUTTON_GAP, centre: bool = False) -> None:
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self._gap = gap
+        self._anchor: Literal["center", "w"] = "center" if centre else "w"
         self._room = 10_000.0
         self._items: list[tk.Widget] = []
         self._rows: list[ctk.CTkFrame] = []
@@ -1000,7 +1134,7 @@ class FlowRow(ctk.CTkFrame):
             widget.pack_forget()
         for index, frame in enumerate(self._rows):
             if index < len(rows):
-                frame.pack(anchor="w", pady=(0 if index == 0 else self._gap, 0))
+                frame.pack(anchor=self._anchor, pady=(0 if index == 0 else self._gap, 0))
             else:
                 frame.pack_forget()
         for index, row in enumerate(rows):
@@ -1343,16 +1477,22 @@ _SPACER_ROW, _BUTTONS_ROW, _HINT_ROW, _CAST_ROW = range(6, 10)
 
 
 def _text(
-    master: Any, text: str, size: int, color: theme.Color = theme.TEXT, *, bold: bool = False
+    master: Any,
+    text: str,
+    size: int,
+    color: theme.Color = theme.TEXT,
+    *,
+    bold: bool = False,
+    centre: bool = False,
 ) -> ctk.CTkLabel:
-    """Left-aligned wrapping text, as tall as its lines."""
+    """Left-aligned (or with `centre` centred) wrapping text, as tall as its lines."""
     return ctk.CTkLabel(
         master,
         text=text,
         font=theme.font(size, bold=bold),
         text_color=color,
-        anchor="w",
-        justify="left",
+        anchor="center" if centre else "w",
+        justify="center" if centre else "left",
         height=1,
     )
 
@@ -1613,12 +1753,16 @@ class TitleInfoWindow(ctk.CTkToplevel):
         meta_gap, genres_gap, summary_gap, more_gap, note_gap, buttons_gap, hint_gap = look.gaps
         self._info = info
         info.grid_columnconfigure(0, weight=1)
-        self._title_label = _text(info, title, look.title, bold=True)
-        self._title_label.grid(row=_TITLE_ROW, column=0, sticky="w")
-        self._meta = _text(info, "", look.detail, theme.TEXT_MUTED)
-        self._meta.grid(row=_META_ROW, column=0, sticky="w", pady=(meta_gap, 0))
-        self.genres = GenrePills(info)
-        self.genres.grid(row=_GENRES_ROW, column=0, sticky="w", pady=(genres_gap, 0))
+        # "side": the title, the meta line, the genres and the actions centred under the
+        # poster; the longer texts (synopsis, note, cast) stay left-aligned.
+        centre = self.layout is InfoLayout.SIDE
+        sticky = "ew" if centre else "w"
+        self._title_label = _text(info, title, look.title, bold=True, centre=centre)
+        self._title_label.grid(row=_TITLE_ROW, column=0, sticky=sticky)
+        self._meta = _text(info, "", look.detail, theme.TEXT_MUTED, centre=centre)
+        self._meta.grid(row=_META_ROW, column=0, sticky=sticky, pady=(meta_gap, 0))
+        self.genres = GenrePills(info, centre=centre)
+        self.genres.grid(row=_GENRES_ROW, column=0, sticky=sticky, pady=(genres_gap, 0))
         self._summary_font = theme.font(look.detail)
         self._summary = _text(info, "", look.detail)
         self._summary.grid(row=_SUMMARY_ROW, column=0, sticky="w", pady=(summary_gap, 0))
@@ -1634,8 +1778,8 @@ class TitleInfoWindow(ctk.CTkToplevel):
         self._more.bind("<Button-1>", lambda _event: self._expand_summary())
         self._note = _text(info, "", look.detail, theme.TEXT_MUTED)
         self._note.grid(row=_NOTE_ROW, column=0, sticky="w", pady=(note_gap, 0))
-        self.buttons = FlowRow(info)
-        self.buttons.grid(row=_BUTTONS_ROW, column=0, sticky="w", pady=(buttons_gap, 0))
+        self.buttons = FlowRow(info, centre=centre)
+        self.buttons.grid(row=_BUTTONS_ROW, column=0, sticky=sticky, pady=(buttons_gap, 0))
         self._hint = _text(info, t(NO_KEY_HINT), look.small, theme.TEXT_MUTED)
         self._hint.grid(row=_HINT_ROW, column=0, sticky="w", pady=(hint_gap, 0))
         self._hint.grid_remove()

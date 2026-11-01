@@ -28,6 +28,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import customtkinter as ctk
+from PIL import Image
 
 from app.i18n import N_, day_short, month_short, t, tn
 from app.models import (
@@ -64,11 +65,15 @@ from app.ui.download_control import (
     episode_key,
 )
 from app.ui.missing_control import (
-    CHIP_HAVE_TEXT,
     CHIP_MISSING_TEXT,
     CHIP_TIP,
     HAVE_EPISODE_TEXT,
+    HAVE_MARK,
     HAVE_SEASON_TEXT,
+    HAVE_TIP,
+    MARK_DOT,
+    MARK_DOT_GAP,
+    MARK_FONT_SIZE,
     MARK_MISSING_TEXT,
     MISSING_COLOR,
     NOTHING_MISSING_TEXT,
@@ -76,7 +81,7 @@ from app.ui.missing_control import (
     MenuItem,
     MissingActions,
     MissingButton,
-    chip,
+    mark_label,
     missing_text,
     popup_menu,
 )
@@ -95,6 +100,7 @@ from app.ui.title_info import (
     exists,
     join_meta,
     rating_text,
+    rounded_mask,
     target_code,
 )
 from app.ui.tooltip import add_tooltip
@@ -107,9 +113,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 RowState = Literal["downloaded", "downloadable", "upcoming"]
-# The latest season's amber "Missing" / blue "New · aired today" / muted "✓ Have it".
+# The latest season's amber "● Missing" / blue "● New · aired today" / muted "✓".
 Mark = Literal["missing", "new", "have"]
+# A row's mark menu: (episode, its mark, the widget it opens under, or the pointer's place).
+OnMark = Callable[[Episode, Mark, Any, tuple[int, int] | None], None]
 Listener = Callable[[], None]
+RGB = tuple[int, int, int]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
 # Per (season, episode) of a show (TVMaze id), its subtitle mark ("CC EN NL").
 SubtitleMarks = Callable[[int], Awaitable[Mapping[tuple[int, int], str]]]
@@ -123,9 +132,12 @@ EPISODE_ROW_HEIGHT = 52
 CODE_WIDTH = 72
 DATE_WIDTH = 64
 SLOT_WIDTH = 200  # the row's right side (at least): its download controls, or when it airs
-MARK_WIDTH = 92  # the latest season's chip, left of that (at least; `mark_slot_width`)
-MARK_PAD = 12  # left and right of a chip's text
+MARK_WIDTH = 72  # the latest season's mark, left of that (at least; `mark_slot_width`)
+MARK_PAD = 12  # beyond a mark's dot and text (the text renders a little wider when scaled)
 MARK_HEIGHT = 26
+MORE_WIDTH = 30  # the ⋯ at the end of a row that has options
+ROW_RADIUS = 8
+STRIPE = 3  # a missing episode's amber line along its row's left edge
 MISSING_BUTTON_WIDTH = 300  # the season bar's "⬇ Download missing (3)"
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
 CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's title
@@ -286,7 +298,7 @@ def episode_row_state(episode: Episode, *, downloaded: bool, now: datetime) -> R
 
 
 def row_mark(details: ShowDetails, episode: Episode) -> Mark | None:
-    """The chip a row of a tracked show's latest season gets: "missing" (see
+    """The mark a row of a tracked show's latest season gets: "missing" (see
     app.services.missing), "new" (aired less than a day ago, not missing yet), "have" (marked
     "I already have this" and not downloaded), else None. Older seasons never get one."""
     if not details.tracked or episode.season != details.latest_season:
@@ -326,7 +338,7 @@ def season_menu_items(missing: Sequence[int], have: Sequence[int]) -> list[tuple
 
 
 def new_text(episode: Episode, now: datetime) -> str:
-    """A new episode's blue chip: "New · aired today", "New · aired yesterday" (in `now`'s
+    """A new episode's blue mark: "New · aired today", "New · aired yesterday" (in `now`'s
     time zone), else just "New"."""
     day = air_day(episode, now)
     days = (now.date() - day).days if day is not None else None
@@ -338,16 +350,16 @@ def new_text(episode: Episode, now: datetime) -> str:
 
 
 def mark_text(mark: Mark, episode: Episode, now: datetime) -> str:
-    """The chip's text: "Missing", "✓ Have it" or "New · aired today"."""
+    """The mark's text: "Missing", "✓" (I already have it) or "New · aired today"."""
     if mark == "missing":
         return t(CHIP_MISSING_TEXT)
     if mark == "have":
-        return t(CHIP_HAVE_TEXT)
+        return HAVE_MARK
     return new_text(episode, now)
 
 
 def mark_color(mark: Mark) -> theme.Color:
-    """Amber for missing, blue for new, muted for "✓ Have it"."""
+    """Amber for missing, blue for new, muted for the ✓."""
     if mark == "missing":
         return MISSING_COLOR
     if mark == "new":
@@ -356,11 +368,27 @@ def mark_color(mark: Mark) -> theme.Color:
 
 
 def mark_slot_width(measure: Measure) -> int:
-    """The chips' slot (logical units, in the current language): room for the widest of
-    "Missing", "✓ Have it" and the new chips, so a season's rows stay aligned."""
-    texts = (CHIP_MISSING_TEXT, CHIP_HAVE_TEXT, NEW_TODAY_TEXT, NEW_YESTERDAY_TEXT, NEW_TEXT)
+    """The marks' slot (logical units, in the current language): room for the dot and the
+    widest of "Missing" and the new texts (the ✓ is narrower), so a season's rows stay
+    aligned."""
+    texts = (CHIP_MISSING_TEXT, NEW_TODAY_TEXT, NEW_YESTERDAY_TEXT, NEW_TEXT)
     widest = max(round(measure(t(text))) for text in texts)
-    return max(MARK_WIDTH, widest + 2 * MARK_PAD)
+    return max(MARK_WIDTH, MARK_DOT + MARK_DOT_GAP + widest + MARK_PAD)
+
+
+def stripe_image(
+    size: tuple[int, int], radius: int, stripe: int, *, line: RGB, fill: RGB, outside: RGB
+) -> Image.Image:
+    """The left end of a row with rounded corners, `size` physical pixels: `line` on its first
+    `stripe` columns and `fill` after them inside the corners' `radius`, `outside` beyond
+    them (the row's background). RGB."""
+    width, height = size
+    mask = rounded_mask((2 * width + 2, height), radius).crop((0, 0, width, height))
+    inside = Image.new("RGB", size, fill)
+    inside.paste(line, (0, 0, stripe, height))
+    out = Image.new("RGB", size, outside)
+    out.paste(inside, (0, 0), mask)
+    return out
 
 
 def upcoming_text(episode: Episode, now: datetime) -> str:
@@ -405,8 +433,11 @@ class _EpisodeRow(ctk.CTkFrame):
     """"S02E01  Title  17 Jan" with its state on the right: ⬇ Auto + ☰ Choose…, ✓ Downloaded +
     ↻ Again (app/ui/row_actions.py), or when it airs ("airs in 7 days"). A downloaded row (and
     its ✓) opens ↻ Again's menu when clicked; beside its title the subtitles (CC ▾, app/ui/
-    subtitle_control.py). In a tracked show's latest season, a chip left of that: amber
-    "Missing", blue "New · aired today" or muted "✓ Have it", each opening a menu (`on_mark`)."""
+    subtitle_control.py). In a tracked show's latest season, a quiet mark left of that, no box:
+    amber "● Missing" (and a thin amber line along the row's left edge), blue "● New · aired
+    today" or a grey ✓ ("You have this"). A marked row's options ("I already have this", "Mark
+    as missing again": `on_mark`) open from the ⋯ at its end, or a right-click on the row; with
+    `on_mark` every row keeps the ⋯'s room, so the rows stay aligned."""
 
     def __init__(
         self,
@@ -418,14 +449,14 @@ class _EpisodeRow(ctk.CTkFrame):
         actions: DownloadActions[CalendarEntry],
         mark: Mark | None = None,
         marks_shown: bool = False,
-        on_mark: Callable[[Episode, Mark, Any], None] | None = None,
+        on_mark: OnMark | None = None,
         cc: str = "",
         subtitles: SubtitleActions | None = None,
         slot_width: int = SLOT_WIDTH,
         mark_width: int = MARK_WIDTH,
     ) -> None:
         super().__init__(
-            master, fg_color=theme.SURFACE, corner_radius=8, height=EPISODE_ROW_HEIGHT
+            master, fg_color=theme.SURFACE, corner_radius=ROW_RADIUS, height=EPISODE_ROW_HEIGHT
         )
         self._holder_width = 0  # physical px, from the title holder's last <Configure>
         self._fit_job: str | None = None
@@ -438,9 +469,12 @@ class _EpisodeRow(ctk.CTkFrame):
         self._state: RowState | None = None
         self._mark: tuple[Mark | None, bool, str] | None = None
         self._mark_slot: ctk.CTkFrame | None = None
+        self._stripe: ctk.CTkLabel | None = None  # a missing row's amber line
+        self.more: ctk.CTkButton | None = None  # the ⋯ (rows with options)
         self.row_actions: RowActions[CalendarEntry] | None = None
         self._upcoming: ctk.CTkLabel | None = None
         episode = entry.episode
+        self._episode = episode
 
         code = ctk.CTkLabel(
             self,
@@ -489,10 +523,19 @@ class _EpisodeRow(ctk.CTkFrame):
             self, fg_color="transparent", width=slot_width, height=CONTROL_HEIGHT
         )
         self._slot.pack_propagate(False)
-        self._slot.grid(row=0, column=4, padx=(0, 10))
-        # A downloaded row opens ↻ Again's menu wherever it is clicked (not on its buttons).
+        self._slot.grid(row=0, column=4, padx=(0, 10 if on_mark is None else 2))
+        self._more_slot: ctk.CTkFrame | None = None
+        if on_mark is not None:  # the ⋯'s room, on every row
+            self._more_slot = ctk.CTkFrame(
+                self, fg_color="transparent", width=MORE_WIDTH, height=CONTROL_HEIGHT
+            )
+            self._more_slot.pack_propagate(False)
+            self._more_slot.grid(row=0, column=5, padx=(0, 8))
+        # A downloaded row opens ↻ Again's menu wherever it is clicked (not on its buttons); a
+        # marked row its options when right-clicked.
         for widget in (self, code, holder, title, self._date):
             widget.bind("<Button-1>", self._row_clicked, add="+")
+            widget.bind("<Button-3>", self._row_right_clicked, add="+")
         self.set_state(entry, state, now, mark=mark, marks_shown=marks_shown, cc=cc)
 
     def set_state(
@@ -505,7 +548,7 @@ class _EpisodeRow(ctk.CTkFrame):
         marks_shown: bool = False,
         cc: str = "",
     ) -> None:
-        """Show `state` on the right and `mark`'s chip (in a slot kept while `marks_shown`, so
+        """Show `state` on the right and `mark` (in a slot kept while `marks_shown`, so
         the season's rows stay aligned), and `cc` ("CC EN NL") beside the title of a
         downloaded row; nothing changes when they already show."""
         episode = entry.episode
@@ -572,6 +615,17 @@ class _EpisodeRow(ctk.CTkFrame):
         if self._state == "downloaded" and self.row_actions is not None:
             self.row_actions.open_again()
 
+    def _row_right_clicked(self, event: Any) -> None:
+        self.open_options(point=(event.x_root, event.y_root))
+
+    def open_options(self, *, point: tuple[int, int] | None = None) -> None:
+        """A marked row's options: under its ⋯, or at the pointer's `point` (screen pixels)."""
+        mark = self.mark
+        if mark is None or self._on_mark is None:
+            return
+        anchor = self.more if point is None and self.more is not None else self
+        self._on_mark(self._episode, mark, anchor, point)
+
     def _cc_changed(self) -> None:
         """The subtitles beside the title changed: show or hide them, then fit the title
         again once laid out."""
@@ -594,10 +648,13 @@ class _EpisodeRow(ctk.CTkFrame):
     def _set_mark(
         self, episode: Episode, mark: Mark | None, marks_shown: bool, now: datetime
     ) -> None:
+        self._episode = episode
         text = mark_text(mark, episode, now) if mark is not None else ""
         if (mark, marks_shown, text) == self._mark:
             return
         self._mark = (mark, marks_shown, text)
+        self._paint_stripe(mark == "missing")
+        self._paint_more(mark is not None and self._on_mark is not None)
         if not marks_shown and mark is None:
             if self._mark_slot is not None:
                 self._mark_slot.destroy()
@@ -609,24 +666,89 @@ class _EpisodeRow(ctk.CTkFrame):
             )
             self._mark_slot.pack_propagate(False)
             self._mark_slot.grid(row=0, column=3, padx=(0, 8))
+            self._mark_slot.bind("<Button-3>", self._row_right_clicked, add="+")
         for child in self._mark_slot.winfo_children():
             child.destroy()
         if mark is None:
             return
-        on_mark = self._on_mark
-        button = chip(
-            self._mark_slot,
-            text,
-            mark_color(mark),
-            height=MARK_HEIGHT,
-            font_size=13,
-            width=self._mark_width,
-            clickable=on_mark is not None,
+        label = mark_label(
+            self._mark_slot, text, mark_color(mark), dot=mark != "have", height=MARK_HEIGHT
         )
-        button.pack(fill="both", expand=True)
-        if on_mark is not None:
-            button.configure(command=functools.partial(on_mark, episode, mark, button))
-            add_tooltip(button, t(NEW_TIP) if mark == "new" else t(CHIP_TIP))
+        label.pack(side="left", fill="y")
+        label.bind("<Button-3>", self._row_right_clicked, add="+")
+        if mark == "have":
+            add_tooltip(label, t(HAVE_TIP))
+        elif mark == "new":
+            add_tooltip(label, t(NEW_TIP))
+
+    def _paint_more(self, shown: bool) -> None:
+        """The ⋯ at the row's end while it has options (in the room kept for it)."""
+        if self._more_slot is None:
+            return
+        if shown and self.more is None:
+            self.more = ctk.CTkButton(
+                self._more_slot,
+                text="⋯",
+                width=MORE_WIDTH,
+                height=CONTROL_HEIGHT,
+                corner_radius=CONTROL_RADIUS,
+                font=theme.font(CONTROL_FONT_SIZE, bold=True),
+                fg_color="transparent",
+                hover_color=theme.CHIP_HOVER,
+                text_color=theme.BUTTON_TEXT,
+                border_width=0,
+                command=self.open_options,
+            )
+            self.more.pack(fill="both", expand=True)
+            add_tooltip(self.more, t(CHIP_TIP))
+        elif not shown and self.more is not None:
+            self.more.destroy()
+            self.more = None
+
+    def _paint_stripe(self, shown: bool) -> None:
+        """A missing row's thin amber line along its left edge, inside its rounded corners: the
+        row's left end baked (light and dark) with the line in it, over the row's own."""
+        if not shown:
+            if self._stripe is not None:
+                self._stripe.destroy()
+                self._stripe = None
+            return
+        if self._stripe is not None:
+            return
+        scaling: float = ctk.ScalingTracker.get_widget_scaling(self)
+        size = (round(ROW_RADIUS * scaling), round(EPISODE_ROW_HEIGHT * scaling))
+        outside = self.cget("bg_color")
+
+        def baked(dark: bool) -> Image.Image:
+            def rgb(color: Any) -> RGB:
+                if isinstance(color, (list, tuple)):
+                    color = color[1 if dark else 0]
+                red, green, blue = self.winfo_rgb(theme.pick(str(color)))
+                return red >> 8, green >> 8, blue >> 8
+
+            return stripe_image(
+                size,
+                round(ROW_RADIUS * scaling),
+                max(1, round(STRIPE * scaling)),
+                line=rgb(MISSING_COLOR),
+                fill=rgb(theme.SURFACE),
+                outside=rgb(outside),
+            )
+
+        image = ctk.CTkImage(
+            light_image=baked(False), dark_image=baked(True), size=(ROW_RADIUS, EPISODE_ROW_HEIGHT)
+        )
+        self._stripe = ctk.CTkLabel(
+            self,
+            text="",
+            image=image,
+            width=ROW_RADIUS,
+            height=EPISODE_ROW_HEIGHT,
+            corner_radius=0,
+            fg_color="transparent",
+        )
+        self._stripe.place(x=0, y=0)
+        self._stripe.bind("<Button-3>", self._row_right_clicked, add="+")
 
     def destroy(self) -> None:
         if self._fit_job is not None:
@@ -689,7 +811,7 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._slot_width = max(
             SLOT_WIDTH, actions_slot_width(theme.font(ACTIONS_FONT_SIZE, bold=True).measure)
         )
-        self._mark_width = mark_slot_width(theme.font(13, bold=True).measure)
+        self._mark_width = mark_slot_width(theme.font(MARK_FONT_SIZE).measure)
         self._missing_actions = missing_actions
         self._missing_button: MissingButton | None = None
         self._library = library
@@ -1047,7 +1169,7 @@ class ShowDetailsWindow(TitleInfoWindow):
     # -- missing episodes --------------------------------------------------------------------
 
     def _marks_shown(self) -> bool:
-        """Whether the rows keep a slot for the "Missing" / "✓ Have it" chips: the tracked
+        """Whether the rows keep a slot for the "Missing" / "✓" marks: the tracked
         show's latest season is selected (and missing episodes are shown at all)."""
         details = self._details
         return (
@@ -1097,7 +1219,10 @@ class ShowDetailsWindow(TitleInfoWindow):
             items.append((label, functools.partial(act, show, ids)))
         popup_menu(self._season_more, items)
 
-    def _open_mark_menu(self, episode: Episode, mark: Mark, anchor: Any) -> None:
+    def _open_mark_menu(
+        self, episode: Episode, mark: Mark, anchor: Any, point: tuple[int, int] | None = None
+    ) -> None:
+        """A row's options (its ⋯, or right-clicked at `point`)."""
         details, actions = self._details, self._missing_actions
         if details is None or actions is None:
             return
@@ -1108,7 +1233,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             item = (
                 t(MARK_MISSING_TEXT), functools.partial(actions.unmark_have, details.show, ids)
             )
-        popup_menu(anchor, [item])
+        popup_menu(anchor, [item], point=point)
 
     def _cancel_rows(self) -> None:
         if self._rows_task is not None and not self._rows_task.done():

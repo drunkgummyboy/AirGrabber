@@ -1,7 +1,7 @@
 """The form for a torrent program on a NAS or another computer: program, address, user name,
-password, destination folder, certificate check, and "Test connection" with its result line.
-Shared by Settings → "Where downloads go" (under its choice, or in folder mode under the magnet
-note) and the first-run welcome.
+password, destination folder (in Settings also the films folder), certificate check, and "Test
+connection" with its result line. Shared by Settings → "Where downloads go" (under its choice, or
+in folder mode under the magnet note) and the first-run welcome.
 
 The form only edits; its host stores `changes()` (Settings' Save, the welcome's Next) and hands
 it `run_test`, which saves first and then tests, as the other test buttons do.
@@ -49,6 +49,9 @@ DESTINATION_HINTS: dict[RemoteKind, str] = {
     RemoteKind.QBITTORRENT: N_("/downloads/tv — empty: qBittorrent's default"),
     RemoteKind.TRANSMISSION: N_("/downloads/tv — empty: Transmission's default"),
 }
+# The films folder's row (Settings only), and its muted hint (also for Settings' folder choice).
+FILMS_LABEL = N_("Films folder")
+FILMS_HINT = N_("Leave empty to use the same folder")
 # The form's labels, also for validation errors (Settings uses them too); shown through t(), as
 # the other texts here.
 FIELD_LABELS: dict[str, str] = {
@@ -57,6 +60,7 @@ FIELD_LABELS: dict[str, str] = {
     "remote_username": N_("User name"),
     "remote_password": N_("Password"),
     "remote_destination": N_("Destination folder"),
+    "movie_remote_destination": FILMS_LABEL,
     "remote_verify_tls": N_("Verify the certificate (https)"),
 }
 TESTING_TEXT = N_("Saving and testing…")
@@ -100,9 +104,10 @@ def remote_changes(
     password: str,
     verify_tls: bool,
     destination: str,
+    movie_destination: str | None = None,
 ) -> dict[str, Any]:
-    """The settings the form stores."""
-    return {
+    """The settings the form stores; the films destination only from a form that shows it."""
+    changes: dict[str, Any] = {
         "remote_kind": kind,
         "remote_url": url,
         "remote_username": username,
@@ -110,6 +115,9 @@ def remote_changes(
         "remote_verify_tls": verify_tls,
         "remote_destination": destination,
     }
+    if movie_destination is not None:
+        changes["movie_remote_destination"] = movie_destination
+    return changes
 
 
 class FolderNote(NamedTuple):
@@ -173,7 +181,8 @@ def _alive(widget: tk.Misc) -> bool:
 
 class RemoteProgramForm(ctk.CTkFrame):
     """Label / field rows (`label_width` + `field_width`, logical units) for the `remote_*`
-    settings, started from `settings`."""
+    settings, started from `settings`; with `films` also the films folder
+    (`movie_remote_destination`)."""
 
     def __init__(
         self,
@@ -184,6 +193,7 @@ class RemoteProgramForm(ctk.CTkFrame):
         label_width: int,
         field_width: int,
         describe: Callable[[ValidationError], str] = describe_error,
+        films: bool = False,
     ) -> None:
         super().__init__(master, fg_color="transparent")
         self._run_test = run_test
@@ -193,7 +203,8 @@ class RemoteProgramForm(ctk.CTkFrame):
         # Plain Tk grid options are not DPI-scaled by CTk.
         self.grid_columnconfigure(0, minsize=round(label_width * scaling))
         self.grid_columnconfigure(1, weight=1)
-        for row, label in enumerate(_FIELD_ROWS):
+        labels = (*_FIELD_ROWS, FILMS_LABEL) if films else _FIELD_ROWS
+        for row, label in enumerate(labels):
             ctk.CTkLabel(
                 self,
                 text=t(label),
@@ -227,7 +238,13 @@ class RemoteProgramForm(ctk.CTkFrame):
         self._destination = self._entry(
             4, settings.remote_destination, placeholder=t(DESTINATION_HINTS[kind])
         )
+        self._films: ctk.CTkEntry | None = None
+        if films:
+            self._films = self._entry(
+                5, settings.movie_remote_destination, placeholder=t(FILMS_HINT)
+            )
         self._program.grid(row=0, column=1, sticky="w", pady=self._pady(0))
+        row = len(labels)  # the rows under the fields
 
         self._verify = ctk.CTkCheckBox(
             self,
@@ -244,14 +261,14 @@ class RemoteProgramForm(ctk.CTkFrame):
         )
         if settings.remote_verify_tls:
             self._verify.select()
-        self._verify.grid(row=5, column=1, sticky="w", pady=self._pady(5))
+        self._verify.grid(row=row, column=1, sticky="w", pady=self._pady(row))
 
         self._test_button = primary_button(
             self, t("Test connection"), self._start_test, width=TEST_BUTTON_WIDTH
         )
-        self._test_button.grid(row=6, column=1, sticky="w", pady=self._pady(6))
+        self._test_button.grid(row=row + 1, column=1, sticky="w", pady=self._pady(row + 1))
         self._result = text_label(self, "", size=SMALL_SIZE, wraplength=field_width)
-        self._result.grid(row=7, column=1, sticky="w", pady=(6, 0))
+        self._result.grid(row=row + 2, column=1, sticky="w", pady=(6, 0))
 
     # -- values --------------------------------------------------------------------------------
 
@@ -268,6 +285,7 @@ class RemoteProgramForm(ctk.CTkFrame):
             self._password.get(),
             bool(self._verify.get()),
             self._destination.get(),
+            self._films.get() if self._films is not None else None,
         )
 
     @property
@@ -292,12 +310,15 @@ class RemoteProgramForm(ctk.CTkFrame):
         name = program_name(settings.remote_kind)
         self._program.set(name)
         self._program_changed(name)
-        for entry, value in (
+        entries = [
             (self._address, settings.remote_url),
             (self._username, settings.remote_username),
             (self._password, settings.remote_password.get_secret_value()),
             (self._destination, settings.remote_destination),
-        ):
+        ]
+        if self._films is not None:
+            entries.append((self._films, settings.movie_remote_destination))
+        for entry, value in entries:
             entry.delete(0, "end")  # shows the hint again when empty
             if value:
                 entry.insert(0, value)

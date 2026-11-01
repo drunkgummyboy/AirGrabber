@@ -1,9 +1,10 @@
 """Baked pictures for the spotlight band (app/ui/spotlight_band.py), in physical pixels: its
 backdrop (a title's picture blurred and dimmed, fading into the page's background at the
-bottom, like the info window's: app/ui/title_info.py's `compose_hero`), the glow that stands in
-without a picture, the scene (the backdrop with the small poster and its shadow), the crossfade
-frames between two scenes, and the controls drawn over the picture (rounded boxes, anti-aliased
-by drawing them larger and scaling down).
+bottom, like the info window's: app/ui/title_info.py's `compose_hero`, under a left-to-right
+scrim of that background: `backdrop_face`), the glow that stands in without a picture, the
+scene (the backdrop with the small poster and its shadow), the crossfade frames between two
+scenes, and the controls drawn over the picture (rounded boxes, anti-aliased by drawing them
+larger and scaling down; `drop_shadow` for the logo and the Series / Movies switch).
 
 Pure functions. The big ones (`glow_layer`, `compose_scene`, `crossfade_frames`) run in a worker
 thread; the controls are small enough for the event loop. Images handed out may be shared:
@@ -11,7 +12,9 @@ read-only."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
+from math import ceil
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
@@ -21,6 +24,16 @@ RGB = tuple[int, int, int]
 RGBA = tuple[int, int, int, int]
 
 FADE_FROM = 0.35  # the picture starts fading into the background this far down the band
+# The scrim over a picture, left to right: (share of the width, how much of the page's
+# background lies over the picture there), straight between them. Darkest behind the logo and
+# "AirGrabber", lightest right of the middle, a little more again behind the search field and
+# the buttons. In the light look the same in the light background: a light wash.
+SCRIM_STOPS: tuple[tuple[float, float], ...] = (
+    (0.0, 0.78),
+    (0.38, 0.45),
+    (0.70, 0.25),
+    (1.0, 0.45),
+)
 GLOW_PEAK = (0.55, 0.8)  # the glow's strongest (light, dark)
 GLOW_SECOND = 0.55  # the smaller glow's strength, as a share of the main one's
 SHADOW_ALPHA = 0.5  # the poster's shadow at its darkest
@@ -30,8 +43,9 @@ _GRADIENT_EDGE = 181.0  # Image.radial_gradient's value halfway along each side
 
 
 def band_face(size: tuple[int, int], bg: RGB, *, blur: bool = True) -> HeroFace:
-    """The band's finish step for a picture `size` pixels big (ImageCache): blurred and dimmed
-    (`blur`), fading into `bg` from FADE_FROM down to the very bottom."""
+    """The band's fade for a picture `size` pixels big: blurred and dimmed (`blur`), fading
+    into `bg` from FADE_FROM down to the very bottom (the glow's finish; a backdrop's is
+    `backdrop_face`, which adds the scrim)."""
     width, height = size
     return HeroFace(
         bg=bg,
@@ -39,6 +53,66 @@ def band_face(size: tuple[int, int], bg: RGB, *, blur: bool = True) -> HeroFace:
         solid_from=height,
         blur=round(width * BLUR_SHARE, 1) if blur else 0.0,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class BackdropFace:
+    """The band's finish step for a title's backdrop (ImageCache): `hero`'s blur and fade into
+    the background, then the left-to-right scrim (SCRIM_STOPS) in that background colour, so
+    the logo, "AirGrabber" and the controls read on any picture. Hashable: part of the image's
+    cache key."""
+
+    hero: HeroFace
+
+    def __call__(self, image: Image.Image, /) -> Image.Image:
+        return apply_scrim(compose_hero(image, self.hero), self.hero.bg)
+
+
+def backdrop_face(size: tuple[int, int], bg: RGB) -> BackdropFace:
+    """The finish step for a backdrop `size` pixels big on a band whose background is `bg`."""
+    return BackdropFace(band_face(size, bg))
+
+
+def scrim_alpha(x: float) -> float:
+    """How much of the background lies over the picture at `x` (0 = the left edge, 1 = the
+    right edge): SCRIM_STOPS, straight between them."""
+    x = min(1.0, max(0.0, x))
+    for (left, low), (right, high) in zip(SCRIM_STOPS, SCRIM_STOPS[1:], strict=False):
+        if x <= right:
+            share = (x - left) / (right - left) if right > left else 1.0
+            return low + (high - low) * share
+    return SCRIM_STOPS[-1][1]
+
+
+def apply_scrim(picture: Image.Image, colour: RGB) -> Image.Image:
+    """`picture` (RGB) with `colour` laid over it left to right by `scrim_alpha`: a new image."""
+    width, height = picture.size
+    row = bytes(round(255 * scrim_alpha((x + 0.5) / width)) for x in range(width))
+    mask = Image.frombytes("L", (width, 1), row).resize((width, height), Image.Resampling.NEAREST)
+    return Image.composite(Image.new("RGB", picture.size, colour), picture.convert("RGB"), mask)
+
+
+def drop_shadow(
+    image: Image.Image, blur: float, offset: int, alpha: float
+) -> tuple[Image.Image, int]:
+    """`image` (RGBA) over a soft black shadow of its own shape, `offset` pixels lower, blurred
+    by `blur` pixels, at most `alpha` (0–1) dark, and only around it (as CSS's box-shadow: a
+    see-through `image` doesn't turn darker): a new RGBA image `pad` pixels larger on every
+    side, and that `pad` (place it `pad` pixels up and left of where `image` would go)."""
+    pad = max(1, ceil(blur * 3)) + max(0, offset)
+    width, height = image.size
+    size = (width + 2 * pad, height + 2 * pad)
+    own = image.convert("RGBA")
+    shape = Image.new("L", size, 0)
+    shape.paste(own.getchannel("A"), (pad, pad + offset))
+    shape = shape.filter(ImageFilter.GaussianBlur(blur)) if blur > 0 else shape
+    shape = shape.point([round(value * alpha) for value in range(256)])
+    outside = Image.new("L", size, 255)
+    outside.paste(ImageChops.invert(own.getchannel("A")), (pad, pad))
+    shadow = Image.new("RGBA", size, (0, 0, 0, 0))
+    shadow.putalpha(ImageChops.multiply(shape, outside))
+    shadow.alpha_composite(own, (pad, pad))
+    return shadow, pad
 
 
 def _blob(size: tuple[int, int], strength: float) -> Image.Image:
@@ -139,3 +213,17 @@ def rounded_box(
     else:
         draw.rounded_rectangle(box, radius=corner, fill=fill)
     return big.resize((width, height), Image.Resampling.BOX)
+
+
+@lru_cache(maxsize=16)
+def shadowed_box(
+    size: tuple[int, int],
+    radius: float,
+    fill: RGBA,
+    edge: RGBA | None,
+    border: int,
+    shadow: tuple[float, int, float],
+) -> tuple[Image.Image, int]:
+    """`rounded_box` over a `drop_shadow` of (blur, offset, alpha): the image and its pad."""
+    blur, offset, alpha = shadow
+    return drop_shadow(rounded_box(size, radius, fill, edge, border), blur, offset, alpha)

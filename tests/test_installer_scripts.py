@@ -677,7 +677,8 @@ foreach ($case in @(@($false, $false), @($true, $false), @($false, $true), @($tr
         source = INSTALLER.read_text(encoding="ascii")
         body = source[source.index("function Install-AirGrabber {") :]
         self.assertLess(body.index("    Install-App\n"), body.index("Install-QBittorrentIfNeeded $python"))
-        self.assertLess(body.index("-r (Join-Path $InstallDir 'requirements.txt')"), body.index("Install-QBittorrentIfNeeded"))
+        self.assertLess(body.index("    Install-App\n"), body.index("    Install-Requirements $python"))
+        self.assertLess(body.index("    Install-Requirements $python"), body.index("Install-QBittorrentIfNeeded"))
         self.assertLess(body.index("Install-QBittorrentIfNeeded"), body.index("Install-ProwlarrIfWanted"))
         self.assertIn("[switch]$NoQBittorrent", source)
         self.assertIn("-NoQBittorrent skips that", source)  # documented in the header
@@ -764,6 +765,103 @@ $values = @(
         txt, missing_class, missing_user = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER)}))
         self.assertTrue(txt)
         self.assertEqual((missing_class, missing_user), ("", ""))
+
+
+# Install-Requirements per scenario: AirGrabber's Python is a stub function that logs its
+# arguments and fails (exit code 1) for the packages the scenario names.
+_REQUIREMENTS_SCENARIOS = """
+function Fake-Python {
+    $line = 'python ' + ($args -join ' ')
+    $global:AgLog.Add($line)
+    $global:LASTEXITCODE = 0
+    foreach ($bad in @($global:AgScenario.fails)) { if ($bad -and $line.Contains($bad)) { $global:LASTEXITCODE = 1 } }
+}
+$results = New-Object System.Collections.Generic.List[object]
+foreach ($scenario in (ConvertFrom-Json $env:AG_SCENARIOS)) {
+    $global:AgScenario = $scenario
+    $global:AgLog = New-Object System.Collections.Generic.List[string]
+    $failed = ''
+    $records = @()
+    try { $records = @(Install-Requirements 'Fake-Python' $env:AG_REQUIREMENTS 6>&1) } catch { $failed = [string]$_.Exception.Message }
+    $results.Add([pscustomobject]@{
+        name = [string]$scenario.name
+        host = [string[]]@($records | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
+            ForEach-Object { [string]$_.MessageData })
+        log = [string[]]$global:AgLog.ToArray()
+        failed = $failed
+    })
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $results.ToArray() -Depth 4 -Compress))
+"""
+_PIP = "python -m pip install --disable-pip-version-check --no-input --quiet --no-warn-script-location"
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
+class InstallerRequirementsTests(unittest.TestCase):
+    """The installer's packages: the required ones in one pip call that must succeed, then each
+    optional one (below requirements.txt's "# optional" line) on its own, a failure only noted."""
+
+    results: dict[str, dict[str, Any]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            requirements = Path(temp, "requirements.txt")
+            requirements.write_text(
+                "customtkinter>=5.2\nhttpx>=0.27  # http\n\n# optional: AirGrabber starts without these\n"
+                "pywebview>=6.0\nother-pkg>=1.0\n",
+                encoding="utf-8",
+            )
+            scenarios = [
+                {"name": "fine", "fails": []},
+                {"name": "optional_fails", "fails": ["pywebview"]},
+                {"name": "required_fails", "fails": ["httpx"]},
+            ]
+            output = _powershell(
+                _load_installer(["Write-Step", "Get-Requirements", "Install-Requirements"]) + _REQUIREMENTS_SCENARIOS,
+                {"AG_INSTALLER": str(INSTALLER), "AG_SCENARIOS": json.dumps(scenarios), "AG_REQUIREMENTS": str(requirements)},
+            )
+        cls.results = {result["name"]: result for result in _json_line(output)}
+
+    def test_required_in_one_go_then_each_optional_one(self) -> None:
+        result = self.results["fine"]
+        self.assertEqual(
+            result["log"],
+            [f"{_PIP} customtkinter>=5.2 httpx>=0.27", f"{_PIP} pywebview>=6.0", f"{_PIP} other-pkg>=1.0"],
+        )
+        self.assertEqual(result["failed"], "")
+        self.assertIn("Installing the parts AirGrabber needs (this can take a minute)", "\n".join(result["host"]))
+        self.assertFalse(any("optional part" in line for line in result["host"]))
+
+    def test_a_failed_optional_package_does_not_fail_the_install(self) -> None:
+        result = self.results["optional_fails"]
+        self.assertEqual(result["failed"], "")
+        self.assertEqual(len(result["log"]), 3)  # the next optional one is still tried
+        self.assertIn(
+            "    The optional part pywebview could not be installed. AirGrabber works without it and tries again later.",
+            result["host"],
+        )
+        self.assertFalse(any("other-pkg" in line for line in result["host"]))
+
+    def test_a_failed_required_package_stops_the_install(self) -> None:
+        result = self.results["required_fails"]
+        self.assertTrue(result["failed"].startswith("Some parts AirGrabber needs could not be installed"))
+        self.assertEqual(result["log"], [f"{_PIP} customtkinter>=5.2 httpx>=0.27"])
+
+    def test_reads_the_project_file_like_the_app(self) -> None:
+        from app.bootstrap import REQUIREMENTS_FILE, parse_requirements
+
+        script = _load_installer(["Get-Requirements"]) + (
+            "$wanted = Get-Requirements $env:AG_REQUIREMENTS\n"
+            "'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject @{ required = $wanted.Required; "
+            "optional = $wanted.Optional } -Compress))\n"
+        )
+        wanted = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_REQUIREMENTS": str(REQUIREMENTS_FILE)}))
+        parsed = parse_requirements(REQUIREMENTS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(wanted["required"], [r.spec for r in parsed if not r.optional])
+        optional = wanted["optional"]
+        self.assertEqual([optional] if isinstance(optional, str) else optional, [r.spec for r in parsed if r.optional])
+        self.assertIn("pywebview>=6.0", [r.spec for r in parsed if r.optional])
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")

@@ -68,7 +68,10 @@ from app.ui.download_control import (
     episode_key,
 )
 from app.ui.text_fit import SLACK
-from app.ui.poster_card import FADE_MAX
+
+# The poster cards' old cap behind their text (they fade on to solid under it now): the
+# calendar card's fade at its text stays above it.
+FADE_MAX = 0.80
 
 RED = (200, 0, 0)
 BG = (36, 36, 36)

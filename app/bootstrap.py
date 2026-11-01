@@ -3,6 +3,13 @@
 pip installs into the interpreter running the app while a small window shows its output. This module
 runs *before* the check has passed, so it (like `app.config`) must stay stdlib-only. That is also why
 the window is plain tkinter with the theme colours copied in: `app.ui.theme` imports customtkinter.
+
+The packages below a "# optional" comment line in requirements.txt are optional: AirGrabber works
+without them (pywebview: trailers then open in the browser). They are installed one by one after
+the required ones, and a failure (offline, a package that won't build) never stops the launch; it
+is logged and remembered in the data folder (OPTIONAL_STATE_FILE), so the next try comes only
+OPTIONAL_RETRY_S later, or at once when the package's line in requirements.txt changes.
+install.ps1 reads the file the same way.
 """
 
 from __future__ import annotations
@@ -10,6 +17,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.util
+import json
 import logging
 import operator
 import os
@@ -20,7 +28,7 @@ import sys
 import time
 import tkinter as tk
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -43,6 +51,10 @@ _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # Windows: no cons
 _POLL_MS = 150
 _STATUS_CHARS = 64
 
+OPTIONAL_MARKER = "optional"  # a comment line starting so: the requirements below it are optional
+OPTIONAL_RETRY_S = 24 * 3600  # an optional package that failed to install is tried again this much later
+OPTIONAL_STATE_FILE = "optional-packages.json"  # in the data folder: requirement line -> last failure (epoch s)
+
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _CLAUSE = re.compile(r"(==|!=|>=|<=|~=|>|<)\s*(\S+)")
 _RELEASE = re.compile(r"\d+(?:\.\d+)*")
@@ -61,10 +73,17 @@ _COMPARE: dict[str, Callable[[tuple[int, ...], tuple[int, ...]], bool]] = {
 class Requirement:
     name: str
     clauses: tuple[tuple[str, str], ...] = ()  # e.g. ((">=", "2.9"),)
+    optional: bool = False  # below the "# optional" line: tried, never blocks the launch
+    line: str = field(default="", compare=False)  # as written (comment dropped): what pip is given
 
     @property
     def specifier(self) -> str:
         return ",".join(op + version for op, version in self.clauses)
+
+    @property
+    def spec(self) -> str:
+        """The requirement for pip's command line."""
+        return self.line or self.name + self.specifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,10 +102,17 @@ def parse_requirements(text: str) -> list[Requirement]:
 
     Comments, pip options (`-r`, `--index-url`, ...) and environment markers are skipped. Clauses this
     checker can't read (URLs, wildcards) are dropped, which leaves only a presence check for pip to judge.
+    The requirements after a "# optional" comment line are `optional`.
     """
     requirements: list[Requirement] = []
+    optional = False
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].split(";", 1)[0].strip()
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            optional = optional or stripped.lstrip("#").strip().lower().startswith(OPTIONAL_MARKER)
+            continue
+        written = raw.split("#", 1)[0].strip()
+        line = written.split(";", 1)[0].strip()
         if not line or line.startswith("-"):
             continue
         name = _NAME.match(line)
@@ -98,7 +124,7 @@ def parse_requirements(text: str) -> list[Requirement]:
             clause = _CLAUSE.fullmatch(part.strip())
             if clause and _RELEASE.fullmatch(clause[2]):
                 clauses.append((clause[1], clause[2]))
-        requirements.append(Requirement(name[0], tuple(clauses)))
+        requirements.append(Requirement(name[0], tuple(clauses), optional, written))
     return requirements
 
 
@@ -146,14 +172,21 @@ def _satisfies(installed: str, requirement: Requirement) -> bool:
     return True
 
 
-def install_commands(requirements_file: Path) -> list[list[str]]:
-    pip = [
-        sys.executable, "-m", "pip", "install",
-        "--disable-pip-version-check", "--no-input", "-r", str(requirements_file),
-    ]  # fmt: skip
-    if importlib.util.find_spec("pip") is None:
-        return [[sys.executable, "-m", "ensurepip", "--upgrade"], pip]
-    return [pip]
+def pip_install(*specs: str) -> list[str]:
+    return [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *specs]
+
+
+def install_commands(
+    required: Sequence[Requirement], optional: Sequence[Requirement] = ()
+) -> tuple[list[list[str]], list[list[str]]]:
+    """pip's commands: those that must succeed (every required requirement in one go, so pip resolves
+    them together; ensurepip first when pip is missing), then the optional ones (a package each, a
+    failure tolerated). Without required ones, ensurepip is tolerated too."""
+    ensure = [[sys.executable, "-m", "ensurepip", "--upgrade"]] if importlib.util.find_spec("pip") is None else []
+    optional_commands = [pip_install(requirement.spec) for requirement in optional]
+    if required:
+        return [*ensure, pip_install(*(requirement.spec for requirement in required))], optional_commands
+    return [], [*ensure, *optional_commands]
 
 
 def refresh_import_paths() -> None:
@@ -169,8 +202,11 @@ def refresh_import_paths() -> None:
     importlib.invalidate_caches()
 
 
-def ensure_requirements(paths: AppPaths, requirements_file: Path = REQUIREMENTS_FILE) -> bool:
-    """Install missing or outdated requirements. False: they are still missing, the app can't start."""
+def ensure_requirements(
+    paths: AppPaths, requirements_file: Path = REQUIREMENTS_FILE, *, clock: Callable[[], float] = time.time
+) -> bool:
+    """Install missing or outdated requirements. False: required ones are still missing, the app
+    can't start (optional ones never decide that)."""
     try:
         requirements = parse_requirements(requirements_file.read_text(encoding="utf-8"))
     except OSError:
@@ -180,17 +216,50 @@ def ensure_requirements(paths: AppPaths, requirements_file: Path = REQUIREMENTS_
     if not problems:
         return True
 
-    log.warning("Installing missing packages: %s", "; ".join(map(str, problems)))
+    now = clock()
+    failures = OptionalFailures(paths.root / OPTIONAL_STATE_FILE)
+    required = [problem for problem in problems if not problem.requirement.optional]
+    optional = [
+        problem for problem in problems if problem.requirement.optional and failures.due(problem.requirement, now)
+    ]
+    waiting = [problem for problem in problems if problem.requirement.optional and problem not in optional]
+    if waiting:
+        log.info("Optional packages not tried again yet: %s", "; ".join(map(str, waiting)))
+    if not required and not optional:
+        return True
+
+    log.warning("Installing missing packages: %s", "; ".join(map(str, [*required, *optional])))
     log_file = paths.logs / "install.log"
-    returncode = _install(install_commands(requirements_file), log_file, problems)
+    commands, optional_commands = install_commands(
+        [requirement for requirement in requirements if not requirement.optional] if required else [],
+        [problem.requirement for problem in optional],
+    )
+    returncode = _install(commands, log_file, [*required, *optional], optional=optional_commands)
     if returncode is None:
-        log.info("Package installation cancelled")
-        return False
+        failures.record([problem.requirement for problem in optional], now)
+        if required:
+            log.info("Package installation cancelled")
+            return False
+        log.info("Optional package installation cancelled; starting without them")
+        return True
 
     refresh_import_paths()
     remaining = unmet(requirements)
+    tried = [problem.requirement for problem in optional]
+    still_optional = [problem for problem in remaining if problem.requirement.optional and problem.requirement in tried]
+    failures.record([problem.requirement for problem in still_optional], now)
+    failures.forget([requirement for requirement in tried if all(p.requirement != requirement for p in still_optional)])
+    if still_optional:
+        log.warning(
+            "Optional packages not installed, AirGrabber starts without them: %s. Last pip output:\n%s",
+            "; ".join(map(str, still_optional)), _tail(log_file),
+        )  # fmt: skip
+    remaining = [problem for problem in remaining if not problem.requirement.optional]
     if not remaining:
-        log.info("Installed the missing packages")
+        if required:
+            log.info("Installed the missing packages")
+        elif not still_optional:
+            log.info("Installed the optional packages")
         return True
     if returncode == 0 and all(problem.installed is not None for problem in remaining):
         # pip says everything is satisfied; on odd version strings the two can disagree, so trust pip.
@@ -205,21 +274,70 @@ def ensure_requirements(paths: AppPaths, requirements_file: Path = REQUIREMENTS_
     return False
 
 
+class OptionalFailures:
+    """When each optional requirement (by its line in requirements.txt) last failed to install: a
+    small JSON file in the data folder, so an optional package that can't be installed (offline, a
+    build failure) isn't tried at every launch. Never raises."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._failed = self._load()
+
+    def due(self, requirement: Requirement, now: float) -> bool:
+        """Whether to try it now: never failed, failed OPTIONAL_RETRY_S ago or longer, or the clock
+        went back."""
+        last = self._failed.get(requirement.spec)
+        return last is None or not 0 <= now - last < OPTIONAL_RETRY_S
+
+    def record(self, requirements: Sequence[Requirement], now: float) -> None:
+        for requirement in requirements:
+            self._failed[requirement.spec] = now
+        if requirements:
+            self._save()
+
+    def forget(self, requirements: Sequence[Requirement]) -> None:
+        if [self._failed.pop(requirement.spec) for requirement in requirements if requirement.spec in self._failed]:
+            self._save()
+
+    def _load(self) -> dict[str, float]:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(key): float(value) for key, value in data.items() if isinstance(value, int | float)}
+
+    def _save(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(self._failed, indent=1, sort_keys=True), encoding="utf-8")
+        except OSError:
+            log.warning("Cannot write %s", self._path.name)
+
+
 class Installer:
     """Runs commands one after another, stopping at the first failure; output goes to `log_file`.
+    Then the `optional` commands, each run whatever the others did: their failures only count in
+    `optional_failures`, never in `returncode` (none run after a failed required one).
 
     Non-blocking: call `poll()` repeatedly (from a Tk `after` loop or a sleep loop) until `finished`.
     """
 
-    def __init__(self, commands: Sequence[Sequence[str]], log_file: Path) -> None:
+    def __init__(
+        self, commands: Sequence[Sequence[str]], log_file: Path, optional: Sequence[Sequence[str]] = ()
+    ) -> None:
         self._queue = [list(command) for command in commands]
+        self._optional = [list(command) for command in optional]
         self._log_file = log_file
         log_file.parent.mkdir(parents=True, exist_ok=True)
         log_file.write_text("", encoding="utf-8")
         self._reader = log_file.open(encoding="utf-8", errors="replace")
         self._partial = ""
         self._process: subprocess.Popen[bytes] | None = None
+        self._running_optional = False
         self.returncode: int | None = None  # once finished: 0, or the failing command's exit code
+        self.optional_failures = 0
 
     @property
     def finished(self) -> bool:
@@ -230,16 +348,19 @@ class Installer:
         if self._process is not None and (code := self._process.poll()) is not None:
             self._process = None
             if code != 0:
-                self.returncode = code
-        if self._process is None and self.returncode is None:
+                self._failed(code)
+        while self._process is None and self.returncode is None:
             if self._queue:
-                self._start(self._queue.pop(0))
+                self._start(self._queue.pop(0), optional=False)
+            elif self._optional:
+                self._start(self._optional.pop(0), optional=True)
             else:
                 self.returncode = 0
         return self._read_lines()
 
     def cancel(self) -> None:
         self._queue.clear()
+        self._optional.clear()
         if self._process is not None:
             self._process.kill()
             self._process.wait()
@@ -249,7 +370,14 @@ class Installer:
         self.cancel()
         self._reader.close()
 
-    def _start(self, command: list[str]) -> None:
+    def _failed(self, code: int) -> None:
+        if self._running_optional:
+            self.optional_failures += 1
+        else:
+            self.returncode = code
+
+    def _start(self, command: list[str], *, optional: bool) -> None:
+        self._running_optional = optional
         with self._log_file.open("a", encoding="utf-8") as out:
             out.write("> " + subprocess.list2cmdline(command) + "\n")
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
@@ -266,7 +394,7 @@ class Installer:
         except OSError as exc:
             with self._log_file.open("a", encoding="utf-8") as out:
                 out.write(f"Could not start it: {exc}\n")
-            self.returncode = 1
+            self._failed(1)
 
     def _read_lines(self) -> list[str]:
         lines = (self._partial + self._reader.read()).split("\n")
@@ -274,12 +402,19 @@ class Installer:
         return [line for line in lines if line.strip()]
 
 
-def _install(commands: Sequence[Sequence[str]], log_file: Path, problems: Sequence[Problem]) -> int | None:
+def _install(
+    commands: Sequence[Sequence[str]],
+    log_file: Path,
+    problems: Sequence[Problem],
+    *,
+    optional: Sequence[Sequence[str]] = (),
+) -> int | None:
     """Run the install with a progress window (console output when Tk can't open one).
 
-    Returns the exit code, or None when the user cancelled.
+    Returns the exit code of the required commands (0 when there are none), or None when the user
+    cancelled.
     """
-    installer = Installer(commands, log_file)
+    installer = Installer(commands, log_file, optional)
     try:
         try:
             window = _ProgressWindow(installer, problems)
@@ -325,9 +460,12 @@ class _ProgressWindow:
             troughcolor=_SURFACE, background=_ACCENT, bordercolor=_BG, lightcolor=_ACCENT, darkcolor=_ACCENT,
         )  # fmt: skip
         names = ", ".join(problem.requirement.name for problem in problems)
-        tk.Label(
-            root, text="Installing required packages", font=("Segoe UI", 12, "bold"), bg=_BG, fg=_TEXT, anchor="w"
-        ).pack(fill="x")
+        heading = (
+            "Installing optional packages"
+            if all(problem.requirement.optional for problem in problems)
+            else "Installing required packages"
+        )
+        tk.Label(root, text=heading, font=("Segoe UI", 12, "bold"), bg=_BG, fg=_TEXT, anchor="w").pack(fill="x")
         tk.Label(
             root, text=f"First-time setup: {names}", font=("Segoe UI", 9), bg=_BG, fg=_TEXT_MUTED, anchor="w"
         ).pack(fill="x", pady=(2, 12))

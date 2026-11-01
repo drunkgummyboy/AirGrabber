@@ -24,6 +24,7 @@ from app.ui.views.calendar_view import (
     range_label,
     range_slot_width,
     suggestions_look,
+    take_new,
 )
 
 MONDAY = date(2026, 10, 12)
@@ -226,6 +227,21 @@ class SuggestionPickTests(unittest.TestCase):
 
     def test_no_suggestions(self) -> None:
         self.assertEqual(day_suggestions([]), {})
+
+    def test_no_show_twice_a_week(self) -> None:
+        # A daily show (1) is Monday's best and Tuesday's: Tuesday gets its next ones instead.
+        shown: set[int] = set()
+        monday = [entry(1, MONDAY), entry(2, MONDAY)]
+        tuesday = [entry(1, TUESDAY), entry(3, TUESDAY), entry(2, TUESDAY), entry(4, TUESDAY)]
+        self.assertEqual(take_new(monday, shown, 1), [monday[0]])
+        self.assertEqual(take_new(tuesday, shown, 1), [tuesday[1]])
+        self.assertEqual(shown, {1, 3})
+        # The extras skip them too, and take no more than asked.
+        self.assertEqual(take_new(monday, shown, 3), [monday[1]])
+        self.assertEqual(take_new(tuesday, shown, 3), [tuesday[3]])
+        self.assertEqual(take_new(tuesday, shown, 3), [])
+        self.assertEqual(take_new([entry(5, MONDAY), entry(6, MONDAY)], shown, 0), [])
+        self.assertEqual(shown, {1, 2, 3, 4})
 
 
 class ExtraSuggestionTests(unittest.TestCase):

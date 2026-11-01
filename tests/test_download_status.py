@@ -41,7 +41,7 @@ from app.services.download_status import (
     match_tasks,
     movie_title,
     progress_program,
-    space_folder,
+    space_folders,
     space_is_low,
     torrent_file_names,
 )
@@ -225,13 +225,26 @@ class SpaceRuleTests(unittest.TestCase):
         self.assertFalse(space_is_low(25 * GB, None))  # no total: only the 20 GB rule
 
     def test_which_folder_counts(self) -> None:
-        self.assertEqual(
-            space_folder(settings_of(subtitles_folder=r"\\nas\video", download_dir="D:/watch")),
-            r"\\nas\video",
+        finished = settings_of(
+            subtitles_folder=r"\\nas\video", download_dir="D:/watch", movie_download_dir="E:/films"
         )
+        self.assertEqual(space_folders(finished), (r"\\nas\video",))
         folder = settings_of(download_mode=DownloadMode.FOLDER, download_dir="D:/watch")
-        self.assertEqual(space_folder(folder), str(Path("D:/watch")))
-        self.assertIsNone(space_folder(settings_of()))
+        self.assertEqual(space_folders(folder), (str(Path("D:/watch")),))
+        self.assertEqual(space_folders(settings_of()), ())
+
+    def test_a_films_folder_of_its_own_counts_too(self) -> None:
+        films = settings_of(
+            download_mode=DownloadMode.FOLDER, download_dir="D:/watch", movie_download_dir="E:/films"
+        )
+        self.assertEqual(space_folders(films), (str(Path("D:/watch")), str(Path("E:/films"))))
+        same = films.model_copy(update={"movie_download_dir": Path("D:/watch")})
+        self.assertEqual(space_folders(same), (str(Path("D:/watch")),))
+        # An empty films folder is none: the watch folder alone.
+        empty = settings_of(
+            download_mode=DownloadMode.FOLDER, download_dir="D:/watch", movie_download_dir=" "
+        )
+        self.assertEqual(space_folders(empty), (str(Path("D:/watch")),))
 
     def test_network_paths(self) -> None:
         self.assertTrue(is_network_path(r"\\nas\video"))
@@ -253,10 +266,10 @@ class FakeStatusClient:
     async def test(self) -> str:
         return self.kind.program
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         pass
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
         pass
 
     async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
@@ -462,6 +475,35 @@ class FreeSpaceTests(ServiceTestCase):
         overview = await self.service.check()
         self.assertEqual(
             overview.space, FreeSpace(free_bytes=5 * GB, total_bytes=None, on_nas=True, low=True)
+        )
+
+    async def test_folder_mode_counts_the_fuller_of_the_watch_and_films_folders(self) -> None:
+        await self.settings.update(
+            download_mode=DownloadMode.FOLDER,
+            download_dir=r"\\nas\watch",
+            movie_download_dir="E:/films",
+        )
+        watch, films = str(Path(r"\\nas\watch")), str(Path("E:/films"))
+        self.usage[watch] = DiskUsage(4000 * GB, 1000 * GB, 3000 * GB)
+        self.usage[films] = DiskUsage(500 * GB, 490 * GB, 10 * GB)
+        overview = await self.service.check()
+        self.assertEqual(self.usage_calls, [watch, films])
+        self.assertEqual(
+            overview.space,
+            FreeSpace(free_bytes=10 * GB, total_bytes=500 * GB, on_nas=False, low=True),
+        )
+
+    async def test_an_unreachable_films_folder_leaves_the_watch_folder(self) -> None:
+        await self.settings.update(
+            download_mode=DownloadMode.FOLDER,
+            download_dir=r"\\nas\watch",
+            movie_download_dir=r"\\nas\gone",
+        )
+        self.usage[str(Path(r"\\nas\watch"))] = DiskUsage(4000 * GB, 1000 * GB, 3000 * GB)
+        overview = await self.service.check()
+        self.assertEqual(
+            overview.space,
+            FreeSpace(free_bytes=3000 * GB, total_bytes=4000 * GB, on_nas=True, low=False),
         )
 
     async def test_no_folder_and_no_report_is_no_banner(self) -> None:

@@ -53,6 +53,7 @@ SLATE_BEFORE: dict[str, theme.Pair] = {
     "ACCENT": ("#4E6A85", "#4E6A85"),
     "ACCENT_HOVER": ("#427839", "#427839"),
     "LINK": ("#2D6390", "#5D8AA8"),
+    "BRAND": ("#2D6390", "#8FB0D0"),  # added later: the spotlight band's "Grabber"
     "PLACEHOLDER": ("#DCE2E9", "gray20"),
     "HOVER": ("#DEE6EF", "#427839"),
     "MENU_HOVER": ("#DEE6EF", "#4E6A85"),

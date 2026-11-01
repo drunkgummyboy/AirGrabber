@@ -211,6 +211,41 @@ class AddTests(QBittorrentTestCase):
         await client.add_torrent(TORRENT, "x.torrent")
         self.assertEqual(self.qbt.forms["torrents/add"], {"savepath": "/downloads/tv"})
 
+    async def test_a_film_goes_to_the_films_folder_an_episode_to_the_destination(self) -> None:
+        self.settings = settings_service(
+            remote_destination="/downloads/tv", movie_remote_destination="/downloads/movies"
+        )
+        client = self.make_client(self.qbt)
+        await client.add_magnet(MAGNET, movie=True)
+        self.assertEqual(
+            self.qbt.forms["torrents/add"], {"urls": MAGNET, "savepath": "/downloads/movies"}
+        )
+        await client.add_torrent(TORRENT, "x.torrent", movie=True)
+        self.assertEqual(self.qbt.forms["torrents/add"], {"savepath": "/downloads/movies"})
+        await client.add_magnet(MAGNET)
+        self.assertEqual(
+            self.qbt.forms["torrents/add"], {"urls": MAGNET, "savepath": "/downloads/tv"}
+        )
+        await client.add_torrent(TORRENT, "x.torrent", movie=False)
+        self.assertEqual(self.qbt.forms["torrents/add"], {"savepath": "/downloads/tv"})
+
+    async def test_an_empty_films_folder_is_the_destination(self) -> None:
+        self.settings = settings_service(remote_destination="/downloads/tv")
+        client = self.make_client(self.qbt)
+        await client.add_magnet(MAGNET, movie=True)
+        self.assertEqual(
+            self.qbt.forms["torrents/add"], {"urls": MAGNET, "savepath": "/downloads/tv"}
+        )
+
+    async def test_a_films_folder_without_a_destination(self) -> None:
+        # E.g. AirGrabber's own qBittorrent on this PC: its own folder for episodes.
+        self.settings = settings_service(movie_remote_destination=r"D:\Films")
+        client = self.make_client(self.qbt)
+        await client.add_magnet(MAGNET)
+        self.assertEqual(self.qbt.forms["torrents/add"], {"urls": MAGNET})
+        await client.add_torrent(TORRENT, "x.torrent", movie=True)
+        self.assertEqual(self.qbt.forms["torrents/add"], {"savepath": r"D:\Films"})
+
     async def test_fails_is_an_error_and_still_signs_out(self) -> None:
         self.qbt.add_answer = lambda: httpx.Response(200, text="Fails.")
         error = await self.error_of(self.client.add_magnet(MAGNET))

@@ -325,6 +325,8 @@ class Settings(BaseModel):
     # FOLDER keeps the 1.x/2.0 behaviour for existing users; new users choose on first run.
     download_mode: DownloadMode = DownloadMode.FOLDER
     download_dir: Path = Field(default_factory=lambda: Path.home() / "Downloads")
+    # Films' own watch folder in FOLDER mode; None ("" as typed) = `download_dir`, as before.
+    movie_download_dir: Path | None = None
     # Newly followed shows get their "download new episodes automatically" switch turned on.
     auto_download_new_shows: bool = False
     first_day: Weekday = Weekday.MONDAY
@@ -371,6 +373,8 @@ class Settings(BaseModel):
     remote_verify_tls: bool = True  # NAS boxes often use self-signed certificates
     # Its download folder: "video/tv" (Download Station), "/downloads/tv"; "" = its default.
     remote_destination: str = ""
+    # Films' own download folder there ("video/movies", "/downloads/movies"); "" = the one above.
+    movie_remote_destination: str = ""
     disabled_indexers: KeywordList = ()
     # The first-run welcome was completed or dismissed (or skipped for a library that already had
     # shows); never shown in Settings.
@@ -468,11 +472,18 @@ class Settings(BaseModel):
             raise ValueError(t("Choose a folder"))
         return value
 
+    @field_validator("movie_download_dir", mode="before")
+    @classmethod
+    def _optional_folder(cls, value: Any) -> Any:
+        """An empty films folder is none: films go to `download_dir` too."""
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator(
         "tmdb_api_key",
         "prowlarr_api_key",
         "remote_username",
         "remote_destination",
+        "movie_remote_destination",
         "subtitles_folder",
         "opensubtitles_username",
         "opensubtitles_own_key",

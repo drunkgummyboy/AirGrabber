@@ -60,11 +60,14 @@ from app.services import (
 from app.services import startup
 from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
+from app.models.backup import BackupLoadResult
+from app.services.backup import BackupService
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.accent_picker import AccentSwatches
 from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM, make_borderless
 from app.ui.branding import set_window_icon
+from app.ui.backup_dialog import LoadBackupDialog, SaveBackupDialog, load_backup
 from app.ui.card_preview import CardSizePreview
 from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
 from app.ui.dialog_kit import (
@@ -83,7 +86,13 @@ from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_field
 from app.ui.quick_setup import OPEN_TEXT as QUICK_SETUP_TEXT
 from app.ui.quick_setup import QuickSetupDialog
 from app.ui.remote_program_form import FIELD_LABELS as REMOTE_LABELS
-from app.ui.remote_program_form import FolderNote, RemoteProgramForm, folder_note
+from app.ui.remote_program_form import (
+    FILMS_HINT,
+    FILMS_LABEL,
+    FolderNote,
+    RemoteProgramForm,
+    folder_note,
+)
 from app.ui.subtitle_settings import (
     ACCOUNT_HINT,
     ACCOUNT_LABEL,
@@ -122,11 +131,15 @@ SECTION_INFO = N_("Movie & show info")
 SECTION_LOOKS = N_("Looks")
 SECTION_UPDATES = N_("Updates")
 SECTION_ADVANCED = N_("Advanced")
+SECTION_BACKUP = N_("Backup")
 
 # The sidebar: a small group label above each part of the list, then its sections in order.
 SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (N_("Downloading"), (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES)),
-    (N_("App"), (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_ADVANCED)),
+    (
+        N_("App"),
+        (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_BACKUP, SECTION_ADVANCED),
+    ),
 )
 SECTIONS: tuple[str, ...] = tuple(name for _group, names in SECTION_GROUPS for name in names)
 SECTION_ICONS: dict[str, str] = {
@@ -137,6 +150,7 @@ SECTION_ICONS: dict[str, str] = {
     SECTION_INFO: "🎬",
     SECTION_LOOKS: "🖼",
     SECTION_UPDATES: "⟳",
+    SECTION_BACKUP: "💾",
     SECTION_ADVANCED: "🛠",
 }
 # Each page's one muted line under its heading (Subtitles uses its own texts).
@@ -152,6 +166,9 @@ SECTION_NOTES: dict[str, str] = {
     ),
     SECTION_LOOKS: N_("How AirGrabber's pages look."),
     SECTION_UPDATES: N_("Getting new versions of AirGrabber."),
+    SECTION_BACKUP: N_(
+        "Keep a copy of your shows, watchlist and settings, or move them to another PC."
+    ),
     SECTION_ADVANCED: N_(
         "Where AirGrabber searches, and which releases it skips. Most people never need to "
         "change these."
@@ -240,6 +257,14 @@ EXCLUDED_TITLE = N_("Skip releases with these words")
 EXCLUDED_TEXT = N_("Separate with commas, for example: cam, telesync")
 PREFERRED_TITLE = N_("Prefer releases from")
 PREFERRED_TEXT = N_("Release group names, separated with commas")
+
+BACKUP_TEXT = N_(
+    "One file with your followed shows, film watchlist, download history and settings. Load "
+    "it on this PC or another one: you see what's in it before anything changes."
+)
+SAVE_BACKUP_BUTTON = N_("Save a backup…")
+LOAD_BACKUP_BUTTON = N_("Load a backup…")
+_BACKUP_BUTTON_WIDTH = 190
 
 # -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
 
@@ -436,13 +461,17 @@ def download_settings(settings: Settings) -> tuple[Any, ...]:
         settings.remote_username,
         settings.remote_password,  # SecretStr compares the passwords themselves
         settings.remote_destination,
+        settings.movie_remote_destination,
         settings.remote_verify_tls,
     )
 
 
-def download_dir_to_save(mode: DownloadMode, entry: str, stored: Path) -> str | Path:
-    """The folder entry only counts when it shows ("Save .torrent files to a folder");
-    otherwise the stored folder stays, whatever the hidden entry holds."""
+def download_dir_to_save(
+    mode: DownloadMode, entry: str, stored: Path | None
+) -> str | Path | None:
+    """A folder entry (the watch folder, the films folder) only counts when it shows ("Save
+    .torrent files to a folder"); otherwise the stored folder stays, whatever the hidden entry
+    holds."""
     return entry.strip() if mode is DownloadMode.FOLDER else stored
 
 
@@ -508,6 +537,7 @@ async def apply_start_with_windows(
 _FIELD_LABELS = {
     "download_mode": SECTION_WHERE,
     "download_dir": FOLDER_CHOICE,
+    "movie_download_dir": FILMS_LABEL,
     "quality_tv": N_("Series quality"),
     "quality_movie": N_("Movies quality"),
     "size_tv_min_gb": N_("Series size"),
@@ -821,12 +851,16 @@ class SettingsDialog(ctk.CTkToplevel):
         on_restart: Callable[[], None] | None = None,
         images: ImageCache | None = None,
         library: LibraryService | None = None,
+        backup: BackupService | None = None,
     ) -> None:
         """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
         `images`: the Card size box's preview card (none without it); `library`: a followed
-        show's poster for it (the placeholder card without one)."""
+        show's poster for it (the placeholder card without one). `backup`: the Backup section
+        shows when it is given."""
         super().__init__(master, fg_color=theme.BG)
+        self._backup = backup
+        self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
         self._images = images
         self._library = library
         self._card_preview: CardSizePreview | None = None
@@ -977,6 +1011,8 @@ class SettingsDialog(ctk.CTkToplevel):
         if self._subtitles is not None:
             subtitles_service = self._subtitles
             builders[SECTION_SUBTITLES] = lambda: self._build_subtitles(subtitles_service)
+        if self._backup is not None:
+            builders[SECTION_BACKUP] = self._build_backup
         for section in SECTIONS:
             if section in builders:
                 self._pages[section] = builders[section]()
@@ -1079,6 +1115,19 @@ class SettingsDialog(ctk.CTkToplevel):
             side="left", padx=(10, 0)
         )
         self._folder_row_index = folder.take_row()
+        # Films' own folder under it (empty: films go to the folder above too).
+        self._films_label = folder.text(t(FILMS_LABEL), indent=_INDENT)
+        self._films_label_row = folder.take_row()
+        self._films_row = ctk.CTkFrame(folder.body, fg_color="transparent")
+        films = self._settings.current.movie_download_dir
+        self._movie_dir = self._hinted_entry(
+            self._films_row, str(films) if films is not None else "", t(FILMS_HINT)
+        )
+        self._movie_dir.pack_configure(side="left", expand=True)
+        secondary_button(self._films_row, t("Browse"), self._browse_films, width=110).pack(
+            side="left", padx=(10, 0)
+        )
+        self._films_row_index = folder.take_row()
         self._folder_note = folder.text("", indent=_INDENT)
         self._folder_note_row = folder.take_row()
         self._folder_link = ctk.CTkLabel(
@@ -1102,6 +1151,7 @@ class SettingsDialog(ctk.CTkToplevel):
             label_width=_REMOTE_LABEL_WIDTH,
             field_width=_REMOTE_FIELD_WIDTH,
             describe=_describe,
+            films=True,
         )
         self._remote_form.configure(corner_radius=0)
         _paint_background(self._remote_form, theme.TAB_BG)
@@ -1169,6 +1219,12 @@ class SettingsDialog(ctk.CTkToplevel):
             self._folder_row.grid(
                 row=self._folder_row_index, column=0, sticky="ew", padx=(_INDENT, 0), pady=(12, 0)
             )
+            self._films_label.grid(
+                row=self._films_label_row, column=0, sticky="w", padx=(_INDENT, 0), pady=(10, 0)
+            )
+            self._films_row.grid(
+                row=self._films_row_index, column=0, sticky="ew", padx=(_INDENT, 0), pady=(4, 0)
+            )
             self._folder_note.configure(text=note.text)
             self._folder_note.grid(
                 row=self._folder_note_row, column=0, sticky="w", padx=(_INDENT, 0), pady=(10, 0)
@@ -1182,6 +1238,8 @@ class SettingsDialog(ctk.CTkToplevel):
                 )
         else:
             self._folder_row.grid_remove()
+            self._films_label.grid_remove()
+            self._films_row.grid_remove()
             self._folder_note.grid_remove()
             self._folder_link.grid_remove()
 
@@ -1210,6 +1268,14 @@ class SettingsDialog(ctk.CTkToplevel):
         chosen = filedialog.askdirectory(parent=self, initialdir=self._download_dir.get() or None)
         if chosen:
             self._download_dir.set(chosen)
+
+    def _browse_films(self) -> None:
+        # Native modal dialog, as `_browse`; it starts in the films folder, else the one above.
+        start = self._movie_dir.get() or self._download_dir.get()
+        chosen = filedialog.askdirectory(parent=self, initialdir=start or None)
+        if chosen:
+            self._movie_dir.delete(0, "end")
+            self._movie_dir.insert(0, chosen)
 
     # -- Quality -------------------------------------------------------------------------------
 
@@ -1718,6 +1784,44 @@ class SettingsDialog(ctk.CTkToplevel):
         self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
         return page
 
+    # -- Backup --------------------------------------------------------------------------------
+
+    def _build_backup(self) -> _Page:
+        page = self._new_page(SECTION_BACKUP)
+        box = page.box(None, t(BACKUP_TEXT))
+        line = box.frame_row()
+        secondary_button(
+            line, t(SAVE_BACKUP_BUTTON), self._save_backup, width=_BACKUP_BUTTON_WIDTH
+        ).pack(side="left")
+        secondary_button(
+            line, t(LOAD_BACKUP_BUTTON), self._load_backup, width=_BACKUP_BUTTON_WIDTH
+        ).pack(side="left", padx=(12, 0))
+        return page
+
+    def _backup_dialog_open(self) -> bool:
+        dialog = self._backup_dialog
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            return True
+        return False
+
+    def _save_backup(self) -> None:
+        """Save a backup of what is stored (not this form's unsaved changes)."""
+        if self._backup is not None and not self._backup_dialog_open():
+            self._backup_dialog = SaveBackupDialog(self, backup=self._backup)
+
+    def _load_backup(self) -> None:
+        if self._backup is not None and not self._backup_dialog_open():
+            self._backup_dialog = load_backup(
+                self, backup=self._backup, on_restart=self._on_restart, on_done=self._backup_loaded
+            )
+
+    def _backup_loaded(self, result: BackupLoadResult | None) -> None:
+        """A load that replaced the settings closes Settings: this form still shows the old
+        ones, and Save would put them back."""
+        if result is not None and result.settings_replaced and self.winfo_exists():
+            self.destroy()
+
     # -- Advanced ------------------------------------------------------------------------------
 
     def _build_advanced(self) -> _Page:
@@ -1979,6 +2083,11 @@ class SettingsDialog(ctk.CTkToplevel):
                 DownloadMode(self._mode.get()),
                 self._download_dir.get(),
                 self._settings.current.download_dir,
+            ),
+            movie_download_dir=download_dir_to_save(
+                DownloadMode(self._mode.get()),
+                self._movie_dir.get(),
+                self._settings.current.movie_download_dir,
             ),
             tmdb_api_key=self._tmdb_key.get(),
             excluded_keywords=self._excluded.get(),

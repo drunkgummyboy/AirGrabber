@@ -47,6 +47,7 @@ from app.services.remote import (
     DiskSpace,
     HttpClients,
     RemoteError,
+    destination,
     fraction,
     host_of,
     magnet_hash,
@@ -221,11 +222,12 @@ class DownloadStationClient:
             return t("{program} on DSM {version}", program=text, version=dsm_version)
         return text
 
-    async def add_magnet(self, magnet: str) -> None:
-        """Log in, create a Download Station task for `magnet`, log out."""
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
+        """Log in, create a Download Station task for `magnet` (a film's in the films
+        destination, when Settings has one), log out."""
         if not magnet.startswith("magnet:"):
             raise ValueError("not a magnet link")
-        async with self._session() as session:
+        async with self._session(movie=movie) as session:
             destination = session.destination
             errors = _task_errors(destination)
             if session.has(_TASK2) and session.api(_TASK2).supports(2):
@@ -240,9 +242,10 @@ class DownloadStationClient:
                 await session.call(_TASK, 3, "create", params, errors=errors)
             log.info("Added a magnet task to Download Station on %s", session.host)
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
-        """Log in, upload a .torrent file as a Download Station task, log out."""
-        async with self._session() as session:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
+        """Log in, upload a .torrent file as a Download Station task (as `add_magnet`), log
+        out."""
+        async with self._session(movie=movie) as session:
             destination = session.destination
             errors = _task_errors(destination)
             if session.has(_TASK2) and session.api(_TASK2).supports(2):
@@ -296,13 +299,14 @@ class DownloadStationClient:
         return None
 
     @contextlib.asynccontextmanager
-    async def _session(self) -> AsyncIterator[_Session]:
+    async def _session(self, *, movie: bool = False) -> AsyncIterator[_Session]:
         settings = self._settings.current  # one snapshot for the whole operation
         _check_configured(settings)
-        # Download Station wants "shared folder/sub folder", without leading or trailing slashes.
-        destination = settings.remote_destination.strip().strip("/").strip()
+        # Download Station wants "shared folder/sub folder", without leading or trailing slashes;
+        # a film's task goes to the films destination when there is one.
+        folder = destination(settings, movie=movie).strip("/").strip()
         async with await self._http.client(settings.remote_verify_tls) as http:
-            session = _Session(http, settings.remote_url, destination)
+            session = _Session(http, settings.remote_url, folder)
             await session.discover()
             await session.login(
                 settings.remote_username, settings.remote_password.get_secret_value()

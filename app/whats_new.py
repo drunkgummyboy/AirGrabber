@@ -14,6 +14,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "2.0.10": (
+        N_("Save a backup of your shows, watchlist and settings, and load it on a new PC (Settings → Backup)."),
+        N_("Films can go to their own folder: fill in Films folder in Settings → Where downloads go."),
+        N_("The releases list marks the one ⬇ Auto would pick with ★ and shows how fast each will download."),
+        N_("Trailers now play in their own AirGrabber window instead of the browser."),
+        N_("A clearer top bar and info screen: bigger poster, calmer episode marks, softer fades."),
+        N_("Saturdays in the calendar get suggestions too."),
+    ),
     "2.0.9": (
         N_(
             "A new top bar with a spotlight on tonight's episodes or new films; click it to open "

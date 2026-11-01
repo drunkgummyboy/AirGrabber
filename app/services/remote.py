@@ -24,7 +24,7 @@ import httpx
 
 from app import APP_NAME, __version__
 from app.i18n import N_, t
-from app.models import RemoteKind, RemoteStatus
+from app.models import RemoteKind, RemoteStatus, Settings
 
 USER_AGENT = f"{APP_NAME}/{__version__}"
 # The Settings checkbox, for messages (through t(), as every message here).
@@ -45,11 +45,21 @@ class RemoteClient(Protocol):
         """Connect and sign in; a short description such as "qBittorrent v5.0.2"."""
         ...
 
-    async def add_magnet(self, magnet: str) -> None: ...
-
-    async def add_torrent(self, content: bytes, filename: str) -> None:
-        """Add a .torrent file (`filename` ends in .torrent)."""
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
+        """Add a magnet link; a film (`movie`) to the films destination (`destination`)."""
         ...
+
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
+        """Add a .torrent file (`filename` ends in .torrent); a film as `add_magnet`."""
+        ...
+
+
+def destination(settings: Settings, *, movie: bool) -> str:
+    """Where the program saves a grab, as Settings has it: a film in `movie_remote_destination`
+    when that is filled in, everything else (and a film without it) in `remote_destination`;
+    "" = the program's own default folder."""
+    films = settings.movie_remote_destination.strip() if movie else ""
+    return films or settings.remote_destination.strip()
 
 
 class DiskSpace(NamedTuple):

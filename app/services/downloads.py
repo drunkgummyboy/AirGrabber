@@ -12,6 +12,10 @@ had — the indexer gave no direct link (or it failed) and itorrents.org has no 
 info hash, which is common for brand-new releases — is the magnet link sent to the remote
 torrent program set up in Settings.
 
+Films may have a place of their own: `movie_download_dir` (FOLDER) and `movie_remote_destination`
+(the remote program, REMOTE and FOLDER's magnets); empty = the same place as everything else.
+`GrabTarget.media_type` tells a film from an episode. APP mode has no place to choose.
+
 Direct download links may embed an indexer/Prowlarr API key: they are never logged or shown,
 and neither are magnet links.
 """
@@ -42,6 +46,7 @@ from app.models import (
     GrabTarget,
     MediaType,
     RemoteKind,
+    Settings,
     TorrentApp,
     TorrentRelease,
 )
@@ -177,12 +182,13 @@ class DownloadService:
         grab it twice.
         """
         mode = self._settings.current.download_mode
+        movie = target.media_type is MediaType.MOVIE  # to the films folder, when there is one
         if mode is DownloadMode.APP:
             result, saved_path, info_hash = await self._grab_in_app(release)
         elif mode is DownloadMode.REMOTE:
-            result, saved_path, info_hash = await self._grab_remote(release)
+            result, saved_path, info_hash = await self._grab_remote(release, movie=movie)
         else:
-            result, saved_path, info_hash = await self._grab_to_folder(release)
+            result, saved_path, info_hash = await self._grab_to_folder(release, movie=movie)
 
         record = DownloadRecord(
             media_type=target.media_type,
@@ -229,9 +235,12 @@ class DownloadService:
         log.info("Grabbed %r: magnet opened in %s", release.title, app.name)
         return GrabResult(outcome=GrabOutcome.OPENED, message=message), app.name, info_hash
 
-    async def _grab_remote(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
+    async def _grab_remote(
+        self, release: TorrentRelease, *, movie: bool
+    ) -> tuple[GrabResult, str, str | None]:
         """Send the .torrent (direct link, then itorrents.org) or else a magnet (the release's
-        own, a Prowlarr redirect, or one built from the hash) to the remote torrent program.
+        own, a Prowlarr redirect, or one built from the hash) to the remote torrent program; a
+        film (`movie`) to its films destination when Settings has one.
 
         Returns (result, history saved_path = the program's name, info hash).
         """
@@ -243,14 +252,16 @@ class DownloadService:
             release, _magnet_or_none(release.magnet_uri)
         )
         if content is not None:
-            await client.add_torrent(content, f"{safe_filename(release.title)}.torrent")
+            await client.add_torrent(
+                content, f"{safe_filename(release.title)}.torrent", movie=movie
+            )
             log.info("Grabbed %r: .torrent sent to %s", release.title, name)
         else:
             if magnet is None and info_hash:
                 magnet = build_magnet(info_hash, release.title)
             if magnet is None:
                 raise GrabError(t(NO_LINK))
-            await client.add_magnet(magnet)
+            await client.add_magnet(magnet, movie=movie)
             log.info("Grabbed %r: magnet sent to %s", release.title, name)
         sent = GrabResult(outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=name))
         return sent, name, info_hash
@@ -279,16 +290,19 @@ class DownloadService:
             )
         return content, magnet, info_hash
 
-    async def _grab_to_folder(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
+    async def _grab_to_folder(
+        self, release: TorrentRelease, *, movie: bool
+    ) -> tuple[GrabResult, str, str | None]:
         """Save the .torrent into the watch folder, or else send the magnet to the remote
-        torrent program (when one is set up).
+        torrent program (when one is set up); a film (`movie`) into the films folder, or to the
+        program's films destination, when Settings has one.
 
         Returns (result, history saved_path, info hash).
         """
         content, magnet, info_hash = await self._obtain(release, _magnet_or_none(release.magnet))
 
         if content is not None:
-            path = await self._save(content, release.title)
+            path = await self._save(content, release.title, movie=movie)
             saved_path = str(path)
             result = GrabResult(
                 outcome=GrabOutcome.SAVED,
@@ -309,7 +323,7 @@ class DownloadService:
         else:
             client = self._remote.client()
             saved_path = client.kind.program
-            await client.add_magnet(magnet)
+            await client.add_magnet(magnet, movie=movie)
             result = GrabResult(
                 outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=saved_path)
             )
@@ -388,8 +402,8 @@ class DownloadService:
         log.info("No .torrent file from %s (too many redirects)", label)
         return None, None
 
-    async def _save(self, content: bytes, title: str) -> Path:
-        directory = self._settings.current.download_dir
+    async def _save(self, content: bytes, title: str, *, movie: bool) -> Path:
+        directory = watch_folder(self._settings.current, movie=movie)
         try:
             return await asyncio.to_thread(_write_torrent, directory, safe_filename(title), content)
         except OSError as exc:
@@ -405,6 +419,14 @@ def open_with_default_program(target: str) -> None:
     if startfile is None:
         raise OSError(0, t("Opening torrents is only supported on Windows"))
     startfile(target)
+
+
+def watch_folder(settings: Settings, *, movie: bool) -> Path:
+    """Where FOLDER mode saves a grab's .torrent: a film in `movie_download_dir` when that is
+    set, everything else (and a film without it) in `download_dir`."""
+    if movie and settings.movie_download_dir is not None:
+        return settings.movie_download_dir
+    return settings.download_dir
 
 
 def _remote_not_set_up(kind: RemoteKind) -> str:

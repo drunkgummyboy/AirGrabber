@@ -35,6 +35,7 @@ from app.ui.settings_dialog import (
     QUALITY_NOTE,
     SECTION_ADVANCED,
     SECTION_AUTOMATIC,
+    SECTION_BACKUP,
     SECTION_GROUPS,
     SECTION_INFO,
     SECTION_LOOKS,
@@ -147,7 +148,7 @@ class SectionTests(unittest.TestCase):
             [(group, list(names)) for group, names in SECTION_GROUPS],
             [
                 ("Downloading", ["Where downloads go", "Quality", "Automatic", "Subtitles"]),
-                ("App", ["Movie & show info", "Looks", "Updates", "Advanced"]),
+                ("App", ["Movie & show info", "Looks", "Updates", "Backup", "Advanced"]),
             ],
         )
         self.assertEqual(SECTIONS[0], SECTION_WHERE)
@@ -390,7 +391,8 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(dialog.page(SECTION_WHERE).winfo_manager())
         # Without the subtitle service there is no Subtitles section.
         self.assertEqual(
-            list(dialog._items), [s for s in SECTIONS if s != SECTION_SUBTITLES]
+            list(dialog._items),
+            [s for s in SECTIONS if s not in (SECTION_SUBTITLES, SECTION_BACKUP)],
         )
         dialog._items[SECTION_LOOKS].click()
         self.assertEqual(dialog.section, SECTION_LOOKS)

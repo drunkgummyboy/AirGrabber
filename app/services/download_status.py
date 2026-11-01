@@ -13,7 +13,8 @@ Download Station picks the .torrent files up from the watch folder. Grabs are ma
 tasks by info hash, then by the .torrent's file name, then by name (`match_tasks`).
 
 Free space: `shutil.disk_usage` of "Where finished downloads end up" (`subtitles_folder`), else
-of the watch folder in FOLDER mode, in a worker thread with a time limit (a share that doesn't
+of the watch folder in FOLDER mode (with a films folder of its own, the fuller of the two), in a
+worker thread with a time limit (a share that doesn't
 answer never blocks the loop, and no second check starts while one hangs); else what
 qBittorrent / Transmission report. Below LOW_SPACE_BYTES, or below LOW_SPACE_FRACTION while
 also below LOW_SPACE_CAP_BYTES (a big disk with plenty of room never warns), the space is
@@ -248,15 +249,18 @@ def space_is_low(free: int, total: int | None) -> bool:
     return free < total * LOW_SPACE_FRACTION
 
 
-def space_folder(settings: Settings) -> str | None:
-    """The folder whose free space counts: "Where finished downloads end up", else the watch
-    folder in FOLDER mode; None for neither."""
+def space_folders(settings: Settings) -> tuple[str, ...]:
+    """The folders whose free space counts: "Where finished downloads end up"; else in FOLDER
+    mode the watch folder, and the films one when that is set apart; () for neither."""
     folder = settings.subtitles_folder.strip()
     if folder:
-        return folder
-    if settings.download_mode is DownloadMode.FOLDER:
-        return str(settings.download_dir)
-    return None
+        return (folder,)
+    if settings.download_mode is not DownloadMode.FOLDER:
+        return ()
+    folders = [str(settings.download_dir)]
+    if settings.movie_download_dir is not None:
+        folders.append(str(settings.movie_download_dir))
+    return tuple(dict.fromkeys(folders))
 
 
 def is_network_path(path: str) -> bool:
@@ -552,9 +556,9 @@ class DownloadStatusService:
         return self._space, True
 
     async def _measure(self, settings: Settings) -> FreeSpace | None:
-        folder = space_folder(settings)
-        if folder:
-            measured = await self._folder_space(folder)
+        folders = space_folders(settings)
+        if folders:
+            measured = await self._folder_space(folders)
             if measured is not None:
                 usage, on_nas = measured
                 return FreeSpace(
@@ -579,12 +583,12 @@ class DownloadStatusService:
             low=space_is_low(disk.free, disk.total),
         )
 
-    async def _folder_space(self, folder: str) -> tuple[DiskUsage, bool] | None:
-        """disk_usage in a worker thread, with a time limit; None when the folder is out of
-        reach (or a check of it still hangs)."""
+    async def _folder_space(self, folders: Sequence[str]) -> tuple[DiskUsage, bool] | None:
+        """disk_usage in a worker thread, with a time limit; None when the folders are out of
+        reach (or a check of them still hangs)."""
         if self._disk_job is not None and not self._disk_job.done():
             return None
-        job = asyncio.ensure_future(asyncio.to_thread(self._read_folder, folder))
+        job = asyncio.ensure_future(asyncio.to_thread(self._read_folders, folders))
         job.add_done_callback(_retrieve)
         self._disk_job = job
         try:
@@ -596,9 +600,20 @@ class DownloadStatusService:
             log.info("No free space for the downloads folder (%s)", type(exc).__name__)
         return None
 
-    def _read_folder(self, folder: str) -> tuple[DiskUsage, bool]:
-        """Blocking: the folder's disk usage and whether it is on the network."""
-        return self._disk_usage(folder), self._network_path(folder)
+    def _read_folders(self, folders: Sequence[str]) -> tuple[DiskUsage, bool]:
+        """Blocking: the disk usage of the fullest of `folders` (one out of reach is left out
+        while another answers) and whether that one is on the network."""
+        found: list[tuple[DiskUsage, str]] = []
+        failure: OSError | ValueError = FileNotFoundError("no folder")
+        for folder in folders:
+            try:
+                found.append((self._disk_usage(folder), folder))
+            except (OSError, ValueError) as exc:
+                failure = exc
+        if not found:
+            raise failure
+        usage, folder = min(found, key=lambda item: item[0].free)
+        return usage, self._network_path(folder)
 
 
 def _open_folder(folder: str) -> None:

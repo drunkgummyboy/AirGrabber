@@ -1,5 +1,6 @@
-"""Missing episodes in the UI: the amber "3 missing" chip, the "⬇ Download missing" button with
-the run states behind it, and the small option menus ("I already have this").
+"""Missing episodes in the UI: the amber "3 missing", the "⬇ Download missing" button with the
+run states behind it, an episode's quiet mark ("● Missing", "● New", a grey ✓: `mark_label`)
+and the small option menus ("I already have this").
 
 The main window runs "Download missing" (one run per show at a time) and keeps each show's run
 state in a `MissingRuns`; every button showing a show attaches to it, so a card or show window
@@ -16,16 +17,22 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import customtkinter as ctk
+from PIL import Image
 
 from app.i18n import N_, t, tn
 from app.models import MissingRunReport, Show
 from app.ui import theme
+from app.ui.borderless import disc_image
 from app.ui.download_control import CORNER_RADIUS, Action, Look, fit_text
 from app.ui.text_fit import SLACK, unscaled_width
 from app.ui.tooltip import add_tooltip
 
 MISSING_COLOR = theme.WARNING  # amber: something is missing rather than broken
 OUTCOME_MS = 60_000  # a finished run's outcome stays on its button this long
+# An episode's mark (CTk units): a small dot, then its text.
+MARK_FONT_SIZE = 13
+MARK_DOT = 8
+MARK_DOT_GAP = 6
 
 # The texts are shown through t().
 DOWNLOAD_MISSING_TEXT = N_("⬇ Download missing")
@@ -35,7 +42,8 @@ STARTING_SHORT = N_("Starting…")
 FAILED_TEXT = N_("Couldn't download")
 NOTHING_MISSING_TEXT = N_("Nothing missing")
 CHIP_MISSING_TEXT = N_("Missing")
-CHIP_HAVE_TEXT = N_("✓ Have it")
+HAVE_MARK = "✓"  # an episode marked "I already have this": a quiet ✓, no text
+HAVE_TIP = N_("You have this")
 CHIP_TIP = N_("Options")
 HAVE_EPISODE_TEXT = N_("I already have this")
 HAVE_SEASON_TEXT = N_("I already have this season")
@@ -373,37 +381,40 @@ class MissingButton(ctk.CTkFrame):
         super().destroy()
 
 
-def chip(
-    master: Any,
-    text: str,
-    color: theme.Color,
-    *,
-    height: int,
-    font_size: int,
-    width: int = 0,
-    clickable: bool = False,
-) -> ctk.CTkButton:
-    """A small outlined pill ("3 missing", "Missing"); a `clickable` one gets its command
-    configured by the caller."""
-    button = ctk.CTkButton(
+def mark_dot(master: tk.Misc, color: theme.Color) -> ctk.CTkImage:
+    """A MARK_DOT disc of `color` (light and dark), baked at the screen's scaling, with
+    MARK_DOT_GAP see-through room right of it (the gap to the text beside it)."""
+    scaling: float = ctk.ScalingTracker.get_widget_scaling(master)
+    side = max(1, round(MARK_DOT * scaling))
+    room = round((MARK_DOT + MARK_DOT_GAP) * scaling)
+
+    def baked(dark: bool) -> Image.Image:
+        red, green, blue = master.winfo_rgb(theme.pick(color, dark=dark))
+        out = Image.new("RGBA", (max(side, room), side), (0, 0, 0, 0))
+        out.paste(disc_image(side, (red >> 8, green >> 8, blue >> 8)), (0, 0))
+        return out
+
+    return ctk.CTkImage(
+        light_image=baked(False), dark_image=baked(True), size=(MARK_DOT + MARK_DOT_GAP, MARK_DOT)
+    )
+
+
+def mark_label(
+    master: Any, text: str, color: theme.Color, *, dot: bool, height: int
+) -> ctk.CTkLabel:
+    """A quiet episode mark, no box: `text` in `color`, after a small dot of that colour with
+    `dot` ("● Missing", "● New"), else alone (the ✓ of "I already have this")."""
+    return ctk.CTkLabel(
         master,
         text=text,
-        width=width,
-        height=height,
-        corner_radius=height // 2,
-        font=theme.font(font_size, bold=True),
-        fg_color="transparent",
-        hover_color=theme.CHIP_HOVER,
-        hover=clickable,
-        border_width=1,
-        border_color=color,
+        image=mark_dot(master, color) if dot else None,
+        compound="left",
+        font=theme.font(MARK_FONT_SIZE),
         text_color=color,
-        text_color_disabled=color,
-        state="normal" if clickable else "disabled",
+        height=height,
+        fg_color="transparent",
+        anchor="w",
     )
-    if clickable:
-        button.configure(cursor="hand2")
-    return button
 
 
 MenuItem = tuple[str, Callable[[], None]]

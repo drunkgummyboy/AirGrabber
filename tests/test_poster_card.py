@@ -1,5 +1,6 @@
-"""Poster cards: the year / rating line, the fade (capped at FADE_MAX behind the text), the
-baked card image, the badge pill and the Track looks."""
+"""Poster cards: the year / rating line, the fade (FADE_STOPS on a smooth curve over the lower
+FADE_SHARE of the cover, solid under the text), the baked card image, the badge pill and the
+Track looks."""
 
 from __future__ import annotations
 
@@ -12,7 +13,8 @@ from PIL import Image
 
 from app.ui import theme
 from app.ui.poster_card import (
-    FADE_MAX,
+    FADE_SHARE,
+    FADE_STOPS,
     FOLLOWING_TEXT,
     POSTER_CARD_HEIGHT,
     POSTER_CARD_WIDTH,
@@ -69,34 +71,40 @@ class YearRatingLineTests(unittest.TestCase):
 
 
 class FadeAlphaTests(unittest.TestCase):
-    def test_the_fade_stops_at_80_percent(self) -> None:
-        self.assertEqual(FADE_MAX, 0.80)
-        self.assertEqual(fade_alpha(1.0), FADE_MAX)
-        self.assertEqual(fade_alpha(1.5), FADE_MAX)
-        self.assertLessEqual(max(fade_alpha(step / 200) for step in range(-20, 241)), FADE_MAX)
+    def test_through_the_designs_stops(self) -> None:
+        # 0 → 18 % → 50 % → 82 % → 100 % of the card's colour at 0 / 25 / 50 / 75 / 100 %.
+        self.assertEqual(
+            FADE_STOPS, ((0.0, 0.0), (0.25, 0.18), (0.5, 0.5), (0.75, 0.82), (1.0, 1.0))
+        )
+        for position, alpha in FADE_STOPS:
+            self.assertAlmostEqual(fade_alpha(position), alpha, places=9)
+        self.assertEqual(FADE_SHARE, 0.58)
 
     def test_ends(self) -> None:
         self.assertEqual(fade_alpha(-0.5), 0.0)
         self.assertEqual(fade_alpha(0.0), 0.0)
-        self.assertEqual(fade_alpha(1.0, maximum=1.0), 1.0)
+        self.assertEqual(fade_alpha(1.0), 1.0)
+        self.assertEqual(fade_alpha(1.5), 1.0)
 
-    def test_85_percent_of_the_way_a_little_under_half_way(self) -> None:
-        self.assertAlmostEqual(fade_alpha(0.45), 0.85 * FADE_MAX)
+    def test_eases_in_and_out(self) -> None:
+        # Flat where it starts and where it turns solid: no line at either end.
+        self.assertLess(fade_alpha(0.02), 0.002)
+        self.assertGreater(fade_alpha(0.98), 0.998)
 
-    def test_soft_start(self) -> None:
-        self.assertLess(fade_alpha(0.02), 0.01)
-
-    def test_never_decreases(self) -> None:
-        values = [fade_alpha(step / 200) for step in range(201)]
+    def test_smooth_and_never_decreasing(self) -> None:
+        values = [fade_alpha(step / 400) for step in range(401)]
         self.assertEqual(values, sorted(values))
+        steps = [after - before for before, after in zip(values, values[1:])]
+        bends = [abs(after - before) for before, after in zip(steps, steps[1:])]
+        self.assertLess(max(bends), 0.0005)  # no kink at the stops
 
-    def test_rows_behind_the_text_stay_at_the_cap_then_turn_solid(self) -> None:
-        rows = [fade_row_alpha(row, 100, 200, 300, 320, FADE_MAX) for row in range(400)]
+    def test_rows_turn_solid_at_the_end(self) -> None:
+        rows = [fade_row_alpha(row, 100, 300) for row in range(400)]
         self.assertEqual(rows[:100], [0.0] * 100)
-        self.assertEqual(set(rows[200:300]), {FADE_MAX})
-        self.assertEqual(rows[320:], [1.0] * 80)
-        self.assertEqual(rows, sorted(rows))  # soft start, cap, then on to solid
-        self.assertLess(rows[101], 0.01)
+        self.assertEqual(rows[300:], [1.0] * 100)
+        self.assertEqual(rows, sorted(rows))
+        self.assertLess(rows[101], 0.001)
+        self.assertAlmostEqual(rows[199], 0.5, delta=0.01)
 
 
 class CardFaceTests(unittest.TestCase):
@@ -105,14 +113,12 @@ class CardFaceTests(unittest.TestCase):
         self.assertEqual(card.size, (POSTER_CARD_WIDTH * 3 // 2, POSTER_CARD_HEIGHT * 3 // 2))
         self.assertEqual((card.border, card.radius), (3, 21))
         height = card.size[1]
-        self.assertEqual(card.fade_from, round(height * 0.45))
-        self.assertEqual(card.fade_max, FADE_MAX)
-        # Solid from the top of the widget rows: border 2 + bottom padding 12 + rows 36.
-        self.assertEqual(card.solid_from, height - round((2 + 12 + 36) * 1.5))
-        # At the cap down to the row gap (10) above the widget rows.
-        self.assertEqual(card.ramp_from, height - round((2 + 12 + 36 + 10) * 1.5))
-        # At the cap from 4 units above the text (58 tall).
-        self.assertEqual(card.full_from, height - round((2 + 12 + 36 + 10 + 58 + 4) * 1.5))
+        # Solid from the text's lower edge: border 2 + bottom padding 12 + rows 36 + gap 10.
+        self.assertEqual(card.solid_from, height - round((2 + 12 + 36 + 10) * 1.5))
+        # The fade covers the lower 58 % of the cover above it: it starts a third of the way
+        # down the card (it used to start at 45 % and reach 80 % just above the text).
+        self.assertEqual(card.fade_from, card.solid_from - round(card.solid_from * 0.58))
+        self.assertAlmostEqual(card.fade_from / height, 0.33, delta=0.01)
 
     def test_one_action_row_by_default(self) -> None:
         default = card_face(1.5, 58, bg=BG, edge=EDGE, outside=OUTSIDE, placeholder=PLACEHOLDER)
@@ -125,18 +131,23 @@ class CardFaceTests(unittest.TestCase):
                 self.assertEqual(face(scale).size, (int(width), int(height)))
                 self.assertEqual((width, height), (int(width), int(height)))
 
-    def test_tall_text_keeps_a_soft_start(self) -> None:
-        # Two title lines over two rows of buttons: the fade starts higher than 45 %.
-        card = face(1.0, text_height=60, rows_height=74)
-        height = card.size[1]
-        self.assertLess(card.fade_from, round(height * 0.45))
-        self.assertGreaterEqual(card.full_from - card.fade_from, round(height * 0.12))
+    def test_more_rows_fade_higher_up(self) -> None:
+        # Two rows of buttons (a film: the watchlist button over Download): the text sits
+        # higher, so does the fade, as long as ever relative to the cover above the text.
+        one, two = face(1.0, rows_height=36), face(1.0, rows_height=74)
+        self.assertLess(two.solid_from, one.solid_from)
+        self.assertLess(two.fade_from, one.fade_from)
+        for card in (one, two):
+            span = card.solid_from - card.fade_from
+            self.assertAlmostEqual(span / card.solid_from, FADE_SHARE, delta=0.01)
 
-    def test_text_taller_than_the_card_still_orders_the_rows(self) -> None:
-        card = face(1.0, text_height=400)
-        self.assertEqual((card.fade_from, card.full_from), (0, 0))
-        self.assertLessEqual(card.full_from, card.ramp_from)
-        self.assertLessEqual(card.ramp_from, card.solid_from)
+    def test_the_text_height_doesnt_move_the_fade(self) -> None:
+        one_line, two_lines = face(1.5, text_height=39), face(1.5, text_height=58)
+        self.assertEqual(one_line, two_lines)
+
+    def test_rows_taller_than_the_card_still_order_the_rows(self) -> None:
+        card = face(1.0, rows_height=400)
+        self.assertEqual((card.fade_from, card.solid_from), (0, 0))
 
     def test_faces_compare_by_value(self) -> None:
         self.assertEqual(face(), face())
@@ -166,13 +177,13 @@ class ComposeCardTests(unittest.TestCase):
             for x in range(inset, self.width - inset, 7):
                 self.assertEqual(self.card.getpixel((x, y)), BG, (x, y))
 
-    def test_the_cover_shows_through_behind_the_text(self) -> None:
+    def test_the_fade_halfway_is_half_the_cover(self) -> None:
         white = compose_card(Image.new("RGB", self.face.size, (255, 255, 255)), self.face)
         x = self.width // 2
-        expected = 255 * (1 - FADE_MAX) + BG[0] * FADE_MAX  # 80 % BG over white
-        for y in range(self.face.full_from, self.face.ramp_from):
-            red = white.getpixel((x, y))[0]  # type: ignore[index]
-            self.assertAlmostEqual(red, expected, delta=1.5)
+        middle = (self.face.fade_from + self.face.solid_from) // 2
+        expected = 255 * 0.5 + BG[0] * 0.5  # 50 % BG over white
+        red = white.getpixel((x, middle))[0]  # type: ignore[index]
+        self.assertAlmostEqual(red, expected, delta=3)
 
     def test_rows_above_the_fade_are_the_cover(self) -> None:
         border = self.face.border
@@ -189,10 +200,10 @@ class ComposeCardTests(unittest.TestCase):
             for y in range(self.face.fade_from, self.face.solid_from)
         ]
         self.assertEqual(column, sorted(column, reverse=True))
-        self.assertGreater(column[0], 245)
-        self.assertLess(column[-1], 40)
+        self.assertGreater(column[0], 253)
+        self.assertLess(column[-1], 24)
         steps = [above - below for above, below in zip(column, column[1:])]
-        self.assertLess(max(steps), 12)  # no hard edge anywhere
+        self.assertLess(max(steps), 3)  # no hard edge anywhere: a long, eased fade
 
     def test_border_and_corners(self) -> None:
         width, height = self.face.size

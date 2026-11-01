@@ -5,3 +5,5 @@ pydantic>=2.9
 httpx>=0.27
 Pillow>=10.0
 pystray>=0.19
+# optional: AirGrabber starts without these (app/bootstrap.py, install.ps1)
+pywebview>=6.0

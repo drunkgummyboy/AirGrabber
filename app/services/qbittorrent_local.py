@@ -120,8 +120,9 @@ def may_point_here(settings: Settings, *, fresh: bool) -> bool:
 
 def airgrabber_changes(settings: Settings, login: WebUiLogin, save_path: str) -> dict[str, Any]:
     """What AirGrabber stores to send its downloads to the Web UI: REMOTE, qBittorrent at its
-    address with the login, qBittorrent's own save folder (no destination), and that folder as
-    "Where finished downloads end up" while that is empty."""
+    address with the login, qBittorrent's own save folder (no destination; a films folder only
+    when one was chosen for this qBittorrent already, not another program's), and that folder
+    as "Where finished downloads end up" while that is empty."""
     changes: dict[str, Any] = {
         "download_mode": DownloadMode.REMOTE,
         "remote_kind": RemoteKind.QBITTORRENT,
@@ -130,6 +131,8 @@ def airgrabber_changes(settings: Settings, login: WebUiLogin, save_path: str) ->
         "remote_password": login.password,
         "remote_destination": "",
     }
+    if not set_up_by_airgrabber(settings):
+        changes["movie_remote_destination"] = ""
     if not settings.subtitles_folder.strip() and save_path:
         changes["subtitles_folder"] = save_path
     return changes
@@ -351,11 +354,11 @@ class LocalQBittorrent:
     async def test(self) -> str:
         return await self._again(self._client.test)
 
-    async def add_magnet(self, magnet: str) -> None:
-        await self._again(lambda: self._client.add_magnet(magnet))
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
+        await self._again(lambda: self._client.add_magnet(magnet, movie=movie))
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
-        await self._again(lambda: self._client.add_torrent(content, filename))
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
+        await self._again(lambda: self._client.add_torrent(content, filename, movie=movie))
 
     async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
         return await self._again(lambda: self._status_client().status(hashes))

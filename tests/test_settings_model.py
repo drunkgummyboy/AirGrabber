@@ -119,6 +119,26 @@ class SettingsModelTests(unittest.TestCase):
         self.assertFalse(settings.remote_verify_tls)
         self.assertEqual(settings.disabled_indexers, ("eztv", "yts"))
 
+    def test_films_have_an_optional_place_of_their_own(self) -> None:
+        # Settings stored before it existed: films go where everything goes.
+        old = Settings.model_validate(json.loads(json.dumps(DOWNLOAD_STATION_STORED)))
+        self.assertIsNone(old.movie_download_dir)
+        self.assertEqual(old.movie_remote_destination, "")
+        self.assertEqual(old.remote_destination, "")  # the ds_* move still happens
+        self.assertEqual(old.remote_url, "http://192.168.1.20:5000")
+        # Empty = none; spaces only stripped, slashes kept (as for remote_destination).
+        settings = Settings(movie_download_dir="  ", movie_remote_destination=" /video/movies/ ")
+        self.assertIsNone(settings.movie_download_dir)
+        self.assertEqual(settings.movie_remote_destination, "/video/movies/")
+        chosen = Settings(movie_download_dir=r"Z:\films")
+        self.assertEqual(chosen.movie_download_dir, Path(r"Z:\films"))
+        # Neither stops a ds_* move: they aren't remote_* keys.
+        moved = Settings.model_validate(
+            {**DOWNLOAD_STATION_STORED, "movie_remote_destination": "video/movies"}
+        )
+        self.assertEqual(moved.remote_url, "http://192.168.1.20:5000")
+        self.assertEqual(moved.movie_remote_destination, "video/movies")
+
 
 # The owner's stored settings from 2.0: FOLDER mode with Download Station as the magnet fallback.
 DOWNLOAD_STATION_STORED: dict[str, Any] = {
@@ -347,6 +367,19 @@ class SettingsStorageTests(unittest.IsolatedAsyncioTestCase):
         loaded = await db.settings.load()
         self.assertEqual(loaded, settings)
         self.assertEqual(loaded.remote_password.get_secret_value(), "DSMPASS123")
+
+    async def test_films_places_round_trip_through_the_database(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        db = await Database.open(Path(tmp.name) / "settings.db")
+        self.addAsyncCleanup(db.close)
+        for films in (Path(r"\\nas\films"), None):
+            with self.subTest(films=films):
+                settings = Settings(movie_download_dir=films, movie_remote_destination="video/movies")
+                await db.settings.save(settings)
+                loaded = await db.settings.load()
+                self.assertEqual(loaded, settings)
+                self.assertEqual(loaded.movie_download_dir, films)
 
     async def test_retired_keys_are_ignored_on_load_and_removed_on_save(self) -> None:
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)

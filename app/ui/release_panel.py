@@ -9,9 +9,12 @@ Public API
 on_target_change=None, on_count=None, on_fix_match=None)``
     A card (SURFACE, with a border) holding: for a series the SEASON and EPISODE chips (with
     "Pack", and "✎ Fix Match" at the right of the season row), the VERSION chips with their
-    counts, the indexer chips, the progress bar, the results table and the selection bar with
-    its Download button. Building it only builds widgets: nothing is loaded or searched (and no
-    task is started) before ``start()``.
+    counts, the indexer chips, the progress bar, the results table (a speed dot in front of
+    every name, and the gold "★ Recommended" tag on a tinted row for the release ⬇ Auto would
+    pick from the listed ones), the dots' legend and the selection bar with its Download
+    button (while no row is selected: the recommended release and why it was picked).
+    Building it only builds widgets: nothing is loaded or searched (and no task is started)
+    before ``start()``.
 ``panel.start()``
     Loads the grabbed releases, a show's episodes (for the chips) or a film's TMDB details (its
     IMDb id, for the search), and searches. Later calls do nothing. Call it once the asyncio
@@ -46,7 +49,13 @@ The results table is a ttk.Treeview rather than CTk widgets: a search can return
 rows and re-renders on every indexer update, which must stay instant. Rows are keyed by a
 stable id (`release_id`), so updates are applied as a diff and a row's selection and grab state
 survive re-renders. The mouse wheel over the table scrolls just the table (not a scrolling
-window around the panel as well).
+window around the panel as well). The name sits in the tree column (#0), the one column a
+Treeview draws a picture in: the speed dot, and the ★ tag before the recommended release's
+name (baked with Pillow, repainted in place on a switch between light and dark).
+
+The recommendation is app.services.picking's `recommend`: the one-click download's very pick
+(`pick_best`), made from the releases the current VERSION lists, again on every search update
+and version change.
 
 Log hygiene: release download links may embed an API key (Prowlarr), so nothing here logs a
 release or a URL.
@@ -58,15 +67,18 @@ import asyncio
 import contextlib
 import functools
 import logging
+import math
 import tkinter as tk
 import webbrowser
 from collections.abc import Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from tkinter import ttk
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from app.i18n import N_, number, t, tn
 from app.models import (
@@ -78,6 +90,7 @@ from app.models import (
     MediaType,
     Movie,
     MovieDetails,
+    Resolution,
     SearchRequest,
     SearchUpdate,
     Settings,
@@ -85,6 +98,7 @@ from app.models import (
     TorrentRelease,
 )
 from app.services.downloads import GrabError
+from app.services.picking import Recommendation, SeedNote, SizeNote, Speed, recommend, speed
 from app.services.remote import RemoteError
 from app.services.search import (
     QUALITY_KEYS,
@@ -95,7 +109,8 @@ from app.services.search import (
 )
 from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError, TVMazeNotFound
-from app.ui import theme
+from app.ui import palettes, theme
+from app.ui.borderless import disc_image
 from app.ui.download_control import outcome_text
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
@@ -192,7 +207,9 @@ _COLUMNS: tuple[tuple[ColumnId, str, int, _Anchor, bool], ...] = (
     ("action", "", 50, "center", False),
 )
 _COLUMN_IDS = tuple(column[0] for column in _COLUMNS)
-_ACTION_COLUMN = f"#{_COLUMN_IDS.index('action') + 1}"
+# The Treeview's own columns: the name is its tree column (#0), which shows the row's picture.
+_DATA_COLUMNS = tuple(column for column in _COLUMN_IDS if column != "name")
+_ACTION_COLUMN = f"#{_DATA_COLUMNS.index('action') + 1}"
 _ROW_HEIGHT = 26
 _TABLE_FONT_SIZE = 11
 _STYLE = "AG.Treeview"
@@ -203,9 +220,50 @@ _SELECTORS_ROW = 0
 _TOP_ROW = 1  # the results title and the indexer chips
 _LOADING_ROW = 2
 _TABLE_ROW = 3
-_HINT_ROW = 4
-_MESSAGE_ROW = 5
-_BAR_ROW = 6
+_LEGEND_ROW = 4  # the speed dots' legend, while the table has rows
+_HINT_ROW = 5
+_MESSAGE_ROW = 6
+_BAR_ROW = 7
+
+# The ★ Recommended row and the speed dots. Shown through t().
+RECOMMENDED_TAG = N_("Recommended")  # the gold tag's word, after its ★
+RECOMMENDED_TEXT = N_("★ Recommended: {name}")  # the selection bar while no row is selected
+SPEED_LEGEND: tuple[tuple[Speed, str], ...] = (
+    (Speed.FAST, N_("fast")),
+    (Speed.SLOWER, N_("slower")),
+    (Speed.STALL, N_("may stall")),
+    (Speed.UNKNOWN, N_("seeders unknown")),
+)
+_SEED_TEXTS: dict[SeedNote, str] = {
+    SeedNote.MOST: N_("most seeders"),
+    SeedNote.LOTS: N_("lots of seeders"),
+    SeedNote.FEW: N_("few seeders"),
+}
+_SIZE_TEXTS: dict[SizeNote, str] = {
+    SizeNote.RIGHT: N_("right size"),
+    SizeNote.BELOW_RANGE: N_("smaller than your size range"),
+    SizeNote.ABOVE_RANGE: N_("bigger than your size range"),
+    SizeNote.SMALL: N_("small size"),
+    SizeNote.NORMAL: N_("normal size"),
+    SizeNote.LARGE: N_("large size"),
+    SizeNote.UNKNOWN: N_("size unknown"),
+}
+PREFERRED_TEXT = N_("your preferred group")
+PACK_TEXT = N_("a pack with this episode")
+# The row pictures, in CTk units: a speed dot, then (the recommended row) the ★ tag, a pill.
+_DOT = 8  # the dot's diameter (the legend's dots too)
+_DOT_GAP = 6  # the room after the dot, and after the tag
+_TAG_HEIGHT = 18  # the tag's height: every row picture's
+_TAG_PAD = 7  # inside the tag, before the ★ and after the word
+_TAG_FONT_SIZE = 10
+_STAR = 9  # the ★'s width
+_STAR_GAP = 3  # between the ★ and the word
+_SUPERSAMPLE = 4
+# (light, dark) shares: the bright gold filling the tag (see-through: the row shows), and the
+# accent tinting the recommended row.
+_TAG_FILL: dict[bool, float] = {False: 0.5, True: 0.14}
+_ROW_TINT: dict[bool, float] = {False: 0.12, True: 0.28}
+_TAG_FONT_FILE = Path(ctk.__file__).parent / "assets" / "fonts" / "Roboto" / "Roboto-Medium.ttf"
 
 
 # -- text --------------------------------------------------------------------------------------
@@ -370,6 +428,156 @@ def default_quality(target: IndexerTarget, settings: Settings) -> str:
     return quality_key(profile)
 
 
+# -- the ★ Recommended row and the speed dots --------------------------------------------------
+
+
+def version_text(release: TorrentRelease) -> str:
+    """"4K", "1080p", "720p x265", "x265": the release's version as the reason line names it
+    (from its name); "" when the name says neither."""
+    resolution = release.resolution
+    parts: list[str] = []
+    if resolution is not None:
+        parts.append("4K" if resolution is Resolution.UHD else resolution.value)
+    if release.is_hevc:
+        parts.append("x265")
+    return " ".join(parts)
+
+
+def recommendation_reason(recommendation: Recommendation) -> str:
+    """The selection bar's line under "★ Recommended: …", from what the picker weighs: "4K,
+    lots of seeders, normal size", "1080p, most seeders, right size", then "your preferred
+    group" and "a pack with this episode" when they count. Parts nobody knows are left out."""
+    parts = [version_text(recommendation.release)]
+    if recommendation.seeds is not None:
+        parts.append(t(_SEED_TEXTS[recommendation.seeds]))
+    if recommendation.size is not None:
+        parts.append(t(_SIZE_TEXTS[recommendation.size]))
+    if recommendation.preferred:
+        parts.append(t(PREFERRED_TEXT))
+    if recommendation.pack:
+        parts.append(t(PACK_TEXT))
+    return ", ".join(part for part in parts if part)
+
+
+def speed_color(level: Speed) -> theme.Color:
+    """A speed dot's colour: green (fast), amber (slower), red (may stall); grey when the
+    source gave no seeders."""
+    if level is Speed.FAST:
+        return theme.SUCCESS
+    if level is Speed.SLOWER:
+        return theme.WARNING
+    if level is Speed.STALL:
+        return theme.DANGER
+    return theme.TEXT_FAINT
+
+
+def rgb(color: str) -> tuple[int, int, int]:
+    """(red, green, blue) of "#rrggbb" or a Tk grey ("gray40")."""
+    value = int(palettes.to_hex(color)[1:], 16)
+    return value >> 16, (value >> 8) & 0xFF, value & 0xFF
+
+
+def mix(color: str, base: str, share: float) -> str:
+    """`share` (0–1) of `color` over `base`, as "#RRGGBB"."""
+    pairs = zip(rgb(color), rgb(base), strict=True)
+    return "#" + "".join(f"{round(top * share + under * (1 - share)):02X}" for top, under in pairs)
+
+
+def recommended_tint(*, dark: bool) -> str:
+    """The recommended row's background: a little of the accent in the table's background."""
+    accent = theme.pick(theme.ACCENT, dark=dark)
+    return mix(accent, theme.pick(theme.SURFACE, dark=dark), _ROW_TINT[dark])
+
+
+@dataclass(frozen=True, slots=True)
+class TagLook:
+    """The ★ tag's word and colours, for `row_picture`."""
+
+    text: str
+    color: tuple[int, int, int]  # the ★ and the word
+    fill: tuple[int, int, int, int]  # behind them, RGBA: the row shows through
+
+
+def tag_look(*, dark: bool) -> TagLook:
+    """The ★ tag in a mode: the star and the word in the mode's gold (a dark gold in light, for
+    contrast), on a see-through fill of the bright gold."""
+    fill = rgb(theme.pick(theme.GOLD, dark=True))
+    return TagLook(
+        text=t(RECOMMENDED_TAG),
+        color=rgb(theme.pick(theme.GOLD, dark=dark)),
+        fill=(*fill, round(255 * _TAG_FILL[dark])),
+    )
+
+
+@functools.cache
+def _tag_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """CTk's own Roboto Medium (the app's font) at `size` pixels; Pillow's own without it."""
+    try:
+        return ImageFont.truetype(str(_TAG_FONT_FILE), size)
+    except OSError:
+        return ImageFont.load_default(size)
+
+
+def _star(center: tuple[float, float], radius: float) -> list[tuple[float, float]]:
+    """A five-pointed star's corners, point up, its box centred on `center`."""
+    x, y = center
+    y += radius * (1 - math.cos(math.pi / 5)) / 2  # the box reaches lower than the top point
+    corners: list[tuple[float, float]] = []
+    for index in range(10):
+        angle = -math.pi / 2 + index * math.pi / 5
+        reach = radius if index % 2 == 0 else radius * 0.42
+        corners.append((x + reach * math.cos(angle), y + reach * math.sin(angle)))
+    return corners
+
+
+def row_picture(
+    dot: tuple[int, int, int], scaling: float, tag: TagLook | None = None
+) -> Image.Image:
+    """The picture in front of a release's name, in physical pixels for `scaling` and
+    transparent around its parts (RGBA): the speed dot in `dot`'s colour, then, for the
+    recommended release, the ★ tag. Small: fine on the event loop."""
+    height = round(_TAG_HEIGHT * scaling)
+    diameter = max(1, round(_DOT * scaling))
+    tag_left = diameter + _DOT_GAP * scaling
+    width = tag_left
+    font = _tag_font(max(1, round(_TAG_FONT_SIZE * scaling)))
+    word_left = tag_right = 0.0
+    if tag is not None:
+        word_left = tag_left + (_TAG_PAD + _STAR + _STAR_GAP) * scaling
+        tag_right = word_left + font.getlength(tag.text) + _TAG_PAD * scaling
+        width = tag_right + _DOT_GAP * scaling
+    size = (math.ceil(width), height)
+    picture = Image.new("RGBA", size, (0, 0, 0, 0))
+    picture.alpha_composite(disc_image(diameter, dot), (0, (height - diameter) // 2))
+    if tag is None:
+        return picture
+    big = _SUPERSAMPLE
+    pill = Image.new("RGBA", (size[0] * big, height * big), (0, 0, 0, 0))
+    box = (tag_left * big, 0, tag_right * big - 1, height * big - 1)
+    ImageDraw.Draw(pill).rounded_rectangle(box, radius=height * big / 2, fill=tag.fill)
+    star = Image.new("RGBA", pill.size, (0, 0, 0, 0))
+    center = ((tag_left + (_TAG_PAD + _STAR / 2) * scaling) * big, height * big / 2)
+    ImageDraw.Draw(star).polygon(_star(center, _STAR * scaling * big / 2), fill=(*tag.color, 255))
+    shapes = Image.alpha_composite(pill, star).resize(size, Image.Resampling.LANCZOS)
+    picture.alpha_composite(shapes)
+    word = Image.new("RGBA", size, (0, 0, 0, 0))
+    ImageDraw.Draw(word).text(
+        (word_left, height / 2), tag.text, font=font, fill=(*tag.color, 255), anchor="lm"
+    )
+    picture.alpha_composite(word)
+    return picture
+
+
+def picture_key(level: Speed, *, recommended: bool) -> str:
+    """Which row picture a row shows: its speed, with or without the ★ tag."""
+    return f"{level.value}+tag" if recommended else level.value
+
+
+def _tree_column(column: ColumnId) -> str:
+    """The Treeview's id of a table column: the name is its tree column, "#0"."""
+    return "#0" if column == "name" else column
+
+
 # -- the panel ---------------------------------------------------------------------------------
 
 
@@ -439,7 +647,15 @@ class ReleasePanel(ctk.CTkFrame):
         self._grabbed: frozenset[str] = frozenset()
         self._row_states: dict[str, RowState] = {}
         self._rows: dict[str, tuple[TorrentRelease, bool]] = {}  # id -> (release, hidden)
-        self._rendered: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+        # id -> (name, picture key, the other cells, tags) as the table shows them
+        self._rendered: dict[str, tuple[str, str, tuple[str, ...], tuple[str, ...]]] = {}
+        self._search_request: SearchRequest | None = None  # what the shown results are for
+        self._recommended: Recommendation | None = None  # its release is a row of the table
+        self._recommended_iid: str | None = None
+        # The last recommendation made, and the (update, request, settings, version) it was made of.
+        self._recommend_inputs: tuple[object, ...] = ()
+        self._recommend_result: Recommendation | None = None
+        self._pictures: dict[str, ImageTk.PhotoImage] = {}  # picture_key -> the row picture
         self._failures = ""
         self._count: int | None = None  # what on_count was last told
         self._fixing = False
@@ -452,8 +668,9 @@ class ReleasePanel(ctk.CTkFrame):
         self._episode_buttons: dict[int | None, ctk.CTkButton] = {}  # None = the Pack button
         self._loading: LoadingBar | None = None
         self._empty_look: tuple[str, str] | None = None
-        self._selected_name = ""  # the selection bar's release name, before eliding
+        self._selected_name = ""  # the selection bar's name line, before eliding
         self._name_room = 0.0  # the room for it, in CTk units (0 until laid out)
+        self._bar_lines: tuple[bool, bool, bool] | None = None  # caption, name, detail shown
 
         self._search_task: asyncio.Task[None] | None = None
         self._grab_tasks: dict[str, asyncio.Task[None]] = {}
@@ -633,12 +850,13 @@ class ReleasePanel(ctk.CTkFrame):
         table.grid_rowconfigure(0, weight=1)
         scaling = float(ctk.ScalingTracker.get_widget_scaling(self))
         self._style_table(scaling)
+        self._paint_pictures()
         tree = ttk.Treeview(
-            table, columns=_COLUMN_IDS, show="headings", selectmode="browse", style=_STYLE
+            table, columns=_DATA_COLUMNS, show="tree headings", selectmode="browse", style=_STYLE
         )
         for column, heading, width, anchor, stretch in _COLUMNS:
             tree.column(
-                column,
+                _tree_column(column),
                 width=round(width * scaling),
                 minwidth=round(min(width, 60) * scaling),
                 anchor=anchor,
@@ -660,6 +878,7 @@ class ReleasePanel(ctk.CTkFrame):
         self._tree = tree
         self._paint_rows()
         self._update_headings()
+        self._build_legend(scaling)
         self._build_selection_bar()
 
         self._empty = ctk.CTkLabel(table, text="", fg_color=theme.SURFACE, anchor="w")
@@ -674,6 +893,32 @@ class ReleasePanel(ctk.CTkFrame):
         )
         self._hint.bind("<Button-1>", lambda _event: self._toggle_hidden())
         self._message = ctk.CTkLabel(self, text="", font=theme.font(11), anchor="w", height=20)
+
+    def _build_legend(self, scaling: float) -> None:
+        """The speed dots' legend under the table ("● fast ● slower ● may stall"), shown while
+        the table has rows. Its dots are CTkImages: CTk swaps them between light and dark."""
+        legend = ctk.CTkFrame(self, fg_color="transparent", width=1, height=1)
+        diameter = max(1, round(_DOT * scaling))
+        for index, (level, text) in enumerate(SPEED_LEGEND):
+            color = speed_color(level)
+            dot = ctk.CTkImage(
+                light_image=disc_image(diameter, rgb(theme.pick(color, dark=False))),
+                dark_image=disc_image(diameter, rgb(theme.pick(color, dark=True))),
+                size=(_DOT, _DOT),
+            )
+            ctk.CTkLabel(legend, text="", image=dot, width=_DOT, height=18).pack(
+                side="left", padx=(0 if index == 0 else 14, 5)
+            )
+            ctk.CTkLabel(
+                legend, text=t(text), font=theme.font(11), text_color=theme.TEXT_MUTED, height=18
+            ).pack(side="left")
+        self._legend = legend
+
+    def _show_legend(self, visible: bool) -> None:
+        if visible and not self._legend.winfo_manager():
+            self._legend.grid(row=_LEGEND_ROW, column=0, sticky="w", padx=12, pady=(0, 4))
+        elif not visible and self._legend.winfo_manager():
+            self._legend.grid_remove()
 
     def _build_selection_bar(self) -> None:
         """The bar under the table: the selected release and a big Download button. It sits in
@@ -705,8 +950,9 @@ class ReleasePanel(ctk.CTkFrame):
         self._bar_caption = ctk.CTkLabel(
             info, text="", font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="w", height=18
         )
-        self._bar_caption.pack(fill="x")
-        self._bar_name_font = theme.font(14, bold=True)
+        self._bar_bold_font = theme.font(14, bold=True)  # a selected release's name
+        self._bar_plain_font = theme.font(14)  # "★ Recommended: …"
+        self._bar_name_font = self._bar_bold_font  # the name line's font now
         self._bar_name = ctk.CTkLabel(
             info, text="", font=self._bar_name_font, text_color=theme.TEXT, anchor="w", height=22
         )
@@ -733,29 +979,54 @@ class ReleasePanel(ctk.CTkFrame):
         selection = self._tree.selection()
         return selection[0] if selection and selection[0] in self._rows else None
 
+    def _bar_iid(self) -> str | None:
+        """The row the selection bar shows and its button grabs: the selected one, else the
+        recommended one."""
+        return self._selected_iid() or self._recommended_iid
+
     def _paint_selection(self) -> None:
-        """Fill the selection bar from the table's selection and that row's grab state."""
+        """Fill the selection bar from the table's selection (else the recommendation) and that
+        row's grab state."""
         iid = self._selected_iid()
-        if iid is None:
-            self._selected_name = ""
-            self._bar_caption.configure(text=t(NO_SELECTION_TEXT))
-            self._bar_name.pack_forget()
-            self._bar_detail.pack_forget()
+        recommendation = self._recommended
+        if iid is not None:
+            release = self._rows[iid][0]
+            self._set_bar(t("Selected"), release.title, selection_detail(release), bold=True)
+        elif recommendation is not None and self._recommended_iid is not None:
+            iid = self._recommended_iid
+            name = t(RECOMMENDED_TEXT, name=recommendation.release.title)
+            self._set_bar("", name, recommendation_reason(recommendation), bold=False)
+        else:
+            self._set_bar(t(NO_SELECTION_TEXT), "", "", bold=True)
             self._download_button.configure(text=t(DOWNLOAD_TEXT), state="disabled")
             return
-        release = self._rows[iid][0]
         state = self._row_states.get(iid)
-        self._selected_name = release.title
-        self._bar_caption.configure(text=t("Selected"))
-        self._paint_name()
-        self._bar_detail.configure(text=selection_detail(release))
-        if not self._bar_name.winfo_manager():
-            self._bar_name.pack(fill="x")
-            self._bar_detail.pack(fill="x")
         self._download_button.configure(
             text=download_button_text(state),
             state="disabled" if state == "grabbing" else "normal",
         )
+
+    def _set_bar(self, caption: str, name: str, detail: str, *, bold: bool) -> None:
+        """The selection bar's lines, each shown only with a text: the muted caption, the name
+        line (bold, or plain for the recommendation; elided to its room) and the muted detail."""
+        self._bar_caption.configure(text=caption)
+        font = self._bar_bold_font if bold else self._bar_plain_font
+        if font is not self._bar_name_font:
+            self._bar_name_font = font
+            self._bar_name.configure(font=font)
+        self._selected_name = name
+        self._paint_name()
+        self._bar_detail.configure(text=detail)
+        lines = (bool(caption), bool(name), bool(detail))
+        if lines == self._bar_lines:
+            return
+        self._bar_lines = lines
+        labels = (self._bar_caption, self._bar_name, self._bar_detail)
+        for label in labels:
+            label.pack_forget()
+        for label, shown in zip(labels, lines, strict=True):
+            if shown:
+                label.pack(fill="x")
 
     def _style_table(self, scaling: float) -> None:
         """The "AG." ttk styles in the current mode's colours (Tk fonts and row heights are
@@ -782,6 +1053,22 @@ class ReleasePanel(ctk.CTkFrame):
         )
         # Just the rows: no field border around them.
         style.layout(_STYLE, [("Treeview.treearea", {"sticky": "nswe"})])
+        # The name cell: the row picture, then the name (no expand arrow: the rows have none).
+        style.layout(
+            f"{_STYLE}.Item",
+            [
+                (
+                    "Treeitem.padding",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            ("Treeitem.image", {"side": "left", "sticky": ""}),
+                            ("Treeitem.text", {"sticky": "nswe"}),
+                        ],
+                    },
+                )
+            ],
+        )
         # The chosen row: clam's own white text only suits the dark row colour.
         style.map(
             _STYLE,
@@ -806,18 +1093,43 @@ class ReleasePanel(ctk.CTkFrame):
         )
 
     def _paint_rows(self) -> None:
-        """The rows' text colours by tag, in the current mode."""
+        """The rows' text colours by tag, and the recommended row's tint, in the current mode.
+        (The selected row keeps its own colours: the style's map wins over a tag.)"""
         tree, pick = self._tree, theme.pick
         tree.tag_configure("preferred", foreground=pick(theme.SECTION_HOT))
         tree.tag_configure("grabbed", foreground=pick(theme.SUCCESS))
         tree.tag_configure("hidden", foreground=pick(theme.TEXT_FAINT))
+        tree.tag_configure("recommended", background=recommended_tint(dark=theme.is_dark()))
+
+    def _paint_pictures(self) -> None:
+        """The row pictures (every speed, with and without the ★ tag) in the current mode: made
+        once, repainted in place after that, so the rows showing them follow."""
+        dark = theme.is_dark()
+        tag = tag_look(dark=dark)
+        replaced = False
+        for level in Speed:
+            dot = rgb(theme.pick(speed_color(level)))
+            for recommended in (False, True):
+                key = picture_key(level, recommended=recommended)
+                image = row_picture(dot, self._table_scaling, tag if recommended else None)
+                photo = self._pictures.get(key)
+                if photo is not None and (photo.width(), photo.height()) == image.size:
+                    photo.paste(image)
+                else:
+                    self._pictures[key] = ImageTk.PhotoImage(image, master=self)
+                    replaced = replaced or photo is not None
+        if replaced:  # a new size (not seen so far): point the rows at the new pictures
+            for iid, (_name, key, _values, _tags) in self._rendered.items():
+                self._tree.item(iid, image=self._pictures[key])
 
     def _set_appearance_mode(self, mode_string: str) -> None:
-        """Light <-> dark: CTk repaints its widgets; the table's ttk styles follow here."""
+        """Light <-> dark: CTk repaints its widgets; the table's ttk styles and the row
+        pictures follow here."""
         super()._set_appearance_mode(mode_string)
         if hasattr(self, "_tree"):
             self._style_table(self._table_scaling)
             self._paint_rows()
+            self._paint_pictures()
 
     def _start(self, coro: Coroutine[Any, Any, T], name: str) -> asyncio.Task[T]:
         """Spawn a helper task that destroy() cancels."""
@@ -1070,6 +1382,7 @@ class ReleasePanel(ctk.CTkFrame):
         if self._search_task is not None and not self._search_task.done():
             self._search_task.cancel()
         self._update = None
+        self._search_request = None
         self._searching = True
         self._failures = ""
         self._set_message("")
@@ -1080,6 +1393,7 @@ class ReleasePanel(ctk.CTkFrame):
     async def _run_search(self) -> None:
         try:
             request = await self._request()
+            self._search_request = request  # what the recommendation is picked for
             async with contextlib.aclosing(self._search.search(request)) as updates:
                 async for update in updates:
                     if not self.winfo_exists():
@@ -1216,6 +1530,7 @@ class ReleasePanel(ctk.CTkFrame):
             for iid in gone:
                 del self._rendered[iid]
         self._rows = wanted
+        self._mark_recommended()
         settings = self._settings.current
         now = datetime.now(UTC)
         for iid in wanted:
@@ -1223,14 +1538,44 @@ class ReleasePanel(ctk.CTkFrame):
         order = tuple(wanted)
         if tree.get_children() != order:
             tree.set_children("", *order)
+        self._show_legend(bool(wanted))
         self._paint_selection()
+
+    def _mark_recommended(self) -> None:
+        """Which row is the recommended one: ⬇ Auto's pick from the releases the current
+        version lists (none while nothing qualifies)."""
+        recommendation = self._recommendation()
+        iid = release_id(recommendation.release) if recommendation is not None else None
+        row = self._rows.get(iid) if iid is not None else None
+        if row is None or row[1]:  # not in the table, or one of the hidden rows
+            recommendation = iid = None
+        self._recommended, self._recommended_iid = recommendation, iid
+
+    def _recommendation(self) -> Recommendation | None:
+        """`recommend` over the current version's shown releases, for the current search;
+        made again only when the update, the search, the settings or the version change."""
+        update, request = self._update, self._search_request
+        if update is None or request is None:
+            return None
+        settings, version = self._settings.current, self._quality
+        inputs: tuple[object, ...] = (update, request, settings, version)
+        cached = self._recommend_inputs
+        if (
+            len(cached) == len(inputs)
+            and all(old is new for old, new in zip(cached[:3], inputs[:3], strict=True))
+            and cached[3] == version
+        ):
+            return self._recommend_result
+        listed = [release for release in update.releases if matches_quality(release, version)]
+        self._recommend_inputs = inputs
+        self._recommend_result = recommend(listed, request, settings)
+        return self._recommend_result
 
     def _render_row(self, iid: str, settings: Settings, now: datetime) -> None:
         release, hidden = self._rows[iid]
         grabbed = release.info_hash is not None and release.info_hash in self._grabbed
         state = self._row_states.get(iid)
         values = (
-            release.title,
             format_size(release.size_bytes),
             str(release.seeders),
             str(release.leechers),
@@ -1238,6 +1583,8 @@ class ReleasePanel(ctk.CTkFrame):
             format_age(release.published_at, now),
             action_text(state, grabbed=grabbed),
         )
+        recommended = iid == self._recommended_iid
+        picture = picture_key(speed(release), recommended=recommended)
         if grabbed or state in _DONE_STATES:
             tags: tuple[str, ...] = ("grabbed",)
         elif hidden:
@@ -1246,17 +1593,30 @@ class ReleasePanel(ctk.CTkFrame):
             tags = ("preferred",)
         else:
             tags = ()
+        if recommended:
+            tags += ("recommended",)
+        look = (release.title, picture, values, tags)
         rendered = self._rendered.get(iid)
         if rendered is None:
-            self._tree.insert("", "end", iid=iid, values=values, tags=tags)
-        elif rendered != (values, tags):
-            self._tree.item(iid, values=values, tags=tags)
-        self._rendered[iid] = (values, tags)
+            self._tree.insert(
+                "",
+                "end",
+                iid=iid,
+                text=release.title,
+                image=self._pictures[picture],
+                values=values,
+                tags=tags,
+            )
+        elif rendered != look:
+            self._tree.item(
+                iid, text=release.title, image=self._pictures[picture], values=values, tags=tags
+            )
+        self._rendered[iid] = look
 
     def _refresh_row(self, iid: str) -> None:
         if iid in self._rows:
             self._render_row(iid, self._settings.current, datetime.now(UTC))
-            if iid == self._selected_iid():
+            if iid == self._bar_iid():
                 self._paint_selection()
 
     def _render_empty_state(self) -> None:
@@ -1294,7 +1654,7 @@ class ReleasePanel(ctk.CTkFrame):
             if column == self._sort_column:
                 arrow = " ▼" if self._sort_descending else " ▲"
             self._tree.heading(
-                column,
+                _tree_column(column),
                 text=t(heading) + arrow,
                 anchor=anchor,
                 command=functools.partial(self._sort_by, column),
@@ -1345,7 +1705,8 @@ class ReleasePanel(ctk.CTkFrame):
             self._grab(iid)
 
     def _grab_selected(self) -> None:
-        iid = self._selected_iid()
+        """The bar's Download button: the selected release, else the recommended one."""
+        iid = self._bar_iid()
         if iid is not None:
             self._grab(iid)
 

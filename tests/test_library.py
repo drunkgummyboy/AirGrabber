@@ -31,6 +31,10 @@ DRAGON = 44778  # web_show.json: 26 episodes, updated 1791048810
 SEVERANCE = 44933  # first hit in search.json
 DUNE_UPDATED = 1765814630
 DRAGON_UPDATED = 1791048810
+# schedule_saturday.json: TVMaze's US schedule of Saturday 7 Nov 2026, recorded 2026-10-31. Not
+# one English scripted or animated show: news, talk, sports, reality and variety only.
+SATURDAY = date(2026, 11, 7)
+ON_PATROL = 62603  # On Patrol: Live (Reality, weight 96) on that Saturday
 
 
 def load(name: str) -> Any:
@@ -59,12 +63,18 @@ def show_payload(
 
 
 def schedule_item(
-    episode_id: int, show_id: int, day: date, *, weight: int = 80, updated: int = 1_700_000_000
+    episode_id: int,
+    show_id: int,
+    day: date,
+    *,
+    weight: int = 80,
+    updated: int = 1_700_000_000,
+    kind: str = "Scripted",
 ) -> dict[str, Any]:
     show = {
         "id": show_id,
         "name": f"Show {show_id}",
-        "type": "Scripted",
+        "type": kind,
         "language": "English",
         "weight": weight,
         "updated": updated,
@@ -408,6 +418,64 @@ class SuggestionTests(LibraryTestCase):
         self.assertEqual(len(await second), 1)
         self.assertEqual(self.server.cancelled, 0)
         self.assertEqual(sum(self.server.requests.values()), 1)
+
+    async def test_a_saturday_without_scripted_shows_still_gets_suggestions(self) -> None:
+        # The week of 2 – 8 Nov 2026: every day airs scripted shows except Saturday, whose US
+        # schedule (recorded) has none. Saturday came out without a single suggestion.
+        week = [SATURDAY + timedelta(days=n) for n in range(-5, 2)]
+        for index, day in enumerate(week):
+            if day != SATURDAY:
+                self.server.schedules[day] = [
+                    schedule_item(1000 + 10 * index + n, 500 + 10 * index + n, day)
+                    for n in range(3)
+                ]
+        self.server.schedules[SATURDAY] = load("schedule_saturday.json")
+        await self.store_tracked(show_payload(ON_PATROL, "On Patrol: Live"))
+
+        entries = await self.service.suggestions(week[0], week[-1], per_day=8)
+
+        per_day = Counter(entry.episode.air_date for entry in entries)
+        self.assertEqual([per_day[day] for day in week], [3, 3, 3, 3, 3, 8, 3])
+        # Popular reality, variety, panel and documentary shows, best first; never news, talk
+        # shows or sports, never a show without English, never a tracked show (On Patrol).
+        saturday = [entry for entry in entries if entry.episode.air_date == SATURDAY]
+        self.assertEqual(
+            [entry.show.name for entry in saturday],
+            [
+                "Saturday Night Live",
+                "America's Test Kitchen",
+                "Have I Got News for You",
+                "Cook's Country from America's Test Kitchen",
+                "Austin City Limits",
+                "Prosecuting Evil with Kelly Siegler",
+                "Love & Marriage: Huntsville",
+                "On Patrol: First Shift",
+            ],
+        )
+        self.assertTrue(all(not entry.is_tracked for entry in saturday))
+        # Scripted and animated shows alone (the rule before) leave this Saturday empty.
+        scripted_only = await self.db.library.suggestions(
+            SATURDAY, SATURDAY, per_day=8, fallback_types=()
+        )
+        self.assertEqual(scripted_only, [])
+
+    async def test_scripted_shows_rank_before_the_fallback(self) -> None:
+        today = date.today()
+        self.server.schedules[today] = [
+            schedule_item(1, 601, today, weight=99, kind="Reality"),
+            schedule_item(2, 602, today, weight=50),
+            schedule_item(3, 603, today, weight=70, kind="Variety"),
+            schedule_item(4, 604, today, weight=60, kind="Animation"),
+            schedule_item(5, 605, today, weight=100, kind="News"),
+            schedule_item(6, 606, today, weight=100, kind="Talk Show"),
+            schedule_item(7, 607, today, weight=100, kind="Sports"),
+            schedule_item(8, 608, today, weight=39, kind="Reality"),  # below the minimum weight
+        ]
+        entries = await self.service.suggestions(today, today, per_day=8)
+        self.assertEqual([entry.show.id for entry in entries], [604, 602, 601, 603])
+        # A day with enough scripted shows never reaches the fallback.
+        entries = await self.service.suggestions(today, today, per_day=2)
+        self.assertEqual([entry.show.id for entry in entries], [604, 602])
 
     async def test_schedule_never_overwrites_tracked_shows(self) -> None:
         await self.service.track(DUNE)

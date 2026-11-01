@@ -38,6 +38,7 @@ ACCENT_TOKENS: tuple[str, ...] = (
     "ACCENT",
     "ACCENT_HOVER",
     "LINK",
+    "BRAND",
     "PLACEHOLDER",
     "HOVER",
     "MENU_HOVER",
@@ -214,6 +215,7 @@ _FROM_SHADES: dict[str, str] = {
 # moved the way that field moves from Slate to the palette.
 _DERIVED: dict[str, tuple[str, str]] = {
     "TAB_BG": ("bg", "bg"),
+    "BRAND": ("link", "link"),  # the band's "Grabber": a light tint of the accent in dark
     "HOVER": ("todaybg", "=hover"),
     "MENU_HOVER": ("todaybg", "=accent"),
     "SELECTED": ("rowsel", "=accent"),

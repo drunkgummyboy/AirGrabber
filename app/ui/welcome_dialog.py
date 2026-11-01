@@ -31,6 +31,8 @@ from app.i18n import N_, t
 from app.models import DownloadMode, QBittorrentState, Settings, TorrentApp
 from app.services import DiscoveryService, RemoteDownloads, SettingsService, TorrentAppService
 from app.services.qbittorrent_local import set_up_by_airgrabber
+from app.models.backup import BackupLoadResult
+from app.services.backup import BackupService
 from app.ui import theme
 from app.ui.airdates_import import (
     SIZING_PREVIEW,
@@ -39,6 +41,7 @@ from app.ui.airdates_import import (
     ShowImporter,
 )
 from app.ui.borderless import make_borderless
+from app.ui.backup_dialog import LoadBackupDialog, load_backup
 from app.ui.branding import load_logo, set_window_icon
 from app.ui.quick_setup import HEADING as QUICK_HEADING
 from app.ui.quick_setup import INTRO as QUICK_INTRO
@@ -92,6 +95,7 @@ _FOLDER_TEXT_WIDTH = _CARD_TEXT_WIDTH - _FOLDER_BUTTON_WIDTH - 16
 _REMOTE_LABEL_WIDTH = 150
 REMOTE_TITLE = N_("Send to a torrent program on my NAS or another computer")
 REMOTE_NOTE = N_("For a NAS or home server (Synology, qBittorrent, Transmission)")
+MOVING_LINK = N_("Moving from another PC? Load a backup")
 
 
 # -- decisions (pure, tested) --------------------------------------------------------------------
@@ -345,11 +349,15 @@ class WelcomeDialog(ctk.CTkToplevel):
         library: ShowImporter,
         remote: RemoteDownloads | None = None,  # None: one reading `settings` (main_window.py)
         on_restart: Callable[[], None] | None = None,
+        backup: BackupService | None = None,
     ) -> None:
         """`on_restart`: restarts AirGrabber (Quick setup's "Restart now" for another language
-        or accent colour; without it they apply at the next start)."""
+        or accent colour; without it they apply at the next start). `backup`: the welcome
+        step's "Moving from another PC? Load a backup" link (none without it)."""
         super().__init__(master, fg_color=theme.BG)
         self._on_restart = on_restart
+        self._backup = backup
+        self._backup_dialog: LoadBackupDialog | None = None
         self._skip_key = False  # Skip for now on step 4: Finish saves no key
         self._settings = settings
         self._torrent_app = torrent_app
@@ -432,6 +440,16 @@ class WelcomeDialog(ctk.CTkToplevel):
         primary_button(
             inner, t("Get started"), lambda: self._show_page(Page.AIRDATES), width=180
         ).pack(pady=(NAV_GAP, 0))
+        if self._backup is not None:
+            self.backup_link = ctk.CTkLabel(
+                inner,
+                text=t(MOVING_LINK),
+                font=theme.font(DETAIL_SIZE, underline=True),
+                text_color=theme.LINK,
+                cursor="hand2",
+            )
+            self.backup_link.pack(pady=(BLOCK_GAP, 0))
+            self.backup_link.bind("<Button-1>", lambda _event: self._load_backup())
         return page
 
     def _build_airdates(self, master: Any) -> ctk.CTkFrame:
@@ -693,6 +711,35 @@ class WelcomeDialog(ctk.CTkToplevel):
         self._right.configure(state="normal")
         if key is not None:
             self._show_page(Page.QUICK)
+
+    # -- moving from another PC ------------------------------------------------------------------
+
+    def _load_backup(self) -> None:
+        """The welcome step's link: load a backup, as Settings → Backup does."""
+        if self._backup is None:
+            return
+        if self._backup_dialog is not None and self._backup_dialog.winfo_exists():
+            self._backup_dialog.lift()
+            return
+        self._backup_dialog = load_backup(
+            self,
+            backup=self._backup,
+            on_restart=self._on_restart,
+            on_loaded=self._backup_loaded,
+            on_done=self._backup_done,
+        )
+
+    async def _backup_loaded(self, result: BackupLoadResult) -> None:
+        """A load that replaced the settings sets this PC up: the setup is done (stored before
+        the result shows, so its Restart now doesn't bring the welcome back)."""
+        if result.settings_replaced:
+            await self._settings.update(setup_done=True)
+
+    def _backup_done(self, result: BackupLoadResult | None) -> None:
+        """Then the welcome closes, without saving its own choices over the loaded settings.
+        After "Add to what I have" (the settings stay) it carries on."""
+        if result is not None and result.settings_replaced and self.winfo_exists():
+            self.destroy()
 
     def _close(self) -> None:
         """The round ✕ (or Alt+F4): done, with whatever was chosen so far."""

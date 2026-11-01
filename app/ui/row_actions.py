@@ -166,11 +166,14 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         downloaded: bool = False,
         height: int = HEIGHT,
         align: Literal["left", "right"] = "right",
+        choose: bool = True,
     ) -> None:
         """`align`: where the controls sit in the frame (the show window's rows: right; the
-        film window's buttons: left)."""
+        film window's buttons: left). `choose`: whether ☰ Choose… shows (not in the film
+        window's "side" layout, which has the releases right beside it)."""
         super().__init__(master, fg_color="transparent", height=height)
         self._align = align
+        self._with_choose = choose
         if align == "right":  # a fixed slot; on the left it is as wide as what it shows
             self.pack_propagate(False)
         self.key = key
@@ -236,6 +239,12 @@ class RowActions(ctk.CTkFrame, Generic[T]):
     def look(self) -> RowLook | None:
         return self._look
 
+    def shown_buttons(self, look: RowLook) -> tuple[Button, ...]:
+        """`look`'s buttons that show here (☰ Choose… left out without `choose`)."""
+        if self._with_choose:
+            return look.buttons
+        return tuple(name for name in look.buttons if name != "choose")
+
     def repaint(self) -> None:
         look = self.current_look()
         if look == self._look:
@@ -244,10 +253,11 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         for widget in (self.status, self.auto, self.choose, self.again):
             widget.pack_forget()
         widgets = {"auto": self.auto, "choose": self.choose, "again": self.again}
+        buttons = self.shown_buttons(look)
         if look.status:
             self.status.configure(text_color=look.color, cursor="hand2" if look.clickable else "")
         if self._align == "right":
-            for name in reversed(look.buttons):
+            for name in reversed(buttons):
                 widgets[name].pack(side="right", padx=(GAP, 0))
             if look.status:
                 self.status.configure(anchor="e")
@@ -256,7 +266,7 @@ class RowActions(ctk.CTkFrame, Generic[T]):
             if look.status:
                 self.status.configure(anchor="w")
                 self.status.pack(side="left")
-            for index, name in enumerate(look.buttons):
+            for index, name in enumerate(buttons):
                 gap = GAP if index or look.status else 0
                 widgets[name].pack(side="left", padx=(gap, 0))
         self.choose.configure(
@@ -281,7 +291,8 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         if self._width is not None and self._align == "right":
             shown = {"auto": self.auto, "choose": self.choose, "again": self.again}
             buttons = sum(
-                unscaled_width(self, shown[name].winfo_reqwidth()) + GAP for name in look.buttons
+                unscaled_width(self, shown[name].winfo_reqwidth()) + GAP
+                for name in self.shown_buttons(look)
             )
             text = fit_text(look.status, self._width - buttons - SLACK, self._font.measure)
         self.status.configure(text=text)

@@ -40,6 +40,9 @@ TEXT_DIM: Pair = ("#596573", "gray60")
 DANGER: Pair = ("#B5302A", "#E74C3C")
 SUCCESS: Pair = ("#1A6F47", "#2FA572")  # positive results (connection test passed)
 LINK: Pair = ("#2D6390", "#5D8AA8")
+# "Grabber" in the spotlight band's "AirGrabber", over the band's picture: in dark a light tint
+# of the accent (LINK's dark half is too deep over a dark picture), in light LINK's.
+BRAND: Pair = ("#2D6390", "#8FB0D0")
 DANGER_BUTTON: Pair = ("#C0392B", "#C0392B")  # destructive buttons (remove)
 DANGER_BUTTON_HOVER: Pair = ("#922B21", "#922B21")
 IMDB = "#F5C518"  # IMDb brand yellow, both modes
@@ -90,6 +93,7 @@ CHIP: Pair = ("#E6EBF1", "gray15")  # unselected season / episode / version butt
 CHIP_HOVER: Pair = ("#D5DDE6", "gray25")
 PENDING: Pair = ("#765D00", "#F1C40F")  # indexer still searching
 ROW_SELECTED: Pair = ("#D7E3F0", "#2A3A4D")  # selected results-table row
+GOLD: Pair = ("#7A5200", "#FFD36A")  # the release list's ★ Recommended tag (dark gold in light)
 TEXT_FAINT: Pair = ("#7D8792", "gray40")  # skipped indexers, results hidden by the filters
 TEXT_QUIET: Pair = ("#58636F", "gray50")  # "No movies found." and other empty results
 

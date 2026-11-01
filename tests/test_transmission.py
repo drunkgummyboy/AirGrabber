@@ -166,6 +166,33 @@ class AddTests(TransmissionTestCase):
         for body in self.server.bodies:
             self.assertEqual(body["arguments"]["download-dir"], "/downloads/tv")
 
+    async def test_a_film_goes_to_the_films_folder_an_episode_to_the_destination(self) -> None:
+        self.settings = settings_service(
+            remote_destination="/downloads/tv", movie_remote_destination="/downloads/movies"
+        )
+        client = self.make_client(self.server)
+        await client.add_magnet(MAGNET, movie=True)
+        await client.add_torrent(TORRENT, "x.torrent", movie=True)
+        await client.add_magnet(MAGNET)
+        await client.add_torrent(TORRENT, "x.torrent", movie=False)
+        self.assertEqual(
+            [body["arguments"]["download-dir"] for body in self.server.bodies],
+            ["/downloads/movies", "/downloads/movies", "/downloads/tv", "/downloads/tv"],
+        )
+
+    async def test_an_empty_films_folder_is_the_destination(self) -> None:
+        cases: list[tuple[str, dict[str, str]]] = [
+            ("/downloads/tv", {"download-dir": "/downloads/tv"}),
+            ("", {}),  # Transmission's own folder for both
+        ]
+        for destination, expected in cases:
+            with self.subTest(destination=destination):
+                self.settings = settings_service(remote_destination=destination)
+                self.server.bodies.clear()
+                await self.make_client(self.server).add_magnet(MAGNET, movie=True)
+                [body] = self.server.bodies
+                self.assertEqual(body["arguments"], {"filename": MAGNET, **expected})
+
     async def test_duplicate_is_fine(self) -> None:
         self.server.answers["torrent-add"] = lambda body: fixture("torrent_add_duplicate.json")
         await self.client.add_magnet(MAGNET)

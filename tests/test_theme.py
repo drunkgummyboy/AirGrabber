@@ -30,6 +30,7 @@ DARK_BEFORE = {
     "DANGER": "#E74C3C",
     "SUCCESS": "#2FA572",
     "LINK": "#5D8AA8",
+    "BRAND": "#8FB0D0",  # the spotlight band's "Grabber" (added later)
     "DANGER_BUTTON": "#C0392B",
     "DANGER_BUTTON_HOVER": "#922B21",
     "PLACEHOLDER": "gray20",
@@ -51,6 +52,7 @@ DARK_BEFORE = {
     "CHIP_HOVER": "gray25",
     "PENDING": "#F1C40F",
     "ROW_SELECTED": "#2A3A4D",
+    "GOLD": "#FFD36A",  # the release list's ★ Recommended tag
     "TEXT_FAINT": "gray40",
     # Colours that were CTk's own defaults or raw values in the widgets before.
     "BUTTON_TEXT": "#DCE4EE",  # CTkButton's text

@@ -8,8 +8,8 @@ Protocol, per qBittorrent's "WebUI API" wiki (v4.1 – v5.x) and its source:
   UI's CSRF check rejects requests whose Origin / Referer differ from the Host header;
 - `GET /api/v2/app/version` → "v5.0.2" (HTTP 403 without a session);
 - `POST /api/v2/torrents/add`, multipart/form-data with `urls` (magnet links, one per line) or
-  `torrents` (file parts), plus `savepath`: "Ok." or "Fails." (none added, e.g. a duplicate);
-  HTTP 415 for an invalid .torrent file; newer builds answer JSON counts or HTTP 409;
+  `torrents` (file parts), plus `savepath` (a film's own folder when Settings has one): "Ok."
+  or "Fails." (none added, e.g. a duplicate); HTTP 415 for an invalid .torrent file; newer builds answer JSON counts or HTTP 409;
 - `POST /api/v2/auth/logout`;
 - the Downloads page (read-only): `GET /api/v2/torrents/info` (optionally `hashes=a|b`) → a JSON
   list of torrents with `hash` (`infohash_v1` from v4.4), `name`, `progress` (0…1) and `state`
@@ -43,6 +43,7 @@ from app.services.remote import (
     HttpClients,
     RemoteError,
     clamp_progress,
+    destination,
     failure_text,
     host_of,
     normal_hash,
@@ -121,15 +122,15 @@ class QBittorrentClient:
             version = (await session.request("GET", "app/version")).text.strip()
         return f"{PROGRAM} {version}" if _VERSION_RE.match(version) else PROGRAM
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         if not magnet.startswith("magnet:"):
             raise ValueError("not a magnet link")
-        async with self._session() as session:
+        async with self._session(movie=movie) as session:
             await session.add([("urls", (None, magnet))])
             log.info("Added a magnet link to qBittorrent on %s", session.host)
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
-        async with self._session() as session:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
+        async with self._session(movie=movie) as session:
             await session.add([("torrents", (filename, content, "application/x-bittorrent"))])
             log.info("Added a .torrent file to qBittorrent on %s", session.host)
 
@@ -184,9 +185,11 @@ class QBittorrentClient:
         sign_in: bool = True,
         sign_out: bool = True,
         cookies: Mapping[str, str] | None = None,
+        movie: bool = False,
     ) -> AsyncIterator[_Session]:
         """One operation's session: signed in (with a user name) and out again; the status
-        calls keep it (`sign_out=False`) or reuse its `cookies` (`sign_in=False`)."""
+        calls keep it (`sign_out=False`) or reuse its `cookies` (`sign_in=False`). A film's
+        (`movie`) adds go to the films destination."""
         settings = self._settings.current  # one snapshot for the whole operation
         if not settings.remote_url:
             raise RemoteError(t("qBittorrent isn't set up: enter its address in Settings."))
@@ -195,7 +198,7 @@ class QBittorrentClient:
         if cookies:
             headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in cookies.items())
         async with await self._http.client(settings.remote_verify_tls, headers=headers) as http:
-            session = _Session(http, base, settings.remote_destination)
+            session = _Session(http, base, destination(settings, movie=movie))
             if sign_in and settings.remote_username:
                 await session.login(
                     settings.remote_username, settings.remote_password.get_secret_value()

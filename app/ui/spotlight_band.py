@@ -1,13 +1,15 @@
 """The main window's header: the spotlight band, edge to edge, BAND_HEIGHT units tall.
 
 Its picture is a title's TMDB backdrop, blurred, dimmed and fading into the page's background at
-the bottom (as the info window's: app/ui/backdrop.py), or without one a soft glow in the accent
-colour. Over it, on the top row: the logo and "AirGrabber", the Series / Movies switch in the
-middle, the search field, ⬇ Downloads (with its badge while downloads are on their way) and the
-settings button on the right. Under them the spotlight: the small poster, a tag ("TONIGHT ·
-21:00", "TRENDING", …), the title, a muted line ("3 episodes today · 1 downloading") and a dot
-per title. The titles come from app/services/spotlight.py: Series and Movies each have their
-own; the Downloads page keeps the last side's.
+the bottom (as the info window's: app/ui/backdrop.py) under a left-to-right scrim of that
+background (darkest behind the logo), or without one a soft glow in the accent colour. Over it,
+on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND), the Series
+/ Movies switch on its solid pill in the middle, the search field, ⬇ Downloads (with its badge
+while downloads are on their way) and the settings button on the right. Under them the
+spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the title, a muted line
+("3 episodes today", a film's "2026 · ★ 7.0") and a dot per title. The titles come from
+app/services/spotlight.py: Series and Movies each have their own; the Downloads page keeps the
+last side's.
 
 Every ROTATE_S seconds the next title fades in (FADE_STEPS frames over FADE_MS, blended in a
 worker thread), not while the pointer is over the band, not at all with Settings'
@@ -45,11 +47,13 @@ from app.models import DownloadsOverview, FreeSpace, Spotlight, SpotlightItem, S
 from app.ui import theme, tooltip
 from app.ui.backdrop import (
     RGBA,
-    band_face,
+    backdrop_face,
     compose_scene,
     crossfade_frames,
+    drop_shadow,
     glow_layer,
     rounded_box,
+    shadowed_box,
 )
 from app.ui.branding import load_logo
 from app.ui.icons import sliders_icon
@@ -111,9 +115,12 @@ SCENE_CACHE = 8  # baked pictures kept (a side's titles and the next one's)
 SHADOW_BLUR = 5  # the poster's shadow (units)
 SHADOW_OFFSET = 3
 ICON_SIZE = 22  # the settings button's sliders
-# The switch's see-through track over the picture: (light, dark).
-TRACK_FILL: tuple[RGBA, RGBA] = ((255, 255, 255, 150), (0, 0, 0, 90))
-TRACK_EDGE: tuple[RGBA, RGBA] = ((0, 0, 0, 24), (255, 255, 255, 28))
+# The Series / Movies switch stands on a solid pill: SURFACE, nearly opaque, a CHIP_HOVER edge,
+# over a soft shadow; the part under the pointer (not the lit one) a CHIP_HOVER fill.
+SWITCH_ALPHA = 235  # the pill's SURFACE (of 255)
+# Soft shadows (blur and offset in units, alpha (light, dark)): the switch's and the logo's.
+SWITCH_SHADOW = (5.0, 2, (0.2, 0.5))
+LOGO_SHADOW = (4.0, 2, (0.25, 0.6))
 DOT_ALPHA = (90, 170, 255)  # a dot: others, under the pointer, the one showing
 
 
@@ -169,6 +176,7 @@ class SpotlightBand(tk.Canvas):
         latest = downloads.latest
         self._downloading = latest.in_progress if latest is not None else 0
         self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
+        self._logo_pad = 0  # the logo's image reaches this far past it (its shadow), px
         self._width = 0  # physical px, from the last <Configure>
         self._layout: BandLayout | None = None
         self._hover: Hit | None = None
@@ -207,6 +215,7 @@ class SpotlightBand(tk.Canvas):
         self._word_items = (text("w"), text("w"))
         self._tag_item, self._title_item, self._sub_item = text(), text(), text()
         self._track_item = self.create_image(0, 0, anchor="nw")
+        self._segment_hover_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._active_item = self.create_image(0, 0, anchor="nw")
         self._segment_items = {side: text("center") for side in SpotlightSide}
         self._search_item = self.create_image(0, 0, anchor="nw")
@@ -511,7 +520,7 @@ class SpotlightBand(tk.Canvas):
         if item is not None:
             url = await self._service.backdrop_url(item, backdrop_size(size[0]))
             if url is not None:
-                layer = await self._images.get(url, size, finish=band_face(size, bg))
+                layer = await self._images.get(url, size, finish=backdrop_face(size, bg))
         if layer is None:
             layer = await asyncio.to_thread(glow_layer, size, bg, accent, dark)
         poster: Image.Image | None = None
@@ -539,9 +548,24 @@ class SpotlightBand(tk.Canvas):
         return scene
 
     async def _load_logo(self) -> None:
-        logo = await asyncio.to_thread(load_logo, self._px(LOGO_SIZE))
-        if logo is not None and not self._closed and _exists(self):
-            self._set_image(self._logo_item, "logo", logo)
+        """The logo over its soft shadow (LOGO_SHADOW, the current look's alpha)."""
+        blur, offset, alphas = LOGO_SHADOW
+        alpha = alphas[theme.is_dark()]
+        size, scale = self._px(LOGO_SIZE), self._scale
+        logo = await asyncio.to_thread(
+            _shadowed_logo, size, blur * scale, round(offset * scale), alpha
+        )
+        if logo is None or self._closed or not _exists(self):
+            return
+        image, self._logo_pad = logo
+        self._set_image(self._logo_item, "logo", image)
+        layout = self._layout
+        if layout is not None:
+            self._place_logo(layout)
+
+    def _place_logo(self, layout: BandLayout) -> None:
+        pad = self._logo_pad
+        self.coords(self._logo_item, self._px(layout.logo.x) - pad, self._px(layout.logo.y) - pad)
 
     # -- layout and painting -------------------------------------------------------------------
 
@@ -584,7 +608,7 @@ class SpotlightBand(tk.Canvas):
         )
         self._layout = layout
         px = self._px
-        self.coords(self._logo_item, px(layout.logo.x), px(layout.logo.y))
+        self._place_logo(layout)
         first, second = APP_NAME[:3], APP_NAME[3:]  # "Air" + "Grabber"
         middle = px(layout.row_middle)
         self.coords(self._word_items[0], px(layout.word_x), middle)
@@ -635,33 +659,8 @@ class SpotlightBand(tk.Canvas):
         layout = self._layout
         if layout is None:
             return
-        px, dark = self._px, theme.is_dark()
-        # The Series / Movies switch: a see-through track, the lit part in the accent colour.
-        pill = layout.pill
-        self.coords(self._track_item, px(pill.x), px(pill.y))
-        track = self._box(pill, px(pill.h) / 2, TRACK_FILL[dark], TRACK_EDGE[dark])
-        self._set_image(self._track_item, "track", track)
-        lit = self._selected
-        if lit is not None:
-            part = layout.segments[0 if lit is SpotlightSide.SERIES else 1]
-            self.coords(self._active_item, px(part.x), px(part.y))
-            self._set_image(
-                self._active_item, "active", self._box(part, px(part.h) / 2, self._rgba(theme.ACCENT))
-            )
-            self.itemconfigure(self._active_item, state="normal")
-        else:
-            self.itemconfigure(self._active_item, state="hidden")
-        for (side, item), part in zip(self._segment_items.items(), layout.segments, strict=True):
-            kind = HitKind.SERIES if side is SpotlightSide.SERIES else HitKind.MOVIES
-            colour = (
-                theme.ON_ACCENT
-                if side is lit
-                else theme.TEXT
-                if self._hovered(kind)
-                else theme.TEXT_MUTED
-            )
-            self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
-            self.itemconfigure(item, text=t(SIDE_LABELS[side]), fill=theme.pick(colour))
+        px = self._px
+        self._paint_switch(layout)
         # The search field: a solid pill (the text box inside is the same colour).
         search = layout.search
         edge = theme.ACCENT if self._entry_focused else theme.EDGE
@@ -703,6 +702,50 @@ class SpotlightBand(tk.Canvas):
             self._settings_icon, "sliders", _sliders(px(ICON_SIZE), rgb(self, theme.BUTTON_TEXT))
         )
         self._paint_badge()
+
+    def _paint_switch(self, layout: BandLayout) -> None:
+        """The Series / Movies switch: a solid pill over a soft shadow, the lit part in the
+        accent colour with white text, the other one in TEXT (a CHIP_HOVER fill under the
+        pointer)."""
+        px, dark = self._px, theme.is_dark()
+        pill = layout.pill
+        blur, offset, alphas = SWITCH_SHADOW
+        track, pad = shadowed_box(
+            (px(pill.w), px(pill.h)),
+            px(pill.h) / 2,
+            self._rgba(theme.SURFACE, SWITCH_ALPHA),
+            self._rgba(theme.CHIP_HOVER),
+            max(1, round(self._scale)),
+            (blur * self._scale, px(offset), alphas[dark]),
+        )
+        self.coords(self._track_item, px(pill.x) - pad, px(pill.y) - pad)
+        self._set_image(self._track_item, "track", track)
+        lit = self._selected
+        hovered: Rect | None = None
+        for side, part in zip(SpotlightSide, layout.segments, strict=True):
+            kind = HitKind.SERIES if side is SpotlightSide.SERIES else HitKind.MOVIES
+            if side is not lit and self._hovered(kind):
+                hovered = part
+        if hovered is not None:
+            self.coords(self._segment_hover_item, px(hovered.x), px(hovered.y))
+            fill = self._box(hovered, px(hovered.h) / 2, self._rgba(theme.CHIP_HOVER))
+            self._set_image(self._segment_hover_item, "segment_hover", fill)
+            self.itemconfigure(self._segment_hover_item, state="normal")
+        else:
+            self.itemconfigure(self._segment_hover_item, state="hidden")
+        if lit is not None:
+            part = layout.segments[0 if lit is SpotlightSide.SERIES else 1]
+            self.coords(self._active_item, px(part.x), px(part.y))
+            self._set_image(
+                self._active_item, "active", self._box(part, px(part.h) / 2, self._rgba(theme.ACCENT))
+            )
+            self.itemconfigure(self._active_item, state="normal")
+        else:
+            self.itemconfigure(self._active_item, state="hidden")
+        for (side, item), part in zip(self._segment_items.items(), layout.segments, strict=True):
+            colour = theme.ON_COLOR if side is lit else theme.TEXT
+            self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
+            self.itemconfigure(item, text=t(SIDE_LABELS[side]), fill=theme.pick(colour))
 
     def _paint_badge(self) -> None:
         layout = self._layout
@@ -760,7 +803,7 @@ class SpotlightBand(tk.Canvas):
         else:
             tag = tag_text(item, self._clock())
             title = title_text(item)
-            line = sub_line(self._spotlights.get(self._side), self._downloading)
+            line = sub_line(self._spotlights.get(self._side), item)
         room = max(1.0, layout.text_right - layout.text_x)
         title = elide_to_width(title, room, self._fonts["title"].measure)
         line = elide_to_width(line, room, self._fonts["sub"].measure)
@@ -780,7 +823,7 @@ class SpotlightBand(tk.Canvas):
             self.coords(canvas_item, px(layout.text_x), px(y))
             self.itemconfigure(canvas_item, text=text, fill=theme.pick(colour))
         self.itemconfigure(self._word_items[0], fill=theme.pick(theme.TEXT))
-        self.itemconfigure(self._word_items[1], fill=theme.pick(theme.LINK))
+        self.itemconfigure(self._word_items[1], fill=theme.pick(theme.BRAND))
 
     # -- the pointer ---------------------------------------------------------------------------
 
@@ -876,7 +919,6 @@ class SpotlightBand(tk.Canvas):
         if count != self._downloading:
             self._downloading = count
             self._paint_badge()
-            self._paint_texts()
 
     def _on_low_space(self, space: FreeSpace) -> None:
         self._report(space_status_text(space), SPACE_NOTICE_MS)
@@ -889,6 +931,8 @@ class SpotlightBand(tk.Canvas):
         self._tip.destroy()  # made again in the new colours
         self._scenes.clear()
         self._relayout()
+        if self._started:  # the logo's shadow is lighter in the light look
+            self._logo_task = self._spawn(self._load_logo(), "SpotlightBand.logo")
         self._show(fade=False)
 
     def _rescaled(self, _widget_scaling: float, _window_scaling: float) -> None:
@@ -987,6 +1031,15 @@ class _Tip:
             except tk.TclError:
                 pass
         self._top = self._label = None
+
+
+def _shadowed_logo(
+    size: int, blur: float, offset: int, alpha: float
+) -> tuple[Image.Image, int] | None:
+    """The logo `size` pixels tall over its `drop_shadow`, and how far that reaches past it
+    (Pillow work: call it in a worker thread). None without the logo."""
+    logo = load_logo(size)
+    return None if logo is None else drop_shadow(logo, blur, offset, alpha)
 
 
 _sliders_cache: dict[tuple[int, tuple[int, int, int]], Image.Image] = {}

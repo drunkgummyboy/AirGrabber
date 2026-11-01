@@ -192,6 +192,41 @@ class DiscoveryAndTaskTests(SynologyTestCase):
         await self.client.add_magnet(MAGNET)
         self.assertIn((TASK, "create"), self.dsm.methods())
 
+    def created(self, api: str) -> list[dict[str, str]]:
+        return [form for name, verb, form in self.dsm.calls if (name, verb) == (api, "create")]
+
+    async def test_a_film_goes_to_the_films_destination_an_episode_to_the_destination(
+        self,
+    ) -> None:
+        await self.configure(
+            remote_destination="video/tv", movie_remote_destination=" /video/movies/ "
+        )
+        await self.client.add_magnet(MAGNET, movie=True)
+        await self.client.add_torrent(TORRENT, "x.torrent", movie=True)
+        await self.client.add_magnet(MAGNET)
+        await self.client.add_torrent(TORRENT, "x.torrent")
+        self.assertEqual(
+            [form["destination"] for form in self.created(TASK2)],
+            ['"video/movies"', '"video/movies"', '"video/tv"', '"video/tv"'],
+        )
+
+    async def test_dsm6_sends_a_film_to_the_films_destination_too(self) -> None:
+        self.dsm.info = DSM6_INFO
+        await self.configure(movie_remote_destination="video/movies")
+        await self.client.add_magnet(MAGNET, movie=True)
+        await self.client.add_torrent(TORRENT, "x.torrent", movie=True)
+        await self.client.add_magnet(MAGNET)  # an episode: Download Station's default
+        forms = self.created(TASK)
+        self.assertEqual([form.get("destination") for form in forms], ["video/movies"] * 2 + [None])
+
+    async def test_an_empty_films_destination_is_the_destination(self) -> None:
+        await self.configure(remote_destination="video/tv")
+        await self.client.add_magnet(MAGNET, movie=True)
+        await self.client.add_torrent(TORRENT, "x.torrent", movie=True)
+        self.assertEqual(
+            [form["destination"] for form in self.created(TASK2)], ['"video/tv"', '"video/tv"']
+        )
+
     async def test_login_posts_the_password_and_keeps_it_out_of_the_url(self) -> None:
         await self.client.add_magnet(MAGNET)
         login = self.dsm.form(AUTH, "login")
@@ -382,6 +417,27 @@ class ErrorMappingTests(SynologyTestCase):
                 self.dsm.overrides[(TASK2, "create")] = partial(failure, code)
                 error = await self.error_of(self.client.add_magnet(MAGNET))
                 self.assertIn(text, str(error))
+
+    async def test_task_errors_name_the_films_destination_for_a_film(self) -> None:
+        await self.configure(
+            remote_destination="video/tv", movie_remote_destination="/video/movies/"
+        )
+        expected = {
+            402: 'isn\'t allowed to save to "video/movies"',
+            403: 'destination "video/movies" doesn\'t exist',
+            407: 'couldn\'t save to "video/movies"',
+        }
+        for code, text in expected.items():
+            with self.subTest(code=code):
+                self.dsm.overrides[(TASK2, "create")] = partial(failure, code)
+                error = await self.error_of(self.client.add_magnet(MAGNET, movie=True))
+                self.assertIn(text, str(error))
+                error = await self.error_of(self.client.add_torrent(TORRENT, "x.torrent", movie=True))
+                self.assertIn(text, str(error))
+        # An episode's still names its own.
+        self.dsm.overrides[(TASK2, "create")] = lambda: failure(403)
+        error = await self.error_of(self.client.add_magnet(MAGNET))
+        self.assertIn('destination "video/tv" doesn\'t exist', str(error))
 
     async def test_task_errors_without_a_destination(self) -> None:
         self.dsm.overrides[(TASK2, "create")] = lambda: failure(403)

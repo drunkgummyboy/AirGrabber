@@ -475,7 +475,10 @@ class LibraryService:
     # -- calendar suggestions ------------------------------------------------------------------
 
     async def suggestions(self, start: date, end: date, *, per_day: int) -> list[CalendarEntry]:
-        """The most popular untracked shows airing each day, from TVMaze's cached US schedule."""
+        """The most popular untracked shows airing each day, from TVMaze's cached US schedule,
+        best first: scripted and animated series, then (filling quiet days such as Saturdays,
+        when the networks air hardly any new ones) popular reality, variety and documentary
+        shows (`LibraryRepository.suggestions`)."""
         await self._ensure_schedule(start, end)
         return await self._library.suggestions(start, end, per_day=per_day)
 

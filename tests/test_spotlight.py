@@ -1,7 +1,8 @@
 """The header's spotlight band: which titles it picks (app/services/spotlight.py), its texts in
 English and Dutch, when it turns (`Rotation`), where everything goes at 1220 units and wider,
-the glow without a TMDB key, the baked pictures, the band on a hidden Tk root, and the main
-pages' underline tabs (widgets.Tabview)."""
+the glow without a TMDB key, the baked pictures (the scrim, the shadows), "Grabber"'s colour in
+every palette, the band on a hidden Tk root, and the main pages' tabs (widgets.Tabview: the
+"pills" look, the "underline" one still there)."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from PIL import Image
 from app import i18n
 from app.i18n import Language
 from app.models import (
+    Accent,
     CalendarEntry,
     DiscoverShow,
     DiscoverShowEntry,
@@ -42,11 +44,25 @@ from app.models import (
 )
 from app.services.spotlight import MAX_ITEMS, SpotlightService, pick_episodes, pick_films
 from app.services.tmdb import TMDBError, TMDBNotConfigured
-from app.ui import theme
-from app.ui.backdrop import compose_scene, crossfade_frames, glow_layer, rounded_box
+from app.ui import palettes, theme
+from app.ui.backdrop import (
+    SCRIM_STOPS,
+    apply_scrim,
+    backdrop_face,
+    compose_scene,
+    crossfade_frames,
+    drop_shadow,
+    glow_layer,
+    rounded_box,
+    scrim_alpha,
+)
 from app.ui.spotlight import (
     BAND_HEIGHT,
     PAD_X,
+    POSTER_HEIGHT,
+    POSTER_TOP,
+    ROW_HEIGHT,
+    ROW_TOP,
     SEARCH_MIN_WIDTH,
     SEARCH_WIDTH,
     Hit,
@@ -54,13 +70,14 @@ from app.ui.spotlight import (
     Rotation,
     band_layout,
     controls,
+    film_line,
     hit_target,
     sub_line,
     tag_text,
     title_text,
 )
-from app.ui.spotlight_band import SpotlightBand
-from app.ui.widgets import UNDERLINE_LEFT, UNDERLINE_TAB_GAP, Tabview
+from app.ui.spotlight_band import SWITCH_ALPHA, SpotlightBand
+from app.ui.widgets import PILLS_GAP, PILLS_LEFT, UNDERLINE_LEFT, UNDERLINE_TAB_GAP, Tabview
 
 CEST = timezone(timedelta(hours=2))
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=CEST)  # a Friday, noon
@@ -101,8 +118,24 @@ def at(day: date, hour: int, minute: int = 0) -> datetime:
     return datetime.combine(day, time(hour, minute), tzinfo=CEST)
 
 
-def film(film_id: int, title: str, backdrop: str | None = None) -> Movie:
-    return Movie(id=film_id, title=title, poster_path=f"/p{film_id}.jpg", backdrop_path=backdrop)
+def film(
+    film_id: int,
+    title: str,
+    backdrop: str | None = None,
+    *,
+    released: date | None = None,
+    rating: float = 0.0,
+    votes: int = 0,
+) -> Movie:
+    return Movie(
+        id=film_id,
+        title=title,
+        poster_path=f"/p{film_id}.jpg",
+        backdrop_path=backdrop,
+        release_date=released,
+        vote_average=rating,
+        vote_count=votes,
+    )
 
 
 def tmdb_show(show_id: int, name: str) -> DiscoverShow:
@@ -381,16 +414,31 @@ class TextTests(unittest.TestCase):
             side=SpotlightSide.SERIES,
             items=(SpotlightItem(reason=SpotlightReason.TRENDING, title="X"),),
         )
-        self.assertEqual(sub_line(today, 1), "3 episodes today · 1 downloading")
-        self.assertEqual(sub_line(one, 0), "1 episode today")
-        self.assertEqual(sub_line(coming, 2), "4 episodes in the next 7 days · 2 downloading")
-        self.assertEqual(sub_line(trending, 0), "")
-        self.assertEqual(sub_line(trending, 3), "3 downloading")
-        self.assertEqual(sub_line(None, 0), "")
+        # What airs; how many downloads are on their way is the ⬇ button's badge, not this line's.
+        self.assertEqual(sub_line(today, item), "3 episodes today")
+        self.assertEqual(sub_line(one, item), "1 episode today")
+        self.assertEqual(sub_line(coming), "4 episodes in the next 7 days")
+        self.assertEqual(sub_line(trending, trending.items[0]), "")
+        self.assertEqual(sub_line(None), "")
         i18n.set_language(Language.NL)
-        self.assertEqual(sub_line(today, 1), "3 afleveringen vandaag · 1 aan het downloaden")
-        self.assertEqual(sub_line(one, 0), "1 aflevering vandaag")
-        self.assertEqual(sub_line(coming, 0), "4 afleveringen in de komende 7 dagen")
+        self.assertEqual(sub_line(today, item), "3 afleveringen vandaag")
+        self.assertEqual(sub_line(one), "1 aflevering vandaag")
+        self.assertEqual(sub_line(coming), "4 afleveringen in de komende 7 dagen")
+
+    def test_a_films_year_and_rating(self) -> None:
+        dune = film(1, "Dune", released=date(2026, 3, 1), rating=7.04, votes=120)
+        movies = Spotlight(
+            side=SpotlightSide.MOVIES,
+            items=(SpotlightItem(reason=SpotlightReason.NEW_TO_STREAM, title="Dune", movie=dune),),
+        )
+        self.assertEqual(sub_line(movies, movies.items[0]), "2026 · ★ 7.0")
+        self.assertEqual(film_line(dune), "2026 · ★ 7.0")
+        # Whatever is known: no votes = no rating; neither = nothing.
+        self.assertEqual(film_line(film(2, "X", released=date(2025, 1, 1), rating=8.0)), "2025")
+        self.assertEqual(film_line(film(3, "Y", rating=6.55, votes=3)), "★ 6.5")
+        self.assertEqual(film_line(film(4, "Z")), "")
+        i18n.set_language(Language.NL)
+        self.assertEqual(film_line(dune), "2026 · ★ 7,0")
 
 
 class RotationTests(unittest.TestCase):
@@ -462,6 +510,14 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(layout.dots[current].w, max(dot.w for dot in layout.dots))
         for rect in (layout.poster, *layout.dots):
             self.assertLessEqual(rect.bottom, BAND_HEIGHT)
+
+    def test_room_above_the_row_and_around_the_spotlight(self) -> None:
+        layout = band_layout(1220, word_width=WORD, segment_width=SEGMENT)
+        self.assertEqual(ROW_TOP, 28)  # 14 more than 2.0.8's: the row isn't pressed to the top
+        self.assertEqual(layout.pill.y, ROW_TOP)
+        self.assertEqual(layout.logo.y, ROW_TOP)
+        self.assertEqual(POSTER_TOP - (ROW_TOP + ROW_HEIGHT), 22)  # the row → the spotlight
+        self.assertEqual(BAND_HEIGHT - (POSTER_TOP + POSTER_HEIGHT), 18)  # → the page tabs
 
     def test_at_the_narrowest_window(self) -> None:
         self.check(1220)
@@ -538,6 +594,44 @@ class PictureTests(unittest.TestCase):
         self.assertTrue(10 < middle[0] < 200)
         self.assertEqual(crossfade_frames(layer, Image.new("RGB", (100, 80)), 8)[0].size, (100, 80))
 
+    def test_the_scrim_over_a_backdrop(self) -> None:
+        self.assertEqual(SCRIM_STOPS, ((0.0, 0.78), (0.38, 0.45), (0.70, 0.25), (1.0, 0.45)))
+        self.assertAlmostEqual(scrim_alpha(0.0), 0.78)
+        self.assertAlmostEqual(scrim_alpha(0.38), 0.45)
+        self.assertAlmostEqual(scrim_alpha(0.70), 0.25)
+        self.assertAlmostEqual(scrim_alpha(1.0), 0.45)
+        self.assertAlmostEqual(scrim_alpha(0.19), (0.78 + 0.45) / 2)
+        white = Image.new("RGB", (400, 60), (255, 255, 255))
+        dark = apply_scrim(white, self.BG)
+        light = apply_scrim(Image.new("RGB", (400, 60), (0, 0, 0)), (242, 244, 247))
+        left, middle = dark.getpixel((0, 30)), dark.getpixel((280, 30))
+        assert isinstance(left, tuple) and isinstance(middle, tuple)
+        self.assertLess(left[0], middle[0])  # darkest behind the logo
+        self.assertAlmostEqual(left[0], 255 * 0.22 + 22 * 0.78, delta=3)
+        washed = light.getpixel((0, 30))
+        assert isinstance(washed, tuple)
+        self.assertAlmostEqual(washed[0], 242 * 0.78, delta=3)  # light: a light wash
+        # The finish step: the fade into the background (the bottom row), then the scrim.
+        face = backdrop_face((400, 60), self.BG)
+        self.assertEqual(face, backdrop_face((400, 60), self.BG))  # a cache key
+        finished = face(white)
+        bottom, top_left, top_middle = (finished.getpixel(xy) for xy in ((200, 59), (0, 0), (280, 0)))
+        assert isinstance(bottom, tuple) and isinstance(top_left, tuple) and isinstance(top_middle, tuple)
+        self.assertLessEqual(abs(bottom[0] - self.BG[0]), 3)
+        self.assertLess(top_left[0], top_middle[0])
+
+    def test_drop_shadow(self) -> None:
+        logo = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+        logo.paste((200, 30, 30, 255), (4, 4, 16, 16))
+        shadowed, pad = drop_shadow(logo, 2.0, 2, 0.6)
+        self.assertEqual(shadowed.size, (20 + 2 * pad, 20 + 2 * pad))
+        self.assertEqual(shadowed.getpixel((pad + 10, pad + 10)), (200, 30, 30, 255))  # the logo
+        under = shadowed.getpixel((pad + 10, pad + 17))  # just under it: the shadow
+        assert isinstance(under, tuple)
+        self.assertEqual(under[:3], (0, 0, 0))
+        self.assertTrue(0 < under[3] <= round(255 * 0.6))
+        self.assertEqual(shadowed.getpixel((0, 0))[3], 0)  # type: ignore[index]
+
     def test_rounded_box_corners_see_through(self) -> None:
         box = rounded_box((40, 40), 10, (36, 36, 36, 255), (78, 106, 133, 255), 2)
         self.assertEqual(box.mode, "RGBA")
@@ -596,7 +690,13 @@ class FakeSpotlight:
             ),
             SpotlightSide.MOVIES: Spotlight(
                 side=SpotlightSide.MOVIES,
-                items=(SpotlightItem(reason=SpotlightReason.NEW_TO_STREAM, title="Dune", movie=film(1, "Dune")),),
+                items=(
+                    SpotlightItem(
+                        reason=SpotlightReason.NEW_TO_STREAM,
+                        title="Dune",
+                        movie=film(1, "Dune", released=date(2026, 9, 1), rating=7.0, votes=50),
+                    ),
+                ),
             ),
         }
         self.backdrops: dict[str, str | None] = {}
@@ -697,7 +797,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(band.current, self.service.sides[SpotlightSide.SERIES].items[0])
         self.assertEqual(self.text(band, band._tag_item), "TONIGHT · 20:00")
         self.assertEqual(self.text(band, band._title_item), "The Bear — S03E05 “Ep 0”")
-        self.assertEqual(self.text(band, band._sub_item), "3 episodes today · 1 downloading")
+        self.assertEqual(self.text(band, band._sub_item), "3 episodes today")
         self.assertEqual(len(band._dot_items), 3)
         self.assertIsNotNone(band._shown)
         assert band._shown is not None
@@ -744,6 +844,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(band.side, SpotlightSide.MOVIES)
         self.assertEqual(self.text(band, band._title_item), "Dune")
         self.assertEqual(self.text(band, band._tag_item), "NEW TO STREAM")
+        self.assertEqual(self.text(band, band._sub_item), "2026 · ★ 7.0")  # a film's year, rating
         self.assertEqual(band._dot_items, [])  # one title: no dots
         self.assertEqual(option(band, band._active_item, "state"), "normal")
         band.select(None)  # the Downloads page keeps the Movies side's title
@@ -760,7 +861,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.status.publish(downloading(DownloadState.DOWNLOADING, DownloadState.WAITING, DownloadState.READY))
         self.assertEqual(self.text(band, band._badge_text), "2")
         self.assertEqual(option(band, band._badge_item, "state"), "normal")
-        self.assertEqual(self.text(band, band._sub_item), "3 episodes today · 2 downloading")
+        self.assertEqual(self.text(band, band._sub_item), "3 episodes today")  # only the badge
         self.status.publish(downloading(DownloadState.READY))
         self.assertEqual(option(band, band._badge_item, "state"), "hidden")
         self.assertEqual(self.text(band, band._sub_item), "3 episodes today")
@@ -798,6 +899,38 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://backdrops.invalid/The Bear/w1280.jpg", self.images.asked)
         self.assertEqual(self.text(band, band._title_item), "The Bear — S03E05 “Ep 0”")
 
+    async def test_the_switch_on_its_solid_pill_and_the_name(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        layout = band.layout
+        assert layout is not None
+        # The pill: nearly opaque SURFACE (with its shadow around it), white text on both sides
+        # in dark, the lit one on the accent.
+        track = band._photo_sources["track"]
+        pad = (track.width - band._px(layout.pill.w)) // 2
+        self.assertGreater(pad, 0)  # the shadow reaches past the pill
+        middle = track.getpixel((track.width // 2, track.height // 2))
+        assert isinstance(middle, tuple)
+        surface = band._rgba(theme.SURFACE)
+        for channel, value in zip(middle, (*surface[:3], SWITCH_ALPHA), strict=True):
+            self.assertLessEqual(abs(channel - value), 2)  # the shadow only around it
+        for side, item in band._segment_items.items():
+            text = theme.ON_COLOR if side is SpotlightSide.SERIES else theme.TEXT
+            self.assertEqual(option(band, item, "fill"), theme.pick(text), side)
+        self.assertEqual(option(band, band._segment_hover_item, "state"), "hidden")
+        band._set_hover(Hit(HitKind.MOVIES))  # the other side under the pointer: a light fill
+        self.assertEqual(option(band, band._segment_hover_item, "state"), "normal")
+        band._set_hover(None)
+        self.assertEqual(option(band, band._segment_hover_item, "state"), "hidden")
+        # "Grabber" in BRAND; the logo over its shadow, placed so the logo itself sits on its
+        # spot.
+        self.assertEqual(option(band, band._word_items[1], "fill"), theme.pick(theme.BRAND))
+        self.assertGreater(band._logo_pad, 0)
+        x, y = band.coords(band._logo_item)
+        self.assertEqual(round(x) + band._logo_pad, band._px(layout.logo.x))
+        self.assertEqual(round(y) + band._logo_pad, band._px(layout.logo.y))
+
     async def test_fits_at_1220_in_dutch(self) -> None:
         i18n.set_language(Language.NL)
         band = self.band()
@@ -809,6 +942,28 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             for other in parts[index + 1 :]:
                 self.assertFalse(part.overlaps(other), (part, other))
         self.assertEqual(self.text(band, band._segment_items[SpotlightSide.MOVIES]), "Films")
+
+
+class BrandColourTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.addCleanup(theme.apply_accent, Accent.SLATE)
+
+    def test_grabber_reads_on_a_dark_picture_in_every_palette(self) -> None:
+        """BRAND: in dark a light tint of the palette's accent, well lighter than LINK; in light
+        LINK itself (on the light wash)."""
+
+        def lightness(colour: str) -> float:
+            hexed = palettes.to_hex(colour)
+            red, green, blue = (int(hexed[i : i + 2], 16) for i in (1, 3, 5))
+            return (max(red, green, blue) + min(red, green, blue)) / 510
+
+        self.assertEqual(theme.BRAND, ("#2D6390", "#8FB0D0"))  # Slate: the design's colour
+        for accent in Accent:
+            theme.apply_accent(accent)
+            with self.subTest(accent=accent):
+                self.assertEqual(theme.BRAND[0], theme.LINK[0])
+                self.assertGreater(lightness(theme.BRAND[1]), 0.6)
+                self.assertGreater(lightness(theme.BRAND[1]), lightness(theme.ACCENT[1]) + 0.2)
 
 
 class UnderlineTabTests(unittest.TestCase):
@@ -867,12 +1022,71 @@ class UnderlineTabTests(unittest.TestCase):
         self.root.update()
         self.assertEqual(tabs.tab("Tracked").winfo_manager(), "")
 
+    def test_pill_tabs(self) -> None:
+        """The main window's look: rounded buttons left-aligned, the chosen one on the accent
+        with white text, the others on a faint CHIP fill (CHIP_HOVER under the pointer) in
+        BUTTON_TEXT; no line under them."""
+        changes: list[str] = []
+        tabs: Tabview | None = None
+
+        def changed() -> None:
+            assert tabs is not None
+            changes.append(tabs.get())
+
+        tabs = Tabview(self.root, look="pills", command=changed)
+        for name in ("Calendar", "Discover", "Tracked"):
+            tabs.add(name)
+        tabs.pack(fill="both", expand=True)
+        self.root.update()
+        bar = tabs.pills
+        assert bar is not None
+        self.assertIsNone(tabs.underline)
+        self.assertEqual(bar.names, ("Calendar", "Discover", "Tracked"))
+        self.assertEqual(bar.current, "Calendar")
+        self.assertEqual(tabs._segmented_button.winfo_manager(), "")  # CTk's buttons hidden
+        buttons = bar.buttons
+        chosen, other = buttons["Calendar"], buttons["Discover"]
+        self.assertEqual(chosen.cget("fg_color"), theme.ACCENT)
+        self.assertEqual(chosen.cget("text_color"), theme.ON_COLOR)
+        self.assertEqual(other.cget("fg_color"), theme.CHIP)
+        self.assertEqual(other.cget("hover_color"), theme.CHIP_HOVER)
+        self.assertEqual(other.cget("text_color"), theme.BUTTON_TEXT)
+        self.assertEqual(chosen.cget("corner_radius"), 9)
+        # Left-aligned, one after the other with a small gap.
+        scale = ctk.ScalingTracker.get_widget_scaling(bar)
+        x = round(PILLS_LEFT * scale)
+        for name in bar.names:
+            button = buttons[name]
+            self.assertLessEqual(abs(button.winfo_x() - x), 2, name)
+            x += button.winfo_width() + round(PILLS_GAP * scale)
+        weights = [int(bar.grid_columnconfigure(column)["weight"]) for column in range(4)]
+        self.assertEqual(weights, [0, 0, 0, 1])
+        # Snug around the name: 16 units either side.
+        label_width = chosen._text_label.winfo_reqwidth() if chosen._text_label else 0
+        self.assertLessEqual(chosen.winfo_reqwidth(), label_width + round(2 * 16 * scale) + 2)
+        # … and 6 units above and under it.
+        font = theme.font(16, bold=True)
+        snug = round((int(font.metrics("linespace")) + 2 * 6) * scale)
+        self.assertLessEqual(chosen.winfo_reqheight(), snug + 3)  # (the scaled font rounds up)
+        bar._on_select("Tracked")  # a click
+        self.assertEqual(tabs.get(), "Tracked")
+        self.assertEqual(changes, ["Tracked"])
+        self.assertEqual(buttons["Tracked"].cget("fg_color"), theme.ACCENT)
+        self.assertEqual(chosen.cget("fg_color"), theme.CHIP)
+        tabs.set("Discover")
+        self.assertEqual(bar.current, "Discover")
+        self.assertEqual(tabs.tab("Discover").winfo_manager(), "grid")
+        self.root.after(150)  # CTk's set() hides the other pages 100 ms later (its own timer)
+        self.root.update()
+        self.assertEqual(tabs.tab("Tracked").winfo_manager(), "")
+
     def test_segmented_stays_the_default(self) -> None:
         tabs = Tabview(self.root)
         tabs.add("One")
         tabs.pack()
         self.root.update()
         self.assertIsNone(tabs.underline)
+        self.assertIsNone(tabs.pills)
         self.assertEqual(tabs._segmented_button.winfo_manager(), "grid")
 
 

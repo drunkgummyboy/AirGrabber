@@ -159,12 +159,24 @@ class SettingsRuleTests(unittest.TestCase):
                 "remote_username": "airgrabber",
                 "remote_password": "pw-1",
                 "remote_destination": "",
+                "movie_remote_destination": "",
                 "subtitles_folder": r"D:\Torrents",
             },
         )
         chosen = airgrabber_changes(Settings(subtitles_folder=r"\\NAS\video"), LOGIN, r"D:\T")
         self.assertNotIn("subtitles_folder", chosen)  # a chosen folder stays
         self.assertNotIn("pw-1", repr(Settings.model_validate({**Settings().model_dump(), **changes})))
+
+    def test_a_films_folder_stays_only_when_chosen_for_this_qbittorrent(self) -> None:
+        # Another program's films folder (a NAS, before APP mode) isn't this qBittorrent's.
+        nas = Settings(
+            download_mode=DownloadMode.APP,
+            remote_url="http://192.168.1.20:5000",
+            movie_remote_destination="video/movies",
+        )
+        self.assertEqual(airgrabber_changes(nas, LOGIN, "")["movie_remote_destination"], "")
+        own = local_settings(movie_remote_destination=r"D:\Films")
+        self.assertNotIn("movie_remote_destination", airgrabber_changes(own, LOGIN, ""))
 
 
 # -- the setup ------------------------------------------------------------------------------------
@@ -436,6 +448,7 @@ class FakeClient:
     def __init__(self, failures: int = 1) -> None:
         self.failures = failures
         self.calls: list[str] = []
+        self.movies: list[bool] = []  # each add's `movie`
 
     def _call(self, name: str) -> None:
         self.calls.append(name)
@@ -447,11 +460,13 @@ class FakeClient:
         self._call("test")
         return "qBittorrent v5.1.2"
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         self._call("add_magnet")
+        self.movies.append(movie)
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
         self._call("add_torrent")
+        self.movies.append(movie)
 
     async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
         self._call("status")
@@ -493,6 +508,15 @@ class WrapperTests(unittest.IsolatedAsyncioTestCase):
                 await calls[name]()
                 self.assertEqual(client.calls, [name, name])
                 self.assertEqual(starter.ports, [8081])
+
+    async def test_a_film_stays_a_film_on_the_way_through(self) -> None:
+        client, starter = FakeClient(), FakeStarter()  # the first try fails, the second works
+        wrapper = self.wrap(client, starter)
+        await wrapper.add_magnet(MAGNET, movie=True)
+        await wrapper.add_torrent(b"d4:infoe", "x.torrent", movie=True)
+        await wrapper.add_magnet(MAGNET)
+        self.assertEqual(client.calls, ["add_magnet"] * 2 + ["add_torrent", "add_magnet"])
+        self.assertEqual(client.movies, [True, True, False])
 
     async def test_a_working_call_starts_nothing(self) -> None:
         client, starter = FakeClient(failures=0), FakeStarter()

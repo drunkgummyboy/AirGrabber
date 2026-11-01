@@ -50,6 +50,7 @@ from app.ui.title_info import (
     SIDE_PAD,
     SIDE_POSTER_GAP,
     SIDE_POSTER_HEIGHT,
+    SIDE_POSTER_WIDTH,
     TEXT_RISE,
     CastList,
     FramedPoster,
@@ -201,9 +202,14 @@ class LayoutTests(unittest.TestCase):
     def test_side_the_poster_reaches_into_the_band_and_the_title_starts_under_it(self) -> None:
         layout = masthead_layout(1800, 1.5, hero=True, layout=InfoLayout.SIDE)
         self.assertEqual(layout.hero_height, round(SIDE_BAND * 1.5))
-        self.assertEqual(layout.poster, (round(SIDE_PAD * 1.5), layout.hero_height - round(SIDE_OVERLAP * 1.5)))
-        poster_bottom = layout.poster[1] + round(SIDE_POSTER_HEIGHT * 1.5)
-        self.assertEqual(layout.text, (layout.poster[0], poster_bottom + round(SIDE_POSTER_GAP * 1.5)))
+        size = (round(SIDE_POSTER_WIDTH * 1.5), round(SIDE_POSTER_HEIGHT * 1.5))
+        self.assertEqual(layout.poster_size, size)
+        # Centred in the info column, reaching far up into the band.
+        column = round(SIDE_LEFT_WIDTH * 1.5)
+        top = layout.hero_height - round(SIDE_OVERLAP * 1.5)
+        self.assertEqual(layout.poster, ((column - size[0]) // 2, top))
+        poster_bottom = layout.poster[1] + size[1]
+        self.assertEqual(layout.text, (round(SIDE_PAD * 1.5), poster_bottom + round(SIDE_POSTER_GAP * 1.5)))
         self.assertEqual(layout.text_width, round(SIDE_LEFT_WIDTH * 1.5) - 2 * round(SIDE_PAD * 1.5))
         self.assertEqual(layout.pill_centre[0], 900)  # centred on the band
         self.assertLess(layout.pill_centre[1], layout.hero_height)

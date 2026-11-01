@@ -25,6 +25,9 @@ from app.services.transmission import TransmissionClient
 from app.ui import theme
 from app.ui.remote_program_form import (
     ADDRESS_HINTS,
+    FIELD_LABELS,
+    FILMS_HINT,
+    FILMS_LABEL,
     PROGRAM_NAMES,
     TESTING_TEXT,
     FolderNote,
@@ -37,7 +40,13 @@ from app.ui.remote_program_form import (
     remote_host,
     result_look,
 )
-from app.ui.settings_dialog import SECTION_WHERE, SettingsDialog
+from app.ui.settings_dialog import (
+    SECTION_WHERE,
+    SettingsDialog,
+    download_dir_to_save,
+    download_settings,
+    section_for_field,
+)
 from app.ui.welcome_dialog import REMOTE_NOTE, REMOTE_TITLE, changes_error, download_changes
 
 
@@ -53,10 +62,10 @@ class FakeClient:
             raise self.error
         return f"{self.kind.program} 9.9"
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         raise AssertionError("not used here")
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
         raise AssertionError("not used here")
 
 
@@ -116,6 +125,24 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(settings.remote_password.get_secret_value(), " pw ")
         self.assertFalse(settings.remote_verify_tls)
         self.assertEqual(settings.remote_destination, "/dl/tv")
+        self.assertNotIn("movie_remote_destination", changes)  # a form without the films row
+        films = remote_changes(RemoteKind.QBITTORRENT, "", "", "", True, "/dl/tv", " /dl/movies ")
+        self.assertEqual(Settings(**films).movie_remote_destination, "/dl/movies")
+
+    def test_films_folder_texts(self) -> None:
+        self.assertEqual(FIELD_LABELS["movie_remote_destination"], "Films folder")
+        self.assertEqual(FILMS_LABEL, "Films folder")
+        self.assertEqual(FILMS_HINT, "Leave empty to use the same folder")
+
+    def test_a_hidden_folder_entry_keeps_the_stored_folder(self) -> None:
+        stored = Path("E:/films")
+        self.assertEqual(download_dir_to_save(DownloadMode.FOLDER, " F:/films ", stored), "F:/films")
+        self.assertEqual(download_dir_to_save(DownloadMode.FOLDER, "", stored), "")
+        for mode in (DownloadMode.APP, DownloadMode.REMOTE):
+            self.assertEqual(download_dir_to_save(mode, "F:/films", stored), stored)
+            self.assertIsNone(download_dir_to_save(mode, "F:/films", None))
+        self.assertEqual(section_for_field("movie_download_dir"), SECTION_WHERE)
+        self.assertEqual(section_for_field("movie_remote_destination"), SECTION_WHERE)
 
     def test_folder_note_with_a_program(self) -> None:
         self.assertEqual(
@@ -256,7 +283,9 @@ class GuiTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class FormTests(GuiTestCase):
-    def form(self, settings: Settings, run_test: Any = None) -> RemoteProgramForm:
+    def form(
+        self, settings: Settings, run_test: Any = None, *, films: bool = False
+    ) -> RemoteProgramForm:
         async def no_test() -> str:
             raise AssertionError("no test here")
 
@@ -266,6 +295,7 @@ class FormTests(GuiTestCase):
             run_test=run_test or no_test,
             label_width=120,
             field_width=260,
+            films=films,
         )
         self.addCleanup(self.close, form)
         return form
@@ -307,6 +337,63 @@ class FormTests(GuiTestCase):
         self.assertEqual(form._address._entry.get(), "http://192.168.1.x:9091")
         self.assertEqual(form.changes()["remote_url"], "")
         self.assertIn("Transmission's default", form._destination._entry.get())
+
+    @staticmethod
+    def labels(form: RemoteProgramForm) -> list[str]:
+        cells = [
+            (int(w.grid_info()["row"]), str(w.cget("text")))
+            for w in form.winfo_children()
+            if isinstance(w, ctk.CTkLabel) and int(w.grid_info().get("column", -1)) == 0
+        ]
+        return [text for _row, text in sorted(cells)]
+
+    async def test_the_films_row_under_the_destination(self) -> None:
+        stored = Settings(
+            remote_kind=RemoteKind.TRANSMISSION,
+            remote_destination="/downloads/tv",
+            movie_remote_destination="/downloads/movies",
+        )
+        form = self.form(stored, films=True)
+        self.assertEqual(
+            self.labels(form),
+            [
+                "Program",
+                "Address",
+                "User name",
+                "Password",
+                "Destination folder (optional)",
+                "Films folder",
+            ],
+        )
+        assert form._films is not None
+        self.assertEqual(int(form._films.grid_info()["row"]), 5)
+        self.assertGreater(int(form._verify.grid_info()["row"]), 5)
+        self.assertEqual(form.changes()["movie_remote_destination"], "/downloads/movies")
+        self.assertEqual(form.changes()["remote_destination"], "/downloads/tv")
+        form._films.delete(0, "end")
+        self.assertEqual(form.changes()["movie_remote_destination"], "")
+        # Empty: the hint shows, and nothing is stored (the same folder as episodes); the
+        # program's hint changes, the films hint stays.
+        empty = self.form(Settings(), films=True)
+        assert empty._films is not None
+        self.assertEqual(empty._films._entry.get(), FILMS_HINT)
+        self.assertEqual(empty.changes()["movie_remote_destination"], "")
+        empty._program.set("qBittorrent")
+        empty._program_changed("qBittorrent")
+        self.assertEqual(empty._films._entry.get(), FILMS_HINT)
+        # Settings changed elsewhere: shown.
+        form.load(stored.model_copy(update={"movie_remote_destination": "/films"}))
+        self.assertEqual(form.changes()["movie_remote_destination"], "/films")
+        form.load(Settings())
+        self.assertEqual(form.changes()["movie_remote_destination"], "")
+
+    async def test_without_the_films_row_the_films_destination_is_left_alone(self) -> None:
+        form = self.form(Settings(movie_remote_destination="/downloads/movies"))  # the welcome
+        self.assertIsNone(form._films)
+        self.assertNotIn("Films folder", self.labels(form))
+        self.assertNotIn("movie_remote_destination", form.changes())
+        form.load(Settings())  # nothing to show it in
+        self.assertNotIn("movie_remote_destination", form.changes())
 
     async def test_test_button_shows_success_and_failure(self) -> None:
         answers: list[Any] = ["qBittorrent v5.0.2", RemoteError("Couldn't reach nas:8080.")]
@@ -466,6 +553,67 @@ class SettingsGeneralTests(GuiTestCase):
         self.assertIs(current.remote_kind, RemoteKind.TRANSMISSION)
         self.assertEqual(current.remote_url, "http://192.168.1.30:9091")
         self.assertEqual(current.remote_destination, "/downloads/tv")
+
+    async def test_the_films_folder_row_shows_in_folder_mode_only(self) -> None:
+        dialog, _settings = self.dialog()
+        self.assertTrue(self.shown(dialog._films_label))
+        self.assertTrue(self.shown(dialog._films_row))
+        self.assertEqual(dialog._films_label.cget("text"), "Films folder")
+        self.assertEqual(dialog._movie_dir._entry.get(), "Leave empty to use the same folder")
+        self.assertEqual(dialog._movie_dir.get(), "")
+        rows = [
+            int(widget.grid_info()["row"])
+            for widget in (dialog._folder_row, dialog._films_label, dialog._films_row)
+        ]
+        self.assertEqual(rows, sorted(rows))  # under the folder
+        self.assertLess(rows[-1], int(dialog._folder_note.grid_info()["row"]))
+        for mode in (DownloadMode.APP, DownloadMode.REMOTE):
+            dialog._mode.set(mode.value)
+            dialog._mode_changed()
+            self.assertFalse(self.shown(dialog._films_label))
+            self.assertFalse(self.shown(dialog._films_row))
+        # The remote form has its own films row.
+        self.assertIsNotNone(dialog._remote_form._films)
+
+    async def test_save_stores_the_films_folder(self) -> None:
+        dialog, settings = self.dialog()
+        films = self.folder / "films"
+        dialog._movie_dir.insert(0, f"  {films}  ")
+        await dialog._save()
+        self.assertEqual(settings.current.movie_download_dir, films)
+        self.assertEqual(settings.current.download_dir, self.folder)
+
+    async def test_an_empty_films_folder_is_stored_as_none(self) -> None:
+        dialog, settings = self.dialog(movie_download_dir=self.folder / "films")
+        self.assertEqual(dialog._movie_dir.get(), str(self.folder / "films"))
+        dialog._movie_dir.delete(0, "end")
+        await dialog._save()
+        self.assertIsNone(settings.current.movie_download_dir)
+
+    async def test_a_hidden_films_folder_keeps_the_stored_one(self) -> None:
+        stored = self.folder / "films"
+        dialog, settings = self.dialog(movie_download_dir=stored, download_mode=DownloadMode.APP)
+        dialog._movie_dir.delete(0, "end")
+        await dialog._save()
+        self.assertEqual(settings.current.movie_download_dir, stored)
+
+    async def test_save_stores_the_films_destination(self) -> None:
+        dialog, settings = self.dialog()
+        dialog._mode.set(DownloadMode.REMOTE.value)
+        form = dialog._remote_form
+        form._program.set("qBittorrent")
+        form._address.insert(0, "http://192.168.1.20:8080")
+        form._destination.insert(0, "/downloads/tv")
+        assert form._films is not None
+        form._films.insert(0, " /downloads/movies ")
+        await dialog._store()  # Save's storing, without closing the dialog
+        current = settings.current
+        self.assertEqual(current.remote_destination, "/downloads/tv")
+        self.assertEqual(current.movie_remote_destination, "/downloads/movies")
+        self.assertEqual(dialog._download_shown, download_settings(current))
+        # A change made elsewhere (qBittorrent's setup) shows in the form.
+        await settings.update(movie_remote_destination="")
+        self.assertEqual(form._films.get(), "")
 
     async def test_test_saves_first_then_tests_the_chosen_program(self) -> None:
         dialog, settings = self.dialog()

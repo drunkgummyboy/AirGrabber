@@ -34,6 +34,7 @@ from app.models import (
     SubtitleGrab,
     WatchlistEntry,
 )
+from app.models.backup import BackupData, BackupFilm, BackupGrab, BackupShow, RestoreCounts
 
 log = logging.getLogger(__name__)
 
@@ -288,9 +289,12 @@ _CALENDAR_SQL = f"""
 """
 
 # Popular untracked shows airing in the range: one episode per show per day, best `per_day` per day.
+# Shows of :types rank first; shows of :fallback_types only after them, so they fill the days with
+# few of the first kind (US networks air hardly any new scripted episodes on a Saturday).
 _SUGGESTIONS_SQL = f"""
     WITH candidates AS (
         SELECT e.id AS episode_id, e.show_id, e.air_date, s.weight,
+               s.type NOT IN (SELECT value FROM json_each(:types)) AS is_fallback,
                ROW_NUMBER() OVER (
                    PARTITION BY e.air_date, e.show_id ORDER BY e.season, e.number
                ) AS nth_of_show
@@ -300,11 +304,16 @@ _SUGGESTIONS_SQL = f"""
           AND e.show_id NOT IN (SELECT show_id FROM tracked_shows)
           AND s.language = :language
           AND s.weight >= :min_weight
-          AND s.type IN (SELECT value FROM json_each(:types))
+          AND (
+              s.type IN (SELECT value FROM json_each(:types))
+              OR s.type IN (SELECT value FROM json_each(:fallback_types))
+          )
     ),
     ranked AS (
         SELECT episode_id, air_date,
-               ROW_NUMBER() OVER (PARTITION BY air_date ORDER BY weight DESC, show_id) AS day_rank
+               ROW_NUMBER() OVER (
+                   PARTITION BY air_date ORDER BY is_fallback, weight DESC, show_id
+               ) AS day_rank
         FROM candidates
         WHERE nth_of_show = 1
     )
@@ -897,9 +906,20 @@ class LibraryRepository:
         per_day: int,
         language: str = "English",
         types: Sequence[str] = ("Scripted", "Animation"),
+        fallback_types: Sequence[str] = (
+            "Reality",
+            "Variety",
+            "Documentary",
+            "Panel Show",
+            "Game Show",
+        ),
         min_weight: int = 40,
     ) -> list[CalendarEntry]:
-        """The most popular untracked shows airing each day, from the cached TVMaze schedule."""
+        """The most popular untracked shows airing each day, from the cached TVMaze schedule,
+        best first. A day's shows of `types` come first, its shows of `fallback_types` after
+        them: those fill the days with few of the first kind, such as Saturdays, when the US
+        networks air hardly any new scripted episodes. (News, talk shows, sports and award
+        shows are never suggested.)"""
         rows = await self._db.fetch_all(
             _SUGGESTIONS_SQL,
             {
@@ -907,6 +927,7 @@ class LibraryRepository:
                 "end": end.isoformat(),
                 "language": language,
                 "types": json.dumps(list(types)),
+                "fallback_types": json.dumps(list(fallback_types)),
                 "min_weight": min_weight,
                 "per_day": per_day,
             },
@@ -1394,3 +1415,247 @@ class SubtitleRepository:
         for row in rows:
             found.setdefault(row["history_id"], set()).add(row["language"])
         return {key: frozenset(languages) for key, languages in found.items()}
+
+
+# -- backups (app/services/backup.py) -------------------------------------------------------------
+
+_BACKUP_SHOWS_SQL = f"""
+    SELECT {_SHOW_FIELDS}, t.tracked_at, t.auto_download, t.auto_since
+    FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id
+    ORDER BY s.name COLLATE NOCASE, s.id
+"""
+_BACKUP_EPISODES_SQL = """
+    SELECT e.* FROM episodes AS e JOIN tracked_shows AS t ON t.show_id = e.show_id
+    ORDER BY e.show_id, e.season, e.number, e.id
+"""
+_BACKUP_HAVE_SQL = """
+    SELECT e.show_id, m.episode_id FROM have_episodes AS m
+    JOIN episodes AS e ON e.id = m.episode_id
+    JOIN tracked_shows AS t ON t.show_id = e.show_id
+    ORDER BY m.episode_id
+"""
+_BACKUP_HISTORY_SQL = """
+    SELECT h.*, EXISTS (SELECT 1 FROM cleared_downloads AS c WHERE c.history_id = h.id) AS cleared
+    FROM download_history AS h
+    ORDER BY julianday(h.downloaded_at), h.id
+"""
+# A grab from a backup, unless the history has it: the same torrent (info hash), or without a
+# hash the same release of the same title recorded at the same moment (so loading a backup
+# twice adds nothing).
+_RESTORE_GRAB_SQL = """
+    INSERT INTO download_history (media_type, media_id, season, episode, release_title,
+                                  info_hash, source, size_bytes, saved_path, downloaded_at)
+    SELECT :media_type, :media_id, :season, :episode, :release_title, :info_hash, :source,
+           :size_bytes, :saved_path, :downloaded_at
+    WHERE NOT EXISTS (
+        SELECT 1 FROM download_history AS h
+        WHERE h.info_hash = :info_hash
+           OR (:info_hash IS NULL AND h.info_hash IS NULL
+               AND h.media_type = :media_type AND h.media_id = :media_id
+               AND h.season IS :season AND h.episode IS :episode
+               AND h.release_title = :release_title
+               AND julianday(h.downloaded_at) = julianday(:downloaded_at))
+    )
+"""
+# A film from a backup onto the watchlist, unless it was downloaded (a downloaded film leaves
+# the list) or is on it already.
+_RESTORE_FILM_SQL = """
+    INSERT INTO watchlist (movie_id, title, movie, added_at, auto_download, imdb_id,
+                           digital_release, theatrical_release)
+    SELECT :movie_id, :title, :movie, :added_at, :auto_download, :imdb_id, :digital_release,
+           :theatrical_release
+    WHERE NOT EXISTS (
+        SELECT 1 FROM download_history WHERE media_type = 'movie' AND media_id = :movie_id
+    )
+    ON CONFLICT (movie_id) DO NOTHING
+"""
+
+
+def _backup_show(
+    row: sqlite3.Row, episodes: Sequence[Episode], have: Sequence[int]
+) -> BackupShow:
+    return BackupShow(
+        show=_show_from_row(_section(row, "show__")),
+        tracked_at=row["tracked_at"],
+        auto_download=bool(row["auto_download"]),
+        auto_since=row["auto_since"],
+        episodes=tuple(episodes),
+        have=tuple(have),
+    )
+
+
+def _backup_grab(row: sqlite3.Row) -> BackupGrab:
+    fields = {key: row[key] for key in row.keys() if key not in ("id", "cleared")}
+    return BackupGrab(record=DownloadRecord.model_validate(fields), cleared=bool(row["cleared"]))
+
+
+def _film_row(film: BackupFilm) -> dict[str, Any]:
+    return {
+        "movie_id": film.movie.id,
+        "title": film.movie.title,
+        "movie": film.movie.model_dump_json(),
+        "added_at": _utc(film.added_at),
+        "auto_download": film.auto_download,
+        "imdb_id": film.imdb_id or film.movie.imdb_id,
+        "digital_release": _iso_date(film.digital_release),
+        "theatrical_release": _iso_date(film.theatrical_release),
+    }
+
+
+class BackupRepository:
+    """A backup's database part (app/services/backup.py): the followed shows with their
+    episodes, automatic-download switches and "I already have this" marks, the film watchlist
+    and the download history. Read in one go; written back in one transaction."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def read(self) -> BackupData:
+        """Everything a backup holds from the database, as one consistent snapshot. A
+        watchlist film whose stored data no longer reads is left out (and logged)."""
+        async with self._db.transaction() as conn:
+            show_rows = await conn.execute_fetchall(_BACKUP_SHOWS_SQL)
+            episode_rows = await conn.execute_fetchall(_BACKUP_EPISODES_SQL)
+            have_rows = await conn.execute_fetchall(_BACKUP_HAVE_SQL)
+            film_rows = await conn.execute_fetchall(
+                f"{_WATCHLIST_SQL} ORDER BY julianday(added_at), movie_id"
+            )
+            grab_rows = await conn.execute_fetchall(_BACKUP_HISTORY_SQL)
+        episodes: dict[int, list[Episode]] = {}
+        for row in episode_rows:
+            episode = Episode.model_validate(dict(row))
+            episodes.setdefault(episode.show_id, []).append(episode)
+        have: dict[int, list[int]] = {}
+        for row in have_rows:
+            have.setdefault(row["show_id"], []).append(row["episode_id"])
+        films: list[BackupFilm] = []
+        for row in film_rows:
+            try:
+                entry = _watchlist_entry(row)
+            except ValidationError:
+                log.warning("Leaving watchlist film %d out of the backup: it doesn't read", row[0])
+                continue
+            films.append(
+                BackupFilm(
+                    movie=entry.movie,
+                    added_at=entry.added_at,
+                    auto_download=entry.auto_download,
+                    imdb_id=entry.imdb_id,
+                    digital_release=entry.digital_release,
+                    theatrical_release=entry.theatrical_release,
+                )
+            )
+        shows = []
+        for row in show_rows:
+            show_id = row["show__id"]
+            shows.append(_backup_show(row, episodes.get(show_id, ()), have.get(show_id, ())))
+        return BackupData(
+            shows=tuple(shows), films=tuple(films), grabs=tuple(_backup_grab(r) for r in grab_rows)
+        )
+
+    async def restore(self, data: BackupData, *, replace: bool, when: datetime) -> RestoreCounts:
+        """Write a backup's database part, all or nothing.
+
+        `replace`: the followed shows and the watchlist become the backup's (shows it lacks are
+        no longer followed, films it lacks leave the list; a show followed here too takes the
+        backup's switch and marks, and keeps the episodes stored here). Else the backup's shows
+        and films are added and what is here wins (a show followed here keeps its switch and
+        marks). Either way the backup's download history is added to this one (no grab twice);
+        a downloaded film leaves the watchlist. A newly followed show is synced from TVMaze at
+        the next sync. `when`: the moment marks and cleared grabs are stamped with.
+        """
+        async with self._db.transaction() as conn:
+            rows = await conn.execute_fetchall("SELECT show_id FROM tracked_shows")
+            tracked = {row[0] for row in rows}
+            shows_removed = 0
+            if replace:
+                wanted = json.dumps(sorted({item.show.id for item in data.shows}))
+                cursor = await conn.execute(
+                    "DELETE FROM tracked_shows "
+                    "WHERE show_id NOT IN (SELECT value FROM json_each(?))",
+                    (wanted,),
+                )
+                shows_removed = cursor.rowcount
+            shows_added = 0
+            for item in data.shows:
+                show_id = item.show.id
+                since = (item.auto_since or when) if item.auto_download else None
+                if show_id in tracked:
+                    if not replace:
+                        continue  # what is here wins
+                    await conn.execute(
+                        "UPDATE tracked_shows SET tracked_at = ?, auto_download = ?, "
+                        "auto_since = ? WHERE show_id = ?",
+                        (_utc(item.tracked_at), item.auto_download, _opt_utc(since), show_id),
+                    )
+                else:
+                    await conn.execute(_SHOW_UPSERT, _show_to_row(item.show))
+                    await conn.executemany(
+                        _EPISODE_UPSERT, [_episode_to_row(episode) for episode in item.episodes]
+                    )
+                    await conn.execute(
+                        "INSERT INTO tracked_shows "
+                        "(show_id, tracked_at, auto_download, auto_since) VALUES (?, ?, ?, ?)",
+                        (show_id, _utc(item.tracked_at), item.auto_download, _opt_utc(since)),
+                    )
+                    shows_added += 1
+                # Its "I already have this" marks become the backup's.
+                await conn.execute(
+                    "DELETE FROM have_episodes "
+                    "WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?)",
+                    (show_id,),
+                )
+                await conn.execute(
+                    "INSERT INTO have_episodes (episode_id, marked_at) "
+                    "SELECT id, ? FROM episodes "
+                    "WHERE show_id = ? AND id IN (SELECT value FROM json_each(?)) "
+                    "ON CONFLICT (episode_id) DO NOTHING",
+                    (_utc(when), show_id, json.dumps(sorted(set(item.have)))),
+                )
+
+            grabs_added = 0
+            downloaded_films: set[int] = set()
+            for grab in data.grabs:
+                record = grab.record
+                cursor = await conn.execute(
+                    _RESTORE_GRAB_SQL, record.model_dump(mode="json", exclude={"id"})
+                )
+                if cursor.rowcount <= 0:
+                    continue
+                grabs_added += 1
+                if record.media_type is MediaType.MOVIE:
+                    downloaded_films.add(record.media_id)
+                if grab.cleared:
+                    await conn.execute(
+                        "INSERT INTO cleared_downloads (history_id, cleared_at) VALUES (?, ?) "
+                        "ON CONFLICT (history_id) DO NOTHING",
+                        (cursor.lastrowid, _utc(when)),
+                    )
+            if downloaded_films:  # as HistoryRepository.add: a downloaded film leaves the list
+                await conn.execute(
+                    "DELETE FROM watchlist WHERE movie_id IN (SELECT value FROM json_each(?))",
+                    (json.dumps(sorted(downloaded_films)),),
+                )
+
+            rows = await conn.execute_fetchall("SELECT movie_id FROM watchlist")
+            listed = {row[0] for row in rows}
+            films_removed = 0
+            if replace:
+                await conn.execute("DELETE FROM watchlist")
+                films_removed = len(listed - {film.movie.id for film in data.films})
+            films_added = 0
+            for film in data.films:
+                cursor = await conn.execute(_RESTORE_FILM_SQL, _film_row(film))
+                if cursor.rowcount > 0 and film.movie.id not in listed:
+                    films_added += 1
+        return RestoreCounts(
+            shows_added=shows_added,
+            shows_removed=shows_removed,
+            films_added=films_added,
+            films_removed=films_removed,
+            grabs_added=grabs_added,
+        )
+
+
+def _opt_utc(instant: datetime | None) -> str | None:
+    return _utc(instant) if instant is not None else None

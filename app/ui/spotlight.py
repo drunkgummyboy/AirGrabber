@@ -10,8 +10,8 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import NamedTuple
 
-from app.i18n import N_, day_short, month_short, t, tn
-from app.models import Spotlight, SpotlightItem, SpotlightReason
+from app.i18n import N_, day_short, month_short, number, t, tn
+from app.models import Movie, Spotlight, SpotlightItem, SpotlightReason
 
 # -- texts -------------------------------------------------------------------------------------
 
@@ -57,20 +57,31 @@ def title_text(item: SpotlightItem) -> str:
     return f"{item.title} — {episode.code}"
 
 
-def sub_line(spotlight: Spotlight | None, downloading: int) -> str:
-    """The muted line under the title: "3 episodes today · 1 downloading"; a part is left out
-    when its number is 0 (trending titles have no episodes part)."""
+def sub_line(spotlight: Spotlight | None, item: SpotlightItem | None = None) -> str:
+    """The muted line under the title: for a film (`item`) its year and rating ("2026 · ★ 7.0",
+    `film_line`); else what airs, "3 episodes today" / "4 episodes in the next 7 days" ("" for
+    trending shows and without any). How many downloads are on their way is the ⬇ button's
+    badge, not this line's."""
+    if item is not None and item.movie is not None:
+        return film_line(item.movie)
+    if spotlight is None or not spotlight.airing:
+        return ""
+    count = spotlight.airing
+    if spotlight.reason is SpotlightReason.TODAY:
+        return tn("{n} episode today", "{n} episodes today", count)
+    if spotlight.reason is SpotlightReason.COMING:
+        return tn("{n} episode in the next 7 days", "{n} episodes in the next 7 days", count)
+    return ""
+
+
+def film_line(movie: Movie) -> str:
+    """ "2026 · ★ 7.0", leaving out whichever is unknown (no votes: no rating); "" for
+    neither."""
     parts: list[str] = []
-    if spotlight is not None and spotlight.airing:
-        count = spotlight.airing
-        if spotlight.reason is SpotlightReason.TODAY:
-            parts.append(tn("{n} episode today", "{n} episodes today", count))
-        elif spotlight.reason is SpotlightReason.COMING:
-            parts.append(
-                tn("{n} episode in the next 7 days", "{n} episodes in the next 7 days", count)
-            )
-    if downloading:
-        parts.append(t("{n} downloading", n=downloading))
+    if movie.year:
+        parts.append(str(movie.year))
+    if movie.vote_count:
+        parts.append(f"★ {number(movie.vote_average, '.1f')}")
     return " · ".join(parts)
 
 
@@ -135,16 +146,15 @@ class Rotation:
 
 # -- layout --------------------------------------------------------------------------------------
 
-BAND_HEIGHT = 150
 PAD_X = 20  # the band's left and right margin
-ROW_TOP = 14  # the controls' row
+ROW_TOP = 28  # the controls' row
 ROW_HEIGHT = 40
 LOGO_SIZE = 40
 WORD_GAP = 10  # the logo → "AirGrabber"
 WORD_SIZE = 18
-PILL_PAD = 4  # the switch's track around its two parts
-SEGMENT_PAD_X = 18  # either side of "Series" / "Movies"
-SEGMENT_FONT_SIZE = 14
+PILL_PAD = 4  # the switch's solid pill around its two parts
+SEGMENT_PAD_X = 20  # either side of "Series" / "Movies"
+SEGMENT_FONT_SIZE = 15
 CLUSTER_GAP = 24  # at least between the switch and what is left and right of it
 SEARCH_WIDTH = 300
 SEARCH_MIN_WIDTH = 200
@@ -158,10 +168,12 @@ BUTTON_GAP = 10
 BUTTON_RADIUS = 10
 BADGE_HEIGHT = 18
 BADGE_OVERHANG = 6  # the ⬇ button's badge reaches this far past its corner
-POSTER_TOP = 72
+POSTER_TOP = ROW_TOP + ROW_HEIGHT + 22  # the row → the spotlight
 POSTER_WIDTH = 44
 POSTER_HEIGHT = 64
 POSTER_RADIUS = 6
+BAND_BOTTOM = 18  # the poster → the band's lower edge (the page tabs sit right under it)
+BAND_HEIGHT = POSTER_TOP + POSTER_HEIGHT + BAND_BOTTOM
 POSTER_GAP = 14  # the poster → the texts
 TITLE_GAP = 24  # the texts → the dots
 DOT = 7

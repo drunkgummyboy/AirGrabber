@@ -122,6 +122,7 @@ _OFF_PAGE_SETTINGS = frozenset(
         "remote_password",
         "remote_verify_tls",
         "remote_destination",
+        "movie_remote_destination",
         "download_mode",
         "auto_download_new_shows",
         "setup_done",
@@ -412,6 +413,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
         # Subtitles: problems in the status bar (saved ones only update the show windows).
         self._unsubscribe_subtitles = services.subtitles.subscribe(self._on_subtitle_event)
+        # A loaded backup changed the library and the watchlist: reload the pages.
+        self._unsubscribe_backup = services.backup.subscribe(self._on_library_changed)
 
         # Closing the window keeps AirGrabber running in the tray; main.py stops the icon at exit.
         self.tray = TrayHost(
@@ -445,6 +448,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_downloads()
         self._unsubscribe_auto()
         self._unsubscribe_subtitles()
+        self._unsubscribe_backup()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
         for job in self.tk.splitlist(self.tk.call("after", "info")):
@@ -496,8 +500,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _build_pages(self) -> None:
         library, settings = self._services.library, self._services.settings
         images, discovery = self._services.images, self._services.discovery
-        # Underline tabs right under the band (left-aligned, an accent line under the chosen).
-        self._series_tabs = Tabview(self, look="underline", command=self._on_tab_changed)
+        # Pill tabs right under the band (left-aligned, the chosen one filled with the accent).
+        self._series_tabs = Tabview(self, look="pills", command=self._on_tab_changed)
         tabs = self._series_tabs
         self._series_views: dict[str, BaseView] = {
             t(_CALENDAR): CalendarView(
@@ -1071,6 +1075,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_restart=self.restart,
             images=self._services.images,
             library=self._services.library,
+            backup=self._services.backup,
         )
 
     async def _set_up_prowlarr(self) -> None:
@@ -1109,6 +1114,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 library=self._services.library,
                 remote=self._services.remote,
                 on_restart=self.restart,
+                backup=self._services.backup,  # "Moving from another PC? Load a backup"
             )
 
     # -- updates -----------------------------------------------------------------------------

@@ -209,16 +209,16 @@ class MarkTests(unittest.TestCase):
     def test_texts_and_colours(self) -> None:
         aired = episode(1, 1, 1, airs=NOW - timedelta(hours=1))
         self.assertEqual(mark_text("missing", aired, NOW), "Missing")
-        self.assertEqual(mark_text("have", aired, NOW), "✓ Have it")
+        self.assertEqual(mark_text("have", aired, NOW), "✓")
         self.assertEqual(mark_text("new", aired, NOW), "New · aired today")
         self.assertEqual(mark_color("missing"), theme.WARNING)
         self.assertEqual(mark_color("new"), theme.LINK)
         self.assertEqual(mark_color("have"), theme.TEXT_MUTED)
 
-    def test_the_chip_slot_fits_the_longest_text(self) -> None:
+    def test_the_mark_slot_fits_the_dot_and_the_longest_text(self) -> None:
         width = mark_slot_width(lambda text: 7.0 * len(text))
-        self.assertEqual(width, 7 * len("New · aired yesterday") + 24)
-        self.assertEqual(mark_slot_width(lambda text: 1.0), 92)  # never below MARK_WIDTH
+        self.assertEqual(width, 8 + 6 + 7 * len("New · aired yesterday") + 12)  # dot, gap, text
+        self.assertEqual(mark_slot_width(lambda text: 1.0), 72)  # never below MARK_WIDTH
 
 
 class SummaryTests(unittest.TestCase):

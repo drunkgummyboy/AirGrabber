@@ -4,9 +4,10 @@ the title, a "2024 | ★ 7.8" line and an action row (Download, + Track) sit.
 Tk can't draw a see-through widget over an image, so the cover, the fade, the border and the
 rounded corners are baked into one image at the card's physical size, in a worker thread
 (`compose_card`, cached by `ImageCache` per url and size), and shown on a canvas that fills the
-card. The title and the line under it are text on that canvas, so the cover shows through
-behind them: the fade stops at FADE_MAX there. The rows of widgets under the text (buttons,
-switches) have `theme.BG` as their own background, so the fade turns solid where they start.
+card. The title and the line under it are text on that canvas, over the fade's lower part: the
+fade starts high up the cover (FADE_SHARE of it above the text's lower edge), eases in and
+turns solid under the text (FADE_STOPS, no visible edge anywhere). The rows of widgets under
+the text (buttons, switches) have `theme.BG` as their own background, on the solid part.
 
 A card is drawn at a `CardScale` (Settings, Card size: app/ui/card_scale.py): every size, gap
 and font below is the XL card's and scales with it; the cover is rendered at the scaled card's
@@ -59,15 +60,19 @@ TEXT_WIDTH = POSTER_CARD_WIDTH - 2 * (BORDER + SIDE_PAD)  # at XL; see `text_wid
 TITLE_SIZE = 15
 TITLE_MAX_LINES = 2
 META_SIZE = 12
-# The fade starts at 45 % of the card's height: soft at first, then on up to FADE_MAX, which it
-# reaches TEXT_MARGIN above the text and keeps behind it; under the text it turns solid by the
-# top of the widget rows. Above tall text (two title lines over two rows of buttons) it starts
-# higher, so its soft part keeps at least FADE_MIN_SPAN of the card's height.
-FADE_FROM = 0.45
-FADE_MIN_SPAN = 0.12
-FADE_KNEE = (0.45, 0.85)  # the soft part's shape: 85 % of the way up a little under half way
-FADE_MAX = 0.80  # the fade's opacity behind the text: the cover shows through at 20 %
-TEXT_MARGIN = 4
+# The fade into the card's colour covers the lower FADE_SHARE of the cover above the text's
+# lower edge (the "poster" over the solid card body), solid from there down. FADE_STOPS: (share
+# of the way down the fade, how much of the card's colour lies over the cover), passed through
+# by a smooth curve that starts and ends flat (`fade_alpha`), so it eases in with no line where
+# it starts or where it turns solid.
+FADE_SHARE = 0.58
+FADE_STOPS: tuple[tuple[float, float], ...] = (
+    (0.0, 0.0),
+    (0.25, 0.18),
+    (0.5, 0.5),
+    (0.75, 0.82),
+    (1.0, 1.0),
+)
 # A badge in the cover's top-left corner ("3 missing" on My shows): a pill on `theme.BG`.
 BADGE_INSET = 10  # from the card's outer edge
 BADGE_HEIGHT = 22
@@ -129,21 +134,43 @@ def year_rating_line(year: int | None, rating: float | None) -> str:
 # -- the baked image -------------------------------------------------------------------------
 
 
-def fade_alpha(position: float, maximum: float = FADE_MAX) -> float:
-    """The fade's opacity at `position`: 0 where it starts, `maximum` where it reaches the text.
-    Smooth from 0 up to 85 % of `maximum` at 0.45 (no visible edge where it starts), then
-    straight on to `maximum`."""
+def _stop_slopes(stops: Sequence[tuple[float, float]]) -> tuple[float, ...]:
+    """The curve's slope at each stop: flat at both ends, inside the harmonic mean of the two
+    straight slopes beside it (0 where they turn): it never overshoots a stop."""
+    secants = [
+        (y1 - y0) / (x1 - x0) for (x0, y0), (x1, y1) in zip(stops, stops[1:], strict=False)
+    ]
+    slopes = [0.0]
+    for before, after in zip(secants, secants[1:], strict=False):
+        same_way = before * after > 0
+        slopes.append(2 / (1 / before + 1 / after) if same_way else 0.0)
+    slopes.append(0.0)
+    return tuple(slopes)
+
+
+_FADE_SLOPES = _stop_slopes(FADE_STOPS)
+
+
+def fade_alpha(position: float) -> float:
+    """The fade's opacity at `position` (0 where it starts, 1 where it turns solid): through
+    FADE_STOPS on a smooth curve (cubic between the stops), flat at both ends."""
     if position <= 0:
         return 0.0
     if position >= 1:
-        return maximum
-    knee, knee_share = FADE_KNEE
-    if position < knee:
-        t = position / knee
-        share = knee_share * t * t * (3 - 2 * t)
-    else:
-        share = knee_share + (1 - knee_share) * (position - knee) / (1 - knee)
-    return maximum * share
+        return 1.0
+    for index, ((x0, y0), (x1, y1)) in enumerate(zip(FADE_STOPS, FADE_STOPS[1:], strict=False)):
+        if position <= x1:
+            span = x1 - x0
+            t = (position - x0) / span
+            m0, m1 = _FADE_SLOPES[index] * span, _FADE_SLOPES[index + 1] * span
+            t2, t3 = t * t, t * t * t
+            return (
+                (2 * t3 - 3 * t2 + 1) * y0
+                + (t3 - 2 * t2 + t) * m0
+                + (-2 * t3 + 3 * t2) * y1
+                + (t3 - t2) * m1
+            )
+    return 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,10 +185,7 @@ class CardFace:
     border: int
     radius: int  # outer corner radius
     fade_from: int  # first row of the fade
-    full_from: int  # first row at `fade_max` (TEXT_MARGIN above the text)
-    ramp_from: int  # first row under the text: from `fade_max` on to solid
-    solid_from: int  # first row of solid `bg` (the widget rows)
-    fade_max: float  # the fade's opacity behind the text
+    solid_from: int  # first row of solid `bg` (under the text: the widget rows and their gap)
     bg: RGB
     edge: RGB  # the border
     outside: RGB  # behind the rounded corners: what the card sits on
@@ -183,37 +207,26 @@ def card_face(
     card: CardScale = FULL,
 ) -> CardFace:
     """The face of a card at widget scaling `scale` (DPI) and card size `card` whose text (the
-    title and the line under it) is `text_height` CTk units tall, above widget rows of
-    `rows_height` units (None: one action row) on the bottom padding.
+    title and the line under it) sits above widget rows of `rows_height` units (None: one
+    action row) on the bottom padding, ROW_GAP above them.
 
-    The fade starts at 45 % of the card's height (higher above tall text: FADE_MIN_SPAN),
-    reaches FADE_MAX TEXT_MARGIN above the text, and turns solid between the text and the
-    widget rows (ROW_GAP). In physical pixels (DPI
-    factor x card scale), so the cover stays sharp at every size."""
+    The fade turns solid at the text's lower edge and starts FADE_SHARE of the cover above it
+    (the cover from the card's top down to there), so a card with more rows under its text
+    fades higher up. The text's height (`text_height`, CTk units) doesn't move it: one or two
+    title lines sit on the same fade. In physical pixels (DPI factor x card scale), so the
+    cover stays sharp at every size."""
     units_w, units_h = card_size(card)
     width, height = round(units_w * scale), round(units_h * scale)
     border = border_width(card)
     rows = row_height(card) if rows_height is None else rows_height
-    rows_top = border + card.px(BOTTOM_PAD) + rows  # all from the card's bottom edge
-    text_bottom = rows_top + card.px(ROW_GAP)
-    text_top = text_bottom + text_height
-
-    def row(units: float) -> int:
-        """The pixel row `units` above the card's bottom edge."""
-        return max(0, height - round(units * scale))
-
-    solid_from = row(rows_top)
-    ramp_from = min(row(text_bottom), solid_from)
-    full_from = min(row(text_top + card.px(TEXT_MARGIN)), ramp_from)
+    text_bottom = border + card.px(BOTTOM_PAD) + rows + card.px(ROW_GAP)  # from the bottom edge
+    solid_from = max(0, height - round(text_bottom * scale))
     return CardFace(
         size=(width, height),
         border=max(1, round(border * scale)),
         radius=round(card.px(CORNER_RADIUS) * scale),
-        fade_from=max(0, min(round(height * FADE_FROM), full_from - round(height * FADE_MIN_SPAN))),
-        full_from=full_from,
-        ramp_from=ramp_from,
+        fade_from=max(0, solid_from - round(solid_from * FADE_SHARE)),
         solid_from=solid_from,
-        fade_max=FADE_MAX,
         bg=bg,
         edge=edge,
         outside=outside,
@@ -238,9 +251,7 @@ def compose_card(cover: Image.Image | None, face: CardFace) -> Image.Image:
         else:
             base.paste(fitted.convert("RGB"), (0, 0))
     shade = Image.new("RGB", face.size, face.bg)
-    mask = _fade_mask(
-        face.size, face.fade_from, face.full_from, face.ramp_from, face.solid_from, face.fade_max
-    )
+    mask = _fade_mask(face.size, face.fade_from, face.solid_from)
     faded = Image.composite(shade, base, mask)
     card = Image.new("RGB", face.size, face.outside)
     card.paste(face.edge, (0, 0, width, height), _rounded_mask(face.size, face.radius, 0))
@@ -249,36 +260,22 @@ def compose_card(cover: Image.Image | None, face: CardFace) -> Image.Image:
     return card
 
 
-def fade_row_alpha(
-    row: int, fade_from: int, full_from: int, ramp_from: int, solid_from: int, fade_max: float
-) -> float:
+def fade_row_alpha(row: int, fade_from: int, solid_from: int) -> float:
     """The fade's opacity on pixel row `row` (see `CardFace`): 0 above `fade_from`,
-    `fade_alpha` up to `fade_max` at `full_from`, `fade_max` behind the text, then straight on
-    to 1 at `solid_from`."""
+    `fade_alpha` on the way down, 1 from `solid_from`."""
     if row >= solid_from:
         return 1.0
-    middle = row + 0.5
-    if row >= ramp_from:
-        return fade_max + (1 - fade_max) * (middle - ramp_from) / max(1, solid_from - ramp_from)
-    if row >= full_from:
-        return fade_max
-    return fade_alpha((middle - fade_from) / max(1, full_from - fade_from), fade_max)
+    if row < fade_from:
+        return 0.0
+    return fade_alpha((row + 0.5 - fade_from) / max(1, solid_from - fade_from))
 
 
 @lru_cache(maxsize=16)
-def _fade_mask(
-    size: tuple[int, int],
-    fade_from: int,
-    full_from: int,
-    ramp_from: int,
-    solid_from: int,
-    fade_max: float,
-) -> Image.Image:
+def _fade_mask(size: tuple[int, int], fade_from: int, solid_from: int) -> Image.Image:
     """An L mask, one value per row (`fade_row_alpha`). Shared between calls: read-only."""
     width, height = size
     column = bytes(
-        round(255 * fade_row_alpha(row, fade_from, full_from, ramp_from, solid_from, fade_max))
-        for row in range(height)
+        round(255 * fade_row_alpha(row, fade_from, solid_from)) for row in range(height)
     )
     return Image.frombytes("L", (1, height), column).resize(size, Image.Resampling.NEAREST)
 

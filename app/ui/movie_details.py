@@ -1,6 +1,7 @@
 """The film info window: the shared info look (app/ui/title_info.py: the backdrop with "▶ Watch
 trailer", the poster, title, meta line, genres, synopsis, cast) with a film's actions: ⬇ Auto
-(the one-click download) and ☰ Choose… (its releases), or once downloaded ✓ Downloaded with
+(the one-click download) and, in "tabs", ☰ Choose… (its Releases tab; "side" shows the
+releases right beside the actions, so it has none), or once downloaded ✓ Downloaded with
 ↻ Again and the subtitles' CC ▾ (app/ui/row_actions.py, app/ui/subtitle_control.py); the
 watchlist button and IMDb. Its releases (app/ui/release_panel.py) are searched as soon as the
 window opens: beside the info ("side") or in the Releases tab ("tabs"), which says how many
@@ -164,6 +165,7 @@ class MovieDetailsWindow(TitleInfoWindow):
             actions=actions,
             height=ROW_HEIGHT,
             align="left",
+            choose=self.layout is not InfoLayout.SIDE,  # "side": the releases are beside it
         )
         # The subtitles of a downloaded film (CC ▾), right of the download controls.
         self.cc_control = CCControl(
@@ -210,8 +212,8 @@ class MovieDetailsWindow(TitleInfoWindow):
         return panel
 
     def _show_buttons(self) -> None:
-        """⬇ Auto + ☰ Choose… (or ✓ Downloaded + ↻ Again), CC ▾ while it has something to
-        show, the watchlist button, IMDb."""
+        """⬇ Auto (+ ☰ Choose… in "tabs"; or ✓ Downloaded + ↻ Again), CC ▾ while it has
+        something to show, the watchlist button, IMDb."""
         cc = [self.cc_control] if self.cc_control.has_content else []
         self.buttons.set_items([self.download, *cc, self.watch_button, self.imdb_button])
 

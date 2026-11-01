@@ -25,6 +25,8 @@ from app.models import (
     Movie,
     MovieDetails,
     QualityProfile,
+    SearchKind,
+    SearchRequest,
     SearchUpdate,
     Settings,
     Show,
@@ -37,6 +39,7 @@ from app.services import (
     TorrentSearchService,
 )
 from app.services.discovery import DiscoveryService
+from app.services.search import episode_request, movie_request
 from app.ui import theme
 from app.ui.release_panel import (
     DOWNLOAD_TEXT,
@@ -245,10 +248,19 @@ SHOW = Show(id=1, name="Severance")
 FILM = Movie(id=7, title="Film")
 
 
+def request_key(request: SearchRequest) -> tuple[object, ...]:
+    """("movie",) / ("season", s) / ("episode", s, e): what a search was for."""
+    if request.kind is SearchKind.MOVIE:
+        return ("movie",)
+    if request.kind is SearchKind.SEASON:
+        return ("season", request.season)
+    return ("episode", request.season, request.episode)
+
+
 class FakeSearch:
-    """Records each search as ("movie",) / ("season", s) / ("episode", s, e) and answers with
-    one finished update of `releases`; with `block`, an unfinished one and then waits until
-    cancelled (`cancelled` tells)."""
+    """Builds the real requests, records each search as ("movie",) / ("season", s) /
+    ("episode", s, e) (`request_key`) and answers with one finished update of `releases`;
+    with `block`, an unfinished one and then waits until cancelled (`cancelled` tells)."""
 
     def __init__(self, releases: tuple[TorrentRelease, ...] = (), *, block: bool = False) -> None:
         self._releases = releases
@@ -256,17 +268,17 @@ class FakeSearch:
         self.requests: list[tuple[object, ...]] = []
         self.cancelled = False
 
-    def movie_request(self, movie: Movie, details: MovieDetails | None = None) -> object:
-        return ("movie",)
+    def movie_request(self, movie: Movie, details: MovieDetails | None = None) -> SearchRequest:
+        return movie_request(movie, details)
 
-    def season_request(self, show: Show, season: int) -> object:
-        return ("season", season)
+    def season_request(self, show: Show, season: int) -> SearchRequest:
+        return SearchRequest(kind=SearchKind.SEASON, title=show.name, season=season)
 
-    def episode_request(self, show: Show, season: int, episode: int) -> object:
-        return ("episode", season, episode)
+    def episode_request(self, show: Show, season: int, episode: int) -> SearchRequest:
+        return episode_request(show, season, episode)
 
     async def search(self, request: object) -> AsyncIterator[SearchUpdate]:
-        self.requests.append(cast(tuple[object, ...], request))
+        self.requests.append(request_key(cast(SearchRequest, request)))
         yield SearchUpdate(statuses=(), releases=self._releases, done=not self._block)
         if self._block:
             try:
@@ -621,8 +633,10 @@ class PanelTests(TkTestCase):
         bar._select_quality("any")
         await self.settle()
         self.assertEqual(bar._tree.get_children(), (release_id(big), release_id(small)))
-        self.assertEqual(bar._bar_caption.cget("text"), NO_SELECTION_TEXT)
-        self.assertEqual(bar._download_button.cget("state"), "disabled")
+        # Nothing selected: the bar shows the recommendation (test_recommended has the rest).
+        self.assertEqual(bar._bar_caption.winfo_manager(), "")
+        self.assertEqual(bar._selected_name, f"★ Recommended: {big.title}")
+        self.assertEqual(bar._download_button.cget("state"), "normal")
 
         bar._tree.selection_set(release_id(small))
         await self.settle()

@@ -364,6 +364,51 @@ class TransmissionStatusTests(tr.TransmissionTestCase):
         self.assertEqual([body["method"] for body in self.server.bodies], ["free-space"])
         self.assertEqual(self.server.bodies[-1]["arguments"], {"path": "/volume1/video"})
 
+    async def test_free_space_with_a_films_folder_is_the_fuller_one(self) -> None:
+        sizes = {"/volume1/tv": 900 * 1024**3, "/volume2/movies": 30 * 1024**3}
+        self.server.answers["free-space"] = lambda body: {
+            "arguments": {
+                "path": body["arguments"]["path"],
+                "size-bytes": sizes[body["arguments"]["path"]],
+                "total_size": 4 * 1024**4,
+            },
+            "result": "success",
+        }
+        await self.settings.update(
+            remote_destination="/volume1/tv", movie_remote_destination="/volume2/movies"
+        )
+        self.assertEqual(await self.client.free_space(), DiskSpace(30 * 1024**3, 4 * 1024**4))
+        self.assertEqual(
+            [body["arguments"] for body in self.server.bodies],
+            [{"path": "/volume1/tv"}, {"path": "/volume2/movies"}],
+        )
+        # Without a destination: its own download folder and the films folder.
+        self.server.bodies.clear()
+        sizes["/downloads/complete"] = 10 * 1024**3
+        await self.settings.update(remote_destination="")
+        self.assertEqual(await self.client.free_space(), DiskSpace(10 * 1024**3, 4 * 1024**4))
+        self.assertEqual(
+            [body["method"] for body in self.server.bodies],
+            ["session-get", "free-space", "free-space"],
+        )
+
+    async def test_a_films_folder_it_cant_measure_is_left_out(self) -> None:
+        def free_space(body: dict[str, Any]) -> dict[str, Any]:
+            if body["arguments"]["path"] == "/volume2/movies":
+                return {"arguments": {}, "result": "No such file or directory"}
+            return dict(fixture("transmission/free_space.json"))
+
+        self.server.answers["free-space"] = free_space
+        await self.settings.update(
+            remote_destination="/volume1/tv", movie_remote_destination="/volume2/movies"
+        )
+        self.assertEqual(await self.client.free_space(), DiskSpace(12884901888, 4000787030016))
+        # The same folder for both is measured once.
+        self.server.bodies.clear()
+        await self.settings.update(movie_remote_destination="/volume1/tv")
+        await self.client.free_space()
+        self.assertEqual(len(self.server.bodies), 1)
+
     async def test_refused_is_plain(self) -> None:
         self.server.whitelisted = False
         error = await self.error_of(self.client.status())
@@ -381,10 +426,10 @@ class OnlyAdds:
     async def test(self) -> str:
         return "x"
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         pass
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
         pass
 
 

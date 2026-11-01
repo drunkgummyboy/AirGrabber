@@ -778,6 +778,46 @@ function Install-QBittorrentIfNeeded([string]$Python) {
     }
 }
 
+function Get-Requirements([string]$Path) {
+    # requirements.txt's packages as pip takes them: those above a "# optional" comment line are
+    # required, those below it optional (app/bootstrap.py reads the file the same way).
+    $required = New-Object System.Collections.Generic.List[string]
+    $optional = New-Object System.Collections.Generic.List[string]
+    $isOptional = $false
+    foreach ($raw in [IO.File]::ReadAllLines($Path)) {
+        $line = $raw.Trim()
+        if ($line.StartsWith('#')) {
+            if ($line.TrimStart('#').Trim().ToLowerInvariant().StartsWith('optional')) { $isOptional = $true }
+            continue
+        }
+        $spec = $line.Split('#')[0].Trim()
+        if (-not $spec -or $spec.StartsWith('-')) { continue }
+        if ($isOptional) { $optional.Add($spec) } else { $required.Add($spec) }
+    }
+    return [pscustomobject]@{ Required = [string[]]$required.ToArray(); Optional = [string[]]$optional.ToArray() }
+}
+
+function Install-Requirements([string]$Python, [string]$Path) {
+    # The required packages in one go (a failure stops the install), then each optional one on
+    # its own: AirGrabber works without it and tries again when it starts.
+    Write-Step 'Installing the parts AirGrabber needs (this can take a minute)'
+    $wanted = Get-Requirements $Path
+    # --no-warn-script-location: pip's "not on PATH" warnings are harmless but look alarming.
+    $pip = @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--quiet', '--no-warn-script-location')
+    $arguments = [string[]]($pip + $wanted.Required)
+    & $Python @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Some parts AirGrabber needs could not be installed (see the messages above). Check your internet connection and try again.' }
+    foreach ($spec in $wanted.Optional) {
+        $arguments = [string[]]($pip + $spec)
+        & $Python @arguments
+        if ($LASTEXITCODE -ne 0) {
+            $name = $spec
+            if ($spec -match '^[A-Za-z0-9][A-Za-z0-9._-]*') { $name = $Matches[0] }
+            Write-Host ('    The optional part ' + $name + ' could not be installed. AirGrabber works without it and tries again later.') -ForegroundColor Yellow
+        }
+    }
+}
+
 function Install-AirGrabber {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest crawls with a progress bar in 5.1
@@ -792,10 +832,7 @@ function Install-AirGrabber {
 
     Install-App
 
-    Write-Step 'Installing the parts AirGrabber needs (this can take a minute)'
-    # --no-warn-script-location: pip's "not on PATH" warnings are harmless but look alarming.
-    & $python -m pip install --disable-pip-version-check --no-input --quiet --no-warn-script-location -r (Join-Path $InstallDir 'requirements.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'Some parts AirGrabber needs could not be installed (see the messages above). Check your internet connection and try again.' }
+    Install-Requirements $python (Join-Path $InstallDir 'requirements.txt')
 
     Install-QBittorrentIfNeeded $python
     Install-ProwlarrIfWanted

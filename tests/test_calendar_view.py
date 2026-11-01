@@ -25,6 +25,7 @@ from app.ui.text_fit import SLACK
 from app.ui.views.calendar_view import (
     RANGE_FONT_SIZE,
     SUGGESTION_CAP,
+    SUGGESTION_POOL,
     CalendarView,
     range_label,
     range_slot_width,
@@ -206,7 +207,7 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         # Monday: last week too, so the weekend's episodes are still on screen.
         week_end = TODAY + timedelta(days=6)
         self.assertEqual(library.calendar_calls, [(GRID_START, week_end)])
-        self.assertEqual(library.suggestion_calls, [(GRID_START, week_end, SUGGESTION_CAP)])
+        self.assertEqual(library.suggestion_calls, [(GRID_START, week_end, SUGGESTION_POOL)])
         self.assertEqual(self.cards(view, TODAY), ["full", "full", "Show 10"])
         self.assertEqual(self.cards(view, SUNDAY), ["Show 12"])
         self.assertEqual(self.cards(view, GRID_START), ["compact"])
@@ -245,6 +246,23 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(names, [f"Show {day.day * 100 + n}" for n in range(len(names))])
         # Last week's row has no suggestions: nothing to fill.
         self.assertEqual(self.cards(filled, GRID_START), [])
+
+    async def test_a_show_is_suggested_once_a_week_row(self) -> None:
+        # Today holds four poster cards. A daily show (50) is the best-ranked suggestion of
+        # every weekday, each day has one more of its own, and last week's Monday has 50 too.
+        tracked = [entry(show_id, TODAY, tracked=True) for show_id in range(1, 5)]
+        weekdays = [TODAY + timedelta(days=n) for n in range(5)]
+        suggestions = [
+            suggestion
+            for n, day in enumerate(weekdays)
+            for suggestion in (entry(50, day, tracked=False), entry(60 + n, day, tracked=False))
+        ] + [entry(50, GRID_START, tracked=False)]
+        view = self.view(FakeLibrary(tracked, suggestions), FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        self.assertEqual(self.cards(view, TODAY), ["full"] * 4 + ["Show 50"])
+        for n, day in enumerate(weekdays[1:], start=1):
+            self.assertEqual(self.cards(view, day), [f"Show {60 + n}"])
+        self.assertEqual(self.cards(view, GRID_START), ["Show 50"])  # another week row
 
     async def test_missing_episodes_get_the_amber_mark(self) -> None:
         # Show 1 today (a poster card) and show 3 a week ago (a compact card) are missing.

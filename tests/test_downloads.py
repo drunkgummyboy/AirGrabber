@@ -37,6 +37,7 @@ from app.services.downloads import (
     GrabError,
     prune_torrent_cache,
     safe_filename,
+    watch_folder,
 )
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
@@ -82,20 +83,23 @@ class FakeRemoteClient:
         self.kind = kind
         self.magnets: list[str] = []
         self.torrents: list[tuple[bytes, str]] = []
+        self.movies: list[bool] = []  # each add's `movie`: a film's own destination
         self.error: RemoteError | None = None
 
     async def test(self) -> str:
         return f"{self.kind.program} 1.0"
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         if self.error is not None:
             raise self.error
         self.magnets.append(magnet)
+        self.movies.append(movie)
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
         if self.error is not None:
             raise self.error
         self.torrents.append((content, filename))
+        self.movies.append(movie)
 
     @property
     def calls(self) -> int:
@@ -718,6 +722,177 @@ class FolderModeTests(DownloadTestCase):
         self.assertIs(result.outcome, GrabOutcome.SAVED)
         self.assertEqual(self.opened, [])
         self.assertFalse(self.cache.exists())
+
+
+FILM = GrabTarget(media_type=MediaType.MOVIE, media_id=557)
+
+
+class FilmsLocationTests(DownloadTestCase):
+    """A film goes to the films folder / destination when Settings has one, an episode (and a
+    film without one) to the usual place."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.films = Path(self.tmp.name) / "nas" / "films"
+
+    def test_watch_folder(self) -> None:
+        both = Settings(download_dir=self.watch, movie_download_dir=self.films)
+        self.assertEqual(watch_folder(both, movie=True), self.films)
+        self.assertEqual(watch_folder(both, movie=False), self.watch)
+        one = Settings(download_dir=self.watch, movie_download_dir="")
+        self.assertIsNone(one.movie_download_dir)
+        self.assertEqual(watch_folder(one, movie=True), self.watch)
+
+    async def test_folder_mode_saves_a_film_in_the_films_folder(self) -> None:
+        await self.settings.update(movie_download_dir=str(self.films))
+        self.serve(ITORRENTS, CACHED)
+        self.serve(f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent", TORRENT)
+        film = await self.service.grab(release(title="Gladiator.II.2024.1080p"), FILM)
+        self.assertEqual(Path(film.path or "").parent, self.films)
+        self.assertEqual(Path(film.path or "").read_bytes(), CACHED)
+        episode = await self.service.grab(release(info_hash=OTHER_HASH), EPISODE)
+        self.assertEqual(Path(episode.path or "").parent, self.watch)
+        self.assertEqual(self.watch_files(), ["Some.Show.S01E02.1080p.WEB.h264-GRP.torrent"])
+        films = sorted(path.name for path in self.films.iterdir())
+        self.assertEqual(films, ["Gladiator.II.2024.1080p.torrent"])
+        saved = {record.media_type: record.saved_path for record in await self.history()}
+        self.assertEqual(saved[MediaType.MOVIE], film.path)
+
+    async def test_without_a_films_folder_films_go_to_the_watch_folder(self) -> None:
+        await self.settings.update(movie_download_dir="  ")
+        self.assertIsNone(self.settings.current.movie_download_dir)
+        self.serve(ITORRENTS, CACHED)
+        film = await self.service.grab(release(title="Gladiator.II.2024.1080p"), FILM)
+        self.assertEqual(Path(film.path or "").parent, self.watch)
+        self.assertFalse(self.films.exists())
+
+    async def test_an_unwritable_films_folder_names_it(self) -> None:
+        blocker = Path(self.tmp.name) / "a file"
+        blocker.write_bytes(b"")
+        await self.settings.update(movie_download_dir=str(blocker))
+        self.serve(ITORRENTS, CACHED)
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(), FILM)
+        self.assertIn(str(blocker), str(caught.exception))
+        self.assertEqual(self.watch_files(), [])
+
+    async def test_folder_mode_sends_a_films_magnet_as_a_film(self) -> None:
+        for kind in RemoteKind:
+            with self.subTest(kind=kind):
+                client = await self.set_up_remote(kind)
+                film = release(title=f"Film {kind}", info_hash=kind_hash(kind)[:-1] + "a")
+                await self.service.grab(film, FILM)  # nothing cached: its magnet
+                show = release(title=f"Show {kind}", info_hash=kind_hash(kind)[:-1] + "b")
+                await self.service.grab(show, EPISODE)
+                self.assertEqual(client.movies, [True, False])
+        self.assertEqual(self.watch_files(), [])
+
+    async def test_remote_mode_sends_a_film_as_a_film_to_each_kind(self) -> None:
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+        self.serve(DIRECT_URL, TORRENT)
+        for kind in RemoteKind:
+            with self.subTest(kind=kind):
+                client = await self.set_up_remote(kind)
+                torrent = release(download_url=DIRECT_URL, info_hash=kind_hash(kind))
+                await self.service.grab(torrent, FILM)  # the .torrent file
+                magnet = release(title=f"Film {kind}", info_hash=kind_hash(kind)[:-1] + "a")
+                await self.service.grab(magnet, FILM)  # nothing cached: a magnet
+                show = release(title=f"Show {kind}", info_hash=kind_hash(kind)[:-1] + "b")
+                await self.service.grab(show, EPISODE)
+                self.assertEqual((len(client.torrents), len(client.magnets)), (1, 2))
+                self.assertEqual(client.movies, [True, True, False])
+
+    async def test_app_mode_has_no_place_to_choose(self) -> None:
+        await self.settings.update(
+            download_mode=DownloadMode.APP, movie_download_dir=str(self.films)
+        )
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(), FILM)
+        self.assertIs(result.outcome, GrabOutcome.OPENED)
+        self.assertEqual(Path(self.opened[0]).parent, self.cache)
+        self.assertFalse(self.films.exists())
+        self.assertEqual(self.remote_calls(), 0)
+
+
+class FilmsThroughTheClientsTests(DownloadTestCase):
+    """REMOTE mode through the real clients on their fake servers (the client tests'): a film
+    reaches the program with the films destination, an episode with the usual one, and a film
+    without a films destination with the usual one too."""
+
+    async def grab_with(self, server: Any, kind: RemoteKind, **values: Any) -> None:
+        await self.settings.update(download_mode=DownloadMode.REMOTE, remote_kind=kind, **values)
+        service = DownloadService(
+            self.http,
+            self.db.history,
+            self.settings,
+            RemoteDownloads(self.settings, transport=httpx.MockTransport(server)),
+            self.cache,
+        )
+        await service.grab(release(title="Gladiator.II.2024", info_hash=HASH), FILM)
+        await service.grab(release(title="Show.S01E02", info_hash=OTHER_HASH), EPISODE)
+        await self.settings.update(movie_remote_destination="")
+        await service.grab(release(title="Heat.1995", info_hash="c" * 40), FILM)
+
+    async def test_qbittorrent(self) -> None:
+        from tests import test_qbittorrent as qbt
+
+        server = qbt.FakeQBittorrent()
+        paths: list[str | None] = []
+        answer = server.add_answer
+
+        def add() -> httpx.Response:
+            paths.append(server.forms["torrents/add"].get("savepath"))
+            return answer()
+
+        server.add_answer = add
+        await self.grab_with(
+            server,
+            RemoteKind.QBITTORRENT,
+            remote_url=qbt.BASE,
+            remote_username="admin",
+            remote_password=qbt.PASSWORD,
+            remote_destination="/downloads/tv",
+            movie_remote_destination="/downloads/movies",
+        )
+        self.assertEqual(paths, ["/downloads/movies", "/downloads/tv", "/downloads/tv"])
+
+    async def test_transmission(self) -> None:
+        from tests import test_transmission as tr
+
+        server = tr.FakeTransmission()
+        await self.grab_with(
+            server,
+            RemoteKind.TRANSMISSION,
+            remote_url=tr.BASE,
+            remote_username="beau",
+            remote_password=tr.PASSWORD,
+            remote_destination="/downloads/tv",
+            movie_remote_destination="/downloads/movies",
+        )
+        added = [body for body in server.bodies if body["method"] == "torrent-add"]
+        self.assertEqual(
+            [body["arguments"].get("download-dir") for body in added],
+            ["/downloads/movies", "/downloads/tv", "/downloads/tv"],
+        )
+
+    async def test_download_station(self) -> None:
+        from tests import test_synology as dsm
+
+        server = dsm.FakeDSM()
+        await self.grab_with(
+            server,
+            RemoteKind.SYNOLOGY,
+            remote_url=dsm.BASE,
+            remote_username="beau",
+            remote_password=dsm.PASSWORD,
+            remote_destination="video/tv",
+            movie_remote_destination="/video/movies/",
+        )
+        created = [form for api, verb, form in server.calls if (api, verb) == (dsm.TASK2, "create")]
+        self.assertEqual(
+            [form.get("destination") for form in created],
+            ['"video/movies"', '"video/tv"', '"video/tv"'],
+        )
 
 
 class WiringTests(unittest.IsolatedAsyncioTestCase):

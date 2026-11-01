@@ -277,6 +277,8 @@ NL: dict[str, str] = {
     "Change": "Wijzigen",
     "Set up a torrent program to receive them": "Stel een torrentprogramma in om ze te ontvangen",
     "Destination folder (optional)": "Doelmap (optioneel)",
+    "Films folder": "Map voor films",
+    "Leave empty to use the same folder": "Laat leeg om dezelfde map te gebruiken",
     "{program} at {host}": "{program} op {host}",
     "Those are sent to {where}.": "Die gaan naar {where}.",
     # app/ui/prowlarr_panel.py
@@ -374,7 +376,6 @@ NL: dict[str, str] = {
     "{n} episodes today": "{n} afleveringen vandaag",
     "{n} episode in the next 7 days": "{n} aflevering in de komende 7 dagen",
     "{n} episodes in the next 7 days": "{n} afleveringen in de komende 7 dagen",
-    "{n} downloading": "{n} aan het downloaden",
     # app/ui/import_dialog.py
     "Show names": "Namen van series",
     "From airdates.tv": "Van airdates.tv",
@@ -472,7 +473,7 @@ NL: dict[str, str] = {
     "Couldn't download": "Downloaden mislukt",
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
-    "✓ Have it": "✓ Heb ik",
+    "You have this": "Deze heb je al",
     "Options": "Opties",
     "I already have this": "Deze heb ik al",
     "I already have this season": "Dit seizoen heb ik al",
@@ -696,6 +697,7 @@ NL: dict[str, str] = {
     "Couldn't look up {title} on TMDB": "Kon {title} niet opzoeken bij TMDB",
     # app/ui/title_info.py
     "Watch trailer": "Trailer bekijken",
+    "Opening trailer…": "Trailer openen…",
     "Add a TMDB key in Settings for posters, trailers and cast":
         "Vul een TMDB-sleutel in bij Instellingen voor posters, trailers en de cast",
     "Rumoured": "Gerucht",
@@ -925,6 +927,23 @@ NL: dict[str, str] = {
     "Searching… {n} found": "Zoeken… {n} gevonden",
     "Releases ({n})": "Releases ({n})",
     "No matching releases found.": "Geen passende releases gevonden.",
+    "★ Recommended: {name}": "★ Aanbevolen: {name}",
+    "fast": "snel",
+    "slower": "trager",
+    "may stall": "kan blijven hangen",
+    "seeders unknown": "seeders onbekend",
+    "most seeders": "meeste seeders",
+    "lots of seeders": "veel seeders",
+    "few seeders": "weinig seeders",
+    "right size": "juiste grootte",
+    "smaller than your size range": "kleiner dan je gekozen grootte",
+    "bigger than your size range": "groter dan je gekozen grootte",
+    "small size": "klein bestand",
+    "normal size": "normale grootte",
+    "large size": "groot bestand",
+    "size unknown": "grootte onbekend",
+    "your preferred group": "je favoriete releasegroep",
+    "a pack with this episode": "een bundel met deze aflevering",
     # app/services/downloads.py
     "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose another option under \"Where downloads go\" in Settings.":
         "Er is geen torrentprogramma ingesteld op deze pc. Installeer er een, zoals qBittorrent, of kies een andere optie onder \"Waar downloads naartoe gaan\" in Instellingen.",
@@ -1205,7 +1224,94 @@ NL: dict[str, str] = {
     "Prowlarr rejected the API key": "Prowlarr weigert de API-sleutel",
     "Prowlarr: {path} not found (HTTP 404); check the URL":
         "Prowlarr: {path} niet gevonden (HTTP 404); controleer de URL",
+    # app/services/backup.py (Backup & move)
+    "AirGrabber backup {date}": "AirGrabber-back-up {date}",
+    "That file isn't an AirGrabber backup.": "Dat bestand is geen back-up van AirGrabber.",
+    "This backup is damaged and can't be loaded.":
+        "Deze back-up is beschadigd en kan niet geladen worden.",
+    "This backup was made by a newer AirGrabber ({version}). Update AirGrabber, then load it again.":
+        "Deze back-up is gemaakt met een nieuwere AirGrabber ({version}). Werk AirGrabber bij en laad hem dan opnieuw.",
+    "This backup was made by a newer AirGrabber. Update AirGrabber, then load it again.":
+        "Deze back-up is gemaakt met een nieuwere AirGrabber. Werk AirGrabber bij en laad hem dan opnieuw.",
+    "Couldn't read that file.": "Kon dat bestand niet lezen.",
+    "Couldn't save the backup there. Choose another folder.":
+        "Kon de back-up daar niet opslaan. Kies een andere map.",
+    # app/ui/backup_dialog.py
+    "Save a backup": "Back-up opslaan",
+    "Your followed shows, film watchlist, download history and settings go into one file. Load it on another PC in Settings → Backup.":
+        "Je gevolgde series, je kijklijst, je downloadgeschiedenis en je instellingen komen in één bestand. Laad het op een andere pc via Instellingen → Back-up.",
+    "Include keys and passwords": "Sleutels en wachtwoorden meenemen",
+    "Anyone with the file can then use them. Keep it somewhere safe.":
+        "Iedereen met het bestand kan ze dan gebruiken. Bewaar het op een veilige plek.",
+    "Save…": "Opslaan…",
+    "Saving…": "Bezig met opslaan…",
+    "Backup saved": "Back-up opgeslagen",
+    "The keys and passwords are in it: keep it somewhere safe.":
+        "De sleutels en wachtwoorden zitten erin: bewaar het op een veilige plek.",
+    "Load a backup": "Back-up laden",
+    "Reading the backup…": "Back-up lezen…",
+    "Can't load this file": "Kan dit bestand niet laden",
+    "Nothing was changed.": "Er is niets veranderd.",
+    "Loading the backup didn't work.": "Het laden van de back-up is niet gelukt.",
+    "Load this backup?": "Deze back-up laden?",
+    "Replace": "Vervangen",
+    "Your shows, watchlist and settings become the backup's. Keys and passwords it doesn't have stay as they are.":
+        "Je series, kijklijst en instellingen worden die van de back-up. Sleutels en wachtwoorden die er niet in zitten, blijven zoals ze zijn.",
+    "Add to what I have": "Toevoegen aan wat ik heb",
+    "The backup's shows and films join yours; where you have one already, yours stays. Your settings don't change.":
+        "De series en films uit de back-up komen bij de jouwe; wat je al hebt, blijft zoals het is. Je instellingen veranderen niet.",
+    "Loading the backup…": "Bezig met laden…",
+    "Backup loaded": "Back-up geladen",
+    "Your settings are now the backup's.": "Je instellingen zijn nu die van de back-up.",
+    "Your downloads keep using qBittorrent on this PC.":
+        "Je downloads blijven naar qBittorrent op deze pc gaan.",
+    "Where downloads go stays as it was on this PC: the backup's qBittorrent was on the other PC.":
+        "Waar downloads naartoe gaan, blijft zoals het op deze pc was: de qBittorrent uit de back-up stond op de andere pc.",
+    "Check your folders in Settings: they may be different on this PC.":
+        "Kijk je mappen na in Instellingen: die kunnen op deze pc anders zijn.",
+    "Keys and passwords weren't in the backup. Fill in any you need in Settings.":
+        "Er zaten geen sleutels en wachtwoorden in de back-up. Vul in Instellingen in wat je nodig hebt.",
+    "AirGrabber backup": "AirGrabber-back-up",
+    "All files": "Alle bestanden",
+    "{n} show": "{n} serie",
+    "{n} shows": "{n} series",
+    "{n} film on the watchlist": "{n} film op de kijklijst",
+    "{n} films on the watchlist": "{n} films op de kijklijst",
+    "settings": "instellingen",
+    "Saved {date} by AirGrabber {version}": "Opgeslagen op {date} met AirGrabber {version}",
+    "Saved {date}": "Opgeslagen op {date}",
+    "{n} download in the history": "{n} download in de geschiedenis",
+    "{n} downloads in the history": "{n} downloads in de geschiedenis",
+    "with keys and passwords": "met sleutels en wachtwoorden",
+    "without keys and passwords": "zonder sleutels en wachtwoorden",
+    "Added: {shows}, {films}.": "Toegevoegd: {shows}, {films}.",
+    "Removed, as they aren't in the backup: {shows}, {films}.":
+        "Verwijderd, want niet in de back-up: {shows}, {films}.",
+    "{n} download added to the history.": "{n} download toegevoegd aan de geschiedenis.",
+    "{n} downloads added to the history.": "{n} downloads toegevoegd aan de geschiedenis.",
+    # app/ui/settings_dialog.py (Backup)
+    "Backup": "Back-up",
+    "Keep a copy of your shows, watchlist and settings, or move them to another PC.":
+        "Bewaar een kopie van je series, kijklijst en instellingen, of zet ze over naar een andere pc.",
+    "One file with your followed shows, film watchlist, download history and settings. Load it on this PC or another one: you see what's in it before anything changes.":
+        "Eén bestand met je gevolgde series, je kijklijst, je downloadgeschiedenis en je instellingen. Laad het op deze pc of een andere: je ziet eerst wat erin zit, voor er iets verandert.",
+    "Save a backup…": "Back-up opslaan…",
+    "Load a backup…": "Back-up laden…",
+    # app/ui/welcome_dialog.py (Backup)
+    "Moving from another PC? Load a backup": "Kom je van een andere pc? Laad een back-up",
     # app/whats_new.py
+    "Save a backup of your shows, watchlist and settings, and load it on a new PC (Settings → Backup).":
+        "Bewaar een back-up van je series, kijklijst en instellingen en laad die op een nieuwe pc (Instellingen → Back-up).",
+    "Films can go to their own folder: fill in Films folder in Settings → Where downloads go.":
+        "Films kunnen naar een eigen map: vul Map voor films in bij Instellingen → Waar downloads naartoe gaan.",
+    "The releases list marks the one ⬇ Auto would pick with ★ and shows how fast each will download.":
+        "De lijst met releases markeert met ★ welke ⬇ Auto zou kiezen en toont hoe snel elke release downloadt.",
+    "Trailers now play in their own AirGrabber window instead of the browser.":
+        "Trailers spelen nu af in een eigen AirGrabber-venster in plaats van in de browser.",
+    "A clearer top bar and info screen: bigger poster, calmer episode marks, softer fades.":
+        "Een duidelijkere bovenbalk en infoscherm: grotere poster, rustigere afleveringslabels, zachtere overgangen.",
+    "Saturdays in the calendar get suggestions too.":
+        "Ook de zaterdagen in de kalender krijgen nu suggesties.",
     "A new top bar with a spotlight on tonight's episodes or new films; click it to open the title.":
         "Een nieuwe bovenbalk met een spotlight op de afleveringen van vanavond of nieuwe films; klik erop om de titel te openen.",
     "The info screen and the releases are now one window: pick a release right beside the info.":

@@ -11,11 +11,12 @@ original ones, which Transmission 4.1's JSON-RPC 2.0 still accepts):
   HTTP 403 means this computer isn't on the RPC whitelist;
 - `session-get` → `version` ("4.0.6 (38c164933e)") for Test connection;
 - `torrent-add` with `filename` (a magnet link) or `metainfo` (the .torrent, base64), plus
-  `download-dir`; the answer holds `torrent-added`, or `torrent-duplicate` (also a success);
+  `download-dir` (a film's own destination when Settings has one); the answer holds
+  `torrent-added`, or `torrent-duplicate` (also a success);
 - the Downloads page (read-only): `torrent-get` with `fields` (hashString, name, percentDone,
   status 0–6, error 0–3, isFinished) and, when every grab asked about has one, `ids` = their
   hashes; `free-space` with `path` (the destination in Settings, else `session-get`'s
-  `download-dir`) → `size-bytes` and, from 4.0, `total_size`.
+  `download-dir`; the films destination too) → `size-bytes` and, from 4.0, `total_size`.
 
 Secret hygiene as in remote.py: the password only travels in the Authorization header. The
 status calls keep the session id Transmission handed out (in memory, per address), so they
@@ -39,6 +40,7 @@ from app.services.remote import (
     HttpClients,
     RemoteError,
     clamp_progress,
+    destination,
     failure_text,
     host_of,
     normal_hash,
@@ -97,15 +99,15 @@ class TransmissionClient:
         match = _VERSION_RE.search(version) if isinstance(version, str) else None
         return f"{PROGRAM} {match.group(0)}" if match else PROGRAM
 
-    async def add_magnet(self, magnet: str) -> None:
+    async def add_magnet(self, magnet: str, *, movie: bool = False) -> None:
         if not magnet.startswith("magnet:"):
             raise ValueError("not a magnet link")
-        async with self._session() as session:
+        async with self._session(movie=movie) as session:
             await session.add({"filename": magnet})
             log.info("Added a magnet link to Transmission on %s", session.host)
 
-    async def add_torrent(self, content: bytes, filename: str) -> None:
-        async with self._session() as session:
+    async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
+        async with self._session(movie=movie) as session:
             await session.add({"metainfo": base64.b64encode(content).decode("ascii")})
             log.info("Added a .torrent file to Transmission on %s", session.host)
 
@@ -124,26 +126,34 @@ class TransmissionClient:
 
     async def free_space(self) -> DiskSpace | None:
         """Free space where Transmission saves: the destination in Settings, else its own
-        download folder."""
+        download folder; with a films destination elsewhere, the fuller of the two (a films
+        folder Transmission can't measure yet is left out)."""
+        settings = self._settings.current
+        films = settings.movie_remote_destination.strip()
+        spaces: list[DiskSpace | None] = []
         async with self._session(keep_id=True) as session:
-            path = self._settings.current.remote_destination.strip()
+            path = settings.remote_destination.strip()
             if not path:
                 answer = await session.call("session-get", {"fields": ["download-dir"]})
                 folder = answer.get("download-dir")
                 path = folder if isinstance(folder, str) else ""
-            if not path:
-                return None
-            answer = await session.call("free-space", {"path": path})
-        free = number(answer.get("size-bytes"))
-        total = number(answer.get("total_size"))
-        if free is None or free < 0:
-            return None
-        return DiskSpace(int(free), int(total) if total is not None and total > 0 else None)
+            if path:
+                spaces.append(_disk_space(await session.call("free-space", {"path": path})))
+            if films and films != path:
+                try:
+                    spaces.append(_disk_space(await session.call("free-space", {"path": films})))
+                except RemoteError:
+                    log.info("No free space for Transmission's films folder")
+        known = [space for space in spaces if space is not None]
+        return min(known, key=lambda space: space.free) if known else None
 
     @contextlib.asynccontextmanager
-    async def _session(self, *, keep_id: bool = False) -> AsyncIterator[_Session]:
+    async def _session(
+        self, *, keep_id: bool = False, movie: bool = False
+    ) -> AsyncIterator[_Session]:
         """One operation's session; `keep_id`: start with (and keep) the session id of the
-        status calls before, so they skip the 409 handshake."""
+        status calls before, so they skip the 409 handshake. A film's (`movie`) adds go to the
+        films destination."""
         settings = self._settings.current  # one snapshot for the whole operation
         if not settings.remote_url:
             raise RemoteError(t("Transmission isn't set up: enter its address in Settings."))
@@ -159,7 +169,7 @@ class TransmissionClient:
                 http,
                 url,
                 host_of(settings.remote_url),
-                settings.remote_destination,
+                destination(settings, movie=movie),
                 signed_in=auth is not None,
                 session_id=kept[1] if keep_id and kept is not None and kept[0] == url else None,
             )
@@ -266,6 +276,15 @@ class _Session:
 
     def unexpected(self) -> str:
         return self._unexpected()
+
+
+def _disk_space(answer: Mapping[str, object]) -> DiskSpace | None:
+    """free-space's answer: `size-bytes` and, from 4.0, `total_size`."""
+    free = number(answer.get("size-bytes"))
+    total = number(answer.get("total_size"))
+    if free is None or free < 0:
+        return None
+    return DiskSpace(int(free), int(total) if total is not None and total > 0 else None)
 
 
 def _field(raw: Mapping[str, object], name: str, snake: str) -> object:

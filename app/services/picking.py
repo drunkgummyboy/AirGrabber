@@ -8,13 +8,20 @@ series one for episodes and season packs, the movie one for films), then the siz
 it first, an unknown size next, then the closest size; never a filter), then preferred release
 groups, then seeders, then a known size before an unknown one.
 
+`recommend` is the same pick with its reasons, in the picker's own terms (the release list's
+★ Recommended row and the line under it); `speed` says how fast a release will likely download
+by its seeders (the list's coloured dots, FAST_SEEDERS / STALL_SEEDERS).
+
 Pure functions; nothing here logs.
 """
 
 from __future__ import annotations
 
 import re
+import statistics
 from collections.abc import Iterable
+from dataclasses import dataclass
+from enum import StrEnum
 
 from app.models import (
     QualityProfile,
@@ -222,3 +229,128 @@ def pick_best(
     """The release a one-click download grabs for `request`; None when nothing qualifies."""
     ranked = rank_releases(releases, request, settings)
     return ranked[0] if ranked else None
+
+
+# -- how fast a release will likely download, and why one is picked ------------------------------
+
+FAST_SEEDERS = 20  # at least this many seeders: fast (the release list's green dot)
+STALL_SEEDERS = 2  # at most this many: it may stall (red); in between: slower (amber)
+# No size range set: a size under SMALL_SIZE times the listed releases' median size is small,
+# one over LARGE_SIZE times it large, the rest normal.
+SMALL_SIZE = 2 / 3
+LARGE_SIZE = 1.5
+
+
+class Speed(StrEnum):
+    """How fast a release will likely download, judged by its seeders alone."""
+
+    FAST = "fast"
+    SLOWER = "slower"
+    STALL = "stall"
+    UNKNOWN = "unknown"  # the source gave no count
+
+
+def speed(release: TorrentRelease) -> Speed:
+    """FAST from FAST_SEEDERS seeders on, STALL at STALL_SEEDERS or fewer, SLOWER in between;
+    UNKNOWN for 0: the indexers drop the releases nobody seeds, so a 0 is a source that didn't
+    say."""
+    seeders = release.seeders
+    if seeders <= 0:
+        return Speed.UNKNOWN
+    if seeders >= FAST_SEEDERS:
+        return Speed.FAST
+    if seeders <= STALL_SEEDERS:
+        return Speed.STALL
+    return Speed.SLOWER
+
+
+class SeedNote(StrEnum):
+    """What the recommendation says about its seeders."""
+
+    MOST = "most"  # the most of the listed releases (and not a STALL count)
+    LOTS = "lots"  # FAST
+    FEW = "few"  # below FAST_SEEDERS
+
+
+class SizeNote(StrEnum):
+    """What the recommendation says about its size."""
+
+    RIGHT = "right"  # inside the user's size range
+    BELOW_RANGE = "below_range"  # a range applies and it is smaller (the closest there was)
+    ABOVE_RANGE = "above_range"  # ... bigger
+    SMALL = "small"  # no range applies: compared with the listed releases' median size
+    NORMAL = "normal"
+    LARGE = "large"
+    UNKNOWN = "unknown"  # the source didn't say
+
+
+@dataclass(frozen=True, slots=True)
+class Recommendation:
+    """The release `pick_best` picks, and why: the criteria it weighs, as plain notes."""
+
+    release: TorrentRelease
+    seeds: SeedNote | None  # None: the source gave no count
+    size: SizeNote | None  # None: no range applies and no other size to compare it with
+    preferred: bool  # from one of the user's preferred release groups
+    pack: bool  # an episode was asked for, and no single-episode release qualified
+
+
+def seed_note(release: TorrentRelease, listed: Iterable[TorrentRelease]) -> SeedNote | None:
+    """FEW for a STALL count; MOST when no other listed release has more; else LOTS for a FAST
+    count, FEW below it. None when the source gave no count."""
+    level = speed(release)
+    if level is Speed.UNKNOWN:
+        return None
+    if level is Speed.STALL:
+        return SeedNote.FEW
+    others = [other for other in listed if other is not release]
+    if others and all(release.seeders >= other.seeders for other in others):
+        return SeedNote.MOST
+    return SeedNote.LOTS if level is Speed.FAST else SeedNote.FEW
+
+
+def size_note(
+    release: TorrentRelease,
+    listed: Iterable[TorrentRelease],
+    request: SearchRequest,
+    settings: Settings,
+) -> SizeNote | None:
+    """UNKNOWN without a size. With a size range for it (`size_range`): RIGHT inside it, else
+    BELOW_RANGE / ABOVE_RANGE. Without one: SMALL / NORMAL / LARGE against the median size of
+    the listed releases (SMALL_SIZE, LARGE_SIZE); None when no other one has a size."""
+    if not release.size_bytes:
+        return SizeNote.UNKNOWN
+    limits = size_range(release, request, settings)
+    if limits is not None:
+        if size_rank(release, request, settings)[0] == 0:
+            return SizeNote.RIGHT
+        low, _high = limits
+        below = low is not None and release.size_bytes / GIB < low
+        return SizeNote.BELOW_RANGE if below else SizeNote.ABOVE_RANGE
+    sizes = [other.size_bytes for other in listed if other.size_bytes and other is not release]
+    if not sizes:
+        return None
+    share = release.size_bytes / statistics.median([*sizes, release.size_bytes])
+    if share < SMALL_SIZE:
+        return SizeNote.SMALL
+    if share > LARGE_SIZE:
+        return SizeNote.LARGE
+    return SizeNote.NORMAL
+
+
+def recommend(
+    releases: Iterable[TorrentRelease], request: SearchRequest, settings: Settings
+) -> Recommendation | None:
+    """`pick_best`'s pick from `releases` (the one-click download's very choice), with its
+    reasons against the other `releases`; None when it picks nothing."""
+    listed = list(releases)
+    best = pick_best(listed, request, settings)
+    if best is None:
+        return None
+    return Recommendation(
+        release=best,
+        seeds=seed_note(best, listed),
+        size=size_note(best, listed, request, settings),
+        preferred=is_preferred(best, settings),
+        pack=request.kind is SearchKind.EPISODE and is_multi_episode(best),
+    )

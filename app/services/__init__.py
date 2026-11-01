@@ -9,11 +9,12 @@ import httpx
 
 from app import APP_NAME, __version__
 from app.config import AppPaths
-from app.database import Database
+from app.database import BackupRepository, Database
 from app.indexers import default_indexers
 from app.models import Settings
 from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportService
 from app.services.auto_download import AutoDownloadService
+from app.services.backup import BackupService
 from app.services.discovery import DiscoveryService
 from app.services.download_status import DownloadStatusService
 from app.services.downloads import DownloadService
@@ -58,6 +59,7 @@ class Services:
         "_http",
         "airdates",
         "auto_download",
+        "backup",
         "discovery",
         "download_status",
         "downloads",
@@ -109,6 +111,8 @@ class Services:
         self.missing = MissingDownloadService(library, self.quick_download)
         # The movie watchlist (in memory once `load`ed; Services.create does that).
         self.watchlist = WatchlistService(db.watchlist, discovery, downloads)
+        # Settings → Backup: shows, watchlist, download history and settings in one file.
+        self.backup = BackupService(BackupRepository(db), settings, self.watchlist)
         # Downloads new episodes of the shows whose switch is on, and the watchlist films whose
         # "Download when it's out" is on (`run_periodic` from the UI).
         self.auto_download = AutoDownloadService(
@@ -251,6 +255,7 @@ __all__ = [
     "AirdatesError",
     "AirdatesImportService",
     "AutoDownloadService",
+    "BackupService",
     "DiscoveryService",
     "DownloadService",
     "DownloadStatusService",
