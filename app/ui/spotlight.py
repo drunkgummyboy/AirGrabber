@@ -1,6 +1,7 @@
 """The spotlight band's pure parts (the widget: app/ui/spotlight_band.py): its texts (the tag,
 the title, the muted line), when it turns to the next title (`Rotation`) and where everything
-goes (`band_layout`, `hit_target`), all in CTk's unscaled units."""
+goes (`band_layout`, `hit_target`; the Series / Movies switch on the tabs row: `switch_layout`,
+`switch_hit`), all in CTk's unscaled units."""
 
 from __future__ import annotations
 
@@ -152,10 +153,7 @@ ROW_HEIGHT = 40
 LOGO_SIZE = 40
 WORD_GAP = 10  # the logo → "AirGrabber"
 WORD_SIZE = 18
-PILL_PAD = 4  # the switch's solid pill around its two parts
-SEGMENT_PAD_X = 20  # either side of "Series" / "Movies"
-SEGMENT_FONT_SIZE = 15
-CLUSTER_GAP = 24  # at least between the switch and what is left and right of it
+CLUSTER_GAP = 24  # at least between "AirGrabber" and the search field
 SEARCH_WIDTH = 300
 SEARCH_MIN_WIDTH = 200
 SEARCH_GAP = 14  # the search field → the ⬇ button
@@ -221,8 +219,6 @@ class BandLayout:
     logo: Rect
     word_x: float  # "AirGrabber" starts here, centred on the row
     brand: Rect  # the logo and "AirGrabber" together
-    pill: Rect  # the Series / Movies switch
-    segments: tuple[Rect, Rect]  # its Series and Movies parts
     search: Rect  # the search field
     magnifier: Rect  # its 🔍 (the search button)
     entry: Rect  # the text box inside it
@@ -241,30 +237,23 @@ class BandLayout:
 
 
 def band_layout(
-    width: float, *, word_width: float, segment_width: float, dots: int = 0, current: int = 0
+    width: float, *, word_width: float, dots: int = 0, current: int = 0
 ) -> BandLayout:
     """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left,
-    the switch (two `segment_width` parts) in the middle, the search field, ⬇ and the settings
-    button on the right; under them the poster and the texts, the `dots` (the `current` one
-    wide) on the right. The switch stays centred while it fits; the search field narrows (to
-    SEARCH_MIN_WIDTH) and then the switch moves left before anything overlaps."""
+    the search field, ⬇ and the settings button on the right (the Series / Movies switch is on
+    the tabs row under the band: `switch_layout`); under them the poster and the texts, the
+    `dots` (the `current` one wide) on the right. The search field narrows (to
+    SEARCH_MIN_WIDTH) before it would come too close to "AirGrabber"."""
     right = width - PAD_X
     logo = Rect(PAD_X, ROW_TOP, LOGO_SIZE, LOGO_SIZE)
     word_x = logo.right + WORD_GAP
     left_end = word_x + word_width
     settings = Rect(right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     downloads = Rect(settings.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
-    pill_width = 2 * PILL_PAD + 2 * segment_width
     search_right = downloads.x - SEARCH_GAP
-    centred = width / 2 - pill_width / 2
-    room = search_right - (centred + pill_width + CLUSTER_GAP)
+    room = search_right - (left_end + CLUSTER_GAP)
     search_width = max(SEARCH_MIN_WIDTH, min(SEARCH_WIDTH, room))
     search = Rect(search_right - search_width, ROW_TOP, search_width, ROW_HEIGHT)
-    pill_x = max(left_end + CLUSTER_GAP, min(centred, search.x - CLUSTER_GAP - pill_width))
-    pill = Rect(pill_x, ROW_TOP, pill_width, ROW_HEIGHT)
-    part_height = ROW_HEIGHT - 2 * PILL_PAD
-    series = Rect(pill.x + PILL_PAD, ROW_TOP + PILL_PAD, segment_width, part_height)
-    movies = Rect(series.right, series.y, segment_width, part_height)
     magnifier = Rect(search.x + MAGNIFIER_LEFT, ROW_TOP, MAGNIFIER_WIDTH, ROW_HEIGHT)
     entry_x = magnifier.right
     entry = Rect(
@@ -293,8 +282,6 @@ def band_layout(
         logo=logo,
         word_x=word_x,
         brand=Rect(logo.x, logo.y, left_end - logo.x, logo.h),
-        pill=pill,
-        segments=(series, movies),
         search=search,
         magnifier=magnifier,
         entry=entry,
@@ -310,8 +297,6 @@ def band_layout(
 
 
 class HitKind(StrEnum):
-    SERIES = "series"
-    MOVIES = "movies"
     SEARCH = "search"  # the 🔍
     FIELD = "field"  # the search field around its text box: focuses it
     DOWNLOADS = "downloads"
@@ -328,13 +313,6 @@ class Hit(NamedTuple):
 def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | None:
     """What a pointer at (x, y) units is over (None: the band's background up top, the logo,
     or the spotlight without titles)."""
-    series, movies = layout.segments
-    if series.contains(x, y):
-        return Hit(HitKind.SERIES)
-    if movies.contains(x, y):
-        return Hit(HitKind.MOVIES)
-    if layout.pill.contains(x, y):
-        return None
     if layout.magnifier.contains(x, y):
         return Hit(HitKind.SEARCH)
     if layout.search.contains(x, y):
@@ -355,8 +333,48 @@ def controls(layout: BandLayout) -> Sequence[Rect]:
     """The top row's parts that must never overlap (tests check it at every width)."""
     return (
         layout.brand,
-        layout.pill,
         layout.search,
         layout.downloads,
         layout.settings,
     )
+
+
+# -- the Series / Movies switch (on the tabs row, under the band) --------------------------------
+
+PILL_PAD = 4  # the switch's solid pill around its two parts
+SEGMENT_PAD_X = 30  # either side of "Series" / "Movies"
+SEGMENT_PAD_Y = 9  # … above and under it
+SEGMENT_FONT_SIZE = 17
+SWITCH_MARGIN = 7  # the switch's own canvas around the pill: room for its shadow
+
+
+@dataclass(frozen=True, slots=True)
+class SwitchLayout:
+    """The switch on its own canvas (`size`), in unscaled units: the pill and its Series and
+    Movies parts."""
+
+    size: tuple[float, float]
+    pill: Rect
+    segments: tuple[Rect, Rect]
+
+
+def switch_layout(*, segment_width: float, line_height: float) -> SwitchLayout:
+    """Two `segment_width` parts (each name's width plus SEGMENT_PAD_X either side), each a
+    `line_height` line tall plus SEGMENT_PAD_Y above and under it, on a pill PILL_PAD around
+    them, SWITCH_MARGIN in from the canvas's edges."""
+    part_height = line_height + 2 * SEGMENT_PAD_Y
+    pill = Rect(
+        SWITCH_MARGIN, SWITCH_MARGIN, 2 * PILL_PAD + 2 * segment_width, 2 * PILL_PAD + part_height
+    )
+    series = Rect(pill.x + PILL_PAD, pill.y + PILL_PAD, segment_width, part_height)
+    movies = Rect(series.right, series.y, segment_width, part_height)
+    size = (pill.right + SWITCH_MARGIN, pill.bottom + SWITCH_MARGIN)
+    return SwitchLayout(size=size, pill=pill, segments=(series, movies))
+
+
+def switch_hit(layout: SwitchLayout, x: float, y: float) -> int | None:
+    """Which part a pointer at (x, y) units is over: 0 = Series, 1 = Movies, None = neither."""
+    for index, part in enumerate(layout.segments):
+        if part.contains(x, y):
+            return index
+    return None

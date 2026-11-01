@@ -266,10 +266,13 @@ class Tabview(ctk.CTkTabview):
     the chosen one filled with the accent colour, and the pages have no box around them (BG, no
     border). `look="underline"` is the same with `UnderlineTabs` (an accent line under the
     chosen name) instead. The default "segmented" look is CTk's own (the info window, Import
-    Shows).
+    Shows). `pills_master`: the pills' row goes in that widget instead (its owner places it:
+    the main window's tabs row, with the Series / Movies switch at its right end).
     """
 
-    def __init__(self, master: Any, *, look: str = "segmented", **kwargs: Any) -> None:
+    def __init__(
+        self, master: Any, *, look: str = "segmented", pills_master: Any = None, **kwargs: Any
+    ) -> None:
         self._look = look
         self._underline: UnderlineTabs | None = None
         self._pills: PillTabs | None = None
@@ -282,8 +285,10 @@ class Tabview(ctk.CTkTabview):
             self._underline = UnderlineTabs(self, on_select=self._tab_clicked)
             self._underline.grid(row=0, column=0, sticky="nsew")
         elif look == "pills":
-            self._pills = PillTabs(self, on_select=self._tab_clicked)
-            self._pills.grid(row=0, column=0, sticky="nsew")
+            own = pills_master is None
+            self._pills = PillTabs(self if own else pills_master, on_select=self._tab_clicked)
+            if own:
+                self._pills.grid(row=0, column=0, sticky="nsew")
 
     @property
     def underline(self) -> UnderlineTabs | None:

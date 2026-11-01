@@ -3,13 +3,16 @@
 Its picture is a title's TMDB backdrop, blurred, dimmed and fading into the page's background at
 the bottom (as the info window's: app/ui/backdrop.py) under a left-to-right scrim of that
 background (darkest behind the logo), or without one a soft glow in the accent colour. Over it,
-on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND), the Series
-/ Movies switch on its solid pill in the middle, the search field, ⬇ Downloads (with its badge
-while downloads are on their way) and the settings button on the right. Under them the
+on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left,
+the search field, ⬇ Downloads (with its badge while downloads are on their way) and the settings
+button on the right. Under them the
 spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the title, a muted line
 ("3 episodes today", a film's "2026 · ★ 7.0") and a dot per title. The titles come from
 app/services/spotlight.py: Series and Movies each have their own; the Downloads page keeps the
 last side's.
+
+The Series / Movies switch (`ModeSwitch`, below) is a canvas of its own at the right end of the
+tabs row under the band: a solid pill over a soft shadow on the page's background.
 
 Every ROTATE_S seconds the next title fades in (FADE_STEPS frames over FADE_MS, blended in a
 worker thread), not while the pointer is over the band, not at all with Settings'
@@ -18,7 +21,7 @@ or the picture opens the title's info window (`on_open`).
 
 Tk can't draw a widget see-through over a picture, so everything but the search field's text
 box is drawn on this canvas: the picture and the poster as one image baked in physical pixels,
-the switch, the field and the buttons as anti-aliased RGBA images with canvas text on them, the
+the field and the buttons as anti-aliased RGBA images with canvas text on them, the
 dots likewise. The text box is a flat CTkEntry inside the field's solid pill, in the same
 colour, so no rectangle or corner shows. Hover tips for the drawn buttons come from a small tip
 window of their own that looks like app/ui/tooltip.py's. A switch between light and dark, a
@@ -78,9 +81,12 @@ from app.ui.spotlight import (
     HitKind,
     Rect,
     Rotation,
+    SwitchLayout,
     band_layout,
     hit_target,
     sub_line,
+    switch_hit,
+    switch_layout,
     tag_text,
     title_text,
 )
@@ -102,9 +108,7 @@ SEARCH_TIP = N_("Search")
 DOWNLOADS_TIP = N_("Downloads")
 SETTINGS_TIP = N_("Settings")
 _TIPS = {HitKind.SEARCH: SEARCH_TIP, HitKind.DOWNLOADS: DOWNLOADS_TIP, HitKind.SETTINGS: SETTINGS_TIP}
-_CONTROLS = frozenset(
-    {HitKind.SERIES, HitKind.MOVIES, HitKind.SEARCH, HitKind.FIELD, HitKind.DOWNLOADS, HitKind.SETTINGS}
-)
+_CONTROLS = frozenset({HitKind.SEARCH, HitKind.FIELD, HitKind.DOWNLOADS, HitKind.SETTINGS})
 
 SPACE_NOTICE_MS = 15_000  # how long the "almost full" notice stays in the status bar
 TICK_MS = 250  # how often the band checks whether the next title is due
@@ -115,8 +119,9 @@ SCENE_CACHE = 8  # baked pictures kept (a side's titles and the next one's)
 SHADOW_BLUR = 5  # the poster's shadow (units)
 SHADOW_OFFSET = 3
 ICON_SIZE = 22  # the settings button's sliders
-# The Series / Movies switch stands on a solid pill: SURFACE, nearly opaque, a CHIP_HOVER edge,
-# over a soft shadow; the part under the pointer (not the lit one) a CHIP_HOVER fill.
+# The Series / Movies switch (ModeSwitch) stands on a solid pill: SURFACE, nearly opaque, a
+# CHIP_HOVER edge, over a soft shadow; the part under the pointer (not the lit one) a CHIP_HOVER
+# fill.
 SWITCH_ALPHA = 235  # the pill's SURFACE (of 255)
 # Soft shadows (blur and offset in units, alpha (light, dark)): the switch's and the logo's.
 SWITCH_SHADOW = (5.0, 2, (0.2, 0.5))
@@ -126,9 +131,9 @@ DOT_ALPHA = (90, 170, 255)  # a dot: others, under the pointer, the one showing
 
 class SpotlightBand(tk.Canvas):
     """The header (see the module docstring). MainWindow calls `start` once the loop runs,
-    `select` when the page changes (None: the Downloads page), `reload` when the library, a
-    download or a setting changed, and `set_motion` for Settings' `spotlight_motion`. `entry`
-    is the search field's text box."""
+    `select` when the page changes (whose titles show; None: the Downloads page), `reload` when
+    the library, a download or a setting changed, and `set_motion` for Settings'
+    `spotlight_motion`. `entry` is the search field's text box."""
 
     def __init__(
         self,
@@ -138,7 +143,6 @@ class SpotlightBand(tk.Canvas):
         downloads: DownloadStatusService,
         images: ImageCache,
         motion: bool = True,
-        on_side: Callable[[SpotlightSide], None],
         on_downloads: Callable[[], None],
         on_settings: Callable[[], None],
         on_search: Callable[[], None],
@@ -157,7 +161,6 @@ class SpotlightBand(tk.Canvas):
         )
         self._service = spotlight
         self._images = images
-        self._on_side = on_side
         self._on_downloads = on_downloads
         self._on_settings = on_settings
         self._on_search = on_search
@@ -168,7 +171,7 @@ class SpotlightBand(tk.Canvas):
         self._closed = False
         self._fresh_picture = False  # bake the title showing again once its side reloaded
         self._side = SpotlightSide.SERIES  # whose titles show
-        self._selected: SpotlightSide | None = SpotlightSide.SERIES  # the switch's lit part
+        self._selected: SpotlightSide | None = SpotlightSide.SERIES  # None: ⬇ lit
         self._spotlights: dict[SpotlightSide, Spotlight] = {}
         self._stale: set[SpotlightSide] = set(SpotlightSide)
         self._indexes = dict.fromkeys(SpotlightSide, 0)
@@ -198,7 +201,6 @@ class SpotlightBand(tk.Canvas):
 
         self._fonts = {
             "word": theme.font(WORD_SIZE, bold=True),
-            "segment": theme.font(SEGMENT_FONT_SIZE, bold=True),
             "tag": theme.font(11, bold=True),
             "title": theme.font(18, bold=True),
             "sub": theme.font(13),
@@ -214,10 +216,6 @@ class SpotlightBand(tk.Canvas):
         self._logo_item = self.create_image(0, 0, anchor="nw")
         self._word_items = (text("w"), text("w"))
         self._tag_item, self._title_item, self._sub_item = text(), text(), text()
-        self._track_item = self.create_image(0, 0, anchor="nw")
-        self._segment_hover_item = self.create_image(0, 0, anchor="nw", state="hidden")
-        self._active_item = self.create_image(0, 0, anchor="nw")
-        self._segment_items = {side: text("center") for side in SpotlightSide}
         self._search_item = self.create_image(0, 0, anchor="nw")
         self._magnifier_item = self.create_text(0, 0, anchor="center", text="🔍")
         self._downloads_item = self.create_image(0, 0, anchor="nw")
@@ -273,8 +271,8 @@ class SpotlightBand(tk.Canvas):
         self._tick_job = self._later(TICK_MS, self._tick)
 
     def select(self, side: SpotlightSide | None) -> None:
-        """Light `side` on the switch and show its titles; None: the Downloads page (⬇ lit,
-        the band keeps the last side's titles)."""
+        """Show `side`'s titles; None: the Downloads page (⬇ lit, the band keeps the last
+        side's titles)."""
         self._selected = side
         if side is None or side is self._side:
             self._paint_controls()
@@ -598,11 +596,9 @@ class SpotlightBand(tk.Canvas):
             return
         spotlight = self._spotlights.get(self._side)
         count = len(spotlight.items) if spotlight is not None else 0
-        segment = max(self._fonts["segment"].measure(t(label)) for label in SIDE_LABELS.values())
         layout = band_layout(
             self._width / self._scale,
             word_width=self._fonts["word"].measure(APP_NAME),
-            segment_width=segment + 2 * SEGMENT_PAD_X,
             dots=count,
             current=self._rotation.index,
         )
@@ -626,8 +622,6 @@ class SpotlightBand(tk.Canvas):
             (self._badge_text, "badge"),
         ):
             self.itemconfigure(item, font=self._scaled(name))
-        for item in self._segment_items.values():
-            self.itemconfigure(item, font=self._scaled("segment"))
         entry = layout.entry
         self.coords(self._entry_window, px(entry.x), px(entry.y))
         if self._entry_size != (entry.w, entry.h):
@@ -660,7 +654,6 @@ class SpotlightBand(tk.Canvas):
         if layout is None:
             return
         px = self._px
-        self._paint_switch(layout)
         # The search field: a solid pill (the text box inside is the same colour).
         search = layout.search
         edge = theme.ACCENT if self._entry_focused else theme.EDGE
@@ -702,50 +695,6 @@ class SpotlightBand(tk.Canvas):
             self._settings_icon, "sliders", _sliders(px(ICON_SIZE), rgb(self, theme.BUTTON_TEXT))
         )
         self._paint_badge()
-
-    def _paint_switch(self, layout: BandLayout) -> None:
-        """The Series / Movies switch: a solid pill over a soft shadow, the lit part in the
-        accent colour with white text, the other one in TEXT (a CHIP_HOVER fill under the
-        pointer)."""
-        px, dark = self._px, theme.is_dark()
-        pill = layout.pill
-        blur, offset, alphas = SWITCH_SHADOW
-        track, pad = shadowed_box(
-            (px(pill.w), px(pill.h)),
-            px(pill.h) / 2,
-            self._rgba(theme.SURFACE, SWITCH_ALPHA),
-            self._rgba(theme.CHIP_HOVER),
-            max(1, round(self._scale)),
-            (blur * self._scale, px(offset), alphas[dark]),
-        )
-        self.coords(self._track_item, px(pill.x) - pad, px(pill.y) - pad)
-        self._set_image(self._track_item, "track", track)
-        lit = self._selected
-        hovered: Rect | None = None
-        for side, part in zip(SpotlightSide, layout.segments, strict=True):
-            kind = HitKind.SERIES if side is SpotlightSide.SERIES else HitKind.MOVIES
-            if side is not lit and self._hovered(kind):
-                hovered = part
-        if hovered is not None:
-            self.coords(self._segment_hover_item, px(hovered.x), px(hovered.y))
-            fill = self._box(hovered, px(hovered.h) / 2, self._rgba(theme.CHIP_HOVER))
-            self._set_image(self._segment_hover_item, "segment_hover", fill)
-            self.itemconfigure(self._segment_hover_item, state="normal")
-        else:
-            self.itemconfigure(self._segment_hover_item, state="hidden")
-        if lit is not None:
-            part = layout.segments[0 if lit is SpotlightSide.SERIES else 1]
-            self.coords(self._active_item, px(part.x), px(part.y))
-            self._set_image(
-                self._active_item, "active", self._box(part, px(part.h) / 2, self._rgba(theme.ACCENT))
-            )
-            self.itemconfigure(self._active_item, state="normal")
-        else:
-            self.itemconfigure(self._active_item, state="hidden")
-        for (side, item), part in zip(self._segment_items.items(), layout.segments, strict=True):
-            colour = theme.ON_COLOR if side is lit else theme.TEXT
-            self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
-            self.itemconfigure(item, text=t(SIDE_LABELS[side]), fill=theme.pick(colour))
 
     def _paint_badge(self) -> None:
         layout = self._layout
@@ -868,11 +817,7 @@ class SpotlightBand(tk.Canvas):
 
     def _activate(self, hit: Hit) -> None:
         kind = hit.kind
-        if kind is HitKind.SERIES:
-            self._on_side(SpotlightSide.SERIES)
-        elif kind is HitKind.MOVIES:
-            self._on_side(SpotlightSide.MOVIES)
-        elif kind is HitKind.SEARCH:
+        if kind is HitKind.SEARCH:
             self._on_search()
         elif kind is HitKind.FIELD:
             self.entry.focus_set()
@@ -962,6 +907,172 @@ class SpotlightBand(tk.Canvas):
         self._unsubscribe_space()
         ctk.ScalingTracker.remove_widget(self._rescaled, self)
         self._tip.destroy()
+        super().destroy()
+
+
+class ModeSwitch(tk.Canvas):
+    """The Series / Movies switch at the right end of the tabs row under the band: a solid pill
+    (SURFACE, nearly opaque, a CHIP_HOVER edge) over a soft shadow on the page's background,
+    the lit part in the accent colour with white text, the other one in TEXT (a CHIP_HOVER fill
+    under the pointer). A click on a part calls `on_side`; MainWindow lights the page's part
+    with `select` (None: the Downloads page, neither lit). Its size follows the font and
+    Windows' scaling (`switch_layout`); a switch between light and dark paints it again."""
+
+    def __init__(self, master: Any, *, on_side: Callable[[SpotlightSide], None]) -> None:
+        super().__init__(
+            master,
+            highlightthickness=0,
+            borderwidth=0,
+            width=1,
+            height=1,
+            background=theme.pick(theme.BG),
+        )
+        self._on_side = on_side
+        self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
+        self._selected: SpotlightSide | None = SpotlightSide.SERIES
+        self._hover: SpotlightSide | None = None
+        self._pressed: SpotlightSide | None = None
+        self._font = theme.font(SEGMENT_FONT_SIZE, bold=True)
+        self._photos: dict[str, ImageTk.PhotoImage] = {}
+        self._photo_sources: dict[str, Image.Image] = {}
+        self._track_item = self.create_image(0, 0, anchor="nw")
+        self._hover_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._active_item = self.create_image(0, 0, anchor="nw")
+        self._text_items = {
+            side: self.create_text(0, 0, anchor="center", text="") for side in SpotlightSide
+        }
+        self._layout = self._measure()
+        self.bind("<Motion>", self._on_motion, add="+")
+        self.bind("<Leave>", lambda _event: self._set_hover(None), add="+")
+        self.bind("<ButtonPress-1>", self._on_press, add="+")
+        self.bind("<ButtonRelease-1>", self._on_release, add="+")
+        theme.on_mode_change(self, self._repaint)
+        ctk.ScalingTracker.add_widget(self._rescaled, self)
+        self._relayout()
+
+    @property
+    def layout(self) -> SwitchLayout:
+        return self._layout
+
+    @property
+    def selected(self) -> SpotlightSide | None:
+        return self._selected
+
+    def select(self, side: SpotlightSide | None) -> None:
+        """Light `side`'s part (None: neither, the Downloads page)."""
+        if side is not self._selected:
+            self._selected = side
+            self._paint()
+
+    def _px(self, units: float) -> int:
+        return round(units * self._scale)
+
+    def _measure(self) -> SwitchLayout:
+        name = max(self._font.measure(t(label)) for label in SIDE_LABELS.values())
+        return switch_layout(
+            segment_width=name + 2 * SEGMENT_PAD_X,
+            line_height=float(self._font.metrics("linespace")),
+        )
+
+    def _relayout(self) -> None:
+        self._layout = self._measure()
+        width, height = self._layout.size
+        self.configure(width=self._px(width), height=self._px(height))
+        font = self._font.create_scaled_tuple(self._scale)
+        for item in self._text_items.values():
+            self.itemconfigure(item, font=font)
+        self._paint()
+
+    def _set_image(self, item: int, name: str, image: Image.Image) -> None:
+        if self._photo_sources.get(name) is image:
+            return
+        self._photos[name] = ImageTk.PhotoImage(image, master=self)
+        self._photo_sources[name] = image
+        self.itemconfigure(item, image=self._photos[name])
+
+    def _rgba(self, color: theme.Color, alpha: int = 255) -> RGBA:
+        return (*rgb(self, color), alpha)
+
+    def _box(self, rect: Rect, fill: RGBA) -> Image.Image:
+        size = (self._px(rect.w), self._px(rect.h))
+        return rounded_box(size, size[1] / 2, fill, None, 0)
+
+    def _paint(self) -> None:
+        px, layout = self._px, self._layout
+        pill = layout.pill
+        blur, offset, alphas = SWITCH_SHADOW
+        track, pad = shadowed_box(
+            (px(pill.w), px(pill.h)),
+            px(pill.h) / 2,
+            self._rgba(theme.SURFACE, SWITCH_ALPHA),
+            self._rgba(theme.CHIP_HOVER),
+            max(1, round(self._scale)),
+            (blur * self._scale, px(offset), alphas[theme.is_dark()]),
+        )
+        self.coords(self._track_item, px(pill.x) - pad, px(pill.y) - pad)
+        self._set_image(self._track_item, "track", track)
+        lit, hovered = self._selected, self._hover
+        parts = dict(zip(SpotlightSide, layout.segments, strict=True))
+        if hovered is not None and hovered is not lit:
+            part = parts[hovered]
+            self.coords(self._hover_item, px(part.x), px(part.y))
+            self._set_image(self._hover_item, "hover", self._box(part, self._rgba(theme.CHIP_HOVER)))
+            self.itemconfigure(self._hover_item, state="normal")
+        else:
+            self.itemconfigure(self._hover_item, state="hidden")
+        if lit is not None:
+            part = parts[lit]
+            self.coords(self._active_item, px(part.x), px(part.y))
+            self._set_image(self._active_item, "active", self._box(part, self._rgba(theme.ACCENT)))
+            self.itemconfigure(self._active_item, state="normal")
+        else:
+            self.itemconfigure(self._active_item, state="hidden")
+        for side, item in self._text_items.items():
+            part = parts[side]
+            colour = theme.ON_COLOR if side is lit else theme.TEXT
+            self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
+            self.itemconfigure(item, text=t(SIDE_LABELS[side]), fill=theme.pick(colour))
+
+    def _side_at(self, x: int, y: int) -> SpotlightSide | None:
+        index = switch_hit(self._layout, x / self._scale, y / self._scale)
+        return None if index is None else tuple(SpotlightSide)[index]
+
+    def _on_motion(self, event: Any) -> None:
+        self._set_hover(self._side_at(event.x, event.y))
+
+    def _set_hover(self, side: SpotlightSide | None) -> None:
+        if side is self._hover:
+            return
+        self._hover = side
+        try:
+            self.configure(cursor="" if side is None else "hand2")
+        except tk.TclError:
+            return
+        self._paint()
+
+    def _on_press(self, event: Any) -> None:
+        self._pressed = self._side_at(event.x, event.y)
+
+    def _on_release(self, event: Any) -> None:
+        side, pressed = self._side_at(event.x, event.y), self._pressed
+        self._pressed = None
+        if side is not None and side is pressed:
+            self._on_side(side)
+
+    def _repaint(self) -> None:
+        """Light ↔ dark: the background and the pill in the new colours."""
+        self.configure(background=theme.pick(theme.BG))
+        self._paint()
+
+    def _rescaled(self, _widget_scaling: float, _window_scaling: float) -> None:
+        if not _exists(self):
+            return
+        self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
+        self._photo_sources.clear()
+        self._relayout()
+
+    def destroy(self) -> None:
+        ctk.ScalingTracker.remove_widget(self._rescaled, self)
         super().destroy()
 
 

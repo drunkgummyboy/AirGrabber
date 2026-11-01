@@ -14,6 +14,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "2.0.11": (
+        N_("The Series / Movies switch is bigger and moved down, next to Calendar, Discover and Tracked."),
+        N_("The top bar keeps just the logo and the search, so it looks calmer."),
+        N_("The switch stays in the same place on every page, so nothing jumps when you switch."),
+    ),
     "2.0.10": (
         N_("Save a backup of your shows, watchlist and settings, and load it on a new PC (Settings → Backup)."),
         N_("Films can go to their own folder: fill in Films folder in Settings → Where downloads go."),

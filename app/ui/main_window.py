@@ -1,5 +1,6 @@
-"""The root window: the spotlight band (mode switch, search, Downloads, settings, tonight's
-episodes), page area and status bar."""
+"""The root window: the spotlight band (search, Downloads, settings, tonight's episodes), the
+tabs row (the Series tabs on the left, the Series / Movies switch on the right), page area and
+status bar."""
 
 from __future__ import annotations
 
@@ -83,7 +84,8 @@ from app.ui.release_panel import PanelServices, TvTarget
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
-from app.ui.spotlight_band import SpotlightBand
+from app.ui.spotlight import PAD_X, SWITCH_MARGIN
+from app.ui.spotlight_band import ModeSwitch, SpotlightBand
 from app.ui.subtitle_control import OUTCOME_MS as SUBTITLE_OUTCOME_MS
 from app.ui.subtitle_control import WORKING as SUBTITLES_WORKING
 from app.ui.subtitle_control import SubtitleActions, SubtitleRuns, fetch_run
@@ -293,6 +295,31 @@ _SIDE_MODES = {SpotlightSide.SERIES: Mode.SERIES, SpotlightSide.MOVIES: Mode.MOV
 _CALENDAR, _DISCOVER, _TRACKED = N_("Calendar"), N_("Discover"), N_("Tracked")
 
 
+def build_tabs_row(
+    master: Any, *, on_side: Callable[[SpotlightSide], None]
+) -> tuple[ctk.CTkFrame, ModeSwitch]:
+    """The tabs row under the band (its owner grids it): the Series tabs on the left
+    (`show_tabs`), the Series / Movies switch at the right end, its pill level with the band's
+    settings button (PAD_X from the edge). The switch shows in every mode, so it never moves;
+    it is the row's tallest part, so the row keeps its height while the tabs are hidden
+    (Movies, Downloads)."""
+    row = ctk.CTkFrame(master, fg_color="transparent", corner_radius=0)
+    row.grid_columnconfigure(1, weight=1)
+    switch = ModeSwitch(row, on_side=on_side)
+    # A plain canvas: Tk's grid doesn't scale its padding as CTk's widgets' does.
+    scale = ctk.ScalingTracker.get_widget_scaling(row)
+    switch.grid(row=0, column=2, sticky="e", padx=(0, round((PAD_X - SWITCH_MARGIN) * scale)))
+    return row, switch
+
+
+def show_tabs(pills: ctk.CTkFrame, shown: bool) -> None:
+    """The Series tabs on the tabs row's left (level with the band's poster), or hidden."""
+    if shown:
+        pills.grid(row=0, column=0, sticky="w", padx=(15, 0))
+    else:
+        pills.grid_remove()
+
+
 class MainWindow(AsyncCTk, ctk.CTk):
     """Owns layout and navigation only; every page fetches its own data through services."""
 
@@ -393,7 +420,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._place(1650, 900)
         self.minsize(1220, 640)  # narrowest width at which the band's top row still fits
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)  # the page
 
         self._build_header()
         self._build_pages()
@@ -480,7 +507,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             downloads=services.download_status,
             images=services.images,
             motion=services.settings.current.spotlight_motion,
-            on_side=lambda side: self._select_mode(_SIDE_MODES[side]),
             on_downloads=lambda: self._select_mode(Mode.DOWNLOADS),
             on_settings=self._open_settings,
             on_search=self._on_search,
@@ -488,6 +514,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             report=self._report,
         )
         self._band.grid(row=0, column=0, sticky="ew")
+        self._tabs_row, self._switch = build_tabs_row(
+            self, on_side=lambda side: self._select_mode(_SIDE_MODES[side])
+        )
+        self._tabs_row.grid(row=1, column=0, sticky="ew")
         self._search = self._band.entry
         self._suggestions = SearchSuggestions(
             self._search,
@@ -500,8 +530,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _build_pages(self) -> None:
         library, settings = self._services.library, self._services.settings
         images, discovery = self._services.images, self._services.discovery
-        # Pill tabs right under the band (left-aligned, the chosen one filled with the accent).
-        self._series_tabs = Tabview(self, look="pills", command=self._on_tab_changed)
+        # Pill tabs on the tabs row under the band (left-aligned, the chosen one filled with the
+        # accent; level with the band's poster).
+        self._series_tabs = Tabview(
+            self, look="pills", pills_master=self._tabs_row, command=self._on_tab_changed
+        )
         tabs = self._series_tabs
         self._series_views: dict[str, BaseView] = {
             t(_CALENDAR): CalendarView(
@@ -568,7 +601,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _build_status_bar(self) -> None:
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=2, column=0, sticky="ew", padx=15, pady=(0, 6))
+        bar.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 6))
         bar.grid_columnconfigure(0, weight=1)
         self._status = ctk.CTkLabel(bar, text="", font=theme.font(12), text_color=theme.TEXT_MUTED)
         self._status.grid(row=0, column=0)
@@ -688,6 +721,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._mode = mode
         sides = {side_mode: side for side, side_mode in _SIDE_MODES.items()}
         self._band.select(sides.get(mode))  # None: the Downloads page (⬇ lit)
+        self._switch.select(sides.get(mode))  # None: neither part lit
+        pills = self._series_tabs.pills
+        if pills is not None:
+            show_tabs(pills, mode is Mode.SERIES)
         pages: dict[Mode, ctk.CTkFrame] = {
             Mode.SERIES: self._series_tabs,
             Mode.MOVIES: self._movie_view,
@@ -696,7 +733,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         for page_mode, page in pages.items():
             if page_mode is not mode:
                 page.grid_remove()
-        pages[mode].grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
+        pages[mode].grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._visible_view().refresh_if_stale()
 
     def _on_tab_changed(self) -> None:

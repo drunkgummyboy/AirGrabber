@@ -1300,6 +1300,12 @@ NL: dict[str, str] = {
     # app/ui/welcome_dialog.py (Backup)
     "Moving from another PC? Load a backup": "Kom je van een andere pc? Laad een back-up",
     # app/whats_new.py
+    "The Series / Movies switch is bigger and moved down, next to Calendar, Discover and Tracked.":
+        "De schakelaar Series / Films is groter en staat nu lager, naast Kalender, Ontdekken en Mijn series.",
+    "The top bar keeps just the logo and the search, so it looks calmer.":
+        "De bovenbalk houdt alleen het logo en het zoekveld over, zodat hij rustiger oogt.",
+    "The switch stays in the same place on every page, so nothing jumps when you switch.":
+        "De schakelaar staat op elke pagina op dezelfde plek, zodat er niets verspringt als je wisselt.",
     "Save a backup of your shows, watchlist and settings, and load it on a new PC (Settings → Backup).":
         "Bewaar een back-up van je series, kijklijst en instellingen en laad die op een nieuwe pc (Instellingen → Back-up).",
     "Films can go to their own folder: fill in Films folder in Settings → Where downloads go.":
