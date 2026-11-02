@@ -71,6 +71,7 @@ from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM, NO_DRAG, Borderless, cleara
 from app.ui.branding import set_window_icon
 from app.ui.poster_card import rgb
 from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, break_lines, elide_to_width, fit_to_lines, unscaled_width
 from app.ui.tooltip import work_area
@@ -1378,7 +1379,7 @@ class CastList(ctk.CTkFrame):
 # -- the window --------------------------------------------------------------------------------
 
 
-class ScrollColumn(ctk.CTkScrollableFrame):
+class ScrollColumn(ScrollableFrame):
     """A column that scrolls on its own while what it holds (in grid row 0, column 0) is taller
     than its room. The scrollbar keeps its place and only shows then: nothing moves when it
     comes or goes (no width that flips back and forth), and the change waits for Tk to be idle
@@ -1691,7 +1692,7 @@ class TitleInfoWindow(ctk.CTkToplevel):
     def _build_tabs(self, title: str, poster: Callable[[int], str | None]) -> None:
         """The masthead with the text column beside the poster, then the tabs; all of it
         scrolls."""
-        self.body = ctk.CTkScrollableFrame(
+        self.body = ScrollableFrame(
             self,
             fg_color="transparent",
             corner_radius=0,

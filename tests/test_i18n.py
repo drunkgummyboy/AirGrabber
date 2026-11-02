@@ -1,4 +1,5 @@
-"""The interface language (app/i18n.py) and its Dutch texts (app/i18n_nl.py)."""
+"""The interface language (app/i18n.py) and its Dutch texts (app/i18n_nl.py and Forge's
+app/i18n_nl_forge.py, checked as one catalog)."""
 
 from __future__ import annotations
 
@@ -8,20 +9,23 @@ import string
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
+from unittest import mock
 
 from app import i18n
 from app.i18n import Language, N_, t, tn
-from app.i18n_nl import NL
+from app.i18n_nl import NL as NL_MAIN
+from app.i18n_nl_forge import NL as NL_FORGE
 
 ROOT = Path(__file__).resolve().parent.parent
-_CATALOG = ROOT / "app" / "i18n_nl.py"
+_CATALOGS = (ROOT / "app" / "i18n_nl.py", ROOT / "app" / "i18n_nl_forge.py")
+NL = {**NL_MAIN, **NL_FORGE}  # the two catalogs as one
 _CALLS = {"t": 1, "tn": 2, "N_": 1}  # function -> how many leading arguments are texts
 
 
 def _sources() -> Iterator[Path]:
     yield ROOT / "main.py"
     for path in sorted((ROOT / "app").rglob("*.py")):
-        if path != _CATALOG:
+        if path not in _CATALOGS:
             yield path
 
 
@@ -67,7 +71,7 @@ def _fields(text: str) -> set[str]:
 class CatalogTests(unittest.TestCase):
     def test_every_text_has_a_dutch_entry(self) -> None:
         missing = {key: where for key, where in _TEXTS.keys.items() if key not in NL}
-        self.assertEqual(missing, {}, "add these to app/i18n_nl.py")
+        self.assertEqual(missing, {}, "add these to app/i18n_nl.py (app/forge: app/i18n_nl_forge.py)")
 
     def test_no_dutch_entry_is_left_over(self) -> None:
         unused = sorted(key for key in NL if key not in _TEXTS.keys)
@@ -77,16 +81,19 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(_TEXTS.formatted, [], "use t('… {name} …', name=value)")
 
     def test_no_entry_twice(self) -> None:
-        tree = ast.parse(_CATALOG.read_text(encoding="utf-8"))
+        """Not twice in one catalog, and not in both."""
         keys: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Dict):
-                keys += [
-                    k.value
-                    for k in node.keys
-                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
-                ]
+        for catalog in _CATALOGS:
+            tree = ast.parse(catalog.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Dict):
+                    keys += [
+                        k.value
+                        for k in node.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                    ]
         self.assertEqual(sorted({k for k in keys if keys.count(k) > 1}), [])
+        self.assertEqual(sorted(NL_MAIN.keys() & NL_FORGE.keys()), [], "keep each text in one catalog")
 
     def test_placeholders_match(self) -> None:
         wrong = {key: value for key, value in NL.items() if _fields(key) != _fields(value)}
@@ -112,6 +119,13 @@ class TranslateTests(unittest.TestCase):
         i18n.set_language(Language.NL)
         self.assertEqual(t("Download"), "Downloaden")
         self.assertEqual(t("Updated to v{version}", version="2.0.5"), "Bijgewerkt naar v2.0.5")
+
+    def test_forge_texts_are_found_too(self) -> None:
+        self.enterContext(mock.patch.dict(NL_FORGE, {"Forge test text {n}": "Forge-testtekst {n}"}))
+        self.enterContext(mock.patch.object(i18n, "_catalog", None))  # merged again from the patched one
+        i18n.set_language(Language.NL)
+        self.assertEqual(t("Forge test text {n}", n=2), "Forge-testtekst 2")
+        self.assertEqual(t("Download"), "Downloaden")  # the main catalog still counts
 
     def test_unknown_text_stays_english(self) -> None:
         i18n.set_language(Language.NL)

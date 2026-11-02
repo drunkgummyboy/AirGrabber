@@ -139,6 +139,7 @@ def make_borderless(
     drag_widgets: Iterable[tk.Misc] = (),
     on_close: Callable[[], object] | None = None,
     hide_to_recolour: bool = False,
+    look: theme.Look | None = None,
 ) -> Borderless | None:
     """Take `window`'s title bar off and give it the close button (see the module's notes);
     None where that isn't done (not on Windows): the window keeps its title bar.
@@ -146,7 +147,10 @@ def make_borderless(
     `hide_to_recolour`: keep CTk's own hiding and re-showing of the window around its title-bar
     recolouring (right after it opens and after a switch between light and dark). The info
     window needs it: its "tabs" layout (a tab view in a scrolling frame) only settles while the
-    window is hidden; laid out while showing, its height swings between two sizes for good."""
+    window is hidden; laid out while showing, its height swings between two sizes for good.
+
+    `look`: a window's own accent tokens (the Forge window's copper) for the close button's
+    quiet disc, instead of AirGrabber's CLOSE_BUTTON."""
     native = _native
     if native is None:
         return None
@@ -158,7 +162,7 @@ def make_borderless(
     # title bar: there is none to recolour, and that would only make the window blink.
     setattr(window, "_deactivate_windows_window_header_manipulation", not hide_to_recolour)
     theme.on_mode_change(window, lambda: native.set_dark(window_id, theme.is_dark()), early=True)
-    borderless = Borderless(window, native, on_close=on_close)
+    borderless = Borderless(window, native, on_close=on_close, look=look)
     borderless.add_drag(*drag_widgets)
     return borderless
 
@@ -172,12 +176,13 @@ class Borderless:
         native: Native,
         *,
         on_close: Callable[[], object] | None = None,
+        look: theme.Look | None = None,
     ) -> None:
         self.window = window
         self._native = native
         self._window_id = window.winfo_id()
         self._on_close = on_close
-        self.close_button = CloseButton(window, command=self.close)
+        self.close_button = CloseButton(window, command=self.close, look=look)
         tip = CLOSE_TIP if window.bind("<Escape>") else CLOSE_TIP_NO_ESCAPE
         add_tooltip(self.close_button, t(tip))
 
@@ -268,12 +273,16 @@ class CloseButton(tk.Canvas):
     (let go on it) calls `command`. Drawn on its own canvas, anti-aliased at the screen's
     scaling, because a CTkButton grows wider than it is tall around any text. Around the disc
     the window's background, or what `set_backdrop` gives (a picture under the button). Follows
-    a switch between light and dark and a change of Windows' scaling."""
+    a switch between light and dark and a change of Windows' scaling. `look`: a window's own
+    accent tokens (the Forge window's copper): the quiet disc is its CHIP."""
 
-    def __init__(self, window: tk.Misc, *, command: Callable[[], object]) -> None:
+    def __init__(
+        self, window: tk.Misc, *, command: Callable[[], object], look: theme.Look | None = None
+    ) -> None:
         super().__init__(window, highlightthickness=0, borderwidth=0)
         self._window = window
         self._command = command
+        self._look = look
         self._hovered = False
         self._pressed = False
         self._backdrop: Backdrop | None = None
@@ -336,8 +345,9 @@ class CloseButton(tk.Canvas):
         diameter = max(1, round(CLOSE_SIZE * scaling))
         background = theme.pick(_background(self._window))
         self.configure(width=diameter, height=diameter, background=background)
+        quiet = theme.CLOSE_BUTTON if self._look is None else self._look.CHIP
         self._discs = (
-            ImageTk.PhotoImage(disc_image(diameter, self._rgb(theme.CLOSE_BUTTON)), master=self),
+            ImageTk.PhotoImage(disc_image(diameter, self._rgb(quiet)), master=self),
             ImageTk.PhotoImage(
                 disc_image(diameter, self._rgb(theme.CLOSE_BUTTON_HOVER)), master=self
             ),

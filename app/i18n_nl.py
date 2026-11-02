@@ -695,6 +695,9 @@ NL: dict[str, str] = {
     "Problems": "Problemen",
     # 2.0.7: app/ui/main_window.py
     "Couldn't look up {title} on TMDB": "Kon {title} niet opzoeken bij TMDB",
+    # app/ui/trailer.py (the trailer player's Fill toggle)
+    "Fill the window": "Venster vullen",
+    "Show the whole picture": "Hele beeld tonen",
     # app/ui/title_info.py
     "Watch trailer": "Trailer bekijken",
     "Opening trailer…": "Trailer openen…",
@@ -716,6 +719,7 @@ NL: dict[str, str] = {
     "+{n} more": "+{n} meer",
     # app/ui/tray.py
     "Open AirGrabber": "AirGrabber openen",
+    "Open MediaForge": "MediaForge openen",
     "Check for new episodes now": "Nu naar nieuwe afleveringen kijken",
     "Quit": "Afsluiten",
     "AirGrabber keeps running": "AirGrabber blijft actief",
@@ -770,6 +774,7 @@ NL: dict[str, str] = {
     "Rose": "Roze",
     "Mocha": "Mokka",
     "Graphite": "Grafiet",
+    "Copper": "Koper",  # palettes.FORGE: the Forge window's look, never offered in Settings
     "Smaller files": "Kleinere bestanden",
     "720p · saves space": "720p · spaart ruimte",
     "Recommended": "Aanbevolen",
@@ -953,7 +958,8 @@ NL: dict[str, str] = {
         "Er is geen .torrent-bestand of magnetlink voor deze release.",
     "Saved {name}": "{name} opgeslagen",
     "Sent to {program}": "Naar {program} gestuurd",
-    "Opened in your torrent program": "Geopend in je torrentprogramma",
+    "Renamed → {folder}": "Hernoemd → {folder}",
+    "Opened in your torrent program":"Geopend in je torrentprogramma",
     "No .torrent file is available for this release, and it has no magnet link to send to {program}.":
         "Er is geen .torrent-bestand voor deze release, en ook geen magnetlink om naar {program} te sturen.",
     "Couldn't open this release in {program}: {reason}":
@@ -1300,6 +1306,16 @@ NL: dict[str, str] = {
     # app/ui/welcome_dialog.py (Backup)
     "Moving from another PC? Load a backup": "Kom je van een andere pc? Laad een back-up",
     # app/whats_new.py
+    "MediaForge is now part of AirGrabber: open it with the 🔨 button, from the tray or from the Start menu.":
+        "MediaForge zit nu in AirGrabber: open het met de 🔨-knop, vanuit het systeemvak of vanuit het Startmenu.",
+    "Your old MediaForge's presets, folders and history come along the first time you open it.":
+        "De voorinstellingen, mappen en geschiedenis van je oude MediaForge komen mee als je het de eerste keer opent.",
+    "Right-click files in Explorer to rename them, and let MediaForge rename AirGrabber's downloads by itself.":
+        "Klik met rechts op bestanden in Verkenner om ze te hernoemen, en laat MediaForge AirGrabbers downloads zelf hernoemen.",
+    "The Downloads page shows where a download ended up, and its subtitles move along with it.":
+        "De pagina Downloads laat zien waar een download is beland, en de ondertitels verhuizen mee.",
+    "Trailers now play in their own window for more videos, with a Fill button against black bars.":
+        "Trailers spelen nu vaker in hun eigen venster, met een knop Vullen tegen zwarte balken.",
     "The Series / Movies switch is bigger and moved down, next to Calendar, Discover and Tracked.":
         "De schakelaar Series / Films is groter en staat nu lager, naast Kalender, Ontdekken en Mijn series.",
     "The top bar keeps just the logo and the search, so it looks calmer.":

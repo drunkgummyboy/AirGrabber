@@ -175,6 +175,145 @@ New-Shortcut $link (Join-Path $env:SystemRoot 'notepad.exe')
         )
 
 
+# Add-Shortcuts into temporary Start-menu / desktop folders per scenario ($env:AG_SCENARIOS: an
+# existing MediaForge.lnk's Arguments or none), then every .lnk there as JSON.
+_FORGE_SHORTCUT_SCENARIOS = """
+$InstallDir = $env:AG_PROJECT  # has app\\shortcut_app_id.cs, as an installed copy does
+$shell = New-Object -ComObject WScript.Shell
+$results = New-Object System.Collections.Generic.List[object]
+foreach ($scenario in (ConvertFrom-Json $env:AG_SCENARIOS)) {
+    $root = Join-Path $env:AG_ROOT $scenario.name
+    $programs = Join-Path $root 'Programs'
+    $desktop = Join-Path $root 'Desktop'
+    $null = New-Item -ItemType Directory -Path $programs, $desktop
+    if ($scenario.existing) {
+        $old = $shell.CreateShortcut((Join-Path $programs 'MediaForge.lnk'))
+        $old.TargetPath = Join-Path $env:SystemRoot 'notepad.exe'
+        $old.Arguments = $scenario.existing
+        $old.Save()
+    }
+    Add-Shortcuts (Join-Path $env:SystemRoot 'notepad.exe') $programs $desktop
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' | Sort-Object FullName)) {
+        $link = $shell.CreateShortcut($file.FullName)
+        $id = ''
+        try { $id = [AirGrabber.ShortcutAppId]::Get($file.FullName) } catch { $id = '' }
+        $results.Add([pscustomobject]@{
+            scenario = [string]$scenario.name
+            file = (Split-Path -Leaf (Split-Path -Parent $file.FullName)) + '\\' + $file.Name
+            arguments = [string]$link.Arguments
+            icon = [string]$link.IconLocation
+            description = [string]$link.Description
+            app_id = [string]$id
+        })
+    }
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $results.ToArray() -Compress))
+"""
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
+class InstallerForgeTests(unittest.TestCase):
+    """D8: MediaForge's Start-menu shortcut beside AirGrabber's (never over another program's
+    MediaForge.lnk) and, on a new install only, its right-click menu turned on by the app."""
+
+    def test_shortcuts(self) -> None:
+        from app.forge.shortcut import APP_USER_MODEL_ID as FORGE_ID, DESCRIPTION, ICON_PATH
+
+        main_py = f"{PROJECT}\\main.py"
+        old = r'"C:\Users\Alex\AppData\Local\Programs\MediaForge\main.py"'
+        scenarios = [
+            {"name": "fresh", "existing": None},
+            {"name": "old_mediaforge", "existing": old},
+            {"name": "ours_before", "existing": f'"{main_py.upper()}" --forge --stale'},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            output = _powershell(
+                _load_installer(
+                    ("New-Shortcut", "New-ForgeShortcut", "Add-Shortcuts", "Set-ShortcutAppId"),
+                    ("$IconPath", "$AppId", "$AppIdHelper", "$ForgeAppId", "$ForgeIconPath"),
+                )
+                + _FORGE_SHORTCUT_SCENARIOS,
+                {
+                    "AG_INSTALLER": str(INSTALLER),
+                    "AG_PROJECT": str(PROJECT),
+                    "AG_ROOT": temp,
+                    "AG_SCENARIOS": json.dumps(scenarios),
+                },
+            )
+        links: dict[str, dict[str, dict[str, str]]] = {}
+        for item in _json_line(output):
+            links.setdefault(item["scenario"], {})[item["file"]] = item
+        airgrabber = {"arguments": f'"{main_py}"', "app_id": APP_USER_MODEL_ID}
+        forge = {
+            "arguments": f'"{main_py}" --forge',
+            "icon": f"{PROJECT}\\{ICON_PATH},0",
+            "description": DESCRIPTION,
+            "app_id": FORGE_ID,
+        }
+
+        def subset(item: dict[str, str], keys: dict[str, str]) -> dict[str, str]:
+            return {key: item[key] for key in keys}
+
+        for name in ("fresh", "ours_before"):
+            with self.subTest(scenario=name):
+                found = links[name]
+                # MediaForge in the Start menu only; AirGrabber in both.
+                self.assertEqual(
+                    sorted(found), ["Desktop\\AirGrabber.lnk", "Programs\\AirGrabber.lnk", "Programs\\MediaForge.lnk"]
+                )
+                self.assertEqual(subset(found["Programs\\MediaForge.lnk"], forge), forge)
+                for file in ("Desktop\\AirGrabber.lnk", "Programs\\AirGrabber.lnk"):
+                    self.assertEqual(subset(found[file], airgrabber), airgrabber)
+        # The old MediaForge's shortcut is left as it was.
+        kept = links["old_mediaforge"]["Programs\\MediaForge.lnk"]
+        self.assertEqual((kept["arguments"], kept["app_id"]), (old, ""))
+        self.assertEqual(len(links["old_mediaforge"]), 3)
+
+    def test_the_right_click_menu(self) -> None:
+        script = _load_installer(("Write-Step", "Enable-ForgeMenu")) + """
+$InstallDir = $env:AG_INSTALL_DIR
+function Fake-Python { $global:AgLog.Add('python ' + ($args -join ' ')); $global:LASTEXITCODE = $global:AgCode }
+$results = New-Object System.Collections.Generic.List[object]
+foreach ($code in @(0, 1, 2)) {
+    $global:AgCode = $code
+    $global:AgLog = New-Object System.Collections.Generic.List[string]
+    $records = @(Enable-ForgeMenu 'Fake-Python' 6>&1)
+    $results.Add([pscustomobject]@{
+        host = [string[]]@($records | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
+            ForEach-Object { [string]$_.MessageData })
+        log = [string[]]$global:AgLog.ToArray()
+    })
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $results.ToArray() -Depth 4 -Compress))
+"""
+        results = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_INSTALL_DIR": _INSTALL_DIR}))
+        step = "==> Adding MediaForge to the right-click menu of files and folders"
+        failed = (
+            "    MediaForge's right-click menu could not be turned on. You can turn it on in AirGrabber "
+            "(Settings, MediaForge, Right-click menu)."
+        )
+        for result in results:
+            self.assertEqual(result["log"], [rf"python {_INSTALL_DIR}\main.py --forge-menu on"])
+        self.assertEqual([result["host"] for result in results], [[step], [step, failed], [step, failed]])
+
+    def test_only_a_new_install_turns_the_menu_on(self) -> None:
+        source = INSTALLER.read_text(encoding="ascii")
+        body = source[source.index("function Install-AirGrabber {") :]
+        new = "    $newInstall = -not (Test-Path -LiteralPath (Join-Path $InstallDir 'main.py'))\n"
+        self.assertIn(new, body)
+        # Decided before the app is copied, used once its packages are there.
+        self.assertLess(body.index(new), body.index("    Install-App\n"))
+        self.assertLess(body.index("    Install-Requirements $python"), body.index("    if ($newInstall) { Enable-ForgeMenu $python }\n"))
+        self.assertIn(
+            "        Add-Shortcuts $pythonw ([Environment]::GetFolderPath('Programs')) "
+            "([Environment]::GetFolderPath('Desktop'))\n",
+            body,
+        )
+        # The menu is no shortcut: -NoShortcuts doesn't skip it.
+        self.assertLess(body.index("    if (-not $NoShortcuts) {"), body.index("    if ($newInstall)"))
+        self.assertNotIn("New-Shortcut (Join-Path", body)
+
+
 # winget's DesktopAppInstaller_Dependencies.zip (v1.29.380): the frameworks per processor.
 _FRAMEWORKS = (
     "Microsoft.VCLibs.140.00_14.0.33519.0_{arch}.appx",
@@ -895,6 +1034,8 @@ foreach ($case in $cases) { 'R:' + (Out-Base64 (Get-FirstArgument $case)) }
             links = {
                 "startup_tray.lnk": f'"{install}\\main.py" --tray',  # Start with Windows
                 "start_menu.lnk": f'"{install}\\main.py"',
+                "mediaforge.lnk": f'"{install}\\main.py" --forge',  # MediaForge's (D8)
+                "old_mediaforge.lnk": f'"{root}\\MediaForge\\main.py"',  # the old MediaForge's
                 "other_tray.lnk": f'"{other}\\main.py" --tray',
                 "other.lnk": f'"{other}\\main.py"',
                 "no_arguments.lnk": "",
@@ -922,17 +1063,115 @@ foreach ($name in $links.PSObject.Properties.Name) {
                 },
             )
             left = sorted(path.name for path in root.glob("*.lnk"))
-        self.assertEqual(left, ["no_arguments.lnk", "other.lnk", "other_tray.lnk"])
+        self.assertEqual(left, ["no_arguments.lnk", "old_mediaforge.lnk", "other.lnk", "other_tray.lnk"])
 
     def test_the_startup_shortcut_is_removed(self) -> None:
         source = UNINSTALLER.read_text(encoding="utf-8")
-        for folder in ("Programs", "Desktop", "Startup"):
-            with self.subTest(folder=folder):
+        for folder, name in (
+            ("Programs", "AirGrabber.lnk"),
+            ("Desktop", "AirGrabber.lnk"),
+            ("Startup", "AirGrabber.lnk"),
+            ("Programs", "MediaForge.lnk"),  # D8
+        ):
+            with self.subTest(folder=folder, name=name):
                 self.assertIn(
                     f"Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('{folder}')) "
-                    "'AirGrabber.lnk') $mainPy",
+                    f"'{name}') $mainPy",
                     source,
                 )
+
+
+# Defines the uninstaller's right-click menu functions, with the registry parts stubbed: the
+# first commands come from $env:AG_COMMANDS (key -> command) and removed keys are collected.
+_LOAD_MENU_FUNCTIONS = """
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:AG_UNINSTALLER, [ref]$tokens, [ref]$errors)
+$wanted = @('Test-MenuOwned', 'Remove-Menu')
+$isFunction = { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }
+foreach ($function in $ast.FindAll($isFunction, $false)) {
+    if ($wanted -contains $function.Name) { . ([scriptblock]::Create($function.Extent.Text)) }
+}
+$commands = ConvertFrom-Json $env:AG_COMMANDS
+$global:removed = @()
+function Get-MenuCommand([string]$Base) { return [string]$commands.$Base }
+function Remove-MenuKey([string]$Base) { $global:removed += $Base }
+function Out-Base64([string]$Text) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Text)) }
+"""
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
+class UninstallerMenuTests(unittest.TestCase):
+    """The right-click menu (app/forge/context_menu.py): removed only when its first command
+    starts this install. The registry itself is never touched (its parts are stubbed)."""
+
+    MAIN = r"C:\Users\Jürgen Smit\AppData\Local\Programs\AirGrabber\main.py"
+    PYTHONW = r"C:\Python313\pythonw.exe"
+
+    def command(self, main_py: str, *, forge: bool = True) -> str:
+        flag = " --forge" if forge else ""
+        return f'"{self.PYTHONW}" "{main_py}"{flag} --confirm --preset "Auto" "%1"'
+
+    def test_test_menu_owned_matches_python(self) -> None:
+        from app.forge.context_menu import starts_copy
+
+        cases = [
+            self.command(self.MAIN),
+            self.command(self.MAIN.upper()),
+            self.command(self.MAIN.replace(r"AirGrabber\main", r"AirGrabber 2\main")),
+            self.command(self.MAIN.replace("AirGrabber", "MediaForge"), forge=False),
+            self.MAIN,  # unquoted: not a command this install wrote
+            "",
+        ]
+        script = _LOAD_MENU_FUNCTIONS + """
+$cases = ConvertFrom-Json $env:AG_CASES
+foreach ($case in $cases) { 'R:' + [string](Test-MenuOwned $case $env:AG_MAIN) }
+"""
+        output = _powershell(
+            script,
+            {
+                "AG_UNINSTALLER": str(UNINSTALLER),
+                "AG_CASES": json.dumps(cases),
+                "AG_COMMANDS": "{}",
+                "AG_MAIN": self.MAIN,
+            },
+        )
+        results = [line[2:] == "True" for line in output.splitlines() if line.startswith("R:")]
+        self.assertEqual(results, [starts_copy(case, Path(self.MAIN)) for case in cases])
+        self.assertEqual(results, [True, True, False, False, False, False])
+
+    def test_removes_only_this_installs_menu_keys(self) -> None:
+        commands = {
+            "files": self.command(self.MAIN),
+            "folders": self.command(self.MAIN),
+            "other copy": self.command(self.MAIN.replace("Programs", "Other")),
+            "old MediaForge": self.command(self.MAIN.replace("AirGrabber", "MediaForge"), forge=False),
+            "empty": "",
+        }
+        script = _LOAD_MENU_FUNCTIONS + """
+Remove-Menu $env:AG_MAIN @($commands.PSObject.Properties.Name)
+'JSON:' + (Out-Base64 (ConvertTo-Json @($global:removed)))
+"""
+        output = _powershell(
+            script,
+            {
+                "AG_UNINSTALLER": str(UNINSTALLER),
+                "AG_COMMANDS": json.dumps(commands),
+                "AG_MAIN": self.MAIN,
+            },
+        )
+        self.assertEqual(_json_line(output), ["files", "folders"])
+
+    def test_the_menu_keys_are_the_apps_and_removed_on_uninstall(self) -> None:
+        from app.forge.context_menu import BASES
+
+        source = UNINSTALLER.read_text(encoding="utf-8")
+        for base in BASES:
+            with self.subTest(base=base):
+                self.assertIn(f"'HKCU:\\{base}'", source)
+        self.assertIn("    Remove-Menu $mainPy $MenuKeys\n", source)
+        # Only after the development-copy check and once AirGrabber has closed.
+        self.assertLess(source.index("if (-not (Close-App $mainPy))"), source.index("Remove-Menu $mainPy"))
 
 
 if __name__ == "__main__":

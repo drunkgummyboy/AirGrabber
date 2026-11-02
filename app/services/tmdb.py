@@ -39,6 +39,8 @@ from app.models.tmdb import (
     TMDBMovieDetails,
     TMDBMovieInfo,
     TMDBMovieItem,
+    TMDBSeason,
+    TMDBTitle,
     TMDBTVDetails,
     TMDBTVInfo,
     TMDBTVItem,
@@ -71,6 +73,10 @@ class TMDBAuthError(TMDBError):
 
 class TMDBNotFound(TMDBError):
     """TMDB answered 404: the requested resource does not exist."""
+
+
+class TMDBBadReply(TMDBError):
+    """TMDB answered, but the body isn't JSON or doesn't have the expected shape."""
 
 
 class TMDBClient:
@@ -217,6 +223,55 @@ class TMDBClient:
             path, payload, lambda raw: TMDBFindResults.model_validate(raw).first_tv_id()
         )
 
+    # MediaForge's (Forge's) lookups: no adult titles, in the language asked for.
+
+    async def find_titles(
+        self,
+        kind: MediaType,
+        query: str,
+        *,
+        year: int | None = None,
+        language: str | None = None,
+    ) -> list[TMDBTitle]:
+        """Films (/search/movie, `year`) or shows (/search/tv, `first_air_date_year`) matching
+        `query`, TMDB's best match first, in `language` (None = the client's). One page;
+        malformed entries are skipped; a 404 gives an empty list."""
+        query = query.strip()
+        if not query:
+            return []
+        path = "/search/movie" if kind is MediaType.MOVIE else "/search/tv"
+        params = {"query": query, "include_adult": "false"}
+        if year:
+            params["year" if kind is MediaType.MOVIE else "first_air_date_year"] = str(year)
+        try:
+            payload = await self._get_json(path, params, language=language)
+        except TMDBNotFound:
+            return []
+        return _parse_results(path, payload, TMDBTitle.model_validate)
+
+    async def title(
+        self, kind: MediaType, tmdb_id: int, *, language: str | None = None
+    ) -> TMDBTitle | None:
+        """A film (/movie/{id}) or show (/tv/{id}) in `language`; None when TMDB has none."""
+        path = f"/{kind.value}/{tmdb_id}"
+        try:
+            payload = await self._get_json(path, {"include_adult": "false"}, language=language)
+        except TMDBNotFound:
+            return None
+        return _parse_one(path, payload, TMDBTitle.model_validate)
+
+    async def tv_season(
+        self, tv_id: int, number: int, *, language: str | None = None
+    ) -> TMDBSeason | None:
+        """Season `number` of show `tv_id` (its poster and episode names) in `language`; None
+        when TMDB has no such season."""
+        path = f"/tv/{tv_id}/season/{number}"
+        try:
+            payload = await self._get_json(path, {"include_adult": "false"}, language=language)
+        except TMDBNotFound:
+            return None
+        return _parse_one(path, payload, TMDBSeason.model_validate)
+
     async def check_key(self, key: str) -> bool:
         """Whether TMDB accepts `key` (a v3 API key or a v4 read access token), whatever key the
         client is configured with.
@@ -356,7 +411,7 @@ def _decode_json(path: str, response: httpx.Response) -> object:
     except ValueError:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
         pass
     # Raised out here so the decode error (which holds the whole body) isn't its context.
-    raise TMDBError(t("TMDB {path}: response is not valid JSON", path=path))
+    raise TMDBBadReply(t("TMDB {path}: response is not valid JSON", path=path))
 
 
 def _summarize(exc: ValidationError) -> str:
@@ -372,14 +427,14 @@ def _parse_one(path: str, payload: object, convert: Callable[[object], T]) -> T:
     except ValidationError as exc:
         problem = _summarize(exc)
     # Deliberately not chained: a ValidationError's str() quotes the input payload.
-    raise TMDBError(t("TMDB {path}: unexpected payload ({problem})", path=path, problem=problem))
+    raise TMDBBadReply(t("TMDB {path}: unexpected payload ({problem})", path=path, problem=problem))
 
 
 def _parse_results(path: str, payload: object, convert: Callable[[object], T]) -> list[T]:
     """Convert a page's `results` one by one so a single malformed entry can't sink the rest."""
     results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(results, list):
-        raise TMDBError(t("TMDB {path}: expected an object with a 'results' list", path=path))
+        raise TMDBBadReply(t("TMDB {path}: expected an object with a 'results' list", path=path))
     parsed: list[T] = []
     for index, item in enumerate(results):
         try:

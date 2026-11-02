@@ -156,7 +156,7 @@ WORD_SIZE = 18
 CLUSTER_GAP = 24  # at least between "AirGrabber" and the search field
 SEARCH_WIDTH = 300
 SEARCH_MIN_WIDTH = 200
-SEARCH_GAP = 14  # the search field → the ⬇ button
+SEARCH_GAP = 14  # the search field → the 🔨 MediaForge button
 MAGNIFIER_LEFT = 8  # the 🔍 inside the search field
 MAGNIFIER_WIDTH = 30
 ENTRY_HEIGHT = 28
@@ -165,7 +165,7 @@ BUTTON_SIZE = 40
 BUTTON_GAP = 10
 BUTTON_RADIUS = 10
 BADGE_HEIGHT = 18
-BADGE_OVERHANG = 6  # the ⬇ button's badge reaches this far past its corner
+BADGE_OVERHANG = 6  # a button's badge (⬇, 🔨) reaches this far past its corner
 POSTER_TOP = ROW_TOP + ROW_HEIGHT + 22  # the row → the spotlight
 POSTER_WIDTH = 44
 POSTER_HEIGHT = 64
@@ -222,9 +222,11 @@ class BandLayout:
     search: Rect  # the search field
     magnifier: Rect  # its 🔍 (the search button)
     entry: Rect  # the text box inside it
+    forge: Rect  # the 🔨 MediaForge button, just left of ⬇
     downloads: Rect
     settings: Rect
     badge: tuple[float, float]  # the ⬇ button's badge's top-right corner
+    forge_badge: tuple[float, float]  # the 🔨 button's badge's top-right corner
     poster: Rect
     text_x: float  # the tag, title and muted line start here
     text_right: float  # … and end before this
@@ -240,9 +242,9 @@ def band_layout(
     width: float, *, word_width: float, dots: int = 0, current: int = 0
 ) -> BandLayout:
     """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left,
-    the search field, ⬇ and the settings button on the right (the Series / Movies switch is on
-    the tabs row under the band: `switch_layout`); under them the poster and the texts, the
-    `dots` (the `current` one wide) on the right. The search field narrows (to
+    the search field, 🔨 MediaForge, ⬇ and the settings button on the right (the Series /
+    Movies switch is on the tabs row under the band: `switch_layout`); under them the poster
+    and the texts, the `dots` (the `current` one wide) on the right. The search field narrows (to
     SEARCH_MIN_WIDTH) before it would come too close to "AirGrabber"."""
     right = width - PAD_X
     logo = Rect(PAD_X, ROW_TOP, LOGO_SIZE, LOGO_SIZE)
@@ -250,7 +252,8 @@ def band_layout(
     left_end = word_x + word_width
     settings = Rect(right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     downloads = Rect(settings.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
-    search_right = downloads.x - SEARCH_GAP
+    forge = Rect(downloads.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
+    search_right = forge.x - SEARCH_GAP
     room = search_right - (left_end + CLUSTER_GAP)
     search_width = max(SEARCH_MIN_WIDTH, min(SEARCH_WIDTH, room))
     search = Rect(search_right - search_width, ROW_TOP, search_width, ROW_HEIGHT)
@@ -285,9 +288,11 @@ def band_layout(
         search=search,
         magnifier=magnifier,
         entry=entry,
+        forge=forge,
         downloads=downloads,
         settings=settings,
         badge=(downloads.right + BADGE_OVERHANG, downloads.y - BADGE_OVERHANG),
+        forge_badge=(forge.right + BADGE_OVERHANG, forge.y - BADGE_OVERHANG),
         poster=poster,
         text_x=text_x,
         text_right=text_right,
@@ -299,6 +304,7 @@ def band_layout(
 class HitKind(StrEnum):
     SEARCH = "search"  # the 🔍
     FIELD = "field"  # the search field around its text box: focuses it
+    FORGE = "forge"  # the 🔨 MediaForge button
     DOWNLOADS = "downloads"
     SETTINGS = "settings"
     DOT = "dot"
@@ -317,6 +323,8 @@ def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | N
         return Hit(HitKind.SEARCH)
     if layout.search.contains(x, y):
         return Hit(HitKind.FIELD)
+    if layout.forge.contains(x, y):
+        return Hit(HitKind.FORGE)
     if layout.downloads.contains(x, y):
         return Hit(HitKind.DOWNLOADS)
     if layout.settings.contains(x, y):
@@ -334,6 +342,7 @@ def controls(layout: BandLayout) -> Sequence[Rect]:
     return (
         layout.brand,
         layout.search,
+        layout.forge,
         layout.downloads,
         layout.settings,
     )

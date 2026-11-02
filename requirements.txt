@@ -7,3 +7,4 @@ Pillow>=10.0
 pystray>=0.19
 # optional: AirGrabber starts without these (app/bootstrap.py, install.ps1)
 pywebview>=6.0
+guessit>=4.4

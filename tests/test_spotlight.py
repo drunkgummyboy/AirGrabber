@@ -58,8 +58,11 @@ from app.ui.backdrop import (
     scrim_alpha,
 )
 from app.ui.main_window import build_tabs_row, show_tabs
+from app.forge.ui.look import forge_look
 from app.ui.spotlight import (
+    BADGE_OVERHANG,
     BAND_HEIGHT,
+    BUTTON_GAP,
     PAD_X,
     PILL_PAD,
     POSTER_HEIGHT,
@@ -533,8 +536,26 @@ class LayoutTests(unittest.TestCase):
         self.check(1220)
         layout = band_layout(1220, word_width=WORD, dots=5)
         self.assertEqual(layout.search.w, SEARCH_WIDTH)  # room for the full search field
-        # The top row: only the logo with its name, the search field and the two buttons.
-        self.assertEqual(controls(layout), (layout.brand, layout.search, layout.downloads, layout.settings))
+        # The top row: only the logo with its name, the search field and the three buttons.
+        self.assertEqual(
+            controls(layout),
+            (layout.brand, layout.search, layout.forge, layout.downloads, layout.settings),
+        )
+
+    def test_the_forge_button_left_of_downloads(self) -> None:
+        """D2: 🔨 MediaForge just left of ⬇ Downloads, the same size, the search field before it;
+        its badge's corner where ⬇'s is on ⬇."""
+        for width in (1220, 1650, 1920, 2560, 900):
+            with self.subTest(width):
+                layout = band_layout(width, word_width=WORD, dots=3)
+                forge, downloads = layout.forge, layout.downloads
+                self.assertEqual((forge.w, forge.h, forge.y), (downloads.w, downloads.h, downloads.y))
+                self.assertAlmostEqual(forge.right + BUTTON_GAP, downloads.x)
+                self.assertLess(layout.search.right, forge.x)
+                self.assertEqual(
+                    layout.forge_badge, (forge.right + BADGE_OVERHANG, forge.y - BADGE_OVERHANG)
+                )
+                self.assertLess(layout.forge_badge[0], downloads.x)  # in the gap, not on ⬇
 
     def test_wide_windows(self) -> None:
         for width in (1650, 1920, 2560):
@@ -550,8 +571,10 @@ class LayoutTests(unittest.TestCase):
                 self.check(width)
                 layout = band_layout(width, word_width=WORD)
                 self.assertGreaterEqual(layout.search.w, SEARCH_MIN_WIDTH)
-        self.check(500)  # far narrower than the window gets: the search field gives way first
-        self.assertEqual(band_layout(500, word_width=WORD).search.w, SEARCH_MIN_WIDTH)
+        # Far narrower than the window gets (550: since 🔨 joined the row): the search field
+        # gives way first.
+        self.check(550)
+        self.assertEqual(band_layout(550, word_width=WORD).search.w, SEARCH_MIN_WIDTH)
 
     def test_what_the_pointer_is_over(self) -> None:
         layout = band_layout(1220, word_width=WORD, dots=3, current=1)
@@ -563,6 +586,9 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(hit_target(layout, *middle(layout.magnifier), items=3), Hit(HitKind.SEARCH))
         self.assertEqual(hit_target(layout, layout.search.right - 4, layout.search.y + 20, items=3), Hit(HitKind.FIELD))
         self.assertEqual(hit_target(layout, *middle(layout.downloads), items=3), Hit(HitKind.DOWNLOADS))
+        self.assertEqual(hit_target(layout, *middle(layout.forge), items=3), Hit(HitKind.FORGE))
+        gap = (layout.forge.right + layout.downloads.x) / 2  # between 🔨 and ⬇: neither
+        self.assertIsNone(hit_target(layout, gap, layout.forge.y + 20, items=3))
         self.assertEqual(hit_target(layout, *middle(layout.settings), items=3), Hit(HitKind.SETTINGS))
         self.assertEqual(hit_target(layout, *middle(layout.dots[2]), items=3), Hit(HitKind.DOT, 2))
         self.assertEqual(hit_target(layout, *middle(layout.poster), items=3), Hit(HitKind.SPOT))
@@ -793,6 +819,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             images=self.images,  # type: ignore[arg-type]
             motion=motion,
             on_downloads=lambda: self.events.append("downloads"),
+            on_forge=lambda: self.events.append("forge"),
             on_settings=lambda: self.events.append("settings"),
             on_search=lambda: self.events.append("search"),
             on_open=lambda item: self.events.append(("open", item.title)),
@@ -846,14 +873,79 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         band = self.band()
         band.start()
         await self.settle()
-        for kind in (HitKind.SEARCH, HitKind.DOWNLOADS, HitKind.SETTINGS, HitKind.SPOT):
+        for kind in (HitKind.SEARCH, HitKind.FORGE, HitKind.DOWNLOADS, HitKind.SETTINGS, HitKind.SPOT):
             band._activate(Hit(kind))
-        self.assertEqual(self.events, ["search", "downloads", "settings", ("open", "The Bear")])
+        self.assertEqual(self.events, ["search", "forge", "downloads", "settings", ("open", "The Bear")])
         layout = band.layout
         assert layout is not None
         scale = band._scale
         x, y = layout.downloads.x + 20, layout.downloads.y + 20
         self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.DOWNLOADS))
+        x, y = layout.forge.x + 20, layout.forge.y + 20
+        self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.FORGE))
+        # 🔨 drawn like ⬇: the same box at its own place, the glyph in its middle.
+        self.assertEqual(self.text(band, band._forge_glyph), "🔨")
+        self.assertEqual(band.coords(band._forge_item), [band._px(layout.forge.x), band._px(layout.forge.y)])
+        forge_box = band._photo_sources["forge"]
+        self.assertEqual(forge_box.size, band._photo_sources["settings"].size)
+        self.assertEqual(
+            band.coords(band._forge_glyph),
+            [band._px(layout.forge.x + layout.forge.w / 2), band._px(layout.forge.y + layout.forge.h / 2)],
+        )
+        self.assertEqual(option(band, band._forge_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
+
+    async def test_the_forge_tip(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        layout = band.layout
+        assert layout is not None
+        band._hover = Hit(HitKind.FORGE)
+        shown: list[str] = []
+        band._tip.show = lambda rect, text, gap: shown.append(text)  # type: ignore[method-assign]
+        band.winfo_ismapped = lambda: True  # type: ignore[method-assign]
+        band._show_tip(Hit(HitKind.FORGE))
+        self.assertEqual(shown, ["MediaForge"])
+
+    async def test_the_forge_badge_in_copper(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        self.assertEqual(option(band, band._forge_badge_item, "state"), "hidden")  # none yet
+        band.set_forge_count(3)
+        self.assertEqual(self.text(band, band._forge_badge_text), "3")
+        self.assertEqual(option(band, band._forge_badge_item, "state"), "normal")
+        self.assertEqual(option(band, band._forge_badge_text, "fill"), theme.pick(theme.ON_COLOR))
+        badge = band._photo_sources["forge_badge"]
+        middle: Any = badge.getpixel((badge.width // 2, badge.height // 2))
+        copper = theme.pick(forge_look().ACCENT)
+        self.assertEqual(middle[:3], tuple(int(copper[i : i + 2], 16) for i in (1, 3, 5)))
+        layout = band.layout
+        assert layout is not None
+        right, top = layout.forge_badge
+        x, y = band.coords(band._forge_badge_item)
+        self.assertEqual((round(x) + badge.width, round(y)), (band._px(right), band._px(top)))
+        band.set_forge_count(150)
+        self.assertEqual(self.text(band, band._forge_badge_text), "99+")
+        self.assertEqual(self.text(band, band._badge_text), "1")  # ⬇'s own badge untouched
+        band.set_forge_count(0)
+        self.assertEqual(option(band, band._forge_badge_item, "state"), "hidden")
+        self.assertEqual(option(band, band._forge_badge_text, "state"), "hidden")
+        band.set_forge_count(2)
+        band._repaint()  # light ↔ dark and scaling paint it again, still shown
+        band._rescaled(1.0, 1.0)
+        self.assertEqual(option(band, band._forge_badge_item, "state"), "normal")
+        self.assertEqual(self.text(band, band._forge_badge_text), "2")
+
+    def test_the_tray_badge_is_copper_too(self) -> None:
+        from app.ui import tray
+
+        picture = tray.with_badge(Image.new("RGBA", (128, 128), (0, 0, 0, 0)), 2)
+        radius = 128 // 4
+        # Off the digit, inside the dot: Forge's copper (one colour in both modes).
+        pixel: Any = picture.getpixel((127 - radius, 127 - 2 * radius + 3))
+        copper = theme.pick(forge_look().ACCENT, dark=True)
+        self.assertEqual(pixel[:3], tuple(int(copper[i : i + 2], 16) for i in (1, 3, 5)))
 
     async def test_switching_sides_and_the_downloads_page(self) -> None:
         band = self.band()

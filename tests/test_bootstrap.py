@@ -23,6 +23,7 @@ from app.bootstrap import (
     install_commands,
     parse_requirements,
     pip_install,
+    retry_optional,
     unmet,
     version_tuple,
 )
@@ -74,9 +75,9 @@ class ParseRequirementsTests(unittest.TestCase):
         )
         self.assertEqual(Requirement("plain", ((">=", "1.0"),)).spec, "plain>=1.0")
 
-    def test_in_the_project_only_pywebview_is_optional(self) -> None:
+    def test_in_the_project_only_pywebview_and_guessit_are_optional(self) -> None:
         requirements = parse_requirements(REQUIREMENTS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual([r.name for r in requirements if r.optional], ["pywebview"])
+        self.assertEqual([r.name for r in requirements if r.optional], ["pywebview", "guessit"])
         self.assertIn("customtkinter", [r.name for r in requirements if not r.optional])
 
 
@@ -372,6 +373,39 @@ class OptionalRequirementsTests(unittest.TestCase):
         failures = OptionalFailures(self.paths.root / OPTIONAL_STATE_FILE)
         self.assertFalse(failures.due(Requirement("viewer", line="viewer>=6.0"), self.now + 1))
         self.assertTrue(failures.due(Requirement("viewer", line="viewer>=6.0"), self.now - 10))  # the clock went back
+
+    def test_retry_optional_tries_it_again_at_the_next_start(self) -> None:
+        self.ensure()
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.ensure())
+        self.assertEqual(len(self.calls), 1)  # remembered: not tried again yet
+        state_file = self.paths.root / OPTIONAL_STATE_FILE
+        self.assertTrue(retry_optional("viewer", state_file))
+        self.assertEqual(json.loads(state_file.read_text(encoding="utf-8")), {})
+        self.assertTrue(self.ensure())
+        self.assertEqual(self.calls[-1], ([], [pip_install("viewer>=6.0")]))  # tried again at once
+
+    def test_retry_optional_matches_the_name_only(self) -> None:
+        state_file = self.paths.root / OPTIONAL_STATE_FILE
+        state_file.write_text(
+            json.dumps({"Viewer_Pkg>=6.0": self.now, "viewer-pkg-extra>=1.0": self.now, "other>=2.0": self.now}),
+            encoding="utf-8",
+        )
+        self.assertTrue(retry_optional("viewer.pkg", state_file))  # pip's name rules: case, - _ . alike
+        self.assertEqual(
+            sorted(json.loads(state_file.read_text(encoding="utf-8"))), ["other>=2.0", "viewer-pkg-extra>=1.0"]
+        )
+        self.assertFalse(retry_optional("viewer-pkg", state_file))  # nothing left to forget
+
+    def test_retry_optional_without_a_state_file(self) -> None:
+        missing = self.paths.root / "nowhere" / OPTIONAL_STATE_FILE
+        self.assertFalse(retry_optional("viewer", missing))
+        self.assertFalse(missing.exists())
+
+    def test_retry_optional_uses_the_data_folder_by_default(self) -> None:
+        (self.paths.root / OPTIONAL_STATE_FILE).write_text(json.dumps({"viewer>=6.0": self.now}), encoding="utf-8")
+        with mock.patch.dict("os.environ", {"AIRGRABBER_DATA_DIR": str(self.paths.root)}):
+            self.assertTrue(retry_optional("viewer"))
 
 
 if __name__ == "__main__":

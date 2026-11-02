@@ -11,14 +11,20 @@ from typing import Any
 
 from PIL import Image
 
+from types import SimpleNamespace
+
 from app.models import Settings
 from app.ui.tray import (
     CHECK_NOW_LABEL,
+    OPEN_FORGE_LABEL,
     OPEN_LABEL,
     QUIT_LABEL,
     CloseAction,
+    TrayHost,
     TrayIcon,
     close_action,
+    tooltip,
+    with_badge,
 )
 
 WAIT_S = 5.0
@@ -84,7 +90,7 @@ class FakeIcon:
         menu: FakeMenu,
         hold_setup: threading.Event | None = None,
     ) -> None:
-        self.name, self.image, self.title, self.menu = name, icon, title, menu
+        self.name, self.icon, self.title, self.menu = name, icon, title, menu  # pystray's names
         self.hold_setup = hold_setup  # setup waits for it: pystray's loop is still starting
         self.visible = False
         self.ever_visible = False
@@ -265,6 +271,41 @@ class TrayIconTests(unittest.TestCase):
         with self.assertRaises(ImportError):
             self._tray(Missing()).start()
 
+    def test_open_mediaforge_in_the_menu(self) -> None:
+        tray = self._tray(self.backend, on_open_forge=self._record("forge"))
+        self.addCleanup(tray.stop)
+        tray.start()
+        icon = self.backend.icons[0]
+        self.assertTrue(icon.setup_done.wait(WAIT_S))
+        items = icon.menu.items
+        self.assertEqual(
+            [item if item is FakeMenu.SEPARATOR else item.text for item in items],
+            [OPEN_LABEL, OPEN_FORGE_LABEL, CHECK_NOW_LABEL, FakeMenu.SEPARATOR, QUIT_LABEL],
+        )
+        clicker = threading.Thread(target=items[1].action)  # as pystray's thread would
+        clicker.start()
+        clicker.join(WAIT_S)
+        self.assertEqual(self.calls, [])  # nothing ran on the tray's thread
+        self._drain_loop()
+        self.assertEqual(self.calls, [("forge", threading.get_ident())])
+
+    def test_the_needs_you_count(self) -> None:
+        icon = self._started_icon()
+        plain = icon.icon
+        self.tray.set_count(3)
+        self.assertEqual(icon.title, "AirGrabber · MediaForge: 3 files need you")
+        self.assertIsNot(icon.icon, plain)  # the badge
+        self.tray.set_count(0)
+        self.assertEqual(icon.title, "AirGrabber")
+        self.assertIs(icon.icon, plain)
+
+    def test_a_count_before_the_icon_starts_with_it(self) -> None:
+        self.tray.set_count(1)
+        icon = self._started_icon()
+        self.assertEqual(icon.title, "AirGrabber · MediaForge: 1 file needs you")
+        self.assertEqual(_alpha(icon.icon, (11, 11)), 255)  # the badge on the 16 px picture
+        self.assertEqual(_alpha(icon.icon, (0, 0)), 0)
+
     def test_a_dying_message_loop_reports_on_the_loop(self) -> None:
         failed = threading.Event()
         tray = self._tray(FakePystray(fail=True), on_failed=failed.set)
@@ -277,6 +318,69 @@ class TrayIconTests(unittest.TestCase):
         self.assertFalse(failed.is_set())  # not on the tray's thread...
         self._drain_loop()
         self.assertTrue(failed.is_set())  # ...but on the loop
+
+
+class BadgeTests(unittest.TestCase):
+    def test_tooltip(self) -> None:
+        self.assertEqual(tooltip(0), "AirGrabber")
+        self.assertEqual(tooltip(-2), "AirGrabber")
+        self.assertEqual(tooltip(1), "AirGrabber · MediaForge: 1 file needs you")
+        self.assertEqual(tooltip(12), "AirGrabber · MediaForge: 12 files need you")
+
+    def test_with_badge_leaves_the_picture_alone(self) -> None:
+        plain = Image.new("RGBA", (128, 100), (0, 0, 0, 0))  # the logo isn't square
+        for count in (1, 9, 10, 250):
+            with self.subTest(count=count):
+                badged = with_badge(plain, count)
+                self.assertEqual(badged.size, plain.size)
+                self.assertEqual(_alpha(badged, (0, 0)), 0)  # only its corner changes
+                self.assertEqual(_alpha(badged, (127 - 25, 99 - 25)), 255)  # the disc
+        self.assertEqual(_alpha(plain, (127 - 25, 99 - 25)), 0)  # the original is untouched
+
+
+class FakeTrayIcon:
+    def __init__(self) -> None:
+        self.counts: list[int] = []
+
+    def set_count(self, count: int) -> None:
+        self.counts.append(count)
+
+
+class TrayHostTests(unittest.TestCase):
+    """TrayHost's MediaForge parts, on a stand-in window (no Tk)."""
+
+    def setUp(self) -> None:
+        self.calls: list[str] = []
+
+    def host(self, **extra: Any) -> TrayHost:
+        window: Any = SimpleNamespace(
+            winfo_exists=lambda: True, destroy=lambda: self.calls.append("destroy")
+        )
+        settings: Any = SimpleNamespace(current=Settings())
+        return TrayHost(window, settings=settings, on_check_now=lambda: None, **extra)
+
+    def test_quit_goes_through_on_quit(self) -> None:
+        self.host(on_quit=lambda: self.calls.append("on_quit")).quit()
+        self.assertEqual(self.calls, ["on_quit"])  # the main window decides when (Forge first)
+
+    def test_quit_without_on_quit_destroys_at_once(self) -> None:
+        self.host().quit()
+        self.assertEqual(self.calls, ["destroy"])
+
+    def test_the_forge_count_reaches_the_icon(self) -> None:
+        host = self.host()
+        host.set_forge_count(2)  # no icon yet: kept for it
+        icon = FakeTrayIcon()
+        host._icon = icon  # type: ignore[assignment]
+        host.set_forge_count(5)
+        self.assertEqual(icon.counts, [5])
+        self.assertEqual(host._forge_count, 5)
+
+
+def _alpha(image: Image.Image, xy: tuple[int, int]) -> int:
+    pixel = image.getpixel(xy)
+    assert isinstance(pixel, tuple)
+    return int(pixel[3])
 
 
 def _raise() -> None:

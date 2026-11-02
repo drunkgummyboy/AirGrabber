@@ -28,6 +28,12 @@ for the languages asked: the newest grab of it with its video in the folder, the
 respected, and the RETRY_AFTER wait and a given-up language only when not `force`d (a request
 by hand may try again at once). Its outcome is a SubtitleFetch.
 
+MediaForge (once it runs: `forge`) moves finished videos out of that folder into the library,
+with the subtitles beside them. Its move records out of the folder (`moves_from`) count as the
+grab's videos at their new place (moved after the grab, MOVE_SLACK allowed), so subtitles
+fetched later land beside them in the library; a video moved during a download is followed
+there. A change to the move records wakes a run soon.
+
 A grab whose videos all have their languages (or were given up), with nothing of it still
 downloading, is complete and not looked at again until the languages change. When today's
 downloads are used up the run stops and says when they start again (midnight UTC); runs skip
@@ -41,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -79,15 +86,21 @@ from app.services.opensubtitles import (
     imdb_number,
     movie_hash,
 )
+from app.services.download_status import MOVE_SLACK, ForgeLookup, MoveRecords
 from app.services.settings import SettingsService
 from app.services.subtitle_files import (
     FolderScan,
     GrabVideo,
+    MovedVideo,
     grab_files,
     has_subtitle,
+    look_beside,
+    moved_videos,
     movie_identity,
+    same_path,
     scan_folder,
     subtitle_path,
+    with_moved,
     write_new_file,
 )
 
@@ -171,6 +184,11 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _aware(moment: datetime) -> datetime:
+    """Forge's move records hold local time without a zone; the grabs hold UTC."""
+    return moment if moment.tzinfo is not None else moment.astimezone(UTC)
+
+
 @dataclass(slots=True)
 class _Run:
     videos: int = 0
@@ -204,10 +222,16 @@ class SubtitleService:
         movie_imdb_id: Callable[[int], Awaitable[str | None]],
         clock: Callable[[], datetime] = _utc_now,
         wall_clock: Callable[[], float] = time.time,
+        forge: ForgeLookup | None = None,
     ) -> None:
         """`show`: a TV show by TVMaze id (its name and IMDb id), None when unknown.
         `movie_imdb_id`: a film's IMDb id by TMDB id, None when it can't be had. `clock`: the
-        current UTC instant; `wall_clock`: seconds as file times count them (tests move both)."""
+        current UTC instant; `wall_clock`: seconds as file times count them (tests move both).
+        `forge`: MediaForge's move records once it runs (download_status.forge_moves), for
+        the videos it moved out of the finished-downloads folder."""
+        self._forge = forge
+        self._watched: MoveRecords | None = None  # the move records listened to
+        self._unwatch: Callable[[], None] | None = None
         self._repository = repository
         self._client = client
         self._settings = settings
@@ -281,6 +305,73 @@ class SubtitleService:
         if any(getattr(previous, name) != getattr(updated, name) for name in SETTINGS_FIELDS):
             self._last_problem = None  # a fixed setting may fail differently: say so at once
             self._wake.set()
+
+    # -- videos MediaForge moved away -----------------------------------------------------------
+
+    def _move_records(self) -> MoveRecords | None:
+        """MediaForge's move records while it runs (listened to for new moves), else None."""
+        forge = self._forge() if self._forge is not None else None
+        if forge is None:
+            return None
+        records = forge.records
+        if records is not self._watched:
+            if self._unwatch is not None:
+                self._unwatch()
+            self._watched = records
+            self._unwatch = records.subscribe(self._moves_changed)
+        return records
+
+    def _moves_changed(self) -> None:
+        self._wake.set()  # a video may have moved into the library: look again soon
+
+    async def _moved(self, folder: str, scan: FolderScan, since: datetime) -> list[MovedVideo]:
+        """The videos MediaForge moved out of `folder` at or after `since` that are still where
+        it put them; the subtitles beside them join `scan.subtitles`. [] without MediaForge (or
+        when its records can't be read: forge.db closing at shutdown)."""
+        moves = self._move_records()
+        if moves is None:
+            return []
+        try:
+            records = await moves.moves_from(Path(folder))
+        except Exception as exc:  # noqa: BLE001 - never the subtitle run's problem
+            log.info("Subtitles: MediaForge's moves can't be read (%s)", type(exc).__name__)
+            return []
+        candidates = moved_videos(
+            folder,
+            (
+                (str(move.source), str(move.target), moved_at)
+                for move in records
+                if (moved_at := _aware(move.moved_at)) >= since
+            ),
+            known=(video.path for video in scan.videos),
+        )
+        if not candidates:
+            return []
+        there, beside = await asyncio.to_thread(look_beside, candidates)
+        scan.subtitles.update(beside)
+        return there
+
+    async def _where_now(self, path: str) -> str | None:
+        """Where a video is now: `path`, or where MediaForge moved it from there meanwhile;
+        None when it is gone."""
+        if await asyncio.to_thread(os.path.exists, path):
+            return path
+        moves = self._move_records()
+        folder = self._settings.current.subtitles_folder
+        if moves is None or not folder.strip():
+            return None
+        try:
+            records = await moves.moves_from(Path(folder))
+        except Exception as exc:  # noqa: BLE001
+            log.info("Subtitles: MediaForge's moves can't be read (%s)", type(exc).__name__)
+            return None
+        for move in records:  # newest first
+            target = str(move.target)
+            if same_path(str(move.source), path) and await asyncio.to_thread(
+                os.path.exists, target
+            ):
+                return target
+        return None
 
     async def show_languages(self, show_id: int) -> dict[tuple[int, int], frozenset[str]]:
         """Per (season, episode) of a TV show, the languages of the subtitles saved for it."""
@@ -384,6 +475,8 @@ class SubtitleService:
             raise _StopRun(folder_unreachable_text(folder)) from None
         if scan.truncated:
             log.info("Subtitles: the downloads folder is large; only part of it was looked at")
+        oldest = min(grab.record.downloaded_at for grab in grabs) - MOVE_SLACK
+        moved = await self._moved(folder, scan, oldest)
 
         shows: dict[int, Show | None] = {}
         movies: dict[int, str | None] = {}
@@ -395,7 +488,11 @@ class SubtitleService:
                 if record.media_id not in shows:
                     shows[record.media_id] = await self._show(record.media_id)
                 show = shows[record.media_id]
-            files = grab_files(record, scan, show_name=show.name if show else None)
+            files = grab_files(
+                record,
+                with_moved(scan, moved, record.downloaded_at - MOVE_SLACK),
+                show_name=show.name if show else None,
+            )
             work.append((record, list(files.videos), files.incomplete))
         states = await self._repository.files(
             video.video.path for _record, videos, _incomplete in work for video in videos
@@ -488,6 +585,8 @@ class SubtitleService:
             scan = await asyncio.to_thread(scan_folder, Path(folder), now=self._wall_clock())
         except OSError:
             raise _StopRun(folder_unreachable_text(folder)) from None
+        oldest = min(candidate.downloaded_at for candidate in records) - MOVE_SLACK
+        moved = await self._moved(folder, scan, oldest)
         shows: dict[int, Show | None] = {}
         if media_type is MediaType.TV:
             shows[media_id] = await self._show(media_id)
@@ -495,8 +594,12 @@ class SubtitleService:
         record: DownloadRecord | None = None
         videos: list[GrabVideo] = []
         incomplete = False
-        for candidate in records:  # the newest grab with its video in the folder
-            files = grab_files(candidate, scan, show_name=show.name if show else None)
+        for candidate in records:  # the newest grab with its video in the folder (or moved)
+            files = grab_files(
+                candidate,
+                with_moved(scan, moved, candidate.downloaded_at - MOVE_SLACK),
+                show_name=show.name if show else None,
+            )
             incomplete = incomplete or files.incomplete
             found = [
                 video
@@ -650,14 +753,15 @@ class SubtitleService:
         hearing_impaired = self._settings.current.subtitles_hearing_impaired
         for language in languages:
             choice = pick(found, language, hearing_impaired)
-            if choice is not None and await self._save(path, language, choice):
+            beside = await self._save(path, language, choice) if choice is not None else None
+            if beside is not None:
                 await self._repository.record_saved(
-                    path,
+                    beside,
                     language,
                     record=record,
                     season=video.season,
                     episode=video.episode,
-                    subtitle_path=subtitle_path(path, language),
+                    subtitle_path=subtitle_path(beside, language),
                     when=self._clock(),
                 )
                 saved.append(language)
@@ -745,9 +849,14 @@ class SubtitleService:
             params["type"] = "movie"
         return found + await self._client.search(params)
 
-    async def _save(self, path: str, language: str, choice: SubtitleCandidate) -> bool:
-        """Download a subtitle and write it next to the video. False when OpenSubtitles gave
-        nothing usable for this one (the run goes on)."""
+    async def _save(self, path: str, language: str, choice: SubtitleCandidate) -> str | None:
+        """Download a subtitle and write it next to the video: where it is now, also when
+        MediaForge moved it meanwhile. Returns the video's path it was saved beside; None when
+        OpenSubtitles gave nothing usable for this one or the video is gone (the run goes
+        on)."""
+        if await self._where_now(path) is None:  # before a download is counted
+            log.info("Subtitles: file %d: its video is gone", choice.file_id)
+            return None
         try:
             link = await self._client.download_link(choice.file_id)
         except QuotaExceeded as exc:
@@ -757,7 +866,7 @@ class SubtitleService:
             if not _is_one_off(exc):
                 raise _StopRun(str(exc)) from None
             log.info("Subtitles: file %d: %s", choice.file_id, exc)
-            return False
+            return None
         self._quota = SubtitleQuota(
             remaining=link.remaining,
             allowed=self._quota.allowed,
@@ -769,13 +878,16 @@ class SubtitleService:
             if not _is_one_off(exc):
                 raise _StopRun(str(exc)) from None
             log.info("Subtitles: file %d: %s", choice.file_id, exc)
-            return False
-        target = subtitle_path(path, language)
+            return None
+        video = await self._where_now(path)  # MediaForge may have moved it during the download
+        if video is None:
+            log.info("Subtitles: file %d: its video is gone", choice.file_id)
+            return None
         try:
-            await asyncio.to_thread(write_new_file, target, content)
+            await asyncio.to_thread(write_new_file, subtitle_path(video, language), content)
         except OSError:
             raise _StopRun(t(WRITE_FAILED_TEXT)) from None
-        return True  # written now, or a subtitle appeared there meanwhile (kept as it is)
+        return video  # written now, or a subtitle appeared there meanwhile (kept as it is)
 
     def _quota_used_up(self, reset_at: datetime | None) -> None:
         self._quota = SubtitleQuota(

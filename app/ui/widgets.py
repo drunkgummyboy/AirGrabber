@@ -38,6 +38,20 @@ def install_edit_menus(root: tk.Misc) -> None:
         root.bind_class(widget_class, "<Button-3>", _open_edit_menu)
 
 
+def install_window_release(root: tk.Misc) -> None:
+    """customtkinter keeps every window its widgets were scaled in (ScalingTracker's tables)
+    and never forgets a closed one, so a closed window stayed in memory for the rest of the
+    run with all it held (widgets, pictures). A class binding: once per Tk root (MainWindow),
+    every Toplevel it opens, CTkToplevel or plain (PopupMenu's), is forgotten as it goes."""
+    root.bind_class("Toplevel", "<Destroy>", _forget_window, add="+")
+
+
+def _forget_window(event: tk.Event[Any]) -> None:
+    # Only Toplevels have this class tag, so this is the window itself, not a child of it.
+    ctk.ScalingTracker.window_widgets_dict.pop(event.widget, None)
+    ctk.ScalingTracker.window_dpi_scaling_dict.pop(event.widget, None)
+
+
 def _open_edit_menu(event: tk.Event[Any]) -> None:
     field = event.widget
     if isinstance(field, (tk.Entry, tk.Text)):
@@ -101,11 +115,15 @@ UNDERLINE_FONT_SIZE = 15
 class UnderlineTabs(ctk.CTkFrame):
     """The "underline" look's tab row: the names left-aligned on the page's background, the
     chosen one in TEXT with an ACCENT line under it, the others muted (TEXT under the pointer),
-    a thin line under them all. A click calls `on_select(name)`."""
+    a thin line under them all. A click calls `on_select(name)`. `colors`: a window's own accent
+    tokens (the Forge window's copper) instead of AirGrabber's."""
 
-    def __init__(self, master: Any, *, on_select: Callable[[str], None]) -> None:
+    def __init__(
+        self, master: Any, *, on_select: Callable[[str], None], colors: theme.Look | None = None
+    ) -> None:
         super().__init__(master, fg_color="transparent", corner_radius=0, height=UNDERLINE_BAR)
         self._on_select = on_select
+        self._colors = colors
         self._names: list[str] = []
         self._current = ""
         self._labels: dict[str, ctk.CTkLabel] = {}
@@ -116,13 +134,17 @@ class UnderlineTabs(ctk.CTkFrame):
         self._line = tk.Frame(
             self,
             height=max(1, round(scaling)),
-            background=theme.pick(theme.PANEL_EDGE),
+            background=theme.pick(self._line_color()),
             borderwidth=0,
             highlightthickness=0,
         )
         theme.on_mode_change(
-            self._line, lambda: self._line.configure(background=theme.pick(theme.PANEL_EDGE))
+            self._line, lambda: self._line.configure(background=theme.pick(self._line_color()))
         )
+
+    def _line_color(self) -> theme.Pair:
+        # PANEL_EDGE follows PLACEHOLDER (theme.apply_accent): a look's own PLACEHOLDER.
+        return theme.PANEL_EDGE if self._colors is None else self._colors.PLACEHOLDER
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -168,7 +190,8 @@ class UnderlineTabs(ctk.CTkFrame):
         for each, label in self._labels.items():
             chosen = each == name
             label.configure(text_color=theme.TEXT if chosen else theme.TEXT_MUTED)
-            self._marks[each].configure(fg_color=theme.ACCENT if chosen else "transparent")
+            accent = theme.ACCENT if self._colors is None else self._colors.ACCENT
+            self._marks[each].configure(fg_color=accent if chosen else "transparent")
 
     def _hover(self, name: str, inside: bool) -> None:
         label = self._labels.get(name)
@@ -190,11 +213,15 @@ class PillTabs(ctk.CTkFrame):
     """The "pills" look's tab row: the names left-aligned as rounded buttons on the page's
     background, the chosen one filled with ACCENT and white text (ON_COLOR), the others on a
     faint CHIP fill in BUTTON_TEXT (CHIP_HOVER under the pointer). A click calls
-    `on_select(name)`."""
+    `on_select(name)`. `colors`: a window's own accent tokens (the Forge window's copper)
+    instead of AirGrabber's."""
 
-    def __init__(self, master: Any, *, on_select: Callable[[str], None]) -> None:
+    def __init__(
+        self, master: Any, *, on_select: Callable[[str], None], colors: theme.Look | None = None
+    ) -> None:
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self._on_select = on_select
+        self._colors = colors
         self._names: list[str] = []
         self._current = ""
         self._buttons: dict[str, ctk.CTkButton] = {}
@@ -244,12 +271,16 @@ class PillTabs(ctk.CTkFrame):
     def select(self, name: str) -> None:
         """Mark `name` as chosen (the colours read now: the accent is set at startup)."""
         self._current = name
+        own = self._colors
+        accent = theme.ACCENT if own is None else own.ACCENT
+        chip = theme.CHIP if own is None else own.CHIP
+        chip_hover = theme.CHIP_HOVER if own is None else own.CHIP_HOVER
         for each, button in self._buttons.items():
             if each == name:
-                colours = {"fg_color": theme.ACCENT, "hover_color": theme.ACCENT}
+                colours = {"fg_color": accent, "hover_color": accent}
                 text: theme.Color = theme.ON_COLOR
             else:
-                colours = {"fg_color": theme.CHIP, "hover_color": theme.CHIP_HOVER}
+                colours = {"fg_color": chip, "hover_color": chip_hover}
                 text = theme.BUTTON_TEXT
             button.configure(**colours, text_color=text)
 
@@ -267,11 +298,19 @@ class Tabview(ctk.CTkTabview):
     border). `look="underline"` is the same with `UnderlineTabs` (an accent line under the
     chosen name) instead. The default "segmented" look is CTk's own (the info window, Import
     Shows). `pills_master`: the pills' row goes in that widget instead (its owner places it:
-    the main window's tabs row, with the Series / Movies switch at its right end).
+    the main window's tabs row, with the Series / Movies switch at its right end). `colors`: a
+    window's own accent tokens for the pills / underline row and the page (the Forge window's
+    copper, app/forge/ui/look.py) instead of AirGrabber's (`look` names the tab row's style).
     """
 
     def __init__(
-        self, master: Any, *, look: str = "segmented", pills_master: Any = None, **kwargs: Any
+        self,
+        master: Any,
+        *,
+        look: str = "segmented",
+        pills_master: Any = None,
+        colors: theme.Look | None = None,
+        **kwargs: Any,
     ) -> None:
         self._look = look
         self._underline: UnderlineTabs | None = None
@@ -279,14 +318,16 @@ class Tabview(ctk.CTkTabview):
         if look in _OWN_ROW_LOOKS:
             kwargs.setdefault("corner_radius", 0)
             kwargs.setdefault("border_width", 0)
-            kwargs.setdefault("fg_color", theme.BG)
+            kwargs.setdefault("fg_color", theme.BG if colors is None else colors.BG)
         super().__init__(master, **kwargs)
         if look == "underline":
-            self._underline = UnderlineTabs(self, on_select=self._tab_clicked)
+            self._underline = UnderlineTabs(self, on_select=self._tab_clicked, colors=colors)
             self._underline.grid(row=0, column=0, sticky="nsew")
         elif look == "pills":
             own = pills_master is None
-            self._pills = PillTabs(self if own else pills_master, on_select=self._tab_clicked)
+            self._pills = PillTabs(
+                self if own else pills_master, on_select=self._tab_clicked, colors=colors
+            )
             if own:
                 self._pills.grid(row=0, column=0, sticky="nsew")
 

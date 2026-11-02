@@ -19,6 +19,7 @@ from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.ui import theme
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.poster_card import POSTER_CARD_WIDTH
+from app.ui.scrollable import ScrollableFrame
 from app.ui.shelf_filter import FilterBar, Genre, chip_genres, empty_text
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
@@ -115,7 +116,7 @@ class ShelvesView(BaseView, Generic[T]):
             on_hide_owned=self._set_hide_owned,
         )
         # Gridded in row 1 once shelves are loaded (`_show_filter_bar`).
-        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.grid(row=2, column=0, sticky="nsew", padx=15, pady=self._body_pady)
 
     @abstractmethod

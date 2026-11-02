@@ -18,6 +18,7 @@ import customtkinter as ctk
 
 from app.ui import theme
 from app.ui.borderless import clearance
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tooltip import work_area
 
 # Logical (unscaled) CTk units.
@@ -47,24 +48,37 @@ Rect = tuple[int, int, int, int]  # left, top, right, bottom
 
 
 def primary_button(
-    master: Any, text: str, command: Callable[[], None], *, width: int = 140
+    master: Any,
+    text: str,
+    command: Callable[[], None],
+    *,
+    width: int = 140,
+    look: theme.Look | None = None,
 ) -> ctk.CTkButton:
+    """An accent-filled button: AirGrabber's accent, or `look`'s (the Forge window's copper)."""
     return ctk.CTkButton(
         master,
         text=text,
         width=width,
         height=BUTTON_HEIGHT,
         corner_radius=BUTTON_RADIUS,
-        fg_color=theme.ACCENT,
-        hover_color=theme.ACCENT_HOVER,
+        fg_color=theme.ACCENT if look is None else look.ACCENT,
+        hover_color=theme.ACCENT_HOVER if look is None else look.ACCENT_HOVER,
+        text_color=theme.ON_ACCENT if look is None else theme.ON_COLOR,  # white on copper
         font=theme.font(15, bold=True),
         command=command,
     )
 
 
 def secondary_button(
-    master: Any, text: str, command: Callable[[], None], *, width: int = 140
+    master: Any,
+    text: str,
+    command: Callable[[], None],
+    *,
+    width: int = 140,
+    look: theme.Look | None = None,
 ) -> ctk.CTkButton:
+    """An outlined button: AirGrabber's EDGE / SURFACE, or `look`'s."""
     return ctk.CTkButton(
         master,
         text=text,
@@ -73,8 +87,8 @@ def secondary_button(
         corner_radius=BUTTON_RADIUS,
         fg_color="transparent",
         border_width=1,
-        border_color=theme.EDGE,
-        hover_color=theme.SURFACE,
+        border_color=theme.EDGE if look is None else look.EDGE,
+        hover_color=theme.SURFACE if look is None else look.SURFACE,
         text_color=theme.TEXT,
         font=theme.font(15),
         command=command,
@@ -187,7 +201,7 @@ def place_over(dialog: ctk.CTkToplevel, master: Any) -> None:
     dialog.geometry(f"+{x}+{y}")
 
 
-class FitScroll(ctk.CTkScrollableFrame):
+class FitScroll(ScrollableFrame):
     """A frame that scrolls only while what it holds is taller than its room: the scrollbar
     shows just then, else it looks like a plain frame. Its content goes in grid row 0, column 0
     (several steps there: the hidden ones grid_remove'd).

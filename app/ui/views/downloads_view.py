@@ -11,8 +11,10 @@ info window (`on_open_film`; on IMDb when TMDB can't describe the film, or witho
 At the top a filter (All / Downloading / Finished / Problems, `entry_group`; kept for the
 session) and "✓ Clear finished", which takes the finished grabs off the list, and those the
 program no longer has (never out of the history, never their files: DownloadStatusService.clear).
-Each row has a ⋯ menu (`row_menu`): Open the folder (once its video is found in "Where finished
-downloads end up", else greyed with the reason as tip), Download again… (⬇ Auto / ☰ Choose…), Get subtitles (the CC menu of
+A row whose video MediaForge moved says where ("Renamed → Series › Gold Rush › Season 17",
+`moved_text`, from the library folder's name on).
+Each row has a ⋯ menu (`row_menu`): Open the folder (where MediaForge moved its video, else once
+it is found in "Where finished downloads end up", else greyed with the reason as tip), Download again… (⬇ Auto / ☰ Choose…), Get subtitles (the CC menu of
 app/ui/subtitle_control.py; its progress shows in the row) and Remove from list.
 """
 
@@ -42,6 +44,7 @@ from app.models import (
     Show,
     SubtitleOffer,
 )
+from app.models.downloads import MovedTo
 from app.i18n import N_, month_short, number, t
 from app.services import DiscoveryService, DownloadStatusService, ImageCache, SettingsService
 from app.services.download_status import Located
@@ -50,6 +53,7 @@ from app.ui import theme
 from app.ui.download_control import DownloadKey
 from app.ui.missing_control import MenuEntry, MenuItem, popup_menu
 from app.ui.row_actions import again_items
+from app.ui.scrollable import ScrollableFrame
 from app.ui.subtitle_control import LOOKING_TEXT, OFF_TIP, RunPhase, SubtitleActions
 from app.ui.subtitle_settings import subtitle_mark
 from app.ui.tasks import spawn
@@ -293,11 +297,22 @@ def subtitles_text(languages: Iterable[str], order: Sequence[str] = ()) -> str:
     return t("Subtitles {languages}", languages=mark.removeprefix("CC ")) if mark else ""
 
 
+def moved_text(moved: MovedTo | None) -> str:
+    """Where MediaForge moved it: "Renamed → Series › Gold Rush › Season 17" (from the library
+    folder's name on); "" when it didn't."""
+    if moved is None or not moved.shown:
+        return ""
+    return t("Renamed → {folder}", folder=" › ".join(moved.shown))
+
+
 def meta_text(entry: DownloadEntry, now: datetime) -> str:
-    """"Today 14:32 · Sent to Download Station"."""
+    """"Today 14:32 · Sent to Download Station", then where MediaForge moved it when it did
+    (" · Renamed → Series › Gold Rush › Season 17")."""
     parts = [when_text(entry.record.downloaded_at, now)]
     if where := destination_text(entry.outcome, entry.program):
         parts.append(where)
+    if moved := moved_text(entry.moved_to):
+        parts.append(moved)
     return " · ".join(parts)
 
 
@@ -428,7 +443,7 @@ class DownloadsView(BaseView):
             self._banner, text="", font=theme.font(14, bold=True), text_color=theme.BG
         )
         self._banner_label.pack(side="left", padx=14, pady=8)
-        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.grid_columnconfigure(0, weight=1)
         self._body.grid(row=3, column=0, sticky="nsew", padx=5, pady=(0, 5))
         self._empty: MessagePanel | None = None

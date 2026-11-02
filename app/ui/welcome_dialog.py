@@ -68,6 +68,7 @@ from app.ui.dialog_kit import (
     text_label,
 )
 from app.ui.remote_program_form import RemoteProgramForm, describe_error, result_look
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import ELLIPSIS, SLACK, Measure, elide_to_width
 from app.ui.tmdb_key_guide import TMDB_HEADING, TMDB_INTRO, KeyAction, TmdbKeyGuide
@@ -491,7 +492,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(LINE_GAP, 0))
 
         # The cards scroll when the NAS / other computer form makes them taller than the step.
-        self._download_cards = ctk.CTkScrollableFrame(
+        self._download_cards = ScrollableFrame(
             page,
             width=CONTENT_WIDTH,
             fg_color="transparent",

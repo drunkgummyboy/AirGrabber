@@ -29,6 +29,7 @@ from app.ui.cards import ShowCard, card_info_line
 from app.ui.import_dialog import ImportShowsDialog
 from app.ui.missing_control import SEASON_MENU_TIP, MissingActions, popup_menu
 from app.ui.poster_card import POSTER_CARD_WIDTH
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.views.base import BaseView, StatusReporter
@@ -318,7 +319,7 @@ class TrackedView(BaseView):
         self._filter_choice.pack(side="left")
         self._show_choices()
 
-        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
 
     def _bar_label(self, text: str) -> ctk.CTkLabel:

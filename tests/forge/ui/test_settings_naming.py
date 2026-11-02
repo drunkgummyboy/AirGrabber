@@ -1,0 +1,754 @@
+"""Settings › MediaForge › Naming (app/forge/ui/settings_naming.py) inside AirGrabber's Settings
+dialog: the naming and remembered-matches parts of MediaForge's tests/ui/test_settings_view.py
+(save / rename / delete a preset, the format sample, forgetting a match, the edited preset
+highlighted), plus what the section adds in AirGrabber: changes kept until Save (D9; Cancel /
+✕ change nothing), only the changed settings stored, the presets merged onto what is stored by
+then, the Series / Movies presets, the names language, the right-click menu's hook, waiting for
+Forge, and Dutch."""
+
+from __future__ import annotations
+
+import asyncio
+import builtins
+import gc
+import tkinter as tk
+import weakref
+from collections.abc import Sequence
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest import mock
+
+import customtkinter as ctk
+
+from app import i18n
+from app.forge.models.match import RememberedMatch
+from app.forge.models.media import MediaKind, TypeHint
+from app.forge.models.preset import DEFAULT_PRESETS, Preset, PresetOptions
+from app.forge.models.settings import ForgeSettings
+from app.forge.ui import settings_naming
+from app.forge.ui.settings_naming import (
+    FORGET,
+    LOAD_FAILED,
+    NAMING_ICON,
+    SECTION_NAMING,
+    NamingSection,
+    PresetDraft,
+    PresetsChange,
+    last_preset_after,
+    match_text,
+    merged_presets,
+    new_preset_name,
+    on_presets_saved,
+    preset_problem,
+    presets_change,
+    sample_lines,
+)
+from app.forge.ui.settings_pages import FORGE_SECTIONS, SAVE_FAILED, SECTION_LIBRARY
+from app.i18n import Language
+from app.models import Settings
+from app.services import SettingsService
+from app.ui import theme
+from app.ui.settings_dialog import SECTION_WHERE, SettingsDialog
+from app.ui.widgets import install_window_release
+from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
+from tests.forge.tk import pump, pump_until
+from tests.forge.ui.test_settings_library import NOT_READY_TEXT, FakeSettings, labels
+from tests.test_settings_dialog import FakeProwlarr, FakeRepository, FakeShortcut
+
+OFFICE = RememberedMatch(
+    kind=MediaKind.EPISODE,
+    norm_title="the office",
+    year=None,
+    tmdb_id=1,
+    label="The Office (2005)",
+)
+DUNE = RememberedMatch(
+    kind=MediaKind.MOVIE, norm_title="dune", year=2021, tmdb_id=2, label="Dune (2021)"
+)
+
+
+class FakePresets:
+    """PresetService's surface the section uses: list, replace_all."""
+
+    def __init__(self, presets: Sequence[Preset] = DEFAULT_PRESETS) -> None:
+        self.stored = list(presets)
+        self.replaced: list[list[Preset]] = []
+        self.fail = False
+
+    async def list(self) -> list[Preset]:
+        await asyncio.sleep(0)
+        return list(self.stored)
+
+    async def replace_all(self, presets: Sequence[Preset]) -> None:
+        await asyncio.sleep(0)
+        if self.fail:
+            raise OSError(r"C:\Users\Alex\forge.db is locked")
+        self.replaced.append(list(presets))
+        self.stored = list(presets)
+
+    @property
+    def names(self) -> builtins.list[str]:
+        return [preset.name for preset in self.stored]
+
+
+class FakeMatches:
+    """MatchService's surface the section uses: list, forget."""
+
+    def __init__(self, matches: Sequence[RememberedMatch] = ()) -> None:
+        self.stored = list(matches)
+        self.forgotten: list[RememberedMatch] = []
+
+    async def list(self) -> list[RememberedMatch]:
+        await asyncio.sleep(0)
+        return list(self.stored)
+
+    async def forget(self, match: RememberedMatch) -> None:
+        await asyncio.sleep(0)
+        self.forgotten.append(match)
+        self.stored.remove(match)
+
+
+class FakeForge:
+    """ForgeRuntime's surface: `services` (None until started), `start()`, `reason`."""
+
+    def __init__(
+        self,
+        settings: FakeSettings | None,
+        presets: FakePresets | None = None,
+        matches: FakeMatches | None = None,
+        *,
+        started: bool = True,
+    ) -> None:
+        self.parts = (
+            None
+            if settings is None
+            else SimpleNamespace(
+                settings=settings,
+                presets=presets or FakePresets(),
+                matches=matches or FakeMatches(),
+            )
+        )
+        self.services = self.parts if started else None
+        self.reason = ""
+        self.gate: asyncio.Future[None] | None = None
+
+    async def start(self) -> Any:
+        if self.gate is not None:
+            await asyncio.shield(self.gate)
+        if self.parts is None:
+            self.reason = NOT_READY_TEXT
+        self.services = self.parts
+        return self.parts
+
+
+class NamingSettingsTests(ForgeAsyncTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        gc.collect()
+        try:
+            self.root = ctk.CTk()
+        except tk.TclError as exc:  # no display
+            self.skipTest(f"Tk unavailable: {exc}")
+        self.root.withdraw()
+        self.addCleanup(self._destroy_root)
+        self.addCleanup(i18n.set_language, i18n.current_language())
+        i18n.set_language(Language.EN)
+        self.told: list[PresetsChange] = []
+
+        async def tell(change: PresetsChange) -> None:
+            self.told.append(change)
+
+        self.addCleanup(on_presets_saved(tell))
+
+    async def asyncSetUp(self) -> None:
+        asyncio.get_running_loop().slow_callback_duration = 2.0  # building a dialog is slow
+
+    def _destroy_root(self) -> None:
+        for child in list(self.root.winfo_children()):
+            child.destroy()
+        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.after_cancel(job)
+        self.root.destroy()
+        gc.collect()  # the dialog's Tk variables, on the main thread
+
+    def dialog(self, forge: FakeForge | None) -> SettingsDialog:
+        settings = SettingsService(
+            FakeRepository(),  # type: ignore[arg-type]
+            Settings(download_dir=self.tmp),
+        )
+        return SettingsDialog(
+            self.root,
+            settings,
+            search=mock.MagicMock(),
+            station=mock.MagicMock(),
+            updates=SimpleNamespace(current="3.0.0"),  # type: ignore[arg-type]
+            torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
+            discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
+            prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
+            startup_shortcut=FakeShortcut(),
+            forge=cast(Any, forge),
+            section=SECTION_NAMING,
+        )
+
+    @staticmethod
+    def section(dialog: SettingsDialog) -> NamingSection:
+        part = dialog._forge_parts[SECTION_NAMING]
+        assert isinstance(part, NamingSection)
+        return part
+
+    async def ready(
+        self,
+        settings: ForgeSettings | None = None,
+        presets: Sequence[Preset] = DEFAULT_PRESETS,
+        matches: Sequence[RememberedMatch] = (),
+    ) -> tuple[SettingsDialog, NamingSection, FakeForge]:
+        forge = FakeForge(
+            FakeSettings(settings or ForgeSettings()), FakePresets(presets), FakeMatches(matches)
+        )
+        dialog = self.dialog(forge)
+        part = self.section(dialog)
+        await pump_until(self.root, lambda: part.ready)
+        return dialog, part, forge
+
+    @staticmethod
+    def stored(forge: FakeForge) -> FakePresets:
+        assert forge.parts is not None
+        return cast(FakePresets, forge.parts.presets)
+
+    @staticmethod
+    def settings(forge: FakeForge) -> FakeSettings:
+        assert forge.parts is not None
+        return cast(FakeSettings, forge.parts.settings)
+
+    @staticmethod
+    def remembered(forge: FakeForge) -> FakeMatches:
+        assert forge.parts is not None
+        return cast(FakeMatches, forge.parts.matches)
+
+    def select(self, part: NamingSection, name: str) -> None:
+        draft = next(d for d in part._drafts if d.preset.name == name)
+        part.preset_buttons[part._drafts.index(draft)].invoke()
+
+    # --- the section in the group ----------------------------------------------------------------
+
+    async def test_a_closed_dialog_is_freed(self) -> None:
+        # Tk holds a variable trace's callback, out of the garbage collector's sight: the name
+        # and format fields' go with the page, so the closed dialog doesn't stay in memory.
+        install_window_release(self.root)  # as MainWindow does
+        dialog, part, _forge = await self.ready()
+        part._name.set("Renamed")  # the traces run
+        part._format.set("{t}")
+        ref = weakref.ref(dialog)
+        dialog.destroy()
+        del dialog, part
+        await pump(self.root, 0.05)
+        gc.collect()
+        self.assertIsNone(ref())
+
+    async def test_naming_follows_library_in_the_group(self) -> None:
+        dialog, _part, _forge = await self.ready()
+        self.assertEqual(list(FORGE_SECTIONS)[:2], [SECTION_LIBRARY, SECTION_NAMING])
+        self.assertEqual(FORGE_SECTIONS[SECTION_NAMING].icon, NAMING_ICON)
+        self.assertIn(SECTION_NAMING, dialog._items)
+        self.assertEqual(dialog.section, SECTION_NAMING)
+        texts = labels(dialog.page(SECTION_NAMING))
+        self.assertEqual(texts[0], "Naming")
+        self.assertTrue(texts[1])
+        for title in ("Presets", "Library presets", "Names language", "Remembered matches"):
+            self.assertIn(title, texts)
+
+    async def test_shows_the_presets_in_order_and_the_first_one_edited(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        names = [preset.name for preset in DEFAULT_PRESETS]
+        self.assertEqual([b.cget("text") for b in part.preset_buttons], names)
+        # The edited preset is highlighted (MediaForge: test_edited_preset_is_highlighted).
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.name, "Auto")
+        self.assertEqual(part.preset_buttons[0].cget("fg_color"), theme.SELECTED)
+        self.assertEqual(part.preset_buttons[1].cget("fg_color"), "transparent")
+        self.assertEqual(part.name_entry.get(), "Auto")
+        self.assertEqual(part.format_entry.get(), "{ny}")
+        self.assertEqual(part.type_switch.get(), "Auto")
+        self.assertEqual(str(part.delete_button.cget("state")), "normal")
+        self.select(part, "Series (Folder)")
+        self.assertEqual(part.preset_buttons[3].cget("fg_color"), theme.SELECTED)
+        self.assertEqual(part.type_switch.get(), "TV")
+        self.assertTrue(part._options["season_poster"].get())
+        self.assertFalse(part._options["trailer"].get())
+
+    async def test_shows_the_stored_settings(self) -> None:
+        stored = ForgeSettings(series_preset="Series (Flat)", tmdb_language="nl-NL")
+        _dialog, part, _forge = await self.ready(stored)
+        self.assertEqual(part.choice_menus["series_preset"].get(), "Series (Flat)")
+        self.assertEqual(part.choice_menus["movies_preset"].get(), "Movie (Folder)")
+        self.assertEqual(part.language_menu.get(), "Dutch")
+        self.assertEqual(part.changes(), {})
+        self.assertFalse(part.presets_changed())
+
+    # --- the format sample -----------------------------------------------------------------------
+
+    async def test_format_sample_shows_rendered_name(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        self.select(part, "Series (Flat)")
+        part._format.set("{ny} - {s00e00} - {en}")
+        self.assertIn("S01E02 - Theseus", part.format_sample.cget("text"))
+        self.assertEqual(part.unknown_label.winfo_manager(), "")
+        part._format.set("{ny}/Season {s}/{s00e00}")
+        self.assertEqual(
+            part.format_sample.cget("text"), r"↳ VisionQuest (2026)\Season 01\S01E02.mkv"
+        )
+
+    async def test_a_film_preset_samples_the_film_and_auto_both(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        self.select(part, "Movie (Folder)")
+        self.assertEqual(
+            part.format_sample.cget("text"), r"↳ Dune Part Two (2024)\Dune Part Two (2024).mkv"
+        )
+        part.set_type(TypeHint.AUTO)
+        self.assertEqual(
+            part.format_sample.cget("text").splitlines(),
+            [
+                r"↳ VisionQuest (2026)\VisionQuest (2026).mkv",
+                r"↳ Dune Part Two (2024)\Dune Part Two (2024).mkv",
+            ],
+        )
+
+    async def test_an_unknown_code_is_flagged(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        part._format.set("{ny} {quality} {Year}")
+        self.assertTrue(part.unknown_label.winfo_manager())
+        self.assertEqual(
+            part.unknown_label.cget("text"), "⚠ Not a known code: {quality}, {Year}"
+        )
+        part._format.set("{ny}")
+        self.assertEqual(part.unknown_label.winfo_manager(), "")
+
+    # --- new / edit / rename / delete, stored on Save ---------------------------------------------
+
+    async def test_a_new_preset_is_stored_on_save_only(self) -> None:
+        dialog, part, forge = await self.ready()
+        part.new_button.invoke()
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.name, "New preset")
+        self.assertEqual(part.preset_buttons[-1].cget("fg_color"), theme.SELECTED)
+        part._name.set("Mine")
+        part.set_type(TypeHint.TV)
+        part._format.set("{t} {s00e00}")
+        part.set_option("season_poster", True)
+        self.assertEqual(self.stored(forge).replaced, [])  # nothing stored yet
+        self.assertEqual(part.preset_buttons[-1].cget("text"), "Mine")
+        self.assertTrue(await dialog._save_all())
+        mine = Preset(
+            name="Mine",
+            type=TypeHint.TV,
+            format="{t} {s00e00}",
+            options=PresetOptions(season_poster=True),
+        )
+        self.assertEqual(self.stored(forge).stored, [*DEFAULT_PRESETS, mine])
+        self.assertEqual(len(self.stored(forge).replaced), 1)
+        # The right-click menu is told (MediaForge: on_presets_changed).
+        self.assertEqual(
+            self.told, [PresetsChange(tuple(self.stored(forge).names), {}, ())]
+        )
+        self.assertFalse(part.presets_changed())  # what was stored is what the form shows
+        self.assertEqual(self.settings(forge).updates, [])  # no setting changed
+
+    async def test_a_second_new_preset_gets_a_number(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        part.new_preset()
+        part.new_preset()
+        self.assertEqual(
+            [d.preset.name for d in part._drafts][-2:], ["New preset", "New preset 2"]
+        )
+
+    async def test_rename_preset(self) -> None:
+        dialog, part, forge = await self.ready()
+        self.select(part, "Movie (Flat)")
+        part._name.set("Films")
+        self.assertTrue(await dialog._save_all())
+        names = self.stored(forge).names
+        self.assertIn("Films", names)
+        self.assertNotIn("Movie (Flat)", names)
+        self.assertEqual(names.index("Films"), 2)  # in its place
+        self.assertEqual(self.told[0].renamed, {"Movie (Flat)": "Films"})
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.name, "Films")  # still edited after Save
+
+    async def test_the_library_choice_follows_a_renamed_preset(self) -> None:
+        dialog, part, forge = await self.ready()
+        self.select(part, "Series (Folder)")
+        part._name.set("Shows")
+        self.assertEqual(part.choice_menus["series_preset"].get(), "Shows")
+        self.assertIn("Shows", part.choice_menus["series_preset"].cget("values"))
+        self.assertEqual(part.changes(), {"series_preset": "Shows"})
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.settings(forge).updates, [{"series_preset": "Shows"}])
+        self.assertEqual(self.stored(forge).names[3], "Shows")
+        self.assertEqual(part.changes(), {})
+
+    async def test_delete_hands_the_choice_to_the_same_type(self) -> None:
+        dialog, part, forge = await self.ready()
+        self.select(part, "Movie (Folder)")
+        part.delete_button.invoke()
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.name, "Movie (Flat)")  # the next one
+        self.assertEqual(part.choice_menus["movies_preset"].get(), "Movie (Flat)")
+        self.assertTrue(await dialog._save_all())
+        self.assertNotIn("Movie (Folder)", self.stored(forge).names)
+        self.assertEqual(self.settings(forge).updates, [{"movies_preset": "Movie (Flat)"}])
+        self.assertEqual(self.told[0].removed, ("Movie (Folder)",))
+
+    async def test_the_inbox_preset_follows_a_rename(self) -> None:
+        dialog, part, forge = await self.ready(ForgeSettings(last_preset="Movie (Flat)"))
+        self.select(part, "Movie (Flat)")
+        part._name.set("Films")
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.settings(forge).updates, [{"last_preset": "Films"}])
+
+    async def test_the_inbox_preset_stays_when_another_is_renamed(self) -> None:
+        dialog, part, forge = await self.ready(ForgeSettings(last_preset="Auto"))
+        self.select(part, "Movie (Flat)")
+        part._name.set("Films")
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.settings(forge).updates, [])
+        self.assertEqual(self.settings(forge).current.last_preset, "Auto")
+
+    async def test_a_deleted_inbox_preset_goes_to_the_first_of_its_type(self) -> None:
+        dialog, part, forge = await self.ready(ForgeSettings(last_preset="Series (Flat)"))
+        self.select(part, "Series (Flat)")
+        part.delete_preset()
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.settings(forge).updates, [{"last_preset": "Series (Folder)"}])
+
+    async def test_a_deleted_inbox_preset_with_none_of_its_type_left_is_cleared(self) -> None:
+        presets = [
+            Preset(name="Auto", type=TypeHint.AUTO, format="{ny}"),
+            Preset(name="Films", type=TypeHint.MOVIE, format="{ny}"),
+        ]
+        dialog, part, forge = await self.ready(ForgeSettings(last_preset="Films"), presets)
+        self.select(part, "Films")
+        part.delete_preset()
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.settings(forge).updates, [{"last_preset": None}])
+
+    async def test_the_last_preset_cannot_be_deleted(self) -> None:
+        only = Preset(name="Only", type=TypeHint.AUTO, format="{ny}")
+        dialog, part, forge = await self.ready(presets=[only])
+        self.assertEqual(str(part.delete_button.cget("state")), "disabled")
+        part.delete_preset()
+        self.assertEqual(part.presets, [only])
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.stored(forge).replaced, [])
+
+    async def test_a_preset_needs_a_name_of_its_own(self) -> None:
+        dialog, part, forge = await self.ready()
+        dialog.show_section(SECTION_WHERE)
+        part._name.set("  ")
+        self.assertEqual(part.name_problem.cget("text"), "Give this preset a name.")
+        self.assertTrue(part.name_problem.winfo_manager())
+        self.assertFalse(await dialog._save_all())
+        self.assertEqual(str(dialog._error.cget("text")), "Give every preset a name.")
+        self.assertEqual(dialog.section, SECTION_NAMING)  # the page with the problem shows
+        part._name.set("series (flat)")  # the same name in other letters
+        self.assertEqual(part.name_problem.cget("text"), "Another preset is called that already.")
+        self.assertFalse(await dialog._save_all())
+        self.assertIn("series (flat)", str(dialog._error.cget("text")).lower())
+        part._name.set("Plain")
+        self.assertEqual(part.name_problem.winfo_manager(), "")
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.stored(forge).names[0], "Plain")
+
+    async def test_cancel_changes_nothing(self) -> None:
+        dialog, part, forge = await self.ready(matches=[OFFICE])
+        part._name.set("Renamed")
+        part.new_preset()
+        part.choose_language("de-DE")
+        part.forget_match(OFFICE)
+        dialog.destroy()  # Cancel, ✕ and Escape all destroy the dialog
+        await pump(self.root, 0.1)
+        self.assertEqual(self.stored(forge).replaced, [])
+        self.assertEqual(self.settings(forge).updates, [])
+        self.assertEqual(self.remembered(forge).forgotten, [])
+        self.assertEqual(self.told, [])
+        # It stopped listening (the Library section's listener goes with it too).
+        self.assertEqual(self.settings(forge).listeners, [])
+
+    async def test_an_unchanged_form_saves_nothing(self) -> None:
+        dialog, part, forge = await self.ready(matches=[OFFICE])
+        part._name.set("Auto")  # typed over with the same name
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.stored(forge).replaced, [])
+        self.assertEqual(self.settings(forge).updates, [])
+        self.assertEqual(self.told, [])
+
+    async def test_a_preset_changed_elsewhere_meanwhile_is_kept(self) -> None:
+        dialog, part, forge = await self.ready()
+        self.select(part, "Auto")
+        part._format.set("{t}")
+        # Meanwhile (the old MediaForge's import, say) another preset changes and one is added.
+        presets = self.stored(forge)
+        flat = Preset(name="Series (Flat)", type=TypeHint.TV, format="{t} {s00e00}")
+        extra = Preset(name="Extra", type=TypeHint.MOVIE, format="{ny}")
+        presets.stored = [p if p.name != flat.name else flat for p in presets.stored] + [extra]
+        self.assertTrue(await dialog._save_all())
+        stored = {p.name: p for p in presets.stored}
+        self.assertEqual(stored["Auto"].format, "{t}")
+        self.assertEqual(stored["Series (Flat)"], flat)
+        self.assertIn("Extra", stored)
+        self.assertEqual([b.cget("text") for b in part.preset_buttons][-1], "Extra")
+
+    async def test_a_failed_save_says_so_and_keeps_the_dialog(self) -> None:
+        dialog, part, forge = await self.ready()
+        part._name.set("Changed")
+        self.stored(forge).fail = True
+        with self.assertLogs("app.forge.ui.settings_naming", "ERROR") as logged:
+            self.assertFalse(await dialog._save_all())
+        self.assertEqual(str(dialog._error.cget("text")), i18n.t(SAVE_FAILED))
+        self.assertNotIn("Alex", logged.output[0])  # the type only, never a path
+        self.assertTrue(dialog.winfo_exists())
+        self.assertEqual(self.told, [])
+        self.assertTrue(part.presets_changed())  # still to be stored
+
+    async def test_a_failing_listener_does_not_fail_save(self) -> None:
+        async def broken(change: PresetsChange) -> None:
+            raise RuntimeError(r"HKCU\Software\Classes\*\shell\MediaForge")
+
+        self.addCleanup(on_presets_saved(broken))
+        dialog, part, forge = await self.ready()
+        part._name.set("Changed")
+        with self.assertLogs("app.forge.ui.settings_naming", "ERROR") as logged:
+            self.assertTrue(await dialog._save_all())
+        self.assertNotIn("HKCU", logged.output[0])
+        self.assertEqual(self.stored(forge).names[0], "Changed")
+        self.assertEqual(len(self.told), 1)
+
+    async def test_long_names_are_cut_in_the_list(self) -> None:
+        long = Preset(name="A very long preset name for my anime series", type="tv", format="{ny}")
+        _dialog, part, _forge = await self.ready(presets=[long])
+        shown = part.preset_buttons[0].cget("text")
+        self.assertTrue(shown.endswith("…"))
+        self.assertTrue(long.name.startswith(shown[:-1]))
+        self.assertEqual(part.name_entry.get(), long.name)  # the editor has it whole
+
+    # --- the names language ---------------------------------------------------------------------
+
+    async def test_the_names_language_is_saved(self) -> None:
+        dialog, part, forge = await self.ready()
+        self.assertEqual(part.language_menu.get(), "English (US)")
+        self.assertEqual(len(part.language_menu.cget("values")), len(settings_naming.LANGUAGES))
+        part._language_chosen("Dutch")  # picked in the menu
+        self.assertEqual(part.changes(), {"tmdb_language": "nl-NL"})
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.settings(forge).updates, [{"tmdb_language": "nl-NL"}])
+
+    async def test_a_language_not_in_the_list_shows_as_it_is(self) -> None:
+        _dialog, part, _forge = await self.ready(ForgeSettings(tmdb_language="ja-JP"))
+        self.assertEqual(part.language_menu.get(), "ja-JP")
+        self.assertIn("ja-JP", part.language_menu.cget("values"))
+        self.assertEqual(part.changes(), {})
+
+    async def test_a_setting_saved_elsewhere_shows_unless_changed_here(self) -> None:
+        _dialog, part, forge = await self.ready()
+        part.choose_preset_for("movies_preset", "Movie (Flat)")  # changed here
+        await self.settings(forge).update(tmdb_language="fr-FR", movies_preset="Auto")
+        self.assertEqual(part.language_menu.get(), "French")
+        self.assertEqual(part.choice_menus["movies_preset"].get(), "Movie (Flat)")
+        self.assertEqual(part.changes(), {"movies_preset": "Movie (Flat)"})
+
+    # --- remembered matches -----------------------------------------------------------------------
+
+    async def test_matches_can_be_forgotten(self) -> None:
+        dialog, part, forge = await self.ready(matches=[OFFICE, DUNE])
+        texts = labels(part.match_list)
+        self.assertEqual(texts, [match_text(OFFICE), match_text(DUNE)])
+        forget = [
+            w
+            for w in part.match_list.winfo_children()
+            if isinstance(w, ctk.CTkButton) and w.cget("text") == i18n.t(FORGET)
+        ]
+        forget[0].invoke()
+        self.assertEqual(labels(part.match_list), [match_text(DUNE)])
+        self.assertEqual(self.remembered(forge).forgotten, [])  # on Save
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.remembered(forge).stored, [DUNE])
+        self.assertEqual(self.remembered(forge).forgotten, [OFFICE])
+
+    async def test_clear_all(self) -> None:
+        dialog, part, forge = await self.ready(matches=[OFFICE, DUNE])
+        part.clear_button.invoke()
+        self.assertEqual(labels(part.match_list), ["None yet"])
+        self.assertEqual(str(part.clear_button.cget("state")), "disabled")
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(self.remembered(forge).stored, [])
+
+    async def test_no_matches_yet(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        self.assertEqual(labels(part.match_list), ["None yet"])
+        self.assertEqual(str(part.clear_button.cget("state")), "disabled")
+
+    # --- before Forge has started -----------------------------------------------------------------
+
+    async def test_waits_for_forge_to_start(self) -> None:
+        forge = FakeForge(FakeSettings(ForgeSettings()), started=False)
+        forge.gate = asyncio.get_running_loop().create_future()
+        dialog = self.dialog(forge)
+        part = self.section(dialog)
+        await pump(self.root, 0.05)
+        self.assertFalse(part.ready)
+        self.assertIn("Getting MediaForge ready…", labels(dialog.page(SECTION_NAMING)))
+        self.assertNotIn("Presets", labels(dialog.page(SECTION_NAMING)))
+        part.new_preset()  # nothing to add to yet
+        self.assertIsNone(part.problem())
+        self.assertTrue(await dialog._save_all())
+        forge.gate.set_result(None)
+        await pump_until(self.root, lambda: part.ready)
+        texts = labels(dialog.page(SECTION_NAMING))
+        self.assertNotIn("Getting MediaForge ready…", texts)
+        self.assertIn("Presets", texts)
+
+    async def test_not_ready_says_why(self) -> None:
+        dialog = self.dialog(FakeForge(None, started=False))
+        part = self.section(dialog)
+        await pump_until(self.root, lambda: NOT_READY_TEXT in labels(dialog.page(SECTION_NAMING)))
+        self.assertFalse(part.ready)
+        self.assertTrue(await dialog._save_all())
+
+    async def test_presets_that_cannot_be_read_say_so(self) -> None:
+        forge = FakeForge(FakeSettings(ForgeSettings()))
+        assert forge.parts is not None
+        forge.parts.presets.list = mock.AsyncMock(side_effect=OSError("database is locked"))
+        with self.assertLogs(level="ERROR") as logged:  # the Right-click menu's section too
+            dialog = self.dialog(forge)
+            part = self.section(dialog)
+            await pump_until(
+                self.root, lambda: i18n.t(LOAD_FAILED) in labels(dialog.page(SECTION_NAMING))
+            )
+        self.assertIn("app.forge.ui.settings_naming", [r.name for r in logged.records])
+        self.assertFalse(part.ready)
+        self.assertTrue(await dialog._save_all())
+
+    # --- Dutch ------------------------------------------------------------------------------------
+
+    async def test_dutch(self) -> None:
+        i18n.set_language(Language.NL)
+        dialog, part, _forge = await self.ready(matches=[OFFICE])
+        texts = labels(dialog.page(SECTION_NAMING))
+        self.assertEqual(texts[0], "Naamgeving")
+        self.assertIn("Voorinstellingen", texts)
+        self.assertIn("Onthouden keuzes", texts)
+        self.assertEqual(part.type_switch.get(), "Auto")
+        self.select(part, "Movie (Flat)")
+        self.assertEqual(part.type_switch.get(), "Film")
+        self.assertEqual(part.language_menu.get(), "Engels (VS)")
+        self.assertEqual(labels(part.match_list), ["the office → The Office (2005) · serie"])
+        part.new_preset()
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.name, "Nieuwe voorinstelling")
+
+
+class NamingRulesTests(ForgeTestCase):
+    """The pure part: merging onto what is stored, names, what listeners are told."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(i18n.set_language, i18n.current_language())
+        i18n.set_language(Language.EN)
+
+    @staticmethod
+    def preset(name: str, fmt: str = "{ny}", type_hint: TypeHint = TypeHint.AUTO) -> Preset:
+        return Preset(name=name, type=type_hint, format=fmt)
+
+    def test_unchanged_storage_gives_the_form_as_it_shows(self) -> None:
+        a, b, c = self.preset("A"), self.preset("B"), self.preset("C")
+        drafts = [
+            PresetDraft("A", a),
+            PresetDraft("C", self.preset("C2", "{t}")),
+            PresetDraft(None, self.preset("New")),
+        ]
+        self.assertEqual(
+            merged_presets([a, b, c], [a, b, c], drafts),
+            [a, self.preset("C2", "{t}"), self.preset("New")],
+        )
+
+    def test_two_presets_can_swap_names(self) -> None:
+        a, b = self.preset("A", "{t}"), self.preset("B", "{ny}")
+        drafts = [
+            PresetDraft("A", a.model_copy(update={"name": "B"})),
+            PresetDraft("B", b.model_copy(update={"name": "A"})),
+        ]
+        merged = merged_presets([a, b], [a, b], drafts)
+        self.assertEqual([(p.name, p.format) for p in merged], [("B", "{t}"), ("A", "{ny}")])
+        change = presets_change([p.name for p in merged], [a, b], drafts)
+        self.assertEqual(change.renamed, {"A": "B", "B": "A"})
+        self.assertEqual(change.removed, ())
+
+    def test_a_change_made_elsewhere_stays_unless_edited_here(self) -> None:
+        a, b = self.preset("A"), self.preset("B")
+        elsewhere = [self.preset("A", "{t}"), self.preset("B", "{t}"), self.preset("Z")]
+        drafts = [PresetDraft("A", a), PresetDraft("B", self.preset("B", "{s00e00}"))]
+        self.assertEqual(
+            merged_presets(elsewhere, [a, b], drafts),
+            [self.preset("A", "{t}"), self.preset("B", "{s00e00}"), self.preset("Z")],
+        )
+
+    def test_edited_here_but_deleted_elsewhere_comes_back_last(self) -> None:
+        a, b = self.preset("A"), self.preset("B")
+        drafts = [PresetDraft("A", a), PresetDraft("B", self.preset("B", "{t}"))]
+        self.assertEqual(merged_presets([a], [a, b], drafts), [a, self.preset("B", "{t}")])
+
+    def test_a_name_taken_elsewhere_meanwhile_keeps_the_first(self) -> None:
+        a = self.preset("A")
+        drafts = [PresetDraft("A", a), PresetDraft(None, self.preset("new", "{t}"))]
+        merged = merged_presets([a, self.preset("New")], [a], drafts)
+        self.assertEqual(merged, [a, self.preset("New")])
+
+    def test_deleted_ones_are_told(self) -> None:
+        a, b = self.preset("A"), self.preset("B")
+        drafts = [PresetDraft("B", b)]
+        merged = merged_presets([a, b], [a, b], drafts)
+        self.assertEqual(merged, [b])
+        self.assertEqual(presets_change(["B"], [a, b], drafts), PresetsChange(("B",), {}, ("A",)))
+
+    def test_the_inbox_preset_after_a_save(self) -> None:
+        a, b = self.preset("A"), self.preset("B", type_hint=TypeHint.TV)
+        c = self.preset("C", type_hint=TypeHint.TV)
+        swap = PresetsChange(("B", "A"), {"A": "B", "B": "A"}, ())
+        self.assertEqual(last_preset_after("A", swap, [a, b], [b, a]), "B")
+        gone = PresetsChange(("A", "C"), {}, ("B",))
+        self.assertEqual(last_preset_after("B", gone, [a, b, c], [a, c]), "C")
+        self.assertIsNone(last_preset_after("B", gone, [a, b], [a]))
+        self.assertEqual(last_preset_after("A", gone, [a, b], [a]), "A")
+        self.assertIsNone(last_preset_after(None, gone, [a, b], [a]))
+
+    def test_names(self) -> None:
+        self.assertIsNone(preset_problem(["Auto", "Films"]))
+        self.assertEqual(preset_problem(["Auto", ""]), "Give every preset a name.")
+        self.assertEqual(
+            preset_problem(["Auto", "AUTO"]),
+            "Two presets are called “AUTO”. Give each its own name."
+        )
+        self.assertEqual(new_preset_name(["Auto"]), "New preset")
+        self.assertEqual(new_preset_name(["new preset", "New preset 2"]), "New preset 3")
+
+    def test_samples(self) -> None:
+        lines, unknown = sample_lines("{ny}/{x}{x}", TypeHint.TV)
+        self.assertEqual(lines, [r"VisionQuest (2026)\{x}{x}.mkv"])
+        self.assertEqual(unknown, ["x"])
+
+    def test_match_texts(self) -> None:
+        self.assertEqual(match_text(OFFICE), "the office → The Office (2005) · show")
+        self.assertEqual(match_text(DUNE), "dune (2021) → Dune (2021) · movie")
+        skipped = DUNE.model_copy(update={"tmdb_id": None, "label": "Don't use TMDB"})
+        i18n.set_language(Language.NL)
+        self.assertEqual(match_text(skipped), "dune (2021) → TMDB niet gebruiken · film")
+
+    def test_a_listener_can_disconnect(self) -> None:
+        async def listener(change: PresetsChange) -> None:
+            pass
+
+        disconnect = on_presets_saved(listener)
+        self.assertIn(listener, settings_naming._listeners)
+        disconnect()
+        disconnect()  # twice is fine
+        self.assertNotIn(listener, settings_naming._listeners)
+

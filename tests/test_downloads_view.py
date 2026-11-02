@@ -22,6 +22,7 @@ from app.models import (
     MediaType,
     Show,
 )
+from app.models.downloads import MovedTo
 from app.ui.views.downloads_view import (
     EMPTY_TITLE,
     PROGRESS_HINT,
@@ -30,6 +31,7 @@ from app.ui.views.downloads_view import (
     destination_text,
     imdb_find_url,
     meta_text,
+    moved_text,
     percent,
     same_rows,
     size_text,
@@ -52,6 +54,7 @@ def entry(
     *,
     media_type: MediaType = MediaType.TV,
     subtitles: tuple[str, ...] = (),
+    moved_to: MovedTo | None = None,
 ) -> DownloadEntry:
     tv = media_type is MediaType.TV
     return DownloadEntry(
@@ -72,7 +75,13 @@ def entry(
         state=state,
         progress=progress,
         subtitles=subtitles,
+        moved_to=moved_to,
     )
+
+
+GOLD_RUSH = MovedTo(
+    folder="D:/Library/Series/Gold Rush/Season 17", shown=("Series", "Gold Rush", "Season 17")
+)
 
 
 class TextTests(unittest.TestCase):
@@ -118,6 +127,17 @@ class TextTests(unittest.TestCase):
     def test_meta_line(self) -> None:
         text = meta_text(entry(1), NOW)
         self.assertTrue(text.endswith(" · Sent to Download Station"), text)
+
+    def test_where_mediaforge_moved_it(self) -> None:
+        self.assertEqual(moved_text(GOLD_RUSH), "Renamed → Series › Gold Rush › Season 17")
+        self.assertEqual(moved_text(None), "")
+        self.assertEqual(moved_text(MovedTo(folder="D:/x", shown=())), "")
+        text = meta_text(entry(1, DownloadState.READY, 1.0, moved_to=GOLD_RUSH), NOW)
+        self.assertTrue(
+            text.endswith(" · Sent to Download Station · Renamed → Series › Gold Rush › Season 17"),
+            text,
+        )
+        self.assertNotIn("D:", text)  # never the path before the library folder
 
     def test_subtitles_in_the_settings_order(self) -> None:
         self.assertEqual(subtitles_text(("en", "nl"), ("nl", "en")), "Subtitles NL EN")
@@ -270,6 +290,20 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(rows[0], page._rows)
         page._rows[0]._clicked()
         self.assertEqual(self.opened, [FALLOUT])
+
+    async def test_a_moved_grab_says_where_it_ended_up(self) -> None:
+        page = self.view()
+        self.status.next = DownloadsOverview(
+            entries=(entry(1, DownloadState.READY, 1.0, moved_to=GOLD_RUSH), entry(2)),
+            program="Download Station",
+            checked_at=NOW,
+        )
+        await page.load()
+        self.root.update()
+        texts = self.texts(page)
+        moved = [text for text in texts if "Renamed → " in text]
+        self.assertEqual(len(moved), 1, texts)
+        self.assertTrue(moved[0].endswith("Renamed → Series › Gold Rush › Season 17"), moved)
 
     async def test_empty_hint_problem_and_banner(self) -> None:
         page = self.view()

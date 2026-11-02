@@ -6,6 +6,9 @@ A Windows desktop app: a calendar of the episodes airing for the shows you follo
 movie discovery (TMDB), and a torrent search across several indexers that saves `.torrent` files to
 your watch folder or sends magnets to Synology Download Station.
 
+It also holds **MediaForge**: a second window that gives downloaded episodes and films tidy names
+and moves them into your Series and Movies folders (see [MediaForge](#mediaforge) below).
+
 ## Install
 
 On Windows 10 or 11:
@@ -19,7 +22,8 @@ On Windows 10 or 11:
 
 3. Follow the questions.
 
-AirGrabber then appears in the Start menu and on your desktop, and opens by itself. If you don't have
+AirGrabber then appears in the Start menu and on your desktop, and opens by itself. MediaForge gets
+its own Start-menu entry and an entry in the right-click menu of files and folders. If you don't have
 Python yet (the program AirGrabber runs on), the installer adds it for you. If you have no torrent
 program yet, it also installs qBittorrent (the free program AirGrabber downloads with) and sets it up
 so downloads start with one click, without a pop-up for each one; a torrent program you already have
@@ -55,8 +59,48 @@ download history and settings):
 - Answer **No** to keep them. If you install AirGrabber again later, everything is still there.
 - Answer **Yes** only if you want them gone for good.
 
-Python and helper programs (like qBittorrent and Prowlarr) stay installed; remove them the same
-way if you no longer need them.
+MediaForge's Start-menu entry and right-click menu go with it. Python and helper programs (like
+qBittorrent and Prowlarr) stay installed; remove them the same way if you no longer need them.
+
+## MediaForge
+
+MediaForge renames downloaded episodes and films with their official names from TMDB (for example
+`Gold Rush (2010) - S17E05 - The Big Pour.mkv`) and moves them into your Series and Movies folders, with
+posters and, if you want, trailers. Every rename can be undone.
+
+**Opening it**: the round 🔨 button left of ⬇ Downloads at the top of AirGrabber, **Open
+MediaForge** in the tray icon's menu, or **MediaForge** in the Start menu. It opens in a window of
+its own, with its own taskbar button. Drag files or folders from Explorer onto it to add them.
+
+**The right-click menu**: select files or folders in Explorer, right-click and choose
+**MediaForge → Forge: <preset>** (on Windows 11 first **Show more options**). A small window shows
+the new names; nothing is renamed until you click **Rename**. It works while AirGrabber is closed
+too. Turn it on or off under ⚙ Settings → **MediaForge → Right-click menu**.
+
+**Renaming on its own**: under ⚙ Settings → **MediaForge → Library & watching**, choose your Series
+and Movies folders and the folders to watch (AirGrabber's own download folder can be watched for
+you). **Trial** shows what would happen without touching anything; **On** renames finished
+downloads by itself. Subtitles AirGrabber saved next to a download move along with it, and the
+Downloads page shows the download as finished with where it went ("Renamed → Series › …").
+
+### Coming from the old MediaForge
+
+1. Install AirGrabber as above and close the old MediaForge.
+2. Open MediaForge from AirGrabber. It asks **Bring over your MediaForge settings, presets and
+   history?**: choose **Bring over**. (Not now? It asks again next time, and ⚙ Settings →
+   MediaForge → Library & watching has a **Bring over…** button.) Your TMDB key comes along when
+   AirGrabber doesn't have one yet.
+3. Choose **Remove the old MediaForge** (offered after the import, and in ⚙ Settings → MediaForge
+   while the old one is installed). Until it is removed, AirGrabber's MediaForge doesn't rename
+   anything on its own, so the two never move the same files. The old MediaForge's data is never
+   deleted.
+
+**Licences**: MediaForge reads file names with [guessit](https://github.com/guessit-io/guessit) and
+rebulk (LGPL), installed by Python's package installer, not copied into AirGrabber. For trailers it
+downloads [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense) and
+[ffmpeg](https://github.com/yt-dlp/FFmpeg-Builds) (GPL) from their GitHub releases the first time
+you ask for one, checks them against their published checksums, and keeps them in AirGrabber's data
+folder.
 
 ## AirGrabber 1.x
 

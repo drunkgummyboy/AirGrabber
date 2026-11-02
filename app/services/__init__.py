@@ -10,13 +10,14 @@ import httpx
 from app import APP_NAME, __version__
 from app.config import AppPaths
 from app.database import BackupRepository, Database
+from app.forge.runtime import ForgeRuntime
 from app.indexers import default_indexers
 from app.models import Settings
 from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportService
 from app.services.auto_download import AutoDownloadService
 from app.services.backup import BackupService
 from app.services.discovery import DiscoveryService
-from app.services.download_status import DownloadStatusService
+from app.services.download_status import DownloadStatusService, forge_moves
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
@@ -63,6 +64,7 @@ class Services:
         "discovery",
         "download_status",
         "downloads",
+        "forge",
         "images",
         "library",
         "missing",
@@ -92,6 +94,8 @@ class Services:
         updates: UpdateService,
         prowlarr_setup: ProwlarrSetupService,
         torrent_app: TorrentAppService,
+        *,
+        forge: ForgeRuntime,
     ) -> None:
         self._db = db
         self._http = http
@@ -139,13 +143,23 @@ class Services:
             settings,
             show=db.library.get_show,
             movie_imdb_id=functools.partial(_movie_imdb_id, discovery),
+            forge=forge_moves(forge),  # videos Forge moved into the library keep their subtitles
         )
         # The Downloads page: recent grabs with the torrent program's progress, free space
         # (`run_periodic` from the UI); looks again soon after every grab.
+        # Where Forge moved a finished download, once Forge runs (`forge_moves`).
         self.download_status = DownloadStatusService(
-            db.history, db.subtitles, settings, remote, show=db.library.get_show
+            db.history,
+            db.subtitles,
+            settings,
+            remote,
+            show=db.library.get_show,
+            forge=forge_moves(forge),
         )
         downloads.subscribe(self.download_status.after_grab)
+        # MediaForge inside AirGrabber: off until something awaits `forge.start()` (the delayed
+        # start after the main window shows, or the Forge window opened earlier).
+        self.forge = forge
 
     @classmethod
     async def create(cls, paths: AppPaths) -> Services:
@@ -204,6 +218,9 @@ class Services:
                     settings=settings,
                     linker=QBittorrentLinker(),
                 ),
+                # Forge shares the HTTP client, the TMDB client (its own names language) and
+                # the poster cache; nothing of it is imported or opened until it starts.
+                forge=ForgeRuntime(paths, http, tmdb, images, settings),
             )
             await services.watchlist.load()
             await services.torrent_app.refresh_qbittorrent_theme()  # after an update: new files
@@ -217,9 +234,13 @@ class Services:
 
     async def aclose(self) -> None:
         try:
-            await self._http.aclose()
+            # First: Forge uses the HTTP client, and forge.db's aiosqlite thread is no daemon.
+            await self.forge.aclose()
         finally:
-            await self._db.close()
+            try:
+                await self._http.aclose()
+            finally:
+                await self._db.close()
 
 
 def _own_opensubtitles_key(settings: SettingsService) -> str:

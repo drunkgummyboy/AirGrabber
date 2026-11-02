@@ -7,21 +7,28 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.models import DownloadRecord, MediaType
 from app.services.subtitle_files import (
     SETTLE_S,
     FolderScan,
+    MovedVideo,
     VideoFile,
     grab_files,
     has_subtitle,
+    look_beside,
+    moved_videos,
     movie_identity,
     normalize,
     parse_episode,
+    parts_below,
     release_name,
+    same_path,
     scan_folder,
     subtitle_path,
+    with_moved,
     write_new_file,
 )
 
@@ -259,6 +266,90 @@ class SubtitleFileTests(unittest.TestCase):
     def test_an_unwritable_folder_raises(self) -> None:
         with self.assertRaises(OSError):
             write_new_file(str(self.root / "missing" / "x.en.srt"), b"x")
+
+WHEN = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+
+
+class MovedVideoTests(unittest.TestCase):
+    """Videos MediaForge moved out of the finished-downloads folder (B-08)."""
+
+    def test_parts_below_a_folder_compare_like_windows(self) -> None:
+        self.assertEqual(
+            parts_below(r"d:\DL\Show.S01\show.s01e02.mkv", "D:\\dl\\"),
+            ("Show.S01", "show.s01e02.mkv"),
+        )
+        self.assertIsNone(parts_below(r"D:\dl2\x.mkv", r"D:\dl"))  # whole folder names only
+        self.assertIsNone(parts_below(r"D:\dl", r"D:\dl"))
+        self.assertEqual(parts_below(r"\\nas\video\dl\x.mkv", r"\\NAS\Video"), ("dl", "x.mkv"))
+        self.assertTrue(same_path(r"D:\Lib\X.mkv", "d:/lib/x.mkv"))
+
+    def test_moved_videos_keep_their_old_name_and_each_target_once(self) -> None:
+        later, earlier = WHEN, WHEN - timedelta(days=2)
+        moves = [  # newest first, as Forge gives them
+            (r"D:\dl\Show.S01E02-GRP\show.s01e02.mkv", r"L:\Series\Show\Show - S01E02.mkv", later),
+            (r"D:\dl\show.s01e02.again.mkv", r"l:\series\show\show - s01e02.MKV", earlier),
+            (r"D:\dl\Film.2024\Sample\film.sample.mkv", r"L:\Movies\film.sample.mkv", later),
+            (r"D:\dl\Film.2024\film.nfo", r"L:\Movies\film.nfo", later),
+            (r"E:\elsewhere\x.mkv", r"L:\Movies\x.mkv", later),
+            (r"D:\dl\Lib\y.mkv", r"D:\dl\Lib\Y (2020).mkv", later),  # the scan has it already
+        ]
+        found = moved_videos(r"D:\dl", moves, known=[r"D:\dl\Lib\Y (2020).mkv"])
+        self.assertEqual(
+            found,
+            [
+                MovedVideo(
+                    VideoFile(
+                        path=r"L:\Series\Show\Show - S01E02.mkv",
+                        parts=("Show.S01E02-GRP", "show.s01e02.mkv"),
+                        size=0,
+                    ),
+                    later,
+                )
+            ],
+        )
+
+    def test_look_beside_keeps_what_is_still_there_with_the_subtitles(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name) / "Series" / "Show" / "Season 01"
+        folder.mkdir(parents=True)
+        (folder / "Show - S01E02.mkv").write_bytes(b"12345")
+        (folder / "Show - S01E02.en.srt").write_bytes(b"sub")
+        (folder / "Show - S01E02.nfo").write_bytes(b"x")
+
+        def moved(path: Path) -> MovedVideo:
+            return MovedVideo(VideoFile(path=str(path), parts=("show.s01e02.mkv",), size=0), WHEN)
+
+        there, subtitles = look_beside(
+            [
+                moved(folder / "Show - S01E02.mkv"),
+                moved(folder / "Show - S01E03.mkv"),  # moved on since
+                moved(Path(tmp.name) / "gone" / "x.mkv"),  # its folder is gone too
+            ]
+        )
+        self.assertEqual(
+            [(m.video.path, m.video.size) for m in there],
+            [(str(folder / "Show - S01E02.mkv"), 5)],
+        )
+        self.assertEqual(subtitles, {str(folder / "Show - S01E02.en.srt").lower()})
+
+    def test_a_grab_owns_a_moved_video_by_its_old_name_when_moved_after_it(self) -> None:
+        record = tv("Show.S01E02.1080p-GRP", 1, 2)
+        item = MovedVideo(
+            VideoFile(
+                path=r"L:\Series\Show - S01E02 - Pilot.mkv",
+                parts=("Show.S01E02.1080p-GRP", "x.mkv"),
+                size=1,
+            ),
+            WHEN,
+        )
+        base = scan()
+        self.assertIs(with_moved(base, [item], WHEN + timedelta(minutes=1)), base)  # moved before
+        files = grab_files(record, with_moved(base, [item], WHEN))
+        self.assertEqual(
+            [v.video.path for v in files.videos], [r"L:\Series\Show - S01E02 - Pilot.mkv"]
+        )
+        self.assertEqual(base.videos, [])  # the scan itself is left as it was
 
 
 if __name__ == "__main__":

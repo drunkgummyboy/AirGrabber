@@ -14,6 +14,10 @@ packages, adds Start menu and desktop shortcuts, registers it under Windows' "In
 (current user; uninstaller: app\uninstall.ps1) and starts it. Running it again reinstalls the latest
 version. Your library and settings live in %LOCALAPPDATA%\AirGrabber and are never touched.
 
+MediaForge (the file renamer inside AirGrabber) gets a Start menu shortcut of its own (a
+MediaForge.lnk of another program, like the old MediaForge, is left alone), and a new install
+turns on its Explorer right-click menu for files and folders.
+
 When Windows has no program for magnet links and .torrent files yet, it installs qBittorrent (the
 free program AirGrabber downloads with; Windows may ask for permission) and sets it up for
 AirGrabber, so downloads start without a pop-up for each one: -NoQBittorrent skips that. A torrent
@@ -45,6 +49,8 @@ $AppEntries = @('main.py', 'requirements.txt', 'app')  # keep in step with app/s
 $IconPath = 'app\assets\airgrabber.ico'                # keep in step with app/ui/branding.py
 $AppId = 'drunkgummyboy.AirGrabber'                    # keep in step with app/identity.py (APP_USER_MODEL_ID)
 $AppIdHelper = 'app\shortcut_app_id.cs'                # also app/services/powershell.py (SHORTCUT_HELPER)
+$ForgeAppId = 'drunkgummyboy.AirGrabber.MediaForge'    # keep in step with app/forge/shortcut.py (APP_USER_MODEL_ID)
+$ForgeIconPath = 'app\assets\forge\MediaForge.ico'     # keep in step with app/forge/shortcut.py (ICON_PATH)
 $PythonFallback = '3.13.15'                            # python.org build used when winget can't
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AirGrabber'
 # winget for PCs without it: App Installer (which brings winget.exe) from winget's own release, plus
@@ -280,6 +286,37 @@ function New-Shortcut([string]$Path, [string]$PythonW) {
     $link.Description = 'Track your shows. Grab your movies.'
     $link.Save()
     Set-ShortcutAppId $Path
+}
+
+function New-ForgeShortcut([string]$Path, [string]$PythonW) {
+    # MediaForge's Start-menu shortcut (D8): "<install>\main.py" --forge opens the Forge window,
+    # with MediaForge's icon and its own AppUserModelID, as the Forge window's taskbar button has
+    # (app/forge/shortcut.py). A MediaForge.lnk that starts another program (the old MediaForge's)
+    # is left alone; AirGrabber makes this one itself once that has gone.
+    $mainPy = Join-Path $InstallDir 'main.py'
+    $shell = New-Object -ComObject WScript.Shell
+    if (Test-Path -LiteralPath $Path) {
+        $existing = ''
+        try { $existing = [string]$shell.CreateShortcut($Path).Arguments } catch { $existing = '' }
+        if ($existing.IndexOf('"' + $mainPy + '"', [StringComparison]::OrdinalIgnoreCase) -lt 0) { return }
+    }
+    $link = $shell.CreateShortcut($Path)
+    $link.TargetPath = $PythonW
+    $link.Arguments = '"' + $mainPy + '" --forge'
+    $link.WorkingDirectory = $InstallDir
+    $link.IconLocation = (Join-Path $InstallDir $ForgeIconPath) + ',0'
+    $link.Description = 'Rename and organise video files'
+    $link.Save()
+    # Set-ShortcutAppId writes $AppId: here MediaForge's (a local of this function, which it sees).
+    $AppId = $ForgeAppId
+    Set-ShortcutAppId $Path
+}
+
+function Add-Shortcuts([string]$PythonW, [string]$Programs, [string]$Desktop) {
+    # AirGrabber in the Start menu and on the desktop; MediaForge in the Start menu only.
+    New-Shortcut (Join-Path $Programs 'AirGrabber.lnk') $PythonW
+    New-Shortcut (Join-Path $Desktop 'AirGrabber.lnk') $PythonW
+    New-ForgeShortcut (Join-Path $Programs 'MediaForge.lnk') $PythonW
 }
 
 function Set-ShortcutAppId([string]$Path) {
@@ -778,6 +815,25 @@ function Install-QBittorrentIfNeeded([string]$Python) {
     }
 }
 
+function Enable-ForgeMenu([string]$Python) {
+    # D8: a new install gets MediaForge's Explorer right-click menu for files and folders, turned
+    # on by AirGrabber itself (main.py --forge-menu on, app/forge/context_menu.py: exit code 0 =
+    # on, or another program's menu left alone). Never fails the install: it can be turned on in
+    # AirGrabber's Settings.
+    $ErrorActionPreference = 'Continue'  # see Test-Python
+    Write-Step 'Adding MediaForge to the right-click menu of files and folders'
+    $code = 1
+    try {
+        & $Python (Join-Path $InstallDir 'main.py') --forge-menu on 2>$null | Out-Host
+        $code = $LASTEXITCODE
+    } catch {
+        $code = 1
+    }
+    if ($code -ne 0) {
+        Write-Host "    MediaForge's right-click menu could not be turned on. You can turn it on in AirGrabber (Settings, MediaForge, Right-click menu)." -ForegroundColor Yellow
+    }
+}
+
 function Get-Requirements([string]$Path) {
     # requirements.txt's packages as pip takes them: those above a "# optional" comment line are
     # required, those below it optional (app/bootstrap.py reads the file the same way).
@@ -830,6 +886,8 @@ function Install-AirGrabber {
     $python = Find-Python
     if ($python) { Write-Host '    Python is already installed.' } else { $python = Install-Python }
 
+    # A new install (no AirGrabber in the folder yet) also gets MediaForge's right-click menu (D8).
+    $newInstall = -not (Test-Path -LiteralPath (Join-Path $InstallDir 'main.py'))
     Install-App
 
     Install-Requirements $python (Join-Path $InstallDir 'requirements.txt')
@@ -841,9 +899,9 @@ function Install-AirGrabber {
     if (-not (Test-Path -LiteralPath $pythonw)) { $pythonw = $python }
     if (-not $NoShortcuts) {
         Write-Step 'Adding AirGrabber to the Start menu and your desktop'
-        New-Shortcut (Join-Path ([Environment]::GetFolderPath('Programs')) 'AirGrabber.lnk') $pythonw
-        New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'AirGrabber.lnk') $pythonw
+        Add-Shortcuts $pythonw ([Environment]::GetFolderPath('Programs')) ([Environment]::GetFolderPath('Desktop'))
     }
+    if ($newInstall) { Enable-ForgeMenu $python }
 
     Write-Step 'Adding AirGrabber to Installed apps in Windows Settings'
     try {

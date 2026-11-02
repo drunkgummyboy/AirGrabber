@@ -41,6 +41,7 @@ from app.ui.calendar_cards import (
 )
 from app.ui.calendar_stack import CompactStackCard, FoldKey, Stack, StackCard, stack_entries
 from app.ui.card_scale import FULL, CardScale
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK
 from app.ui.tooltip import add_tooltip
@@ -311,7 +312,7 @@ class CalendarView(BaseView):
         self._build_header()
         self._sync_controls(settings.current)
 
-        self._scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._scroll = ScrollableFrame(self, fg_color="transparent")
         self._scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 5))
 
     # -- header --------------------------------------------------------------------------------

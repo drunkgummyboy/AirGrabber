@@ -51,6 +51,9 @@ class ImageCache:
     instance from one event loop only.
 
     Returned images are shared between callers and must be treated as read-only.
+
+    `raw` gives a url's original file bytes (for saving a poster as it is), from the same disk
+    cache, with the same de-duplication of concurrent calls, size limit and never-raise rule.
     """
 
     def __init__(
@@ -68,6 +71,7 @@ class ImageCache:
         self._memory_items = max(0, memory_items)
         self._memory: OrderedDict[_MemoryKey, Image.Image] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[Image.Image | None]] = {}
+        self._raw_inflight: dict[str, asyncio.Task[bytes | None]] = {}
         self._downloads = asyncio.Semaphore(max_concurrent)
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -101,6 +105,23 @@ class ImageCache:
             return None
         return self._remember(key, fitted)
 
+    async def raw(self, url: str | None) -> bytes | None:
+        """The original bytes of the image at `url`, from the disk cache or downloaded (and then
+        stored there); concurrent calls for one url share one disk read or download.
+
+        None without a url, or when the image cannot be downloaded, is over the size limit or
+        does not decode (logged at DEBUG). Never raises for network or image problems.
+        """
+        if not url:
+            return None
+        task = self._raw_inflight.get(url)
+        if task is None:
+            task = asyncio.create_task(self._load_raw(url), name=f"image cache (raw): {url}")
+            self._raw_inflight[url] = task
+            task.add_done_callback(lambda done: self._raw_finished(url, done))
+        # A cancelled caller must not cancel the load the other callers are still awaiting.
+        return await asyncio.shield(task)
+
     async def prune(self, max_bytes: int = 300 * 1024 * 1024) -> int:
         """Delete the least recently used files until the directory holds at most `max_bytes`.
 
@@ -121,6 +142,10 @@ class ImageCache:
     def _finished(self, url: str, task: asyncio.Task[Image.Image | None]) -> None:
         if self._inflight.get(url) is task:
             del self._inflight[url]
+
+    def _raw_finished(self, url: str, task: asyncio.Task[bytes | None]) -> None:
+        if self._raw_inflight.get(url) is task:
+            del self._raw_inflight[url]
 
     def _remember(self, key: _MemoryKey, image: Image.Image) -> Image.Image:
         existing = self._memory.get(key)
@@ -146,6 +171,37 @@ class ImageCache:
             if image is not None:
                 return image
         return await self._download(url, path)
+
+    async def _load_raw(self, url: str) -> bytes | None:
+        """`_load` for `raw`: disk, then network, bytes checked to decode. Never raises (except
+        when cancelled)."""
+        path = self._directory / _file_name(url)
+        try:
+            data = await asyncio.to_thread(_read_cached_bytes, path)
+        except _CorruptFile as exc:
+            log.debug("Deleted corrupt cached image for %s (%s); downloading it again", url, exc)
+        except Exception as exc:
+            log.debug("Could not read cached image for %s: %r", url, exc)
+        else:
+            if data is not None:
+                return data
+        try:
+            data = await self._fetch(url)
+        except Exception as exc:
+            log.debug("Could not download image %s: %r", url, exc)
+            return None
+        if data is None:
+            return None
+        try:
+            await asyncio.to_thread(_decode, data)
+        except Exception as exc:
+            log.debug("Downloaded data for %s is not a usable image: %r", url, exc)
+            return None
+        try:
+            await asyncio.to_thread(_write_atomic, path, data)
+        except Exception as exc:
+            log.debug("Could not store image %s in the cache: %r", url, exc)
+        return data
 
     async def _download(self, url: str, path: Path) -> Image.Image | None:
         try:
@@ -240,6 +296,25 @@ def _read_cached(path: Path) -> Image.Image | None:
     with contextlib.suppress(OSError):
         os.utime(path)
     return image
+
+
+def _read_cached_bytes(path: Path) -> bytes | None:
+    """A cache file's bytes, checked to decode, and the file marked recently used; None when
+    there is no such file. A file that fails to decode is deleted and reported as `_CorruptFile`.
+    """
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    try:
+        _decode(data)
+    except Exception as exc:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise _CorruptFile(repr(exc)) from exc
+    with contextlib.suppress(OSError):
+        os.utime(path)
+    return data
 
 
 def _write_atomic(path: Path, data: bytes) -> None:

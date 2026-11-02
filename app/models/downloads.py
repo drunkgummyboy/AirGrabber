@@ -1,6 +1,6 @@
 """The Downloads page's models: what the torrent program on a NAS or another computer says about
-its tasks (RemoteTask, RemoteStatus), the recent grabs with their state (DownloadEntry,
-DownloadsOverview) and the free space of the folder downloads end up in (FreeSpace)."""
+its tasks (RemoteTask, RemoteStatus), the recent grabs with their state and where MediaForge
+moved them (DownloadEntry, MovedTo, DownloadsOverview) and the free space of the folder downloads end up in (FreeSpace)."""
 
 from __future__ import annotations
 
@@ -56,6 +56,15 @@ class FreeSpace(DomainModel):
     low: bool = False  # below LOW_SPACE_FRACTION or LOW_SPACE_BYTES (download_status.py)
 
 
+class MovedTo(DomainModel):
+    """Where MediaForge moved a finished grab's video: the library folder now holding it."""
+
+    folder: str  # the whole path, for "Open the folder": never shown or logged (a user name)
+    # What the row shows: the library folder's base name onward ("Series", "Gold Rush",
+    # "Season 17"), never the part before it.
+    shown: tuple[str, ...]
+
+
 class DownloadEntry(DomainModel):
     """One recent grab on the Downloads page."""
 
@@ -67,6 +76,7 @@ class DownloadEntry(DomainModel):
     state: DownloadState = DownloadState.UNKNOWN
     progress: float | None = Field(default=None, ge=0.0, le=1.0)  # known for a found task
     subtitles: tuple[str, ...] = ()  # languages saved for it (OpenSubtitles codes)
+    moved_to: MovedTo | None = None  # where MediaForge moved its video (None: not known)
 
 
 class DownloadsOverview(DomainModel):

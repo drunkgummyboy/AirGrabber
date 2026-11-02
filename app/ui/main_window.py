@@ -11,7 +11,7 @@ import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from types import TracebackType
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import customtkinter as ctk
 from async_tkinter_loop.mixins import AsyncCTk
@@ -81,6 +81,10 @@ from app.ui.missing_control import (
 )
 from app.ui.movie_details import MovieWindows, movie_title
 from app.ui.release_panel import PanelServices, TvTarget
+from app.forge.ui.host import ForgeHost
+from app.forge.ui.settings_pages import SECTION_LIBRARY
+from app.single_instance import ForgeRequest
+from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
@@ -98,8 +102,12 @@ from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, Tracke
 from app.ui.views.downloads_view import DownloadsView, PageActions
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action, first_run_defaults
 from app.ui.whats_new_dialog import WhatsNewDialog
-from app.ui.widgets import Tabview, install_edit_menus
+from app.ui.widgets import Tabview, install_edit_menus, install_window_release
 from app.whats_new import WhatsNew, whats_new
+
+if TYPE_CHECKING:
+    from app.forge.old_install import Outcome
+    from app.forge.services import ForgeServices
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +115,7 @@ _UPDATE_CHECK_DELAY_S = 5  # let the pages load first
 _DOWNLOAD_STATUS_MS = 10_000  # how long a one-click download's result stays in the status bar
 _DETAILS_WAIT_S = 5.0  # a one-click movie download waits this long for TMDB details (IMDb id)
 _UPDATE_STATUS_MS = 10_000  # how long "… is ready" / "Updated to …" stay in the status bar
+_FORGE_START_DELAY_S = 15  # MediaForge starts this long after the window: not on AirGrabber's start
 # The update badges' hover tips.
 UPDATE_TIP = N_("Open Settings to update")
 RESTART_TIP = N_("Installs the downloaded update and restarts AirGrabber")
@@ -209,6 +218,7 @@ def update_notice(last_run_version: str, running: str) -> str | None:
 
 _SUBTITLE_STATUS_MS = 15_000  # how long a subtitle problem stays in the status bar
 _AUTO_STATUS_MS = 10_000  # how long an automatic download's line stays in the status bar
+_OLD_FORGE_STATUS_MS = 15_000  # the old MediaForge's notice and its removal's outcome
 AUTO_ERROR_INTERVAL_S = 3600.0  # at most one "Automatic download didn't work" per hour
 
 
@@ -329,7 +339,13 @@ class MainWindow(AsyncCTk, ctk.CTk):
         *,
         start_hidden: bool = False,
         show_requests: Callable[[], bool] | None = None,
+        forge_mailbox: Mailbox | None = None,
+        forge_request: ForgeRequest | None = None,
     ) -> None:
+        """`forge_mailbox`: where later starts hand MediaForge requests over (main.py's
+        InstanceLock). `forge_request`: the one this start carries (the right-click menu, the
+        "MediaForge" shortcut): the window then starts hidden and only Forge's window shows
+        (D5: AirGrabber quits or stays in the tray when that closes)."""
         theme.apply_appearance(services.settings.current.theme_mode)
         super().__init__(fg_color=theme.BG)
         self._services = services
@@ -427,6 +443,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._build_status_bar()
         self._bind_shortcuts()
         install_edit_menus(self)  # right-click Cut / Copy / Paste in every text field
+        install_window_release(self)  # a closed window doesn't stay in customtkinter's tables
         self._whats_new_binding: str | None = None  # waiting for the window to open (tray start)
 
         on_task_error(self._report_task_error)
@@ -443,16 +460,51 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # A loaded backup changed the library and the watchlist: reload the pages.
         self._unsubscribe_backup = services.backup.subscribe(self._on_library_changed)
 
+        # MediaForge (Forge inside AirGrabber): its window, its confirm windows and the requests
+        # later starts hand over (app/forge/ui/host.py, app/ui/forge_link.py). Forge itself
+        # starts _FORGE_START_DELAY_S after the window, or when something needs it first.
+        self._forge = ForgeHost(
+            self,
+            services.forge,
+            open_settings=self._open_forge_settings,
+            restart=self.restart,
+        )
+        self._forge.on_needs = self._on_forge_needs
+        self._forge.notify = self._on_forge_notice
+        self._forge.on_closed = self._on_forge_closed
+        # The old MediaForge (F-27): the import result's "Remove the old MediaForge"; what a
+        # removal came to (from there or from Settings) shows in the status bar.
+        from app.forge.old_install import remover_for
+
+        self._old_remover = remover_for(services.forge)
+        self._forge.on_remove_old = self._remove_old_mediaforge
+        self._unsubscribe_old_remover = self._old_remover.subscribe(self._on_old_removal)
+        self._started_for_forge = forge_request is not None
+        self._forge_pump = RequestPump(forge_mailbox, self._forge.handle, start_request=forge_request)
+        # The right-click menu is rewritten at every Forge start (presets, language, this copy).
+        services.forge.when_ready(self._on_forge_ready)
+        # Quit and restart first wait for a Forge run to finish its file, then close Forge.
+        self._quit_gate = QuitGate(
+            self._forge,
+            close_forge=services.forge.aclose,
+            finish=self._destroy_for_good,
+            on_asked=self._forge_pump.stop,  # what arrives from now on waits in the folder
+            on_leaving=self.withdraw,
+        )
+
         # Closing the window keeps AirGrabber running in the tray; main.py stops the icon at exit.
         self.tray = TrayHost(
             self,
             settings=services.settings,
             on_check_now=self._check_now,
             show_requests=show_requests,  # a second start of AirGrabber asks for the window
+            on_open_forge=self.open_forge,
+            on_quit=self.quit_app,
         )
         self.protocol("WM_DELETE_WINDOW", self.tray.close_window)
-        if start_hidden:
-            self.withdraw()  # main.py --tray: only the tray icon shows
+        if start_hidden or self._started_for_forge:
+            # main.py --tray: only the tray icon shows; a start for Forge: only Forge's window.
+            self.withdraw()
 
     def async_mainloop(self, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
         loop = event_loop or asyncio.new_event_loop()
@@ -476,6 +528,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_auto()
         self._unsubscribe_subtitles()
         self._unsubscribe_backup()
+        self._unsubscribe_old_remover()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
         for job in self.tk.splitlist(self.tk.call("after", "info")):
@@ -508,6 +561,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             images=services.images,
             motion=services.settings.current.spotlight_motion,
             on_downloads=lambda: self._select_mode(Mode.DOWNLOADS),
+            on_forge=self.open_forge,  # 🔨 MediaForge: the Forge window (ForgeHost.open)
             on_settings=self._open_settings,
             on_search=self._on_search,
             on_open=self._open_spotlight,
@@ -634,6 +688,103 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._set_up_prowlarr(), name="prowlarr-setup")
         spawn(self._first_run(), name="first-run")
         self.tray.start()
+        spawn(self._start_forge_later(), name="forge-start")
+        spawn(self._forge_pump.run(), name="forge-requests")  # this start's own request first
+
+    # -- MediaForge -----------------------------------------------------------------------------
+
+    async def _start_forge_later(self) -> None:
+        """Forge starts a while after the window (INTEGRATION.md 3.6), unless something
+        needed it earlier (`start` is shared and idempotent)."""
+        await asyncio.sleep(_FORGE_START_DELAY_S)
+        await self._services.forge.start()
+
+    def open_forge(self) -> None:
+        """The Forge window (the tray's Open MediaForge), shown and raised."""
+        spawn(self._forge.open(), name="forge-open")
+
+    def _on_forge_ready(self, forge: ForgeServices) -> None:
+        """Forge has started: rewrite the Explorer right-click menu if it is on and starts this
+        copy (app/forge/context_menu.py never takes another copy's menu over)."""
+        from app.forge import context_menu
+
+        spawn(context_menu.refresh_from(forge), name="forge-menu-refresh")
+        spawn(self._old_mediaforge_notice(forge), name="forge-old-notice")
+
+    async def _old_mediaforge_notice(self, forge: ForgeServices) -> None:
+        """Once: an old MediaForge's data waits to be brought over (app/forge/old_install.py)."""
+        from app.forge.old_install import startup_notice
+
+        text = await startup_notice(forge)
+        if text is not None:
+            self._report(text, _OLD_FORGE_STATUS_MS)
+
+    def _remove_old_mediaforge(self) -> None:
+        """The import result's "Remove the old MediaForge": its own uninstaller asks the owner."""
+        spawn(self._old_remover.remove(), name="forge-remove-old")
+
+    def _on_old_removal(self, outcome: Outcome | None) -> None:
+        """What removing the old MediaForge came to, in the status bar (None: it started)."""
+        from app.forge.old_install import WAITING_TEXT, outcome_text
+
+        if outcome is None:
+            self._report(t(WAITING_TEXT), _OLD_FORGE_STATUS_MS)
+        else:
+            self._report(outcome_text(outcome), _OLD_FORGE_STATUS_MS)
+
+    def _on_forge_needs(self, count: int) -> None:
+        """How many watched downloads need the owner (MediaForge's renamer): the band's 🔨
+        badge and the tray's."""
+        self._band.set_forge_count(count)
+        self.tray.set_forge_count(count)
+
+    def _on_forge_notice(self, title: str, text: str) -> None:
+        """The renamer's notification, from the tray icon."""
+        self.tray.notify(title, text)
+
+    def _on_forge_closed(self) -> None:
+        """A Forge window closed. D5: a start for Forge whose main window never showed leaves
+        when the last one closes, unless it stays in the tray (`quits_after_forge`)."""
+        if self._quit_gate.asked:
+            return
+        current = self._services.settings.current
+        try:
+            hidden = self.state() == "withdrawn"
+        except tk.TclError:
+            return  # the window is gone already
+        if quits_after_forge(
+            started_for_forge=self._started_for_forge,
+            forge_windows_open=self._forge.windows_open,
+            main_hidden=hidden,
+            keep_in_tray=current.keep_in_tray,
+            tray_running=self.tray.running,
+        ):
+            log.info("The MediaForge window this start was for closed: quitting")
+            self.quit_app()
+
+    def _open_forge_settings(self) -> None:
+        """The Forge window's "More in Settings…": Settings at MediaForge › Library & watching.
+        Settings belongs to the main window, so that shows first (it may be in the tray)."""
+        try:
+            hidden = self.state() == "withdrawn"
+        except tk.TclError:
+            return
+        if hidden:
+            self.tray.show_window()
+        self._open_settings(SECTION_LIBRARY)
+
+    def quit_app(self) -> None:
+        """Quit for good (the tray's Quit, closing the window without the tray): a Forge run
+        first finishes its current file, then Forge closes (bounded), then the window goes and
+        main.py shuts the rest down."""
+        self._quit_gate.request()
+
+    def _destroy_for_good(self) -> None:
+        try:
+            if self.winfo_exists():
+                self.destroy()
+        except tk.TclError:
+            pass  # gone already
 
     def _check_now(self) -> None:
         """The tray's "Check for new episodes now": refresh the library, then auto-download."""
@@ -1092,8 +1243,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # Also replaces a lingering "Syncing library…" message (unless a timed one is showing).
         spawn(self._show_library_summary(), name="library-summary")
 
-    def _open_settings(self) -> None:
+    def _open_settings(self, section: str | None = None) -> None:
+        """Settings (at `section`'s page when given, also on a dialog that is open already)."""
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
+            if section is not None:
+                self._settings_dialog.show_section(section)
             self._settings_dialog.lift()
             self._settings_dialog.focus_force()
             return
@@ -1113,6 +1267,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             images=self._services.images,
             library=self._services.library,
             backup=self._services.backup,
+            forge=self._services.forge,  # the MediaForge group
+            section=section,
         )
 
     async def _set_up_prowlarr(self) -> None:
@@ -1255,9 +1411,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self.after(1200, self.restart)
 
     def restart(self) -> None:
-        """Close, and have main.py start a fresh copy once everything is shut down."""
+        """Close, and have main.py start a fresh copy once everything is shut down (after a
+        Forge run has finished its current file: `quit_app`)."""
         self.restart_requested = True
-        self.destroy()
+        self._quit_gate.request()
 
     # -- status bar --------------------------------------------------------------------------
 

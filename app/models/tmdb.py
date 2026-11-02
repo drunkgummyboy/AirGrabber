@@ -9,9 +9,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, datetime
 from enum import IntEnum
-from typing import Annotated
+from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from app.models.domain import (
     CastMember,
@@ -361,6 +361,58 @@ class TMDBFindResults(_Wire):
 
     def first_tv_id(self) -> int | None:
         return self.tv_results[0].id if self.tv_results else None
+
+
+class TMDBTitle(_Wire):
+    """A film or a show as MediaForge (Forge) uses it: an entry of /search/movie or /search/tv,
+    or /movie/{id} or /tv/{id}. A show's `name` / `original_name` / `first_air_date` map onto
+    `title` / `original_title` / `date` (MediaForge's `TmdbResult`)."""
+
+    id: int
+    title: str
+    original_title: str | None = None
+    date: str | None = None  # "YYYY-MM-DD" as TMDB sends it; "" or None when unknown
+    overview: str = ""
+    poster_path: str | None = None
+    backdrop_path: str | None = None
+    popularity: float = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_tv_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        fields: dict[str, Any] = dict(data)
+        fields.setdefault("title", fields.get("name"))
+        fields.setdefault("original_title", fields.get("original_name"))
+        fields["date"] = (
+            fields.get("release_date") or fields.get("first_air_date") or fields.get("date")
+        )
+        if fields.get("overview") is None:
+            fields["overview"] = ""
+        return fields
+
+    @property
+    def year(self) -> int | None:
+        if self.date and len(self.date) >= 4 and self.date[:4].isdigit():
+            return int(self.date[:4])
+        return None
+
+
+class TMDBSeasonEpisode(_Wire):
+    """An episode of /tv/{id}/season/{n} (MediaForge's `TmdbEpisode`)."""
+
+    episode_number: int
+    name: str = ""
+
+
+class TMDBSeason(_Wire):
+    """/tv/{id}/season/{n}: the season's poster and its episodes' names (MediaForge's
+    `TmdbSeason`)."""
+
+    season_number: int
+    poster_path: str | None = None
+    episodes: tuple[TMDBSeasonEpisode, ...] = ()
 
 
 def _earliest(releases: Sequence[TMDBReleaseDate], release_type: ReleaseType) -> date | None:

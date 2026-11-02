@@ -8,7 +8,8 @@ The packages below a "# optional" comment line in requirements.txt are optional:
 without them (pywebview: trailers then open in the browser). They are installed one by one after
 the required ones, and a failure (offline, a package that won't build) never stops the launch; it
 is logged and remembered in the data folder (OPTIONAL_STATE_FILE), so the next try comes only
-OPTIONAL_RETRY_S later, or at once when the package's line in requirements.txt changes.
+OPTIONAL_RETRY_S later, or at once when the package's line in requirements.txt changes or
+`retry_optional(name)` forgot the failure (the Forge window's "Try again" for guessit).
 install.ps1 reads the file the same way.
 """
 
@@ -274,6 +275,19 @@ def ensure_requirements(
     return False
 
 
+def retry_optional(name: str, state_file: Path | None = None) -> bool:
+    """Forget the remembered install failure of the optional requirement `name` (as pip names it,
+    any case, `-` / `_` / `.` alike), so the next start tries it again at once instead of after
+    OPTIONAL_RETRY_S. `state_file`: OPTIONAL_STATE_FILE in the default data folder. True when a
+    failure was forgotten. Never raises."""
+    failures = OptionalFailures(state_file or AppPaths.default().root / OPTIONAL_STATE_FILE)
+    return failures.forget_name(name)
+
+
+def _canonical_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 class OptionalFailures:
     """When each optional requirement (by its line in requirements.txt) last failed to install: a
     small JSON file in the data folder, so an optional package that can't be installed (offline, a
@@ -298,6 +312,20 @@ class OptionalFailures:
     def forget(self, requirements: Sequence[Requirement]) -> None:
         if [self._failed.pop(requirement.spec) for requirement in requirements if requirement.spec in self._failed]:
             self._save()
+
+    def forget_name(self, name: str) -> bool:
+        """Forget every remembered failure of the requirement called `name`, whatever its line."""
+        wanted = _canonical_name(name)
+        lines = [
+            line
+            for line in self._failed
+            if any(_canonical_name(requirement.name) == wanted for requirement in parse_requirements(line))
+        ]
+        for line in lines:
+            del self._failed[line]
+        if lines:
+            self._save()
+        return bool(lines)
 
     def _load(self) -> dict[str, float]:
         try:

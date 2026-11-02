@@ -25,6 +25,7 @@ from app.models import (
     Settings,
     ThemeMode,
 )
+from app.forge.ui.settings_pages import FORGE_GROUP, FORGE_SECTIONS
 from app.services import SettingsService
 from app.services.tmdb import TMDBError
 from app.ui import theme
@@ -37,6 +38,7 @@ from app.ui.settings_dialog import (
     SECTION_AUTOMATIC,
     SECTION_BACKUP,
     SECTION_GROUPS,
+    SECTION_ICONS,
     SECTION_INFO,
     SECTION_LOOKS,
     SECTION_QUALITY,
@@ -149,9 +151,15 @@ class SectionTests(unittest.TestCase):
             [
                 ("Downloading", ["Where downloads go", "Quality", "Automatic", "Subtitles"]),
                 ("App", ["Movie & show info", "Looks", "Updates", "Backup", "Advanced"]),
+                # FORGE_SECTIONS, in order
+                ("MediaForge", ["Library & watching", "Naming", "Right-click menu"]),
             ],
         )
         self.assertEqual(SECTIONS[0], SECTION_WHERE)
+        self.assertEqual(SECTION_GROUPS[-1], (FORGE_GROUP, tuple(FORGE_SECTIONS)))
+        for section in SECTIONS:
+            with self.subTest(section=section):
+                self.assertTrue(SECTION_ICONS[section])
 
     def test_every_setting_has_a_section(self) -> None:
         expected = {
@@ -389,11 +397,17 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         dialog, _settings = self.dialog()
         self.assertEqual(dialog.section, SECTION_WHERE)
         self.assertTrue(dialog.page(SECTION_WHERE).winfo_manager())
-        # Without the subtitle service there is no Subtitles section.
+        # Without the subtitle service there is no Subtitles section; without Forge no
+        # MediaForge group.
         self.assertEqual(
             list(dialog._items),
-            [s for s in SECTIONS if s not in (SECTION_SUBTITLES, SECTION_BACKUP)],
+            [
+                s
+                for s in SECTIONS
+                if s not in (SECTION_SUBTITLES, SECTION_BACKUP, *FORGE_SECTIONS)
+            ],
         )
+        self.assertNotIn("MEDIAFORGE", labels(dialog._sidebar))
         dialog._items[SECTION_LOOKS].click()
         self.assertEqual(dialog.section, SECTION_LOOKS)
         self.assertTrue(dialog._items[SECTION_LOOKS].selected)

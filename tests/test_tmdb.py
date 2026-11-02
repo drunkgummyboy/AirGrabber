@@ -16,7 +16,8 @@ from unittest import mock
 
 import httpx
 
-from app.models import DiscoverShow, Movie, MovieDetails
+from app.models import DiscoverShow, MediaType, Movie, MovieDetails
+from app.models.tmdb import TMDBSeason, TMDBTitle
 from app.services.tmdb import (
     TMDBAuthError,
     TMDBClient,
@@ -849,6 +850,32 @@ class SecretHygieneTests(TMDBTestCase):
         self.assertNotIn(SECRET_TOKEN, self.log_output.getvalue())
 
 
+    async def test_forge_lookups_never_leak(self) -> None:
+        for key in (SECRET, SECRET_TOKEN):
+            for handler in (self.leaky_transport_error, self.echoing_html):
+                with self.subTest(key=key, handler=handler.__name__):
+
+                    async def async_handler(
+                        request: httpx.Request,
+                        handler: Callable[[httpx.Request], httpx.Response] = handler,
+                    ) -> httpx.Response:
+                        return handler(request)
+
+                    client = self.client(async_handler, key=key)
+                    calls: list[Callable[[], Coroutine[Any, Any, object]]] = [
+                        lambda: client.find_titles(MediaType.MOVIE, "Dune", year=2021),
+                        lambda: client.title(MediaType.TV, 9),
+                        lambda: client.tv_season(9, 1),
+                    ]
+                    for call in calls:
+                        with self.assertRaises(TMDBError) as caught:
+                            await call()
+                        for exc in exception_chain(caught.exception):
+                            self.assertNotIn(key, str(exc))
+                            self.assertNotIn(key, repr(exc))
+        self.assertNotIn(SECRET, self.log_output.getvalue())
+        self.assertNotIn(SECRET_TOKEN, self.log_output.getvalue())
+
 class KeyCheckTests(TMDBTestCase):
     """check_key: one request to /authentication with the given key, whatever key is set."""
 
@@ -909,6 +936,152 @@ class KeyCheckTests(TMDBTestCase):
                 self.assertFalse(await client.check_key(key))
         self.assertEqual(server.requests, [])
 
+
+class ForgeLookupTests(TMDBTestCase):
+    """find_titles / title / tv_season: what Forge (MediaForge) asks TMDB."""
+
+    async def test_movie_search_sends_year_and_no_adult_titles(self) -> None:
+        server = FakeTMDB(ok(page()))
+        await self.client(server).find_titles(MediaType.MOVIE, " Dune ", year=2021)
+        [request] = server.requests
+        self.assert_request(
+            request, "/search/movie", {"query": "Dune", "include_adult": "false", "year": "2021"}
+        )
+
+    async def test_tv_search_sends_first_air_date_year(self) -> None:
+        server = FakeTMDB(ok(page()))
+        await self.client(server).find_titles(MediaType.TV, "The Office", year=2005)
+        [request] = server.requests
+        self.assert_request(
+            request,
+            "/search/tv",
+            {"query": "The Office", "include_adult": "false", "first_air_date_year": "2005"},
+        )
+
+    async def test_search_without_year(self) -> None:
+        server = FakeTMDB(ok(page()))
+        client = self.client(server)
+        await client.find_titles(MediaType.MOVIE, "Dune")
+        await client.find_titles(MediaType.TV, "Dune", year=None)
+        for request, path in zip(server.requests, ("/search/movie", "/search/tv"), strict=True):
+            self.assert_request(request, path, {"query": "Dune", "include_adult": "false"})
+
+    async def test_language_per_call_else_the_clients(self) -> None:
+        server = FakeTMDB(ok(page()))
+        client = self.client(server, language="nl-NL")
+        await client.find_titles(MediaType.MOVIE, "Dune", language="en-US")
+        await client.find_titles(MediaType.MOVIE, "Dune")
+        self.assertEqual(server.requests[0].url.params["language"], "en-US")
+        self.assertEqual(server.requests[1].url.params["language"], "nl-NL")
+
+    async def test_tv_fields_map_onto_title_and_date(self) -> None:
+        show = {
+            "id": 9,
+            "name": "The Office",
+            "original_name": "The Office US",
+            "first_air_date": "2005-03-24",
+            "overview": None,
+            "poster_path": "/p.jpg",
+            "popularity": 12.5,
+        }
+        [title] = await self.client(FakeTMDB(ok(page(show)))).find_titles(MediaType.TV, "office")
+        self.assertEqual(
+            (title.id, title.title, title.original_title, title.date, title.year),
+            (9, "The Office", "The Office US", "2005-03-24", 2005),
+        )
+        self.assertEqual(
+            (title.overview, title.poster_path, title.popularity), ("", "/p.jpg", 12.5)
+        )
+
+    async def test_movie_fields(self) -> None:
+        film = {"id": 1, "title": "Dune", "original_title": "Dune", "release_date": "2021-10-22"}
+        [title] = await self.client(FakeTMDB(ok(page(film)))).find_titles(MediaType.MOVIE, "x")
+        self.assertEqual((title.title, title.date, title.year), ("Dune", "2021-10-22", 2021))
+        empty_date = TMDBTitle.model_validate({"id": 2, "title": "X", "release_date": ""})
+        self.assertIsNone(empty_date.year)
+
+    async def test_malformed_results_are_skipped(self) -> None:
+        server = FakeTMDB(ok(page({"title": "no id"}, {"id": 3, "title": "Ok"})))
+        with self.assertLogs(LOGGER, "WARNING"):
+            found = await self.client(server).find_titles(MediaType.MOVIE, "x")
+        self.assertEqual([title.id for title in found], [3])
+
+    async def test_empty_query_makes_no_request(self) -> None:
+        server = FakeTMDB(ok(page()))
+        self.assertEqual(await self.client(server).find_titles(MediaType.MOVIE, "  "), [])
+        self.assertEqual(server.requests, [])
+
+    async def test_title_paths(self) -> None:
+        server = FakeTMDB(ok({"id": 9, "name": "The Office"}))
+        client = self.client(server)
+        show = await client.title(MediaType.TV, 9, language="de-DE")
+        await client.title(MediaType.MOVIE, 438631)
+        self.assertEqual(show, TMDBTitle(id=9, title="The Office"))
+        self.assert_request(
+            server.requests[0], "/tv/9", {"include_adult": "false"}, language="de-DE"
+        )
+        self.assert_request(server.requests[1], "/movie/438631", {"include_adult": "false"})
+
+    async def test_tv_season(self) -> None:
+        season = {
+            "season_number": 1,
+            "poster_path": "/s1.jpg",
+            "episodes": [{"episode_number": 2, "name": "Theseus", "extra": 1}],
+        }
+        server = FakeTMDB(ok(season))
+        found = await self.client(server).tv_season(9, 1, language="en-US")
+        [request] = server.requests
+        self.assert_request(request, "/tv/9/season/1", {"include_adult": "false"})
+        assert found is not None
+        self.assertIsInstance(found, TMDBSeason)
+        self.assertEqual(found.poster_path, "/s1.jpg")
+        self.assertEqual(
+            [(episode.episode_number, episode.name) for episode in found.episodes],
+            [(2, "Theseus")],
+        )
+
+    async def test_404_gives_none_or_nothing(self) -> None:
+        server = FakeTMDB(httpx.Response(404, json={"success": False, "status_code": 34}))
+        client = self.client(server)
+        self.assertEqual(await client.find_titles(MediaType.MOVIE, "Dune", year=2021), [])
+        self.assertIsNone(await client.title(MediaType.MOVIE, 1))
+        self.assertIsNone(await client.tv_season(9, 7))
+        self.assertEqual(len(server.requests), 3)  # a 404 is never retried
+
+    async def test_v3_key_and_v4_token(self) -> None:
+        server = FakeTMDB(ok(page()))
+        await self.client(server, key=V3_KEY).find_titles(MediaType.MOVIE, "Dune")
+        await self.client(server, key=V4_TOKEN).find_titles(MediaType.TV, "Dune")
+        v3, v4 = server.requests
+        self.assertEqual(v3.url.params["api_key"], V3_KEY)
+        self.assertNotIn("Authorization", v3.headers)
+        self.assertEqual(v4.headers["Authorization"], f"Bearer {V4_TOKEN}")
+        self.assertNotIn("api_key", v4.url.params)
+
+    async def test_missing_key_raises_before_any_request(self) -> None:
+        server = FakeTMDB(ok(page()))
+        client = self.client(server, key=" ")
+        calls: list[Callable[[], Coroutine[Any, Any, object]]] = [
+            lambda: client.find_titles(MediaType.MOVIE, "Dune"),
+            lambda: client.title(MediaType.MOVIE, 1),
+            lambda: client.tv_season(1, 1),
+        ]
+        for call in calls:
+            with self.subTest(call=call), self.assertRaises(TMDBNotConfigured):
+                await call()
+        self.assertEqual(server.requests, [])
+
+    async def test_errors_behave_like_the_other_calls(self) -> None:
+        server = FakeTMDB(httpx.Response(500))
+        with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(TMDBError):
+            await self.client(server).find_titles(MediaType.MOVIE, "Dune")
+        self.assertEqual(len(server.requests), 3)
+        with self.assertRaises(TMDBAuthError):
+            await self.client(FakeTMDB(httpx.Response(401))).title(MediaType.TV, 1)
+        with self.assertRaises(TMDBError):
+            await self.client(FakeTMDB(ok({"id": "x"}))).title(MediaType.TV, 1)
+        with self.assertRaises(TMDBError):
+            await self.client(FakeTMDB(ok({"episodes": []}))).tv_season(1, 1)
 
 if __name__ == "__main__":
     unittest.main()

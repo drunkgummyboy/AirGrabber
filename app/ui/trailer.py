@@ -6,14 +6,16 @@ plays in a borderless window run by a process of its own, `python -m app.trailer
 this process's Tk loop, so never a thread here. It is the interpreter running AirGrabber
 (pythonw.exe when it runs windowless), without a console, from the folder holding `app/`. Its
 colours are theme.py's dark halves (`player_look`: the player is always dark), its ✕'s tip
-"Close (Esc)" in the app's language.
+"Close (Esc)" and the Fill toggle's tips (FILL_TIP / FIT_TIP) in the app's language.
 
 The browser instead, as before, for a link that isn't YouTube's (`youtube_id`), when the player
 can't run here (`player_available`: not Windows, or pywebview isn't installed) or doesn't come
 up: it can't be started, it ends before its page has loaded (no WebView2, pythonnet trouble:
 EXIT_CODES), or it says nothing for READY_TIMEOUT_S (then it is ended). Each such case logs
-one short English line, never the link or the video id. A video YouTube won't play embedded
-the player itself opens in the browser.
+one short English line, never the link or the video id. What the player tells after "ready"
+is logged too (`log_event`): the embedded player's error number when YouTube refused it there
+(the player then shows YouTube's watch page in its window), and why the watch page couldn't
+play it either (the player then closed and opened the browser: EXIT_IN_BROWSER).
 
 One trailer at a time (TrailerPlayer, one per app behind `open_trailer` / `close_trailer`): a
 new one closes the one showing — its stdin is closed, so it closes its window and ends — and so
@@ -33,6 +35,7 @@ import asyncio
 import contextlib
 import importlib.util
 import logging
+import re
 import subprocess
 import sys
 import webbrowser
@@ -42,8 +45,15 @@ from typing import Final, Literal, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 from app import APP_NAME
-from app.i18n import current_language, t
-from app.trailer_player import EXIT_CODES, EXIT_IN_BROWSER, READY_LINE, VIDEO_ID
+from app.i18n import N_, current_language, t
+from app.trailer_player import (
+    EVENT_EMBED_ERROR,
+    EVENT_WATCH_ERROR,
+    EXIT_CODES,
+    EXIT_IN_BROWSER,
+    READY_LINE,
+    VIDEO_ID,
+)
 from app.ui import palettes, theme
 from app.ui.borderless import CLOSE_TIP
 from app.ui.tasks import spawn
@@ -58,6 +68,14 @@ FAILED: Final = "failed"  # the trailer went to the browser instead
 StateListener = Callable[[TrailerState], object]
 
 PLAYER_MODULE = "app.trailer_player"
+# The player's Fill toggle (its tip, as the look's texts: shown through t())
+FILL_TIP = N_("Fill the window")
+FIT_TIP = N_("Show the whole picture")
+# The player's event lines: YouTube's error numbers, its playability statuses (UNPLAYABLE, …),
+# the player's own words; nothing that could be a video id gets through.
+_EVENT = re.compile(
+    r"(embed-error) (\d{1,4}|script|unknown)|(watch-error) ([A-Z_]{2,32}|navigation|timeout|unknown)"
+)
 READY_TIMEOUT_S = 20.0  # the player's page loaded by then, or the browser instead
 END_TIMEOUT_S = 5.0  # a player that didn't come up: this long to learn its exit code
 APP_ROOT = Path(__file__).resolve().parents[2]  # the folder holding app/ (`-m` runs from there)
@@ -129,7 +147,8 @@ def player_look() -> list[str]:
             options += [option, palettes.to_hex(theme.pick(token, dark=True))]
         except ValueError:
             continue
-    return [*options, "--tip", t(CLOSE_TIP), "--title", APP_NAME, "--language", current_language().value]
+    texts = ["--tip", t(CLOSE_TIP), "--fill-tip", t(FILL_TIP), "--fit-tip", t(FIT_TIP)]
+    return [*options, *texts, "--title", APP_NAME, "--language", current_language().value]
 
 
 def player_command(video_id: str, python: str, look: Sequence[str] = ()) -> list[str]:
@@ -335,12 +354,36 @@ class _Notifier:
 
 
 async def _until_ended(process: PlayerProcess) -> None:
-    """Wait for the player to end, reading what it might still write so it never blocks."""
+    """Wait for the player to end, logging its event lines (`log_event`) and reading anything
+    else it might write, so it never blocks."""
     stdout = process.stdout
     if stdout is not None:
+        with contextlib.suppress(ValueError):  # a line beyond the reader's limit: no event
+            while line := await stdout.readline():
+                log_event(line)
         while await stdout.read(4096):
             pass
     await process.wait()
+
+
+def log_event(line: bytes) -> None:
+    """Log one of the player's event lines: an event name and a short code (the trailer player
+    never writes a link or a video id; anything that doesn't look like an event is dropped)."""
+    match = _EVENT.fullmatch(line.decode("ascii", "replace").strip())
+    if match is None:
+        return
+    event, code = (match[1], match[2]) if match[1] else (match[3], match[4])
+    if event == EVENT_EMBED_ERROR:
+        log.info(
+            "YouTube's embedded player refused the trailer (error %s); "
+            "showing YouTube's watch page in the player window",
+            code,
+        )
+    elif event == EVENT_WATCH_ERROR:
+        log.warning(
+            "YouTube's watch page can't play the trailer either (%s); opening it in the browser",
+            code,
+        )
 
 
 async def _exit_code(process: PlayerProcess) -> int | None:

@@ -1,7 +1,8 @@
 """Preferences dialog in plain words: a sidebar of sections (Downloading: where downloads go,
-quality, automatic, subtitles; App: movie & show info, looks, updates, advanced) and one
-scrolling page per section, its settings grouped in boxes that each say what they are for.
-Every change goes through SettingsService, which validates first."""
+quality, automatic, subtitles; App: movie & show info, looks, updates, advanced; MediaForge:
+its sections from app/forge/ui/settings_pages.py, when given Forge) and one scrolling page per
+section, its settings grouped in boxes that each say what they are for. Every change goes through
+SettingsService (MediaForge's through ForgeSettingsService), which validates first."""
 
 from __future__ import annotations
 
@@ -15,11 +16,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from tkinter import filedialog
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import customtkinter as ctk
 from pydantic import ValidationError
 
+# Settings › MediaForge: the group's sections come from this registry (a light import).
+from app.forge.ui.settings_pages import FORGE_GROUP, FORGE_SECTIONS, ForgeSection, ForgeSectionPart
 from app.i18n import N_, Language, capitalized, current_language, day_name, number, t
 from app.indexers import (
     ApibayIndexer,
@@ -93,6 +96,7 @@ from app.ui.remote_program_form import (
     RemoteProgramForm,
     folder_note,
 )
+from app.ui.scrollable import ScrollableFrame
 from app.ui.subtitle_settings import (
     ACCOUNT_HINT,
     ACCOUNT_LABEL,
@@ -117,6 +121,9 @@ from app.ui.tasks import async_command, spawn
 from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
 
+if TYPE_CHECKING:
+    from app.forge.runtime import ForgeRuntime
+
 log = logging.getLogger(__name__)
 
 # -- sections ----------------------------------------------------------------------------------
@@ -140,9 +147,13 @@ SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         N_("App"),
         (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_BACKUP, SECTION_ADVANCED),
     ),
+    # Shown when the dialog is given Forge; the sections, icons and pages come from
+    # app/forge/ui/settings_pages.py (FORGE_SECTIONS).
+    (FORGE_GROUP, tuple(FORGE_SECTIONS)),
 )
 SECTIONS: tuple[str, ...] = tuple(name for _group, names in SECTION_GROUPS for name in names)
 SECTION_ICONS: dict[str, str] = {
+    **{name: section.icon for name, section in FORGE_SECTIONS.items()},
     SECTION_WHERE: "⬇",
     SECTION_QUALITY: "🎚",
     SECTION_AUTOMATIC: "⏱",
@@ -739,6 +750,11 @@ class _Page:
         self._next_row += 1
 
 
+# The public names Forge's sections build with (app/forge/ui/settings_pages.py).
+SettingsBox = _Box
+SettingsPage = _Page
+
+
 class _SidebarItem(ctk.CTkFrame):
     """One section in the sidebar: its icon and name; a click shows its page."""
 
@@ -852,13 +868,18 @@ class SettingsDialog(ctk.CTkToplevel):
         images: ImageCache | None = None,
         library: LibraryService | None = None,
         backup: BackupService | None = None,
+        forge: ForgeRuntime | None = None,
+        section: str | None = None,
     ) -> None:
         """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
         `images`: the Card size box's preview card (none without it); `library`: a followed
         show's poster for it (the placeholder card without one). `backup`: the Backup section
-        shows when it is given."""
+        shows when it is given. `forge` (Services.forge): the MediaForge group shows when it is
+        given. `section`: the page it opens at (Where downloads go when not given or not shown;
+        the Forge window's "More in Settings…" opens Library & watching)."""
         super().__init__(master, fg_color=theme.BG)
+        self._forge_parts: dict[str, ForgeSectionPart] = {}
         self._backup = backup
         self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
         self._images = images
@@ -884,6 +905,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self._on_update = on_update
         self._on_restart = on_restart
         self._tests: dict[str, asyncio.Task[None]] = {}
+        # Variable traces this dialog added, removed in destroy(): a trace's callback is held by
+        # Tk, out of the garbage collector's sight, and would keep the closed dialog in memory.
+        self._traces: list[tuple[tk.Variable, str]] = []
         self._key_dialog: TmdbKeyDialog | None = None
         self._form_in_folder = False  # the remote form opened under the magnet note
         current = settings.current
@@ -962,7 +986,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         paint_line()
         theme.on_mode_change(line, paint_line)
-        self._scroll = ctk.CTkScrollableFrame(
+        self._scroll = ScrollableFrame(
             body,
             width=_PAGE_WIDTH,
             height=200,
@@ -1013,13 +1037,16 @@ class SettingsDialog(ctk.CTkToplevel):
             builders[SECTION_SUBTITLES] = lambda: self._build_subtitles(subtitles_service)
         if self._backup is not None:
             builders[SECTION_BACKUP] = self._build_backup
-        for section in SECTIONS:
-            if section in builders:
-                self._pages[section] = builders[section]()
+        if forge is not None:
+            for name, forge_section in FORGE_SECTIONS.items():
+                builders[name] = functools.partial(self._build_forge, name, forge_section, forge)
+        for name in SECTIONS:
+            if name in builders:
+                self._pages[name] = builders[name]()
         self._items: dict[str, _SidebarItem] = {}
         self._build_sidebar()
-        self._section = SECTION_WHERE
-        self._show_section(SECTION_WHERE)
+        self._section = section if section in self._pages else SECTION_WHERE
+        self._show_section(self._section)
         if update_info is not None:
             self._show_update(update_info)
 
@@ -1039,6 +1066,11 @@ class SettingsDialog(ctk.CTkToplevel):
     def page(self, section: str) -> ctk.CTkFrame:
         """A section's page frame (tests look inside it)."""
         return self._pages[section].frame
+
+    def show_section(self, section: str) -> None:
+        """Show `section`'s page (an open dialog asked for MediaForge › Library & watching);
+        a section that isn't shown changes nothing."""
+        self._show_section(section)
 
     def _build_sidebar(self) -> None:
         first = True
@@ -1073,6 +1105,13 @@ class SettingsDialog(ctk.CTkToplevel):
             if name != section:
                 page.frame.grid_remove()
         self._pages[section].frame.grid(row=0, column=0, sticky="ew", pady=(0, _PAGE_BOTTOM))
+
+    def _build_forge(self, name: str, section: ForgeSection, forge: ForgeRuntime) -> _Page:
+        """A MediaForge section: its page, filled by its builder (app/forge/ui/settings_pages.py),
+        which keeps its changes until Save (`_save_all`)."""
+        page = self._new_page(name, section.note)
+        self._forge_parts[name] = section.build(page, forge)
+        return page
 
     def _new_page(self, section: str, note: str | None = None) -> _Page:
         shown = note if note is not None else SECTION_NOTES[section]
@@ -1524,7 +1563,7 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         self._tmdb_guide.bind("<Button-1>", lambda _event: self._open_key_guide())
         self._tmdb_guide.pack(side="left")
-        self._tmdb_key.trace_add("write", self._on_tmdb_key_edited)
+        self._trace(self._tmdb_key, self._on_tmdb_key_edited)
         return page
 
     def _check_tmdb_key(self) -> None:
@@ -1615,7 +1654,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 cards.body, images=self._images, chosen=saved, saved=saved
             )
             cards.add(self._card_preview, sticky="w")
-            self._card_size.trace_add("write", lambda *_args: self._card_size_changed())
+            self._trace(self._card_size, lambda *_args: self._card_size_changed())
             if self._library is not None:
                 self._preview_task = spawn(self._preview_show(self._library), name="card-preview")
         layout = page.box(t(INFO_LAYOUT_TITLE), t(INFO_LAYOUT_TEXT))
@@ -2124,6 +2163,11 @@ class SettingsDialog(ctk.CTkToplevel):
         if problem is not None:
             self._show_problem(problem, SECTION_SUBTITLES)
             return False
+        for name, part in self._forge_parts.items():  # MediaForge's sections: checked first too
+            problem = part.problem()
+            if problem is not None:
+                self._show_problem(problem, name)
+                return False
         self._save_button.configure(state="disabled")
         if self._own_key is not None and self._own_key.needs_check:
             problem = await self._own_key.verify()  # a new own key: does OpenSubtitles take it?
@@ -2146,6 +2190,13 @@ class SettingsDialog(ctk.CTkToplevel):
                     self._reveal_remote_form()  # the form with the problem shows
                 self._save_button.configure(state="normal")
             return False
+        for name, part in self._forge_parts.items():  # MediaForge's settings (D9: on Save)
+            problem = await part.save()
+            if problem is not None:
+                if self.winfo_exists():
+                    self._show_problem(problem, name)
+                    self._save_button.configure(state="normal")
+                return False
         return await self._save_startup()
 
     async def _save_startup(self) -> bool:
@@ -2258,10 +2309,19 @@ class SettingsDialog(ctk.CTkToplevel):
         if self._on_update is not None:
             self._on_update()
 
+    def _trace(self, variable: tk.Variable, callback: Callable[..., object]) -> None:
+        self._traces.append((variable, variable.trace_add("write", callback)))
+
     def destroy(self) -> None:
         stop_listening = getattr(self, "_stop_listening", None)
         if stop_listening is not None:
             stop_listening()
+        for variable, name in self._traces:
+            try:
+                variable.trace_remove("write", name)
+            except tk.TclError:
+                pass  # gone with its interpreter
+        self._traces.clear()
         for task in self._tests.values():
             task.cancel()
         self._tests.clear()

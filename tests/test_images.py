@@ -77,7 +77,9 @@ class FakeServer:
         return httpx.Response(status, content=body)
 
 
-class ImageCacheTests(unittest.IsolatedAsyncioTestCase):
+class CacheCase(unittest.IsolatedAsyncioTestCase):
+    """A cache directory in a temporary folder and a FakeServer behind MockTransport."""
+
     async def asyncSetUp(self) -> None:
         temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
@@ -95,6 +97,8 @@ class ImageCacheTests(unittest.IsolatedAsyncioTestCase):
     def stored_files(self) -> list[str]:
         return sorted(os.listdir(self.directory))
 
+
+class ImageCacheTests(CacheCase):
     async def test_returns_exact_size_in_rgb(self) -> None:
         self.server.serve(POSTER, encode(size=(400, 120)))  # far wider than the target
         image = await self.make_cache().get(POSTER, SIZE)
@@ -322,6 +326,97 @@ class ImageCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await cache.prune(max_bytes=400), 0)
         self.assertEqual(await cache.prune(max_bytes=250), 2)
         self.assertEqual(self.stored_files(), ["a.jpg", "c.jpg"])
+
+
+class RawTests(CacheCase):
+    """ImageCache.raw: the original bytes, through the same disk cache as `get`."""
+
+    async def test_raw_gives_the_original_bytes_and_stores_them(self) -> None:
+        body = encode(size=(400, 600))
+        self.server.serve(POSTER, body)
+        self.assertEqual(await self.make_cache().raw(POSTER), body)
+        self.assertEqual(self.cache_file(POSTER).read_bytes(), body)
+
+    async def test_raw_is_served_from_disk_and_refreshes_mtime(self) -> None:
+        body = encode()
+        self.server.serve(POSTER, body)
+        await self.make_cache().raw(POSTER)
+        os.utime(self.cache_file(POSTER), (1_000_000, 1_000_000))
+        self.server.requests.clear()
+        self.assertEqual(await self.make_cache().raw(POSTER), body)
+        self.assertEqual(self.server.requests, [])
+        self.assertGreater(self.cache_file(POSTER).stat().st_mtime, 1_000_000)
+
+    async def test_raw_and_get_share_the_disk_cache(self) -> None:
+        body = encode()
+        self.server.serve(POSTER, body)
+        cache = self.make_cache()
+        self.assertIsNotNone(await cache.get(POSTER, SIZE))
+        self.assertEqual(await cache.raw(POSTER), body)
+        self.assertEqual(len(self.server.requests), 1)
+        other = url_for(7)
+        self.server.serve(other, body)
+        self.assertEqual(await cache.raw(other), body)
+        self.assertIsNotNone(await self.make_cache().get(other, SIZE))
+        self.assertEqual(len(self.server.requests), 2)
+
+    async def test_concurrent_raws_share_one_download(self) -> None:
+        body = encode()
+        self.server.serve(POSTER, body)
+        self.server.release.clear()
+        cache = self.make_cache()
+        gathered = asyncio.gather(*(cache.raw(POSTER) for _ in range(4)))
+        await self.server.started.wait()
+        await asyncio.sleep(0.1)  # time for any duplicate request to reach the server too
+        self.server.release.set()
+        self.assertEqual(await gathered, [body] * 4)
+        self.assertEqual(len(self.server.requests), 1)
+
+    async def test_raw_outlives_a_cancelled_waiter(self) -> None:
+        body = encode()
+        self.server.serve(POSTER, body)
+        self.server.release.clear()
+        cache = self.make_cache()
+        cancelled = asyncio.create_task(cache.raw(POSTER))
+        survivor = asyncio.create_task(cache.raw(POSTER))
+        await self.server.started.wait()
+        cancelled.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await cancelled
+        self.server.release.set()
+        self.assertEqual(await survivor, body)
+        self.assertEqual(len(self.server.requests), 1)
+
+    async def test_raw_gives_none_and_never_raises(self) -> None:
+        cache = self.make_cache()
+        self.server.serve(url_for(1), encode(), status=404)
+        self.server.serve(url_for(2), b"<html>definitely not a poster</html>")
+        for url in (None, "", url_for(1), url_for(2)):
+            with self.subTest(url):
+                self.assertIsNone(await cache.raw(url))
+        self.assertEqual(self.stored_files(), [])
+
+        def refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(refuse)) as http:
+            self.assertIsNone(await ImageCache(http, self.directory).raw(POSTER))
+
+    async def test_raw_rejects_oversized_bodies(self) -> None:
+        too_big = b"\0" * (MAX_DOWNLOAD_BYTES + 1)
+        self.server.serve(POSTER, too_big)
+        self.assertIsNone(await self.make_cache().raw(POSTER))
+        self.assertEqual(self.stored_files(), [])
+
+    async def test_raw_downloads_a_corrupt_disk_file_again(self) -> None:
+        body = encode()
+        self.server.serve(POSTER, body)
+        self.directory.mkdir(parents=True)
+        path = self.cache_file(POSTER)
+        path.write_bytes(b"\xff\xd8\xff garbage")
+        self.assertEqual(await self.make_cache().raw(POSTER), body)
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertEqual(path.read_bytes(), body)
 
 
 if __name__ == "__main__":

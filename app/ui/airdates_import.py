@@ -31,6 +31,7 @@ from app.ui.dialog_kit import (
     secondary_button,
     text_label,
 )
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines
 
@@ -390,7 +391,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
         text_label(page, t(REVIEW_HINT), size=DETAIL_SIZE, color=theme.TEXT_MUTED).grid(
             row=1, column=0, sticky="w", pady=(LINE_GAP, 0)
         )
-        self._list = ctk.CTkScrollableFrame(
+        self._list = ScrollableFrame(
             page,
             height=self._list_height,
             corner_radius=8,

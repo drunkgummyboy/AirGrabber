@@ -15,11 +15,12 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 
 ## Rules
 - `main.py`'s top-level imports, `app/__init__.py`, `app/config.py`, `app/bootstrap.py`,
-  `app/single_instance.py`, `app/identity.py`, `app/i18n.py` and `app/i18n_nl.py` run before the package
-  check, so they must stay stdlib-only. Import third-party packages from `main._run` onwards.
+  `app/single_instance.py`, `app/identity.py`, `app/i18n.py`, `app/i18n_nl.py` and `app/i18n_nl_forge.py`
+  run before the package check, so they must stay stdlib-only. Import third-party packages from `main._run` onwards.
 - All user-visible text goes through `t()` (`app/i18n.py`; `tn()` for one / more, `N_()` for a text kept in
   a constant, translated where it is shown; placeholders as `t("… {name} …", name=…)`, never an f-string
-  inside `t()`): add the Dutch entry to `app/i18n_nl.py` (tests/test_i18n.py checks both ways). Log
+  inside `t()`): add the Dutch entry to `app/i18n_nl.py`, for `app/forge` to `app/i18n_nl_forge.py` (merged
+  into one lookup; tests/test_i18n.py checks both ways, a text in one catalog only). Log
   messages, `install.ps1` and `app/bootstrap.py` stay English. The language is set once at startup.
 - An installed copy is only `main.py`, `requirements.txt` and `app/` (`APP_ENTRIES` in `app/services/updates.py`
   and `install.ps1`): runtime files belong under `app/` (images in `app/assets`). Installed copies only see a
@@ -29,10 +30,36 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   await httpx/aiosqlite directly, then update widgets. CPU-heavy Pillow work goes through `asyncio.to_thread`.
 - The one exception: the tray icon (`app/ui/tray.py`, pystray) runs its own Win32 message loop on a daemon
   thread. Its callbacks may only hand work to the loop with `loop.call_soon_threadsafe` and never touch Tk.
+- No GC guard (D6, F-28 measured): in two 30-min soaks (Forge Inbox of 1,000 files with backdrops, pages and band busy) only 8–11 collections ran off the Tk thread (≤ 4.4 ms each) and every one of ~11,600 Tk images and 73 fonts was freed on the Tk thread; keep Tk images made and dropped on the loop.
 - UI code starts coroutines only via `app.ui.tasks.spawn` / `async_command` (they log + report failures).
   Nothing may spawn before the loop runs (see `MainWindow.async_mainloop`).
 - Layers: `app/ui` → `app/services` → repositories (`app/database.py`) and API clients.
-  UI never imports `app.database` or httpx. All SQL lives in `app/database.py`.
+  UI never imports `app.database` or httpx. All SQL lives in `app/database.py` and `app/forge/db/`
+  (MediaForge's own `forge.db`).
+- Forge (`app/forge`, MediaForge inside AirGrabber; plan and decisions in `docs/forge/`): `app/forge/ui` →
+  `app/forge/services.py` → `app/forge/db` and `app/forge/clients`; `app/forge/ui` never imports
+  `app.forge.db`, `app.database` or httpx; non-UI Forge code never imports tkinter / customtkinter.
+  guessit is the one optional package Forge needs (below `# optional` in requirements.txt), imported only
+  inside `app/forge/core/parser.py`'s functions; no tkinterdnd2, no aiohttp. Tests in `tests/forge/`
+  (`tests/forge/base.py`). Its Dutch is the second catalog, `app/i18n_nl_forge.py`. yt-dlp / ffmpeg go
+  to `AppPaths.forge / "tools"`, never under `app/`. Explorer drops (`app/forge/ui/file_drops.py`) and
+  the taskbar identity (`app/forge/ui/taskbar.py`) are ctypes on the Tk thread behind a seam (tests: fakes).
+- The bridges between AirGrabber and Forge (phase 2): no SQL across `airgrabber.db` and `forge.db`.
+  Forge's move records (`ForgeMoveService`, `app/forge/core/moves.py`) reach AirGrabber only through
+  `app/services/download_status.py` (where a grab was moved, matched by a film's TMDB id or the
+  release name; a moved grab shows as finished whatever its torrent program says) and
+  `app/services/subtitles.py` (a grab's video at its new place). There is no library index and no
+  "have it" from the library (removed by the owner's decision, 2026-11-02). AirGrabber's start
+  imports Forge's types only under `TYPE_CHECKING`; these log ids and counts, never a file's path.
+- The old MediaForge's project folder (`…\scripts\MediaForge`) is read-only reference, like `airgrabber.py`.
+  Its install and data (`%APPDATA%\MediaForge`) are only read by `app/forge/migration.py` (a snapshot)
+  and its uninstaller only started by `app/forge/old_install.py` on the user's click; tests hide both.
+- Right-click hand-over: `main.py --forge [--confirm] …` hands its request to a running AirGrabber
+  (`app/single_instance.py`) before logging and the package check, so that path stays stdlib-only.
+- MediaForge's Explorer right-click menu is written only by `app/forge/context_menu.py`, under
+  HKCU\Software\Classes (`*\shell\MediaForge`, `Directory\shell\MediaForge`) only, never over a menu
+  that starts another copy or program (the old MediaForge's only by the import); tests use a fake
+  registry (`tests/forge/base.py` patches the real writers). On for a new install (`--forge-menu on`).
 - The UI consumes only frozen Pydantic models from `app.models`; API JSON is validated into models at the boundary.
 - Widgets touched after an `await` may be gone: views cancel their tasks in `destroy()`; long-lived async
   widget code checks `winfo_exists()` first.

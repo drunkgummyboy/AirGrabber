@@ -15,6 +15,8 @@ from typing import Any
 from unittest import mock
 
 from app.database import Database, SettingsRepository
+from app.forge.models.media import MediaKind
+from app.forge.models.moves import MoveRecord
 from app.models import (
     DownloadMode,
     DownloadRecord,
@@ -29,18 +31,25 @@ from app.models import (
     Settings,
     Show,
 )
+from app.models.downloads import MovedTo
 from app.services import download_status as ds
 from app.services.download_status import (
     DiskUsage,
     DownloadStatusService,
+    ForgeMoves,
+    Located,
     entry_state,
     episode_title,
     expected_in_program,
     grab_outcome,
     is_network_path,
+    match_moves,
     match_tasks,
+    move_folders,
+    moved_state,
     movie_title,
     progress_program,
+    shown_folder,
     space_folders,
     space_is_low,
     torrent_file_names,
@@ -559,6 +568,414 @@ class TimingTests(ServiceTestCase):
         async with asyncio.timeout(2):
             while len(self.overviews) < count:
                 await asyncio.sleep(0.01)
+
+
+# -- where MediaForge moved a grab ----------------------------------------------------------------
+
+FINISHED = r"D:\Downloads\Finished"
+SERIES = r"\\nas\video\Series"
+MOVIES = r"\\nas\video\Movies"
+GOLD_RUSH_TMDB = 34634
+GLADIATOR_TMDB = 558449
+
+
+def local(moment: datetime) -> datetime:
+    """Forge's records keep local time without a zone."""
+    return moment.astimezone().replace(tzinfo=None)
+
+
+def move(
+    source: str,
+    target: str,
+    *,
+    kind: MediaKind = MediaKind.EPISODE,
+    tmdb_id: int | None = GOLD_RUSH_TMDB,
+    when: datetime = NOW - timedelta(minutes=30),
+) -> MoveRecord:
+    return MoveRecord(
+        source=Path(FINISHED) / source,
+        target=Path(target),
+        moved_at=local(when),
+        kind=kind,
+        tmdb_id=tmdb_id,
+        run_id=1,
+    )
+
+
+def film(
+    source: str,
+    target: str,
+    *,
+    tmdb_id: int | None = GLADIATOR_TMDB,
+    when: datetime = NOW - timedelta(minutes=30),
+) -> MoveRecord:
+    return move(source, target, kind=MediaKind.MOVIE, tmdb_id=tmdb_id, when=when)
+
+
+def season_17(episode: int) -> str:
+    return rf"{SERIES}\Gold Rush\Season 17\Gold Rush - S17E{episode:02d}.mkv"
+
+
+class MoveRuleTests(unittest.TestCase):
+    def match(
+        self, records: list[DownloadRecord], moves: list[MoveRecord], **values: Any
+    ) -> dict[int, MoveRecord]:
+        options: dict[str, Any] = {
+            "show_names": {FALLOUT.id: "Gold Rush"},
+            "folders": (Path(FINISHED),),
+        }
+        options.update(values)
+        return match_moves(records, moves, **options)
+
+    def test_folders_each_once_nested_ones_left_out(self) -> None:
+        self.assertEqual(
+            move_folders(FINISHED, [FINISHED.upper() + "\\", r"D:\Downloads", r"E:\Other", ""]),
+            (Path(r"D:\Downloads"), Path(r"E:\Other")),
+        )
+        self.assertEqual(move_folders("", []), ())
+        self.assertEqual(move_folders(" ", [r"E:\Other"]), (Path(r"E:\Other"),))
+
+    def test_shown_from_the_library_folders_name_on(self) -> None:
+        libraries = (SERIES, MOVIES)
+        folder = Path(SERIES) / "Gold Rush" / "Season 17"
+        self.assertEqual(shown_folder(folder, libraries), ("Series", "Gold Rush", "Season 17"))
+        self.assertEqual(
+            shown_folder(Path(r"\\NAS\Video\movies\Dune (2021)"), libraries),
+            ("Movies", "Dune (2021)"),
+        )
+        # The deepest library folder wins; a share itself shows its own name.
+        self.assertEqual(
+            shown_folder(Path(r"\\nas\video\Series\Kids\Bluey"), (SERIES, SERIES + r"\Kids")),
+            ("Kids", "Bluey"),
+        )
+        self.assertEqual(
+            shown_folder(Path(r"\\nas\video\Gold Rush"), (r"\\nas\video",)),
+            ("video", "Gold Rush"),
+        )
+        # Outside every library folder (they changed since): its parent's and its own name only.
+        self.assertEqual(
+            shown_folder(Path(r"C:\Users\Alex\Videos\Gold Rush\Season 17"), libraries),
+            ("Gold Rush", "Season 17"),
+        )
+
+    def test_a_film_by_its_tmdb_id_episodes_by_their_release_names(self) -> None:
+        records = [
+            record("Gladiator.II.2024.1080p", media_type=MediaType.MOVIE, media_id=GLADIATOR_TMDB),
+            record("Gold.Rush.S02E03.720p.WEB-GRP", season=2, episode=3),
+            record("Gold.Rush.S02E05.720p", season=2, episode=5),
+        ]
+        moves = [
+            film(r"x\a.mkv", rf"{MOVIES}\Gladiator II (2024)\Gladiator II (2024).mkv"),
+            move(r"Gold.Rush.S02E03.720p.WEB-GRP\gr.mkv", season_17(3)),  # the release's folder
+            move(r"Gold.Rush.S02E05.720p.mkv", season_17(5)),  # a single file: its own name
+        ]
+        self.assertEqual(self.match(records, moves), {0: moves[0], 1: moves[1], 2: moves[2]})
+
+    def test_an_episodes_move_without_its_name_isnt_taken(self) -> None:
+        # A move whose source tells nothing of the grab isn't taken, whatever its ids say
+        # (AirGrabber knows a show by its TVMaze id, Forge by its TMDB id).
+        grab = record("Gold.Rush.S02E03.720p")
+        self.assertEqual(self.match([grab], [move(r"x\a.mkv", season_17(3))]), {})
+
+    def test_a_move_from_before_the_grab_or_of_another_kind_doesnt_count(self) -> None:
+        grab = record("Gold.Rush.S02E03.720p")  # an hour ago
+        source = r"Gold.Rush.S02E03.720p\gr.mkv"
+        early = move(source, season_17(3), when=NOW - timedelta(hours=2))
+        self.assertEqual(self.match([grab], [early]), {})
+        slack = move(source, season_17(3), when=NOW - timedelta(hours=1, minutes=2))
+        self.assertEqual(self.match([grab], [slack]), {0: slack})
+        other_kind = film(source, rf"{MOVIES}\X\X.mkv", tmdb_id=GOLD_RUSH_TMDB)
+        self.assertEqual(self.match([grab], [other_kind]), {})
+        other_episode = move(r"Gold Rush - S02E04.mkv", season_17(4))
+        self.assertEqual(self.match([grab], [other_episode]), {})
+        film_grab = record(
+            "Gladiator.II.2024.1080p", media_type=MediaType.MOVIE, media_id=GLADIATOR_TMDB
+        )
+        before = film(r"x\a.mkv", rf"{MOVIES}\G\G.mkv", when=NOW - timedelta(hours=2))
+        self.assertEqual(self.match([film_grab], [before]), {})
+
+    def test_each_move_once_newest_grab_first(self) -> None:
+        newer = record("Gold.Rush.S02E03.1080p", when=NOW - timedelta(hours=1))
+        older = record("Gold.Rush.S02E03.720p", when=NOW - timedelta(days=3))
+        moves = [  # both named by the show: either grab could own them
+            move(r"Gold Rush - S02E03.mkv", season_17(3), when=NOW - timedelta(minutes=10)),
+            move(r"old\Gold Rush - S02E03.mkv", season_17(3), when=NOW - timedelta(days=2)),
+        ]
+        self.assertEqual(self.match([newer, older], moves), {0: moves[0], 1: moves[1]})
+
+    def test_a_season_pack_takes_its_seasons_moves(self) -> None:
+        pack = record("Gold.Rush.S02.1080p", season=2, episode=None)
+        single = record("Gold.Rush.S02E02.1080p", episode=2, when=NOW - timedelta(hours=2))
+        moves = [
+            move(rf"Gold.Rush.S02.1080p\Gold.Rush.S02E0{n}.1080p.mkv", season_17(n))
+            for n in (1, 2, 3)
+        ]
+        self.assertEqual(self.match([pack, single], moves), {0: moves[0]})  # the pack took all
+
+    def test_by_release_name_when_the_ids_dont_tell(self) -> None:
+        records = [
+            record("Gold.Rush.S02E03.720p.WEB-GRP"),
+            record("Dune.2021.2160p.UHD", media_type=MediaType.MOVIE, media_id=438631),
+            record("Other.Show.S01E01.720p", media_id=999, season=1, episode=1),
+        ]
+        moves = [
+            move(r"Gold.Rush.S02E03.720p.WEB-GRP\gr.mkv", season_17(3), tmdb_id=None),
+            film(r"Dune.2021.2160p.UHD.mkv", rf"{MOVIES}\Dune (2021)\Dune (2021).mkv", tmdb_id=None),
+            move(r"Unrelated.S01E01.mkv", season_17(1), tmdb_id=None),
+        ]
+        self.assertEqual(self.match(records, moves), {0: moves[0], 1: moves[1]})
+        # A file named "Show S02E03" outside a release folder: by the show's name.
+        loose = move(r"gold rush s02e03.mkv", season_17(3), tmdb_id=None)
+        self.assertEqual(self.match(records[:1], [loose]), {0: loose})
+        # A film's release name never takes an episode's move.
+        self.assertEqual(self.match(records[1:2], moves[:1]), {})
+
+
+class FakeMoveRecords:
+    """ForgeMoveService's surface the Downloads page reads."""
+
+    def __init__(self) -> None:
+        self.moves: list[MoveRecord] = []
+        self.asked: list[Path] = []
+        self.listeners: list[Any] = []
+        self.error: Exception | None = None
+
+    async def moves_from(self, folder: Path) -> list[MoveRecord]:
+        self.asked.append(folder)
+        if self.error is not None:
+            raise self.error
+        prefix = str(folder).lower() + "\\"
+        return [m for m in self.moves if str(m.source).lower().startswith(prefix)]
+
+    def subscribe(self, listener: Any) -> Any:
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
+
+class MovedTests(ServiceTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.library = FakeMoveRecords()
+        self.forge: ForgeMoves | None = None
+        self.service._forge = lambda: self.forge
+        await self.settings.update(subtitles_folder=FINISHED)
+
+    def forge_runs(self, *moves: MoveRecord) -> None:
+        self.library.moves = list(moves)
+        self.forge = ForgeMoves(self.library, (r"E:\Watched",), (SERIES, MOVIES))
+
+    async def test_without_forge_the_page_is_as_before(self) -> None:
+        await self.add(record("Gold.Rush.S02E03.720p"))
+        overview = await self.service.check()
+        self.assertIsNone(overview.entries[0].moved_to)
+        self.assertEqual(self.library.asked, [])
+
+    async def test_a_moved_grab_says_where_and_its_folder_opens_there(self) -> None:
+        await self.add(record("Gold.Rush.S02E03.720p", when=NOW - timedelta(hours=2)))
+        await self.add(record("Fallout.S02E04.720p", episode=4))
+        self.forge_runs(move(r"Gold.Rush.S02E03.720p\gr.mkv", season_17(3)))
+        overview = await self.service.check()
+        self.assertEqual(
+            [entry.record.episode for entry in overview.entries], [4, 3]  # newest first
+        )
+        self.assertIsNone(overview.entries[0].moved_to)
+        self.assertEqual(
+            overview.entries[1].moved_to,
+            MovedTo(
+                folder=rf"{SERIES}\Gold Rush\Season 17", shown=("Series", "Gold Rush", "Season 17")
+            ),
+        )
+        self.assertEqual(self.library.asked, [Path(FINISHED), Path(r"E:\Watched")])
+        # "Open the folder" opens the new place (even with no finished-downloads folder set).
+        await self.settings.update(subtitles_folder="")
+        located = await self.service.locate(overview.entries[1])
+        self.assertEqual(located, Located(rf"{SERIES}\Gold Rush\Season 17", ""))
+
+    async def test_moves_are_read_again_only_after_a_change(self) -> None:
+        await self.add(record("Gold.Rush.S02E03.720p"))
+        self.forge_runs()
+        await self.service.check()
+        await self.service.check()
+        self.assertEqual(len(self.library.asked), 2)  # one read: two folders
+        self.assertEqual(len(self.library.listeners), 1)
+        self.library.moves = [move(r"Gold.Rush.S02E03.720p.mkv", season_17(3))]
+        self.service._wake.clear()
+        self.library.listeners[0]()  # hidden: the next check reads them again
+        self.assertFalse(self.service._wake.is_set())
+        self.service.set_visible(True)
+        self.service._wake.clear()
+        self.library.listeners[0]()
+        self.assertTrue(self.service._wake.is_set())  # the page shows: look again now
+        overview = await self.service.check()
+        self.assertIsNotNone(overview.entries[0].moved_to)
+        self.assertEqual(len(self.library.asked), 4)
+        self.clock += ds.MOVES_TTL_S
+        await self.service.check()
+        self.assertEqual(len(self.library.asked), 6)  # at the latest after MOVES_TTL_S
+
+    async def test_a_forge_failure_leaves_the_page_as_it_was(self) -> None:
+        await self.add(record("Gold.Rush.S02E03.720p"))
+        self.forge_runs(move(r"a.mkv", season_17(3)))
+        self.library.error = ValueError(r"D:\Downloads\Finished: forge.db is closed")
+        with self.assertLogs(ds.log, "INFO") as logs:
+            overview = await self.service.check()
+        self.assertIsNone(overview.entries[0].moved_to)
+        self.assertNotIn("forge.db", "\n".join(logs.output))
+        self.assertNotIn(FINISHED, "\n".join(logs.output))
+
+    async def test_a_moved_grab_is_finished_whatever_its_program_says(self) -> None:
+        # Forge moved the seeding file away: qBittorrent says "missingFiles", Transmission a
+        # local error, Download Station "error" (all PROBLEM); a task removed since: not found.
+        await self.add(record("Gold.Rush.S02E03.720p", info_hash=HASH_A))
+        await self.add(record("Gold.Rush.S02E05.720p", episode=5, when=NOW - timedelta(hours=2)))
+        await self.add(record("Fallout.S02E06.720p", episode=6, info_hash=HASH_B))
+        await self.add(record("Fallout.S02E07.720p", episode=7, when=NOW - timedelta(hours=3)))
+        self.station.tasks = (
+            task("Gold.Rush.S02E03.720p", DownloadState.PROBLEM, 1.0, info_hash=HASH_A),
+            task("Fallout.S02E06.720p", DownloadState.PROBLEM, 0.5, info_hash=HASH_B),
+        )
+        self.forge_runs(
+            move(r"Gold.Rush.S02E03.720p\gr.mkv", season_17(3)),
+            move(r"Gold.Rush.S02E05.720p\gr.mkv", season_17(5)),
+        )
+        overview = await self.service.check()
+        rows = {
+            entry.record.episode: (entry.state, entry.progress, entry.moved_to is not None)
+            for entry in overview.entries
+        }
+        self.assertEqual(
+            rows,
+            {
+                3: (DownloadState.READY, 1.0, True),  # a problem in the program: finished
+                5: (DownloadState.READY, 1.0, True),  # not found in the program: finished
+                6: (DownloadState.PROBLEM, 0.5, False),  # not moved: a real problem
+                7: (DownloadState.NOT_FOUND, None, False),
+            },
+        )
+
+    def test_moved_state(self) -> None:
+        moved = MovedTo(folder=rf"{SERIES}\Gold Rush\Season 17", shown=("Series",))
+        for state in (DownloadState.PROBLEM, DownloadState.NOT_FOUND):
+            with self.subTest(state=state):
+                self.assertEqual(moved_state(state, None, moved), (DownloadState.READY, 1.0))
+                self.assertEqual(moved_state(state, 0.3, None), (state, 0.3))
+        for state in (DownloadState.READY, DownloadState.DOWNLOADING, DownloadState.UNKNOWN):
+            with self.subTest(state=state):
+                self.assertEqual(moved_state(state, 0.4, moved), (state, 0.4))
+
+
+class RealForgeMovesTests(ServiceTestCase):
+    """Forge's own move records (forge.db, written by its executor) behind the page: ordinary
+    downloads (a release folder, a single file named like the release, a film by its TMDB id)
+    show where they ended up, with no TVMaze ↔ TMDB link for the show."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        from app.forge.core.executor import Executor
+        from app.forge.core.moves import ForgeMoveService
+        from app.forge.db.database import Database as ForgeDatabase
+        from app.forge.db.history import HistoryRepo
+        from app.forge.db.moves import MoveRepository
+        from app.forge.models.settings import ForgeSettings
+
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.finished = self.root / "Finished"
+        self.series = self.root / "Series"
+        self.movies = self.root / "Movies"
+        forge_db = await ForgeDatabase.open(self.root / "forge.db")
+        self.addAsyncCleanup(forge_db.close)
+        forge_settings = ForgeSettings(
+            watch_folders=[str(self.finished)],
+            series_folder=str(self.series),
+            movies_folder=str(self.movies),
+        )
+        self.moves = ForgeMoveService(MoveRepository(forge_db), settings=lambda: forge_settings)
+        self.executor = Executor(
+            HistoryRepo(forge_db, on_moves_change=self.moves.changed), None, None, moves=self.moves
+        )
+        await self.settings.update(subtitles_folder=str(self.finished))
+        forge = ForgeMoves(self.moves, (str(self.finished),), (str(self.series), str(self.movies)))
+        self.service._forge = lambda: forge
+
+    def video(self, *parts: str) -> Path:
+        path = self.finished.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"video")
+        return path
+
+    async def rename(self, *files: tuple[Path, Path, Any]) -> None:
+        from app.forge.models.history import RunSource
+        from app.forge.models.plan import Plan, PlannedFile
+
+        plan = Plan(
+            files=tuple(
+                PlannedFile(item_id=i, source=src, target=dst)
+                for i, (src, dst, _) in enumerate(files, start=1)
+            )
+        )
+        result = await self.executor.run(
+            plan,
+            source=RunSource.AUTOMATIC,
+            preset_name=None,
+            on_progress=lambda event: None,
+            cancel=asyncio.Event(),
+            media={i: media for i, (_, _, media) in enumerate(files, start=1)},
+        )
+        self.assertEqual(result.renamed, len(files))
+
+    async def test_ordinary_downloads_say_where_they_ended_up(self) -> None:
+        from app.forge.models.media import MatchState, ParsedMedia, ResolvedMedia
+
+        def resolved(kind: MediaKind, title: str, tmdb_id: int) -> ResolvedMedia:
+            parsed = ParsedMedia(source_name="x.mkv", kind=kind, title=title)
+            return ResolvedMedia(
+                parsed=parsed,
+                title=title,
+                year=None,
+                episode_title=None,
+                match_state=MatchState.CONFIDENT,
+                tmdb_id=tmdb_id,
+            )
+
+        await self.add(record("Fallout.S02E03.720p.WEB-GRP", episode=3))
+        await self.add(record("Fallout.S02E04.1080p.WEB", episode=4))
+        await self.add(
+            record("Gladiator.II.2024.1080p.WEB", media_type=MediaType.MOVIE, media_id=GLADIATOR_TMDB)
+        )
+        await self.add(record("Fallout.S02E05.720p", episode=5))  # not renamed (yet)
+        show = resolved(MediaKind.EPISODE, "Fallout", 106379)
+        season = self.series / "Fallout" / "Season 02"
+        gladiator = self.movies / "Gladiator II (2024)" / "Gladiator II (2024).mkv"
+        await self.rename(
+            (
+                self.video("Fallout.S02E03.720p.WEB-GRP", "fallout.s02e03.720p.web-grp.mkv"),
+                season / "Fallout - S02E03.mkv",
+                show,
+            ),
+            (self.video("Fallout.S02E04.1080p.WEB.mkv"), season / "Fallout - S02E04.mkv", show),
+            (
+                self.video("glad2-1080p", "g2.mkv"),  # a name that tells nothing: the TMDB id does
+                gladiator,
+                resolved(MediaKind.MOVIE, "Gladiator II", GLADIATOR_TMDB),
+            ),
+        )
+        overview = await self.service.check()
+        shown = {entry.record.release_title: entry.moved_to for entry in overview.entries}
+        series_line = ("Series", "Fallout", "Season 02")
+        self.assertEqual(
+            {title: moved.shown if moved else None for title, moved in shown.items()},
+            {
+                "Fallout.S02E03.720p.WEB-GRP": series_line,
+                "Fallout.S02E04.1080p.WEB": series_line,
+                "Gladiator.II.2024.1080p.WEB": ("Movies", "Gladiator II (2024)"),
+                "Fallout.S02E05.720p": None,
+            },
+        )
+        # "Open the folder" opens the new place.
+        [episode] = [e for e in overview.entries if e.record.episode == 3]
+        self.assertEqual(await self.service.locate(episode), Located(str(season), ""))
 
 
 if __name__ == "__main__":

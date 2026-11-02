@@ -26,6 +26,15 @@ the database (HistoryRepository.clear), never deleted from the history and never
 subtitle_files.py's scan, in a thread with a time limit, kept LOCATE_TTL_S) for "Open the folder"
 (`open_folder`).
 
+Where MediaForge put a finished grab (once Forge runs; `forge`, see `forge_moves`): its move
+records (`ForgeMoveService.moves_from`) out of "Where finished downloads end up" and Forge's
+watched folders are matched to the grabs (`match_moves`: a film by its TMDB id first, then by
+release name with subtitle_files' `grab_files` rules) and set as `DownloadEntry.moved_to`;
+`locate` then gives that folder. Such a grab shows as finished even when its program reports a
+problem for the file that is gone, or no longer has the task (`moved_state`). The records are
+read again when Forge reports a change to them (`subscribe`), at the latest after MOVES_TTL_S.
+Without Forge every entry's `moved_to` stays None.
+
 Nothing here logs a URL, magnet, password or release object; RemoteError texts are plain words.
 """
 
@@ -40,10 +49,10 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from app.database import HistoryRepository, SubtitleRepository
 from app.i18n import t
@@ -62,11 +71,16 @@ from app.models import (
     Settings,
     Show,
 )
+from app.models.downloads import MovedTo
 from app.services.downloads import safe_filename
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
-from app.services.subtitle_files import FolderScan, grab_files, normalize, scan_folder
+from app.services.subtitle_files import FolderScan, VideoFile, grab_files, normalize, scan_folder
+
+if TYPE_CHECKING:  # Forge's models and runtime: only typed here, nothing of Forge is imported
+    from app.forge.models.moves import MoveRecord
+    from app.forge.runtime import ForgeRuntime
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +101,9 @@ LOW_SPACE_BYTES = 20 * GIB
 LOW_SPACE_CAP_BYTES = 100 * GIB  # the 5 % rule only counts below this much free
 _DRIVE_REMOTE = 4  # GetDriveTypeW: a network drive
 LOCATE_TTL_S = 60.0  # a scan of the finished-downloads folder serves "Open the folder" this long
+MOVES_TTL_S = 10 * 60.0  # Forge's move records are read again at the latest after this long
+# A move counts for a grab when it came after the grab (this much earlier allowed: clocks).
+MOVE_SLACK = timedelta(minutes=5)
 
 REMOTE_PROGRAMS = frozenset(kind.program for kind in RemoteKind)
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d\d(?!\d)")
@@ -95,6 +112,42 @@ _TAG_RE = re.compile(r"\[[^\]]*\]|\{[^}]*\}")
 ShowLookup = Callable[[int], Awaitable[Show | None]]
 OverviewListener = Callable[[DownloadsOverview], None]
 SpaceListener = Callable[[FreeSpace], None]
+
+
+class MoveRecords(Protocol):
+    """What the page reads of Forge's move records (ForgeMoveService)."""
+
+    async def moves_from(self, folder: Path) -> list[MoveRecord]: ...
+
+    def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]: ...
+
+
+class ForgeMoves(NamedTuple):
+    """Forge, once it runs: its move records and the folders that matter here."""
+
+    records: MoveRecords
+    watch_folders: tuple[str, ...]  # the folders Forge moves downloads out of
+    library_folders: tuple[str, ...]  # the Series and Movies library folders
+
+
+ForgeLookup = Callable[[], ForgeMoves | None]
+
+
+def forge_moves(runtime: ForgeRuntime) -> ForgeLookup:
+    """Forge's part for the Downloads page: None until it runs (and when it is off)."""
+
+    def current() -> ForgeMoves | None:
+        services = runtime.services
+        if services is None:
+            return None
+        settings = services.settings.current
+        return ForgeMoves(
+            services.moves,
+            tuple(settings.watch_folders),
+            tuple(f for f in (settings.series_folder, settings.movies_folder) if f),
+        )
+
+    return current
 
 
 class DiskUsage(NamedTuple):
@@ -221,6 +274,21 @@ def entry_state(
     return DownloadState.UNKNOWN, None
 
 
+_GONE_AFTER_A_MOVE = frozenset({DownloadState.PROBLEM, DownloadState.NOT_FOUND})
+
+
+def moved_state(
+    state: DownloadState, progress: float | None, moved: MovedTo | None
+) -> tuple[DownloadState, float | None]:
+    """A grab MediaForge moved into the library is finished, whatever the torrent program
+    makes of its files being gone: qBittorrent ("missingFiles"), Transmission (a local error)
+    and Download Station ("error") report a problem for a task whose file was moved away while
+    it seeded, and a task removed afterwards is not found. Any other state stays."""
+    if moved is not None and state in _GONE_AFTER_A_MOVE:
+        return DownloadState.READY, 1.0
+    return state, progress
+
+
 def episode_title(show_name: str, season: int, episode: int | None) -> str:
     """"Fallout S02E03"; a season pack "Fallout Season 2"."""
     if episode is None:
@@ -280,6 +348,146 @@ def is_network_path(path: str) -> bool:
         return False
 
 
+# -- where MediaForge moved a grab -------------------------------------------------------------
+
+
+def _key(path: Path) -> tuple[str, ...]:
+    """A path as Windows compares it, folder by folder (case, slashes)."""
+    return tuple(os.path.normcase(part).rstrip("\\/") for part in path.parts)
+
+
+def _below(path: Path, folder: Path) -> tuple[str, ...] | None:
+    """`path`'s parts below `folder` (whole folder names); None when it isn't below it."""
+    mine, theirs = _key(path), _key(folder)
+    if len(mine) <= len(theirs) or mine[: len(theirs)] != theirs:
+        return None
+    return path.parts[len(theirs) :]
+
+
+def move_folders(finished: str, watched: Iterable[str]) -> tuple[Path, ...]:
+    """The folders Forge's moves are read from: "Where finished downloads end up" and Forge's
+    watched folders, each once, a folder inside another one left out (its moves come with it)."""
+    folders: list[Path] = []
+    for text in (finished, *watched):
+        if text.strip():
+            path = Path(text.strip())
+            if not any(_key(path) == _key(known) for known in folders):
+                folders.append(path)
+    return tuple(
+        folder
+        for folder in folders
+        if not any(other is not folder and _below(folder, other) for other in folders)
+    )
+
+
+def shown_folder(folder: Path, library_folders: Sequence[str]) -> tuple[str, ...]:
+    """What a row shows of the folder a video was moved to: the library folder's base name
+    onward ("Series", "Gold Rush", "Season 17"); for a folder in no library folder (the
+    library folders changed since), its own and its parent's name. Never the path before it
+    (it may hold the user's name)."""
+    roots = sorted((Path(text) for text in library_folders), key=lambda p: -len(p.parts))
+    for root in roots:
+        if _key(folder) == _key(root):
+            below: tuple[str, ...] = ()
+        elif (found := _below(folder, root)) is not None:
+            below = found
+        else:
+            continue
+        base = _base_name(root)
+        return (base, *below) if base else below
+    names = folder.parts[1:] if folder.anchor else folder.parts
+    return tuple(names[-2:]) if names else ((_base_name(folder),) if _base_name(folder) else ())
+
+
+def _base_name(folder: Path) -> str:
+    r"""A folder's own name; for a share or drive itself its last name (\\nas\video → video)."""
+    return folder.name or folder.anchor.replace("/", "\\").rstrip("\\").rsplit("\\", 1)[-1]
+
+
+def _aware(moment: datetime) -> datetime:
+    """Forge's records hold local time without a zone; the history holds UTC."""
+    return moment if moment.tzinfo is not None else moment.astimezone(UTC)
+
+
+def match_moves(
+    records: Sequence[DownloadRecord],
+    moves: Sequence[MoveRecord],
+    *,
+    show_names: Mapping[int, str],
+    folders: Sequence[Path],
+) -> dict[int, MoveRecord]:
+    """The move that shows where each grab ended up (by index in `records`).
+
+    `records` newest first, `moves` newest first. A move counts for a grab only when it came
+    after the grab (MOVE_SLACK allowed) and is of its kind. First a film by its TMDB id (the
+    grab's and the move's). Then, for the grabs left, by release name with subtitle_files'
+    `grab_files` rules (an episode also by its show's name and SxxEyy), the move's source read
+    below the folder (`folders`) it came out of. A single grab takes one move, each move used
+    once; a season pack takes every move of its season and shows the newest.
+    """
+    used: set[int] = set()
+    found: dict[int, MoveRecord] = {}
+
+    def fits(record: DownloadRecord, move: MoveRecord) -> bool:
+        kind = "movie" if record.media_type is MediaType.MOVIE else "episode"
+        return move.kind == kind and _aware(move.moved_at) >= record.downloaded_at - MOVE_SLACK
+
+    def take(index: int, record: DownloadRecord, picked: list[int]) -> None:
+        if not picked:
+            return
+        pack = record.media_type is MediaType.TV and record.episode is None
+        chosen = picked if pack else picked[:1]
+        used.update(chosen)
+        found[index] = moves[chosen[0]]
+
+    for index, record in enumerate(records):
+        if record.media_type is not MediaType.MOVIE:
+            continue
+        picked = [
+            position
+            for position, move in enumerate(moves)
+            if position not in used and fits(record, move) and move.tmdb_id == record.media_id
+        ]
+        take(index, record, picked)
+
+    left = [index for index in range(len(records)) if index not in found]
+    if not left:
+        return found
+    videos: list[VideoFile] = []
+    positions: dict[int, int] = {}  # id(video) → its move's position
+    for position, move in enumerate(moves):
+        parts = next(
+            (below for folder in folders if (below := _below(move.source, folder))), None
+        )
+        video = VideoFile(path=str(move.source), parts=parts or move.source.parts[-2:], size=0)
+        videos.append(video)
+        positions[id(video)] = position
+    for index in left:
+        record = records[index]
+        unused = [video for video in videos if positions[id(video)] not in used]
+        if not unused:
+            break
+        files = grab_files(
+            record,
+            FolderScan(videos=unused),
+            show_name=show_names.get(record.media_id)
+            if record.media_type is MediaType.TV
+            else None,
+        )
+        picked = [
+            positions[id(grab.video)]
+            for grab in files.videos
+            if fits(record, moves[positions[id(grab.video)]])
+        ]
+        take(index, record, sorted(picked))
+    return found
+
+
+def moved_to(move: MoveRecord, library_folders: Sequence[str]) -> MovedTo:
+    folder = move.target.parent
+    return MovedTo(folder=str(folder), shown=shown_folder(folder, library_folders))
+
+
 def _read_disk_usage(path: str) -> DiskUsage:
     usage = shutil.disk_usage(path)
     return DiskUsage(usage.total, usage.used, usage.free)
@@ -303,7 +511,14 @@ class DownloadStatusService:
         opener: Callable[[str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        forge: ForgeLookup | None = None,
     ) -> None:
+        """`forge`: Forge's move records once it runs (`forge_moves`), for where grabs ended
+        up."""
+        self._forge = forge
+        self._moves: tuple[tuple[str, ...], float, list[MoveRecord]] | None = None
+        self._watched: MoveRecords | None = None  # the move records listened to
+        self._unwatch: Callable[[], None] | None = None
         self._history = history
         self._subtitles = subtitles
         self._settings = settings
@@ -418,11 +633,15 @@ class DownloadStatusService:
             asked = [index for index, wanted in enumerate(expected) if wanted]
             found = match_tasks([records[index] for index in asked], status.tasks)
             matches = {asked[position]: task for position, task in found.items()}
+        moved = await self._moved(records, settings, shows)
         entries = []
         for index, record in enumerate(records):
             outcome, via = outcomes[index]
-            state, progress = entry_state(
-                matches.get(index), expected=expected[index], asked=status is not None
+            state, progress = moved_state(
+                *entry_state(
+                    matches.get(index), expected=expected[index], asked=status is not None
+                ),
+                moved.get(index),
             )
             assert record.id is not None
             entries.append(
@@ -435,6 +654,7 @@ class DownloadStatusService:
                     state=state,
                     progress=progress,
                     subtitles=tuple(sorted(languages.get(record.id, ()))),
+                    moved_to=moved.get(index),
                 )
             )
         space, fresh = await self._free_space(settings)
@@ -474,8 +694,10 @@ class DownloadStatusService:
         return count
 
     async def locate(self, entry: DownloadEntry) -> Located:
-        """Where the grab's video is in "Where finished downloads end up" (see the module
-        docstring)."""
+        """Where the grab's video is: where MediaForge moved it, else in "Where finished
+        downloads end up" (see the module docstring)."""
+        if entry.moved_to is not None:
+            return Located(entry.moved_to.folder, "")
         folder = self._settings.current.subtitles_folder.strip()
         if not folder:
             return Located(None, "no_folder")
@@ -509,6 +731,66 @@ class DownloadStatusService:
             log.info("Downloads page: Explorer couldn't open the folder")
             return False
         return True
+
+    # -- where MediaForge moved the grabs ---------------------------------------------------------
+
+    async def _moved(
+        self, records: Sequence[DownloadRecord], settings: Settings, shows: Mapping[int, Show]
+    ) -> dict[int, MovedTo]:
+        """Where Forge moved each grab (by index in `records`); {} while Forge doesn't run.
+        A failure (forge.db closing at shutdown) leaves the page as it would be without it."""
+        forge = self._forge() if self._forge is not None else None
+        if forge is None or not records:
+            return {}
+        try:
+            self._listen(forge.records)
+            folders = move_folders(settings.subtitles_folder, forge.watch_folders)
+            moves = await self._read_moves(forge.records, folders)
+            oldest = min(record.downloaded_at for record in records) - MOVE_SLACK
+            recent = [move for move in moves if _aware(move.moved_at) >= oldest]
+            if not recent:
+                return {}
+            found = match_moves(
+                records,
+                recent,
+                show_names={show_id: show.name for show_id, show in shows.items()},
+                folders=folders,
+            )
+            return {index: moved_to(move, forge.library_folders) for index, move in found.items()}
+        except Exception as exc:  # noqa: BLE001 - never the page's problem
+            log.info("Downloads page: MediaForge's moves can't be read (%s)", type(exc).__name__)
+            return {}
+
+    async def _read_moves(
+        self, records: MoveRecords, folders: Sequence[Path]
+    ) -> list[MoveRecord]:
+        """The moves out of `folders`, newest first (kept until Forge reports a change to them,
+        at most MOVES_TTL_S)."""
+        key = tuple(os.path.normcase(str(folder)) for folder in folders)
+        cached, now = self._moves, self._clock()
+        if cached is not None and cached[0] == key and now - cached[1] < MOVES_TTL_S:
+            return cached[2]
+        moves: list[MoveRecord] = []
+        for folder in folders:
+            moves.extend(await records.moves_from(folder))
+        moves.sort(key=lambda move: _aware(move.moved_at), reverse=True)
+        self._moves = (key, now, moves)
+        return moves
+
+    def _listen(self, records: MoveRecords) -> None:
+        """Hear about changes to Forge's move records (once per Forge start)."""
+        if records is self._watched:
+            return
+        if self._unwatch is not None:
+            self._unwatch()
+        self._watched = records
+        self._moves = None
+        self._unwatch = records.subscribe(self._moves_changed)
+
+    def _moves_changed(self) -> None:
+        self._moves = None
+        if self._visible:  # the page shows: the new place at once
+            self._wake.set()
 
     async def _status(
         self, wanted: Sequence[DownloadRecord]

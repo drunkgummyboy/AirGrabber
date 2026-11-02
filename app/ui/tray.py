@@ -8,6 +8,10 @@ TrayHost ties the icon to the main window: closing the window hides it in the tr
 time after TrayNotice explains where it went), the menu opens it again or quits, and a second
 start of AirGrabber (app/single_instance.py) brings it back. Without a working tray icon, or with
 `keep_in_tray` off, closing the window quits, as before.
+
+MediaForge (Forge inside AirGrabber) shares the icon: Open MediaForge in its menu, the
+renamer's notifications through `notify`, and its "needs you" count in the tooltip and as a
+small badge on the icon (`set_forge_count`, MediaForge's `with_badge`), all on the loop.
 """
 
 from __future__ import annotations
@@ -18,13 +22,15 @@ import threading
 import tkinter as tk
 from collections.abc import Callable
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from app import APP_NAME
-from app.i18n import N_, t
+from app.forge.ui.look import forge_look
+from app.i18n import N_, t, tn
 from app.services import SettingsService
 from app.ui import theme
 from app.ui.borderless import make_borderless
@@ -48,6 +54,7 @@ log = logging.getLogger(__name__)
 
 # Shown through t().
 OPEN_LABEL = N_("Open AirGrabber")
+OPEN_FORGE_LABEL = N_("Open MediaForge")
 CHECK_NOW_LABEL = N_("Check for new episodes now")
 QUIT_LABEL = N_("Quit")
 
@@ -61,6 +68,10 @@ NOTICE_BUTTON = N_("Got it")
 _IMAGE_PX = 128  # pystray hands Windows an .ico; it picks the size the tray needs from it
 _SHOW_POLL_S = 0.5  # how often a second start's "show the window" is checked for
 _STOP_TIMEOUT_S = 3.0
+# The "needs you" badge (MediaForge's `with_badge`): Forge's copper (as the band's 🔨 badge,
+# white text readable on it) and AirGrabber's font (D10); one colour in both modes.
+_BADGE_COLOR = theme.pick(forge_look().ACCENT, dark=True)
+_BADGE_FONT_FILE = Path(ctk.__file__).parent / "assets" / "fonts" / "Roboto" / "Roboto-Medium.ttf"
 
 
 # -- decisions (pure, tested) --------------------------------------------------------------------
@@ -79,12 +90,42 @@ def close_action(*, keep_in_tray: bool, tray_running: bool, notice_shown: bool) 
     return CloseAction.HIDE if notice_shown else CloseAction.NOTICE_THEN_HIDE
 
 
+def tooltip(count: int) -> str:
+    """The icon's tooltip: AirGrabber, and how many files MediaForge needs the owner for."""
+    if count <= 0:
+        return APP_NAME
+    needs = tn("{n} file needs you", "{n} files need you", count)
+    return f"{APP_NAME} · MediaForge: {needs}"
+
+
+def with_badge(image: Image.Image, count: int) -> Image.Image:
+    """The icon with a small copper count in its bottom-right corner (MediaForge's), "9+" from
+    ten on. A small Pillow drawing (one 128 px picture): fine on the loop."""
+    badged = image.convert("RGBA").copy()
+    radius = min(badged.size) // 4
+    right, bottom = badged.width - 1, badged.height - 1
+    draw = ImageDraw.Draw(badged)
+    draw.ellipse((right - 2 * radius, bottom - 2 * radius, right, bottom), fill=_BADGE_COLOR)
+    text = str(count) if count < 10 else "9+"
+    centre = (right - radius, bottom - radius)
+    draw.text(centre, text, fill=theme.ON_COLOR, font=_badge_font(int(radius * 1.3)), anchor="mm")
+    return badged
+
+
+def _badge_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype(str(_BADGE_FONT_FILE), size)
+    except OSError:
+        return ImageFont.load_default(size)
+
+
 # -- the icon (pystray on its own thread) --------------------------------------------------------
 
 
 class TrayIcon:
-    """The tray icon and its menu: Open AirGrabber (default: clicking the icon), Check for new
-    episodes now, Quit.
+    """The tray icon and its menu: Open AirGrabber (default: clicking the icon), Open MediaForge
+    (with `on_open_forge`), Check for new episodes now, Quit; `set_count` puts MediaForge's
+    "needs you" count in its tooltip and as a badge on it.
 
     Every callback runs on `loop`'s thread (handed over with call_soon_threadsafe), never on
     pystray's. `start` raises ImportError when pystray is missing; `on_failed` is called (on the
@@ -99,12 +140,14 @@ class TrayIcon:
         on_open: Callable[[], None],
         on_check_now: Callable[[], None],
         on_quit: Callable[[], None],
+        on_open_forge: Callable[[], None] | None = None,
         on_failed: Callable[[], None] | None = None,
         backend: Any = None,
     ) -> None:
         self._loop = loop
         self._image = image
         self._on_open = on_open
+        self._on_open_forge = on_open_forge
         self._on_check_now = on_check_now
         self._on_quit = on_quit
         self._on_failed = on_failed
@@ -115,6 +158,7 @@ class TrayIcon:
         self._ready = False  # pystray's loop runs and the icon was shown
         self._stopping = False
         self._failed = False
+        self._count = 0  # MediaForge's "needs you" (only the loop's thread uses it)
 
     @property
     def running(self) -> bool:
@@ -126,13 +170,18 @@ class TrayIcon:
             return
         # pystray missing → ImportError: the caller falls back to close = quit.
         pystray = self._backend if self._backend is not None else _import_pystray()
-        menu = pystray.Menu(
-            pystray.MenuItem(t(OPEN_LABEL), self._menu_action(self._on_open), default=True),
+        items = [pystray.MenuItem(t(OPEN_LABEL), self._menu_action(self._on_open), default=True)]
+        if self._on_open_forge is not None:
+            items.append(pystray.MenuItem(t(OPEN_FORGE_LABEL), self._menu_action(self._on_open_forge)))
+        items += [
             pystray.MenuItem(t(CHECK_NOW_LABEL), self._menu_action(self._on_check_now)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(t(QUIT_LABEL), self._menu_action(self._on_quit)),
-        )
-        self._icon = pystray.Icon(APP_NAME, self._image, APP_NAME, menu)
+        ]
+        menu = pystray.Menu(*items)
+        count = self._count
+        image = with_badge(self._image, count) if count > 0 else self._image
+        self._icon = pystray.Icon(APP_NAME, image, tooltip(count), menu)
         # A daemon thread: pystray's own setup thread inherits that, so neither can keep the
         # process alive if stop() is never reached.
         thread = threading.Thread(target=self._run, name="tray-icon", daemon=True)
@@ -169,6 +218,22 @@ class TrayIcon:
             self._icon.notify(message, title)
         except Exception:
             log.warning("Could not show the notification %r", title, exc_info=True)
+
+    def set_count(self, count: int) -> None:
+        """How many files MediaForge needs the owner for: in the tooltip, and as a badge on the
+        icon (none for 0). Before `start` it is kept for the icon to start with."""
+        count = max(0, count)
+        if count == self._count:
+            return
+        self._count = count
+        icon = self._icon
+        if icon is None:
+            return
+        try:
+            icon.title = tooltip(count)
+            icon.icon = with_badge(self._image, count) if count > 0 else self._image
+        except Exception:
+            log.warning("Could not show MediaForge's count on the tray icon", exc_info=True)
 
     # -- pystray's threads -----------------------------------------------------------------------
 
@@ -237,13 +302,21 @@ class TrayHost:
         settings: SettingsService,
         on_check_now: Callable[[], None],
         show_requests: Callable[[], bool] | None = None,
+        on_open_forge: Callable[[], None] | None = None,
+        on_quit: Callable[[], None] | None = None,
     ) -> None:
+        """`on_open_forge`: the menu's Open MediaForge (no such item without it). `on_quit`:
+        what quitting does (the main window's, which first waits for MediaForge); without it
+        the window is destroyed at once."""
         self._window = window
         self._settings = settings
         self._on_check_now = on_check_now
         self._show_requests = show_requests
+        self._on_open_forge = on_open_forge
+        self._on_quit = on_quit
         self._icon: TrayIcon | None = None
         self._notice: TrayNotice | None = None
+        self._forge_count = 0
 
     @property
     def running(self) -> bool:
@@ -262,6 +335,12 @@ class TrayHost:
     def notify(self, title: str, message: str) -> None:
         if self._icon is not None:
             self._icon.notify(title, message)
+
+    def set_forge_count(self, count: int) -> None:
+        """MediaForge's "needs you" count on the icon (kept for an icon that starts later)."""
+        self._forge_count = count
+        if self._icon is not None:
+            self._icon.set_count(count)
 
     def close_window(self) -> None:
         """WM_DELETE_WINDOW: into the tray, or quit (see close_action)."""
@@ -291,8 +370,11 @@ class TrayHost:
         window.focus_force()
 
     def quit(self) -> None:
-        """Close for good: main.py then runs the full shutdown (and installs a staged update)."""
-        if _alive(self._window):
+        """Close for good: main.py then runs the full shutdown (and installs a staged update).
+        With `on_quit`, that decides when (MediaForge first finishes its current file)."""
+        if self._on_quit is not None:
+            self._on_quit()
+        elif _alive(self._window):
             self._window.destroy()
 
     def _notice_done(self) -> None:
@@ -314,10 +396,12 @@ class TrayHost:
             asyncio.get_running_loop(),
             image,
             on_open=self.show_window,
+            on_open_forge=self._on_open_forge,
             on_check_now=self._on_check_now,
             on_quit=self.quit,
             on_failed=lambda: self._fall_back("its message loop failed"),
         )
+        icon.set_count(self._forge_count)  # a count that came before the icon
         try:
             icon.start()
         except Exception as exc:  # ImportError: pystray is missing

@@ -4,8 +4,9 @@ Its picture is a title's TMDB backdrop, blurred, dimmed and fading into the page
 the bottom (as the info window's: app/ui/backdrop.py) under a left-to-right scrim of that
 background (darkest behind the logo), or without one a soft glow in the accent colour. Over it,
 on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left,
-the search field, ⬇ Downloads (with its badge while downloads are on their way) and the settings
-button on the right. Under them the
+the search field, 🔨 MediaForge (with a copper badge while MediaForge's renamer needs the owner:
+`set_forge_count`), ⬇ Downloads (with its badge while downloads are on their way) and the
+settings button on the right. Under them the
 spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the title, a muted line
 ("3 episodes today", a film's "2026 · ★ 7.0") and a dot per title. The titles come from
 app/services/spotlight.py: Series and Movies each have their own; the Downloads page keeps the
@@ -45,6 +46,7 @@ import customtkinter as ctk
 from PIL import Image, ImageTk
 
 from app import APP_NAME
+from app.forge.ui.look import forge_look
 from app.i18n import N_, t
 from app.models import DownloadsOverview, FreeSpace, Spotlight, SpotlightItem, SpotlightSide
 from app.ui import theme, tooltip
@@ -105,10 +107,18 @@ T = TypeVar("T")
 SIDE_LABELS = {SpotlightSide.SERIES: N_("Series"), SpotlightSide.MOVIES: N_("Movies")}
 SEARCH_PLACEHOLDER = N_("Search shows & movies…")
 SEARCH_TIP = N_("Search")
+FORGE_TIP = N_("MediaForge")
 DOWNLOADS_TIP = N_("Downloads")
 SETTINGS_TIP = N_("Settings")
-_TIPS = {HitKind.SEARCH: SEARCH_TIP, HitKind.DOWNLOADS: DOWNLOADS_TIP, HitKind.SETTINGS: SETTINGS_TIP}
-_CONTROLS = frozenset({HitKind.SEARCH, HitKind.FIELD, HitKind.DOWNLOADS, HitKind.SETTINGS})
+_TIPS = {
+    HitKind.SEARCH: SEARCH_TIP,
+    HitKind.FORGE: FORGE_TIP,
+    HitKind.DOWNLOADS: DOWNLOADS_TIP,
+    HitKind.SETTINGS: SETTINGS_TIP,
+}
+_CONTROLS = frozenset(
+    {HitKind.SEARCH, HitKind.FIELD, HitKind.FORGE, HitKind.DOWNLOADS, HitKind.SETTINGS}
+)
 
 SPACE_NOTICE_MS = 15_000  # how long the "almost full" notice stays in the status bar
 TICK_MS = 250  # how often the band checks whether the next title is due
@@ -133,7 +143,8 @@ class SpotlightBand(tk.Canvas):
     """The header (see the module docstring). MainWindow calls `start` once the loop runs,
     `select` when the page changes (whose titles show; None: the Downloads page), `reload` when
     the library, a download or a setting changed, and `set_motion` for Settings'
-    `spotlight_motion`. `entry` is the search field's text box."""
+    `spotlight_motion` and `set_forge_count` with MediaForge's "needs you" count; a click on
+    🔨 calls `on_forge`. `entry` is the search field's text box."""
 
     def __init__(
         self,
@@ -144,6 +155,7 @@ class SpotlightBand(tk.Canvas):
         images: ImageCache,
         motion: bool = True,
         on_downloads: Callable[[], None],
+        on_forge: Callable[[], None],
         on_settings: Callable[[], None],
         on_search: Callable[[], None],
         on_open: Callable[[SpotlightItem], None],
@@ -162,6 +174,7 @@ class SpotlightBand(tk.Canvas):
         self._service = spotlight
         self._images = images
         self._on_downloads = on_downloads
+        self._on_forge = on_forge
         self._on_settings = on_settings
         self._on_search = on_search
         self._on_open = on_open
@@ -178,6 +191,7 @@ class SpotlightBand(tk.Canvas):
         self._rotation = Rotation(motion=motion)
         latest = downloads.latest
         self._downloading = latest.in_progress if latest is not None else 0
+        self._forge_needs = 0  # MediaForge's "needs you" count: the 🔨 button's badge
         self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
         self._logo_pad = 0  # the logo's image reaches this far past it (its shadow), px
         self._width = 0  # physical px, from the last <Configure>
@@ -218,12 +232,16 @@ class SpotlightBand(tk.Canvas):
         self._tag_item, self._title_item, self._sub_item = text(), text(), text()
         self._search_item = self.create_image(0, 0, anchor="nw")
         self._magnifier_item = self.create_text(0, 0, anchor="center", text="🔍")
+        self._forge_item = self.create_image(0, 0, anchor="nw")
+        self._forge_glyph = self.create_text(0, 0, anchor="center", text="🔨")
         self._downloads_item = self.create_image(0, 0, anchor="nw")
         self._downloads_glyph = self.create_text(0, 0, anchor="center", text="⬇")
         self._settings_item = self.create_image(0, 0, anchor="nw")
         self._settings_icon = self.create_image(0, 0, anchor="center")
         self._badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
+        self._forge_badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._forge_badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
         self._dot_items: list[int] = []
 
         # The search field's text box: flat, in the field's own colour.
@@ -299,6 +317,14 @@ class SpotlightBand(tk.Canvas):
     def set_motion(self, on: bool) -> None:
         """Settings' `spotlight_motion`: turn to the next title by itself or stay put."""
         self._rotation.set_motion(on, time.monotonic())
+
+    def set_forge_count(self, count: int) -> None:
+        """MediaForge's "needs you" count (ForgeHost.on_needs): the 🔨 button's copper badge
+        (hidden at 0)."""
+        count = max(0, count)
+        if count != self._forge_needs:
+            self._forge_needs = count
+            self._paint_forge_badge()
 
     def jump(self, index: int) -> None:
         """Show the side's `index`th title (its dot)."""
@@ -618,8 +644,10 @@ class SpotlightBand(tk.Canvas):
             (self._title_item, "title"),
             (self._sub_item, "sub"),
             (self._magnifier_item, "magnifier"),
+            (self._forge_glyph, "glyph"),
             (self._downloads_glyph, "glyph"),
             (self._badge_text, "badge"),
+            (self._forge_badge_text, "badge"),
         ):
             self.itemconfigure(item, font=self._scaled(name))
         entry = layout.entry
@@ -668,9 +696,10 @@ class SpotlightBand(tk.Canvas):
         )
         glass = theme.TEXT if self._hovered(HitKind.SEARCH) else theme.TEXT_MUTED
         self.itemconfigure(self._magnifier_item, fill=theme.pick(glass))
-        # ⬇ Downloads (lit while its page shows) and the settings button.
+        # 🔨 MediaForge, ⬇ Downloads (lit while its page shows) and the settings button.
         on_page = self._selected is None
         for kind, rect, item, name in (
+            (HitKind.FORGE, layout.forge, self._forge_item, "forge"),
             (HitKind.DOWNLOADS, layout.downloads, self._downloads_item, "downloads"),
             (HitKind.SETTINGS, layout.settings, self._settings_item, "settings"),
         ):
@@ -680,7 +709,9 @@ class SpotlightBand(tk.Canvas):
             self.coords(item, px(rect.x), px(rect.y))
             image = self._box(rect, px(BUTTON_RADIUS), self._rgba(fill), self._rgba(border))
             self._set_image(item, name, image)
-        downloads, settings = layout.downloads, layout.settings
+        forge, downloads, settings = layout.forge, layout.downloads, layout.settings
+        self.coords(self._forge_glyph, px(forge.x + forge.w / 2), px(forge.y + forge.h / 2))
+        self.itemconfigure(self._forge_glyph, fill=theme.pick(theme.BUTTON_TEXT))
         self.coords(
             self._downloads_glyph,
             px(downloads.x + downloads.w / 2),
@@ -695,32 +726,64 @@ class SpotlightBand(tk.Canvas):
             self._settings_icon, "sliders", _sliders(px(ICON_SIZE), rgb(self, theme.BUTTON_TEXT))
         )
         self._paint_badge()
+        self._paint_forge_badge()
 
     def _paint_badge(self) -> None:
+        """⬇'s green badge: how many downloads are on their way."""
         layout = self._layout
-        text = badge_text(self._downloading)
-        if layout is None or not text:
-            self.itemconfigure(self._badge_item, state="hidden")
-            self.itemconfigure(self._badge_text, state="hidden")
+        corner = layout.badge if layout is not None else None
+        self._paint_count(
+            self._badge_item, self._badge_text, "badge", corner, self._downloading, theme.SUCCESS
+        )
+
+    def _paint_forge_badge(self) -> None:
+        """🔨's copper badge (the Forge look's ACCENT): how many files MediaForge needs the
+        owner for."""
+        layout = self._layout
+        corner = layout.forge_badge if layout is not None else None
+        self._paint_count(
+            self._forge_badge_item,
+            self._forge_badge_text,
+            "forge_badge",
+            corner,
+            self._forge_needs,
+            forge_look().ACCENT,
+        )
+
+    def _paint_count(
+        self,
+        item: int,
+        text_item: int,
+        name: str,
+        corner: tuple[float, float] | None,
+        count: int,
+        colour: theme.Color,
+    ) -> None:
+        """A button's badge: `count` (badge_text: "99+" above 99) in white ON_COLOR on a
+        `colour` pill with a BG ring, its top-right at `corner`; hidden for none."""
+        text = badge_text(count)
+        if corner is None or not text:
+            self.itemconfigure(item, state="hidden")
+            self.itemconfigure(text_item, state="hidden")
             return
         px = self._px
         width = max(BADGE_HEIGHT, self._fonts["badge"].measure(text) + 10)
-        right, top = layout.badge
+        right, top = corner
         rect = Rect(right - width, top, width, BADGE_HEIGHT)
         border = max(1, round(2 * self._scale))
         image = rounded_box(
             (px(rect.w), px(rect.h)),
             px(rect.h) / 2,
-            self._rgba(theme.SUCCESS),
+            self._rgba(colour),
             self._rgba(theme.BG),
             border,
         )
-        self.coords(self._badge_item, px(rect.x), px(rect.y))
-        self._set_image(self._badge_item, "badge", image)
-        self.coords(self._badge_text, px(rect.x + rect.w / 2), px(rect.y + rect.h / 2))
-        self.itemconfigure(self._badge_text, text=text, fill=theme.pick(theme.ON_COLOR))
-        self.itemconfigure(self._badge_item, state="normal")
-        self.itemconfigure(self._badge_text, state="normal")
+        self.coords(item, px(rect.x), px(rect.y))
+        self._set_image(item, name, image)
+        self.coords(text_item, px(rect.x + rect.w / 2), px(rect.y + rect.h / 2))
+        self.itemconfigure(text_item, text=text, fill=theme.pick(theme.ON_COLOR))
+        self.itemconfigure(item, state="normal")
+        self.itemconfigure(text_item, state="normal")
 
     def _paint_dots(self) -> None:
         for item in self._dot_items:
@@ -821,6 +884,8 @@ class SpotlightBand(tk.Canvas):
             self._on_search()
         elif kind is HitKind.FIELD:
             self.entry.focus_set()
+        elif kind is HitKind.FORGE:
+            self._on_forge()
         elif kind is HitKind.DOWNLOADS:
             self._on_downloads()
         elif kind is HitKind.SETTINGS:
@@ -842,6 +907,7 @@ class SpotlightBand(tk.Canvas):
             return
         rect = {
             HitKind.SEARCH: layout.magnifier,
+            HitKind.FORGE: layout.forge,
             HitKind.DOWNLOADS: layout.downloads,
             HitKind.SETTINGS: layout.settings,
         }[hit.kind]

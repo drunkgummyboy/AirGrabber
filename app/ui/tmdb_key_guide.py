@@ -153,7 +153,9 @@ class TmdbKeyGuide(ctk.CTkFrame):
         self._check_button.grid(row=3, column=2, sticky="e", padx=(16, 0), pady=(16, 0))
         self._result = text_label(self, "", size=DETAIL_SIZE, wraplength=CONTENT_WIDTH - 40)
         self._result.grid(row=4, column=1, columnspan=2, sticky="w", pady=(10, 0))
-        self._key.trace_add("write", self._on_key_edited)
+        # Removed in destroy(): Tk holds a trace's callback, out of the garbage collector's
+        # sight, and would keep the closed guide in memory.
+        self._key_trace = self._key.trace_add("write", self._on_key_edited)
 
     @property
     def checked_key(self) -> str | None:
@@ -253,6 +255,12 @@ class TmdbKeyGuide(ctk.CTkFrame):
     def destroy(self) -> None:
         if self._check_task is not None:
             self._check_task.cancel()
+        trace = getattr(self, "_key_trace", None)  # None: destroyed while being built
+        if trace is not None:
+            try:
+                self._key.trace_remove("write", trace)
+            except tk.TclError:
+                pass  # gone with its interpreter
         super().destroy()
 
 

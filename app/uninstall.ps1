@@ -4,9 +4,10 @@ UninstallString that install.ps1 registers:
 
     powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<install>\app\uninstall.ps1"
 
-It removes the install folder it lives in (this file's parent's parent), this install's Start menu,
-desktop and Startup-folder (start with Windows) shortcuts and its "Installed apps" entry, and, when
-the user agrees, the library and settings in %LOCALAPPDATA%\AirGrabber (or $env:AIRGRABBER_DATA_DIR).
+It removes the install folder it lives in (this file's parent's parent), this install's Start menu
+(AirGrabber and MediaForge), desktop and Startup-folder (start with Windows) shortcuts, its Explorer right-click menu ("MediaForge",
+only when it starts this install) and its "Installed apps" entry, and, when the user agrees, the
+library and settings in %LOCALAPPDATA%\AirGrabber (or $env:AIRGRABBER_DATA_DIR).
 
 -Quiet: no dialogs, and the library and settings are kept (testing and QuietUninstallString).
 
@@ -20,6 +21,11 @@ param(
 
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AirGrabber'
 $Title = 'Uninstall AirGrabber'
+# The Explorer right-click menu (BASES in app/forge/context_menu.py), under HKEY_CURRENT_USER.
+$MenuKeys = @(
+    'HKCU:\Software\Classes\*\shell\MediaForge',
+    'HKCU:\Software\Classes\Directory\shell\MediaForge'
+)
 
 function Normalize-Path([string]$Path) {
     return [IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -114,6 +120,39 @@ function Remove-Shortcut([string]$Path, [string]$MainPy) {
     }
 }
 
+function Test-MenuOwned([string]$Command, [string]$MainPy) {
+    # Whether a right-click menu command starts this install: its quoted main.py, letter case
+    # aside (as starts_copy in app/forge/context_menu.py).
+    if (-not $Command -or -not $MainPy) { return $false }
+    return ($Command.IndexOf('"' + $MainPy + '"', [StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Get-MenuCommand([string]$Base) {
+    # The command line of the first entry under a menu key; '' when there is none.
+    $shellKey = $Base + '\shell'
+    if (-not (Test-Path -LiteralPath $shellKey)) { return '' }
+    $first = @(Get-ChildItem -LiteralPath $shellKey -ErrorAction SilentlyContinue | Sort-Object PSChildName | Select-Object -First 1)
+    if ($first.Count -eq 0) { return '' }
+    try {
+        return [string](Get-ItemProperty -LiteralPath ($first[0].PSPath + '\command') -ErrorAction Stop).'(default)'
+    } catch {
+        return ''
+    }
+}
+
+function Remove-MenuKey([string]$Base) {
+    Remove-Item -LiteralPath $Base -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Remove-Menu([string]$MainPy, [string[]]$Keys) {
+    # Removes each right-click menu key whose first command starts this install; one that starts
+    # another copy, or the old MediaForge, stays. Done here, not through Python, so it also works
+    # when Python has been removed already.
+    foreach ($base in $Keys) {
+        if (Test-MenuOwned (Get-MenuCommand $base) $MainPy) { Remove-MenuKey $base }
+    }
+}
+
 function Uninstall-AirGrabber {
     $ErrorActionPreference = 'Stop'
     if (-not $Quiet) { Add-Type -AssemblyName System.Windows.Forms }
@@ -152,6 +191,9 @@ function Uninstall-AirGrabber {
     Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'AirGrabber.lnk') $mainPy
     # Start with Windows (app/services/startup.py): "<install>\main.py" --tray
     Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Startup')) 'AirGrabber.lnk') $mainPy
+    # MediaForge (D8): "<install>\main.py" --forge; the old MediaForge's own MediaForge.lnk stays.
+    Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Programs')) 'MediaForge.lnk') $mainPy
+    Remove-Menu $mainPy $MenuKeys
 
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     $leftOver = Test-Path -LiteralPath $installDir

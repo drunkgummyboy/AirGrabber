@@ -111,7 +111,9 @@ from app.services.tmdb import TMDBError
 from app.services.tvmaze import TVMazeError, TVMazeNotFound
 from app.ui import palettes, theme
 from app.ui.borderless import disc_image
+from app.ui.branding import set_window_icon
 from app.ui.download_control import outcome_text
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
 from app.ui.tooltip import Tooltip, add_tooltip
@@ -591,6 +593,7 @@ class _AnswerDialog(ctk.CTkInputDialog):
     def __init__(self, *, on_answer: Callable[[str | None], None], **kwargs: Any) -> None:
         self._on_answer: Callable[[str | None], None] | None = on_answer
         super().__init__(**kwargs)
+        set_window_icon(self)  # AirGrabber's, not customtkinter's (which is read per window)
 
     def destroy(self) -> None:
         callback, self._on_answer = self._on_answer, None
@@ -805,7 +808,7 @@ class ReleasePanel(ctk.CTkFrame):
         # Most rows fit, but long-running daily shows can have hundreds of episodes in a
         # season: the scrollbar appears only then (it blends into the card until hovered), so
         # the rows stay chip-high. No corner radius: it would pad the chips.
-        scroll = ctk.CTkScrollableFrame(
+        scroll = ScrollableFrame(
             frame,
             orientation="horizontal",
             height=_SELECTOR_HEIGHT,

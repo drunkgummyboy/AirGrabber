@@ -24,6 +24,7 @@ from app.ui.dialog_kit import heading_row
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
 from app.ui.poster_card import POSTER_CARD_WIDTH, TrackState
+from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width
 from app.ui.widgets import FlexGrid, LoadingBar
@@ -181,6 +182,7 @@ class SearchSuggestions:
     def _ensure_popup(self) -> ctk.CTkToplevel:
         if self._popup is None or not self._popup.winfo_exists():
             popup = ctk.CTkToplevel(self._root, fg_color=theme.SURFACE)
+            set_window_icon(popup)  # else customtkinter reads its own icon file for it
             popup.withdraw()
             popup.overrideredirect(True)
             popup.attributes("-topmost", True)
@@ -345,7 +347,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         # No title bar: the query shows in the heading, clear of the close button.
         heading = heading_row(self, title, right_room=clearance(self.PAD))
         heading.pack(fill="x", padx=self.PAD, pady=(self.PAD, 0))
-        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.pack(fill="both", expand=True, padx=self.PAD, pady=(12, self.PAD))
         # One section per media type, each with its own loading bar until its search is done.
         self._shows_section = self._section(t("📺 TV Shows"))

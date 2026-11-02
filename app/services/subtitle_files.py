@@ -13,14 +13,19 @@ scan walks the folder (bounded depth and size; hidden, system and NAS index fold
 
 Samples are never a grab's video. A file changed in the last few minutes is still growing: it
 belongs to its grab but isn't handled yet.
+
+MediaForge moves finished videos out of that folder into the library. Its move records give
+`MovedVideo`s: the video where it is now, owned by a grab through the name it had in the folder
+(`moved_videos`, `look_beside`, `with_moved`), so subtitles fetched later land beside it there.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from app.models import DownloadRecord, MediaType
@@ -262,6 +267,110 @@ def grab_files(
             continue
         found.append(item)
     return GrabFiles(videos=tuple(found), incomplete=incomplete)
+
+
+# -- videos MediaForge moved away --------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MovedVideo:
+    """A video MediaForge moved out of the finished-downloads folder (from its move records).
+    `video.path` is where it is now; `video.parts` its old place below that folder, so a grab
+    owns it by the name it had there (grab_files' rules)."""
+
+    video: VideoFile
+    moved_at: datetime  # aware
+
+
+def _key(path: str) -> tuple[str, ...]:
+    """A path as Windows compares it, folder by folder (case, slashes)."""
+    return tuple(os.path.normcase(part).rstrip("\\/") for part in Path(path).parts)
+
+
+def parts_below(path: str, folder: str) -> tuple[str, ...] | None:
+    """`path`'s parts below `folder` (whole folder names); None when it isn't below it."""
+    mine, theirs = _key(path), _key(folder)
+    if len(mine) <= len(theirs) or mine[: len(theirs)] != theirs:
+        return None
+    return Path(path).parts[len(theirs) :]
+
+
+def same_path(a: str, b: str) -> bool:
+    return _key(a) == _key(b)
+
+
+def moved_videos(
+    folder: str, moves: Iterable[tuple[str, str, datetime]], known: Iterable[str] = ()
+) -> list[MovedVideo]:
+    """The videos moved out of `folder` (or a folder below it), from (source, target, moved
+    at) newest first: each target once (its newest move), samples and other files left out,
+    and so is a target among `known` (the scan's own videos: a library inside the folder)."""
+    seen = {_key(path) for path in known}
+    found: list[MovedVideo] = []
+    for source, target, moved_at in moves:
+        parts = parts_below(source, folder)
+        if parts is None or _key(target) in seen:
+            continue
+        seen.add(_key(target))
+        if os.path.splitext(target)[1].lower() not in VIDEO_EXTENSIONS or is_sample(parts):
+            continue
+        found.append(MovedVideo(VideoFile(path=target, parts=parts, size=0), moved_at))
+    return found
+
+
+def look_beside(moved: Sequence[MovedVideo]) -> tuple[list[MovedVideo], set[str]]:
+    """Of the moved videos, those still where they were moved to (with their sizes), and the
+    lowercase paths of the subtitle files beside them (each folder listed once). Blocking: run
+    it in a thread. A folder that can't be read counts as empty."""
+    listings: dict[tuple[str, ...], dict[str, int] | None] = {}
+    subtitles: set[str] = set()
+    there: list[MovedVideo] = []
+    for item in moved:
+        folder = os.path.dirname(item.video.path)
+        key = _key(folder)
+        if key not in listings:
+            listings[key] = _list_files(folder, subtitles)
+        sizes = listings[key]
+        name = os.path.basename(item.video.path).casefold()
+        if sizes is None or name not in sizes:
+            continue
+        video = VideoFile(path=item.video.path, parts=item.video.parts, size=sizes[name])
+        there.append(MovedVideo(video, item.moved_at))
+    return there, subtitles
+
+
+def _list_files(folder: str, subtitles: set[str]) -> dict[str, int] | None:
+    """The files in `folder` by lowercase name with their sizes (subtitle files added to
+    `subtitles` as lowercase paths); None when it can't be read."""
+    files: dict[str, int] = {}
+    try:
+        with os.scandir(folder) as listing:
+            for entry in listing:
+                try:
+                    if not entry.is_file():
+                        continue
+                    if os.path.splitext(entry.name)[1].lower() in SUBTITLE_EXTENSIONS:
+                        subtitles.add(os.path.join(folder, entry.name).lower())
+                    files[entry.name.casefold()] = entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return files
+
+
+def with_moved(scan: FolderScan, moved: Sequence[MovedVideo], since: datetime) -> FolderScan:
+    """The scan with the moved videos moved at or after `since` (for a grab: a video moved
+    before it was another download)."""
+    videos = [item.video for item in moved if item.moved_at >= since]
+    if not videos:
+        return scan
+    return FolderScan(
+        videos=[*scan.videos, *videos],
+        partial=scan.partial,
+        subtitles=scan.subtitles,
+        truncated=scan.truncated,
+    )
 
 
 # -- subtitle files ----------------------------------------------------------------------------

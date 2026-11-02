@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,8 @@ from typing import Any
 import httpx
 
 from app.database import MIGRATIONS, SUBTITLES_MIGRATION, Database
+from app.forge.models.media import MediaKind
+from app.forge.models.moves import MoveRecord
 from app.models import (
     DownloadRecord,
     MediaType,
@@ -28,11 +30,14 @@ from app.models import (
     Show,
     SubtitleAccount,
     SubtitleEvent,
+    SubtitleFetchOutcome,
     SubtitleProblem,
+    SubtitlesMode,
     SubtitlesSaved,
 )
 from app.models.opensubtitles import SubtitleCandidate, SubtitleLink
 from app.services import SettingsService
+from app.services.download_status import ForgeMoves
 from app.services.opensubtitles import (
     LOGIN_REJECTED_TEXT,
     LoginRejected,
@@ -48,6 +53,7 @@ from app.services.subtitles import (
     pick,
     quota_text,
 )
+from app.services.subtitle_files import parts_below
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 RESET = datetime(2026, 10, 20, 0, 0, tzinfo=UTC)
@@ -583,6 +589,165 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
             await services.settings.update(opensubtitles_own_key="MINE")
             self.assertTrue(services.subtitles.available)
         self.assertIn("opensubtitles_own_key", SETTINGS_FIELDS)  # a change wakes a run
+
+# -- videos MediaForge moved into the library (B-08) ------------------------------------------
+
+
+class FakeMoveRecords:
+    """ForgeMoveService's surface for the subtitles: move records and change listeners."""
+
+    def __init__(self) -> None:
+        self.moves: list[MoveRecord] = []  # newest first
+        self.listeners: list[Callable[[], None]] = []
+        self.broken = False
+
+    async def moves_from(self, folder: Path) -> list[MoveRecord]:
+        if self.broken:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        return [m for m in self.moves if parts_below(str(m.source), str(folder)) is not None]
+
+    def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
+    def emit(self) -> None:
+        for listener in list(self.listeners):
+            listener()
+
+
+class ForgeMoveTests(SubtitleRunTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.library = FakeMoveRecords()
+        self.forge_running = True
+        self.series = self.tmp / "Series" / "Severance (2022)" / "Season 02"
+
+        def lookup() -> ForgeMoves | None:
+            if not self.forge_running:
+                return None
+            return ForgeMoves(self.library, (), (str(self.tmp / "Series"),))
+
+        async def movie_imdb_id(movie_id: int) -> str | None:
+            return self.movie_ids.get(movie_id)
+
+        client: Any = self.client
+        self.service = SubtitleService(
+            self.db.subtitles,
+            client,
+            self.settings,
+            show=self.db.library.get_show,
+            movie_imdb_id=movie_imdb_id,
+            clock=lambda: self.now,
+            forge=lookup,
+        )
+        self.service.subscribe(self.events.append)
+
+    def move(self, source: Path, target: Path, *, hours_ago: float = 12) -> Path:
+        """Move a file the way Forge does, with its move record (local time, no zone)."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(target)
+        when = (self.now - timedelta(hours=hours_ago)).astimezone().replace(tzinfo=None)
+        self.library.moves.insert(
+            0,
+            MoveRecord(
+                source=source, target=target, moved_at=when, kind=MediaKind.EPISODE,
+                tmdb_id=95396, run_id=1,
+            ),
+        )  # fmt: skip
+        return target
+
+    async def test_subtitles_land_beside_the_video_in_the_library(self) -> None:
+        await self.grab()
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.1080p.mkv")
+        moved = self.move(video, self.series / "Severance (2022) - S02E04 - Woe's Hollow.mkv")
+        report = await self.service.run_once()
+        self.assertEqual(report.saved, ("Severance S02E04 (EN)", "Severance S02E04 (NL)"))
+        self.assertEqual(moved.with_name(f"{moved.stem}.en.srt").read_bytes(), b"subtitle 1")
+        self.assertEqual(moved.with_name(f"{moved.stem}.nl.srt").read_bytes(), b"subtitle 4")
+        self.assertEqual(list((self.downloads / FOLDER_NAME).iterdir()), [])
+        self.assertEqual(await self.service.show_languages(7), {(2, 4): frozenset({"en", "nl"})})
+        self.client.searches.clear()
+        await self.service.run_once()  # the grab is complete
+        self.assertEqual(self.client.searches, [])
+
+    async def test_a_subtitle_forge_moved_along_counts_as_there(self) -> None:
+        await self.grab()
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.mkv")
+        moved = self.move(video, self.series / "Severance (2022) - S02E04.mkv")
+        moved.with_name("Severance (2022) - S02E04.en.srt").write_bytes(b"moved along")
+        await self.service.run_once()
+        self.assertEqual([s["languages"] for s in self.client.searches], ["nl", "nl"])
+        self.assertEqual(
+            moved.with_name("Severance (2022) - S02E04.en.srt").read_bytes(), b"moved along"
+        )
+        self.assertEqual(await self.service.show_languages(7), {(2, 4): frozenset({"en", "nl"})})
+
+    async def test_a_video_moved_before_the_grab_is_another_download(self) -> None:
+        await self.grab(days_ago=1)
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.mkv")
+        self.move(video, self.series / "Severance (2022) - S02E04.mkv", hours_ago=48)
+        report = await self.service.run_once()
+        self.assertEqual((report.videos, self.client.searches), (0, []))
+
+    async def test_a_moved_video_that_is_gone_or_forge_off_is_not_looked_for(self) -> None:
+        await self.grab()
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.mkv")
+        moved = self.move(video, self.series / "Severance (2022) - S02E04.mkv")
+        self.forge_running = False
+        self.assertEqual((await self.service.run_once()).videos, 0)
+        self.forge_running = True
+        moved.unlink()
+        self.assertEqual((await self.service.run_once()).videos, 0)
+        self.assertEqual(self.client.searches, [])
+
+    async def test_unreadable_move_records_leave_the_run_as_without_forge(self) -> None:
+        await self.settings.update(subtitle_languages=("en",))
+        await self.grab()
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.mkv")
+        self.library.broken = True
+        report = await self.service.run_once()
+        self.assertEqual(report.saved, ("Severance S02E04 (EN)",))
+        self.assertTrue(video.with_name("severance.s02e04.en.srt").exists())
+
+    async def test_a_video_moved_during_the_download_gets_its_subtitle_at_the_new_place(
+        self,
+    ) -> None:
+        await self.settings.update(subtitle_languages=("en",))
+        await self.grab()
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.mkv")
+        target = self.series / "Severance (2022) - S02E04.mkv"
+        original_fetch = self.client.fetch
+
+        async def fetch(link: str) -> bytes:
+            self.move(video, target, hours_ago=0)
+            (self.downloads / FOLDER_NAME).rmdir()  # Forge cleared the download's folder
+            return await original_fetch(link)
+
+        self.client.fetch = fetch  # type: ignore[method-assign]
+        report = await self.service.run_once()
+        self.assertEqual((report.saved, report.problem), (("Severance S02E04 (EN)",), None))
+        self.assertEqual(target.with_name("Severance (2022) - S02E04.en.srt").read_bytes(), b"subtitle 1")
+        files = await self.db.subtitles.files([str(target)])
+        self.assertIsNotNone(files[(str(target), "en")].saved_at)
+
+    async def test_fetch_now_finds_a_moved_video(self) -> None:
+        await self.settings.update(subtitles_mode=SubtitlesMode.ASK)
+        await self.grab()
+        video = self.video(f"{FOLDER_NAME}/severance.s02e04.mkv")
+        moved = self.move(video, self.series / "Severance (2022) - S02E04.mkv")
+        fetch = await self.service.fetch_now(MediaType.TV, 7, 2, 4, ["en"])
+        self.assertEqual(fetch.outcome, SubtitleFetchOutcome.SAVED)
+        self.assertTrue(moved.with_name("Severance (2022) - S02E04.en.srt").exists())
+
+    async def test_new_move_records_wake_a_run(self) -> None:
+        await self.grab()
+        await self.service.run_once()  # Forge runs: its moves are listened to from now on
+        self.assertEqual(len(self.library.listeners), 1)
+        self.service._wake.clear()
+        self.library.emit()
+        self.assertTrue(self.service._wake.is_set())
+        await self.service.run_once()
+        self.assertEqual(len(self.library.listeners), 1)  # listened to once
 
 
 if __name__ == "__main__":

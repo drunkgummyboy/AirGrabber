@@ -14,6 +14,13 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.0.0": (
+        N_("MediaForge is now part of AirGrabber: open it with the 🔨 button, from the tray or from the Start menu."),
+        N_("Your old MediaForge's presets, folders and history come along the first time you open it."),
+        N_("Right-click files in Explorer to rename them, and let MediaForge rename AirGrabber's downloads by itself."),
+        N_("The Downloads page shows where a download ended up, and its subtitles move along with it."),
+        N_("Trailers now play in their own window for more videos, with a Fill button against black bars."),
+    ),
     "2.0.11": (
         N_("The Series / Movies switch is bigger and moved down, next to Calendar, Discover and Tracked."),
         N_("The top bar keeps just the logo and the search, so it looks calmer."),

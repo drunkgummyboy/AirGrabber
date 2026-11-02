@@ -1,14 +1,20 @@
 """Main window helpers: which settings changes reload the pages, the Prowlarr setup message and
-the notice after an update."""
+the notice after an update; MediaForge's wiring (app/ui/forge_link.py and the main window's
+side of it) with fakes for the Forge host, the mailbox and the window."""
 
 from __future__ import annotations
 
+import asyncio
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from app.forge.ui.settings_pages import SECTION_LIBRARY
 from app.models import AutoDownloaded, AutoError, AutoGaveUp, ProwlarrSetupResult, Settings
+from app.single_instance import ForgeRequest
+from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
 from app.ui.main_window import (
     AutoNotice,
     MainWindow,
@@ -267,6 +273,377 @@ class AutoEventRoutingTests(unittest.TestCase):
                 "Automatic download didn't work: Broken",
             ],
         )
+
+
+# -- MediaForge ----------------------------------------------------------------------------------
+
+FILE_A = "C:\\Media\\Alex.S01E01.mkv"
+FILE_B = "C:\\Media\\Alex.S01E02.mkv"
+
+
+async def _until(condition: Callable[[], bool], timeout_s: float = 2.0) -> None:
+    async with asyncio.timeout(timeout_s):
+        while not condition():
+            await asyncio.sleep(0.005)
+
+
+class FakeMailbox:
+    """InstanceLock's mailbox: the event (`signal`) and the folder (`waiting`)."""
+
+    def __init__(self, *waiting: ForgeRequest) -> None:
+        self.waiting = list(waiting)
+        self.signalled = False
+        self.takes = 0
+
+    def signal(self, *requests: ForgeRequest) -> None:
+        self.waiting += requests
+        self.signalled = True
+
+    def forge_requested(self) -> bool:
+        signalled, self.signalled = self.signalled, False
+        return signalled
+
+    def take_requests(self) -> list[ForgeRequest]:
+        self.takes += 1
+        taken, self.waiting = self.waiting, []
+        return taken
+
+
+class RequestPumpTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.handled: list[ForgeRequest] = []
+        self.now = 0.0
+
+    def pump(self, mailbox: FakeMailbox | None, start: ForgeRequest | None = None) -> RequestPump:
+        pump = RequestPump(
+            mailbox,
+            self.handled.append,
+            start_request=start,
+            poll_s=0.01,
+            folder_poll_s=3.0,
+            clock=lambda: self.now,
+        )
+        task = asyncio.create_task(pump.run())
+
+        async def stop() -> None:
+            pump.stop()
+            await asyncio.wait_for(task, 2.0)
+
+        self.addAsyncCleanup(stop)
+        return pump
+
+    async def test_the_start_request_first_then_what_waited(self) -> None:
+        start = ForgeRequest((FILE_A,), "Plex", True)
+        waiting = ForgeRequest((FILE_B,), "Plex", True)
+        mailbox = FakeMailbox(waiting)
+        self.pump(mailbox, start)
+        await _until(lambda: len(self.handled) == 2)
+        self.assertEqual(self.handled, [start, waiting])
+
+    async def test_a_copy_of_the_start_request_in_the_folder_is_dropped_once(self) -> None:
+        # Its sender couldn't delete its own file and started AirGrabber anyway.
+        start = ForgeRequest((FILE_A,), "Plex", True)
+        other = ForgeRequest((FILE_B,), "Plex", True)
+        mailbox = FakeMailbox(start, other, start)
+        self.pump(mailbox, start)
+        await _until(lambda: mailbox.takes >= 1)
+        self.assertEqual(self.handled, [start, other, start])  # a second copy is a new request
+        # Later, the same request again (a second right-click) counts.
+        mailbox.signal(start)
+        await _until(lambda: len(self.handled) == 4)
+        self.assertEqual(self.handled[-1], start)
+
+    async def test_the_event_wakes_it(self) -> None:
+        mailbox = FakeMailbox()
+        self.pump(mailbox)
+        await _until(lambda: mailbox.takes == 1)  # the look at once when it starts
+        await asyncio.sleep(0.05)
+        self.assertEqual(mailbox.takes, 1)  # no event, folder time not up: nothing read
+        request = ForgeRequest((FILE_A,), None, True)
+        mailbox.signal(request)
+        await _until(lambda: self.handled == [request])
+
+    async def test_the_folder_is_read_every_few_seconds_without_the_event(self) -> None:
+        mailbox = FakeMailbox()
+        self.pump(mailbox)
+        await _until(lambda: mailbox.takes == 1)
+        request = ForgeRequest((FILE_A,))
+        mailbox.waiting.append(request)  # an elevated sender couldn't set the event
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.handled, [])
+        self.now += 3.0
+        await _until(lambda: self.handled == [request])
+
+    async def test_nothing_is_taken_once_stopped(self) -> None:
+        mailbox = FakeMailbox()
+        pump = self.pump(mailbox)
+        await _until(lambda: mailbox.takes == 1)
+        pump.stop()
+        mailbox.signal(ForgeRequest((FILE_A,)))
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.handled, [])
+        self.assertEqual(len(mailbox.waiting), 1)  # still in the folder for the next start
+        self.assertTrue(pump.stopped)
+
+    async def test_a_stop_while_handing_on_leaves_the_rest(self) -> None:
+        first, second = ForgeRequest((FILE_A,)), ForgeRequest((FILE_B,))
+        mailbox = FakeMailbox(first, second)
+        pump: RequestPump | None = None
+
+        def handle(request: ForgeRequest) -> None:
+            self.handled.append(request)
+            assert pump is not None
+            pump.stop()  # e.g. the request led to quitting
+
+        pump = RequestPump(mailbox, handle, poll_s=0.01)
+        await asyncio.wait_for(pump.run(), 2.0)
+        self.assertEqual(self.handled, [first])
+
+    async def test_without_a_mailbox_only_the_start_request(self) -> None:
+        start = ForgeRequest()
+        await asyncio.wait_for(RequestPump(None, self.handled.append, start_request=start).run(), 2.0)
+        self.assertEqual(self.handled, [start])
+
+    async def test_a_failing_handler_is_logged_and_the_pump_goes_on(self) -> None:
+        mailbox = FakeMailbox(ForgeRequest((FILE_A,)))
+        calls: list[ForgeRequest] = []
+
+        def handle(request: ForgeRequest) -> None:
+            calls.append(request)
+            if len(calls) == 1:
+                raise ValueError("boom")
+
+        pump = RequestPump(mailbox, handle, poll_s=0.01)
+        task = asyncio.create_task(pump.run())
+        with self.assertLogs("app.ui.forge_link", "ERROR"):
+            await _until(lambda: len(calls) == 1)
+        mailbox.signal(ForgeRequest((FILE_B,)))
+        await _until(lambda: len(calls) == 2)
+        pump.stop()
+        await asyncio.wait_for(task, 2.0)
+
+
+class FakeHost:
+    """ForgeHost's side the gate uses: `may_close` says no while a run is going."""
+
+    def __init__(self, *, busy: bool = False, shutdown_s: float = 0.0) -> None:
+        self.busy = busy
+        self.shutdown_s = shutdown_s
+        self.retry: Callable[[], None] | None = None
+        self.asked = 0
+        self.events: list[str] = []
+
+    def may_close(self, retry: Callable[[], None]) -> bool:
+        self.asked += 1
+        if self.busy:
+            self.retry = retry
+            return False
+        return True
+
+    async def shutdown(self) -> None:
+        self.events.append("windows")
+        await asyncio.sleep(self.shutdown_s)
+
+    def run_ended(self) -> None:
+        self.busy = False
+        assert self.retry is not None
+        self.retry()
+
+
+class QuitGateTests(unittest.IsolatedAsyncioTestCase):
+    def gate(self, host: FakeHost, *, close_s: float = 0.0, timeout_s: float = 5.0) -> QuitGate:
+        self.host = host
+        self.finished = asyncio.Event()
+
+        async def close_forge() -> None:
+            host.events.append("forge")
+            await asyncio.sleep(close_s)
+            host.events.append("forge closed")
+
+        def finish() -> None:
+            host.events.append("finish")
+            self.finished.set()
+
+        return QuitGate(
+            host,
+            close_forge=close_forge,
+            finish=finish,
+            on_asked=lambda: host.events.append("asked"),
+            on_leaving=lambda: host.events.append("leaving"),
+            timeout_s=timeout_s,
+        )
+
+    async def test_quits_at_once_when_forge_may_close(self) -> None:
+        gate = self.gate(FakeHost())
+        gate.request()
+        self.assertTrue(gate.asked and gate.leaving)
+        await asyncio.wait_for(self.finished.wait(), 2.0)
+        self.assertEqual(
+            self.host.events, ["asked", "leaving", "windows", "forge", "forge closed", "finish"]
+        )
+        gate.request()  # twice: nothing more
+        await asyncio.sleep(0.01)
+        self.assertEqual(self.host.events.count("finish"), 1)
+
+    async def test_waits_for_a_forge_run_to_finish_its_file(self) -> None:
+        host = FakeHost(busy=True)
+        gate = self.gate(host)
+        gate.request()
+        gate.request()  # Quit clicked again meanwhile
+        await asyncio.sleep(0.02)
+        self.assertTrue(gate.asked)
+        self.assertFalse(gate.leaving)
+        self.assertEqual(host.events, ["asked"])  # the pump stopped; nothing closed yet
+        host.run_ended()  # the run stopped after its current file: it calls retry
+        await asyncio.wait_for(self.finished.wait(), 2.0)
+        self.assertEqual(host.events[-1], "finish")
+        self.assertEqual(host.events.count("asked"), 1)
+
+    async def test_a_slow_forge_cannot_hold_quitting_up(self) -> None:
+        gate = self.gate(FakeHost(shutdown_s=10.0), close_s=10.0, timeout_s=0.05)
+        with self.assertLogs("app.ui.forge_link", "WARNING") as logs:
+            gate.request()
+            await asyncio.wait_for(self.finished.wait(), 2.0)
+        self.assertEqual(self.host.events, ["asked", "leaving", "windows", "forge", "finish"])
+        self.assertEqual(len(logs.records), 2)
+
+    async def test_a_failing_shutdown_still_quits(self) -> None:
+        host = FakeHost()
+
+        async def broken() -> None:
+            raise RuntimeError("boom")
+
+        host.shutdown = broken  # type: ignore[method-assign]
+        gate = self.gate(host)
+        with self.assertLogs("app.ui.forge_link", "ERROR"):
+            gate.request()
+            await asyncio.wait_for(self.finished.wait(), 2.0)
+        self.assertIn("forge closed", host.events)
+
+
+class QuitsAfterForgeTests(unittest.TestCase):
+    """D5: a start for Forge leaves when its last Forge window closes, unless it stays in the
+    tray."""
+
+    def quits(self, **changes: bool) -> bool:
+        state = {
+            "started_for_forge": True,
+            "forge_windows_open": False,
+            "main_hidden": True,
+            "keep_in_tray": False,
+            "tray_running": True,
+        }
+        state.update(changes)
+        return quits_after_forge(**state)
+
+    def test_keep_in_tray_decides(self) -> None:
+        self.assertTrue(self.quits(keep_in_tray=False))
+        self.assertFalse(self.quits(keep_in_tray=True))
+        self.assertTrue(self.quits(keep_in_tray=True, tray_running=False))  # nothing to stay in
+
+    def test_only_a_start_for_forge_with_nothing_else_showing(self) -> None:
+        for name, value in (
+            ("started_for_forge", False),  # a plain start (or --tray)
+            ("forge_windows_open", True),  # another confirm window, or "Open in MediaForge"
+            ("main_hidden", False),  # the owner opened AirGrabber meanwhile
+        ):
+            with self.subTest(name):
+                self.assertFalse(self.quits(**{name: value}))
+
+
+class ForgeWiringTests(unittest.TestCase):
+    """The main window's side, on a stand-in window."""
+
+    def window(
+        self,
+        *,
+        started_for_forge: bool = True,
+        hidden: bool = True,
+        keep_in_tray: bool = False,
+        windows_open: bool = False,
+        asked: bool = False,
+    ) -> Any:
+        calls: list[Any] = []
+        settings = SimpleNamespace(current=Settings(keep_in_tray=keep_in_tray))
+        window: Any = SimpleNamespace(
+            calls=calls,
+            _started_for_forge=started_for_forge,
+            _services=SimpleNamespace(settings=settings),
+            _forge=SimpleNamespace(windows_open=windows_open),
+            _quit_gate=SimpleNamespace(asked=asked, request=lambda: calls.append("quit")),
+            _band=SimpleNamespace(set_forge_count=lambda count: calls.append(("badge", count))),
+            tray=SimpleNamespace(
+                running=True,
+                show_window=lambda: calls.append("show"),
+                set_forge_count=lambda count: calls.append(("count", count)),
+                notify=lambda title, text: calls.append(("notify", title, text)),
+            ),
+            state=lambda: "withdrawn" if hidden else "normal",
+            _open_settings=lambda section=None: calls.append(("settings", section)),
+            restart_requested=False,
+        )
+        window.quit_app = lambda: MainWindow.quit_app(window)
+        return window
+
+    def test_the_last_confirm_window_closing_quits_a_start_for_forge(self) -> None:
+        window = self.window()
+        MainWindow._on_forge_closed(window)
+        self.assertEqual(window.calls, ["quit"])
+
+    def test_it_stays_in_the_tray_with_keep_in_tray(self) -> None:
+        window = self.window(keep_in_tray=True)
+        MainWindow._on_forge_closed(window)
+        self.assertEqual(window.calls, [])
+
+    def test_other_starts_and_open_windows_stay(self) -> None:
+        for changes in (
+            {"started_for_forge": False},
+            {"hidden": False},
+            {"windows_open": True},
+            {"asked": True},  # quitting already
+        ):
+            with self.subTest(**changes):
+                window = self.window(**changes)
+                MainWindow._on_forge_closed(window)
+                self.assertEqual(window.calls, [])
+
+    def test_restart_waits_for_forge_too(self) -> None:
+        window = self.window()
+        MainWindow.restart(window)
+        self.assertTrue(window.restart_requested)
+        self.assertEqual(window.calls, ["quit"])  # through the gate, not destroy()
+
+    def test_more_in_settings_shows_the_main_window_first(self) -> None:
+        window = self.window(hidden=True)
+        MainWindow._open_forge_settings(window)
+        self.assertEqual(window.calls, ["show", ("settings", SECTION_LIBRARY)])
+        window = self.window(hidden=False)
+        MainWindow._open_forge_settings(window)
+        self.assertEqual(window.calls, [("settings", SECTION_LIBRARY)])
+
+    def test_the_renamer_reaches_the_tray(self) -> None:
+        window = self.window()
+        MainWindow._on_forge_needs(window, 3)
+        MainWindow._on_forge_notice(window, "MediaForge", "2 files need you")
+        self.assertEqual(
+            window.calls,
+            [("badge", 3), ("count", 3), ("notify", "MediaForge", "2 files need you")],
+        )
+
+    def test_an_open_settings_dialog_goes_to_the_section(self) -> None:
+        shown: list[Any] = []
+        dialog = SimpleNamespace(
+            winfo_exists=lambda: True,
+            show_section=lambda section: shown.append(section),
+            lift=lambda: shown.append("lift"),
+            focus_force=lambda: shown.append("focus"),
+        )
+        window: Any = SimpleNamespace(_settings_dialog=dialog)
+        MainWindow._open_settings(window, SECTION_LIBRARY)
+        self.assertEqual(shown, [SECTION_LIBRARY, "lift", "focus"])
+        shown.clear()
+        MainWindow._open_settings(window)  # the band's ⚙: the page it is on
+        self.assertEqual(shown, ["lift", "focus"])
 
 
 if __name__ == "__main__":

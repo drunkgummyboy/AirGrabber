@@ -246,7 +246,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
         version = await db.fetch_one("PRAGMA user_version")
         assert version is not None
-        self.assertEqual(version[0], 7)
+        self.assertEqual(version[0], len(MIGRATIONS))
         [kept] = await db.history.listed(5)
         assert kept.id is not None
         await db.history.clear([kept.id], NOW)

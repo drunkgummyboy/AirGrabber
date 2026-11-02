@@ -256,7 +256,8 @@ class RowActionsWidgetTests(WidgetTestCase):
         self.assertEqual(str(row.status.cget("text")), "✓ Downloaded")
         self.assertTrue(row.again.winfo_ismapped())
         row.status._label.event_generate("<Button-1>")  # a click on ✓ Downloaded itself
-        await self.settle()
+        # Open at once. Read before Tk runs again: the menu closes when it loses the keyboard
+        # focus, which another window can take from a test's window at any moment.
         menu = PopupMenu._open
         assert menu is not None
         menu.close()

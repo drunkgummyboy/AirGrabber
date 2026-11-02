@@ -483,19 +483,24 @@ class PopupMenu:
         items: Sequence[MenuItem | MenuEntry],
         *,
         point: tuple[int, int] | None = None,
+        look: theme.Look | None = None,
     ) -> None:
-        """`point`: open at the pointer (screen pixels) instead of under `anchor`."""
+        """`point`: open at the pointer (screen pixels) instead of under `anchor`. `look`: a
+        window's own accent tokens (the Forge window's copper) instead of AirGrabber's."""
+        edge = theme.EDGE if look is None else look.EDGE
+        surface = theme.SURFACE if look is None else look.SURFACE
+        menu_hover = theme.MENU_HOVER if look is None else look.MENU_HOVER
         if PopupMenu._open is not None:
             PopupMenu._open.close()
         PopupMenu._open = self
         self._closed = False
         entries = [_entry(item) for item in items]
         self.labels = tuple(entry.label for entry in entries)
-        top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.pick(theme.EDGE))
+        top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.pick(edge))
         top.withdraw()
         top.overrideredirect(True)
         top.attributes("-topmost", True)
-        box = ctk.CTkFrame(top, fg_color=theme.SURFACE, corner_radius=0)
+        box = ctk.CTkFrame(top, fg_color=surface, corner_radius=0)
         box.pack(fill="both", expand=True, padx=1, pady=1)
         self.buttons: list[ctk.CTkButton] = []
         for entry in entries:
@@ -509,7 +514,7 @@ class PopupMenu:
                 anchor="w",
                 font=theme.font(MENU_FONT_SIZE),
                 fg_color="transparent",
-                hover_color=theme.MENU_HOVER,
+                hover_color=menu_hover,
                 text_color=theme.TEXT,
                 text_color_disabled=theme.TEXT_FAINT,
                 state="normal" if action is not None else "disabled",
@@ -519,7 +524,7 @@ class PopupMenu:
             if entry.tip:
                 add_tooltip(button, entry.tip)
             self.buttons.append(button)
-        tk.Frame(box, height=4, bg=theme.pick(theme.SURFACE)).pack()  # bottom padding
+        tk.Frame(box, height=4, bg=theme.pick(surface)).pack()  # bottom padding
         # Closed once the repaint is over: destroying it now would upset CTk's list of widgets
         # being repainted.
         theme.on_mode_change(top, lambda: top.nametowidget(".").after_idle(self.close))
@@ -597,9 +602,11 @@ def popup_menu(
     items: Sequence[MenuItem | MenuEntry],
     *,
     point: tuple[int, int] | None = None,
+    look: theme.Look | None = None,
 ) -> PopupMenu | None:
     """A small menu of `items` ((label, action) or a MenuEntry, which may be greyed out with a
-    tip) under `anchor`, or at the pointer's `point`; none without items."""
+    tip) under `anchor`, or at the pointer's `point`; none without items. `look`: a window's
+    own accent tokens (the Forge window's copper) instead of AirGrabber's."""
     if not items:
         return None
-    return PopupMenu(anchor, items, point=point)
+    return PopupMenu(anchor, items, point=point, look=look)

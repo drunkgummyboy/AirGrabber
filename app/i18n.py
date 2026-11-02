@@ -2,8 +2,9 @@
 
 Every text the user sees is written in English in the code and goes through `t()` where it is
 shown: `t("Download")` is "Downloaden" while Dutch is on. The Dutch texts live in
-app/i18n_nl.py, keyed by the English text; tests/test_i18n.py checks that every `t()` /
-`tn()` / `N_()` text has its Dutch entry and that no entry is left over.
+app/i18n_nl.py (Forge's, app/forge, in app/i18n_nl_forge.py; the two are merged into one
+lookup), keyed by the English text; tests/test_i18n.py checks that every `t()` / `tn()` /
+`N_()` text has its Dutch entry in one of them and that no entry is left over or in both.
 
 - `t("Updated to v{version}", version=v)`: placeholders are filled in after the lookup (the
   English text is the key, so never an f-string inside `t()`).
@@ -61,8 +62,9 @@ def _dutch() -> Mapping[str, str]:
     global _catalog
     if _catalog is None:
         from app.i18n_nl import NL
+        from app.i18n_nl_forge import NL as NL_FORGE
 
-        _catalog = NL
+        _catalog = {**NL, **NL_FORGE}
     return _catalog
 
 
