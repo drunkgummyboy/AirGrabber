@@ -61,7 +61,7 @@ class PreviewFinder(Protocol):
     """`services.airdates` (AirdatesImportService), or a fake in screenshots and tests."""
 
     async def find(
-        self, export_text: str, progress: Progress | None = None
+        self, export_text: str, progress: Progress | None = None, *, profile_id: int
     ) -> AirdatesPreview: ...
 
 
@@ -69,7 +69,7 @@ class ShowImporter(Protocol):
     """`services.library` (LibraryService), or a fake in screenshots and tests."""
 
     async def import_shows(
-        self, entries: Sequence[str], progress: Progress | None = None
+        self, entries: Sequence[str], progress: Progress | None = None, *, profile_id: int
     ) -> ImportResult: ...
 
 
@@ -199,7 +199,8 @@ class AirdatesImportPanel(ctk.CTkFrame):
     """Paste stage (three numbered steps, the paste box, Find my shows) and, once the preview
     arrives, the review stage (the matches to tick, Back, Import N shows) in the same place.
 
-    `on_done(count)` follows a finished import with the number of shows added.
+    `on_done(count)` follows a finished import with the number of shows added. The shows are
+    matched against, and imported into, the library of `profile_id` (a person).
     """
 
     def __init__(
@@ -208,6 +209,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
         *,
         airdates: PreviewFinder,
         library: ShowImporter,
+        profile_id: int,
         on_done: Callable[[int], None] | None = None,
         width: int = CONTENT_WIDTH,
         list_height: int = 170,
@@ -215,6 +217,7 @@ class AirdatesImportPanel(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self._airdates = airdates
         self._library = library
+        self._profile_id = profile_id
         self._on_done = on_done
         self._width = width
         self._list_height = list_height
@@ -343,7 +346,9 @@ class AirdatesImportPanel(ctk.CTkFrame):
             text=looking_up_text(0, 2 * count), text_color=theme.TEXT_MUTED
         )
         try:
-            preview = await self._airdates.find(text, self._find_progress)
+            preview = await self._airdates.find(
+                text, self._find_progress, profile_id=self._profile_id
+            )
         except AirdatesError as exc:
             self._paste_failed(str(exc))
             return
@@ -597,7 +602,9 @@ class AirdatesImportPanel(ctk.CTkFrame):
         )
         try:
             result = await self._library.import_shows(
-                [str(show_id) for show_id in ids], self._import_progress
+                [str(show_id) for show_id in ids],
+                self._import_progress,
+                profile_id=self._profile_id,
             )
         except BaseException:
             if self.winfo_exists():

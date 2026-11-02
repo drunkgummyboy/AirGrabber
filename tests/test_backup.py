@@ -40,6 +40,7 @@ from app.services.backup import (
     summarize,
     valid_settings,
 )
+from app.services.profiles import ProfileService
 from app.services.watchlist import WatchlistService
 
 NOW = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
@@ -135,9 +136,10 @@ class BackupTestCase(unittest.IsolatedAsyncioTestCase):
         if settings:
             await service.update(**settings)
         watchlist = WatchlistService(db.watchlist, mock.MagicMock(), mock.MagicMock())
-        await watchlist.load()
+        profiles = ProfileService(db.profiles, service, watchlist)
+        await profiles.load()
         backup = BackupService(
-            BackupRepository(db), service, watchlist, app_version="2.0.9", clock=lambda: NOW
+            BackupRepository(db), service, profiles, app_version="2.0.9", clock=lambda: NOW
         )
         loads: list[int] = []
         backup.subscribe(lambda: loads.append(1))
@@ -150,14 +152,14 @@ class BackupTestCase(unittest.IsolatedAsyncioTestCase):
         place = await self.place("a", **SETTINGS_A)
         db = place.db
         await db.library.save_show(show(1, "Fargo"), episodes(1, 6))
-        await db.library.track(1)
-        await db.library.set_auto_download(1, True, since=AUTO_SINCE)
+        await db.library.track(1, profile_id=1)
+        await db.library.set_auto_download(1, True, since=AUTO_SINCE, profile_id=1)
         await db.library.mark_have([101, 102], NOW)
         await db.library.save_show(show(2, "Severance"), episodes(2, 3))
-        await db.library.track(2)
+        await db.library.track(2, profile_id=1)
         await db.library.save_show(show(9, "Not followed"), episodes(9, 2))  # schedule cache
-        await db.watchlist.add(movie(10, "Dune"), auto_download=True, when=NOW)
-        await db.watchlist.add(movie(11, "Arrival"), auto_download=False, when=NOW)
+        await db.watchlist.add(movie(10, "Dune"), auto_download=True, when=NOW, profile_id=1)
+        await db.watchlist.add(movie(11, "Arrival"), auto_download=False, when=NOW, profile_id=1)
         await db.history.add(
             DownloadRecord(
                 media_type=MediaType.TV, media_id=1, season=1, episode=3,
@@ -189,10 +191,10 @@ class BackupTestCase(unittest.IsolatedAsyncioTestCase):
         return place
 
     async def tracked(self, place: Place) -> dict[int, bool]:
-        return {entry.show.id: entry.auto_download for entry in await place.db.library.tracked()}
+        return {entry.show.id: entry.auto_download for entry in await place.db.library.tracked(profile_id=1)}
 
     async def films(self, place: Place) -> dict[int, bool]:
-        return {entry.movie_id: entry.auto_download for entry in await place.db.watchlist.entries()}
+        return {entry.movie_id: entry.auto_download for entry in await place.db.watchlist.entries(profile_id=1)}
 
 
 # -- the one list of secrets -------------------------------------------------------------------
@@ -470,7 +472,7 @@ class RoundTripTests(BackupTestCase):
         self.assertEqual(await BackupRepository(b.db).read(), await BackupRepository(a.db).read())
         self.assertEqual(await self.tracked(b), {1: True, 2: False})
         self.assertEqual(await b.db.library.have_ids(1), {101, 102})
-        self.assertTrue(all(entry.synced_at is None for entry in await b.db.library.tracked()))
+        self.assertTrue(all(entry.synced_at is None for entry in await b.db.library.tracked(profile_id=1)))
         self.assertIsNone(await b.db.library.get_show(9))  # the cache stayed behind
         self.assertEqual(await self.films(b), {10: True, 11: False})
         self.assertTrue(await b.db.history.has_episode(1, 1, 3))
@@ -539,14 +541,14 @@ class ModeTests(BackupTestCase):
         b = await self.place("b", language="en", quality_tv="1080p")
         db = b.db
         await db.library.save_show(show(1, "Fargo"), episodes(1, 7))
-        await db.library.track(1)
+        await db.library.track(1, profile_id=1)
         await db.library.mark_synced(1)
         await db.library.save_show(show(3, "Mythic Quest"), episodes(3, 2))
-        await db.library.track(3, auto_download=True)
+        await db.library.track(3, auto_download=True, profile_id=1)
         await db.library.mark_have([301], NOW)
-        await db.watchlist.add(movie(11, "Arrival"), auto_download=True, when=NOW)
-        await db.watchlist.add(movie(12, "Heat"), auto_download=True, when=NOW)
-        await db.watchlist.add(movie(20, "Past Lives"), auto_download=False, when=NOW)
+        await db.watchlist.add(movie(11, "Arrival"), auto_download=True, when=NOW, profile_id=1)
+        await db.watchlist.add(movie(12, "Heat"), auto_download=True, when=NOW, profile_id=1)
+        await db.watchlist.add(movie(20, "Past Lives"), auto_download=False, when=NOW, profile_id=1)
         await b.watchlist.load()
         return b
 
@@ -576,7 +578,7 @@ class ModeTests(BackupTestCase):
         result = await b.backup.load(await b.backup.open(self.file), LoadMode.REPLACE)
         self.assertEqual(await self.tracked(b), {1: True, 2: False})
         self.assertEqual(await b.db.library.have_ids(1), {101, 102})
-        entries = {entry.show.id: entry for entry in await b.db.library.tracked()}
+        entries = {entry.show.id: entry for entry in await b.db.library.tracked(profile_id=1)}
         self.assertIsNotNone(entries[1].synced_at)  # followed here already: its sync state stays
         self.assertEqual(len(await b.db.library.episodes(1)), 7)  # and its fresher episodes
         self.assertEqual(await self.films(b), {10: True, 11: False})
@@ -686,7 +688,7 @@ class BadFileTests(BackupTestCase):
     async def test_nothing_changes(self) -> None:
         b = await self.place("b", language="en")
         await b.db.library.save_show(show(3, "Mythic Quest"), episodes(3, 2))
-        await b.db.library.track(3)
+        await b.db.library.track(3, profile_id=1)
         cases = {
             "notes.txt": (b"just some notes", BackupProblem.NOT_A_BACKUP),
             "other.json": (b'{"format": "something-else", "version": 1}', BackupProblem.NOT_A_BACKUP),
@@ -713,7 +715,7 @@ class BadFileTests(BackupTestCase):
     ) -> None:
         b = await self.place("b", setup_done=True)
         await b.db.library.save_show(show(3, "Mythic Quest"), episodes(3, 2))
-        await b.db.library.track(3)
+        await b.db.library.track(3, profile_id=1)
         empty = BackupFile(format=FORMAT_NAME, version=FORMAT_VERSION, created=NOW)
         result = await b.backup.load(empty, LoadMode.REPLACE)
         self.assertEqual(await self.tracked(b), {})

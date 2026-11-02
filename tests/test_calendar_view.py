@@ -72,12 +72,16 @@ class FakeLibrary:
         self.missing_calls: list[tuple[date, date]] = []
         self.have_calls: list[tuple[date, date]] = []
         self.suggestion_calls: list[tuple[date, date, int]] = []
+        self.people: list[int] = []  # the person each calendar was asked for
 
-    async def calendar(self, start: date, end: date) -> list[CalendarEntry]:
+    async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
         self.calendar_calls.append((start, end))
+        self.people.append(profile_id)
         return _within(self._tracked, start, end)
 
-    async def missing_between(self, start: date, end: date) -> frozenset[int]:
+    async def missing_between(
+        self, start: date, end: date, *, profile_id: int
+    ) -> frozenset[int]:
         self.missing_calls.append((start, end))
         return self._missing
 
@@ -85,10 +89,12 @@ class FakeLibrary:
         self.have_calls.append((start, end))
         return self._had
 
-    async def new_between(self, start: date, end: date) -> frozenset[int]:
+    async def new_between(self, start: date, end: date, *, profile_id: int) -> frozenset[int]:
         return self._new
 
-    async def suggestions(self, start: date, end: date, *, per_day: int) -> list[CalendarEntry]:
+    async def suggestions(
+        self, start: date, end: date, *, profile_id: int, per_day: int
+    ) -> list[CalendarEntry]:
         self.suggestion_calls.append((start, end, per_day))
         return _within(self._suggestions, start, end)
 
@@ -336,9 +342,46 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(suggestion, SuggestionCard)
         self.assertEqual(str(suggestion.name_label.cget("cursor")), "hand2")
         self.assertNotEqual(suggestion.name_label._label.bind("<Button-1>"), "")
+        # The hand on all of the clickable name: its frame and the canvas around the text too.
+        self.assertEqual(str(tk.Frame.cget(suggestion.name_label, "cursor")), "hand2")
+        self.assertNotEqual(suggestion.name_label._canvas.bind("<Button-1>"), "")
+        self.assertEqual(str(suggestion.name_label._canvas.cget("cursor")), "hand2")
+        self.assertEqual(str(suggestion._track_button.cget("cursor")), "hand2")
         assert suggestion.open_show is not None
         suggestion.open_show()  # as a click on the name does
         self.assertEqual([show.name for show in opened], ["Show 10"])
+
+    async def test_the_whole_suggestion_card_opens_the_show_but_track(self) -> None:
+        opened: list[Show] = []
+        view = self.view(self.library(), FakeSettings(Settings(weeks_to_show=1)), opened.append)
+        await view.load()
+        suggestion = self.card_widgets(view, TODAY)[-1]
+        self.assertIsInstance(suggestion, SuggestionCard)
+        track = suggestion._track_button
+        own = {str(w) for w in (track, *_descendants(track))}
+        rest = [w for w in (suggestion, *_descendants(suggestion)) if str(w) not in own]
+        self.assertGreater(len(rest), 5)  # the card, its frames, texts and their canvases
+        for widget in rest:
+            with self.subTest(widget=str(widget)):
+                self.assertEqual(str(tk.Misc.cget(widget, "cursor")), "hand2")
+        # One click, one window: the background, the code, the name's text.
+        code = next(
+            w for w in _descendants(suggestion)
+            if isinstance(w, ctk.CTkLabel) and w is not suggestion.name_label
+            and str(w.cget("text")).startswith("S")
+            and str(w) not in own
+        )
+        for widget in (suggestion, code._label, suggestion.name_label._label):
+            opened.clear()
+            widget.event_generate("<Button-1>", x=1, y=1)
+            self.assertEqual([show.name for show in opened], ["Show 10"], str(widget))
+        # "+ Track" keeps its own action: its parts don't open the show.
+        for widget in (track, *_descendants(track)):
+            self.assertNotIn("open_show", str(tk.Misc.bind(widget, "<Button-1>")))
+        opened.clear()
+        for widget in _descendants(track):
+            widget.event_generate("<Button-1>", x=1, y=1)
+        self.assertEqual(opened, [])
 
     async def test_switched_off_suggestions_are_not_fetched(self) -> None:
         library = self.library()

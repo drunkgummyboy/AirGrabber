@@ -36,7 +36,7 @@ from app.forge.core import fsops
 from app.forge.core.executor import RunResult
 from app.forge.core.matcher import Resolution
 from app.forge.core.queue import ItemStatus, QueueItem
-from app.forge.models.media import MatchState, MediaKind, ResolvedMedia
+from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.services import ForgeServices
 from app.forge.ui import file_drops
@@ -164,6 +164,15 @@ class QueueCase(ForgeAsyncTestCase):
     def rows(self, kind: str) -> list[Row]:
         return [r for r in self.view.list.rows if r.kind == kind]
 
+    def select_band(self, title: str) -> None:
+        """Click a band: its first line is selected and the card shows that band."""
+        band = self.band(title)
+        first = next(r.key for r in self.rows("item") if r.band == band.key)
+        self.view.list.select(first)
+
+    def item(self, name: str) -> QueueItem:
+        return next(i for i in self.services.queue.items if i.path.name.startswith(name))
+
     def bands(self) -> list[str]:
         return [r.title for r in self.rows("band")]
 
@@ -228,7 +237,9 @@ class QueueTest(QueueCase):
         self.assertEqual(self.view.forge_button.cget("text"), "⚒ Forge 5 files")
         self.assertEqual(self.view.filter_buttons["all"].cget("text"), "All 5")
         self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 5")
-        self.assertEqual(self.view.kind_switch.cget("values"), ["Shows · 5", "Films"])
+        # The first band is selected; the card names it (there is no Shows | Films switch).
+        self.assertEqual(self.view.for_label.cget("text"), "For: Show Name · 5 episodes")
+        self.assertFalse(hasattr(self.view, "kind_switch"))
 
     async def test_shows_and_films_are_one_list(self) -> None:
         make_files(
@@ -250,11 +261,11 @@ class QueueTest(QueueCase):
         after = rows[rows.index(ted) + 1 : rows.index(ted) + 3]
         self.assertEqual([r.code for r in after], ["S04E03", "S04E05"])
         self.assertEqual(after[0].faint, "Ted.Lasso.S04E03.1080p.WEB.mkv")
-        self.assertEqual(ted.actions, (("rename", "Rename"),))
-        self.assertEqual(self.view.kind_switch.cget("values"), ["Shows · 3", "Films · 1"])
-        self.view.set_side("movies")  # the card only: the list stays as it is
+        self.assertEqual(ted.actions, (("ignore", "Ignore"), ("rename", "Rename")))
+        self.select_band("Dune")  # the card only: the list stays as it is
         await pump(self.root, 0.1)
         self.assertEqual(self.bands(), ["Dune", "Severance", "Ted Lasso"])
+        self.assertEqual(self.view.for_label.cget("text"), "For: Dune (2021)")
 
     async def test_the_filter_shows_needs_you_and_ready(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Heat.1995.mkv"])
@@ -311,7 +322,7 @@ class QueueTest(QueueCase):
     async def test_custom_rule_renames_the_titles_of_its_kind(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Ted.Lasso.S04E03.mkv"])
         await self.add_and_settle(self.tmp / "in")
-        self.view.set_side("movies")
+        self.select_band("Dune")
         self.view._custom_clicked()  # Custom: the rule's box can be typed in
         self.assertEqual(self.view.choice.custom, self.view.choice.preset.format)  # type: ignore[union-attr]
         self.assertEqual(str(self.view.rule_text.cget("state")), "normal")
@@ -324,7 +335,7 @@ class QueueTest(QueueCase):
         self.assertEqual(dune.title, "Dune [Dune (2021)].mkv")
         self.assertEqual(self.view.example, "→ Dune [Dune (2021)].mkv")
         ted = next(r for r in self.rows("item") if r.code)  # shows keep their own rule
-        self.assertEqual(self.view.choices["series"].custom, None)
+        self.assertEqual(self.view.choice_for(self.item("Ted")).custom, None)
         self.assertTrue(ted.title)
         codes = self.view.rule_text._textbox.tag_ranges("code")
         self.assertEqual(len(codes), 4)  # {t} and {ny} in copper
@@ -336,8 +347,7 @@ class QueueTest(QueueCase):
     async def test_unknown_code_flagged(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
         await self.add_and_settle(self.tmp / "in")
-        self.view.set_side("movies")
-        self.view.set_custom("{ny} {oops}")
+        self.view.set_custom("{ny} {oops}")  # the only band is selected
         await pump(self.root, 0.3)
         self.assertIn("not a known code: {oops}", self.view.example)
 
@@ -345,7 +355,8 @@ class QueueTest(QueueCase):
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Ted.Lasso.S04E03.mkv"])
         await self.add_and_settle(self.tmp / "in")
         await self.choose("Movie (Flat)", "Series (Flat)")
-        self.assertEqual(self.view.choices["movies"].preset, self.preset("Movie (Flat)"))
+        dune = self.view.choice_for(self.item("Dune"))
+        self.assertEqual(dune.preset, self.preset("Movie (Flat)"))
         await self.view.forge()
         await pump(self.root, 0.2)
         self.assertEqual(
@@ -465,8 +476,7 @@ class QueueTest(QueueCase):
         make_files(self.tmp / "in", ["A.2001.mkv", "B.2002.mkv", "C.2003.mkv"])
         await self.add_and_settle(self.tmp / "in")
         keys = self.view.list.item_keys()
-        self.view.move_selection(1)
-        self.assertEqual(self.view.list.selected, keys[0])
+        self.assertEqual(self.view.list.selected, keys[0])  # the first band is selected already
         self.view.move_selection(1)
         self.assertEqual(self.view.list.selected, keys[1])
         self.view.move_selection(-1)
@@ -474,15 +484,13 @@ class QueueTest(QueueCase):
         self.view.move_selection(-1)
         self.assertEqual(self.view.list.selected, keys[0])  # stays at the top
 
-    async def test_the_example_follows_the_selected_file_of_the_cards_kind(self) -> None:
+    async def test_the_example_follows_the_selected_file(self) -> None:
         make_files(self.tmp / "in", ["A.2001.mkv", "B.2002.mkv", "Show.S01E02.mkv"])
         await self.add_and_settle(self.tmp / "in")
         await self.choose("Movie (Flat)", "Series (Flat)")
-        self.view.set_side("movies")
-        b = next(i for i in self.services.queue.items if i.path.name.startswith("B"))
-        self.view.list.select(b.id)
+        self.view.list.select(self.item("B").id)
         self.assertEqual(self.view.example, "→ B (2002).mkv")
-        self.view.set_side("series")  # the selection is a film: the first show instead
+        self.select_band("Show")
         self.assertEqual(self.view.example, "→ Show - S01E02 - Episode 02.mkv")
 
     async def test_responsive_with_1000_items(self) -> None:
@@ -655,7 +663,7 @@ class QueueTest(QueueCase):
         self.view.refresh()
         [band] = self.rows("band")
         self.assertEqual((band.title, band.state), ("Shrinking", "needs"))
-        self.assertEqual(band.actions[0], ("choose", "Choose…"))
+        self.assertEqual(band.actions[:2], (("ignore", "Ignore"), ("choose", "Choose…")))
         self.view.list.on_action(band.key, "choose")
         await pump(self.root, 0.1)
         self.assertEqual(asked, [item.id])
@@ -677,7 +685,7 @@ class QueueTest(QueueCase):
             view.save_as_button,
             *view.option_buttons.values(),
         ):
-            if widget is view.option_buttons["Season posters"] and view.side == "movies":
+            if widget is view.option_buttons["Season posters"] and view.kind == "movies":
                 continue
             self.assertTrue(widget.winfo_ismapped(), widget)
             self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
@@ -685,7 +693,7 @@ class QueueTest(QueueCase):
     async def test_the_option_line_wraps_rather_than_overflow(self) -> None:
         self.root.geometry("1000x640")
         await pump(self.root, 0.2)
-        self.view.option_buttons["Trailer"].invoke()  # "Changed for this batch" too
+        self.view.option_buttons["Trailer"].invoke()  # "Changed for this item" too
         await pump(self.root, 0.3)
         line = self.view.option_line
         right = line.winfo_rootx() + line.winfo_width()
@@ -783,7 +791,6 @@ class QueueTest(QueueCase):
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
         await self.add_and_settle(self.tmp / "in")
         await self.choose("Movie (Folder)")  # posters and a trailer
-        self.view.set_side("movies")
         self.assertTrue(self.view.option_buttons["Trailer"].value)
         asked: list[str] = []
 
@@ -797,10 +804,12 @@ class QueueTest(QueueCase):
         self.assertTrue((self.tmp / "in" / "Dune (2021)" / "Dune (2021).mkv").exists())
         self.assertEqual(self.names(self.tmp / "in" / "Dune (2021)"), ["Dune (2021).mkv"])
 
-    async def test_option_buttons_follow_the_cards_kind_and_their_clicks(self) -> None:
+    async def test_option_buttons_follow_the_selected_band_and_their_clicks(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv", "Show.S01E02.mkv"])
+        await self.add_and_settle(self.tmp / "in")
         await self.choose("Movie (Folder)", "Series (Folder)")
         view = self.view
-        view.set_side("movies")
+        self.select_band("Dune")
         await pump(self.root, 0.1)
         on = {name for name, b in view.option_buttons.items() if b.value}
         self.assertEqual(on, {"Poster", "Trailer"})
@@ -815,11 +824,11 @@ class QueueTest(QueueCase):
             },
         )
         self.assertFalse(view.changed_note.winfo_ismapped())
-        view.option_buttons["Trailer"].invoke()  # off for this batch
+        view.option_buttons["Trailer"].invoke()  # off for this item
         await pump(self.root, 0.1)
-        self.assertFalse(view.choices["movies"].options.trailer)
-        self.assertTrue(view.changed_note.winfo_ismapped())  # "Changed for this batch"
-        view.set_side("series")
+        self.assertFalse(view.choice_for(self.item("Dune")).options.trailer)
+        self.assertTrue(view.changed_note.winfo_ismapped())  # "Changed for this item"
+        self.select_band("Show")
         await pump(self.root, 0.1)
         on = {name for name, b in view.option_buttons.items() if b.value}
         self.assertEqual(on, {"Poster", "Season posters"})
@@ -827,10 +836,9 @@ class QueueTest(QueueCase):
         self.assertFalse(view.changed_note.winfo_ismapped())  # the shows' preset is unchanged
         self.assertEqual(view.fmt, "{ny}/{ny} - Season {s}/{ny} - {s00e00} - {en}")
 
-    async def test_save_to_preset_stores_the_batchs_changes(self) -> None:
+    async def test_save_to_preset_stores_the_items_changes(self) -> None:
         await self.choose("Movie (Folder)")
-        view = self.view
-        view.set_side("movies")
+        view = self.view  # an empty queue: the card is the films' default
         view.option_buttons["Trailer"].invoke()
         view.set_custom("{t}")
         await view.save_to_preset()
@@ -844,8 +852,7 @@ class QueueTest(QueueCase):
         self.assertEqual(self.services.activity.lines()[-1].text, "Saved to the preset Movie (Folder)")
 
     async def test_save_as_preset_makes_one_for_the_cards_kind(self) -> None:
-        view = self.view
-        view.set_side("movies")
+        view = self.view  # an empty queue: the films' default
         view.set_custom("{t} ({y})")
         asked: list[str] = []
 
@@ -860,8 +867,7 @@ class QueueTest(QueueCase):
         self.assertEqual((stored.type.value, stored.format), ("movie", "{t} ({y})"))
         self.assertEqual(view.choice.preset, stored)
         self.assertEqual(view.preset_menu.get(), "Films, short")
-        view.set_side("series")
-        self.assertNotIn("Films, short", view.preset_menu.cget("values"))  # a film preset
+        self.assertNotIn("Films, short", [p.name for p in view.presets_for("series")])
         await pump_until(
             self.root, lambda: self.services.settings.current.last_film_preset == "Films, short"
         )
@@ -896,23 +902,31 @@ class QueueTest(QueueCase):
             == ("Series (Flat)", "Movie (Flat)"),
         )
         second = await self.make_view()
-        self.assertEqual(second.preset_menu.get(), "Series (Flat)")
-        self.assertEqual(second.fmt, "{ny} - {s00e00} - {en}")
-        self.assertEqual(second.choices["movies"].preset, self.preset("Movie (Flat)"))
+        self.assertEqual(second.preset_menu.get(), "Movie (Flat)")  # "For: new files"
+        self.assertEqual(second.for_label.cget("text"), "For: new files")
+        self.assertEqual(second._kind_default("series").preset, self.preset("Series (Flat)"))
+        make_files(self.tmp / "in", ["Show.S01E02.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        second.refresh()
+        self.assertEqual(second.fmt, "{ny} - {s00e00} - {en}")  # a new show starts with it
 
-    async def test_each_side_offers_the_presets_for_its_kind(self) -> None:
+    async def test_the_menu_offers_the_presets_for_the_bands_kind(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv", "Show.S01E02.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        self.select_band("Show")
         self.assertEqual(
             self.view.preset_menu.cget("values"), ["Auto", "Series (Folder)", "Series (Flat)"]
         )
-        self.view.set_side("movies")
+        self.select_band("Dune")
         self.assertEqual(
             self.view.preset_menu.cget("values"), ["Auto", "Movie (Folder)", "Movie (Flat)"]
         )
         self.view._preset_chosen("Movie (Flat)")
-        self.assertEqual(self.view.choices["movies"].preset, self.preset("Movie (Flat)"))
-        self.view.select_preset("Auto")  # a right-click request's: both kinds
-        self.assertEqual(self.view.choices["series"].preset, self.preset("Auto"))
-        self.assertEqual(self.view.choices["movies"].preset, self.preset("Auto"))
+        dune = self.view.choice_for(self.item("Dune"))
+        self.assertEqual(dune.preset, self.preset("Movie (Flat)"))
+        self.view.select_preset("Auto")  # a right-click request's without files: every band
+        self.assertEqual(self.view.choice_for(self.item("Show")).preset, self.preset("Auto"))
+        self.assertEqual(self.view.choice_for(self.item("Dune")).preset, self.preset("Auto"))
 
     async def test_scan_subfolders_is_in_the_folder_menu_saved_and_scans_again(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
@@ -1178,7 +1192,7 @@ class LookAndLanguageTest(QueueCase):
             [b.cget("text") for b in view.filter_buttons.values()],
             ["Alles 2", "Wacht op jou 0", "Klaar 2"],
         )
-        self.assertEqual(view.kind_switch.cget("values"), ["Series", "Films · 2"])
+        self.assertEqual(view.for_label.cget("text"), "Voor: Dune (2021)")
         self.assertEqual(
             summary_text(RunResult(renamed=2, posters=1, cancelled=True)),
             "Klaar: 2 hernoemd, 0 al goed, 0 mislukt · 1 poster · geannuleerd",
@@ -1276,7 +1290,8 @@ class SmoothRefreshTest(QueueCase):
         watched = (
             self.view.forge_button,
             self.view.example_label,
-            self.view.kind_switch,
+            self.view.for_label,
+            self.view.preset_menu,
             *self.view.filter_buttons.values(),
         )
         with contextlib.ExitStack() as stack:
@@ -1316,3 +1331,304 @@ class SmoothRefreshTest(QueueCase):
                 self.assertEqual(len([r for r in built.rows if r.kind == "item"]), 1000)
                 self.assertLess(done - start, 0.1)
                 self.assertLess(shown - done, 0.1)
+
+
+class IgnoreTest(QueueCase):
+    """The band's Ignore: this file, or the download's whole folder right under the watched
+    folder; the rows leave the queue and Auto-rename leaves them alone from then on."""
+
+    async def course(self) -> tuple[Path, list[int], list[int]]:
+        downloads, _, _ = await self.library()
+        lessons = ["Python Course/01 Getting Started.mp4", "Python Course/Part 2/02 Loops.mp4"]
+        for name in lessons:
+            (downloads / name).parent.mkdir(parents=True, exist_ok=True)
+        course = await self.watched(downloads, *lessons)
+        clip = await self.watched(downloads, "Holiday.Clip.2023.mp4")
+        return downloads, course, clip
+
+    def band_of(self, item_id: int) -> int:
+        return next(key for key, ids in self.view._bands.items() if item_id in ids)
+
+    async def test_every_band_not_done_has_ignore(self) -> None:
+        _downloads, course, clip = await self.course()
+        for item_id in (*course, *clip):
+            self.unsure(cast(QueueItem, self.services.queue.get(item_id)))
+        self.view.refresh()
+        await pump(self.root, 0.1)
+        for band in self.rows("band"):
+            with self.subTest(band=band.title):
+                self.assertEqual(band.actions[0], ("ignore", "Ignore"))
+
+    async def test_a_file_directly_in_the_watched_folder_has_no_folder_choice(self) -> None:
+        _downloads, _course, [clip] = await self.course()
+        labels = [label for label, _ in self.view.ignore_choices([clip])]
+        self.assertEqual(labels, ["Ignore this file"])
+
+    async def test_ignore_this_file(self) -> None:
+        downloads, course, [clip] = await self.course()
+        self.view.list.on_action(self.band_of(clip), "ignore")  # the menu at the pointer
+        await pump(self.root, 0.05)
+        self.assertIsNotNone(PopupMenu._open)
+        assert PopupMenu._open is not None
+        self.assertEqual(PopupMenu._open.labels, ("Ignore this file",))
+        PopupMenu._open.close()
+        [(_label, ignore)] = self.view.ignore_choices([clip])
+        ignore()
+        await pump_until(self.root, lambda: self.services.queue.get(clip) is None)
+        [entry] = self.services.ignored.entries
+        self.assertEqual((entry.path, entry.folder), (downloads / "Holiday.Clip.2023.mp4", False))
+        self.assertTrue(all(self.services.queue.get(i) is not None for i in course))
+        lines = [line.text for line in self.services.activity.lines()]
+        self.assertIn("Ignored: Holiday.Clip.2023.mp4. MediaForge won't pick it up again.", lines)
+
+    async def test_ignore_this_whole_folder(self) -> None:
+        downloads, course, [clip] = await self.course()
+        labels = [label for label, _ in self.view.ignore_choices(course[1:])]
+        self.assertEqual(labels, ["Ignore this file", "Ignore this whole folder"])
+        _file, (_label, whole) = self.view.ignore_choices(course[1:])
+        whole()
+        await pump_until(self.root, lambda: all(self.services.queue.get(i) is None for i in course))
+        [entry] = self.services.ignored.entries
+        self.assertEqual((entry.path, entry.folder), (downloads / "Python Course", True))
+        self.assertIsNotNone(self.services.queue.get(clip))  # the rest stays
+        lines = [line.text for line in self.services.activity.lines()]
+        self.assertIn("Ignored: Python Course. MediaForge won't pick it up again.", lines)
+
+    async def test_a_dropped_file_can_be_ignored_but_not_its_folder(self) -> None:
+        make_files(self.tmp / "in" / "Sub", ["Holiday.Clip.mp4"])
+        await self.add_and_settle(self.tmp / "in")
+        [item] = self.services.queue.items
+        labels = [label for label, _ in self.view.ignore_choices([item.id])]
+        self.assertEqual(labels, ["Ignore this file"])  # not under a watched folder
+
+    async def test_nothing_while_a_run_goes_or_for_done_files(self) -> None:
+        _downloads, _course, [clip] = await self.course()
+        self.view.running = True
+        self.assertEqual(self.view.ignore_choices([clip]), [])
+        self.view.running = False
+        item = self.services.queue.get(clip)
+        assert item is not None
+        item.status = ItemStatus.DONE
+        self.assertEqual(self.view.ignore_choices([clip]), [])
+
+    async def test_dutch(self) -> None:
+        set_language(Language.NL)
+        _downloads, course, _clip = await self.course()
+        labels = [label for label, _ in self.view.ignore_choices(course[1:])]
+        self.assertEqual(labels, ["Dit bestand negeren", "Deze hele map negeren"])
+        self.assertEqual(
+            [label for label, _ in self.view.ignore_choices(course)][0],
+            "Deze 2 bestanden negeren",
+        )
+
+
+class PresetPerBandTest(QueueCase):
+    """A preset per band (the Shows | Films switch is gone): each film and each show has its own
+    Choice; the card follows the selected band; the chip sets a band's preset; "Use for all ▾"
+    copies it where it fits; Forge and the library use each band's own."""
+
+    async def films_and_show(self) -> None:
+        make_files(
+            self.tmp / "in",
+            ["Dune.2021.mkv", "Heat.1995.mkv", "Show.S01E01.mkv", "Show.S01E02.mkv"],
+        )
+        await self.add_and_settle(self.tmp / "in")
+
+    def line(self, name: str) -> Row:
+        item = self.item(name)
+        return next(r for r in self.rows("item") if r.key == item.id)
+
+    def preset_name(self, name: str) -> str:
+        preset = self.view.choice_for(self.item(name)).preset
+        return preset.name if preset is not None else ""
+
+    async def test_two_films_with_their_own_presets(self) -> None:
+        await self.films_and_show()
+        self.view.set_band_preset([self.item("Dune").id], self.preset("Movie (Flat)"))
+        self.view.set_band_preset([self.item("Heat").id], self.preset("Movie (Folder)"))
+        self.view.refresh()
+        self.assertEqual(self.line("Dune").title, "Dune (2021).mkv")
+        self.assertEqual(self.band("Dune").chip, "Movie (Flat) ▾")
+        self.assertEqual(self.band("Heat").chip, "Movie (Folder) ▾")
+        parts = self.view._plan_parts([self.item("Dune"), self.item("Heat")])
+        self.assertEqual(sorted(rule for _inputs, rule, _options in parts), ["{ny}", "{ny}/{ny}"])
+        self.view.ask = self._skip_trailers
+        await self.view.forge(only=[self.item("Dune").id, self.item("Heat").id])
+        await pump(self.root, 0.2)
+        names = self.names(self.tmp / "in")
+        self.assertIn("Dune (2021).mkv", names)  # flat
+        self.assertTrue((self.tmp / "in" / "Heat (1995)" / "Heat (1995).mkv").exists())
+
+    async def _skip_trailers(self, title: str, message: str, choices: Sequence[str]) -> str | None:
+        return "Skip trailers"
+
+    async def test_a_shows_episodes_follow_the_show(self) -> None:
+        await self.films_and_show()
+        self.select_band("Show")
+        self.view._preset_chosen("Series (Flat)")
+        self.view.refresh()
+        for name in ("Show.S01E01", "Show.S01E02"):
+            self.assertEqual(self.preset_name(name), "Series (Flat)")
+        make_files(self.tmp / "more", ["Show.S01E03.mkv"])  # a new episode joins its show
+        await self.add_and_settle(self.tmp / "more")
+        self.view.refresh()
+        self.assertEqual(self.preset_name("Show.S01E03"), "Series (Flat)")
+        self.assertEqual(self.band("Show").subtitle, "Season 1 · 3 episodes")
+        self.assertEqual(self.preset_name("Dune"), "Movie (Folder)")
+
+    async def test_the_card_follows_the_selection(self) -> None:
+        await self.films_and_show()
+        self.view.set_band_preset([self.item("Heat").id], self.preset("Movie (Flat)"))
+        self.select_band("Dune")
+        self.assertEqual(self.view.for_label.cget("text"), "For: Dune (2021)")
+        self.assertEqual(self.view.preset_menu.get(), "Movie (Folder)")
+        self.select_band("Heat")
+        self.assertEqual(self.view.for_label.cget("text"), "For: Heat (1995)")
+        self.assertEqual(self.view.preset_menu.get(), "Movie (Flat)")
+        self.select_band("Show")
+        self.assertEqual(self.view.for_label.cget("text"), "For: Show · 2 episodes")
+        self.assertIn("Series (Folder)", self.view.preset_menu.cget("values"))
+        self.view.list.select(None)  # nothing selected: the first band is, at the next refresh
+        self.view.refresh()
+        self.assertIsNotNone(self.view.list.selected)
+
+    async def test_the_chip_menu_sets_a_bands_preset(self) -> None:
+        await self.films_and_show()
+        band = self.band("Heat")
+        ids = self.view._bands[band.key]
+        labels = [label for label, _ in self.view.chip_choices(ids)]
+        self.assertEqual(labels, ["Auto", "Movie (Folder)", "Movie (Flat)"])  # the film presets
+        self.view.list.on_action(band.key, "preset")  # opens the menu at the chip
+        await pump(self.root, 0.05)
+        assert PopupMenu._open is not None
+        self.assertEqual(PopupMenu._open.labels, tuple(labels))
+        PopupMenu._open.close()
+        dict(self.view.chip_choices(ids))["Movie (Flat)"]()
+        self.view.refresh()
+        self.assertEqual(self.band("Heat").chip, "Movie (Flat) ▾")
+        self.assertEqual(self.view.for_label.cget("text"), "For: Heat (1995)")  # selected
+        self.view.set_custom("{t}")
+        self.view.refresh()
+        self.assertEqual(self.band("Heat").chip, "✎ Custom")
+        await pump_until(
+            self.root, lambda: self.services.settings.current.last_film_preset == "Movie (Flat)"
+        )
+
+    async def test_use_for_all_films_copies_to_films_only(self) -> None:
+        await self.films_and_show()
+        self.select_band("Dune")
+        self.view._preset_chosen("Movie (Flat)")
+        self.view.option_buttons["Trailer"].invoke()
+        entries = self.view.use_for_all_entries()
+        self.assertEqual(
+            [(e.label, e.action is not None) for e in entries],
+            [("All films (2)", True), ("All shows (1) · doesn't fit", False)],
+        )
+        assert entries[0].action is not None
+        entries[0].action()
+        self.view.refresh()
+        heat = self.view.choice_for(self.item("Heat"))
+        self.assertEqual((heat.preset, heat.options.trailer), (self.preset("Movie (Flat)"), True))
+        self.assertIsNot(heat, self.view.choice_for(self.item("Dune")))  # a copy of its own
+        self.assertEqual(self.preset_name("Show"), "Series (Folder)")
+        self.assertEqual(self.services.activity.lines()[-1].text, "Used Movie (Flat) for 2 films")
+
+    async def test_use_for_all_shows_and_everything(self) -> None:
+        await self.films_and_show()
+        self.select_band("Show")
+        self.view._preset_chosen("Series (Flat)")
+        entries = self.view.use_for_all_entries()
+        self.assertEqual(
+            [(e.label, e.action is not None) for e in entries],
+            [("All films (2) · doesn't fit", False), ("All shows (1)", True)],
+        )
+        self.view._preset_chosen("Auto")  # fits both: everything is offered
+        entries = self.view.use_for_all_entries()
+        self.assertEqual(
+            [e.label for e in entries],
+            ["All films (2)", "All shows (1)", "Everything in the queue (3)"],
+        )
+        assert entries[-1].action is not None
+        entries[-1].action()
+        for name in ("Dune", "Heat", "Show.S01E01"):
+            self.assertEqual(self.preset_name(name), "Auto")
+        self.assertEqual(self.services.activity.lines()[-1].text, "Used Auto for 3 items")
+        self.select_band("Dune")
+        self.view._preset_chosen("Movie (Flat)")
+        self.assertEqual(len(self.view.use_for_all_entries()), 2)  # a film preset: no everything
+        self.view.set_custom("{t}")  # a Custom rule names anything
+        self.assertEqual(len(self.view.use_for_all_entries()), 3)
+
+    async def test_use_for_all_is_hidden_with_one_band(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await pump(self.root, 0.05)
+        self.assertFalse(self.view.use_all_link.winfo_ismapped())
+        make_files(self.tmp / "more", ["Heat.1995.mkv"])
+        await self.add_and_settle(self.tmp / "more")
+        self.view.refresh()
+        await pump(self.root, 0.05)
+        self.assertTrue(self.view.use_all_link.winfo_ismapped())
+        self.assertEqual(self.view.use_all_link.cget("text"), "Use for all ▾")
+
+    async def test_presets_read_again_keep_a_bands_preset_by_name_or_fall_back(self) -> None:
+        await self.films_and_show()
+        mine = Preset(name="Mine", type=TypeHint.MOVIE, format="{t}", options=PresetOptions())
+        await self.services.presets.save(mine)
+        await self.view._load_presets()
+        self.view.set_band_preset([self.item("Dune").id], self.preset("Mine"))
+        self.view.set_band_preset([self.item("Heat").id], self.preset("Movie (Flat)"))
+        flat = self.preset("Movie (Flat)")
+        await self.services.presets.save(flat.model_copy(update={"format": "{t} [{y}]"}))
+        await self.services.presets.delete("Mine")
+        await self.view._load_presets()
+        heat = self.view.choice_for(self.item("Heat"))
+        self.assertEqual((self.preset_name("Heat"), heat.rule), ("Movie (Flat)", "{t} [{y}]"))
+        # Its preset is gone: its default again (the film preset chosen last, Heat's).
+        self.assertEqual(self.preset_name("Dune"), "Movie (Flat)")
+
+    async def test_a_right_click_requests_preset_names_the_files_it_added(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        make_files(self.tmp / "request", ["Heat.1995.mkv", "Show.S01E01.mkv"])
+        await self.view.add([self.tmp / "request"], preset="Movie (Flat)")
+        await self.view.settled()
+        self.view.refresh()
+        self.assertEqual(self.preset_name("Heat"), "Movie (Flat)")
+        self.assertEqual(self.preset_name("Dune"), "Movie (Folder)")
+        self.assertEqual(self.preset_name("Show"), "Series (Folder)")
+        self.view.select_preset("Movie (Flat)")  # without files: every film band
+        self.assertEqual(self.preset_name("Dune"), "Movie (Flat)")
+        self.assertEqual(self.preset_name("Show"), "Series (Folder)")
+
+    async def test_a_watched_download_goes_to_the_library_with_its_bands_preset(self) -> None:
+        downloads, _, movies = await self.library()
+        [item_id] = await self.watched(downloads, "Dune.2021.mkv")
+        self.assertEqual(self.band("Dune").chip, "Movie (Folder) ▾")  # the library's at first
+        self.view.set_band_preset([item_id], self.preset("Movie (Flat)"))
+        self.view.refresh()
+        self.assertIn("→ Movies", self.band("Dune").dest)
+        self.view.list.on_action(self.band("Dune").key, "rename")
+        target = movies / "Dune (2021).mkv"  # flat, in the Movies library
+        item = self.services.queue.get(item_id)
+        assert item is not None
+        await pump_until(self.root, lambda: target.exists() and item.status is ItemStatus.DONE)
+        [run] = await self.services.history.list_runs()
+        self.assertEqual(run.preset_name, "Movie (Flat)")
+
+    async def test_dutch(self) -> None:
+        set_language(Language.NL)
+        self.view.destroy()
+        self.view = await self.make_view()
+        self.assertEqual(self.view.for_label.cget("text"), "Voor: nieuwe bestanden")
+        await self.films_and_show()
+        self.select_band("Show")
+        self.assertEqual(self.view.for_label.cget("text"), "Voor: Show · 2 afleveringen")
+        self.assertEqual(self.view.use_all_link.cget("text"), "Gebruiken voor alles ▾")
+        self.view._preset_chosen("Auto")
+        self.assertEqual(
+            [e.label for e in self.view.use_for_all_entries()],
+            ["Alle films (2)", "Alle series (1)", "Alles in de wachtrij (3)"],
+        )
+        self.view._preset_chosen("Series (Flat)")
+        self.assertEqual(self.view.use_for_all_entries()[0].label, "Alle films (2) · past niet")

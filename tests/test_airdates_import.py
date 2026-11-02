@@ -146,7 +146,9 @@ class FakeImporter:
         self.failing = set(failing)
         self.calls: list[list[str]] = []
 
-    async def import_shows(self, entries: Any, progress: Any = None) -> ImportResult:
+    async def import_shows(
+        self, entries: Any, progress: Any = None, *, profile_id: int
+    ) -> ImportResult:
         entries = list(entries)
         self.calls.append(entries)
         failed = tuple(entry for entry in entries if entry in self.failing)
@@ -156,7 +158,9 @@ class FakeImporter:
 
 
 class FakeFinder:
-    async def find(self, export_text: str, progress: Any = None) -> AirdatesPreview:
+    async def find(
+        self, export_text: str, progress: Any = None, *, profile_id: int
+    ) -> AirdatesPreview:
         raise AssertionError("not used")
 
 
@@ -191,7 +195,7 @@ class PanelTests(unittest.IsolatedAsyncioTestCase):
     def panel(self, library: FakeImporter) -> AirdatesImportPanel:
         done: list[int] = []
         panel = AirdatesImportPanel(
-            self.root, airdates=FakeFinder(), library=library, on_done=done.append
+            self.root, airdates=FakeFinder(), library=library, on_done=done.append, profile_id=1
         )
         panel.pack()
         self.done = done

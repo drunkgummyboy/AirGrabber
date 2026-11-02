@@ -117,11 +117,11 @@ class ShowLibrary(FakeLibrary):
     def __init__(self) -> None:
         super().__init__({SHOW.id: list(EPISODES), OTHER.id: list(EPISODES)})
 
-    async def show_details(self, show_id: int) -> ShowDetails:
+    async def show_details(self, show_id: int, *, profile_id: int) -> ShowDetails:
         show = SHOW if show_id == SHOW.id else OTHER
         return ShowDetails(show=show, episodes=tuple(EPISODES), tracked=True, latest_season=3)
 
-    async def set_auto_download(self, show_id: int, on: bool) -> None:
+    async def set_auto_download(self, show_id: int, on: bool, *, profile_id: int) -> None:
         return None
 
     def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -196,6 +196,7 @@ class WindowsTestCase(TkTestCase):
                 download=lambda entry: None, choose=choose, states=states
             ),
             downloads_changed=no_subscribe,
+            profile=lambda: 1,
             releases=services,
         )
         holder["shows"] = shows

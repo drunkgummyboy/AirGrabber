@@ -418,6 +418,11 @@ class MovieWindows:
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe = []
+        self.close_windows()
+
+    def close_windows(self) -> None:
+        """Close every window (another person was selected: MainWindow closes the show windows
+        then too, one rule for every info window)."""
         for window in self._live().values():
             window.destroy()
         self._windows = {}

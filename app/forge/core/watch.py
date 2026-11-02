@@ -3,7 +3,8 @@
 A file counts as finished only when it looked the same (size and time) at two looks in a row,
 nothing has written to it for QUIET_S, and it can be opened with nobody else holding it. Change
 notifications are not used: over SMB (the NAS) Windows misses them, so a look every few minutes is
-the base. Temporary download names, samples and the NAS's own folders are never candidates.
+the base. Temporary download names, samples and the NAS's own folders are never candidates, nor
+what the owner ignored (`candidates(root, ignored)`: app/forge/core/ignored.py's IgnoreList).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Protocol
 
 from app.forge.core import fsops
 from app.forge.core.parser import is_video
@@ -64,8 +66,17 @@ def _in_progress(name: str) -> bool:
     return name.lower().endswith(TEMP_SUFFIXES)
 
 
-def candidates(root: Path) -> list[Path]:
-    """The videos under `root` that may be downloads (blocking: run it in a thread).
+class Ignored(Protocol):
+    """What the owner ignored (app/forge/core/ignored.py's IgnoreList)."""
+
+    def ignored(self, path: Path | str) -> bool: ...
+
+    def folder_ignored(self, folder: Path | str) -> bool: ...
+
+
+def candidates(root: Path, ignored: Ignored | None = None) -> list[Path]:
+    """The videos under `root` that may be downloads (blocking: run it in a thread), without
+    the files and folders in `ignored`.
 
     Raises OSError when `root` itself can't be read (not there, the NAS is off).
     """
@@ -74,6 +85,9 @@ def candidates(root: Path) -> list[Path]:
     found: list[Path] = []
     for folder, dirs, names in os.walk(fsops.long_path(root)):
         dirs[:] = [d for d in dirs if not _skip_folder(d)]
+        if ignored:
+            here = fsops.short_path(folder)
+            dirs[:] = [d for d in dirs if not ignored.folder_ignored(here / d)]
         if any(_in_progress(n) for n in names):
             continue  # part of this release is still coming in: none of it is finished yet
         lower = {n.lower() for n in names}
@@ -85,7 +99,10 @@ def candidates(root: Path) -> list[Path]:
                 continue
             if any(f"{name}{suffix}".lower() in lower for suffix in TEMP_SUFFIXES):
                 continue  # the downloader keeps a marker beside a file it is still writing
-            found.append(fsops.short_path(os.path.join(folder, name)))
+            file = fsops.short_path(os.path.join(folder, name))
+            if ignored and ignored.ignored(file):
+                continue
+            found.append(file)
     return sorted(found, key=lambda p: str(p).casefold())
 
 

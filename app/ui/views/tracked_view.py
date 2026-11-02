@@ -1,4 +1,6 @@
-"""The user's tracked TV library (My shows): a responsive grid of poster cards (`ShowCard`).
+"""The selected person's tracked TV library (My shows): a responsive grid of poster cards
+(`ShowCard`). The person is read at every load (Settings' `current_profile`); the page's
+switches, removals and imports go to the person whose shows it shows.
 
 Under the heading a bar sorts the grid (A–Z / Next episode / Recently downloaded) and filters
 it (All / Has missing / Auto on / Ended); both choices are kept in Settings (`tracked_sort`,
@@ -254,6 +256,7 @@ class TrackedView(BaseView):
         self._card_scale = card_scale
         self._library = library
         self._settings = settings
+        self._profile_id = settings.current.current_profile  # whose shows are on the page
         self._airdates = airdates
         self._images = images
         self._status = status
@@ -348,13 +351,17 @@ class TrackedView(BaseView):
         self._show_choices()
         self._clear_body()
         LoadingBar(self._body).pack(fill="x")
-        entries = await self._library.tracked()
-        activity = await self._library.activity()
+        profile_id = prefs.current_profile
+        entries = await self._library.tracked(profile_id=profile_id)
+        activity = await self._library.activity(profile_id=profile_id)
         missing = (
-            await self._library.missing_counts() if self._missing_actions is not None else {}
+            await self._library.missing_counts(profile_id=profile_id)
+            if self._missing_actions is not None
+            else {}
         )
         last_downloads = await self._library.last_downloads()
         now = datetime.now().astimezone()
+        self._profile_id = profile_id
         self._clear_body()
         self._rows = show_rows(entries, activity, missing, last_downloads)
         if not entries:
@@ -464,7 +471,7 @@ class TrackedView(BaseView):
 
     async def _set_auto(self, show: Show, on: bool) -> None:
         try:
-            await self._library.set_auto_download(show.id, on)
+            await self._library.set_auto_download(show.id, on, profile_id=self._profile_id)
         except Exception:
             log.exception("Switching automatic downloads for TVMaze show %d failed", show.id)
             self._note_auto(show.id, not on)
@@ -481,7 +488,7 @@ class TrackedView(BaseView):
             self._own_changes -= 1
 
     async def _untrack(self, show: Show) -> None:
-        await self._library.untrack(show.id)
+        await self._library.untrack(show.id, profile_id=self._profile_id)
         self._report(t("Removed {name}", name=show.name), clear_after_ms=4000)
 
     def _open_more_menu(self) -> None:
@@ -493,7 +500,7 @@ class TrackedView(BaseView):
     async def _cleanup(self) -> None:
         self._more_button.configure(state="disabled")
         try:
-            removed = await self._library.remove_ended()
+            removed = await self._library.remove_ended(profile_id=self._profile_id)
             if removed:
                 text = tn("Removed {n} ended show", "Removed {n} ended shows", removed)
                 self._report(text, clear_after_ms=5000)
@@ -511,7 +518,11 @@ class TrackedView(BaseView):
             return
         if (window := self._window()) is not None:
             self._import_dialog = ImportShowsDialog(
-                window, on_import=self._on_import, airdates=self._airdates, library=self._library
+                window,
+                on_import=self._on_import,
+                airdates=self._airdates,
+                library=self._library,
+                profile_id=self._profile_id,
             )
 
     def _window(self) -> ctk.CTk | ctk.CTkToplevel | None:
@@ -529,6 +540,7 @@ class TrackedView(BaseView):
                 progress=lambda done, total: self._report(
                     t("Importing shows… {done}/{total}", done=done, total=total)
                 ),
+                profile_id=self._profile_id,
             )
         except TVMazeError as exc:
             self._report(t("Import failed: {error}", error=exc), clear_after_ms=8000)

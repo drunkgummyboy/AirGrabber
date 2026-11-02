@@ -11,13 +11,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from app.forge.ui.settings_pages import SECTION_LIBRARY
 from app.models import AutoDownloaded, AutoError, AutoGaveUp, ProwlarrSetupResult, Settings
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
+from app.ui.settings_dialog import SECTION_LOOKS
+from app.i18n import t
 from app.ui.main_window import (
     AutoNotice,
     MainWindow,
+    Mode,
     AutoNoticeThrottle,
     auto_notice,
     prowlarr_setup_message,
@@ -72,6 +74,8 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "spotlight_motion": False,
     # The accent colour applies at the next start.
     "accent": "ocean",
+    # Who is selected: a switch reloads the pages itself (MainWindow._on_profiles_changed).
+    "current_profile": 2,
 }
 
 PAGE_CHANGES: dict[str, Any] = {
@@ -613,13 +617,14 @@ class ForgeWiringTests(unittest.TestCase):
         self.assertTrue(window.restart_requested)
         self.assertEqual(window.calls, ["quit"])  # through the gate, not destroy()
 
-    def test_more_in_settings_shows_the_main_window_first(self) -> None:
+    def test_open_airgrabbers_settings_from_forge_shows_the_main_window_first(self) -> None:
+        # MediaForge's Settings window's "Open AirGrabber's Settings": the default page.
         window = self.window(hidden=True)
-        MainWindow._open_forge_settings(window)
-        self.assertEqual(window.calls, ["show", ("settings", SECTION_LIBRARY)])
+        MainWindow._open_settings_from_forge(window)
+        self.assertEqual(window.calls, ["show", ("settings", None)])
         window = self.window(hidden=False)
-        MainWindow._open_forge_settings(window)
-        self.assertEqual(window.calls, [("settings", SECTION_LIBRARY)])
+        MainWindow._open_settings_from_forge(window)
+        self.assertEqual(window.calls, [("settings", None)])
 
     def test_the_renamer_reaches_the_tray(self) -> None:
         window = self.window()
@@ -639,11 +644,46 @@ class ForgeWiringTests(unittest.TestCase):
             focus_force=lambda: shown.append("focus"),
         )
         window: Any = SimpleNamespace(_settings_dialog=dialog)
-        MainWindow._open_settings(window, SECTION_LIBRARY)
-        self.assertEqual(shown, [SECTION_LIBRARY, "lift", "focus"])
+        MainWindow._open_settings(window, SECTION_LOOKS)
+        self.assertEqual(shown, [SECTION_LOOKS, "lift", "focus"])
         shown.clear()
         MainWindow._open_settings(window)  # the band's ⚙: the page it is on
         self.assertEqual(shown, ["lift", "focus"])
+
+
+class GoHomeTests(unittest.TestCase):
+    """The start page, Series › Calendar (at start and back from the tray), on a stand-in."""
+
+    def window(self, mode: Mode, tab: str) -> Any:
+        calls: list[Any] = []
+        tabs = SimpleNamespace(current=tab)
+        tabs.get = lambda: tabs.current
+
+        def set_tab(name: str) -> None:
+            calls.append(("tab", name))
+            tabs.current = name
+
+        tabs.set = set_tab
+        window: Any = SimpleNamespace(
+            calls=calls,
+            mode=mode,
+            _series_tabs=tabs,
+            _select_mode=lambda m: calls.append(("mode", m)),
+            _on_tab_changed=lambda: calls.append("refresh"),
+        )
+        return window
+
+    def test_from_another_page_and_tab(self) -> None:
+        window = self.window(Mode.MOVIES, t("Tracked"))
+        MainWindow._go_home(window)
+        self.assertEqual(
+            window.calls, [("mode", Mode.SERIES), ("tab", t("Calendar")), "refresh"]
+        )
+
+    def test_already_on_the_calendar(self) -> None:
+        window = self.window(Mode.DOWNLOADS, t("Calendar"))
+        MainWindow._go_home(window)
+        self.assertEqual(window.calls, [("mode", Mode.SERIES)])
 
 
 if __name__ == "__main__":

@@ -1,12 +1,14 @@
-"""First-run welcome: what AirGrabber does, importing shows from airdates.tv, how downloads
-should open, the TMDB key, and Quick setup ("Make it yours": look, download quality, card size,
-language; app/ui/quick_setup.py).
+"""First-run welcome: what AirGrabber does, who uses it (the people, app/services/profiles.py),
+importing shows from airdates.tv, how downloads should open, the TMDB key, and Quick setup
+("Make it yours": look, download quality, card size, language; app/ui/quick_setup.py).
 
 MainWindow opens it on the first start of a new library (see `first_run_action`). Choices are
-saved as they are made: an airdates.tv import tracks its shows at once; step 3's Next stores
+saved as they are made: step 2's Next names the first person (an empty name leaves them "Me")
+and adds the others typed there (the first person stays selected: the airdates.tv import and
+the rest are theirs); an airdates.tv import tracks its shows at once; step 4's Next stores
 how to download (with the NAS / other computer form when that is the choice; its Test
-connection saves the form first); step 4's Next checks a pasted key nobody checked yet, and
-stays on the step when TMDB doesn't accept it (Skip for now goes on without a key); step 5's
+connection saves the form first); step 5's Next checks a pasted key nobody checked yet, and
+stays on the step when TMDB doesn't accept it (Skip for now goes on without a key); step 6's
 look applies at once. Finish (and closing the window) marks the setup as done and saves the
 TMDB key that checked OK and the Quick setup choices; another language than the running one
 offers "Restart now" (it saves the same first), else it applies at the next start.
@@ -17,19 +19,28 @@ from __future__ import annotations
 import asyncio
 import math
 import tkinter as tk
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping, Sequence
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from tkinter import filedialog
-from typing import Any
+from typing import Any, Protocol
 
 import customtkinter as ctk
 from pydantic import ValidationError
 
 from app import APP_NAME
 from app.i18n import N_, t
-from app.models import DownloadMode, QBittorrentState, Settings, TorrentApp
+from app.models import (
+    DownloadMode,
+    Profile,
+    ProfileColour,
+    QBittorrentState,
+    Settings,
+    TorrentApp,
+)
 from app.services import DiscoveryService, RemoteDownloads, SettingsService, TorrentAppService
+from app.services.profiles import ProfileError, name_problem, next_colour
 from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.models.backup import BackupLoadResult
 from app.services.backup import BackupService
@@ -42,6 +53,7 @@ from app.ui.airdates_import import (
 )
 from app.ui.borderless import make_borderless
 from app.ui.backup_dialog import LoadBackupDialog, load_backup
+from app.ui.people import ME, ColourSwatches
 from app.ui.branding import load_logo, set_window_icon
 from app.ui.quick_setup import HEADING as QUICK_HEADING
 from app.ui.quick_setup import INTRO as QUICK_INTRO
@@ -58,6 +70,7 @@ from app.ui.dialog_kit import (
     NAV_GAP,
     PAD_X,
     PAD_Y,
+    SMALL_SIZE,
     FitScroll,
     activate_later,
     heading_row,
@@ -74,8 +87,17 @@ from app.ui.text_fit import ELLIPSIS, SLACK, Measure, elide_to_width
 from app.ui.tmdb_key_guide import TMDB_HEADING, TMDB_INTRO, KeyAction, TmdbKeyGuide
 from app.ui.torrent_app_status import QBITTORRENT, TorrentAppStatus, TorrentStatus
 
-STEP_COUNT = 5
+STEP_COUNT = 6
+MAX_EXTRA_PEOPLE = 4  # "＋ Add another person" adds at most this many
 # Shown through t().
+PEOPLE_HEADING = N_("Who uses AirGrabber?")
+PEOPLE_INTRO = N_(
+    "Each person gets their own followed series, watchlist and calendar. Downloads and "
+    "settings are shared."
+)
+YOUR_NAME = N_("Your name")
+ADD_PERSON = N_("＋ Add another person")
+NAME_PLACEHOLDER = N_("Name")
 AIRDATES_HEADING = N_("Already follow shows on airdates.tv?")
 AIRDATES_INTRO = N_("Bring your list over, so your calendar is ready right away.")
 AIRDATES_IMPORT_HEADING = N_("Import from airdates.tv")
@@ -94,6 +116,10 @@ _CARD_TEXT_WIDTH = CONTENT_WIDTH - 2 * _CARD_PAD_X - _DOT_SIZE - _DOT_GAP
 _FOLDER_BUTTON_WIDTH = 150
 _FOLDER_TEXT_WIDTH = _CARD_TEXT_WIDTH - _FOLDER_BUTTON_WIDTH - 16
 _REMOTE_LABEL_WIDTH = 150
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)  # the stand-in people's creation (unused)
+_NAME_FIELD_WIDTH = 260  # a person's name on the people step; the colours beside it
+_NAME_FIELD_HEIGHT = 36
+_PERSON_ROW_GAP = 10
 REMOTE_TITLE = N_("Send to a torrent program on my NAS or another computer")
 REMOTE_NOTE = N_("For a NAS or home server (Synology, qBittorrent, Transmission)")
 MOVING_LINK = N_("Moving from another PC? Load a backup")
@@ -134,10 +160,43 @@ def first_run_defaults(
     return changes
 
 
+class PeopleEditor(Protocol):
+    """`services.profiles` (ProfileService), or a fake in screenshots and tests."""
+
+    @property
+    def people(self) -> tuple[Profile, ...]: ...
+
+    @property
+    def current(self) -> Profile: ...
+
+    async def add(self, name: str, colour: ProfileColour) -> Profile: ...
+
+    async def update(
+        self, profile_id: int, *, name: str | None, colour: ProfileColour
+    ) -> Profile: ...
+
+    async def remove(self, profile_id: int) -> None: ...
+
+
+def people_problem(names: Sequence[str]) -> str | None:
+    """Why the people step's names (the first person's, then the others'; empty ones are
+    skipped, the first one stays "Me") can't be saved, else None: one too long, or two the same
+    ignoring case (`name_problem`)."""
+    taken: list[Profile] = []
+    for index, name in enumerate(names):
+        problem = name_problem(name, taken, required=False)
+        if problem is not None:
+            return problem
+        if name.strip():
+            taken.append(Profile(id=-1 - index, name=" ".join(name.split()), created_at=_EPOCH))
+    return None
+
+
 class Page(Enum):
-    """The welcome's pages; AIRDATES_IMPORT is still step 2 (after "Yes" on AIRDATES)."""
+    """The welcome's pages; AIRDATES_IMPORT is still step 3 (after "Yes" on AIRDATES)."""
 
     WELCOME = "welcome"
+    PEOPLE = "people"  # who uses AirGrabber?
     AIRDATES = "airdates"  # already follow shows on airdates.tv? yes / no
     AIRDATES_IMPORT = "airdates_import"  # the import panel
     DOWNLOAD = "download"
@@ -147,11 +206,12 @@ class Page(Enum):
 
 _STEPS = {
     Page.WELCOME: 1,
-    Page.AIRDATES: 2,
-    Page.AIRDATES_IMPORT: 2,
-    Page.DOWNLOAD: 3,
-    Page.TMDB: 4,
-    Page.QUICK: 5,
+    Page.PEOPLE: 2,
+    Page.AIRDATES: 3,
+    Page.AIRDATES_IMPORT: 3,
+    Page.DOWNLOAD: 4,
+    Page.TMDB: 5,
+    Page.QUICK: 6,
 }
 
 
@@ -160,7 +220,7 @@ def page_step(page: Page) -> int:
 
 
 def step_label(step: int) -> str | None:
-    """'Step 2 of 5' at the top right of steps 2 to 5; the welcome itself has none."""
+    """'Step 2 of 6' at the top right of steps 2 to 6; the welcome itself has none."""
     return t("Step {step} of {count}", step=step, count=STEP_COUNT) if step >= 2 else None
 
 
@@ -169,7 +229,7 @@ def nav_buttons(page: Page, *, imported: bool = False) -> tuple[str | None, str 
     The import panel's right button is "Skip" until an import is done."""
     if page is Page.AIRDATES_IMPORT:
         return t("Back"), t("Next") if imported else t("Skip")
-    if page in (Page.AIRDATES, Page.DOWNLOAD):
+    if page in (Page.PEOPLE, Page.AIRDATES, Page.DOWNLOAD):
         return t("Back"), t("Next")
     if page is Page.TMDB:
         return t("Skip for now"), t("Next")
@@ -181,6 +241,8 @@ def nav_buttons(page: Page, *, imported: bool = False) -> tuple[str | None, str 
 def next_page(page: Page, *, import_shows: bool) -> Page:
     """Where the right button (or "Get started") leads; `import_shows` = "Yes" on AIRDATES."""
     if page is Page.WELCOME:
+        return Page.PEOPLE
+    if page is Page.PEOPLE:
         return Page.AIRDATES
     if page is Page.AIRDATES:
         return Page.AIRDATES_IMPORT if import_shows else Page.DOWNLOAD
@@ -199,6 +261,8 @@ def previous_page(page: Page, *, import_shows: bool) -> Page:
         return Page.AIRDATES_IMPORT if import_shows else Page.AIRDATES
     if page is Page.AIRDATES_IMPORT:
         return Page.AIRDATES
+    if page is Page.AIRDATES:
+        return Page.PEOPLE
     return Page.WELCOME
 
 
@@ -270,6 +334,42 @@ def _page_heading(page: ctk.CTkFrame, title: str, which: Page) -> ctk.CTkFrame:
 
 
 # -- widgets -------------------------------------------------------------------------------------
+
+
+class _PersonRow(ctk.CTkFrame):
+    """A person on the people step: their name and colour. `person_id`: the person saved for
+    it (the first row's is the first person; another row's once Next added them)."""
+
+    def __init__(
+        self, master: Any, *, colour: ProfileColour, placeholder: str, person_id: int | None
+    ) -> None:
+        super().__init__(master, fg_color="transparent")
+        self.person_id = person_id
+        self.entry = ctk.CTkEntry(
+            self,
+            width=_NAME_FIELD_WIDTH,
+            height=_NAME_FIELD_HEIGHT,
+            corner_radius=8,
+            border_width=1,
+            border_color=theme.EDGE,
+            fg_color=theme.SURFACE,
+            text_color=theme.TEXT,
+            placeholder_text=placeholder,
+            placeholder_text_color=theme.TEXT_MUTED,
+            font=theme.font(BODY_SIZE),
+        )
+        self.entry.pack(side="left")
+        self.swatches = ColourSwatches(self, selected=colour)
+        self.swatches.pack(side="left", padx=(16, 0))
+
+    @property
+    def name(self) -> str:
+        return str(self.entry.get())
+
+    @property
+    def colour(self) -> ProfileColour:
+        return self.swatches.selected
+
 
 
 class _OptionCard(ctk.CTkFrame):
@@ -351,13 +451,18 @@ class WelcomeDialog(ctk.CTkToplevel):
         remote: RemoteDownloads | None = None,  # None: one reading `settings` (main_window.py)
         on_restart: Callable[[], None] | None = None,
         backup: BackupService | None = None,
+        profiles: PeopleEditor,
     ) -> None:
         """`on_restart`: restarts AirGrabber (Quick setup's "Restart now" for another language
         or accent colour; without it they apply at the next start). `backup`: the welcome
-        step's "Moving from another PC? Load a backup" link (none without it)."""
+        step's "Moving from another PC? Load a backup" link (none without it). `profiles`: the
+        people step; the first person (the selected one) stays selected and gets the airdates.tv
+        import."""
         super().__init__(master, fg_color=theme.BG)
         self._on_restart = on_restart
         self._backup = backup
+        self._profiles = profiles
+        self._person_rows: list[_PersonRow] = []
         self._backup_dialog: LoadBackupDialog | None = None
         self._skip_key = False  # Skip for now on step 4: Finish saves no key
         self._settings = settings
@@ -393,6 +498,7 @@ class WelcomeDialog(ctk.CTkToplevel):
         )
         self._pages = {
             Page.WELCOME: self._build_welcome(steps),
+            Page.PEOPLE: self._build_people(steps),
             Page.AIRDATES: self._build_airdates(steps),
             Page.AIRDATES_IMPORT: self._build_airdates_import(steps, airdates, library),
             Page.DOWNLOAD: self._build_download(steps),
@@ -439,7 +545,10 @@ class WelcomeDialog(ctk.CTkToplevel):
             wraplength=480,
         ).pack(pady=(12, 0))
         primary_button(
-            inner, t("Get started"), lambda: self._show_page(Page.AIRDATES), width=180
+            inner,
+            t("Get started"),
+            lambda: self._show_page(next_page(Page.WELCOME, import_shows=self._import_shows)),
+            width=180,
         ).pack(pady=(NAV_GAP, 0))
         if self._backup is not None:
             self.backup_link = ctk.CTkLabel(
@@ -452,6 +561,101 @@ class WelcomeDialog(ctk.CTkToplevel):
             self.backup_link.pack(pady=(BLOCK_GAP, 0))
             self.backup_link.bind("<Button-1>", lambda _event: self._load_backup())
         return page
+
+    def _build_people(self, master: Any) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(master, fg_color="transparent")
+        self._headings.append(_page_heading(page, t(PEOPLE_HEADING), Page.PEOPLE))
+        text_label(page, t(PEOPLE_INTRO), size=DETAIL_SIZE, color=theme.TEXT_MUTED).pack(
+            anchor="w", pady=(LINE_GAP, 0)
+        )
+        text_label(page, t(YOUR_NAME), size=SMALL_SIZE, color=theme.TEXT_MUTED).pack(
+            anchor="w", pady=(BLOCK_GAP, 6)
+        )
+        self._people_box = ctk.CTkFrame(page, fg_color="transparent")
+        self._people_box.pack(fill="x")
+        first = self._profiles.current
+        row = _PersonRow(
+            self._people_box, colour=first.colour, placeholder=t(ME), person_id=first.id
+        )
+        if first.name:
+            row.entry.insert(0, first.name)
+        row.pack(anchor="w")
+        self._person_rows = [row]
+        self.add_person_link = ctk.CTkLabel(
+            page,
+            text=t(ADD_PERSON),
+            font=theme.font(DETAIL_SIZE, underline=True),
+            text_color=theme.LINK,
+            cursor="hand2",
+        )
+        self.add_person_link.pack(anchor="w", pady=(14, 0))
+        self.add_person_link.bind("<Button-1>", lambda _event: self.add_person_row())
+        self.people_problem = text_label(page, "", size=SMALL_SIZE, color=theme.DANGER)
+        self.people_problem.pack(anchor="w", pady=(8, 0))
+        return page
+
+    def add_person_row(self) -> _PersonRow | None:
+        """"＋ Add another person": one more name and colour (at most MAX_EXTRA_PEOPLE)."""
+        if len(self._person_rows) > MAX_EXTRA_PEOPLE:
+            return None
+        taken = [*self._profiles.people]
+        taken += [
+            Profile(id=-1 - index, colour=row.colour, created_at=_EPOCH)
+            for index, row in enumerate(self._person_rows)
+        ]
+        row = _PersonRow(
+            self._people_box,
+            colour=next_colour(taken),
+            placeholder=t(NAME_PLACEHOLDER),
+            person_id=None,
+        )
+        row.pack(anchor="w", pady=(_PERSON_ROW_GAP, 0))
+        self._person_rows.append(row)
+        if len(self._person_rows) > MAX_EXTRA_PEOPLE:
+            self.add_person_link.pack_forget()
+        self._steps.refit()
+        row.entry.focus_set()
+        return row
+
+    @property
+    def person_rows(self) -> tuple[_PersonRow, ...]:
+        return tuple(self._person_rows)
+
+    async def _save_people(self) -> None:
+        """Step 2's Next: the first person's name (empty: "Me") and colour, then the others:
+        added, or changed when Back led here again (a name taken out again: that person goes).
+        A name that can't be saved keeps the step, saying why."""
+        rows = list(self._person_rows)
+        names = [row.name for row in rows]
+        problem = people_problem(names)
+        if problem is not None:
+            self.people_problem.configure(text=problem)
+            return
+        self.people_problem.configure(text="")
+        self._set_nav_state("disabled")
+        editor = self._profiles
+        try:
+            first = rows[0]
+            if first.person_id is not None:
+                await editor.update(first.person_id, name=names[0] or None, colour=first.colour)
+            for row, name in zip(rows[1:], names[1:], strict=True):
+                if name.strip():
+                    if row.person_id is None:
+                        row.person_id = (await editor.add(name, row.colour)).id
+                    else:
+                        await editor.update(row.person_id, name=name, colour=row.colour)
+                elif row.person_id is not None:
+                    await editor.remove(row.person_id)
+                    row.person_id = None
+        except ProfileError as exc:
+            if self.winfo_exists():
+                self.people_problem.configure(text=str(exc))
+                self._set_nav_state("normal")
+            return
+        if not self.winfo_exists():
+            return
+        self._set_nav_state("normal")
+        self._show_page(next_page(Page.PEOPLE, import_shows=self._import_shows))
 
     def _build_airdates(self, master: Any) -> ctk.CTkFrame:
         page = ctk.CTkFrame(master, fg_color="transparent")
@@ -475,7 +679,11 @@ class WelcomeDialog(ctk.CTkToplevel):
         heading = _page_heading(page, t(AIRDATES_IMPORT_HEADING), Page.AIRDATES_IMPORT)
         self._headings.append(heading)
         self._airdates_panel = AirdatesImportPanel(
-            page, airdates=airdates, library=library, on_done=self._on_imported
+            page,
+            airdates=airdates,
+            library=library,
+            profile_id=self._profiles.current.id,  # the first person, selected
+            on_done=self._on_imported,
         )
         self._airdates_panel.pack(fill="x", pady=(BLOCK_GAP, 0))
         return page
@@ -570,12 +778,14 @@ class WelcomeDialog(ctk.CTkToplevel):
 
     def _keep_tallest_size(self) -> None:
         """Fix the dialog at its tallest (the downloads step with the torrent program's button and
-        the folder row, or the airdates.tv review with every kind of line), so it doesn't change size
+        the folder row, the airdates.tv review with every kind of line, or the people step with
+        every extra person's row: those are taken out again), so it doesn't change size
         between steps or while a step changes. The download cards' area takes the height of the
         cards with the NAS / other computer form folded; with the form open they scroll. On a
         screen too small for that (`max_dialog_height`) the dialog is as tall as it allows and a
         step taller than its room scrolls, with the scrollbar's room kept beside every step."""
         self._torrent.show(TorrentStatus.SETUP_NEEDED)  # its tallest: the line and a button
+        extra_rows = [self.add_person_row() for _ in range(MAX_EXTRA_PEOPLE)]  # every row
         self._remote_card.show_extra(False)
         self._folder_card.show_extra(True)
         self._airdates_panel.show_review(SIZING_PREVIEW)
@@ -597,6 +807,11 @@ class WelcomeDialog(ctk.CTkToplevel):
             self.update_idletasks()
             height = room
         width = steps.width_needed(scaling) + 2 * PAD_X
+        for row in extra_rows:
+            if row is not None:
+                row.destroy()
+        self._person_rows = self._person_rows[:1]
+        self.add_person_link.pack(anchor="w", pady=(14, 0), before=self.people_problem)
         self._torrent.show(TorrentStatus.LOOKING)
         self._select_mode(self._mode)
         self._airdates_panel.show_paste()
@@ -632,7 +847,9 @@ class WelcomeDialog(ctk.CTkToplevel):
             self._show_page(previous_page(self._page, import_shows=self._import_shows))
 
     def _on_right(self) -> None:
-        if self._page is Page.DOWNLOAD:
+        if self._page is Page.PEOPLE:
+            self._spawn(self._save_people(), "welcome-people")
+        elif self._page is Page.DOWNLOAD:
             self._spawn(self._save_download_choice(), "welcome-download-choice")
         elif self._page in (Page.AIRDATES, Page.AIRDATES_IMPORT):
             self._show_page(next_page(self._page, import_shows=self._import_shows))

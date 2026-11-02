@@ -417,6 +417,10 @@ class Settings(BaseModel):
     # The user's own OpenSubtitles API key, optional: when set it is used instead of the shipped
     # one (app/services/opensubtitles.py, `effective_api_key`). Header only, never logged.
     opensubtitles_own_key: StoredSecret = SecretStr("")
+    # The person whose followed series, watchlist and calendar show (app/services/profiles.py;
+    # the top band's name button). AirGrabber opens as the last one chosen; a person that is
+    # gone is the first one again. This PC's own: never in a backup.
+    current_profile: int = Field(default=1, ge=1)
 
     @property
     def remote_configured(self) -> bool:

@@ -519,19 +519,6 @@ class QuickDownloadResult(DomainModel):
     grab: GrabResult | None = None
 
 
-class MissingProgress(DomainModel):
-    """One step of a "Download missing" run: episode `index` of `total` is being searched
-    (`result` None, not `failed`), or is done (`result`), or its grab failed (`failed`; the
-    run stops)."""
-
-    show_id: int
-    index: int  # 1-based
-    total: int
-    episode: Episode
-    result: QuickDownloadResult | None = None
-    failed: bool = False
-
-
 class MissingRunReport(DomainModel):
     """What one "Download missing" run did, by episode label ("Severance S02E04")."""
 

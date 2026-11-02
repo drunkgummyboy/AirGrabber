@@ -44,7 +44,10 @@ class ImportShowsDialog(ctk.CTkToplevel):
         on_import: Callable[[list[str]], None],
         airdates: PreviewFinder,
         library: ShowImporter,
+        profile_id: int,
     ) -> None:
+        """`profile_id`: the person whose library the shows go into (the airdates.tv tab
+        imports by itself; `on_import` gets the names)."""
         super().__init__(master, fg_color=theme.BG)
         self._on_import = on_import
 
@@ -76,7 +79,10 @@ class ImportShowsDialog(ctk.CTkToplevel):
         self._tabs.pack(fill="both", expand=True, padx=PAD_X, pady=(_HEADING_GAP, PAD_Y))
         self._build_names(self._tabs.add(t(TAB_NAMES)))
         self._panel = AirdatesImportPanel(
-            self._tabs.add(t(TAB_AIRDATES)), airdates=airdates, library=library
+            self._tabs.add(t(TAB_AIRDATES)),
+            airdates=airdates,
+            library=library,
+            profile_id=profile_id,
         )
         self._panel.pack(fill="x", padx=_TAB_PAD, pady=(_TAB_PAD - 8, 0))
         self._tabs.set(t(TAB_NAMES))

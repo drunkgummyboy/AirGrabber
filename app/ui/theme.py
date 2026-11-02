@@ -23,7 +23,7 @@ from typing import Any, Protocol
 
 import customtkinter as ctk
 
-from app.models import Accent, ThemeMode
+from app.models import Accent, ProfileColour, ThemeMode
 from app.ui import palettes
 
 Pair = tuple[str, str]  # (light, dark)
@@ -97,6 +97,29 @@ ROW_SELECTED: Pair = ("#D7E3F0", "#2A3A4D")  # selected results-table row
 GOLD: Pair = ("#7A5200", "#FFD36A")  # the release list's ★ Recommended tag (dark gold in light)
 TEXT_FAINT: Pair = ("#7D8792", "gray40")  # skipped indexers, results hidden by the filters
 TEXT_QUIET: Pair = ("#58636F", "gray50")  # "No movies found." and other empty results
+
+# People (app/services/profiles.py): each person's colour, their avatar and name button, with a
+# white letter (ON_COLOR) on it; the swatches in the order of app.models.ProfileColour. Not
+# accent colours: they stay whatever the accent is.
+PERSON_BLUE: Pair = ("#4E6A85", "#4E6A85")
+PERSON_PINK: Pair = ("#A84D70", "#B5567A")
+PERSON_GREEN: Pair = ("#3F7A4B", "#47805A")
+PERSON_COPPER: Pair = ("#94561F", "#A0612B")
+PERSON_PURPLE: Pair = ("#7356A0", "#7A5AA8")
+_PERSON_TOKENS = {
+    ProfileColour.BLUE: "PERSON_BLUE",
+    ProfileColour.PINK: "PERSON_PINK",
+    ProfileColour.GREEN: "PERSON_GREEN",
+    ProfileColour.COPPER: "PERSON_COPPER",
+    ProfileColour.PURPLE: "PERSON_PURPLE",
+}
+
+
+def person_colour(colour: ProfileColour) -> Pair:
+    """A person's colour token (PERSON_*)."""
+    pair: Pair = globals()[_PERSON_TOKENS[colour]]
+    return pair
+
 
 # A pop-up's round ✕ (app/ui/borderless.py): a quiet disc on the window background, red with a
 # white ✕ (ON_COLOR) under the pointer.

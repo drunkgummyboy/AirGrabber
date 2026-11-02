@@ -19,6 +19,7 @@ from pathlib import Path
 from app.forge.clients.tmdb import TmdbError
 from app.forge.core.auto import (
     AutoRenamer,
+    NamingChoice,
     RenamerParts,
     WatchStatus,
     needs_message,
@@ -195,6 +196,22 @@ class RenamerTest(RenamerTestCase):
         assert not any(self.folders.downloads.iterdir())  # moved, and its release folder cleared
         [item] = self.queue.items
         assert item.status is ItemStatus.DONE and item.run_id is not None
+
+    async def test_the_owners_rename_names_each_download_as_its_band_chose(self) -> None:
+        await self.use(automatic="off")
+        file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        ids = await self.queue.add_watched([(file, self.folders.downloads)])
+        await self.queue.wait_idle()
+        flat = next(p for p in await PresetRepo(self.db).list() if p.name == "Movie (Flat)")
+        auto = self.renamer(Clock())
+        await auto.rename(
+            ids,
+            source=RunSource.APP,
+            naming={ids[0]: NamingChoice(flat, flat.format, flat.options)},
+        )
+        assert (self.folders.movies / "Dune (2021).mkv").exists()  # flat, still in the library
+        [run] = await self.history.list_runs()
+        assert run.preset_name == "Movie (Flat)"
 
     async def test_a_sure_movie_is_moved_into_the_movies_folder(self) -> None:
         await self.use()

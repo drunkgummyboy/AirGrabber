@@ -1,20 +1,23 @@
-"""Settings › MediaForge: the sections of AirGrabber's Settings that belong to Forge
-(docs/forge/INTEGRATION.md 3.7).
+"""MediaForge's Settings sections: the pages of its own Settings window
+(app/forge/ui/settings_window.py; docs/forge/INTEGRATION.md 3.7, the owner's decision of
+2026-11-02: MediaForge has its own Settings; what it shares with AirGrabber (language, theme,
+the TMDB key, updates, tray, Start with Windows) stays in AirGrabber's Settings only).
 
-`app/ui/settings_dialog.py` only has a hook: its sidebar's third group, FORGE_GROUP, lists
-FORGE_SECTIONS in order, and it builds each one with its `build(page, forge)`. A later Forge
-section is one more line in FORGE_SECTIONS (its own module, imported lazily by its builder);
-the dialog doesn't change.
+The window's sidebar lists FORGE_SECTIONS in order (FORGE_GROUP is its label), and it builds
+each one with its `build(page, forge)`. A later Forge section is one more line in
+FORGE_SECTIONS (its own module, imported lazily by its builder); the window doesn't change.
 
-A builder gets the dialog's page for its section (`SettingsPage`: heading and muted line done;
-`box()` / `add()` below them) and AirGrabber's ForgeRuntime, and returns a ForgeSectionPart. The
-sections apply on Settings' Save, like the rest of the dialog (D9): `problem()` is asked before
-anything is stored, `save()` after AirGrabber's own settings were stored; Cancel and ✕ change
-nothing. A section waits for `forge.start()` (Forge may not have started yet) and says so while
-Forge is NOT_READY or FAILED.
+A builder gets the window's page for its section (app/ui/settings_layout.py's `SettingsPage`:
+heading and muted line done; `box()` / `add()` below them; `page.look` = the window's copper
+look, `section_look(page)`) and AirGrabber's ForgeRuntime, and returns a ForgeSectionPart. The
+sections apply on the window's Save (D9): `problem()` is asked of every section before anything
+is stored, then each `save()`; Cancel and ✕ change nothing. A section waits for `forge.start()`
+(Forge may not have started yet) and says so while Forge is NOT_READY or FAILED.
 
 The first section, **Library & watching**, is MediaForge's Settings › Library tab
-(`ui/library_tab.py`): the download folders to watch (add / remove), "Use AirGrabber's downloads"
+(`ui/library_tab.py`): the download folders to watch (add / remove), what is ignored (the
+queue's Ignore: each entry with "Stop ignoring", applied on Save like the rest; app/forge/core/
+ignored.py's IgnoreService, `services.ignored`), "Use AirGrabber's downloads"
 with AirGrabber's folders and why each is (not) watched, a suggested one's Add, and what to choose
 (B-01, app/forge/core/airgrabber_folders.py), the Series and Movies library
 folders (Browse), renaming on its own Off / Trial / On (On straight from Off becomes Trial first),
@@ -41,6 +44,7 @@ import customtkinter as ctk
 
 from app.forge.core.library import NESTED, OVERLAP, library_problems
 from app.forge.models.settings import ForgeSettings
+from app.forge.ui.look import forge_look
 from app.forge.ui.settings_menu import MENU_ICON, MENU_NOTE, SECTION_MENU, build_menu
 from app.forge.ui.settings_naming import NAMING_ICON, NAMING_NOTE, SECTION_NAMING, build_naming
 from app.i18n import N_, t
@@ -50,14 +54,16 @@ from app.ui.tasks import spawn
 if TYPE_CHECKING:
     import asyncio
 
+    from app.forge.models.ignored import IgnoredPath
+
     from app.forge.runtime import ForgeRuntime
     from app.forge.ui.library_page import Mode, SettingsSource
-    from app.ui.settings_dialog import SettingsBox, SettingsPage
+    from app.ui.settings_layout import SettingsBox, SettingsPage
 
 log = logging.getLogger(__name__)
 
-# This module is imported with the Settings dialog, at AirGrabber's start: it imports nothing of
-# Forge's beyond its settings model and folder rules (the Library page's texts are imported
+# Light at import (MediaForge's Settings window imports it; AirGrabber's start doesn't): nothing
+# of Forge's beyond its settings model and folder rules (the Library page's texts are imported
 # where they are used), so Forge's core, forge.db and guessit stay unloaded (INTEGRATION.md 3.6).
 
 # -- the registry -------------------------------------------------------------------------------
@@ -66,8 +72,13 @@ FORGE_GROUP = N_("MediaForge")  # the sidebar group's label
 SECTION_LIBRARY = N_("Library & watching")
 
 
+def section_look(page: SettingsPage) -> theme.Look:
+    """The look a section paints its accent with: its page's (the window's copper look)."""
+    return forge_look() if page.look is None else page.look
+
+
 class ForgeSectionPart(Protocol):
-    """What the dialog asks of a built Forge section when Save is clicked."""
+    """What the Settings window asks of a built Forge section when Save is clicked."""
 
     def problem(self) -> str | None:
         """Why Save can't store this section's changes (translated), or None. Asked before
@@ -109,6 +120,11 @@ AIRGRABBER_HINT = N_(
     "a suggested folder is only watched once you add it."
 )
 USE_AIRGRABBER_TEXT = N_("Use AirGrabber's downloads")
+IGNORED_TITLE = N_("Ignored")
+IGNORED_TEXT = N_("Files and folders Auto-rename leaves alone.")
+NOTHING_IGNORED = N_("Nothing ignored.")
+STOP_IGNORING = N_("Stop ignoring")
+FOLDER_MARK = "📁"  # before an ignored folder
 ADD_SUGGESTED = N_("Add")
 
 # What this section edits; Save stores only the ones changed here.
@@ -128,6 +144,8 @@ _ROW_GAP = 8
 _LABEL_WIDTH = 90  # "Series" / "Movies"
 _PATH_WRAP = 330  # a folder's path next to its label and button (CTk units)
 _LIST_WRAP = 420  # a watched folder's path next to its Remove button
+_STOP_WIDTH = 150  # "Stop ignoring"
+_IGNORED_WRAP = 380  # an ignored path next to its Stop ignoring button
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
 
 
@@ -148,11 +166,29 @@ class _Parts(Protocol):
     def settings(self) -> SettingsSource: ...
 
 
+class IgnoredSource(Protocol):
+    """What the section needs of IgnoreService (app/forge/core/ignored.py)."""
+
+    @property
+    def entries(self) -> tuple[IgnoredPath, ...]: ...
+
+    def subscribe(
+        self, listener: Callable[[tuple[IgnoredPath, ...]], None]
+    ) -> Callable[[], None]: ...
+
+    async def stop_ignoring(self, path: Path) -> bool: ...
+
+
 AskFolder = Callable[[str, str], str]  # (title, start folder) → the chosen folder, or ""
 
 
 def _same_folder(a: str, b: str) -> bool:
     return os.path.normcase(a.rstrip("\\/")) == os.path.normcase(b.rstrip("\\/"))
+
+
+def ignored_text(entry: IgnoredPath) -> str:
+    """An ignored entry as the list shows it: the path, a folder with 📁 before it."""
+    return f"{FOLDER_MARK}  {entry.path}" if entry.folder else str(entry.path)
 
 
 # -- Library & watching ---------------------------------------------------------------------------
@@ -168,6 +204,7 @@ class LibrarySection:
     ) -> None:
         self._page = page
         self._forge = forge
+        self._look = section_look(page)
         self.ask_folder: AskFolder = ask_folder if ask_folder is not None else self._ask_folder
         self._settings: SettingsSource | None = None
         self._unsubscribe: Callable[[], None] | None = None
@@ -196,6 +233,17 @@ class LibrarySection:
         watch.add(self.watch_list)
         self.add_button = self._button(watch.body, t(ADD_FOLDER), self.add_watch_folder)
         watch.add(self.add_button, gap=_ROW_GAP + 2, sticky="w")
+
+        # What Auto-rename leaves alone (the queue's Ignore); Stop ignoring waits for Save.
+        self._ignored: IgnoredSource | None = None
+        self._ignored_entries: tuple[IgnoredPath, ...] = ()
+        self._unignore: list[Path] = []  # stopped ignoring in the form (stored on Save)
+        self._unsubscribe_ignored: Callable[[], None] | None = None
+        ignored = page.box(t(IGNORED_TITLE), t(IGNORED_TEXT))
+        # Never empty (an empty CTkFrame keeps its default 200 units): "Nothing ignored." then.
+        self.ignored_list = ctk.CTkFrame(ignored.body, fg_color="transparent")
+        self.ignored_list.grid_columnconfigure(0, weight=1)
+        ignored.add(self.ignored_list)
 
         # AirGrabber's downloads (B-01): the switch, AirGrabber's folders and why, what to choose.
         self._use_chosen: bool | None = None  # None: not chosen (on unless brought over)
@@ -258,11 +306,11 @@ class LibrarySection:
             height=dialog_kit.BUTTON_HEIGHT,
             corner_radius=dialog_kit.BUTTON_RADIUS,
             font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
-            fg_color=theme.SURFACE,
-            selected_color=theme.SELECTED,
-            selected_hover_color=theme.SELECTED_HOVER,
-            unselected_color=theme.SURFACE,
-            unselected_hover_color=theme.CHIP_HOVER,
+            fg_color=self._look.SURFACE,
+            selected_color=self._look.SELECTED,
+            selected_hover_color=self._look.SELECTED_HOVER,
+            unselected_color=self._look.SURFACE,
+            unselected_hover_color=self._look.CHIP_HOVER,
             text_color=theme.BUTTON_TEXT,
             dynamic_resizing=False,
             command=self._mode_clicked,
@@ -286,7 +334,7 @@ class LibrarySection:
         ):
             options.add(self._checkbox(options.body, t(text), variable), gap=_ROW_GAP, sticky="w")
 
-        self._content: list[SettingsBox] = [watch, airgrabber, library, rename, options]
+        self._content: list[SettingsBox] = [watch, ignored, airgrabber, library, rename, options]
 
         # The foot: hidden until something is put in it (F-27's "Remove the old MediaForge").
         self.foot = ctk.CTkFrame(frame, fg_color="transparent")
@@ -304,14 +352,14 @@ class LibrarySection:
 
     # --- widgets -------------------------------------------------------------------------------
 
-    @staticmethod
-    def _button(master: Any, text: str, command: Callable[[], None]) -> ctk.CTkButton:
-        button = dialog_kit.secondary_button(master, text, command, width=_BUTTON_WIDTH)
+    def _button(self, master: Any, text: str, command: Callable[[], None]) -> ctk.CTkButton:
+        button = dialog_kit.secondary_button(
+            master, text, command, width=_BUTTON_WIDTH, look=self._look
+        )
         button.configure(text_color=theme.BUTTON_TEXT)
         return button
 
-    @staticmethod
-    def _checkbox(master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
+    def _checkbox(self, master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
         return ctk.CTkCheckBox(
             master,
             text=text,
@@ -322,13 +370,13 @@ class LibrarySection:
             checkbox_height=22,
             corner_radius=6,
             font=theme.font(dialog_kit.DETAIL_SIZE),
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            border_color=theme.EDGE,
+            fg_color=self._look.ACCENT,
+            hover_color=self._look.ACCENT_HOVER,
+            border_color=self._look.EDGE,
         )
 
     def _ask_folder(self, title: str, start: str) -> str:
-        # Native modal dialog: the event loop pauses until it closes (as the dialog's Browse).
+        # Native modal dialog: the event loop pauses until it closes (as Settings' Browse).
         return filedialog.askdirectory(
             title=title,
             parent=self._page.frame.winfo_toplevel(),
@@ -355,6 +403,11 @@ class LibrarySection:
 
     def _ready(self, settings: SettingsSource) -> None:
         self._settings = settings
+        source: IgnoredSource | None = getattr(self._forge.services, "ignored", None)
+        if source is not None:
+            self._ignored = source
+            self._ignored_entries = source.entries
+            self._unsubscribe_ignored = source.subscribe(self._ignored_changed)
         self._load(settings.current)
         self._unsubscribe = settings.subscribe(self._saved_elsewhere)
         first_gap = self.waiting.frame.grid_info().get("pady")
@@ -379,6 +432,9 @@ class LibrarySection:
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
+        if self._unsubscribe_ignored is not None:
+            self._unsubscribe_ignored()
+            self._unsubscribe_ignored = None
 
     # --- the form --------------------------------------------------------------------------------
 
@@ -471,6 +527,7 @@ class LibrarySection:
             self._button(
                 self.watch_list, t(REMOVE), functools.partial(self.remove_watch_folder, folder)
             ).grid(row=row_no, column=1, sticky="e", padx=(10, 0), pady=pady)
+        self._refresh_ignored()
         self._refresh_airgrabber()
         for kind, folder in self._folders.items():
             self.folder_labels[kind].configure(
@@ -493,6 +550,67 @@ class LibrarySection:
         else:
             label.grid_remove()
 
+    # --- ignored files and folders ------------------------------------------------------------
+
+    @property
+    def ignored_shown(self) -> list[IgnoredPath]:
+        """The ignored entries the box lists (without those stopped in the form)."""
+        stopped = {os.path.normcase(str(path)) for path in self._unignore}
+        return [
+            e for e in self._ignored_entries if os.path.normcase(str(e.path)) not in stopped
+        ]
+
+    @property
+    def unignored(self) -> list[Path]:
+        """What Save stops ignoring."""
+        return list(self._unignore)
+
+    def stop_ignoring(self, path: Path) -> None:
+        """Stop ignoring `path` (stored on Save, like the rest of the section)."""
+        if all(os.path.normcase(str(path)) != os.path.normcase(str(p)) for p in self._unignore):
+            self._unignore.append(path)
+        self._refresh_ignored()
+
+    def _ignored_changed(self, entries: tuple[IgnoredPath, ...]) -> None:
+        """Ignored (or stopped) elsewhere meanwhile: the list follows."""
+        if not self.waiting_label.winfo_exists():
+            return
+        self._ignored_entries = entries
+        keys = {os.path.normcase(str(e.path)) for e in entries}
+        self._unignore = [p for p in self._unignore if os.path.normcase(str(p)) in keys]
+        self._refresh_ignored()
+
+    def _refresh_ignored(self) -> None:
+        for child in self.ignored_list.winfo_children():
+            child.destroy()
+        shown = self.ignored_shown
+        if not shown:
+            ctk.CTkLabel(
+                self.ignored_list,
+                text=t(NOTHING_IGNORED),
+                font=theme.font(_TEXT_SIZE),
+                text_color=theme.TEXT_MUTED,
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+        for row_no, entry in enumerate(shown):
+            pady = (0 if row_no == 0 else _ROW_GAP // 2, 0)
+            ctk.CTkLabel(
+                self.ignored_list,
+                text=ignored_text(entry),
+                font=theme.font(_TEXT_SIZE),
+                text_color=theme.TEXT,
+                anchor="w",
+                justify="left",
+                wraplength=_IGNORED_WRAP,
+            ).grid(row=row_no, column=0, sticky="w", pady=pady)
+            button = self._button(
+                self.ignored_list,
+                t(STOP_IGNORING),
+                functools.partial(self.stop_ignoring, entry.path),
+            )
+            button.configure(width=_STOP_WIDTH)
+            button.grid(row=row_no, column=1, sticky="e", padx=(10, 0), pady=pady)
+
     def _use_on(self) -> bool:
         """Whether the form uses AirGrabber's downloads (as `ForgeSettings.airgrabber_on`)."""
         if self._use_chosen is not None:
@@ -513,6 +631,7 @@ class LibrarySection:
         on = self._use_on()
         self._use.set(on)
         if self._settings is None:
+            self.airgrabber_list.grid_remove()
             return
         draft = self._draft_settings()
         row_no = 0
@@ -560,6 +679,13 @@ class LibrarySection:
                 sticky="w",
                 pady=(0 if row_no == 0 else _ROW_GAP, 0),
             )
+            row_no += 1
+        # An empty CTkFrame keeps its default size (200 units tall): without rows the list is
+        # taken out, so the box ends under the tick box.
+        if row_no:
+            self.airgrabber_list.grid()
+        else:
+            self.airgrabber_list.grid_remove()
 
     # --- changes (kept in the form until Save) ---------------------------------------------------
 
@@ -636,10 +762,16 @@ class LibrarySection:
 
     async def save(self) -> str | None:
         changes = self.changes()
-        if self._settings is None or not changes:
+        stopped = list(self._unignore)
+        if self._settings is None or not (changes or stopped):
             return None
         try:
-            await self._settings.update(**changes)
+            if changes:
+                await self._settings.update(**changes)
+            if stopped and self._ignored is not None:
+                for path in stopped:
+                    await self._ignored.stop_ignoring(path)
+                self._unignore = [p for p in self._unignore if p not in stopped]
         except Exception as exc:  # a bad value, or forge.db couldn't be written
             # The type only: a message could name a folder (with the user's name in it).
             log.error("MediaForge's settings couldn't be saved (%s)", type(exc).__name__)
@@ -651,7 +783,7 @@ def _build_library(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:
     return LibrarySection(page, forge)
 
 
-# The MediaForge group's sections, in the sidebar's order.
+# MediaForge's Settings sections, in the sidebar's order.
 FORGE_SECTIONS: dict[str, ForgeSection] = {
     SECTION_LIBRARY: ForgeSection("📁", LIBRARY_NOTE, _build_library),
     SECTION_NAMING: ForgeSection(NAMING_ICON, NAMING_NOTE, build_naming),

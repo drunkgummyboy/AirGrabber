@@ -10,8 +10,9 @@ a copper line under the one shown — Queue (with the "needs you" count as a cop
 and Auto-rename; at its right end, as real buttons on the band's plain colour, the watching chip
 (the renamer's light and status, or a quiet "Auto-rename off"; a click shows Auto-rename), the
 Activity button, which opens the Activity panel over the top right of the pages (✕ or Escape
-closes it), and ⚙ (tooltip "Settings": AirGrabber's Settings at MediaForge › Library & watching,
-`on_more_settings`, which shows AirGrabber's window first when it is in the tray).
+closes it), and ⚙ (tooltip "Settings": MediaForge's own Settings window at its first section,
+`on_settings(None)`; the Auto-rename page's "More in Settings…" is `on_settings(SECTION_LIBRARY)`;
+the host opens app/forge/ui/settings_window.py).
 
 `ForgeHost` (app/forge/ui/host.py) makes it and fills it: `show_forge(services)` builds the pages
 (QueueView, HistoryView, and the Auto-rename page (LibraryPage) in a scrolling frame so "More in
@@ -55,6 +56,7 @@ from app.forge.ui.history_view import HistoryView
 from app.forge.ui.library_page import LibraryPage, light_colour
 from app.forge.ui.look import Pair, forge_look, mix
 from app.forge.ui.queue_view import QueueView
+from app.forge.ui.settings_pages import SECTION_LIBRARY
 from app.forge.ui.widgets.chips import fit_text, round_rect
 from app.i18n import N_, number, t
 from app.ui import palettes, tasks, theme
@@ -492,7 +494,8 @@ class ForgeBand(ctk.CTkFrame):
 
 class ForgeWindow(ctk.CTkToplevel):
     """`ForgeWindow(master, look=, geometry=)`; then `show_forge(services)` or `show_problem`.
-    The host sets `on_close` (the window's ✕: it hides the window) and `on_more_settings`."""
+    The host sets `on_close` (the window's ✕: it hides the window) and `on_settings(section)`
+    (MediaForge's Settings at `section`, None = the first one)."""
 
     def __init__(
         self,
@@ -505,7 +508,7 @@ class ForgeWindow(ctk.CTkToplevel):
         super().__init__(master, fg_color=self.look.BG)
         self.services: ForgeServices | None = None
         self.on_close: Callable[[], None] = self.withdraw
-        self.on_more_settings: Callable[[], None] = lambda: None
+        self.on_settings: Callable[[str | None], object] = lambda section: None
         self.queue: QueueView | None = None
         self.history: HistoryView | None = None
         self.library: LibraryPage | None = None  # the Auto-rename page
@@ -537,7 +540,7 @@ class ForgeWindow(ctk.CTkToplevel):
         self.band.on_page = self.show_page
         self.band.on_watch = self._status_clicked
         self.band.on_activity = self.toggle_activity
-        self.band.on_settings = lambda: self.on_more_settings()
+        self.band.on_settings = lambda: self.open_settings(None)
         self._hidden = tk.Frame(self)  # holds the Tabview's own tab row, never shown
         self.bind("<Escape>", lambda _event: self.hide_activity(), add="+")
         self.place_at(geometry)
@@ -623,7 +626,7 @@ class ForgeWindow(ctk.CTkToplevel):
             scroll,
             services.settings,
             services.auto,
-            lambda: self.on_more_settings(),
+            lambda: self.open_settings(SECTION_LIBRARY),
             look=look,
             presets=services.presets,
         )
@@ -741,6 +744,11 @@ class ForgeWindow(ctk.CTkToplevel):
         name = self.tabs.get()
         return next((key for key, text in self._page_names.items() if text == name), None)
 
+    def open_settings(self, section: str | None) -> None:
+        """⚙ (None: the first section) and "More in Settings…" (Library & watching): MediaForge's
+        Settings window, through the host's `on_settings`."""
+        self.on_settings(section)
+
     def show_page(self, page: Page) -> None:
         if self.tabs is None:
             return
@@ -837,11 +845,12 @@ class ForgeWindow(ctk.CTkToplevel):
 
     # --- what the host asks -------------------------------------------------------------------
 
-    def add_paths(self, paths: Sequence[Path]) -> None:
-        """Queue files and folders (drops, right-click "Open in MediaForge")."""
+    def add_paths(self, paths: Sequence[Path], *, preset: str | None = None) -> None:
+        """Queue files and folders (drops, right-click "Open in MediaForge"; `preset`: the
+        request's, for the files it adds)."""
         if self.queue is not None and paths:
             self.show_page("queue")
-            self.queue.add_paths(paths)
+            self.queue.add_paths(paths, preset=preset)
 
     def select_preset(self, name: str) -> None:
         if self.queue is not None:

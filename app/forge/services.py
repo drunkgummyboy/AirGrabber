@@ -6,8 +6,9 @@ queue, executor, undo, trailers, the move records and the automatic renamer. It 
 the renamer: `ForgeRuntime` (app/forge/runtime.py) does that once whoever shows Forge's state is
 listening.
 
-The window gets services, never repositories: `history`, `presets` and `matches` are thin
-wrappers over `app.forge.db`, so `app/forge/ui` never imports it.
+The window gets services, never repositories: `history`, `presets`, `matches` and `ignored` (what
+Auto-rename leaves alone, read at the start) are thin wrappers over `app.forge.db`, so
+`app/forge/ui` never imports it.
 
 Settings are saved with `settings.update(...)`; when a save changes one of `RENAMER_FIELDS`
 the renamer is told at once (`AutoRenamer.reconfigure`), so Settings' Save needs nothing more.
@@ -38,6 +39,7 @@ from app.forge.core.auto import AutoRenamer, RenamerParts
 from app.forge.core.executor import Executor
 from app.forge.core.history_service import HistoryService
 from app.forge.core.matcher import Resolver
+from app.forge.core.ignored import IgnoreService
 from app.forge.core.matches_service import MatchService
 from app.forge.core.moves import ForgeMoveService
 from app.forge.core.parser import parse_filename
@@ -49,6 +51,7 @@ from app.forge.core.undo import UndoService
 from app.forge.db.cache import CacheRepo
 from app.forge.db.database import Database, db_path
 from app.forge.db.history import HistoryRepo
+from app.forge.db.ignored import IgnoredRepo
 from app.forge.db.matches import MatchRepo
 from app.forge.db.moves import MoveRepository
 from app.forge.db.presets import PresetRepo
@@ -182,6 +185,8 @@ class ForgeServices:
         self.history = HistoryService(history_repo)
         self.presets = PresetService(PresetRepo(db))
         self.matches = MatchService(match_repo)
+        # What Auto-rename leaves alone (the queue's Ignore, Settings › Library & watching).
+        self.ignored = IgnoreService(IgnoredRepo(db), activity=self.activity)
         self.resolver = Resolver(tmdb, match_repo, activity=self.activity)
         self.queue_events = QueueEvents()
         self.queue = Queue(self.resolver, self.queue_events.emit)
@@ -207,6 +212,7 @@ class ForgeServices:
                 tmdb=tmdb,
                 settings=settings,
                 run_lock=self.run_lock,
+                ignored=self.ignored,
             ),
             activity=self.activity,
         )
@@ -254,6 +260,7 @@ class ForgeServices:
                 http=http,
                 airgrabber_settings=airgrabber_settings,
             )
+            await services.ignored.load()
             if settled:
                 services.activity.say(
                     tn(

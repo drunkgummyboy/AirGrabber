@@ -16,6 +16,10 @@ A row whose video MediaForge moved says where ("Renamed → Series › Gold Rush
 Each row has a ⋯ menu (`row_menu`): Open the folder (where MediaForge moved its video, else once
 it is found in "Where finished downloads end up", else greyed with the reason as tip), Download again… (⬇ Auto / ☰ Choose…), Get subtitles (the CC menu of
 app/ui/subtitle_control.py; its progress shows in the row) and Remove from list.
+
+Above the grabs (3.0.1), while one-click downloads wait in the download queue
+(app/services/download_queue.py), a small "Waiting (3)" group lists them, each with a ✕ that
+takes it out of the queue: closing the window a download was asked for in leaves it here.
 """
 
 from __future__ import annotations
@@ -41,12 +45,16 @@ from app.models import (
     FreeSpace,
     GrabOutcome,
     MediaType,
+    QueuedItem,
+    QueueEvent,
+    QueueKey,
     Show,
     SubtitleOffer,
 )
 from app.models.downloads import MovedTo
 from app.i18n import N_, month_short, number, t
 from app.services import DiscoveryService, DownloadStatusService, ImageCache, SettingsService
+from app.services.download_queue import DownloadQueue
 from app.services.download_status import Located
 from app.services.tmdb import TMDBError
 from app.ui import theme
@@ -90,10 +98,13 @@ NO_SHOW_TIP = N_("AirGrabber doesn't know this show any more")
 NO_SUBTITLES_TIP = N_(
     "Subtitles need the folder where finished downloads end up (Settings → Subtitles)"
 )
+WAITING_TEXT = N_("Waiting ({n})")
+DROP_TIP = N_("Remove from the queue")
 IMDB_TITLE_URL = "https://www.imdb.com/title/{}/"
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
 _POSTER = (40, 60)
 _STATE_WIDTH = 210
+_WAITING_ROW_HEIGHT = 36
 _DETAILS_WAIT_S = 5.0
 
 _STATE_COLORS: dict[DownloadState, theme.Color] = {
@@ -371,11 +382,13 @@ class DownloadsView(BaseView):
         on_open_show: Callable[[Show], None],
         on_open_film: Callable[[int], Awaitable[bool]] | None = None,
         actions: PageActions | None = None,
+        queue: DownloadQueue | None = None,
         **kwargs: Any,
     ) -> None:
         """`on_open_film(tmdb_id)`: opens a film's info window; False when it couldn't (the
         row then opens the film on IMDb). `actions`: the ⋯ menus' Download again… and Get
-        subtitles (greyed out without them)."""
+        subtitles (greyed out without them). `queue`: the download queue, whose waiting
+        downloads show at the top (none without it)."""
         super().__init__(master, **kwargs)
         self._on_open_film = on_open_film
         self._actions = actions
@@ -448,6 +461,14 @@ class DownloadsView(BaseView):
         self._body.grid(row=3, column=0, sticky="nsew", padx=5, pady=(0, 5))
         self._empty: MessagePanel | None = None
         self._loading: LoadingBar | None = None
+        # The downloads waiting in the queue, above the grabs (the body's first row).
+        self._queue = queue
+        self.waiting: WaitingGroup | None = None
+        self._unsubscribe_queue: Callable[[], None] = lambda: None
+        if queue is not None:
+            self.waiting = WaitingGroup(self._body, on_drop=queue.remove)
+            self._unsubscribe_queue = queue.subscribe(self._on_queue)
+            self._paint_waiting()
 
         self._unsubscribe = downloads.subscribe(self._on_overview)
         # Checks every 10 s only while the page is on screen.
@@ -460,17 +481,39 @@ class DownloadsView(BaseView):
             self._render(latest)
         elif not self._rows and self._loading is None:
             self._loading = LoadingBar(self._body)
-            self._loading.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+            self._loading.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
         await self._downloads.check()  # the listener renders it
 
     def destroy(self) -> None:
         self._unsubscribe()
+        self._unsubscribe_queue()
         self._downloads.set_visible(False)
         if self._open_task is not None:
             self._open_task.cancel()
         if self._menu_task is not None:
             self._menu_task.cancel()
         super().destroy()
+
+    # -- the downloads waiting in the queue ----------------------------------------------------
+
+    def _on_queue(self, _event: QueueEvent) -> None:
+        try:
+            if self.winfo_exists():
+                self._paint_waiting()
+        except tk.TclError:
+            pass  # the window is closing
+
+    def _paint_waiting(self) -> None:
+        """"Waiting (n)" and its downloads while any wait; nothing while none does."""
+        group, queue = self.waiting, self._queue
+        if group is None or queue is None:
+            return
+        items = queue.waiting
+        if items:
+            group.show_items(items)
+            group.grid(row=0, column=0, sticky="ew", padx=10, pady=(4, 8))
+        else:
+            group.grid_remove()
 
     # -- the filter and the list ---------------------------------------------------------------
 
@@ -580,7 +623,7 @@ class DownloadsView(BaseView):
                 self._empty = MessagePanel(
                     self._body, t(EMPTY_TITLE), t(EMPTY_TEXT), height=300
                 )
-                self._empty.grid(row=0, column=0, sticky="nsew")
+                self._empty.grid(row=1, column=0, sticky="nsew")
             return
         if self._empty is not None:
             self._empty.destroy()
@@ -603,7 +646,7 @@ class DownloadsView(BaseView):
                 on_menu=self.open_menu,
                 subtitles=subtitles,
             )
-            row.grid(row=index, column=0, sticky="ew", padx=10, pady=4)
+            row.grid(row=index + 1, column=0, sticky="ew", padx=10, pady=4)
             row.show_entry(entry, overview.program, now, order)
             self._rows.append(row)
         self._row_ids = [entry.record.id for entry in entries]
@@ -617,7 +660,7 @@ class DownloadsView(BaseView):
                 text_color=theme.TEXT_MUTED,
                 anchor="w",
             )
-            self._no_match.grid(row=0, column=0, sticky="w", padx=15, pady=15)
+            self._no_match.grid(row=1, column=0, sticky="w", padx=15, pady=15)
         elif not show and self._no_match is not None:
             self._no_match.destroy()
             self._no_match = None
@@ -671,6 +714,63 @@ class DownloadsView(BaseView):
         except (TMDBError, TimeoutError):
             log.info("No IMDb id for TMDB film %d; opening IMDb's search", entry.record.media_id)
         webbrowser.open(url)
+
+
+class WaitingGroup(ctk.CTkFrame):
+    """The downloads waiting in the queue: "Waiting (3)", then a slim row each (its label and
+    a ✕ that takes it out of the queue: `on_drop`)."""
+
+    def __init__(self, master: Any, *, on_drop: Callable[[QueueKey], object]) -> None:
+        super().__init__(master, fg_color="transparent")
+        self._on_drop = on_drop
+        self._shown: tuple[QueuedItem, ...] = ()
+        self.rows: list[ctk.CTkFrame] = []
+        self.drops: list[ctk.CTkButton] = []  # each row's ✕
+        self.grid_columnconfigure(0, weight=1)
+        self.title = ctk.CTkLabel(
+            self, text="", font=theme.font(13, bold=True), text_color=theme.TEXT_MUTED, anchor="w"
+        )
+        self.title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 2))
+
+    def show_items(self, items: Sequence[QueuedItem]) -> None:
+        shown = tuple(items)
+        if shown == self._shown:
+            return
+        self._shown = shown
+        self.title.configure(text=t(WAITING_TEXT, n=len(shown)))
+        for row in self.rows:
+            row.destroy()
+        self.rows, self.drops = [], []
+        for index, item in enumerate(shown, start=1):
+            row = ctk.CTkFrame(
+                self, fg_color=theme.SURFACE, corner_radius=8, height=_WAITING_ROW_HEIGHT
+            )
+            row.grid(row=index, column=0, sticky="ew", pady=2)
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                row, text=item.label, font=theme.font(13), text_color=theme.TEXT, anchor="w"
+            ).grid(row=0, column=0, sticky="w", padx=(14, 8), pady=4)
+            drop = ctk.CTkButton(
+                row,
+                text="✕",
+                width=28,
+                height=28,
+                corner_radius=6,
+                font=theme.font(13, bold=True),
+                fg_color="transparent",
+                hover_color=theme.CHIP_HOVER,
+                text_color=theme.TEXT_MUTED,
+                command=functools.partial(self._on_drop, item.key),
+            )
+            drop.grid(row=0, column=1, padx=(0, 8), pady=4)
+            add_tooltip(drop, t(DROP_TIP))
+            self.rows.append(row)
+            self.drops.append(drop)
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """The waiting downloads it lists, in order."""
+        return tuple(item.label for item in self._shown)
 
 
 class _Row(ctk.CTkFrame):

@@ -6,6 +6,8 @@ Reads followed_shows.json, episodes_cache.json, history.json and settings.json f
 (default: the current directory), whichever exist. The JSON files are never modified, and
 re-running is safe: shows and settings are upserted, history entries are de-duplicated.
 The 1.x per-show "auto" flag is not carried over: imported shows start with automatic downloads off.
+The followed shows go to the person selected in AirGrabber (the first person on a new database
+or when the selected one is gone); the history and settings are shared.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from pydantic import ValidationError
 
 from app.config import AppPaths
 from app.database import Database
-from app.models import DownloadRecord, Episode, MediaType, Settings, Show
+from app.models import FIRST_PROFILE_ID, DownloadRecord, Episode, MediaType, Settings, Show
 from app.models.tvmaze import TVMazeEpisode, TVMazeShow
 
 _HISTORY_KEY = re.compile(r"^(\d+)_S(\d+)E(\d+)$", re.IGNORECASE)
@@ -31,6 +33,7 @@ _HISTORY_KEY = re.compile(r"^(\d+)_S(\d+)E(\d+)$", re.IGNORECASE)
 
 @dataclass
 class ImportReport:
+    profile_id: int = FIRST_PROFILE_ID  # whose followed shows they became
     shows: int = 0
     episodes: int = 0
     history: int = 0
@@ -67,11 +70,19 @@ async def _import_settings(raw: dict[str, Any], db: Database, report: ImportRepo
     report.settings = True
 
 
+async def _selected_profile(db: Database) -> int:
+    """The person selected in AirGrabber; the first one when that names nobody."""
+    wanted = (await db.settings.load()).current_profile
+    people = await db.profiles.all()
+    return wanted if any(person.id == wanted for person in people) else FIRST_PROFILE_ID
+
+
 async def import_legacy(legacy_dir: Path, db: Database) -> ImportReport:
     report = ImportReport()
 
     if isinstance(raw_settings := _read_json(legacy_dir / "settings.json"), dict):
         await _import_settings(raw_settings, db, report)
+    report.profile_id = profile_id = await _selected_profile(db)
 
     followed: dict[str, Any] = _read_json(legacy_dir / "followed_shows.json") or {}
     episode_cache: dict[str, Any] = _read_json(legacy_dir / "episodes_cache.json") or {}
@@ -81,10 +92,11 @@ async def import_legacy(legacy_dir: Path, db: Database) -> ImportReport:
         except (ValidationError, ValueError, KeyError) as exc:
             report.problems.append(f"show {key} ({entry.get('name', '?')}): {exc}")
             continue
-        newly_tracked = await db.library.tracked_entry(show.id) is None
+        newly_followed = show.id not in await db.library.followed_ids()
         await db.library.save_show(show, episodes)
-        await db.library.track(show.id)  # 1.x "auto" flag ignored: every switch starts off in 2.x
-        if newly_tracked:  # what aired already counts as had (as in LibraryService.track)
+        # 1.x "auto" flag ignored: every switch starts off in 2.x.
+        await db.library.track(show.id, profile_id=profile_id)
+        if newly_followed:  # what aired already counts as had (as in LibraryService.track)
             now = datetime.now(UTC)
             await db.library.mark_aired_have(
                 show.id, now=now, today=now.astimezone().date(), when=now
@@ -130,7 +142,10 @@ def main() -> None:
     db_path = args.db or AppPaths.default().ensure().database
     report = asyncio.run(_run(args.legacy_dir, db_path))
     print(f"Imported into {db_path}")
-    print(f"  shows:    {report.shows} ({report.episodes} episodes)")
+    print(
+        f"  shows:    {report.shows} ({report.episodes} episodes), "
+        f"followed by person {report.profile_id}"
+    )
     print(f"  history:  {report.history} entries")
     print(f"  settings: {'yes' if report.settings else 'no settings.json found'}")
     for problem in report.problems:

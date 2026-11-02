@@ -1,12 +1,13 @@
-"""Missing episodes in the UI: the amber "3 missing", the "⬇ Download missing" button with the
-run states behind it, an episode's quiet mark ("● Missing", "● New", a grey ✓: `mark_label`)
-and the small option menus ("I already have this").
+"""Missing episodes in the UI: the amber "3 missing", "Download missing"'s texts and the run
+states behind it, an episode's quiet mark ("● Missing", "● New", a grey ✓: `mark_label`) and
+the small option menus ("I already have this").
 
-The main window runs "Download missing" (one run per show at a time) and keeps each show's run
-state in a `MissingRuns`; every button showing a show attaches to it, so a card or show window
-rebuilt mid-run (pages reload after every grab) picks the run's state up, and a finished run
-repaints whichever buttons show the show by then. Which episodes are missing is decided in
-app.services.missing.
+The main window runs "Download missing" (one run per show at a time; since 3.0.1 its episodes
+go into the download queue as one batch, `queued_run_report` sums up how it went) and keeps
+each show's run state in a `MissingRuns`; every My shows card showing a show attaches to it,
+so a card rebuilt mid-run (pages reload after every grab) picks the run's state up, and a
+finished run repaints whichever cards show the show by then. Which episodes are missing is
+decided in app.services.missing.
 """
 
 from __future__ import annotations
@@ -20,11 +21,9 @@ import customtkinter as ctk
 from PIL import Image
 
 from app.i18n import N_, t, tn
-from app.models import MissingRunReport, Show
+from app.models import MissingRunReport, QueueEvent, QueueState, Show
 from app.ui import theme
 from app.ui.borderless import disc_image
-from app.ui.download_control import CORNER_RADIUS, Action, Look, fit_text
-from app.ui.text_fit import SLACK, unscaled_width
 from app.ui.tooltip import add_tooltip
 
 MISSING_COLOR = theme.WARNING  # amber: something is missing rather than broken
@@ -36,7 +35,6 @@ MARK_DOT_GAP = 6
 
 # The texts are shown through t().
 DOWNLOAD_MISSING_TEXT = N_("⬇ Download missing")
-DOWNLOAD_MISSING_SHORT = (N_("⬇ Download"), "⬇")
 STARTING_TEXT = N_("Finding missing episodes…")
 STARTING_SHORT = N_("Starting…")
 FAILED_TEXT = N_("Couldn't download")
@@ -143,56 +141,49 @@ def have_status_text(show_name: str, count: int, *, have: bool) -> str:
 @dataclass(frozen=True, slots=True)
 class MissingRunState:
     """A show's "Download missing" run: working on episode `index` of `total` (0 = not
-    started yet), or finished with `report`."""
+    started yet), waiting in the download queue (`queued`), or finished with `report`."""
 
     index: int = 0
     total: int = 0
     report: MissingRunReport | None = None
+    queued: bool = False
 
     @property
     def working(self) -> bool:
         return self.report is None
 
 
-def missing_look(count: int, state: MissingRunState | None, *, with_count: bool) -> Look | None:
-    """How a "Download missing" button looks for the show's `count` missing episodes and its
-    run state; None = not shown (nothing missing and no run to tell about).
-
-    A run working or finished wins; a finished run's button starts another run while
-    episodes are still missing."""
-    action: Action | None = "download" if count > 0 else None
-    if state is not None and state.report is None:
-        index_texts = progress_texts(state.index, state.total)
-        return Look("label", index_texts[0], text_color=theme.TEXT_MUTED, short=index_texts[1:])
-    if state is not None and state.report is not None:
-        report = state.report
-        text, *short = outcome_texts(report)
-        if report.error is not None:
-            return Look(
-                "button", text, "transparent", theme.CHIP_HOVER, theme.DANGER,
-                action=action, short=tuple(short), border=theme.DANGER,
-            )
-        if _got(report):
-            return Look(
-                "button", text, theme.GRABBED, theme.ACCENT_HOVER, theme.ON_COLOR,
-                action=action, short=tuple(short),
-            )
-        return Look(
-            "button", text, "transparent", theme.CHIP_HOVER, theme.PENDING,
-            action=action, short=tuple(short), border=theme.PENDING,
-        )
-    if count <= 0:
-        return None
-    return Look(
-        "button",
-        download_missing_text(count if with_count else None),
-        action="download",
-        short=tuple(t(text) for text in DOWNLOAD_MISSING_SHORT),
+def queued_run_report(
+    show_id: int, total: int, events: Sequence[QueueEvent], left_over: int = 0
+) -> MissingRunReport:
+    """What a "Download missing" run did, from its episodes' last events in the download
+    queue: grabbed, downloaded already, nothing good enough yet; a failed grab's reason ends
+    it (the queue dropped the rest of the batch). `left_over`: missing beyond the run's cap."""
+    downloaded: list[str] = []
+    already: list[str] = []
+    not_found: list[str] = []
+    error: str | None = None
+    for event in events:
+        if event.state is QueueState.DONE:
+            grabbed = event.result is not None and event.result.grab is not None
+            (downloaded if grabbed else already).append(event.label)
+        elif event.state is QueueState.NOTHING:
+            not_found.append(event.label)
+        elif event.state is QueueState.FAILED and error is None:
+            error = event.message
+    return MissingRunReport(
+        show_id=show_id,
+        total=total,
+        downloaded=tuple(downloaded),
+        already=tuple(already),
+        not_found=tuple(not_found),
+        left_over=left_over,
+        error=error,
     )
 
 
 class RunView(Protocol):
-    """What shows a show's run state and follows it: a `MissingButton`, a My shows card."""
+    """What shows a show's run state and follows it: a My shows card."""
 
     @property
     def show_id(self) -> int: ...
@@ -203,8 +194,8 @@ class RunView(Protocol):
 
 
 class MissingRuns:
-    """The "Download missing" run state of every show, and the views (buttons, My shows cards)
-    showing them."""
+    """The "Download missing" run state of every show, and the views (My shows cards) showing
+    them."""
 
     def __init__(self) -> None:
         self._states: dict[int, MissingRunState] = {}
@@ -267,120 +258,6 @@ class MissingActions:
 # -- widgets -----------------------------------------------------------------------------------
 
 
-class MissingButton(ctk.CTkFrame):
-    """The "⬇ Download missing" button of one show; while a run works, "Downloading 2 of 3…";
-    then the run's outcome. Blank (but keeping its place) while nothing is missing."""
-
-    def __init__(
-        self,
-        master: Any,
-        *,
-        show: Show,
-        count: int,
-        actions: MissingActions,
-        with_count: bool,
-        height: int,
-        font_size: int,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(master, fg_color="transparent", height=height, **kwargs)
-        self.pack_propagate(False)
-        self.show_id = show.id
-        self._show = show
-        self._count = count
-        self._actions = actions
-        self._with_count = with_count
-        self._look: Look | None = None
-        self._painted = False
-        self._width: float | None = None  # unscaled, once laid out
-        self._font = theme.font(font_size, bold=True)
-        self._label_font = theme.font(font_size)
-        self._button = ctk.CTkButton(
-            self,
-            text="",
-            height=height,
-            corner_radius=CORNER_RADIUS,
-            font=self._font,
-            border_width=0,
-            command=self._click,
-        )
-        self._label = ctk.CTkLabel(
-            self, text="", height=height, font=self._label_font, text_color=theme.TEXT_MUTED
-        )
-        self._tip = add_tooltip(self._button, "")
-        self._label_tip = add_tooltip(self._label, "")
-        self.bind("<Configure>", self._on_resize, add="+")
-        actions.runs.attach(self)
-        self.repaint()
-
-    @property
-    def look(self) -> Look | None:
-        return self._look
-
-    def set_count(self, count: int) -> None:
-        if count != self._count:
-            self._count = count
-            self.repaint()
-
-    def repaint(self) -> None:
-        look = missing_look(
-            self._count, self._actions.runs.get(self.show_id), with_count=self._with_count
-        )
-        if self._painted and look == self._look:
-            return
-        previous, self._look, self._painted = self._look, look, True
-        if previous is None or look is None or previous.layout != look.layout:
-            self._button.pack_forget()
-            self._label.pack_forget()
-            if look is not None:
-                widget = self._label if look.layout == "label" else self._button
-                widget.pack(fill="both", expand=True)
-        if look is not None and look.layout == "button":
-            text_color = look.text_color or theme.ON_COLOR
-            self._button.configure(
-                fg_color=look.color,
-                hover_color=look.hover,
-                text_color=text_color,
-                text_color_disabled=text_color,
-                border_width=1 if look.border else 0,
-                border_color=look.border or theme.EDGE,
-                state="normal" if look.action else "disabled",
-            )
-        self._fit_text()
-
-    def _on_resize(self, event: Any) -> None:
-        if event.width > 1:
-            self._width = unscaled_width(self, event.width)
-            self._fit_text()
-
-    def _fit_text(self) -> None:
-        look = self._look
-        if look is None:
-            return
-        text = look.text
-        if look.layout == "label":
-            if self._width is not None:
-                room = self._width - 2 * CORNER_RADIUS - SLACK  # the label's own padding
-                text = fit_text(look.texts, room, self._label_font.measure)
-            self._label.configure(text=text)
-            self._label_tip.set_text(look.text if text != look.text else "")
-            return
-        if self._width is not None:
-            room = self._width - 2 * CORNER_RADIUS - SLACK
-            text = fit_text(look.texts, room, self._font.measure)
-        self._button.configure(text=text)
-        self._tip.set_text(look.text if text != look.text else "")
-
-    def _click(self) -> None:
-        look = self._look
-        if look is not None and look.action is not None:
-            self._actions.download(self._show)
-
-    def destroy(self) -> None:
-        self._actions.runs.detach(self)
-        super().destroy()
-
-
 def mark_dot(master: tk.Misc, color: theme.Color) -> ctk.CTkImage:
     """A MARK_DOT disc of `color` (light and dark), baked at the screen's scaling, with
     MARK_DOT_GAP see-through room right of it (the gap to the text beside it)."""
@@ -423,11 +300,19 @@ MenuItem = tuple[str, Callable[[], None]]
 @dataclass(frozen=True, slots=True)
 class MenuEntry:
     """A popup menu item that can be greyed out: `action` None = not available now, `tip`
-    says why (or what it does)."""
+    says why (or what it does). `image`: a picture before the text (a CTkImage: a person's
+    avatar); `checked`: a ✓ at the item's right end (the person selected); `separator`: a line
+    between items instead of an item (MENU_SEPARATOR)."""
 
     label: str
     action: Callable[[], None] | None
     tip: str = ""
+    image: Any = None
+    checked: bool = False
+    separator: bool = False
+
+
+MENU_SEPARATOR = MenuEntry("", None, separator=True)
 
 
 def _entry(item: MenuItem | MenuEntry) -> MenuEntry:
@@ -436,6 +321,10 @@ def _entry(item: MenuItem | MenuEntry) -> MenuEntry:
 MENU_ITEM_HEIGHT = 34
 MENU_FONT_SIZE = 14
 MENU_MIN_WIDTH = 200
+MENU_SEPARATOR_PAD = 8  # a separator line's room left and right
+MENU_SEPARATOR_GAP = 5  # … above and under it
+MENU_CHECK_WIDTH = 18  # a ✓ at an item's right end
+MENU_CHECK_PAD = 10
 
 
 def menu_position(
@@ -483,10 +372,13 @@ class PopupMenu:
         items: Sequence[MenuItem | MenuEntry],
         *,
         point: tuple[int, int] | None = None,
+        under: tuple[int, int, int, int] | None = None,
         look: theme.Look | None = None,
     ) -> None:
-        """`point`: open at the pointer (screen pixels) instead of under `anchor`. `look`: a
-        window's own accent tokens (the Forge window's copper) instead of AirGrabber's."""
+        """`point`: open at the pointer (screen pixels) instead of under `anchor`. `under`: open
+        under this part of `anchor` instead (x, y, width, height in screen pixels: a button
+        drawn on a canvas). `look`: a window's own accent tokens (the Forge window's copper)
+        instead of AirGrabber's."""
         edge = theme.EDGE if look is None else look.EDGE
         surface = theme.SURFACE if look is None else look.SURFACE
         menu_hover = theme.MENU_HOVER if look is None else look.MENU_HOVER
@@ -495,7 +387,8 @@ class PopupMenu:
         PopupMenu._open = self
         self._closed = False
         entries = [_entry(item) for item in items]
-        self.labels = tuple(entry.label for entry in entries)
+        self.labels = tuple(entry.label for entry in entries if not entry.separator)
+        self.checks: list[ctk.CTkLabel] = []  # the ✓ marks
         top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.pick(edge))
         top.withdraw()
         top.overrideredirect(True)
@@ -503,11 +396,19 @@ class PopupMenu:
         box = ctk.CTkFrame(top, fg_color=surface, corner_radius=0)
         box.pack(fill="both", expand=True, padx=1, pady=1)
         self.buttons: list[ctk.CTkButton] = []
+        first = True
         for entry in entries:
+            if entry.separator:
+                tk.Frame(box, height=1, bg=theme.pick(edge)).pack(
+                    fill="x", padx=MENU_SEPARATOR_PAD, pady=MENU_SEPARATOR_GAP
+                )
+                continue
             action = entry.action
             button = ctk.CTkButton(
                 box,
                 text=entry.label,
+                image=entry.image,
+                compound="left",
                 width=MENU_MIN_WIDTH,
                 height=MENU_ITEM_HEIGHT,
                 corner_radius=0,
@@ -520,7 +421,10 @@ class PopupMenu:
                 state="normal" if action is not None else "disabled",
                 command=(lambda action=action: self._choose(action)) if action else None,
             )
-            button.pack(fill="x", padx=4, pady=(4 if not self.buttons else 0, 0))
+            button.pack(fill="x", padx=4, pady=(4 if first else 0, 0))
+            first = False
+            if entry.checked:
+                self._check(button, action)
             if entry.tip:
                 add_tooltip(button, entry.tip)
             self.buttons.append(button)
@@ -541,11 +445,14 @@ class PopupMenu:
         if point is not None:
             x, y = point_position(point, size, bounds)
         else:
-            x, y = menu_position(
-                (anchor.winfo_rootx(), anchor.winfo_rooty(), anchor.winfo_width(), anchor.winfo_height()),
-                size,
-                bounds,
-            )
+            if under is None:
+                under = (
+                    anchor.winfo_rootx(),
+                    anchor.winfo_rooty(),
+                    anchor.winfo_width(),
+                    anchor.winfo_height(),
+                )
+            x, y = menu_position(under, size, bounds)
         top.geometry(f"+{x}+{y}")
         top.deiconify()
         top.lift()
@@ -554,6 +461,21 @@ class PopupMenu:
     @property
     def is_open(self) -> bool:
         return not self._closed
+
+    def _check(self, button: ctk.CTkButton, action: Callable[[], None] | None) -> None:
+        """A ✓ at `button`'s right end (a click on it is a click on the item)."""
+        mark = ctk.CTkLabel(
+            button,
+            text="✓",
+            font=theme.font(MENU_FONT_SIZE, bold=True),
+            text_color=theme.LINK,
+            fg_color="transparent",
+            width=MENU_CHECK_WIDTH,
+        )
+        mark.place(relx=1.0, rely=0.5, x=-MENU_CHECK_PAD, anchor="e")
+        if action is not None:
+            mark.bind("<Button-1>", lambda _event: self._choose(action), add="+")
+        self.checks.append(mark)
 
     def close(self) -> None:
         if self._closed:
@@ -602,11 +524,13 @@ def popup_menu(
     items: Sequence[MenuItem | MenuEntry],
     *,
     point: tuple[int, int] | None = None,
+    under: tuple[int, int, int, int] | None = None,
     look: theme.Look | None = None,
 ) -> PopupMenu | None:
     """A small menu of `items` ((label, action) or a MenuEntry, which may be greyed out with a
-    tip) under `anchor`, or at the pointer's `point`; none without items. `look`: a window's
-    own accent tokens (the Forge window's copper) instead of AirGrabber's."""
+    tip) under `anchor` (or `under` a part drawn on it), or at the pointer's `point`;
+    none without items. `look`: a window's own accent tokens (the Forge window's copper)
+    instead of AirGrabber's."""
     if not items:
         return None
-    return PopupMenu(anchor, items, point=point, look=look)
+    return PopupMenu(anchor, items, point=point, under=under, look=look)

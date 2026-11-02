@@ -10,7 +10,7 @@ stored mode applies at once.
 
 The remove action (`OldInstallRemover.remove`): "Remove the old MediaForge", offered once in the
 import result (app/forge/ui/import_step.py, through `ForgeHost.on_remove_old`) and in
-Settings › MediaForge › Library & watching while the old install is registered
+MediaForge Settings › Library & watching while the old install is registered
 (`RemoveOldBox`; there only once its data was brought over or when it has none, so no data is
 lost by removing it first). It reads the old entry's `UninstallString` and accepts it only when it is
 Windows PowerShell running `-File "<InstallLocation>\\src\\mediaforge\\uninstall.ps1"` with

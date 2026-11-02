@@ -310,15 +310,13 @@ NL: dict[str, str] = {
     "Empty folders": "Lege mappen",
     "After moving, deletes folders that are left empty":
         "Haalt na het verplaatsen de mappen weg die leeg zijn gebleven",
-    "Shows": "Series",
-    "Films": "Films",
     "Clear queue": "Wachtrij leegmaken",
     "Custom": "Aangepast",
     "Save as preset…": "Opslaan als voorinstelling…",
-    "Type a naming rule for this batch only; it isn't saved.":
-        "Typ een naamregel voor alleen deze ronde; die wordt niet bewaard.",
-    "Changed for this batch": "Aangepast voor deze ronde",
-    "Save to preset": "In voorinstelling opslaan",
+    "Type a naming rule for this item only; it isn't saved.":
+        "Typ een naamregel voor alleen dit item; die wordt niet bewaard.",
+    "Changed for this item": "Aangepast voor dit item",
+    "Save to preset": "Opslaan in voorinstelling",
     "Saved to the preset {name}": "Opgeslagen in de voorinstelling {name}",
     "Save as preset": "Opslaan als voorinstelling",
     "A name for the new preset:": "Een naam voor de nieuwe voorinstelling:",
@@ -563,24 +561,25 @@ NL: dict[str, str] = {
     "{program} saves AirGrabber's downloads here": "{program} bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's films here": "{program} bewaart de films van AirGrabber hier",
     "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in “Where "
-    "finished downloads end up” in Settings › Subtitles, or add the folder to the download "
-    "folders to watch.":
+    "finished downloads end up” in AirGrabber's Settings › Subtitles, or add the folder to the "
+    "download folders to watch.":
         "AirGrabber weet niet waar zijn voltooide downloads op deze pc terechtkomen. Vul “Waar "
-        "voltooide downloads terechtkomen” in bij Instellingen › Ondertitels, of voeg de map toe "
-        "aan de downloadmappen om te bewaken.",
+        "voltooide downloads terechtkomen” in bij de instellingen van AirGrabber › Ondertitels, "
+        "of voeg de map toe aan de downloadmappen om te bewaken.",
     "AirGrabber sends downloads to {program} on another computer. Add the folder where they "
     "show up on this PC (a shared network folder) to the download folders to watch, or fill in "
-    "“Where finished downloads end up” in Settings › Subtitles.":
+    "“Where finished downloads end up” in AirGrabber's Settings › Subtitles.":
         "AirGrabber stuurt downloads naar {program} op een andere computer. Voeg de map waar ze "
         "op deze pc verschijnen (een gedeelde netwerkmap) toe aan de downloadmappen om te "
-        "bewaken, of vul “Waar voltooide downloads terechtkomen” in bij Instellingen › "
-        "Ondertitels.",
+        "bewaken, of vul “Waar voltooide downloads terechtkomen” in bij de instellingen van "
+        "AirGrabber › Ondertitels.",
     "Download Station keeps AirGrabber's downloads in its own download folder. Add the shared "
     "folder where they show up on this PC to the download folders to watch, or fill in “Where "
-    "finished downloads end up” in Settings › Subtitles.":
+    "finished downloads end up” in AirGrabber's Settings › Subtitles.":
         "Download Station bewaart de downloads van AirGrabber in zijn eigen downloadmap. Voeg de "
         "gedeelde map waar ze op deze pc verschijnen toe aan de downloadmappen om te bewaken, of "
-        "vul “Waar voltooide downloads terechtkomen” in bij Instellingen › Ondertitels.",
+        "vul “Waar voltooide downloads terechtkomen” in bij de instellingen van AirGrabber › "
+        "Ondertitels.",
     "Suggested: {reason}": "Voorstel: {reason}",
     "This PC can reach it.": "Deze pc kan erbij.",
     "This PC can't reach it right now.": "Deze pc kan er nu niet bij.",
@@ -595,4 +594,36 @@ NL: dict[str, str] = {
     "switch it to On when you're happy.":
         "De downloads van AirGrabber komen nu ook terecht in {folder}. Vanzelf hernoemen staat "
         "weer op Proef: zet het op Aan als je tevreden bent.",
+    # app/forge/ui/settings_window.py (MediaForge's own Settings window)
+    "MediaForge Settings": "MediaForge-instellingen",
+    "Language, theme, TMDB key and updates are shared with AirGrabber.":
+        "Taal, thema, TMDB-sleutel en updates deel je met AirGrabber.",
+    "Open AirGrabber's Settings": "AirGrabber-instellingen openen",
+    # Ignoring files and folders (app/forge/core/ignored.py, queue_rows.py, queue_view.py,
+    # settings_pages.py)
+    "Ignore": "Negeren",
+    "Ignore this file": "Dit bestand negeren",
+    "Ignore these {n} files": "Deze {n} bestanden negeren",
+    "Ignore this whole folder": "Deze hele map negeren",
+    "Ignored: {name}. MediaForge won't pick it up again.":
+        "Genegeerd: {name}. MediaForge pakt het niet meer op.",
+    "Ignored": "Genegeerd",
+    "Files and folders Auto-rename leaves alone.":
+        "Bestanden en mappen die automatisch hernoemen met rust laat.",
+    "Nothing ignored.": "Niets genegeerd.",
+    "Stop ignoring": "Niet meer negeren",
+    # A preset per band (app/forge/ui/queue_view.py)
+    "For: {name}": "Voor: {name}",
+    "For: new files": "Voor: nieuwe bestanden",
+    "Use for all ▾": "Gebruiken voor alles ▾",
+    "All films ({n})": "Alle films ({n})",
+    "All shows ({n})": "Alle series ({n})",
+    "Everything in the queue ({n})": "Alles in de wachtrij ({n})",
+    " · doesn't fit": " · past niet",
+    "Used {preset} for {n} film": "Gebruikt {preset} voor {n} film",
+    "Used {preset} for {n} films": "Gebruikt {preset} voor {n} films",
+    "Used {preset} for {n} show": "Gebruikt {preset} voor {n} serie",
+    "Used {preset} for {n} shows": "Gebruikt {preset} voor {n} series",
+    "Used {preset} for {n} item": "Gebruikt {preset} voor {n} item",
+    "Used {preset} for {n} items": "Gebruikt {preset} voor {n} items",
 }

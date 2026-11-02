@@ -1,23 +1,42 @@
 """The queue: what will be renamed, to what, and Forge (ported from MediaForge's ui/queue_view.py;
 its pure part, the rows, is app/forge/ui/queue_rows.py). The owner's design:
-mockups/forge-chosen.html.
+mockups/forge-chosen.html, except its card's Shows | Films switch: since 3.0.1 every band has its
+own preset (the owner's decision of 2026-11-02), set on the card or with the band's chip.
 
 At the top a toolbar: "+ Files", "+ Folder ▾" (its menu: choose a folder, "Scan subfolders"),
 then "Clear queue", Preview and the big Forge button, which becomes the run's progress bar with
-Cancel next to it while a run goes. Under it the preset card: a Shows | Films switch (with each
-kind's count) that only picks which kind's preset the card shows and edits; the preset menu,
-"✎ Custom" (a one-off naming rule for this batch, not saved) and "Save as preset…"; the naming
-rule with its codes in copper and an example name; one line of option buttons (Extras: Poster,
-Season posters for shows, Trailer; Tidy up: Clean junk, Empty folders), and "Changed for this
-batch · Save to preset" at its end while the options or the rule differ from the preset.
+Cancel next to it while a run goes. Under it the preset card, for the band selected in the list
+(every band has its own preset; with nothing selected the first band is, with an empty queue
+the card shows the films' default "For: new files"): "For: {name}" (a show with its episode
+count, a film with its year) and "Use for all ▾" (its menu copies the band's choice to all films,
+all shows, or everything in the queue, each entry only where the choice fits; hidden with one
+band); the preset menu (the presets that fit the band's kind), "✎ Custom" (a one-off naming rule
+for this item, not saved) and "Save as preset…"; the naming rule with its codes in copper and an
+example name; one line of option buttons (Extras: Poster, Season posters for shows, Trailer;
+Tidy up: Clean junk, Empty folders), and "Changed for this item · Save to preset" at its end while
+the options or the rule differ from the preset.
 
 Then one list of shows and films (`queue_rows`), filtered by All / Needs you / Ready with their
 counts: a band per show with its episodes under it, a band per film; each band's status as a dot
-and a word, its buttons (Choose…, Rename, a done band's Undo) only under the pointer, except on a
-band that needs the owner. "Choose…" opens the match picker. Forge renames everything not
-waiting for the owner in one go: dropped files where they are, each with its own kind's preset
-(or that kind's Custom rule) in one run, and watched downloads into their library folder with the
-library's preset, through the automatic renamer (`services.auto.rename`). Forge runs one at a time
+and a word with its preset chip under it (always shown on a band not done; a click opens the
+presets that fit and sets that band's), its buttons (Ignore, Choose…, Rename, a done band's Undo)
+only under the pointer, except on a band that needs the owner. A click on a band selects it.
+"Choose…" opens the match picker. "Ignore" opens a small menu: "Ignore this file" (its files)
+and, when they sit in a subfolder of a watched folder, "Ignore this whole folder" (the download's
+own folder right under the watched one, `core.ignored.top_folder`); Auto-rename leaves them
+alone from then on (`services.ignored`, listed in Settings › Library & watching) and their rows
+leave the queue. Forge renames everything not
+waiting for the owner in one go: dropped files where they are, each band with its own preset (or
+its Custom rule) in one run, and watched downloads into their library folder with their band's
+preset, through the automatic renamer (`services.auto.rename(naming=…)`).
+
+Each band's `Choice` (preset, options, Custom rule) lives as long as its files are queued (in
+memory): the files of one show or film share one (`band_identity`); a new band starts with its
+kind's default (the one remembered for the kind, the last chosen, the library's, the first that
+fits), a watched download with its library's preset; presets read again keep each band's preset
+by name, else its default. Choosing a preset for a band remembers it as its kind's last. A
+right-click request's preset (`add_paths(paths, preset=)`) names the files it added;
+`select_preset(name)` alone names every band not done that it fits. Forge runs one at a time
 with the renamer (`services.run_lock`); closing the window while a run goes (`request_close`)
 stops it after its current file. Keys: Enter = Preview, Ctrl+Enter = Forge, Ctrl+Z = undo the
 last run, Up / Down = the selection; ignored while typing in a text field.
@@ -36,6 +55,7 @@ once and takes Explorer drops on itself (app/forge/ui/file_drops.py).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import logging
 import re
@@ -52,9 +72,12 @@ from typing import TYPE_CHECKING, Any, Concatenate
 import customtkinter as ctk
 
 from app.forge.clients.trailers import ToolInstallError
-from app.forge.core.auto import library_naming
+from app.forge.core.airgrabber_folders import watched_folders
+from app.forge.core.auto import NamingChoice, library_naming
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.formatter import render
+from app.forge.core.ignored import top_folder
+from app.forge.core.library import inside
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import PlanPart, build_mixed_plan, describe
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
@@ -80,7 +103,7 @@ from app.forge.ui.widgets.dialogs import ask_choice, ask_text
 from app.forge.ui.widgets.virtual_list import MONO_FAMILY, Row, Sizes, VirtualList, faded_fill
 from app.i18n import N_, number, t, tn
 from app.ui import tasks, theme
-from app.ui.missing_control import popup_menu
+from app.ui.missing_control import MenuEntry, popup_menu
 from app.ui.tooltip import add_tooltip
 
 if TYPE_CHECKING:
@@ -148,8 +171,17 @@ OPTION_GROUPS: tuple[tuple[str, tuple[OptionButtonSpec, ...]], ...] = (
         ),
     ),
 )
-KINDS: tuple[tuple[Kind, str], ...] = (("series", N_("Shows")), ("movies", N_("Films")))
 _KINDS: tuple[Kind, ...] = ("series", "movies")
+FOR_LINE = N_("For: {name}")
+FOR_NEW = N_("For: new files")
+USE_FOR_ALL = N_("Use for all ▾")
+ALL_FILMS = N_("All films ({n})")
+ALL_SHOWS = N_("All shows ({n})")
+EVERYTHING = N_("Everything in the queue ({n})")
+NO_FIT = N_(" · doesn't fit")
+CHANGED = N_("Changed for this item")
+CUSTOM_TIP = N_("Type a naming rule for this item only; it isn't saved.")
+_FOR_MAX = 300  # the "For:" line's name at most (CTk units; cut with "…")
 FILTERS: tuple[tuple[Show, str], ...] = (
     ("all", N_("All")),
     ("needs", N_("Needs you")),
@@ -227,12 +259,25 @@ def fits(preset: Preset, kind: Kind) -> bool:
 
 @dataclass
 class Choice:
-    """What names one kind: the preset chosen for it, its options for this batch and the Custom
-    rule (None: the preset's own)."""
+    """What names one band: the preset chosen for it, its options for this item and the Custom
+    rule (None: the preset's own). `chosen`: the owner (or a request) chose it, so the band's
+    other files follow it."""
 
     preset: Preset | None = None
     options: PresetOptions = field(default_factory=PresetOptions)
     custom: str | None = None
+    chosen: bool = False
+
+    def fits(self, kind: Kind) -> bool:
+        """Whether it can name `kind`: a Custom rule names anything."""
+        return self.custom is not None or (self.preset is not None and fits(self.preset, kind))
+
+    @property
+    def label(self) -> str:
+        """Its name as the chip and the Activity panel say it (translated)."""
+        if self.custom is not None:
+            return "✎ " + t("Custom")
+        return self.preset.name if self.preset is not None else "…"
 
     @property
     def rule(self) -> str:
@@ -282,6 +327,22 @@ def _merge(a: RunResult, b: RunResult) -> RunResult:
     )
 
 
+type BandId = tuple[Kind, str, int | None]  # a show or film: kind, title (casefolded), year
+
+
+def band_identity(item: QueueItem) -> BandId:
+    """The band a file belongs to whatever its status: its show or film (as queue_rows groups)."""
+    return item_kind(item), item.media.title.casefold(), item.media.year
+
+
+def band_name(items: Sequence[QueueItem]) -> str:
+    """The "For:" line's name: a show with its episodes, a film with its year."""
+    media = items[0].media
+    if item_kind(items[0]) == "series":
+        return f"{media.title} · " + tn("{n} episode", "{n} episodes", len(items))
+    return f"{media.title} ({media.year})" if media.year else media.title
+
+
 def _set_text(widget: Any, text: str) -> None:
     """A CTk widget's text, configured only when it changed: CTk redraws on every configure."""
     if widget.cget("text") != text:
@@ -313,6 +374,13 @@ def forge_label(pending: int) -> str:
     return "⚒ " + (tn("Forge {n} file", "Forge {n} files", pending) if pending else t("Forge"))
 
 
+IGNORE_FOLDER = N_("Ignore this whole folder")
+
+
+def _same(a: Path, b: Path) -> bool:
+    return str(a).casefold() == str(b).casefold()
+
+
 def display_name(item: QueueItem) -> str:
     """How the progress bar names a file: the episode's or the film's title."""
     media = item.media
@@ -329,8 +397,9 @@ class QueueView(ctk.CTkFrame):
         super().__init__(master, fg_color=self.look.BG, corner_radius=0)
         self.services = services
         self.presets: list[Preset] = []
-        self.choices: dict[Kind, Choice] = {"series": Choice(), "movies": Choice()}
-        self.side: Kind = "series"  # the kind the preset card shows
+        self._choices: dict[int, Choice] = {}  # item id → its band's Choice (shared in a band)
+        self._new_choice = Choice()  # the card with an empty queue: the films' default
+        self._card_key: tuple[object, ...] | None = None  # what the card shows (for refreshes)
         self.show: Show = "all"  # the list's filter
         self.loaded = False  # the presets have been read
         self.running = False  # a Forge run is going (its progress and Cancel show)
@@ -341,14 +410,14 @@ class QueueView(ctk.CTkFrame):
         self._targets_in_run: dict[int, Path] = {}
         self._loading: set[Key] = set()  # band pictures being fetched right now
         self._close_after_run: Callable[[], None] | None = None
-        self._pending_preset: str | None = None
+        # Right-click presets asked before the presets were read: (name, the files it added).
+        self._requests: list[tuple[str, list[int] | None]] = []
         self._refresh_id: str | None = None  # a refresh coming (after a queue event, typing …)
         self._show_id: str | None = None  # its rows, built, shown when Tk is idle next
         self._flow_id: str | None = None  # the option line laid out again
         self._refreshed_at = 0.0  # time.monotonic() of the last refresh
         self._refresh_cost = 0.0  # how long it took (s)
         self._told: tuple[object, int] | None = None  # (on_counts, needs) last told
-        self._kind_counts: dict[Kind, int] = {"series": 0, "movies": 0}
         self._run_total = 0
         self._run_done: set[int] = set()
         self._run_name = ""
@@ -471,26 +540,29 @@ class QueueView(ctk.CTkFrame):
         card.grid_columnconfigure(0, weight=1)
         self.card = card
 
-        head = ctk.CTkFrame(card, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
-        self.kind_switch = ctk.CTkSegmentedButton(
-            head,
-            values=self._kind_labels(),
-            command=self._kind_clicked,
-            height=30,
-            corner_radius=15,
-            font=theme.font(13, bold=True),
-            fg_color=rule_bg,
-            selected_color=look.SELECTED,
-            selected_hover_color=look.SELECTED_HOVER,
-            unselected_color=rule_bg,
-            unselected_hover_color=look.CHIP_HOVER,
-            text_color=theme.TEXT,
+        # "For: {name}" and "Use for all ▾" over the preset line.
+        line = ctk.CTkFrame(card, fg_color="transparent")
+        line.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 0))
+        self.for_label = ctk.CTkLabel(
+            line, text=t(FOR_NEW), font=theme.font(13), text_color=theme.TEXT_MUTED, anchor="w"
         )
-        self.kind_switch.set(self._kind_labels()[0])
-        self.kind_switch.pack(side="left")
+        self.for_label.pack(side="left")
+        self.use_all_link = ctk.CTkLabel(
+            line,
+            text=t(USE_FOR_ALL),
+            font=theme.font(13, underline=True),
+            text_color=look.LINK,
+            fg_color=ground,
+            cursor="hand2",
+        )
+        self.use_all_link.bind("<Button-1>", lambda _event: self.use_for_all_menu())
+        self._for_full = ""
+        self._for_font: tuple[float, tkfont.Font] | None = None
+
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.grid(row=1, column=0, sticky="ew", padx=16, pady=(4, 8))
         ctk.CTkLabel(head, text=t("Preset"), font=theme.font(13), text_color=theme.TEXT_MUTED).pack(
-            side="left", padx=(18, 8)
+            side="left", padx=(2, 8)
         )
         self.preset_menu = ctk.CTkOptionMenu(
             head,
@@ -518,13 +590,10 @@ class QueueView(ctk.CTkFrame):
             head, "✎ " + t("Custom"), self._custom_clicked, fill=ground
         )
         self.custom_button.pack(side="right", padx=(0, 8))
-        add_tooltip(
-            self.custom_button,
-            t("Type a naming rule for this batch only; it isn't saved."),
-        )
+        add_tooltip(self.custom_button, t(CUSTOM_TIP))
 
         box = ctk.CTkFrame(card, fg_color=rule_bg, corner_radius=8)
-        box.grid(row=1, column=0, sticky="ew", padx=16)
+        box.grid(row=2, column=0, sticky="ew", padx=16)
         self.rule_box = box
         self.example_label = ctk.CTkLabel(
             box,
@@ -557,7 +626,7 @@ class QueueView(ctk.CTkFrame):
 
         # The options: one line of buttons (wrapping onto a second at the narrowest).
         self.option_line = tk.Frame(card, bg=theme.pick(ground), bd=0, highlightthickness=0)
-        self.option_line.grid(row=2, column=0, sticky="ew", padx=16, pady=(10, 14))
+        self.option_line.grid(row=3, column=0, sticky="ew", padx=16, pady=(10, 14))
         self.option_line.grid_propagate(False)
         self.option_line.pack_propagate(False)
         self._option_rows = [
@@ -600,7 +669,7 @@ class QueueView(ctk.CTkFrame):
         changed = tk.Frame(self.option_line, bg=theme.pick(ground), bd=0, highlightthickness=0)
         ctk.CTkLabel(
             changed,
-            text=t("Changed for this batch") + " · ",
+            text=t(CHANGED) + " · ",
             font=theme.font(13),
             text_color=look.LINK,
             fg_color=ground,
@@ -653,6 +722,7 @@ class QueueView(ctk.CTkFrame):
             hover_actions=True,
         )
         self.list.on_select = self._on_select
+        self.list.select_bands = True  # a click on a band selects it (the card follows)
         self.list.on_remove = self._remove
         self.list.on_action = self._on_band_action
         self.list.images = self._images_for
@@ -711,18 +781,40 @@ class QueueView(ctk.CTkFrame):
         return await ask_text(self, title, message, ok, look=self.look)
 
     @property
+    def selected_ids(self) -> list[int]:
+        """The files of the band selected in the list (its line or the band itself)."""
+        key = self.list.selected
+        if key is None:
+            return []
+        band = next((r.band for r in self.list.rows if r.key == key), None)
+        return list(self._bands.get(band, [key])) if band is not None else [key]
+
+    @property
+    def kind(self) -> Kind:
+        """The kind of the band the card shows (films with an empty queue)."""
+        ids = self.selected_ids
+        item = self.services.queue.get(ids[0]) if ids else None
+        return item_kind(item) if item is not None else "movies"
+
+    @property
     def choice(self) -> Choice:
-        """What names the kind the card shows."""
-        return self.choices[self.side]
+        """What names the band the card shows (an empty queue's: the films' default)."""
+        ids = self.selected_ids
+        return self._choices.get(ids[0], self._new_choice) if ids else self._new_choice
 
     @property
     def fmt(self) -> str:
         """The naming rule the card shows."""
         return self.choice.rule
 
+    def choice_for(self, item: QueueItem) -> Choice:
+        """A file's band's choice (its default until the band has one)."""
+        choice = self._choices.get(item.id)
+        return choice if choice is not None else self._default_choice(item)
+
     def rule_for(self, item: QueueItem) -> str:
-        """A dropped file's naming rule: its kind's preset, or that kind's Custom rule."""
-        return self.choices[item_kind(item)].rule
+        """A file's naming rule: its band's preset, or the band's Custom rule."""
+        return self.choice_for(item).rule
 
     def pending_items(self) -> list[QueueItem]:
         return self.services.queue.pending()
@@ -735,25 +827,42 @@ class QueueView(ctk.CTkFrame):
             return
         self.presets = presets
         self.loaded = True
-        for kind in _KINDS:
-            self.choices[kind] = self._reloaded(kind, presets)
-        if self._pending_preset is not None:
-            pending, self._pending_preset = self._pending_preset, None
-            self.select_preset(pending)
+        queue = self.services.queue
+        shared: dict[int, list[int]] = {}  # each band's Choice → its files
+        for item_id, choice in self._choices.items():
+            shared.setdefault(id(choice), []).append(item_id)
+        for ids in shared.values():
+            item = queue.get(ids[0])
+            if item is None:
+                continue
+            fresh = self._reloaded(self._choices[ids[0]], item)
+            for item_id in ids:
+                self._choices[item_id] = fresh
+        self._new_choice = self._reloaded(self._new_choice, None)
+        requests, self._requests = self._requests, []
+        for name, request_ids in requests:
+            self._apply_request(name, request_ids)
+        self._sync_choices()
+        self._card_key = None
         self._show_card()
         self.refresh()
 
-    def _reloaded(self, kind: Kind, presets: Sequence[Preset]) -> Choice:
-        """`kind`'s choice after the presets were read (again): the same preset when it is
-        still there (its options as stored now, unless changed for this batch), else the one
-        remembered for the kind, the one last chosen, the library's, or the first that fits."""
-        choice = self.choices[kind]
+    def _reloaded(self, choice: Choice, item: QueueItem | None) -> Choice:
+        """A band's choice after the presets were read (again): the same preset when it is still
+        there (its options as stored now, unless changed for this item), else its default."""
+        kind = item_kind(item) if item is not None else "movies"
         old = choice.preset
         if old is not None:
-            fresh = next((p for p in presets if p.name == old.name and fits(p, kind)), None)
+            fresh = next((p for p in self.presets if p.name == old.name and fits(p, kind)), None)
             if fresh is not None:
                 options = fresh.options if choice.options == old.options else choice.options
-                return Choice(preset=fresh, options=options, custom=choice.custom)
+                return Choice(fresh, options, choice.custom, choice.chosen)
+        return self._default_choice(item) if item is not None else self._kind_default(kind)
+
+    def _kind_default(self, kind: Kind) -> Choice:
+        """A new band's choice: the preset remembered for its kind, the one last chosen, the
+        library's, or the first that fits."""
+        presets = self.presets
         settings = self.services.settings.current
         remembered = settings.last_show_preset if kind == "series" else settings.last_film_preset
         library = settings.series_preset if kind == "series" else settings.movies_preset
@@ -770,6 +879,47 @@ class QueueView(ctk.CTkFrame):
             preset = next((p for p in presets if fits(p, kind)), presets[0] if presets else None)
         return Choice(preset=preset, options=preset.options if preset else PresetOptions())
 
+    def _library_default(self, kind: Kind) -> Choice:
+        """A watched download's choice: its library's preset (as the renamer names it)."""
+        settings = self.services.settings.current
+        name = settings.series_preset if kind == "series" else settings.movies_preset
+        fallback = "Series (Folder)" if kind == "series" else "Movie (Folder)"
+        for wanted in (name, fallback):
+            preset = next((p for p in self.presets if p.name == wanted), None)
+            if preset is not None:
+                return Choice(preset=preset, options=preset.options)
+        return self._kind_default(kind)
+
+    def _default_choice(self, item: QueueItem) -> Choice:
+        if item.watched is not None:
+            return self._library_default(item_kind(item))
+        return self._kind_default(item_kind(item))
+
+    def _sync_choices(self) -> None:
+        """Every queued file's band has one Choice: a new file takes its band's (one chosen by
+        the owner first), a band without one its default; files that left are forgotten; a
+        Choice shared by two bands (one request's files) is copied for each."""
+        items = self.services.queue.items
+        alive = {i.id for i in items}
+        for item_id in [k for k in self._choices if k not in alive]:
+            del self._choices[item_id]
+        if not self.loaded:
+            return  # the defaults come with the presets
+        groups: dict[BandId, list[QueueItem]] = {}
+        for item in items:
+            groups.setdefault(band_identity(item), []).append(item)
+        owners: dict[int, BandId] = {}
+        for identity, group in groups.items():
+            have = [self._choices[i.id] for i in group if i.id in self._choices]
+            leader = next((c for c in have if c.chosen), have[0] if have else None)
+            if leader is None:
+                leader = self._default_choice(group[0])
+            elif owners.get(id(leader), identity) != identity:
+                leader = dataclasses.replace(leader)
+            owners[id(leader)] = identity
+            for item in group:
+                self._choices[item.id] = leader
+
     def reload_presets(self) -> None:
         """The presets changed (Settings › Naming, an import): load them again."""
         self.spawn(self._load_presets())
@@ -778,30 +928,76 @@ class QueueView(ctk.CTkFrame):
         """The presets the card's menu offers for `kind`."""
         return [p for p in self.presets if fits(p, kind)] or list(self.presets)
 
+    def _band_groups(self, *, finished: bool = False) -> dict[BandId, list[int]]:
+        """The queue's bands by identity: their files (only those not done unless `finished`)."""
+        groups: dict[BandId, list[int]] = {}
+        for item in self.services.queue.items:
+            if finished or item.status not in FINISHED:
+                groups.setdefault(band_identity(item), []).append(item.id)
+        return groups
+
+    def _assign(self, ids: Sequence[int], choice: Choice) -> None:
+        """`choice` names these files' band(s): every file sharing their Choice follows."""
+        old = {id(self._choices[i]) for i in ids if i in self._choices}
+        for item_id, current in list(self._choices.items()):
+            if id(current) in old:
+                self._choices[item_id] = choice
+        for item_id in ids:
+            self._choices[item_id] = choice
+
     def select_preset(self, name: str) -> None:
-        """Use the preset `name` (a right-click request's): for its kind, or for both kinds
-        (Auto); the card shows that kind."""
+        """Use the preset `name` (a right-click request's without files): for every band not
+        done that it fits."""
         if not self.loaded:
-            self._pending_preset = name  # chosen before the presets have loaded
+            self._requests.append((name, None))  # chosen before the presets have loaded
             return
+        self._apply_request(name, None)
+        self._card_key = None
+        self._show_card()
+        self._schedule_refresh(0)
+
+    def _apply_request(self, name: str, ids: Sequence[int] | None) -> None:
+        """A request's preset for the files it added (`ids`), or every band not done (None)."""
         preset = next((p for p in self.presets if p.name == name), None)
         if preset is None:
             return
-        if preset.type is TypeHint.AUTO:
-            kinds: tuple[Kind, ...] = ("series", "movies")
+        queue = self.services.queue
+        if ids is None:
+            groups = list(self._band_groups().values())
         else:
-            kinds = ("series",) if preset.type is TypeHint.TV else ("movies",)
-        for kind in kinds:
-            self.choose_preset(kind, preset)
-        if self.side not in kinds:
-            self.set_side(kinds[0])
+            by_kind: dict[Kind, list[int]] = {}
+            for item_id in ids:
+                if (item := queue.get(item_id)) is not None:
+                    by_kind.setdefault(item_kind(item), []).append(item_id)
+            groups = list(by_kind.values())
+        kinds: set[Kind] = set()
+        for group in groups:
+            item = queue.get(group[0])
+            if item is None or not fits(preset, item_kind(item)):
+                continue
+            self._assign(group, Choice(preset=preset, options=preset.options, chosen=True))
+            kinds.add(item_kind(item))
+        if not groups and ids is None:
+            kinds = {k for k in _KINDS if fits(preset, k)}
+        for kind in sorted(kinds):
+            self._remember(kind, preset.name)
+        if ids is None and fits(preset, "movies"):
+            self._new_choice = Choice(preset=preset, options=preset.options)
 
-    def choose_preset(self, kind: Kind, preset: Preset) -> None:
-        """`preset` names `kind` from now on (its options; the Custom rule is dropped)."""
-        self.choices[kind] = Choice(preset=preset, options=preset.options)
-        if kind == self.side:
-            self._show_card()
-        self._remember(kind, preset.name)
+    def set_band_preset(self, ids: Sequence[int], preset: Preset) -> None:
+        """`preset` names these files' band from now on (its options; no Custom rule); it is
+        remembered as its kind's last."""
+        queue = self.services.queue
+        item = next((i for i in (queue.get(x) for x in ids) if i is not None), None)
+        choice = Choice(preset=preset, options=preset.options, chosen=True)
+        if item is None:
+            self._new_choice = choice
+            self._remember("movies", preset.name)
+        else:
+            self._assign(ids, choice)
+            self._remember(item_kind(item), preset.name)
+        self._card_key = None
+        self._show_card()
         self._schedule_refresh(0)
 
     def _remember(self, kind: Kind, name: str) -> None:
@@ -811,42 +1007,135 @@ class QueueView(ctk.CTkFrame):
             self.spawn(self.services.settings.update(**{key: name, "last_preset": name}))
 
     def _preset_chosen(self, name: str) -> None:
-        preset = next((p for p in self.presets_for(self.side) if p.name == name), None)
+        preset = next((p for p in self.presets_for(self.kind) if p.name == name), None)
         if preset is not None:
-            self.choose_preset(self.side, preset)
+            self.set_band_preset(self.selected_ids, preset)
 
-    def set_side(self, kind: Kind) -> None:
-        """The Shows | Films switch: which kind's preset the card shows and edits (the list
-        stays one)."""
-        if kind != self.side:
-            self.side = kind
-            self._show_card()
+    # --- the band's chip and "Use for all" ---------------------------------------------------
 
-    def _kind_labels(self) -> list[str]:
-        labels: list[str] = []
-        for kind, label in KINDS:
-            n = self._kind_counts.get(kind, 0)
-            labels.append(f"{t(label)} · {number(n)}" if n else t(label))
-        return labels
+    def chip_text(self, item: QueueItem) -> str:
+        """A band's preset chip: its preset's name, or "✎ Custom"."""
+        choice = self.choice_for(item)
+        return choice.label if choice.custom is not None else f"{choice.label} ▾"
 
-    def _kind_clicked(self, value: str) -> None:
-        values = list(self.kind_switch.cget("values"))
-        if value in values:
-            self.set_side(KINDS[values.index(value)][0])
+    def chip_choices(self, ids: Sequence[int]) -> list[tuple[str, Callable[[], None]]]:
+        """The chip's menu: the presets that fit the band's kind."""
+        queue = self.services.queue
+        item = next((i for i in (queue.get(x) for x in ids) if i is not None), None)
+        if item is None:
+            return []
+        return [
+            (preset.name, functools.partial(self._chip_chosen, list(ids), preset))
+            for preset in self.presets_for(item_kind(item))
+        ]
 
-    def _label_kinds(self) -> None:
-        labels = self._kind_labels()
-        if labels != list(self.kind_switch.cget("values")):  # configuring rebuilds every part
-            self.kind_switch.configure(values=labels)
-        wanted = labels[[kind for kind, _ in KINDS].index(self.side)]
-        if self.kind_switch.get() != wanted:
-            self.kind_switch.set(wanted)
+    def _chip_chosen(self, ids: list[int], preset: Preset) -> None:
+        self.set_band_preset(ids, preset)
+        if ids and self.services.queue.get(ids[0]) is not None:
+            self.list.select(ids[0])
+
+    def _chip_menu(self, key: int, ids: Sequence[int]) -> None:
+        box = self.list.chip_box(key)
+        canvas = self.list.canvas
+        if box is not None:
+            x0, _y0, _x1, y1 = box
+            point = (
+                round(canvas.winfo_rootx() + x0 - canvas.canvasx(0)),
+                round(canvas.winfo_rooty() + y1 - canvas.canvasy(0) + 4),
+            )
+        else:
+            point = self.winfo_pointerxy()
+        popup_menu(self, self.chip_choices(ids), point=point, look=self.look)
+
+    def use_for_all_entries(self) -> list[MenuEntry]:
+        """"Use for all ▾": all films, all shows, everything; each only where the selected
+        band's choice fits ("doesn't fit" greyed); everything only when it fits both kinds."""
+        groups = self._band_groups()
+        counts = {kind: sum(1 for k in groups if k[0] == kind) for kind in _KINDS}
+        choice = self.choice
+        entries: list[MenuEntry] = []
+        entry_kinds: tuple[tuple[Kind, str], ...] = (("movies", ALL_FILMS), ("series", ALL_SHOWS))
+        for kind, label in entry_kinds:
+            if not counts[kind]:
+                continue
+            text = t(label, n=counts[kind])
+            if choice.fits(kind):
+                entries.append(MenuEntry(text, functools.partial(self.use_for_all, (kind,))))
+            else:
+                entries.append(MenuEntry(text + t(NO_FIT), None))
+        if all(choice.fits(kind) for kind in _KINDS):
+            entries.append(
+                MenuEntry(t(EVERYTHING, n=len(groups)), functools.partial(self.use_for_all, _KINDS))
+            )
+        return entries
+
+    def use_for_all_menu(self) -> None:
+        popup_menu(self.use_all_link, self.use_for_all_entries(), look=self.look)
+
+    def use_for_all(self, kinds: Sequence[Kind]) -> None:
+        """Copy the selected band's choice (preset, options, Custom) to every band not done of
+        these kinds; the Activity panel says so."""
+        choice = self.choice
+        ids = self.selected_ids
+        if not ids:
+            return
+        count = 0
+        for (kind, _title, _year), group in self._band_groups().items():
+            if kind not in kinds or not choice.fits(kind):
+                continue
+            count += 1
+            if ids[0] in group:
+                continue
+            copy = dataclasses.replace(choice, chosen=True)
+            self._assign(group, copy)
+        choice.chosen = True
+        if choice.preset is not None and choice.custom is None:
+            for kind in kinds:
+                if choice.fits(kind):
+                    self._remember(kind, choice.preset.name)
+        name = choice.label
+        if len(kinds) > 1:
+            line = tn(
+                "Used {preset} for {n} item", "Used {preset} for {n} items", count, preset=name
+            )
+        elif kinds[0] == "movies":
+            line = tn(
+                "Used {preset} for {n} film", "Used {preset} for {n} films", count, preset=name
+            )
+        else:
+            line = tn(
+                "Used {preset} for {n} show", "Used {preset} for {n} shows", count, preset=name
+            )
+        log.info("Used one naming for %d band(s)", count)
+        self._say(line)
+        self._schedule_refresh(0)
+
+    def _show_for_line(self) -> None:
+        """"For: {name}", and "Use for all ▾" while there is more than one band."""
+        ids = self.selected_ids
+        queue = self.services.queue
+        items = [i for i in (queue.get(x) for x in ids) if i is not None]
+        full = t(FOR_LINE, name=band_name(items)) if items else t(FOR_NEW)
+        if full != self._for_full:
+            self._for_full = full
+            scale = float(self._get_widget_scaling())
+            if self._for_font is None or self._for_font[0] != scale:
+                spec = theme.font(13).create_scaled_tuple(scale)
+                self._for_font = (scale, tkfont.Font(root=self, font=spec))
+            fitted = fit_text(full, self._for_font[1], round(_FOR_MAX * scale)) or full
+            _set_text(self.for_label, fitted)
+        several = bool(items) and len(self._band_groups()) > 1
+        if several and not self.use_all_link.winfo_manager():
+            self.use_all_link.pack(side="left", padx=(14, 0))
+        elif not several and self.use_all_link.winfo_manager():
+            self.use_all_link.pack_forget()
 
     def _show_card(self) -> None:
-        """The card for the kind it shows: the switch, the menu, the rule, the options."""
-        choice = self.choice
-        self._label_kinds()
-        names = [p.name for p in self.presets_for(self.side)] or ["…"]
+        """The card for the selected band: its line, the menu, the rule, the options."""
+        choice, kind = self.choice, self.kind
+        self._card_key = (tuple(self.selected_ids[:1]), id(choice), kind)
+        self._show_for_line()
+        names = [p.name for p in self.presets_for(kind)] or ["…"]
         if list(self.preset_menu.cget("values")) != names:
             self.preset_menu.configure(values=names)
         if choice.preset is not None and self.preset_menu.get() != choice.preset.name:
@@ -861,22 +1150,23 @@ class QueueView(ctk.CTkFrame):
         if (int(self.rule_box.cget("border_width")) > 0) != custom:  # typed in: a copper edge
             self.rule_box.configure(border_width=1 if custom else 0, border_color=look.ACCENT)
         for name, button in self.option_buttons.items():
-            key = getattr(self._option_specs[name], self.side)
+            key = getattr(self._option_specs[name], kind)
             button.set(bool(key and getattr(choice.options, key)))
         self._update_example()
         self._schedule_flow()
 
     def _option_clicked(self, name: str, value: bool) -> None:
-        key = getattr(self._option_specs[name], self.side)
+        key = getattr(self._option_specs[name], self.kind)
         if key is None:
             return
         choice = self.choice
         choice.options = choice.options.model_copy(update={key: value})
+        choice.chosen = True
         self._schedule_flow()
 
     def option_keys(self) -> dict[str, str]:
         """The option buttons the card shows for its kind: name → the preset option."""
-        keys = {name: getattr(spec, self.side) for name, spec in self._option_specs.items()}
+        keys = {name: getattr(spec, self.kind) for name, spec in self._option_specs.items()}
         return {name: key for name, key in keys.items() if key}
 
     def set_scan_subfolders(self, value: bool) -> None:
@@ -894,13 +1184,13 @@ class QueueView(ctk.CTkFrame):
 
     def _flow(self) -> None:
         """The option groups on one line, or wrapped at a group's edge when they don't fit (a
-        divider never starts or ends a line); "Changed for this batch" at the end while the
+        divider never starts or ends a line); "Changed for this item" at the end while the
         options or the rule differ from the preset."""
         self._flow_id = None
         if not self.winfo_exists():
             return
         season = self.option_buttons["Season posters"]
-        if self.side == "series":
+        if self.kind == "series":
             if not season.winfo_manager():
                 season.pack(side="left", padx=(0, 8), before=self.option_buttons["Trailer"])
         elif season.winfo_manager():
@@ -982,14 +1272,16 @@ class QueueView(ctk.CTkFrame):
             return
         text = " ".join(self.rule_text.get("1.0", "end-1c").splitlines())
         choice.custom = text
+        choice.chosen = True
         self._tag_codes()
         self._update_example()
         self._schedule_flow()
         self._schedule_refresh(_REFRESH_FORMAT_MS)
 
     def set_custom(self, rule: str | None) -> None:
-        """Custom mode for the kind the card shows, with `rule` (None: back to the preset's)."""
+        """Custom mode for the band the card shows, with `rule` (None: back to the preset's)."""
         self.choice.custom = rule
+        self.choice.chosen = True
         self._show_card()
         self._schedule_refresh(_REFRESH_FORMAT_MS)
 
@@ -1008,23 +1300,27 @@ class QueueView(ctk.CTkFrame):
 
     async def save_to_preset(self) -> None:
         """"Save to preset": the card's rule and options into the preset it shows."""
-        choice, kind = self.choice, self.side
+        choice, ids = self.choice, self.selected_ids
         preset = choice.preset
         if preset is None:
             return
         saved = preset.model_copy(update={"format": choice.rule, "options": choice.options})
         await self.services.presets.save(saved)
-        log.info("Saved the batch's changes to a preset")
+        log.info("Saved an item's changes to a preset")
         self._say(t("Saved to the preset {name}", name=preset.name), success=True)
-        self.choices[kind] = Choice(preset=saved, options=saved.options)
+        fresh = Choice(preset=saved, options=saved.options, chosen=True)
+        if ids:
+            self._assign(ids, fresh)
+        else:
+            self._new_choice = fresh
         await self._load_presets()
 
     def _save_as_clicked(self) -> None:
         self.spawn(self.save_as_preset())
 
     async def save_as_preset(self) -> None:
-        """"Save as preset…": the card's rule and options as a new preset for its kind."""
-        kind, choice = self.side, self.choice
+        """"Save as preset…": the card's rule and options as a new preset for its band's kind."""
+        kind, choice, ids = self.kind, self.choice, self.selected_ids
         name = await self.ask_name(
             t("Save as preset"), t("A name for the new preset:"), t("Save")
         )
@@ -1044,7 +1340,11 @@ class QueueView(ctk.CTkFrame):
         await self.services.presets.save(preset)
         log.info("Saved a new preset")
         self._say(t("Saved the preset {name}", name=name), success=True)
-        self.choices[kind] = Choice(preset=preset, options=preset.options)
+        fresh = Choice(preset=preset, options=preset.options, chosen=True)
+        if ids:
+            self._assign(ids, fresh)
+        else:
+            self._new_choice = fresh
         self._remember(kind, name)
         await self._load_presets()
 
@@ -1141,13 +1441,20 @@ class QueueView(ctk.CTkFrame):
     def _build(self) -> QueueRows:
         settings = self.services.settings.current
         presets = self.presets
+        self._sync_choices()
+
+        def naming(item: QueueItem) -> tuple[str, Path]:
+            # Into its library folder, named as its band chose (the library's preset by default).
+            return self.rule_for(item), library_naming(item, settings, presets)[1]
+
         return build_queue_rows(
             self.services.queue.items,
             self.rule_for,
-            naming=lambda item: library_naming(item, settings, presets),
+            naming=naming,
             show=self.show,
             trial=settings.automatic == "trial",
             today=date.today(),
+            chip=self.chip_text,
         )
 
     def _show(self, built: QueueRows, started: float) -> None:
@@ -1173,9 +1480,7 @@ class QueueView(ctk.CTkFrame):
             if not self.empty_state.winfo_manager():
                 self.empty_state.pack(fill="both", expand=True)
         self._paint_filters(built.counts)
-        if built.kinds != self._kind_counts:
-            self._kind_counts = dict(built.kinds)
-            self._label_kinds()
+        self._keep_a_selection()
         if not self.running:
             _set_text(self.forge_button, forge_label(len(self._pending(None))))
         self._update_example()
@@ -1186,19 +1491,26 @@ class QueueView(ctk.CTkFrame):
         self._refreshed_at = time.monotonic()
         self._refresh_cost = time.perf_counter() - started
 
+    def _keep_a_selection(self) -> None:
+        """While the list has bands one is selected (the first when none is), and the card shows
+        the selected band; only what changed is configured."""
+        lines = self.list.item_keys()
+        if self.list.selected is None and lines:
+            self.list.select(lines[0], notify=False)
+        ids = self.selected_ids
+        key = (tuple(ids[:1]), id(self.choice), self.kind)
+        if key != self._card_key:
+            self._show_card()
+        else:
+            self._show_for_line()
+
     # --- the example name ------------------------------------------------------------------
 
     def _example_item(self) -> QueueItem | None:
-        """The file the example name shows: the one selected when it is of the card's kind,
-        else the first dropped file of that kind, else any of that kind."""
+        """The file the example name shows: the selected one (the card's band's)."""
         queue = self.services.queue
-        selected = queue.get(self.list.selected) if self.list.selected is not None else None
-        if selected is not None and item_kind(selected) == self.side:
-            return selected
-        of_kind = [i for i in queue.items if item_kind(i) == self.side]
-        dropped = [i for i in of_kind if i.watched is None and i.status not in FINISHED]
-        candidates = dropped or of_kind
-        return candidates[0] if candidates else None
+        ids = self.selected_ids
+        return queue.get(ids[0]) if ids else None
 
     def _update_example(self) -> None:
         item = self._example_item()
@@ -1281,6 +1593,10 @@ class QueueView(ctk.CTkFrame):
             self.spawn(self.forge(only=ids))
         elif action == "undo":
             self.spawn(self.undo_band(ids))
+        elif action == "ignore":
+            self.ignore_menu(ids)
+        elif action == "preset":
+            self._chip_menu(key, ids)
         elif action == "choose":
             for item_id in ids:
                 item = self.services.queue.get(item_id)
@@ -1288,8 +1604,68 @@ class QueueView(ctk.CTkFrame):
                     self._change_match(item)
                     return
 
+    # --- ignoring ----------------------------------------------------------------------------
+
+    def ignore_choices(self, ids: Sequence[int]) -> list[tuple[str, Callable[[], None]]]:
+        """The Ignore menu of a band's files: this file (or these files) and, when they sit in
+        one subfolder of a watched folder, that whole folder. Nothing while a run goes."""
+        queue = self.services.queue
+        items = [
+            item
+            for item in (queue.get(item_id) for item_id in ids)
+            if item is not None and item.status not in FINISHED
+        ]
+        if not items or self.running:
+            return []
+        files = tn("Ignore this file", "Ignore these {n} files", len(items))
+        choices: list[tuple[str, Callable[[], None]]] = [
+            (files, lambda: self._spawn_ignore(self.ignore_files(items)))
+        ]
+        folder = self.ignore_folder_for(items)
+        if folder is not None:
+            choices.append(
+                (t(IGNORE_FOLDER), lambda: self._spawn_ignore(self.ignore_folder(folder)))
+            )
+        return choices
+
+    def ignore_menu(self, ids: Sequence[int]) -> None:
+        """The band's Ignore button: its menu at the pointer."""
+        popup_menu(self, self.ignore_choices(ids), point=self.winfo_pointerxy(), look=self.look)
+
+    def _spawn_ignore(self, coro: Coroutine[Any, Any, None]) -> None:
+        self.spawn(coro)
+
+    def ignore_folder_for(self, items: Sequence[QueueItem]) -> Path | None:
+        """The one folder right under a watched folder that holds all of `items`, or None (a
+        file directly in the watched folder, a file from elsewhere, files from two folders)."""
+        roots = [Path(folder) for folder in watched_folders(self.services.settings.current)]
+        found: Path | None = None
+        for item in items:
+            root = item.watched or next((r for r in roots if inside(item.path, r)), None)
+            folder = top_folder(item.path, root) if root is not None else None
+            if folder is None or (found is not None and not _same(found, folder)):
+                return None
+            found = found or folder
+        return found
+
+    async def ignore_files(self, items: Sequence[QueueItem]) -> None:
+        """Auto-rename leaves these files alone; their rows leave the queue."""
+        for item in items:
+            await self.services.ignored.ignore(item.path, folder=False)
+        self.services.queue.remove_many([item.id for item in items])
+
+    async def ignore_folder(self, folder: Path) -> None:
+        """Auto-rename leaves `folder` and all under it alone; every row under it leaves."""
+        ignored = self.services.ignored
+        await ignored.ignore(folder, folder=True)
+        snapshot = ignored.snapshot()
+        queue = self.services.queue
+        queue.remove_many(
+            [i.id for i in queue.items if i.status not in FINISHED and snapshot.ignored(i.path)]
+        )
+
     def _on_select(self, key: int | None) -> None:
-        self._update_example()
+        self._show_card()
 
     def move_selection(self, delta: int) -> None:
         keys = self.list.item_keys()
@@ -1355,16 +1731,27 @@ class QueueView(ctk.CTkFrame):
         if files:
             self.add_paths([Path(f) for f in files])
 
-    def add_paths(self, paths: Sequence[Path]) -> None:
+    def add_paths(self, paths: Sequence[Path], *, preset: str | None = None) -> None:
         """Queue these files and folders (folders are scanned, subfolders per the setting):
-        the + buttons, Explorer drops and the window's requests."""
+        the + buttons, Explorer drops and the window's requests (`preset`: a right-click
+        request's, for the files it adds)."""
         if paths:
-            self.spawn(self.add(paths))
+            self.spawn(self.add(paths, preset=preset))
 
-    async def add(self, paths: Sequence[Path]) -> int:
+    async def add(self, paths: Sequence[Path], *, preset: str | None = None) -> int:
         """`add_paths`, awaited: how many files were new."""
         recursive = self.services.settings.current.scan_subfolders
-        added = await self.services.queue.add_paths(list(paths), recursive)
+        queue = self.services.queue
+        before = {i.id for i in queue.items}
+        added = await queue.add_paths(list(paths), recursive)
+        if preset:
+            new = [i.id for i in queue.items if i.id not in before]
+            if not self.loaded:
+                self._requests.append((preset, new))
+            elif new and self.winfo_exists():
+                self._apply_request(preset, new)
+                self._card_key = None
+                self._schedule_refresh(0)
         if added:
             log.info("Added %d file(s) to the queue", added)
             self._say(tn("Added {n} file to the queue", "Added {n} files to the queue", added))
@@ -1407,14 +1794,13 @@ class QueueView(ctk.CTkFrame):
             return True
         return False
 
-    async def _trailer_options(
-        self, options: dict[Kind, PresetOptions]
-    ) -> dict[Kind, PresetOptions]:
-        """The options for this run: trailers only once their tools are there (asked first)."""
+    async def _trailers_allowed(self, items: Sequence[QueueItem]) -> bool:
+        """Whether this run may fetch trailers: once their tools are there (asked first). True
+        when no band of these files wants one."""
         trailers = self.services.trailers
-        if not any(o.trailer for o in options.values()):
-            return options
-        without = {kind: o.model_copy(update={"trailer": False}) for kind, o in options.items()}
+        if not any(self.choice_for(i).options.trailer for i in items):
+            return True
+        without = False
         if not trailers.tools_present():
             download = t("Download")
             answer = await self.ask(
@@ -1445,7 +1831,7 @@ class QueueView(ctk.CTkFrame):
                 if self.winfo_exists():
                     self._show_actions(running=False)
         await trailers.maybe_update()
-        return options
+        return True
 
     def _set_running(self, running: bool, total: int = 0) -> None:
         self.running = running
@@ -1519,24 +1905,41 @@ class QueueView(ctk.CTkFrame):
         """Wait for every lookup."""
         await self.services.queue.wait_idle()
 
-    def _plan_parts(
-        self, items: Sequence[QueueItem], options: dict[Kind, PresetOptions]
-    ) -> list[PlanPart]:
-        """The dropped files, by kind, each with its kind's rule and options."""
+    def _naming_groups(
+        self, items: Sequence[QueueItem]
+    ) -> list[tuple[Choice, list[QueueItem]]]:
+        """These files by their band's choice (bands that share one are one part)."""
+        groups: dict[int, tuple[Choice, list[QueueItem]]] = {}
+        for item in items:
+            choice = self.choice_for(item)
+            groups.setdefault(id(choice), (choice, []))[1].append(item)
+        return list(groups.values())
+
+    @staticmethod
+    def _run_options(choice: Choice, trailers: bool) -> PresetOptions:
+        if trailers or not choice.options.trailer:
+            return choice.options
+        return choice.options.model_copy(update={"trailer": False})
+
+    def _plan_parts(self, items: Sequence[QueueItem], trailers: bool = True) -> list[PlanPart]:
+        """The dropped files, by band, each with its band's rule and options."""
         inputs = {i.item_id: i for i in self.services.queue.plan_inputs([i.id for i in items])}
         parts: list[PlanPart] = []
-        for kind in _KINDS:
-            of_kind = [inputs[i.id] for i in items if item_kind(i) == kind and i.id in inputs]
-            if of_kind:
-                choice = self.choices[kind]
-                parts.append((of_kind, choice.rule, options.get(kind, choice.options)))
+        for choice, group in self._naming_groups(items):
+            mine = [inputs[i.id] for i in group if i.id in inputs]
+            if mine:
+                parts.append((mine, choice.rule, self._run_options(choice, trailers)))
         return parts
 
-    def _batch_options(self, items: Sequence[QueueItem]) -> dict[Kind, PresetOptions]:
-        """The card's options for the kinds of these dropped files (downloads go by the
-        library's preset)."""
-        kinds = {item_kind(i) for i in items if i.watched is None}
-        return {kind: self.choices[kind].options for kind in _KINDS if kind in kinds}
+    def _library_naming(self, items: Sequence[QueueItem]) -> dict[int, NamingChoice]:
+        """How each watched download goes into its library: its band's preset and options (a
+        trailer only when the tools are there: the renamer drops it otherwise)."""
+        naming: dict[int, NamingChoice] = {}
+        for item in items:
+            choice = self.choice_for(item)
+            if choice.preset is not None:
+                naming[item.id] = NamingChoice(choice.preset, choice.rule, choice.options)
+        return naming
 
     @_one_at_a_time
     async def preview(self) -> None:
@@ -1545,7 +1948,7 @@ class QueueView(ctk.CTkFrame):
         items = [i for i in self.pending_items() if i.watched is None]  # downloads: their bands
         if not items:
             return
-        parts = self._plan_parts(items, self._batch_options(items))
+        parts = self._plan_parts(items)
         plan = await asyncio.to_thread(build_mixed_plan, parts)
         log.info("Preview of %d file(s); nothing changed", len(plan.files))
         self._say(t("Preview (nothing has been changed):"))
@@ -1571,24 +1974,28 @@ class QueueView(ctk.CTkFrame):
         await self.settled()
         if not self._pending(only) or not await self._settle_uncertain(only):
             return
-        options = await self._trailer_options(self._batch_options(self._pending(only)))
+        # Asked for dropped files only: a download's trailer comes when the tools are there.
+        trailers = await self._trailers_allowed(
+            [i for i in self._pending(only) if i.watched is None]
+        )
         items = self._pending(only)
         self._cancel = asyncio.Event()
         self._set_running(True, len(items))
         try:
             result = RunResult()
             watched = [i.id for i in items if i.watched is not None]
-            if watched:  # into the library, with the Series or Movies preset
+            if watched:  # into the library, with each band's preset
                 result = await self.services.auto.rename(
                     watched,
                     source=RunSource.APP,
                     on_progress=self._on_watched_progress,
                     cancel=self._cancel,
+                    naming=self._library_naming([i for i in items if i.watched is not None]),
                 )
             dropped = [i for i in items if i.watched is None]
             if dropped:
                 async with self.services.run_lock:  # never alongside an automatic run
-                    result = _merge(result, await self._forge_dropped(dropped, options))
+                    result = _merge(result, await self._forge_dropped(dropped, trailers))
         finally:
             self._set_running(False)
             close, self._close_after_run = self._close_after_run, None
@@ -1612,21 +2019,19 @@ class QueueView(ctk.CTkFrame):
             self._say(summary_text(result), success=True)
 
     def _preset_name(self, items: Sequence[QueueItem]) -> str | None:
-        """The run's preset, as History shows it: each kind's preset in it."""
+        """The run's preset, as History shows it: each band's preset in it."""
         names: list[str] = []
-        for kind in _KINDS:
-            preset = self.choices[kind].preset
-            if preset is not None and any(item_kind(i) == kind for i in items):
-                if preset.name not in names:
-                    names.append(preset.name)
+        groups = self._naming_groups(items)
+        groups.sort(key=lambda group: item_kind(group[1][0]) != "series")  # shows first
+        for choice, _group in groups:
+            if choice.preset is not None and choice.preset.name not in names:
+                names.append(choice.preset.name)
         return " + ".join(names) or None
 
-    async def _forge_dropped(
-        self, items: Sequence[QueueItem], options: dict[Kind, PresetOptions]
-    ) -> RunResult:
+    async def _forge_dropped(self, items: Sequence[QueueItem], trailers: bool) -> RunResult:
         queue = self.services.queue
         inputs = queue.plan_inputs([i.id for i in items])
-        plan = await asyncio.to_thread(build_mixed_plan, self._plan_parts(items, options))
+        plan = await asyncio.to_thread(build_mixed_plan, self._plan_parts(items, trailers))
         self._targets_in_run = {f.item_id: f.target for f in plan.files}
         result = await self.services.executor.run(
             plan,

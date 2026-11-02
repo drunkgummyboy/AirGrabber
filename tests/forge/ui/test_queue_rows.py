@@ -117,7 +117,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual({r.faint_label for r in lines}, {"Now:"})
         self.assertEqual({r.new for r in lines}, {False})  # an episode's title is its name
         self.assertEqual({r.band for r in lines}, {ted.key})  # hovered with their band
-        self.assertEqual(ted.actions, (("rename", "Rename"),))
+        self.assertEqual(ted.actions, (("ignore", "Ignore"), ("rename", "Rename")))
         self.assertEqual(rows.bands[ted.key], [items[2].id, items[0].id])
         self.assertEqual(rows.targets[items[2].id].parent.name, "Ted Lasso - Season 04")
         dune = bands(rows)[0]
@@ -148,7 +148,9 @@ class QueueRowsTests(ForgeTestCase):
         shrinking, arrival = bands(rows)
         self.assertEqual(shrinking.title, "Shrinking")
         self.assertEqual((shrinking.state, shrinking.state_text), ("needs", "Needs you"))
-        self.assertEqual(shrinking.actions, (("choose", "Choose…"), ("rename", "Rename")))
+        self.assertEqual(
+            shrinking.actions, (("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename"))
+        )
         self.assertEqual((shrinking.subtitle, shrinking.dest), ("TMDB isn't sure · 1 file", ""))
         self.assertEqual(arrival.title, "Arrival")
         self.assertEqual(rows.needs, 1)
@@ -176,6 +178,16 @@ class QueueRowsTests(ForgeTestCase):
                 self.assertEqual(rows.counts, {"all": 3, "needs": 1, "ready": 1})
                 self.assertEqual(rows.kinds, {"series": 0, "movies": 2})  # not renamed yet
         self.assertEqual(sections(build(items, show="needs")), [])  # done ones: only in All
+
+    def test_a_band_not_done_shows_its_preset_chip(self) -> None:
+        at = time.mktime((2026, 11, 1, 14, 5, 0, 0, 0, -1))
+        items = [
+            movie(self.folder, "Dune.2021.mkv", "Dune", 2021, status=DONE, finished_at=at),
+            movie(self.folder, "Ran.1985.mkv", "Ran", 1985),
+        ]
+        rows = build(items, chip=lambda item: f"{item.media.title} preset ▾")
+        self.assertEqual([b.chip for b in bands(rows)], ["Ran preset ▾", ""])  # none when done
+        self.assertEqual([b.chip for b in bands(build(items))], ["", ""])  # not asked
 
     def test_done_today_is_at_the_end_faded_with_undo(self) -> None:
         at = time.mktime((2026, 11, 1, 14, 5, 0, 0, 0, -1))
@@ -357,7 +369,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(dune.state_text, "Hernoemd")
         self.assertEqual(show.subtitle, "Seizoenen 1–2 · 2 afleveringen")
         self.assertEqual(show.dest, "→ dezelfde map")
-        self.assertEqual(show.actions, (("rename", "Hernoemen"),))
+        self.assertEqual(show.actions, (("ignore", "Negeren"), ("rename", "Hernoemen")))
         self.assertEqual(dune.actions, (("undo", "Ongedaan maken"),))
         self.assertEqual(dune.subtitle, "Film · 2021")
         self.assertEqual({r.faint_label for r in rows.rows if r.kind == "item"}, {"Nu:"})

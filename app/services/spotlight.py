@@ -1,7 +1,7 @@
 """The header's spotlight band: which titles it shows (`SpotlightService.spotlight`) and their
 backdrops (`backdrop_url`).
 
-Series: the episodes of followed shows airing today (the local day: an episode's airstamp in
+Series: the episodes of the selected person's followed shows airing today (the local day: an episode's airstamp in
 local time, else its listed air date), in airing order; none today: the next ones in the coming
 7 days; none either: TMDB's trending shows (the TV dashboard's, cached by DiscoveryService).
 Movies: the films first released digitally in the last 14 days, then trending films to fill up.
@@ -149,25 +149,28 @@ class SpotlightService:
         self._discovery = discovery
         self._clock = clock
 
-    async def spotlight(self, side: SpotlightSide) -> Spotlight:
+    async def spotlight(self, side: SpotlightSide, *, profile_id: int) -> Spotlight:
+        """A side's titles; Series' episodes are those of the shows `profile_id` follows."""
         if side is SpotlightSide.MOVIES:
             return Spotlight(side=side, items=await self._films())
         now = self._clock()
         today = now.date()
         # A day either side: the listed (network) air dates may differ from the local days.
         entries = await self._library.calendar(
-            today - timedelta(days=1), today + timedelta(days=AHEAD_DAYS + 1)
+            today - timedelta(days=1),
+            today + timedelta(days=AHEAD_DAYS + 1),
+            profile_id=profile_id,
         )
         items, airing = pick_episodes(entries, now)
         if items:
             return Spotlight(side=side, items=items, airing=airing)
-        return Spotlight(side=side, items=await self._trending_shows())
+        return Spotlight(side=side, items=await self._trending_shows(profile_id))
 
-    async def _trending_shows(self) -> tuple[SpotlightItem, ...]:
+    async def _trending_shows(self, profile_id: int) -> tuple[SpotlightItem, ...]:
         if not self._discovery.has_tmdb_key:
             return ()
         try:
-            dashboard = await self._discovery.tv_dashboard()
+            dashboard = await self._discovery.tv_dashboard(profile_id=profile_id)
         except TMDBError as exc:
             log.info("Spotlight: no trending shows: %s", exc)
             return ()

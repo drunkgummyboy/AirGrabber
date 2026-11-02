@@ -113,7 +113,7 @@ async def _schema(path: Path) -> list[tuple[object, ...]]:
 class DatabaseTest(ForgeDbTestCase):
     async def test_open_sets_wal_and_version(self) -> None:
         assert await self.scalar("PRAGMA journal_mode") == "wal"
-        assert await self.scalar("PRAGMA user_version") == SCHEMA_VERSION == 3
+        assert await self.scalar("PRAGMA user_version") == SCHEMA_VERSION == 4
         assert await self.scalar("PRAGMA foreign_keys") == 1
 
     async def test_open_twice_is_idempotent(self) -> None:
@@ -190,7 +190,7 @@ class DatabaseTest(ForgeDbTestCase):
 
 class MediaForgeFileTest(ForgeDbTestCase):
     """A database written by MediaForge 1.3 (schema v2), copied in, opens with its rows and its
-    own tables unchanged; v3 only adds the move records' table."""
+    own tables unchanged; v3 and v4 only add the move records' and the ignored paths' tables."""
 
     async def test_opens_and_keeps_its_rows(self) -> None:
         path = self.tmp / "mediaforge.db"
@@ -199,7 +199,7 @@ class MediaForgeFileTest(ForgeDbTestCase):
 
         db = await Database.open(path)
         try:
-            assert (await db.fetch_one("PRAGMA user_version") or [None])[0] == SCHEMA_VERSION == 3
+            assert (await db.fetch_one("PRAGMA user_version") or [None])[0] == SCHEMA_VERSION == 4
             assert (await db.fetch_one("SELECT COUNT(*) FROM moves") or [None])[0] == 0
 
             settings = await SettingsRepo(db).load()
@@ -242,6 +242,8 @@ class MediaForgeFileTest(ForgeDbTestCase):
             ("index", "moves_src"),
             ("index", "moves_op"),
             ("index", "moves_moved_at"),
+            ("table", "ignored"),  # v4
+            ("index", "sqlite_autoindex_ignored_1"),  # its primary key
         }
 
     async def test_a_new_forge_db_has_the_same_schema_as_a_migrated_one(self) -> None:

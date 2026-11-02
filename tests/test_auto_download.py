@@ -154,9 +154,9 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
         saved = show(show_id, name)
         await self.db.library.save_show(saved, list(episodes))
         if tracked:
-            await self.db.library.track(show_id)
+            await self.db.library.track(show_id, profile_id=1)
             if since is not None:
-                await self.db.library.set_auto_download(show_id, True, since=since)
+                await self.db.library.set_auto_download(show_id, True, since=since, profile_id=1)
         return saved
 
     async def due(self, now: datetime = NOW, limit: int = 100) -> list[int]:
@@ -353,7 +353,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         assert version is not None
         self.assertEqual(version[0], len(MIGRATIONS))
         self.assertGreaterEqual(len(MIGRATIONS), 2)
-        entries = {entry.show.id: entry for entry in await db.library.tracked()}
+        entries = {entry.show.id: entry for entry in await db.library.tracked(profile_id=1)}
         self.assertEqual(sorted(entries), [1, 2])
         self.assertEqual(entries[1].show.genres, ("Drama",))
         # Every switch starts off after the upgrade, also those the 1.x import had on.
@@ -425,7 +425,7 @@ class SwitchTests(DatabaseTestCase):
         await super().asyncTearDown()
 
     async def switch(self, show_id: int) -> bool:
-        entries = {entry.show.id: entry for entry in await self.library.tracked()}
+        entries = {entry.show.id: entry for entry in await self.library.tracked(profile_id=1)}
         return entries[show_id].auto_download
 
     async def test_switch_on_and_off(self) -> None:
@@ -434,44 +434,44 @@ class SwitchTests(DatabaseTestCase):
         self.assertIsNone(await self.auto_since(1))
 
         before = datetime.now(UTC)
-        await self.library.set_auto_download(1, True)
+        await self.library.set_auto_download(1, True, profile_id=1)
         self.assertTrue(await self.switch(1))
         since = await self.auto_since(1)
         assert since is not None
         self.assertLessEqual(before, datetime.fromisoformat(since))
         self.assertEqual(self.notifications, 1)
 
-        await self.library.set_auto_download(1, True)  # already on: keeps its start
+        await self.library.set_auto_download(1, True, profile_id=1)  # already on: keeps its start
         self.assertEqual(await self.auto_since(1), since)
 
-        await self.library.set_auto_download(1, False)
+        await self.library.set_auto_download(1, False, profile_id=1)
         self.assertFalse(await self.switch(1))
         self.assertIsNone(await self.auto_since(1))
         self.assertEqual(self.notifications, 3)
 
     async def test_switching_an_untracked_show_does_nothing(self) -> None:
-        await self.library.set_auto_download(12345, True)
-        self.assertEqual(await self.library.tracked(), [])
+        await self.library.set_auto_download(12345, True, profile_id=1)
+        self.assertEqual(await self.library.tracked(profile_id=1), [])
 
     async def test_new_shows_follow_the_setting(self) -> None:
-        await self.library.track(DUNE)
+        await self.library.track(DUNE, profile_id=1)
         self.assertFalse(await self.switch(DUNE))
         self.assertIsNone(await self.auto_since(DUNE))
 
         await self.settings.update(auto_download_new_shows=True)
         before = datetime.now(UTC)
-        await self.library.track(DRAGON)
+        await self.library.track(DRAGON, profile_id=1)
         self.assertTrue(await self.switch(DRAGON))
         since = await self.auto_since(DRAGON)
         assert since is not None
         self.assertLessEqual(before, datetime.fromisoformat(since))
 
-        await self.library.track(DUNE)  # already followed: refreshed, switch untouched
+        await self.library.track(DUNE, profile_id=1)  # already followed: refreshed, switch untouched
         self.assertFalse(await self.switch(DUNE))
 
     async def test_imported_shows_follow_the_setting(self) -> None:
         await self.settings.update(auto_download_new_shows=True)
-        result = await self.library.import_shows([str(DUNE)])
+        result = await self.library.import_shows([str(DUNE)], profile_id=1)
         self.assertEqual(len(result.added), 1)
         self.assertTrue(await self.switch(DUNE))
 
@@ -479,7 +479,7 @@ class SwitchTests(DatabaseTestCase):
         library = LibraryService(
             self.db.library, self.db.history, TVMazeClient(self.http, retry_delay=0)
         )
-        await library.track(DUNE)
+        await library.track(DUNE, profile_id=1)
         self.assertFalse(await self.switch(DUNE))
 
 
@@ -528,7 +528,7 @@ class ActivityTests(DatabaseTestCase):
         await self.grab(2, 1, 1, NOW - timedelta(days=8))  # too old
         await self.grab(4, 1, None, NOW - timedelta(days=3))  # a season pack
 
-        activity = await self.library.activity(now=NOW)
+        activity = await self.library.activity(now=NOW, profile_id=1)
 
         self.assertEqual(sorted(activity), [1, 4])  # 2: nothing recent or upcoming; 3: untracked
         first = activity[1]
@@ -550,8 +550,8 @@ class ActivityTests(DatabaseTestCase):
                 ),
             ],
         )
-        await self.db.library.track(1)
-        activity = await self.library.activity(now=NOW)
+        await self.db.library.track(1, profile_id=1)
+        activity = await self.library.activity(now=NOW, profile_id=1)
         upcoming = activity[1].next_episode
         assert upcoming is not None
         self.assertEqual(upcoming.id, 11)  # airs today: still "next"

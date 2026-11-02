@@ -1,8 +1,9 @@
-"""Settings › MediaForge › Library & watching (app/forge/ui/settings_pages.py) inside AirGrabber's
-Settings dialog: the MediaForge group from FORGE_SECTIONS, opening at the section, the form
-ported from MediaForge's Settings › Library (watched folders, library folders, Off / Trial / On,
-the options), changes kept until Save (D9; Cancel / ✕ change nothing), the folder rules from
-`library_problems`, waiting for Forge to start and saying when it can't."""
+"""MediaForge Settings › Library & watching (app/forge/ui/settings_pages.py) in MediaForge's own
+Settings window (app/forge/ui/settings_window.py): the sections from FORGE_SECTIONS, opening at
+the section, the form ported from MediaForge's Settings › Library (watched folders, library
+folders, Off / Trial / On, the options), changes kept until Save (D9; Cancel / ✕ change
+nothing), the folder rules from `library_problems`, waiting for Forge to start and saying when
+it can't."""
 
 from __future__ import annotations
 
@@ -21,7 +22,9 @@ import customtkinter as ctk
 
 from app import i18n
 from app.forge.models.preset import DEFAULT_PRESETS
+from app.forge.models.ignored import IgnoredPath
 from app.forge.models.settings import ForgeSettings
+from app.forge.ui.settings_naming import SECTION_NAMING
 from app.forge.ui.settings_pages import (
     FORGE_GROUP,
     FORGE_SECTIONS,
@@ -30,13 +33,10 @@ from app.forge.ui.settings_pages import (
     SECTION_LIBRARY,
     LibrarySection,
 )
+from app.forge.ui.settings_window import ForgeSettingsWindow
 from app.i18n import Language
-from app.models import Settings
-from app.services import SettingsService
-from app.ui.settings_dialog import SECTION_WHERE, SettingsDialog
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.tk import pump, pump_until
-from tests.test_settings_dialog import FakeProwlarr, FakeRepository, FakeShortcut
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -72,10 +72,47 @@ class FakeSettings:
         return lambda: self.listeners.remove(listener)
 
 
+class FakeIgnored:
+    """IgnoreService's surface for the section: entries, subscribe, stop_ignoring."""
+
+    def __init__(self, *entries: IgnoredPath) -> None:
+        self.entries: tuple[IgnoredPath, ...] = entries
+        self.listeners: list[Callable[[tuple[IgnoredPath, ...]], None]] = []
+        self.stopped: list[Path] = []
+
+    def subscribe(
+        self, listener: Callable[[tuple[IgnoredPath, ...]], None]
+    ) -> Callable[[], None]:
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
+    def set(self, *entries: IgnoredPath) -> None:
+        """Ignored (or stopped) elsewhere meanwhile."""
+        self.entries = entries
+        for listener in list(self.listeners):
+            listener(entries)
+
+    async def stop_ignoring(self, path: Path) -> bool:
+        await asyncio.sleep(0)
+        self.stopped.append(path)
+        self.set(*(e for e in self.entries if e.path != path))
+        return True
+
+
+def ignored_entry(path: str, folder: bool = False) -> IgnoredPath:
+    return IgnoredPath.model_validate({"path": path, "folder": folder, "added_at": 0})
+
+
 class FakeForge:
     """ForgeRuntime's surface: `services` (None until started), `start()`, `reason`."""
 
-    def __init__(self, settings: FakeSettings | None, *, started: bool = True) -> None:
+    def __init__(
+        self,
+        settings: FakeSettings | None,
+        *,
+        started: bool = True,
+        ignored: FakeIgnored | None = None,
+    ) -> None:
         # The other MediaForge sections (Naming, Right-click menu) read the presets and matches.
         self._parts = (
             None
@@ -84,6 +121,7 @@ class FakeForge:
                 settings=settings,
                 presets=SimpleNamespace(list=mock.AsyncMock(return_value=list(DEFAULT_PRESETS))),
                 matches=SimpleNamespace(list=mock.AsyncMock(return_value=[])),
+                ignored=ignored if ignored is not None else FakeIgnored(),
             )
         )
         self.services = self._parts if started else None
@@ -111,7 +149,7 @@ def labels(widget: tk.Misc) -> list[str]:
     return found
 
 
-class LibrarySettingsTests(ForgeAsyncTestCase):
+class LibrarySettingsCase(ForgeAsyncTestCase):
     def setUp(self) -> None:
         super().setUp()
         gc.collect()
@@ -138,29 +176,12 @@ class LibrarySettingsTests(ForgeAsyncTestCase):
         gc.collect()  # the dialog's Tk variables, on the main thread
 
     def dialog(
-        self, forge: FakeForge | None, *, section: str | None = SECTION_LIBRARY
-    ) -> SettingsDialog:
-        settings = SettingsService(
-            FakeRepository(),  # type: ignore[arg-type]
-            Settings(download_dir=self.tmp),
-        )
-        dialog = SettingsDialog(
-            self.root,
-            settings,
-            search=mock.MagicMock(),
-            station=mock.MagicMock(),
-            updates=SimpleNamespace(current="3.0.0"),  # type: ignore[arg-type]
-            torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
-            discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
-            prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
-            startup_shortcut=FakeShortcut(),
-            forge=cast(Any, forge),
-            section=section,
-        )
-        return dialog
+        self, forge: FakeForge, *, section: str | None = SECTION_LIBRARY
+    ) -> ForgeSettingsWindow:
+        return ForgeSettingsWindow(self.root, cast(Any, forge), section=section)
 
-    def section(self, dialog: SettingsDialog) -> LibrarySection:
-        part = dialog._forge_parts[SECTION_LIBRARY]
+    def section(self, dialog: ForgeSettingsWindow) -> LibrarySection:
+        part = dialog.parts[SECTION_LIBRARY]
         assert isinstance(part, LibrarySection)
         part.ask_folder = self._ask
         return part
@@ -169,34 +190,33 @@ class LibrarySettingsTests(ForgeAsyncTestCase):
         self.asked.append((title, start))
         return self.chosen.pop(0) if self.chosen else ""
 
-    def ready(self, settings: ForgeSettings = READY) -> tuple[SettingsDialog, LibrarySection, FakeSettings]:
+    def ready(
+        self, settings: ForgeSettings = READY
+    ) -> tuple[ForgeSettingsWindow, LibrarySection, FakeSettings]:
         fake = FakeSettings(settings)
         dialog = self.dialog(FakeForge(fake))
         return dialog, self.section(dialog), fake
 
-    # --- the group and the section -------------------------------------------------------------
 
-    async def test_the_mediaforge_group_comes_last_and_opens_at_library(self) -> None:
+class LibrarySettingsTests(LibrarySettingsCase):
+    # --- the sections and this one ---------------------------------------------------------------
+
+    async def test_the_sidebar_lists_forges_sections_and_opens_at_library(self) -> None:
         dialog, _part, _fake = self.ready()
-        self.assertEqual(list(dialog._items)[-len(FORGE_SECTIONS) :], list(FORGE_SECTIONS))
+        self.assertEqual(dialog.sections, list(FORGE_SECTIONS))
         # The group's label, then an icon and a name per section.
-        self.assertEqual(labels(dialog._sidebar)[-1 - 2 * len(FORGE_SECTIONS)], "MEDIAFORGE")
+        self.assertEqual(labels(dialog._sidebar)[0], "MEDIAFORGE")
+        self.assertEqual(len(labels(dialog._sidebar)), 1 + 2 * len(FORGE_SECTIONS))
         self.assertEqual(dialog.section, SECTION_LIBRARY)
         self.assertTrue(dialog._items[SECTION_LIBRARY].selected)
         texts = labels(dialog.page(SECTION_LIBRARY))
         self.assertEqual(texts[0], "Library & watching")
         self.assertTrue(texts[1])
-        dialog.show_section(SECTION_WHERE)
-        self.assertEqual(dialog.section, SECTION_WHERE)
-        dialog.show_section(SECTION_LIBRARY)  # an open dialog asked for the section again
+        dialog.show_section(SECTION_NAMING)
+        self.assertEqual(dialog.section, SECTION_NAMING)
+        dialog.show_section(SECTION_LIBRARY)  # an open window asked for the section again
         self.assertEqual(dialog.section, SECTION_LIBRARY)
         self.assertEqual(FORGE_GROUP, "MediaForge")
-
-    async def test_without_forge_the_dialog_opens_where_it_did(self) -> None:
-        dialog = self.dialog(None)
-        self.assertEqual(dialog.section, SECTION_WHERE)
-        self.assertNotIn(SECTION_LIBRARY, dialog._items)
-        self.assertEqual(dialog._forge_parts, {})
 
     async def test_shows_the_stored_settings(self) -> None:
         dialog, part, _fake = self.ready()
@@ -308,7 +328,7 @@ class LibrarySettingsTests(ForgeAsyncTestCase):
 
     async def test_a_watched_folder_inside_a_library_folder_never_saves(self) -> None:
         dialog, part, fake = self.ready()
-        dialog.show_section(SECTION_WHERE)
+        dialog.show_section(SECTION_NAMING)
         self.chosen = [r"\\nas\video\Series\incoming"]
         part.add_watch_folder()
         self.assertFalse(await dialog._save_all())
@@ -408,14 +428,92 @@ class LibrarySettingsTests(ForgeAsyncTestCase):
         self.assertEqual(labels(dialog.page(SECTION_LIBRARY))[-1], "Remove the old MediaForge")
 
 
+class IgnoredBoxTests(LibrarySettingsCase):
+    """The "Ignored" box under "Download folders to watch": what Auto-rename leaves alone, each
+    with "Stop ignoring" (stored on Save, D9); "Nothing ignored." without a gap when empty."""
+
+    COURSE = r"D:\Downloads\tv\Python Course"
+    CLIP = r"D:\Downloads\tv\Holiday.Clip.mp4"
+
+    def ignored_ready(
+        self, ignored: FakeIgnored
+    ) -> tuple[ForgeSettingsWindow, LibrarySection, FakeSettings]:
+        fake = FakeSettings(READY)
+        dialog = self.dialog(FakeForge(fake, ignored=ignored))
+        return dialog, self.section(dialog), fake
+
+    async def test_empty_says_nothing_ignored_without_a_gap(self) -> None:
+        _dialog, part, _fake = self.ignored_ready(FakeIgnored())
+        self.assertEqual(labels(part.ignored_list), ["Nothing ignored."])
+        box = part.ignored_list.master
+        box.update_idletasks()
+        scaling = ctk.ScalingTracker.get_widget_scaling(box)
+        # The heading, its line and "Nothing ignored." only (an empty CTkFrame would keep 200).
+        self.assertLess(box.winfo_reqheight(), 140 * scaling)
+
+    async def test_the_box_follows_download_folders_to_watch(self) -> None:
+        dialog, _part, _fake = self.ignored_ready(FakeIgnored())
+        texts = labels(dialog.page(SECTION_LIBRARY))
+        watch = texts.index("Download folders to watch")
+        ignored = texts.index("Ignored")
+        self.assertLess(watch, ignored)
+        self.assertLess(ignored, texts.index("AirGrabber's downloads"))
+        self.assertEqual(texts[ignored + 1], "Files and folders Auto-rename leaves alone.")
+
+    async def test_lists_entries_and_stop_ignoring_waits_for_save(self) -> None:
+        source = FakeIgnored(ignored_entry(self.COURSE, folder=True), ignored_entry(self.CLIP))
+        dialog, part, fake = self.ignored_ready(source)
+        self.assertEqual(labels(part.ignored_list), [f"📁  {self.COURSE}", self.CLIP])
+        buttons = [w for w in part.ignored_list.winfo_children() if isinstance(w, ctk.CTkButton)]
+        self.assertEqual([b.cget("text") for b in buttons], ["Stop ignoring", "Stop ignoring"])
+        buttons[0].invoke()
+        self.assertEqual(labels(part.ignored_list), [self.CLIP])
+        self.assertEqual(source.stopped, [])  # kept until Save
+        self.assertEqual(part.unignored, [Path(self.COURSE)])
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(source.stopped, [Path(self.COURSE)])
+        self.assertEqual(fake.updates, [])  # no setting changed
+        self.assertEqual(part.unignored, [])
+        self.assertEqual(labels(part.ignored_list), [self.CLIP])
+
+    async def test_cancel_keeps_them_ignored(self) -> None:
+        source = FakeIgnored(ignored_entry(self.CLIP))
+        dialog, part, _fake = self.ignored_ready(source)
+        part.stop_ignoring(Path(self.CLIP))
+        self.assertEqual(labels(part.ignored_list), ["Nothing ignored."])
+        dialog.destroy()
+        await pump(self.root, 0.05)
+        self.assertEqual(source.stopped, [])
+        self.assertEqual(source.listeners, [])  # it stopped listening
+
+    async def test_ignored_meanwhile_shows(self) -> None:
+        source = FakeIgnored()
+        _dialog, part, _fake = self.ignored_ready(source)
+        source.set(ignored_entry(self.CLIP))
+        self.assertEqual(labels(part.ignored_list), [self.CLIP])
+
+    async def test_dutch(self) -> None:
+        i18n.set_language(Language.NL)
+        dialog, part, _fake = self.ignored_ready(FakeIgnored(ignored_entry(self.CLIP)))
+        texts = labels(dialog.page(SECTION_LIBRARY))
+        self.assertIn("Genegeerd", texts)
+        self.assertIn("Bestanden en mappen die automatisch hernoemen met rust laat.", texts)
+        buttons = [w for w in part.ignored_list.winfo_children() if isinstance(w, ctk.CTkButton)]
+        self.assertEqual(buttons[0].cget("text"), "Niet meer negeren")
+        part.stop_ignoring(Path(self.CLIP))
+        self.assertEqual(labels(part.ignored_list), ["Niets genegeerd."])
+
+
 class ImportCostTests(ForgeAsyncTestCase):
-    def test_the_settings_dialog_loads_no_forge_core_database_or_guessit(self) -> None:
-        """Settings is imported with the main window at start: the registry stays light
-        (INTEGRATION.md 3.6)."""
+    def test_airgrabbers_settings_load_none_of_forges_settings(self) -> None:
+        """AirGrabber's Settings is imported with the main window at start: it has no
+        MediaForge sections any more, so none of Forge's settings pages, core, forge.db or
+        guessit come along (INTEGRATION.md 3.6)."""
         code = (
             "import sys\n"
             "import app.ui.settings_dialog\n"
             "bad = [m for m in sys.modules if m == 'guessit' or m.startswith('app.forge.db')\n"
+            "       or m.startswith('app.forge.ui.settings')\n"
             "       or m in ('app.forge.core.auto', 'app.forge.services',\n"
             "                'app.forge.ui.library_page')]\n"
             "print(bad)\n"

@@ -1,4 +1,4 @@
-"""AirGrabber's downloads in MediaForge's pages (B-01): Settings › MediaForge › Library &
+"""AirGrabber's downloads in MediaForge's pages (B-01): MediaForge Settings › Library &
 watching's "Use AirGrabber's downloads" (on for a new setup, off for an imported one, stored on
 Save only; turning it on while On is chosen goes to Trial first; a suggestion's Add makes it one
 of the owner's own folders) and the Forge window's Auto-rename page listing what is watched and why,
@@ -22,13 +22,10 @@ from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, For
 from app.forge.ui.library_page import LibraryPage
 from app.forge.ui.settings_pages import SECTION_LIBRARY, LibrarySection
 from app.i18n import Language
-from app.models import Settings
-from app.services import SettingsService
-from app.ui.settings_dialog import SettingsDialog
+from app.forge.ui.settings_window import ForgeSettingsWindow
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.ui.test_library_page import FakeRenamer
 from tests.forge.ui.test_settings_library import FakeSettings, labels
-from tests.test_settings_dialog import FakeProwlarr, FakeRepository, FakeShortcut
 
 SERIES = r"\\nas\video\Series"
 MOVIES = r"\\nas\video\Movies"
@@ -174,22 +171,12 @@ class _Forge:
 
 
 class SettingsSectionTests(_TkCase):
-    def ready(self, settings: ForgeSettings) -> tuple[SettingsDialog, LibrarySection, FakeSettings]:
+    def ready(
+        self, settings: ForgeSettings
+    ) -> tuple[ForgeSettingsWindow, LibrarySection, FakeSettings]:
         fake = FakeSettings(settings)
-        dialog = SettingsDialog(
-            self.root,
-            SettingsService(FakeRepository(), Settings(download_dir=self.tmp)),  # type: ignore[arg-type]
-            search=mock.MagicMock(),
-            station=mock.MagicMock(),
-            updates=SimpleNamespace(current="3.0.0"),  # type: ignore[arg-type]
-            torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
-            discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
-            prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
-            startup_shortcut=FakeShortcut(),
-            forge=cast(Any, _Forge(fake)),
-            section=SECTION_LIBRARY,
-        )
-        part = dialog._forge_parts[SECTION_LIBRARY]
+        dialog = ForgeSettingsWindow(self.root, cast(Any, _Forge(fake)), section=SECTION_LIBRARY)
+        part = dialog.parts[SECTION_LIBRARY]
         assert isinstance(part, LibrarySection)
         return dialog, part, fake
 
@@ -254,3 +241,21 @@ class SettingsSectionTests(_TkCase):
         await fake.update(airgrabber=AirGrabberDownloads(folders=[DONE]))
         self.assertEqual(labels(part.airgrabber_list)[0], DONE.path)
         self.assertEqual(part.changes(), {})
+
+    async def test_without_airgrabbers_folders_the_box_ends_under_the_tick_box(self) -> None:
+        # An empty CTkFrame keeps its default 200 units: the empty list is taken out.
+        _dialog, part, fake = self.ready(with_airgrabber())
+        body = part.use_box.master
+        body.update_idletasks()
+        self.assertEqual(part.airgrabber_list.winfo_manager(), "")
+        empty = body.winfo_reqheight()
+        scaling = ctk.ScalingTracker.get_widget_scaling(body)
+        self.assertLess(empty, 200 * scaling)  # the heading, its text and the tick box only
+        await fake.update(airgrabber=AirGrabberDownloads(folders=[DONE]))
+        body.update_idletasks()
+        self.assertEqual(part.airgrabber_list.winfo_manager(), "grid")
+        self.assertGreater(body.winfo_reqheight(), empty)
+        await fake.update(airgrabber=AirGrabberDownloads())  # gone again: no room kept
+        body.update_idletasks()
+        self.assertEqual(part.airgrabber_list.winfo_manager(), "")
+        self.assertEqual(body.winfo_reqheight(), empty)

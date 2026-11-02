@@ -72,6 +72,12 @@ DARK_BEFORE = {
     "STACK_NEAR_EDGE": "#46607A",
     "STACK_FAR": "#1E2329",
     "STACK_FAR_EDGE": "#3A4E63",
+    # People (3.0.1): the avatars' and name button's colours, the accounts mockup's.
+    "PERSON_BLUE": "#4E6A85",
+    "PERSON_PINK": "#B5567A",
+    "PERSON_GREEN": "#47805A",
+    "PERSON_COPPER": "#A0612B",
+    "PERSON_PURPLE": "#7A5AA8",
 }
 
 HEX = re.compile(r"#[0-9A-Fa-f]{6}")

@@ -1,9 +1,11 @@
-"""The backup file (Settings → Backup, app/services/backup.py): the followed shows, the film
-watchlist, the download history and the settings in one JSON file (UTF-8), to keep or to load
-on another PC.
+"""The backup file (Settings → Backup, app/services/backup.py): the people, their followed
+shows and film watchlists, the download history and the settings in one JSON file (UTF-8), to
+keep or to load on another PC.
 
 Its header names the format and its version (FORMAT_NAME, FORMAT_VERSION); a file of a newer
-version isn't read. Every model here is frozen and ignores fields it doesn't know, and the
+version isn't read. Version 2 has people (`profiles`; each show and film says whose it is, a
+show followed by two people is in it twice, its episodes and marks with the first of them only);
+a version 1 file is one person's lists. Every model here is frozen and ignores fields it doesn't know, and the
 TVMaze / TMDB data inside (Show, Episode, Movie, DownloadRecord) is read by the fields this
 version knows, so a later AirGrabber may add fields without a new format version."""
 
@@ -21,7 +23,7 @@ from app.models.settings import Accent
 from app.models.types import ImdbId, UtcDatetime
 
 FORMAT_NAME = "airgrabber-backup"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 FILE_SUFFIX = ".airgrabber"
 
 
@@ -46,11 +48,24 @@ KnownMovie = Annotated[Movie, _known_fields(Movie)]
 KnownRecord = Annotated[DownloadRecord, _known_fields(DownloadRecord)]
 
 
-class BackupShow(BackupModel):
-    """A followed show with what the user chose for it: its automatic downloads (`auto_since`:
-    from when) and the episodes marked "I already have this" (`have`, episode ids). Its
-    episodes come along, so the marks have their episodes and the show draws before a sync."""
+class BackupProfile(BackupModel):
+    """A person: `id` is their number in the file (BackupShow.profile, BackupFilm.profile);
+    `name` None: never named ("Me"); `colour`: app.models.ProfileColour's value."""
 
+    id: int
+    name: str | None = None
+    colour: str = "blue"
+    created_at: UtcDatetime | None = None
+
+
+class BackupShow(BackupModel):
+    """A show a person (`profile`, their number in the file) follows, with what they chose for
+    it: its automatic downloads (`auto_since`: from when); and the show's episodes marked "I
+    already have this" (`have`, episode ids; shared by everyone). Its episodes come along, so
+    the marks have their episodes and the show draws before a sync; a show two people follow
+    carries them in its first entry only."""
+
+    profile: int = 1
     show: KnownShow
     tracked_at: UtcDatetime
     auto_download: bool = False
@@ -66,9 +81,11 @@ class BackupShow(BackupModel):
 
 
 class BackupFilm(BackupModel):
-    """A film on the watchlist: the TMDB data it was saved with, its "Download when it's out"
-    switch and the release dates as last read (read again after a load)."""
+    """A film on a person's (`profile`) watchlist: the TMDB data it was saved with, its
+    "Download when it's out" switch and the release dates as last read (read again after a
+    load)."""
 
+    profile: int = 1
     movie: KnownMovie
     added_at: UtcDatetime
     auto_download: bool = True
@@ -86,8 +103,10 @@ class BackupGrab(BackupModel):
 
 
 class BackupData(BackupModel):
-    """The database part of a backup (BackupRepository)."""
+    """The database part of a backup (BackupRepository). No `profiles`: a backup from before
+    people (version 1), whose lists are one person's."""
 
+    profiles: tuple[BackupProfile, ...] = ()
     shows: tuple[BackupShow, ...] = ()
     films: tuple[BackupFilm, ...] = ()
     grabs: tuple[BackupGrab, ...] = ()
@@ -101,6 +120,7 @@ class BackupFile(BackupModel):
     version: int
     app_version: str = ""
     created: UtcDatetime
+    profiles: tuple[BackupProfile, ...] = ()
     shows: tuple[BackupShow, ...] = ()
     watchlist: tuple[BackupFilm, ...] = ()
     history: tuple[BackupGrab, ...] = ()
@@ -108,13 +128,16 @@ class BackupFile(BackupModel):
 
     @property
     def data(self) -> BackupData:
-        return BackupData(shows=self.shows, films=self.watchlist, grabs=self.history)
+        return BackupData(
+            profiles=self.profiles, shows=self.shows, films=self.watchlist, grabs=self.history
+        )
 
 
 class BackupSummary(BackupModel):
     """What a backup holds, for the question before loading it and the line after saving."""
 
-    shows: int
+    people: int = 1
+    shows: int  # a show followed by two people counts twice
     films: int
     grabs: int
     settings: bool  # it has settings
@@ -136,6 +159,8 @@ class RestoreCounts(BackupModel):
     films_added: int = 0
     films_removed: int = 0
     grabs_added: int = 0
+    people_added: int = 0
+    people_removed: int = 0
 
 
 class KeptDownloads(StrEnum):

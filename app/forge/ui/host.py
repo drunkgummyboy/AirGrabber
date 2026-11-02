@@ -9,12 +9,18 @@ AirGrabber's main window owns one (F-21) and calls it:
   Opened before Forge's file-name reader has warmed up (F-28, app/forge/services.py), the window
   shows "Getting ready…" first, then `ForgeServices.warm_up()` runs and the pages are built.
 - `close()` — hides the Forge window (its ✕ does the same) and remembers its size and place
-  (ForgeSettings.window_geometry). Closing it never quits AirGrabber.
+  (ForgeSettings.window_geometry); an open Settings window goes (= Cancel). Closing it never
+  quits AirGrabber.
+- `open_settings(section)` — MediaForge's own Settings window (app/forge/ui/settings_window.py;
+  the Forge window's ⚙ and the Auto-rename page's "More in Settings…"): made over the Forge
+  window, or, while one is open, raised and switched to `section`. Its "Open AirGrabber's
+  Settings" calls `open_airgrabber_settings` (AirGrabber's main window's).
 - `may_close(retry)` — before AirGrabber quits or restarts: False while the Inbox's Forge run
   stops after its current file (`QueueView.request_close`), History's undo finishes or a
   confirm window renames or undoes (`ConfirmWindow.busy`); `retry` is called then.
 - `handle(request)` — a right-click / "MediaForge" shortcut request (app/single_instance.py's
-  ForgeRequest): plain → the Forge window, the preset chosen, the paths added to the Inbox;
+  ForgeRequest): plain → the Forge window, the paths added to the Inbox with the preset (for
+  those files; without files the preset goes to the queue's bands);
   confirm → ConfirmBatcher (app/forge/core/batcher.py) → one ConfirmWindow per preset, whose
   "Open in MediaForge" comes back here as a plain request.
 - `await shutdown()` — at quit: no more requests, the size and place saved, every Forge window
@@ -38,7 +44,8 @@ again (`imported`: the host hears every change of `imported_from` through Forge'
 default).
 
 Light at import (AirGrabber's main window may import it at start): the window, the confirm window,
-the import step and Forge's services are imported only when first needed (INTEGRATION.md 3.6).
+the Settings window, the import step and Forge's services are imported only when first needed
+(INTEGRATION.md 3.6).
 """
 
 from __future__ import annotations
@@ -47,7 +54,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from app import bootstrap
 from app.forge.core.batcher import ConfirmBatcher
@@ -62,7 +69,9 @@ if TYPE_CHECKING:
     from app.forge.models.settings import ForgeSettings
     from app.forge.services import ForgeServices
     from app.forge.ui.confirm_window import ConfirmWindow
+    from app.forge.runtime import ForgeRuntime
     from app.forge.ui.import_step import ImportStep
+    from app.forge.ui.settings_window import ForgeSettingsWindow
     from app.forge.ui.window import ForgeWindow
     from app.ui import theme
 
@@ -108,24 +117,26 @@ class ForgeHost:
         root: Any,
         runtime: Runtime,
         *,
-        open_settings: Callable[[], None] | None = None,
+        open_airgrabber_settings: Callable[[], None] | None = None,
         restart: Callable[[], None] | None = None,
         retry_install: Callable[[str], object] | None = None,
         look: theme.Look | None = None,
         find_old_install: Callable[[], OldInstall | None] | None = None,
     ) -> None:
-        """`root`: AirGrabber's main window (the Forge windows' master). `open_settings`: Settings
-        at MediaForge › Library & watching ("More in Settings…"). `restart`: AirGrabber's
-        restart (Try again). `retry_install`: forget a package's remembered install failure.
-        `find_old_install`: the old MediaForge (blocking; run in a thread)."""
+        """`root`: AirGrabber's main window (the Forge windows' master).
+        `open_airgrabber_settings`: AirGrabber's own Settings (MediaForge's Settings window's
+        "Open AirGrabber's Settings"). `restart`: AirGrabber's restart (Try again).
+        `retry_install`: forget a package's remembered install failure. `find_old_install`: the
+        old MediaForge (blocking; run in a thread)."""
         self._root = root
         self._runtime = runtime
-        self._open_settings = open_settings or (lambda: None)
+        self._open_airgrabber_settings = open_airgrabber_settings or (lambda: None)
         self._restart = restart or (lambda: None)
         self._retry_install = retry_install or _retry_guessit
         self._look = look
         self._find_old_install = find_old_install or _find_old_install
         self._window: ForgeWindow | None = None
+        self._settings_window: ForgeSettingsWindow | None = None
         self.import_step: ImportStep | None = None  # the old MediaForge's import, while it shows
         self._offering = False  # looking for the old MediaForge
         self._imported_from = ""  # the last `ForgeSettings.imported_from` heard
@@ -218,7 +229,7 @@ class ForgeHost:
         geometry = services.settings.current.window_geometry if services is not None else None
         window = ForgeWindow(self._root, look=self._look, geometry=geometry)
         window.on_close = self.close
-        window.on_more_settings = self._more_settings
+        window.on_settings = self.open_settings
         self._window = window
         return window
 
@@ -236,6 +247,7 @@ class ForgeHost:
         if window is None or window.state() == "withdrawn":
             return
         geometry = window.saved_geometry()
+        self._close_settings()  # its Cancel: a closed Forge window leaves no Settings behind
         window.withdraw()
         services = self._runtime.services
         if geometry and services is not None:
@@ -266,8 +278,56 @@ class ForgeHost:
         else:
             self._spawn(self.open())
 
-    def _more_settings(self) -> None:
-        self._open_settings()
+    # --- MediaForge's Settings -----------------------------------------------------------------
+
+    @property
+    def settings_window(self) -> ForgeSettingsWindow | None:
+        """MediaForge's Settings window while it is open."""
+        window = self._settings_window
+        try:
+            if window is not None and window.winfo_exists():
+                return window
+        except Exception:  # its interpreter is gone
+            pass
+        return None
+
+    def open_settings(self, section: str | None = None) -> ForgeSettingsWindow | None:
+        """MediaForge's Settings over the Forge window, at `section` (its first one when not
+        given); an open one is raised and switched to `section`. None without a Forge window."""
+        window = self.window
+        if window is None or self._shut:
+            return None
+        settings = self.settings_window
+        if settings is not None:
+            if section is not None:
+                settings.show_section(section)
+            settings.deiconify()
+            settings.lift()
+            settings.focus_force()
+            return settings
+        from app.forge.ui.settings_window import ForgeSettingsWindow
+
+        # The sections need ForgeRuntime's start / services / reason (the host's Runtime) and
+        # what the old-install box asks of it.
+        runtime = cast("ForgeRuntime", self._runtime)
+        settings = ForgeSettingsWindow(
+            window,
+            runtime,
+            section=section,
+            on_open_airgrabber=self._open_airgrabber_settings,
+            look=self._look,
+        )
+        self._settings_window = settings
+        return settings
+
+    def _close_settings(self) -> None:
+        settings = self.settings_window
+        self._settings_window = None
+        if settings is not None:
+            try:
+                settings.destroy()
+            except Exception:
+                log.debug("MediaForge's Settings window was gone already", exc_info=True)
 
     # --- the old MediaForge ---------------------------------------------------------------------
 
@@ -351,10 +411,10 @@ class ForgeHost:
             self._opening -= 1
         if window is None:
             return
-        if preset:
-            window.select_preset(preset)
         if paths:
-            window.add_paths(paths)
+            window.add_paths(paths, preset=preset)  # the preset names the files it adds
+        elif preset:
+            window.select_preset(preset)
 
     def _confirm_batch(self, preset: str | None, paths: list[Path]) -> None:
         """The batcher's: one confirm window for these files (on the loop, no Tk event)."""
@@ -453,6 +513,7 @@ class ForgeHost:
             except Exception:
                 log.debug("A confirm window was gone already", exc_info=True)
         self.confirm_windows.clear()
+        self._close_settings()
         if window is not None:
             try:
                 window.destroy()

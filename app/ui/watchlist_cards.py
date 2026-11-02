@@ -317,7 +317,11 @@ class WatchlistCard(PosterCard):
     def _auto_toggled(self) -> None:
         on = bool(self._auto_var.get())
         self._switch.configure(text_color=auto_switch_color(on))
-        spawn(self._watchlist.set_auto_download(self.movie_id, on), name="watchlist-auto")
+        watchlist = self._watchlist  # the card shows the list in memory: the selected person's
+        spawn(
+            watchlist.set_auto_download(self.movie_id, on, profile_id=watchlist.profile_id),
+            name="watchlist-auto",
+        )
 
     def _open_imdb(self) -> None:
         webbrowser.open(imdb_url(self._entry))

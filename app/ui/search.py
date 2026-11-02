@@ -4,6 +4,7 @@ both covering TV shows (TVMaze) and movies (TMDB)."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import tkinter as tk
 from collections.abc import Callable
@@ -28,6 +29,7 @@ from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width
 from app.ui.widgets import FlexGrid, LoadingBar
+from app.ui.window_front import open_in_front
 
 if TYPE_CHECKING:
     from app.services import ImageCache, LibraryService, WatchlistService
@@ -82,10 +84,14 @@ class SearchSuggestions:
         library: LibraryService,
         discovery: DiscoveryService,
         on_open: Callable[[str], None],
+        profile: Callable[[], int],
     ) -> None:
+        """`profile`: the selected person, read at every lookup (the shows they follow get
+        a ✓)."""
         self._entry = entry
         self._root = root
         self._library = library
+        self._profile = profile
         self._discovery = discovery
         self._on_open = on_open
         self._debounce_job: str | None = None
@@ -165,7 +171,9 @@ class SearchSuggestions:
 
     async def _suggest_shows(self, query: str) -> list[ShowSearchResult]:
         try:
-            return await self._library.search(query, limit=SUGGESTION_LIMIT)
+            return await self._library.search(
+                query, profile_id=self._profile(), limit=SUGGESTION_LIMIT
+            )
         except TVMazeError as exc:
             log.debug("Show suggestions for %r failed: %s", query, exc)
             return []
@@ -316,24 +324,32 @@ class SearchResultsWindow(ctk.CTkToplevel):
         movie_actions: DownloadActions[Movie],
         watchlist: WatchlistService,
         on_open_settings: Callable[[], None],
+        profile_id: int,
         on_open_show: Callable[[Show], None] | None = None,
         card_scale: CardScale = FULL,
         on_open_movie: Callable[[Movie], None] | None = None,
     ) -> None:
-        """`on_open_show`: what a click on a show card's cover does (the show details).
+        """`profile_id`: the person the window searches for (the shows they follow are
+        marked, "+ Track" adds to their library; MainWindow closes it at a switch).
+        `on_open_show`: what a click on a show card's cover does (the show details).
         `on_open_movie`: the same for a film card (the film's info window)."""
         super().__init__(master, fg_color=theme.BG)
         self._scale = card_scale
         self._library = library
+        self._profile_id = profile_id
         self._discovery = discovery
         self._images = images
         self._status = status
         self._query = query
-        self._movie_actions = movie_actions  # the movie cards' Download and ⋯ buttons
+        # A window opened from a result (a show's or film's info window, a film's ☰ Choose…)
+        # comes to the front, over this one (app/ui/window_front.py).
+        self._movie_actions = dataclasses.replace(  # the movie cards' Download and ⋯ buttons
+            movie_actions, choose=self._in_front(movie_actions.choose)
+        )
         self._watchlist = watchlist  # the movie cards' watchlist buttons
         self._on_open_settings = on_open_settings
-        self._on_open_show = on_open_show
-        self._on_open_movie = on_open_movie
+        self._on_open_show = None if on_open_show is None else self._in_front(on_open_show)
+        self._on_open_movie = None if on_open_movie is None else self._in_front(on_open_movie)
         self._cards: dict[int, SearchShowCard] = {}
 
         title = t("Search Results: {query}", query=query)
@@ -402,11 +418,21 @@ class SearchResultsWindow(ctk.CTkToplevel):
             self.lift()
             self.focus_force()
 
+    def _in_front[T](self, open_window: Callable[[T], object]) -> Callable[[T], None]:
+        """`open_window`, with the window it opens (or raises) brought in front of this one."""
+
+        def opened(item: T) -> None:
+            open_in_front(self, lambda: open_window(item))
+
+        return opened
+
     # -- shows -------------------------------------------------------------------------------
 
     async def _load_shows(self) -> None:
         try:
-            results = await self._library.search(self._query, limit=RESULTS_LIMIT)
+            results = await self._library.search(
+                self._query, profile_id=self._profile_id, limit=RESULTS_LIMIT
+            )
         except TVMazeError as exc:
             if self.winfo_exists():
                 self._clear_shows_loading()
@@ -516,7 +542,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
 
     async def _track_show(self, show: Show) -> None:
         try:
-            await self._library.track(show.id)
+            await self._library.track(show.id, profile_id=self._profile_id)
         except TVMazeError as exc:
             self._set_card_state(show, "idle")
             self._report(t("Couldn't track {name}: {error}", name=show.name, error=exc), 6000)

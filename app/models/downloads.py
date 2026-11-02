@@ -1,6 +1,7 @@
 """The Downloads page's models: what the torrent program on a NAS or another computer says about
 its tasks (RemoteTask, RemoteStatus), the recent grabs with their state and where MediaForge
-moved them (DownloadEntry, MovedTo, DownloadsOverview) and the free space of the folder downloads end up in (FreeSpace)."""
+moved them (DownloadEntry, MovedTo, DownloadsOverview) and the free space of the folder downloads end up in (FreeSpace).
+The download queue's states and events (QueueState, QueueEvent, QueuedItem)."""
 
 from __future__ import annotations
 
@@ -8,7 +9,14 @@ from enum import StrEnum
 
 from pydantic import Field
 
-from app.models.domain import DomainModel, DownloadRecord, GrabOutcome, Show
+from app.models.domain import (
+    DomainModel,
+    DownloadRecord,
+    GrabOutcome,
+    MediaType,
+    QuickDownloadResult,
+    Show,
+)
 from app.models.types import InfoHash, UtcDatetime
 
 
@@ -97,4 +105,47 @@ class DownloadsOverview(DomainModel):
     @property
     def in_progress(self) -> int:
         return sum(1 for entry in self.entries if entry.state.in_progress)
+
+
+# -- the download queue (app/services/download_queue.py) -----------------------------------------
+
+# A one-click download's title: (media type, TVMaze show id or TMDB film id, season, episode);
+# an episode None with a season = that season's pack.
+QueueKey = tuple[MediaType, int, int | None, int | None]
+
+
+class QueueState(StrEnum):
+    """Where a one-click download in the download queue is."""
+
+    WAITING = "waiting"  # queued, its turn not come yet
+    RUNNING = "running"  # searching, or sending what it picked
+    DONE = "done"  # grabbed, or it was downloaded already
+    NOTHING = "nothing"  # no release was good enough
+    FAILED = "failed"  # the grab failed (`QueueEvent.message` says why)
+    DROPPED = "dropped"  # taken out before its turn (✕, its batch's grab failed)
+
+    @property
+    def active(self) -> bool:
+        """Still in the queue: waiting or running."""
+        return self in (QueueState.WAITING, QueueState.RUNNING)
+
+
+class QueueEvent(DomainModel):
+    """A queued download's new state, as the queue tells its listeners."""
+
+    key: QueueKey
+    label: str  # "Severance S02E01", "Severance S02", "Dune (2021)": never a release
+    state: QueueState
+    result: QuickDownloadResult | None = None  # DONE and NOTHING
+    message: str = ""  # FAILED: why, in plain words (never a URL or a key)
+    # NOTHING of a season pack: its episodes, queued instead (empty: none were needed).
+    fallback: tuple[QueueKey, ...] = ()
+
+
+class QueuedItem(DomainModel):
+    """A download waiting in the queue, as the Downloads page lists it."""
+
+    key: QueueKey
+    label: str
+    state: QueueState = QueueState.WAITING
 

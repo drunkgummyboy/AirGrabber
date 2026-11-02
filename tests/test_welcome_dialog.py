@@ -95,22 +95,24 @@ class FirstRunDefaultsTests(unittest.TestCase):
 class StepTests(unittest.TestCase):
     def test_step_labels(self) -> None:
         self.assertIsNone(step_label(1))
-        self.assertEqual(step_label(2), "Step 2 of 5")
-        self.assertEqual(step_label(3), "Step 3 of 5")
-        self.assertEqual(step_label(4), "Step 4 of 5")
-        self.assertEqual(step_label(5), "Step 5 of 5")
+        self.assertEqual(step_label(2), "Step 2 of 6")
+        self.assertEqual(step_label(3), "Step 3 of 6")
+        self.assertEqual(step_label(4), "Step 4 of 6")
+        self.assertEqual(step_label(6), "Step 6 of 6")
 
     def test_pages_and_their_steps(self) -> None:
         self.assertEqual(
-            [page_step(page) for page in Page], [1, 2, 2, 3, 4, 5]
-        )  # the import panel is still step 2
-        self.assertEqual(step_label(page_step(Page.AIRDATES_IMPORT)), "Step 2 of 5")
-        self.assertEqual(step_label(page_step(Page.DOWNLOAD)), "Step 3 of 5")
-        self.assertEqual(step_label(page_step(Page.TMDB)), "Step 4 of 5")
-        self.assertEqual(step_label(page_step(Page.QUICK)), "Step 5 of 5")
+            [page_step(page) for page in Page], [1, 2, 3, 3, 4, 5, 6]
+        )  # who uses AirGrabber is step 2; the import panel is still step 3
+        self.assertEqual(step_label(page_step(Page.PEOPLE)), "Step 2 of 6")
+        self.assertEqual(step_label(page_step(Page.AIRDATES_IMPORT)), "Step 3 of 6")
+        self.assertEqual(step_label(page_step(Page.DOWNLOAD)), "Step 4 of 6")
+        self.assertEqual(step_label(page_step(Page.TMDB)), "Step 5 of 6")
+        self.assertEqual(step_label(page_step(Page.QUICK)), "Step 6 of 6")
 
     def test_nav_buttons(self) -> None:
         self.assertEqual(nav_buttons(Page.WELCOME), (None, None))  # "Get started" in the content
+        self.assertEqual(nav_buttons(Page.PEOPLE), ("Back", "Next"))
         self.assertEqual(nav_buttons(Page.AIRDATES), ("Back", "Next"))
         self.assertEqual(nav_buttons(Page.DOWNLOAD), ("Back", "Next"))
         self.assertEqual(nav_buttons(Page.TMDB), ("Skip for now", "Next"))
@@ -124,6 +126,8 @@ class StepTests(unittest.TestCase):
 
     def test_yes_goes_through_the_panel_to_downloads(self) -> None:
         page = next_page(Page.WELCOME, import_shows=True)
+        self.assertIs(page, Page.PEOPLE)  # who uses AirGrabber, right after the welcome
+        page = next_page(page, import_shows=True)
         self.assertIs(page, Page.AIRDATES)
         page = next_page(page, import_shows=True)
         self.assertIs(page, Page.AIRDATES_IMPORT)
@@ -138,7 +142,8 @@ class StepTests(unittest.TestCase):
         self.assertIs(next_page(Page.DOWNLOAD, import_shows=False), Page.TMDB)
 
     def test_back(self) -> None:
-        self.assertIs(previous_page(Page.AIRDATES, import_shows=True), Page.WELCOME)
+        self.assertIs(previous_page(Page.PEOPLE, import_shows=True), Page.WELCOME)
+        self.assertIs(previous_page(Page.AIRDATES, import_shows=True), Page.PEOPLE)
         self.assertIs(previous_page(Page.AIRDATES_IMPORT, import_shows=True), Page.AIRDATES)
         self.assertIs(previous_page(Page.DOWNLOAD, import_shows=True), Page.AIRDATES_IMPORT)
         self.assertIs(previous_page(Page.DOWNLOAD, import_shows=False), Page.AIRDATES)

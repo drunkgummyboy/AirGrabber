@@ -43,11 +43,11 @@ from app.forge.core.matcher import normalize_title
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueItem
-from app.forge.core.watch import LOOK_INTERVAL_S, Watcher, candidates
+from app.forge.core.watch import LOOK_INTERVAL_S, Ignored, Watcher, candidates
 from app.forge.models.history import RunSource, RunSummary
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia
 from app.forge.models.plan import Plan, PlanInput, PlannedLeftovers
-from app.forge.models.preset import DEFAULT_PRESETS, Preset
+from app.forge.models.preset import DEFAULT_PRESETS, Preset, PresetOptions
 from app.forge.models.settings import ForgeSettings
 from app.i18n import N_, t, tn
 
@@ -105,6 +105,16 @@ class LibraryRun(NamedTuple):
     preset: Preset
     plan: Plan
     held: dict[int, str]  # item id → why it was left out of the plan (translated)
+
+
+class NamingChoice(NamedTuple):
+    """How the owner chose to name one watched download (the queue's band): its preset (for
+    History), the naming rule (the preset's or a Custom one) and the options. Into the library
+    folder of its kind all the same; clean-up stays the library's (`clean_downloads`)."""
+
+    preset: Preset
+    rule: str
+    options: PresetOptions
 
 
 def _preset(name: str, fallback: str, presets: Sequence[Preset]) -> Preset:
@@ -173,8 +183,11 @@ def _runs(
     exists: Callable[[Path], bool],
     *,
     hold_taken: bool,
+    naming: Mapping[int, NamingChoice] | None = None,
 ) -> list[LibraryRun]:
+    """One run per kind, or (with the owner's `naming` per item) one per kind and naming."""
     runs: list[LibraryRun] = []
+    chosen = naming or {}
     for kind, folder, preset_name, fallback in (
         (MediaKind.EPISODE, settings.series_folder, settings.series_preset, "Series (Folder)"),
         (MediaKind.MOVIE, settings.movies_folder, settings.movies_preset, "Movie (Folder)"),
@@ -184,12 +197,16 @@ def _runs(
             continue
         library = Path(folder)
         preset = _preset(preset_name, fallback, presets)
-        options = preset.options.model_copy(update={"clean_junk": False, "prune_empty": False})
+        default = NamingChoice(preset, preset.format, preset.options)
+
+        def naming_of(item: QueueItem, default: NamingChoice = default) -> NamingChoice:
+            return chosen.get(item.id, default)
+
         held: dict[int, str] = {
             i.id: t(NOT_WATCHED) for i in mine if i.watched is None or not inside(i.path, i.watched)
         }
         wanted = {
-            i.id: library.joinpath(*render(preset.format, i.media, i.path.suffix).parts)
+            i.id: library.joinpath(*render(naming_of(i).rule, i.media, i.path.suffix).parts)
             for i in mine
         }
         if hold_taken:
@@ -197,27 +214,39 @@ def _runs(
             for item_id, target in wanted.items():
                 if item_id not in held and claims[os.path.normcase(str(target))] > 1:
                     held[item_id] = t(SAME_NAME)
-        inputs = [
-            PlanInput(item_id=i.id, source=i.path, root=library, dropped_folder=None, media=i.media)
-            for i in mine
-            if i.id not in held
-        ]
-        plan = build_plan(inputs, preset.format, options, exists)
-        if hold_taken:
+        groups: dict[tuple[str, str, str], list[QueueItem]] = {}
+        for item in mine:
+            how = naming_of(item)
+            key = (how.preset.name, how.rule, how.options.model_dump_json())
+            groups.setdefault(key, []).append(item)
+        for group in groups.values():
+            how = naming_of(group[0])
+            options = how.options.model_copy(update={"clean_junk": False, "prune_empty": False})
+            ids = {i.id for i in group}
+            inputs = [
+                PlanInput(
+                    item_id=i.id, source=i.path, root=library, dropped_folder=None, media=i.media
+                )
+                for i in group
+                if i.id not in held
+            ]
+            plan = build_plan(inputs, how.rule, options, exists)
+            if hold_taken:
+                for planned in plan.files:
+                    target = wanted[planned.item_id]
+                    if not _same(planned.target, target) or _other_copy(target, exists):
+                        held[planned.item_id] = t(ALREADY_THERE)
+                plan = plan.model_copy(
+                    update={"files": tuple(f for f in plan.files if f.item_id not in held)}
+                )
+            if settings.clean_downloads:
+                plan = plan.model_copy(update={"leftovers": _leftovers(group, plan, held)})
             for planned in plan.files:
-                target = wanted[planned.item_id]
-                if not _same(planned.target, target) or _other_copy(target, exists):
-                    held[planned.item_id] = t(ALREADY_THERE)
-            plan = plan.model_copy(
-                update={"files": tuple(f for f in plan.files if f.item_id not in held)}
-            )
-        if settings.clean_downloads:
-            plan = plan.model_copy(update={"leftovers": _leftovers(mine, plan, held)})
-        for planned in plan.files:
-            if not inside(planned.target, library):
-                # Never the path in the message: it can hold the user name.
-                raise ValueError(f"a planned file is outside the {kind.value} library folder")
-        runs.append(LibraryRun(kind, preset, plan, held))
+                if not inside(planned.target, library):
+                    # Never the path in the message: it can hold the user name.
+                    raise ValueError(f"a planned file is outside the {kind.value} library folder")
+            mine_held = {item_id: why for item_id, why in held.items() if item_id in ids}
+            runs.append(LibraryRun(kind, how.preset, plan, mine_held))
     return runs
 
 
@@ -236,9 +265,12 @@ def owner_runs(
     settings: ForgeSettings,
     presets: Sequence[Preset],
     exists: Callable[[Path], bool] = fsops.exists,
+    naming: Mapping[int, NamingChoice] | None = None,
 ) -> list[LibraryRun]:
-    """The same for the owner's Rename click: a taken name gets a numbered copy, as in 1.x."""
-    return _runs(items, settings, presets, exists, hold_taken=False)
+    """The same for the owner's Rename click: a taken name gets a numbered copy, as in 1.x;
+    `naming`: how the owner chose to name each download (its queue band), else the library's
+    preset."""
+    return _runs(items, settings, presets, exists, hold_taken=False, naming=naming)
 
 
 # --- what the renamer needs ----------------------------------------------------------------------
@@ -284,6 +316,12 @@ class SettingsLike(Protocol):
     async def update(self, **changes: Any) -> ForgeSettings: ...
 
 
+class IgnoreSource(Protocol):
+    """What the renamer needs of IgnoreService (app/forge/core/ignored.py)."""
+
+    def snapshot(self) -> Ignored: ...
+
+
 @dataclass(frozen=True)
 class RenamerParts:
     """Everything the renamer works with (MediaForge passed its whole `Services`)."""
@@ -296,6 +334,7 @@ class RenamerParts:
     tmdb: TmdbStateLike
     settings: SettingsLike
     run_lock: asyncio.Lock  # shared with the owner's runs: one run at a time
+    ignored: IgnoreSource | None = None  # what the owner ignored: never looked at
 
 
 # --- the renamer ---------------------------------------------------------------------------------
@@ -507,9 +546,10 @@ class AutoRenamer:
         libraries = [Path(settings.series_folder), Path(settings.movies_folder)]
         lost_roots: list[Path] = []
         listed: list[tuple[Path, Path]] = []
+        ignored = parts.ignored.snapshot() if parts.ignored is not None else None
         for root in map(Path, watched_folders(settings)):
             try:
-                files = await asyncio.to_thread(candidates, root)
+                files = await asyncio.to_thread(candidates, root, ignored)
             except OSError:
                 lost_roots.append(root)
                 continue
@@ -640,9 +680,12 @@ class AutoRenamer:
         source: RunSource,
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cancel: asyncio.Event | None = None,
+        naming: Mapping[int, NamingChoice] | None = None,
     ) -> RunResult:
         """The owner's Rename on watched downloads: into the library, whatever decide says.
-        `cancel` is the Inbox's (its Cancel button, or closing), not the renamer's own."""
+        `cancel` is the Inbox's (its Cancel button, or closing), not the renamer's own.
+        `naming`: the preset, rule and options the owner chose per download (the queue's band);
+        a download without one goes by its library's preset."""
         queue = self._parts.queue
         items = [
             i
@@ -663,7 +706,12 @@ class AutoRenamer:
         if kept != set(self._settings.kept_back):
             await self._save_kept(kept)
         return await self._run(
-            items, source, owner=True, on_progress=on_progress, cancel=cancel or asyncio.Event()
+            items,
+            source,
+            owner=True,
+            on_progress=on_progress,
+            cancel=cancel or asyncio.Event(),
+            naming=naming,
         )
 
     async def keep_back(self, paths: Sequence[Path]) -> None:
@@ -681,6 +729,7 @@ class AutoRenamer:
         owner: bool,
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cancel: asyncio.Event | None = None,
+        naming: Mapping[int, NamingChoice] | None = None,
     ) -> RunResult:
         parts = self._parts
         queue = parts.queue
@@ -694,8 +743,12 @@ class AutoRenamer:
             if not items:
                 return total
             presets = await parts.presets.list()
-            make = owner_runs if owner else library_runs
-            runs = await asyncio.to_thread(make, items, self._settings, presets)
+            if owner:
+                runs = await asyncio.to_thread(
+                    owner_runs, items, self._settings, presets, fsops.exists, naming
+                )
+            else:
+                runs = await asyncio.to_thread(library_runs, items, self._settings, presets)
             for run in runs:
                 for item_id, reason in run.held.items():
                     queue.hold(item_id, reason)

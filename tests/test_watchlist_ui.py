@@ -272,7 +272,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         await until(lambda: not self.watchlist.contains(1))
         self.assertEqual(button.cget("text"), ADD_TEXT)
         other.destroy()  # unsubscribes
-        await self.watchlist.add(film)
+        await self.watchlist.add(film, profile_id=1)
         self.assertEqual(button.cget("text"), ON_TEXT)
 
     async def test_shelf_hides_while_empty_and_follows_the_list(self) -> None:
@@ -286,8 +286,8 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(shelf.winfo_manager())  # empty
 
         self.discovery.details[1] = MovieDetails(id=1, digital_release=TODAY + timedelta(days=20))
-        await self.watchlist.add(movie(1, "Clayface"))
-        await self.watchlist.add(movie(2, "Sinners", release_date="2026-01-01"), auto_download=False)
+        await self.watchlist.add(movie(1, "Clayface"), profile_id=1)
+        await self.watchlist.add(movie(2, "Sinners", release_date="2026-01-01"), auto_download=False, profile_id=1)
         self.assertEqual(body.pack_slaves()[0], shelf)  # first, above the TMDB shelves
         self.assertEqual(shelf._count.cget("text"), "2 films")
         self.assertEqual(list(shelf.cards), [2, 1])  # newest first
@@ -303,21 +303,21 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sinners._control.winfo_manager())
 
         # A change to a film repaints its card in place.
-        await self.watchlist.set_auto_download(1, False)
+        await self.watchlist.set_auto_download(1, False, profile_id=1)
         self.assertIs(shelf.cards[1], card)
         self.assertFalse(card._auto_var.get())
 
-        await self.watchlist.remove(2)
+        await self.watchlist.remove(2, profile_id=1)
         self.assertEqual(list(shelf.cards), [1])
         self.assertEqual(shelf._count.cget("text"), "1 film")
-        await self.watchlist.remove(1)
+        await self.watchlist.remove(1, profile_id=1)
         self.assertFalse(shelf.winfo_manager())
         shelf.destroy()
-        await self.watchlist.add(movie(3))  # no longer listening: nothing breaks
+        await self.watchlist.add(movie(3), profile_id=1)  # no longer listening: nothing breaks
 
     async def test_the_switch_changes_the_film(self) -> None:
         self.discovery.details[1] = MovieDetails(id=1, digital_release=TODAY - timedelta(days=1))
-        await self.watchlist.add(movie(1))
+        await self.watchlist.add(movie(1), profile_id=1)
         body = ctk.CTkFrame(self.root)
         body.pack()
         shelf = self.shelf(body)

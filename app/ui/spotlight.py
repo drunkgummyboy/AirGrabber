@@ -166,6 +166,16 @@ BUTTON_GAP = 10
 BUTTON_RADIUS = 10
 BADGE_HEIGHT = 18
 BADGE_OVERHANG = 6  # a button's badge (⬇, 🔨) reaches this far past its corner
+# The name button at the right end (app/services/profiles.py): a pill as tall as the buttons,
+# the person's avatar in its left end, their name, then ▾.
+PERSON_AVATAR = 30
+PERSON_PAD_LEFT = 5  # the avatar's inset (it is centred top to bottom)
+PERSON_NAME_GAP = 8  # the avatar → the name
+PERSON_ARROW_GAP = 6  # the name → ▾
+PERSON_PAD_RIGHT = 12
+PERSON_NAME_MAX = 120  # a longer name is cut short
+PERSON_FONT_SIZE = 14
+PERSON_ARROW = "▾"
 POSTER_TOP = ROW_TOP + ROW_HEIGHT + 22  # the row → the spotlight
 POSTER_WIDTH = 44
 POSTER_HEIGHT = 64
@@ -232,25 +242,58 @@ class BandLayout:
     text_right: float  # … and end before this
     dots: tuple[Rect, ...]
     spot: Rect  # a click here opens the title (not on the controls or the dots)
+    person: Rect = Rect(0, 0, 0, 0)  # the name button, at the right end (none: 0 wide)
 
     @property
     def row_middle(self) -> float:
         return ROW_TOP + ROW_HEIGHT / 2
 
+    @property
+    def avatar(self) -> Rect:
+        """The person's avatar inside the name button."""
+        person = self.person
+        return Rect(
+            person.x + PERSON_PAD_LEFT,
+            person.y + (person.h - PERSON_AVATAR) / 2,
+            PERSON_AVATAR,
+            PERSON_AVATAR,
+        )
+
+
+def person_width(name_width: float, arrow_width: float) -> float:
+    """The name button's width for a name (cut to PERSON_NAME_MAX) `name_width` wide."""
+    return (
+        PERSON_PAD_LEFT
+        + PERSON_AVATAR
+        + PERSON_NAME_GAP
+        + min(name_width, PERSON_NAME_MAX)
+        + PERSON_ARROW_GAP
+        + arrow_width
+        + PERSON_PAD_RIGHT
+    )
+
 
 def band_layout(
-    width: float, *, word_width: float, dots: int = 0, current: int = 0
+    width: float,
+    *,
+    word_width: float,
+    dots: int = 0,
+    current: int = 0,
+    person_width: float = 0.0,
 ) -> BandLayout:
     """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left,
-    the search field, 🔨 MediaForge, ⬇ and the settings button on the right (the Series /
-    Movies switch is on the tabs row under the band: `switch_layout`); under them the poster
-    and the texts, the `dots` (the `current` one wide) on the right. The search field narrows (to
-    SEARCH_MIN_WIDTH) before it would come too close to "AirGrabber"."""
+    the search field, 🔨 MediaForge, ⬇, the settings button and the name button
+    (`person_width` wide; none at 0) on the right (the Series / Movies switch is on the tabs
+    row under the band: `switch_layout`); under them the poster and the texts, the `dots` (the
+    `current` one wide) on the right. The search field narrows (to SEARCH_MIN_WIDTH) before it
+    would come too close to "AirGrabber"."""
     right = width - PAD_X
     logo = Rect(PAD_X, ROW_TOP, LOGO_SIZE, LOGO_SIZE)
     word_x = logo.right + WORD_GAP
     left_end = word_x + word_width
-    settings = Rect(right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
+    person = Rect(right - person_width, ROW_TOP, person_width, BUTTON_SIZE)
+    buttons_right = person.x - BUTTON_GAP if person_width > 0 else right
+    settings = Rect(buttons_right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     downloads = Rect(settings.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     forge = Rect(downloads.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     search_right = forge.x - SEARCH_GAP
@@ -298,6 +341,7 @@ def band_layout(
         text_right=text_right,
         dots=tuple(dot_rects),
         spot=spot,
+        person=person if person_width > 0 else Rect(0, 0, 0, 0),
     )
 
 
@@ -307,6 +351,7 @@ class HitKind(StrEnum):
     FORGE = "forge"  # the 🔨 MediaForge button
     DOWNLOADS = "downloads"
     SETTINGS = "settings"
+    PERSON = "person"  # the name button: who is selected, and the people menu
     DOT = "dot"
     SPOT = "spot"  # the title: opens its info window
 
@@ -329,6 +374,8 @@ def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | N
         return Hit(HitKind.DOWNLOADS)
     if layout.settings.contains(x, y):
         return Hit(HitKind.SETTINGS)
+    if layout.person.w > 0 and layout.person.contains(x, y):
+        return Hit(HitKind.PERSON)
     for index, dot in enumerate(layout.dots):
         if dot.grown(DOT_HIT).contains(x, y):
             return Hit(HitKind.DOT, index)
@@ -339,13 +386,14 @@ def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | N
 
 def controls(layout: BandLayout) -> Sequence[Rect]:
     """The top row's parts that must never overlap (tests check it at every width)."""
-    return (
+    parts = (
         layout.brand,
         layout.search,
         layout.forge,
         layout.downloads,
         layout.settings,
     )
+    return (*parts, layout.person) if layout.person.w > 0 else parts
 
 
 # -- the Series / Movies switch (on the tabs row, under the band) --------------------------------

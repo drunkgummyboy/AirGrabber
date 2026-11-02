@@ -139,7 +139,7 @@ class WatchlistTestCase(unittest.IsolatedAsyncioTestCase):
         self.changes += 1
 
     async def row(self, movie_id: int) -> WatchlistEntry | None:
-        return await self.db.watchlist.entry(movie_id)
+        return await self.db.watchlist.entry(movie_id, profile_id=1)
 
 
 # -- schema ------------------------------------------------------------------------------------
@@ -163,7 +163,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         version = await db.fetch_one("PRAGMA user_version")
         assert version is not None
         self.assertGreaterEqual(version[0], 3)
-        self.assertEqual(await db.watchlist.entries(), [])
+        self.assertEqual(await db.watchlist.entries(profile_id=1), [])
         self.assertTrue(await db.history.has_movie(7))
         tables = {row["name"]: row["strict"] for row in await db.fetch_all("PRAGMA table_list")}
         self.assertEqual(tables["watchlist"], 1)
@@ -180,9 +180,9 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
 class RepositoryTests(WatchlistTestCase):
     async def test_add_keeps_the_film_and_an_existing_row(self) -> None:
         film = movie(5, "Sinners", poster_path="/p.jpg", vote_average=7.6, vote_count=900)
-        self.assertTrue(await self.db.watchlist.add(film, auto_download=True, when=NOW))
+        self.assertTrue(await self.db.watchlist.add(film, auto_download=True, when=NOW, profile_id=1))
         self.assertFalse(
-            await self.db.watchlist.add(movie(5, "Renamed"), auto_download=False, when=NOW)
+            await self.db.watchlist.add(movie(5, "Renamed"), auto_download=False, when=NOW, profile_id=1)
         )
         stored = await self.row(5)
         assert stored is not None
@@ -194,12 +194,13 @@ class RepositoryTests(WatchlistTestCase):
     async def test_newest_first(self) -> None:
         for movie_id, days in ((1, 3), (2, 1), (3, 2)):
             await self.db.watchlist.add(
-                movie(movie_id), auto_download=True, when=NOW - timedelta(days=days)
+                movie(movie_id), auto_download=True, when=NOW - timedelta(days=days),
+                profile_id=1,
             )
-        self.assertEqual([e.movie_id for e in await self.db.watchlist.entries()], [2, 3, 1])
+        self.assertEqual([e.movie_id for e in await self.db.watchlist.entries(profile_id=1)], [2, 3, 1])
 
     async def test_release_dates_and_imdb_id(self) -> None:
-        await self.db.watchlist.add(movie(1, imdb_id="tt0000001"), auto_download=True, when=NOW)
+        await self.db.watchlist.add(movie(1, imdb_id="tt0000001"), auto_download=True, when=NOW, profile_id=1)
         await self.db.watchlist.set_release_dates(
             1, imdb_id=None, digital=date(2026, 12, 1), theatrical=date(2026, 10, 2), when=NOW
         )
@@ -218,7 +219,7 @@ class RepositoryTests(WatchlistTestCase):
         self.assertEqual((stored.imdb_id, stored.digital_release), ("tt0000002", None))
 
     async def test_tries_give_up_and_switching_on_again_starts_afresh(self) -> None:
-        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW)
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
         await self.db.watchlist.record_try(1, NOW, give_up=False)
         later = NOW + timedelta(hours=5)
         await self.db.watchlist.record_try(1, later, give_up=True)
@@ -228,7 +229,7 @@ class RepositoryTests(WatchlistTestCase):
             (stored.tries, stored.first_try, stored.last_try, stored.gave_up, stored.auto_download),
             (2, NOW, later, True, False),
         )
-        await self.db.watchlist.set_auto_download(1, True)
+        await self.db.watchlist.set_auto_download(1, True, profile_id=1)
         stored = await self.row(1)
         assert stored is not None
         self.assertEqual(
@@ -237,39 +238,39 @@ class RepositoryTests(WatchlistTestCase):
         )
 
     async def test_switching_on_a_switch_that_is_on_keeps_the_tries(self) -> None:
-        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW)
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
         await self.db.watchlist.record_try(1, NOW, give_up=False)
-        await self.db.watchlist.set_auto_download(1, True)
+        await self.db.watchlist.set_auto_download(1, True, profile_id=1)
         stored = await self.row(1)
         assert stored is not None
         self.assertEqual(stored.tries, 1)
 
     async def test_remove_and_unknown_films(self) -> None:
-        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW)
-        self.assertTrue(await self.db.watchlist.remove(1))
-        self.assertFalse(await self.db.watchlist.remove(1))
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
+        self.assertTrue(await self.db.watchlist.remove(1, profile_id=1))
+        self.assertFalse(await self.db.watchlist.remove(1, profile_id=1))
         await self.db.watchlist.record_try(1, NOW, give_up=False)  # ignored
-        await self.db.watchlist.set_auto_download(1, True)
-        self.assertEqual(await self.db.watchlist.entries(), [])
+        await self.db.watchlist.set_auto_download(1, True, profile_id=1)
+        self.assertEqual(await self.db.watchlist.entries(profile_id=1), [])
 
     async def test_a_film_grab_takes_it_off_the_list_an_episode_grab_does_not(self) -> None:
-        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW)
-        await self.db.watchlist.add(movie(2), auto_download=True, when=NOW)
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
+        await self.db.watchlist.add(movie(2), auto_download=True, when=NOW, profile_id=1)
         await self.db.history.add(
             DownloadRecord(media_type=MediaType.TV, media_id=1, season=1, release_title="x")
         )
         await self.db.history.add(
             DownloadRecord(media_type=MediaType.MOVIE, media_id=2, release_title="y")
         )
-        self.assertEqual([e.movie_id for e in await self.db.watchlist.entries()], [1])
+        self.assertEqual([e.movie_id for e in await self.db.watchlist.entries(profile_id=1)], [1])
 
     async def test_an_unreadable_row_is_skipped_not_fatal(self) -> None:
-        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW)
-        await self.db.watchlist.add(movie(2), auto_download=True, when=NOW)
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
+        await self.db.watchlist.add(movie(2), auto_download=True, when=NOW, profile_id=1)
         async with self.db.transaction() as conn:
             await conn.execute("UPDATE watchlist SET movie = '{\"id\": 2}' WHERE movie_id = 2")
         with self.assertLogs("app.database", "WARNING"):
-            entries = await self.db.watchlist.entries()
+            entries = await self.db.watchlist.entries(profile_id=1)
         self.assertEqual([e.movie_id for e in entries], [1])
 
 
@@ -352,7 +353,7 @@ class ServiceTests(WatchlistTestCase):
             id=1, imdb_id="tt1234567", digital_release="2026-12-01", theatrical_release="2026-10-30"
         )
         with self.assertLogs(LOGGER, "INFO"):
-            await self.service.add(movie(1))
+            await self.service.add(movie(1), profile_id=1)
         self.assertTrue(self.service.contains(1))
         stored = self.service.entry(1)
         assert stored is not None
@@ -365,31 +366,31 @@ class ServiceTests(WatchlistTestCase):
 
     async def test_add_without_a_tmdb_key_keeps_the_stored_data(self) -> None:
         self.discovery.error = TMDBNotConfigured("no key")
-        await self.service.add(movie(1), auto_download=False)
+        await self.service.add(movie(1), auto_download=False, profile_id=1)
         stored = self.service.entry(1)
         assert stored is not None
         self.assertEqual((stored.auto_download, stored.details_at), (False, None))
         self.assertEqual(self.changes, 1)
 
     async def test_adding_twice_changes_nothing(self) -> None:
-        await self.service.add(movie(1))
+        await self.service.add(movie(1), profile_id=1)
         changes = self.changes
-        await self.service.add(movie(1), auto_download=False)
+        await self.service.add(movie(1), auto_download=False, profile_id=1)
         self.assertEqual(self.changes, changes)
         self.assertEqual(self.discovery.calls, [1])
 
     async def test_remove(self) -> None:
-        await self.service.add(movie(1))
+        await self.service.add(movie(1), profile_id=1)
         changes = self.changes
-        await self.service.remove(1)
-        await self.service.remove(1)
+        await self.service.remove(1, profile_id=1)
+        await self.service.remove(1, profile_id=1)
         self.assertFalse(self.service.contains(1))
         self.assertIsNone(await self.row(1))
         self.assertEqual(self.changes, changes + 1)
 
     async def test_entries_newest_first_and_load_from_the_database(self) -> None:
         for movie_id in (1, 2, 3):
-            await self.service.add(movie(movie_id))
+            await self.service.add(movie(movie_id), profile_id=1)
             self.now += timedelta(minutes=1)
         self.assertEqual([e.movie_id for e in self.service.entries()], [3, 2, 1])
         fresh = WatchlistService(self.db.watchlist, self.discovery, self.downloads)
@@ -398,14 +399,14 @@ class ServiceTests(WatchlistTestCase):
         self.assertEqual(fresh.entries(), self.service.entries())
 
     async def test_switch(self) -> None:
-        await self.service.add(movie(1))
-        await self.service.set_auto_download(1, False)
+        await self.service.add(movie(1), profile_id=1)
+        await self.service.set_auto_download(1, False, profile_id=1)
         stored = self.service.entry(1)
         assert stored is not None
         self.assertFalse(stored.auto_download)
 
     async def test_record_try_gives_up_after_thirty_days(self) -> None:
-        await self.service.add(movie(1))
+        await self.service.add(movie(1), profile_id=1)
         self.assertFalse(await self.service.record_try(1))
         self.now += GIVE_UP_AFTER - timedelta(seconds=1)
         self.assertFalse(await self.service.record_try(1))
@@ -418,8 +419,8 @@ class ServiceTests(WatchlistTestCase):
 
     async def test_refresh_reads_stale_films_only_and_stops_without_a_key(self) -> None:
         self.discovery.details = {n: MovieDetails(id=n, digital_release="2026-12-01") for n in (1, 2)}
-        await self.service.add(movie(1))
-        await self.service.add(movie(2))
+        await self.service.add(movie(1), profile_id=1)
+        await self.service.add(movie(2), profile_id=1)
         self.discovery.calls.clear()
         await self.service.refresh_release_dates()
         self.assertEqual(self.discovery.calls, [])  # read on adding
@@ -435,8 +436,8 @@ class ServiceTests(WatchlistTestCase):
 
     async def test_refresh_skips_a_film_tmdb_fails_on(self) -> None:
         self.discovery.error = TMDBError("timeout")
-        await self.service.add(movie(1))
-        await self.service.add(movie(2))
+        await self.service.add(movie(1), profile_id=1)
+        await self.service.add(movie(2), profile_id=1)
         self.discovery.calls.clear()
         self.discovery.details[2] = MovieDetails(id=2, digital_release="2026-12-01")
         with self.assertLogs(LOGGER, "INFO"):
@@ -447,8 +448,8 @@ class ServiceTests(WatchlistTestCase):
         self.assertEqual(stored.digital_release, date(2026, 12, 1))
 
     async def test_a_grab_from_anywhere_takes_the_film_off_the_list(self) -> None:
-        await self.service.add(movie(1))
-        await self.service.add(movie(2))
+        await self.service.add(movie(1), profile_id=1)
+        await self.service.add(movie(2), profile_id=1)
         changes = self.changes
         heard: list[str] = []
         self.downloads.subscribe(lambda: heard.append("pages"))
@@ -475,14 +476,14 @@ class ServiceTests(WatchlistTestCase):
 
         self.service.subscribe(broken)
         with self.assertLogs(LOGGER, "ERROR"):
-            await self.service.add(movie(1))
+            await self.service.add(movie(1), profile_id=1)
         self.assertGreater(self.changes, 0)
 
     async def test_unsubscribe(self) -> None:
         unsubscribe = self.service.subscribe(self.on_change)
         unsubscribe()
         unsubscribe()
-        await self.service.add(movie(1))
+        await self.service.add(movie(1), profile_id=1)
         self.assertEqual(self.changes, 1)  # the first subscription only (TMDB is down)
 
 
@@ -548,7 +549,7 @@ class AutoRunTests(WatchlistTestCase):
         self.discovery.details[movie_id] = MovieDetails(
             id=movie_id, imdb_id=imdb_id, digital_release=digital
         )
-        await self.service.add(film, auto_download=auto)
+        await self.service.add(film, auto_download=auto, profile_id=1)
         return film
 
     async def test_an_out_film_is_downloaded_and_leaves_the_list(self) -> None:
@@ -620,8 +621,8 @@ class AutoRunTests(WatchlistTestCase):
         await self.db.library.save_show(
             show(9, "Lost"), [episode(91, 9, NOW - timedelta(hours=3), number=1)]
         )
-        await self.db.library.track(9)
-        await self.db.library.set_auto_download(9, True, since=NOW - timedelta(days=1))
+        await self.db.library.track(9, profile_id=1)
+        await self.db.library.set_auto_download(9, True, since=NOW - timedelta(days=1), profile_id=1)
         await self.add(1, "A")
         self.quick.default = GrabError("Broken")
         with self.assertLogs(AUTO_LOGGER, "WARNING"):
@@ -688,7 +689,7 @@ class ServicesWiringTests(unittest.IsolatedAsyncioTestCase):
         paths = AppPaths(Path(tmp.name))
         paths.ensure()
         db = await Database.open(paths.database)
-        await db.watchlist.add(movie(1), auto_download=True, when=NOW)
+        await db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
         await db.close()
         asyncio.get_running_loop().slow_callback_duration = 1.0  # httpx loads its CA bundle
         network = AssertionError("no network calls")

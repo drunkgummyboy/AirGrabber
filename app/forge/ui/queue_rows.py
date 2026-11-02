@@ -46,6 +46,7 @@ READY = N_("Ready")
 WOULD_RENAME = N_("Would rename")
 DONE = N_("Renamed")
 DONE_TODAY = N_("Done today")
+IGNORE = N_("Ignore")  # a band's menu: Auto-rename leaves the file (or its folder) alone
 STATE_WORDS: dict[State, str] = {
     "needs": NEEDS_YOU,
     "ready": READY,
@@ -230,13 +231,15 @@ def build_queue_rows(
     show: Show = "all",
     trial: bool = False,
     today: date | None = None,
+    chip: Callable[[QueueItem], str] | None = None,
 ) -> QueueRows:
     """The queue's rows for the filter `show`, with every filter's count.
 
-    `rule` gives a dropped file its naming rule (its kind's preset, or the Custom rule): it is
-    renamed where it is. `naming` gives a watched download its library folder and naming rule.
-    `trial`: renaming on its own is a trial, so watched downloads only "would" be renamed. Only
-    today's finished files are shown when `today` is set.
+    `rule` gives a dropped file its naming rule (its band's preset, or the band's Custom rule):
+    it is renamed where it is. `naming` gives a watched download its library folder and naming
+    rule. `trial`: renaming on its own is a trial, so watched downloads only "would" be renamed.
+    Only today's finished files are shown when `today` is set. `chip`: a band's preset chip
+    (from its first file; none on a done band).
     """
     out = QueueRows()
     rendered = {}
@@ -307,10 +310,11 @@ def build_queue_rows(
             actions: tuple[tuple[str, str], ...] = (("undo", t("Undo")),)
         else:
             note = ""
+            # Ignore (a menu: this file / this whole folder) first, the main button last.
             actions = (
-                (("choose", t("Choose…")), ("rename", t("Rename")))
+                (("ignore", t(IGNORE)), ("choose", t("Choose…")), ("rename", t("Rename")))
                 if unsure
-                else (("rename", t("Rename")),)
+                else (("ignore", t(IGNORE)), ("rename", t("Rename")))
             )
         dest = "" if state == "needs" else "→ " + _shared_folder([folders(i) for i in group])
         out.rows.append(
@@ -325,6 +329,7 @@ def build_queue_rows(
                 backdrop=first.backdrop_path,
                 actions=actions,
                 note=note,
+                chip=chip(group[0]) if chip is not None and state != "done" else "",
                 state=state,
                 state_text=t(STATE_WORDS[state]),
                 faded=state == "done",

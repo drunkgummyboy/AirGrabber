@@ -329,18 +329,18 @@ class FakeLibrary:
         self.episode_calls.append(show_id)
         return self._episodes.get(show_id, [])
 
-    async def tracked(self) -> list[LibraryEntry]:
+    async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
         return [
             LibraryEntry(show=Show(id=show_id, name=f"Show {show_id}"), tracked_at=NOW)
             for show_id in self.tracked_ids
         ]
 
-    async def track(self, show_id: int) -> Show:
+    async def track(self, show_id: int, *, profile_id: int) -> Show:
         self.track_calls.append(show_id)
         self.tracked_ids.append(show_id)
         return Show(id=show_id, name="The Right Show")
 
-    async def untrack(self, show_id: int) -> None:
+    async def untrack(self, show_id: int, *, profile_id: int) -> None:
         self.tracked_ids.remove(show_id)
 
 

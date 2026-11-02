@@ -10,7 +10,8 @@ The one-click runs keep their state in the main window's DownloadStates (shared 
 cards' DownloadControl), so a row rebuilt mid-run picks it up: while it works "Finding the best
 one…", once it grabbed the green outcome ("✓ Sent", what it picked as the tip, then "↻ Again"),
 when nothing was good enough an amber "No good release found" beside "☰ Choose…" outlined
-in amber. `row_look` is the rule; RowActions draws it.
+in amber; waiting in the download queue (3.0.1) "Queued". `row_look` is the rule; RowActions
+draws it.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import customtkinter as ctk
 from app.i18n import N_, t
 from app.ui import theme
 from app.ui.download_control import (
+    QUEUED_TEXT,
     WORKING_SHORT,
     WORKING_TEXT,
     Base,
@@ -65,7 +67,9 @@ NOTHING_TEXT = N_("No good release found")
 NOTHING_SHORT = N_("None found")
 NOTHING_TIP = N_("Nothing good enough was found. Choose a download yourself.")
 
-RowKind = Literal["download", "search", "working", "nothing", "done", "downloaded", "unavailable"]
+RowKind = Literal[
+    "download", "search", "queued", "working", "nothing", "done", "downloaded", "unavailable"
+]
 Button = Literal["auto", "choose", "again"]
 
 
@@ -90,6 +94,8 @@ def row_look(base: Base, state: RunState | None, *, downloaded: bool = False) ->
     title without a number to download by)."""
     if state is not None and state.phase is Phase.WORKING:
         return RowLook("working", (t(WORKING_TEXT), t(WORKING_SHORT)))
+    if state is not None and state.phase is Phase.QUEUED:
+        return RowLook("queued", (t(QUEUED_TEXT),))
     if state is not None and state.phase is Phase.DONE and state.outcome is not None:
         return RowLook(
             "done", (outcome_text(state.outcome),), theme.SUCCESS, ("again",), clickable=True
@@ -125,6 +131,7 @@ def slot_width(measure: Measure) -> int:
         round(measure(t(DOWNLOADED_TEXT))) + LABEL_PAD + GAP + again,
         round(measure(t(NOTHING_SHORT))) + LABEL_PAD + GAP + choose,
         round(measure(t(WORKING_TEXT))),
+        round(measure(t(QUEUED_TEXT))),
     )
     return max(MIN_WIDTH, *pairs) + SLACK
 

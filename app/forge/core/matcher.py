@@ -59,19 +59,29 @@ def match_key(parsed: ParsedMedia) -> tuple[MediaKind, str, int | None]:
     return parsed.kind, normalize_title(parsed.title), parsed.year
 
 
+def _names(result: TMDBTitle) -> set[str]:
+    return {normalize_title(result.title), normalize_title(result.original_title or "")}
+
+
 def choose(
     results: Sequence[TMDBTitle], title: str, year: int | None
 ) -> tuple[MatchState, TMDBTitle | None]:
+    """The result a file is, and how sure that is. CONFIDENT: a result whose (original) title is
+    the file's and whose year is the file's; or the only result, when its (original) title is
+    the file's and, if the file has a year, so is its year. Anything else is UNCERTAIN (the
+    top result, the owner chooses): a lone result with another name is not taken on trust (a
+    home video or a course in a watched folder would otherwise be renamed after some film)."""
     if not results:
         return MatchState.NOT_FOUND, None
     wanted = normalize_title(title)
     if year:
         for r in results:
-            names = {normalize_title(r.title), normalize_title(r.original_title or "")}
-            if r.year == year and wanted in names:
+            if r.year == year and wanted in _names(r):
                 return MatchState.CONFIDENT, r
     if len(results) == 1:
-        return MatchState.CONFIDENT, results[0]
+        only = results[0]
+        if wanted in _names(only) and (not year or only.year == year):
+            return MatchState.CONFIDENT, only
     return MatchState.UNCERTAIN, results[0]
 
 

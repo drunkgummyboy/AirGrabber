@@ -1,6 +1,12 @@
-"""The root window: the spotlight band (search, Downloads, settings, tonight's episodes), the
-tabs row (the Series tabs on the left, the Series / Movies switch on the right), page area and
-status bar."""
+"""The root window: the spotlight band (search, Downloads, settings, the name button, tonight's
+episodes), the tabs row (the Series tabs on the left, the Series / Movies switch on the right),
+page area and status bar.
+
+People (app/services/profiles.py): the band's name button opens the people menu
+(app/ui/people_dialogs.py). When another person is selected, every info window and the search
+results close (they were opened for the person before: none of their buttons may follow a show
+or fill a watchlist for the wrong person; reloading each for the new person would take far more
+than closing), the pages and the band reload, and the status bar says "Now showing …'s list"."""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ import asyncio
 import logging
 import time
 import tkinter as tk
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -29,11 +35,11 @@ from app.models import (
     DownloadEntry,
     GrabTarget,
     MediaType,
-    MissingProgress,
     Movie,
     MovieDetails,
     ProwlarrSetupResult,
-    QuickDownloadResult,
+    QueueEvent,
+    SearchRequest,
     Settings,
     Show,
     SubtitleEvent,
@@ -45,11 +51,11 @@ from app.models import (
     UpdateInfo,
 )
 from app.services import Services, UpdateError
-from app.services.missing import MissingRunBusy
+from app.services.download_queue import QueuedDownload
+from app.services.profiles import ProfileChange
+from app.services.missing import MAX_PER_RUN
 from app.services.auto_download import GIVE_UP_AFTER
 from app.services.watchlist import GIVE_UP_AFTER as MOVIE_GIVE_UP_AFTER
-from app.services.downloads import GrabError
-from app.services.synology import DownloadStationError
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.branding import set_window_icon
@@ -57,19 +63,9 @@ from app.ui.card_scale import CardScale
 from app.ui.download_control import (
     BatchKey,
     BatchState,
-    BatchStep,
     DownloadActions,
     DownloadKey,
     DownloadStates,
-    Phase,
-    RunState,
-    already_downloaded_text,
-    download_in_turn,
-    download_status_text,
-    episode_key,
-    grabbed_state,
-    movie_key,
-    nothing_found_text,
 )
 from app.ui.missing_control import (
     OUTCOME_MS,
@@ -78,11 +74,14 @@ from app.ui.missing_control import (
     MissingRunState,
     have_status_text,
     outcome_status_text,
+    queued_run_report,
 )
 from app.ui.movie_details import MovieWindows, movie_title
+from app.ui.people import person_initial, person_name, switched_text
+from app.ui.people_dialogs import PeopleActions
+from app.ui.queue_link import QueueLink
 from app.ui.release_panel import PanelServices, TvTarget
 from app.forge.ui.host import ForgeHost
-from app.forge.ui.settings_pages import SECTION_LIBRARY
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.search import SearchResultsWindow, SearchSuggestions
@@ -167,6 +166,9 @@ _OFF_PAGE_SETTINGS = frozenset(
         "spotlight_motion",
         # The accent colour: applied at the next start (main.py), like the language.
         "accent",
+        # Who is selected: a switch reloads the pages itself (_on_profiles_changed), once that
+        # person's watchlist is read.
+        "current_profile",
     }
 )
 
@@ -217,6 +219,7 @@ def update_notice(last_run_version: str, running: str) -> str | None:
 
 
 _SUBTITLE_STATUS_MS = 15_000  # how long a subtitle problem stays in the status bar
+_SWITCHED_STATUS_MS = 6_000  # "Now showing …'s list" after a switch
 _AUTO_STATUS_MS = 10_000  # how long an automatic download's line stays in the status bar
 _OLD_FORGE_STATUS_MS = 15_000  # the old MediaForge's notice and its removal's outcome
 AUTO_ERROR_INTERVAL_S = 3600.0  # at most one "Automatic download didn't work" per hour
@@ -349,6 +352,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         theme.apply_appearance(services.settings.current.theme_mode)
         super().__init__(fg_color=theme.BG)
         self._services = services
+        # The name button's menu and its dialogs (add, rename or recolour, remove a person).
+        self._people = PeopleActions(self, services.profiles)
         self._mode: Mode | None = None
         self._idle_status = ""
         self._status_job: str | None = None
@@ -360,13 +365,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # One-click downloads: their state per title, shared by every card that shows it.
         # The Download buttons' hover tip says what a download looks for (Settings → Quality).
         self._download_states = DownloadStates(settings=lambda: services.settings.current)
+        # They run in the app's download queue (no window owns them); the link shows its
+        # states on the buttons ("Queued", working, the outcome) and reports the outcomes.
+        self._queue_link = QueueLink(
+            services.download_queue,
+            self._download_states,
+            report=lambda text: self._report(text, _DOWNLOAD_STATUS_MS),
+        )
         self._download_tasks: set[asyncio.Task[None]] = set()
         self._episode_actions: DownloadActions[CalendarEntry] = DownloadActions(
             download=self._download_episode,
             choose=self._search_episode,
             states=self._download_states,
-            download_all=self._download_episodes,  # the calendar's stack cards
+            download_all=self._download_episodes,  # calendar stacks, the show window's seasons
             download_again=self._download_episode_again,  # ↻ Again (show window)
+            download_season=self._download_season,  # the show window's "⬇ Whole season"
         )
         self._movie_actions: DownloadActions[Movie] = DownloadActions(
             download=self._download_movie,
@@ -409,6 +422,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             status=self.set_status,
             episode_actions=self._episode_actions,
             downloads_changed=services.downloads.subscribe,
+            profile=lambda: services.profiles.current_id,  # a window is for the person then
             missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
             subtitles_changed=self._on_subtitles_saved,
@@ -459,6 +473,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_subtitles = services.subtitles.subscribe(self._on_subtitle_event)
         # A loaded backup changed the library and the watchlist: reload the pages.
         self._unsubscribe_backup = services.backup.subscribe(self._on_library_changed)
+        # People added, renamed or removed (the name button), or another person selected.
+        self._unsubscribe_profiles = services.profiles.subscribe(self._on_profiles_changed)
 
         # MediaForge (Forge inside AirGrabber): its window, its confirm windows and the requests
         # later starts hand over (app/forge/ui/host.py, app/ui/forge_link.py). Forge itself
@@ -466,7 +482,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._forge = ForgeHost(
             self,
             services.forge,
-            open_settings=self._open_forge_settings,
+            open_airgrabber_settings=self._open_settings_from_forge,
             restart=self.restart,
         )
         self._forge.on_needs = self._on_forge_needs
@@ -500,6 +516,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             show_requests=show_requests,  # a second start of AirGrabber asks for the window
             on_open_forge=self.open_forge,
             on_quit=self.quit_app,
+            on_reopen=self._go_home,  # back from the tray: Series › Calendar
         )
         self.protocol("WM_DELETE_WINDOW", self.tray.close_window)
         if start_hidden or self._started_for_forge:
@@ -522,12 +539,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._results_window = None
         for task in list(self._download_tasks):
             task.cancel()
+        self._queue_link.close()
         self._unsubscribe_settings()
         self._unsubscribe_library()
         self._unsubscribe_downloads()
         self._unsubscribe_auto()
         self._unsubscribe_subtitles()
         self._unsubscribe_backup()
+        self._unsubscribe_profiles()
         self._unsubscribe_old_remover()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
@@ -566,8 +585,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_search=self._on_search,
             on_open=self._open_spotlight,
             report=self._report,
+            profile=lambda: services.profiles.current_id,  # the Series side's episodes
+            on_person=self._open_people_menu,  # the name button
         )
         self._band.grid(row=0, column=0, sticky="ew")
+        self._show_person()
         self._tabs_row, self._switch = build_tabs_row(
             self, on_side=lambda side: self._select_mode(_SIDE_MODES[side])
         )
@@ -579,6 +601,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             library=services.library,
             discovery=services.discovery,
             on_open=self._open_search_results,
+            profile=lambda: services.profiles.current_id,
         )
 
     def _build_pages(self) -> None:
@@ -647,6 +670,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_open_show=self._show_windows.open_show,
             on_open_film=self._movie_windows.open_movie_id,
             actions=PageActions(again=self._download_entry_again, subtitles=self._subtitle_actions),
+            queue=self._services.download_queue,  # its waiting downloads at the top
         )
 
     def _card_scale(self) -> CardScale:
@@ -668,7 +692,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- navigation --------------------------------------------------------------------------
 
     def _start(self) -> None:
-        self._select_mode(Mode.SERIES)
+        self._go_home()
         spawn(self._show_library_summary(), name="library-summary")
         spawn(
             self._services.library.run_periodic_sync(progress=self._on_sync_progress),
@@ -762,16 +786,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.info("The MediaForge window this start was for closed: quitting")
             self.quit_app()
 
-    def _open_forge_settings(self) -> None:
-        """The Forge window's "More in Settings…": Settings at MediaForge › Library & watching.
-        Settings belongs to the main window, so that shows first (it may be in the tray)."""
+    def _open_settings_from_forge(self) -> None:
+        """MediaForge's Settings window's "Open AirGrabber's Settings": AirGrabber's Settings at
+        their default page. Settings belongs to the main window, so that shows first (it may be
+        in the tray)."""
         try:
             hidden = self.state() == "withdrawn"
         except tk.TclError:
             return
         if hidden:
             self.tray.show_window()
-        self._open_settings(SECTION_LIBRARY)
+        self._open_settings()
 
     def quit_app(self) -> None:
         """Quit for good (the tray's Quit, closing the window without the tray): a Forge run
@@ -887,8 +912,53 @@ class MainWindow(AsyncCTk, ctk.CTk):
         pages[mode].grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._visible_view().refresh_if_stale()
 
+    def _go_home(self) -> None:
+        """The start page, Series › Calendar: at start and when a plain Open brings the window
+        back from the tray (TrayHost.open_window). A window shown for a purpose (Settings, an
+        update, a notification) keeps its page."""
+        self._select_mode(Mode.SERIES)
+        calendar = t(_CALENDAR)
+        if self._series_tabs.get() != calendar:
+            self._series_tabs.set(calendar)  # CTk's set() doesn't run the tab command
+            self._on_tab_changed()
+
     def _on_tab_changed(self) -> None:
         self._visible_view().refresh_if_stale()
+
+    # -- people --------------------------------------------------------------------------------
+
+    def _show_person(self) -> None:
+        """The selected person on the band's name button."""
+        person = self._services.profiles.current
+        self._band.set_person(
+            person_name(person), person_initial(person), theme.person_colour(person.colour)
+        )
+
+    def _open_people_menu(self) -> None:
+        """The name button: the people menu under it."""
+        box = self._band.person_box()
+        if box is not None:
+            self._people.open_menu(self._band, box)
+
+    def _on_profiles_changed(self, change: ProfileChange) -> None:
+        """Someone was added, renamed or removed: the name button. Another person selected:
+        the info windows and the search results close (see the module docstring), the pages
+        and the band reload, and the status bar says whose list shows now."""
+        try:
+            self._show_person()
+        except tk.TclError:
+            return  # closing
+        if change is not ProfileChange.SWITCHED:
+            return
+        self._show_windows.close_windows()
+        self._movie_windows.close_windows()
+        if self._results_window is not None and self._results_window.winfo_exists():
+            self._results_window.destroy()
+        self._results_window = None
+        self._suggestions.hide()
+        self._reload_pages()
+        spawn(self._show_library_summary(), name="library-summary")
+        self._report(switched_text(self._services.profiles.current), _SWITCHED_STATUS_MS)
 
     def _open_spotlight(self, item: SpotlightItem) -> None:
         """A click on the band's title: its info window (a followed show's, a TMDB show's
@@ -968,6 +1038,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             movie_actions=self._movie_actions,
             watchlist=self._services.watchlist,
             on_open_settings=self._open_settings,
+            profile_id=self._services.profiles.current_id,  # closes at a switch
             on_open_show=self._show_windows.open_show,
             card_scale=self._card_scale(),
             on_open_movie=self._movie_windows.open_movie,
@@ -986,34 +1057,35 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     # -- one-click downloads -------------------------------------------------------------------
 
+    # Every one-click download goes into the app's download queue (QueueLink), which no
+    # window owns: closing a window never cancels one, and they run a couple at a time.
+
     def _download_episode(self, entry: CalendarEntry) -> None:
-        run = self._episode_run(entry)
-        if run is None:  # a special: nothing to download by (its card says Search)
+        item = self._episode_item(entry)
+        if item is None:  # a special: nothing to download by (its card says Search)
             self._search_episode(entry)
             return
-        self._start_download(*run)
+        self._queue_link.download(item)
 
     def _download_episode_again(self, entry: CalendarEntry) -> None:
         """↻ Again → Auto: the one-click download of an episode downloaded before."""
-        run = self._episode_run(entry, again=True)
-        if run is None:
+        item = self._episode_item(entry, again=True)
+        if item is None:
             self._search_episode(entry)
             return
-        self._start_download(*run)
+        self._queue_link.download(item)
 
-    def _episode_run(
-        self, entry: CalendarEntry, *, again: bool = False
-    ) -> tuple[DownloadKey, str, Callable[[], Awaitable[QuickDownloadResult]]] | None:
-        """An episode's one-click download: its key, its label and the run (None for a
-        special, which has no number to download by). `again`: also when downloaded before."""
+    def _episode_item(self, entry: CalendarEntry, *, again: bool = False) -> QueuedDownload | None:
+        """An episode's one-click download (None for a special, which has no number to
+        download by). `again`: also when downloaded before."""
         show, episode = entry.show, entry.episode
         if episode.number is None:
             return None
-        return self._tv_run(show, episode.season, episode.number, again=again)
+        return self._tv_item(show, episode.season, episode.number, again=again)
 
-    def _tv_run(
+    def _tv_item(
         self, show: Show, season: int, number: int | None, *, again: bool = False
-    ) -> tuple[DownloadKey, str, Callable[[], Awaitable[QuickDownloadResult]]]:
+    ) -> QueuedDownload:
         """The one-click download of an episode (`number` None: its season's pack)."""
         search = self._services.search
         if number is None:
@@ -1025,10 +1097,19 @@ class MainWindow(AsyncCTk, ctk.CTk):
         target = GrabTarget(
             media_type=MediaType.TV, media_id=show.id, season=season, episode=number
         )
-        return (
-            episode_key(show.id, season, number),
-            label,
-            lambda: self._services.quick_download.download(request, target, again=again),
+        return QueuedDownload(label=label, target=target, request=request, again=again)
+
+    def _download_season(self, show: Show, season: int, needed: Sequence[CalendarEntry]) -> None:
+        """The show window's "⬇ Whole season": the season's pack; when none is good enough,
+        the episodes still `needed` instead (the queue does that, and says so)."""
+        fallback = tuple(
+            item for entry in needed if (item := self._episode_item(entry)) is not None
+        )
+        pack = self._tv_item(show, season, None)
+        self._queue_link.download(
+            QueuedDownload(
+                label=pack.label, target=pack.target, request=pack.request, fallback=fallback
+            )
         )
 
     def _download_entry_again(self, entry: DownloadEntry, auto: bool) -> None:
@@ -1039,7 +1120,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             if show is None or record.season is None:
                 return
             if auto:
-                self._start_download(*self._tv_run(show, record.season, record.episode, again=True))
+                item = self._tv_item(show, record.season, record.episode, again=True)
+                self._queue_link.download(item)
             else:
                 target = TvTarget(show, record.season, record.episode)
                 self._show_windows.open_show(show, target=target)
@@ -1065,43 +1147,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._download_movie_again(movie)
 
     def _download_episodes(self, batch: BatchKey, entries: Sequence[CalendarEntry]) -> None:
-        """A calendar stack's "⬇ Download all": its episodes one after another through the
-        one-click download (each with its own state), unless the batch runs already."""
-        states = self._download_states
-        if states.batch(batch) is not None:
-            return
-        steps: list[BatchStep] = []
-        for entry in entries:
-            run = self._episode_run(entry)
-            if run is not None:
-                steps.append((run[0], self._batch_step(*run)))
-        if not steps:
-            return
-        states.set_batch(batch, BatchState(1, len(steps)))  # at once: no second click
-        task = spawn(download_in_turn(states, batch, steps), name="quick-download-all")
-        self._download_tasks.add(task)
-        task.add_done_callback(self._download_tasks.discard)
-
-    def _batch_step(
-        self,
-        key: DownloadKey,
-        label: str,
-        download: Callable[[], Awaitable[QuickDownloadResult]],
-    ) -> Callable[[], Awaitable[bool]]:
-        async def step() -> bool:
-            self._download_states.set(key, RunState(Phase.WORKING))
-            return await self._run_download(key, label, download)
-
-        return step
+        """A calendar stack's "⬇ Download all" (and the show window's "⬇ All missing"): its
+        episodes queued as one batch (each with its own state; a failed grab ends the batch),
+        unless that batch is queued already."""
+        items = [item for entry in entries if (item := self._episode_item(entry)) is not None]
+        self._queue_link.download_batch(batch, items)
 
     def _download_movie(self, movie: Movie, *, again: bool = False) -> None:
-        async def download() -> QuickDownloadResult:
+        async def request() -> SearchRequest:  # when its turn comes
             details = await self._movie_details(movie)
-            request = self._services.search.movie_request(movie, details)
-            target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie.id)
-            return await self._services.quick_download.download(request, target, again=again)
+            return self._services.search.movie_request(movie, details)
 
-        self._start_download(movie_key(movie.id), movie_title(movie), download)
+        target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie.id)
+        self._queue_link.download(
+            QueuedDownload(label=movie_title(movie), target=target, request=request, again=again)
+        )
 
     def _download_movie_again(self, movie: Movie) -> None:
         """↻ Again → Auto: the one-click download of a film downloaded before."""
@@ -1118,102 +1178,51 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.info("No TMDB details for %s (TMDB id %d) in time", movie.title, movie.id)
         return None
 
-    def _start_download(
-        self,
-        key: DownloadKey,
-        label: str,
-        download: Callable[[], Awaitable[QuickDownloadResult]],
-    ) -> None:
-        """Run a one-click download for `key`, unless one is running already."""
-        if self._download_states.is_working(key):
-            return
-        self._download_states.set(key, RunState(Phase.WORKING))
-
-        async def run() -> None:
-            await self._run_download(key, label, download)
-
-        task = spawn(run(), name="quick-download")
-        self._download_tasks.add(task)
-        task.add_done_callback(self._download_tasks.discard)
-
-    async def _run_download(
-        self,
-        key: DownloadKey,
-        label: str,
-        download: Callable[[], Awaitable[QuickDownloadResult]],
-    ) -> bool:
-        """One one-click download and its outcome; False when the grab failed (a batch then
-        stops)."""
-        # The cards may be gone or rebuilt by now: DownloadStates repaints whichever exist.
-        try:
-            result = await download()
-        except (GrabError, DownloadStationError) as exc:
-            self._download_states.set(key, None)
-            self._report(str(exc), _DOWNLOAD_STATUS_MS)
-            return False
-        except BaseException:
-            self._download_states.set(key, None)
-            raise  # cancelled, or logged and reported by the task runner
-        if result.already_downloaded:  # e.g. grabbed meanwhile from another window
-            self._download_states.set(key, RunState(Phase.DONE))
-            self._report(already_downloaded_text(label), _DOWNLOAD_STATUS_MS)
-            return True
-        if result.grab is None:
-            self._download_states.set(key, RunState(Phase.NOTHING))
-            self._report(nothing_found_text(label), _DOWNLOAD_STATUS_MS)
-            return True
-        self._download_states.set(key, grabbed_state(result))
-        self._report(download_status_text(label, result), _DOWNLOAD_STATUS_MS)
-        return True
-
     # -- missing episodes ----------------------------------------------------------------------
 
     def _download_missing(self, show: Show) -> None:
-        """Start "Download missing" for a tracked show, unless its run is going already."""
+        """Start "Download missing" for a tracked show, unless its run is going already: its
+        missing episodes (at most MAX_PER_RUN, oldest first) queued as one batch in the
+        download queue."""
         runs = self._missing_runs
-        if runs.is_working(show.id) or self._services.missing.is_running(show.id):
+        if runs.is_working(show.id):
             return
-        runs.set(show.id, MissingRunState())
-        task = spawn(self._run_missing(show), name="download-missing")
+        runs.set(show.id, MissingRunState())  # "Finding missing episodes…" at once
+        # The selected person's: the cards and windows offering it show their shows.
+        person = self._services.profiles.current_id
+        task = spawn(self._queue_missing(show, person), name="download-missing")
         self._download_tasks.add(task)
         task.add_done_callback(self._download_tasks.discard)
 
-    async def _run_missing(self, show: Show) -> None:
-        # The buttons may be gone or rebuilt by now: MissingRuns repaints whichever exist.
+    async def _queue_missing(self, show: Show, profile_id: int) -> None:
+        # The cards may be gone or rebuilt by now: MissingRuns repaints whichever exist.
         runs = self._missing_runs
-
-        def on_progress(step: MissingProgress) -> None:
-            runs.set(show.id, MissingRunState(index=step.index, total=step.total))
-            self._missing_step(show, step)
-
         try:
-            report = await self._services.missing.download_missing(show.id, on_progress)
-        except MissingRunBusy:
-            return  # that run's state is the one shown
+            missing = await self._services.library.missing_episodes(
+                show.id, profile_id=profile_id
+            )
         except BaseException:
             runs.set(show.id, None)
             raise  # cancelled, or logged and reported by the task runner
-        state = MissingRunState(index=report.total, total=report.total, report=report)
-        runs.set(show.id, state)
-        self._report(outcome_status_text(show.name, report), _DOWNLOAD_STATUS_MS)
-        self.after(OUTCOME_MS, lambda: runs.expire(show.id, state))
+        todo = missing[:MAX_PER_RUN]
+        items = [item for entry in todo if (item := self._episode_item(entry)) is not None]
 
-    def _missing_step(self, show: Show, step: MissingProgress) -> None:
-        """The episode's own Download row follows the run (show details window)."""
-        episode, result, states = step.episode, step.result, self._download_states
-        key = episode_key(show.id, episode.season, episode.number)
-        if step.failed:
-            states.set(key, None)
-        elif result is None:
-            states.set(key, RunState(Phase.WORKING))
-        elif result.already_downloaded:
-            current = states.get(key)
-            if current is None or current.phase is not Phase.DONE:  # keep "✓ Saved" and co
-                states.set(key, RunState(Phase.DONE))
-        elif result.grab is None:
-            states.set(key, RunState(Phase.NOTHING))
-        else:
-            states.set(key, grabbed_state(result))
+        def progress(state: BatchState) -> None:
+            runs.set(
+                show.id,
+                MissingRunState(index=state.index, total=state.total, queued=state.queued),
+            )
+
+        def done(events: tuple[QueueEvent, ...]) -> None:
+            report = queued_run_report(show.id, len(items), events, len(missing) - len(todo))
+            finished = MissingRunState(index=report.total, total=report.total, report=report)
+            runs.set(show.id, finished)
+            self._report(outcome_status_text(show.name, report), _DOWNLOAD_STATUS_MS)
+            self.after(OUTCOME_MS, lambda: runs.expire(show.id, finished))
+
+        batch = tuple(item.key for item in items)
+        if not self._queue_link.download_batch(batch, items, on_progress=progress, on_done=done):
+            runs.set(show.id, None)  # the same episodes are queued already as a batch
 
     def _mark_have(self, show: Show, episode_ids: tuple[int, ...]) -> None:
         """ "I already have this": the episodes no longer count as missing."""
@@ -1267,7 +1276,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             images=self._services.images,
             library=self._services.library,
             backup=self._services.backup,
-            forge=self._services.forge,  # the MediaForge group
             section=section,
         )
 
@@ -1284,7 +1292,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         settings = self._services.settings
         if settings.current.setup_done:
             return
-        stats = await self._services.library.stats()
+        stats = await self._services.library.stats(profile_id=self._services.profiles.current_id)
         action = first_run_action(settings.current.setup_done, stats.tracked_shows)
         if action is FirstRun.MARK_DONE:
             await settings.update(setup_done=True)
@@ -1308,6 +1316,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 remote=self._services.remote,
                 on_restart=self.restart,
                 backup=self._services.backup,  # "Moving from another PC? Load a backup"
+                profiles=self._services.profiles,  # "Who uses AirGrabber?"
             )
 
     # -- updates -----------------------------------------------------------------------------
@@ -1419,7 +1428,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- status bar --------------------------------------------------------------------------
 
     async def _show_library_summary(self) -> None:
-        stats = await self._services.library.stats()
+        stats = await self._services.library.stats(profile_id=self._services.profiles.current_id)
         if stats.last_synced:
             when = stats.last_synced.astimezone()
             synced = t("last synced {date}", date=f"{when:%d} {month_short(when)} {when:%H:%M}")

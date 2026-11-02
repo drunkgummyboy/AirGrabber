@@ -14,6 +14,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.0.1": (
+        N_("Everyone at home can have their own series, watchlist and calendar: click your name at the top right."),
+        N_("Downloads now wait in a queue: click a whole season and close the window; the Downloads page shows what's waiting."),
+        N_("Each season has a \"Whole season\" button that looks for a season pack first."),
+        N_("MediaForge has its own Settings (⚙), and every item in its queue can have its own preset."),
+        N_("Ignore keeps a file or folder out of MediaForge's Auto-rename, which now only renames videos whose name matches."),
+        N_("AirGrabber opens on the calendar, and a series opened from search comes to the front."),
+    ),
     "3.0.0": (
         N_("MediaForge is now part of AirGrabber: open it with the 🔨 button, from the tray or from the Start menu."),
         N_("Your old MediaForge's presets, folders and history come along the first time you open it."),

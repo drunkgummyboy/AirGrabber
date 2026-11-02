@@ -1,4 +1,5 @@
-"""Weekly episode calendar: tracked episodes from SQL, plus suggested shows per day.
+"""Weekly episode calendar: tracked episodes from SQL, plus suggested shows per day. Both are
+the selected person's (Settings' `current_profile`, read at every load; app/services/profiles.py).
 
 Missing episodes (`LibraryService.missing_between`: aired at least a day ago, not downloaded,
 not marked "I already have this") get the cards' amber mark; new ones (`new_between`: aired
@@ -306,6 +307,9 @@ class CalendarView(BaseView):
         self._offset = 0  # weeks from the current one; this session only
         self._unfolded: set[FoldKey] = set()  # the stack cards unfolded; this session only
         self._suggestions_shown = settings.current.show_suggestions  # the toggle's state
+        # The person whose calendar shows (Settings' `current_profile`, read at every load):
+        # the suggestions' "+ Track" adds to their library.
+        self._profile_id = settings.current.current_profile
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -456,12 +460,14 @@ class CalendarView(BaseView):
         )
         self._range.configure(text=range_label(start, end))
 
-        entries = await self._library.calendar(start, end)
-        missing = await self._library.missing_between(start, end)
-        new = await self._library.new_between(start, end)
+        profile_id = prefs.current_profile
+        entries = await self._library.calendar(start, end, profile_id=profile_id)
+        missing = await self._library.missing_between(start, end, profile_id=profile_id)
+        new = await self._library.new_between(start, end, profile_id=profile_id)
         had = await self._library.have_between(start, end)
         if not self.winfo_exists():
             return
+        self._profile_id = profile_id
         cells = await self._render_tracked(
             _days(start, end),
             by_day(entries),
@@ -476,7 +482,9 @@ class CalendarView(BaseView):
             return
         self._note.configure(text=t("Finding suggestions…"))
         try:
-            suggestions = await self._library.suggestions(start, end, per_day=SUGGESTION_POOL)
+            suggestions = await self._library.suggestions(
+                start, end, profile_id=profile_id, per_day=SUGGESTION_POOL
+            )
         except Exception:
             log.exception("Couldn't load calendar suggestions for %s – %s", start, end)
             if self.winfo_exists():
@@ -661,6 +669,7 @@ class CalendarView(BaseView):
             entry,
             library=self._library,
             status=self._status,
+            profile_id=self._profile_id,
             scale=scale,
             on_open_show=self._on_open_show,
         )

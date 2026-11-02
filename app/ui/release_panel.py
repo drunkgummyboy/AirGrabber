@@ -1216,15 +1216,18 @@ class ReleasePanel(ctk.CTkFrame):
                 t("“{answer}” is not a TVMaze ID (a number).", answer=answer), theme.DANGER
             )
             return None
+        # The selected person's library (the info windows close when another is selected).
+        person = self._settings.current.current_profile
         new_id = int(answer)
         if new_id == old.id:
             return None
         self._set_message(t("Fetching TVMaze show {id}…", id=new_id), theme.TEXT_MUTED)
         try:
-            was_tracked = any(entry.show.id == old.id for entry in await self._library.tracked())
-            show = await self._library.track(new_id)
+            followed = await self._library.tracked(profile_id=person)
+            was_tracked = any(entry.show.id == old.id for entry in followed)
+            show = await self._library.track(new_id, profile_id=person)
             if was_tracked:
-                await self._library.untrack(old.id)
+                await self._library.untrack(old.id, profile_id=person)
         except TVMazeNotFound:
             message = t("TVMaze has no show with ID {id}.", id=new_id)
         except TVMazeError as exc:

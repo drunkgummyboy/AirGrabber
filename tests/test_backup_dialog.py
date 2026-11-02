@@ -58,6 +58,7 @@ from app.ui.settings_dialog import (
     SettingsDialog,
 )
 from app.ui.welcome_dialog import MOVING_LINK, WelcomeDialog
+from tests.people import FakePeople
 
 CREATED = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
 SUMMARY = BackupSummary(
@@ -462,6 +463,7 @@ class WelcomeLinkTests(DialogTestCase):
             discovery=mock.MagicMock(),
             airdates=mock.MagicMock(),
             library=mock.MagicMock(),
+            profiles=FakePeople(),
             **extra,
         )
         self.keep(dialog)

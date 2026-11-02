@@ -1,13 +1,14 @@
-"""Backup & move (Settings → Backup; the welcome's "Moving from another PC?"): the followed
-shows, the film watchlist, the download history and the settings in one file
+"""Backup & move (Settings → Backup; the welcome's "Moving from another PC?"): the people, their
+followed shows and film watchlists, the download history and the settings in one file
 (app/models/backup.py), and loading such a file here or on another PC.
 
 What goes in, and why:
-- the followed shows with their automatic-download switch and "I already have this" marks, and
-  their episodes (the marks belong to episodes, and the calendar and My shows can draw before
-  the first sync; a loaded show is refreshed from TVMaze at the next sync);
-- the watchlist films with their "Download when it's out" switch (not the automatic tries: they
-  start afresh, and the release dates are read from TMDB again);
+- the people (name and colour; app/services/profiles.py);
+- each person's followed shows with their automatic-download switch, the shows' "I already have
+  this" marks, and their episodes (the marks belong to episodes, and the calendar and My shows
+  can draw before the first sync; a loaded show is refreshed from TVMaze at the next sync);
+- each person's watchlist films with their "Download when it's out" switch (not the automatic
+  tries: they start afresh, and the release dates are read from TMDB again);
 - the whole download history, and which grabs were taken off the Downloads page. It is small (a
   few hundred bytes a grab) and it is what stops downloading twice: without it every episode
   downloaded before would count as missing on the new PC, and "Download missing" and the
@@ -20,9 +21,12 @@ the subtitles' bookkeeping (it is about files on this PC) and the automatic down
 
 Loading: `open` reads and checks a file (another kind of file, a newer version or a damaged
 one: BackupError, nothing changed), `summarize` says what it holds, and `load` writes it:
-REPLACE (the shows, the watchlist and the settings become the backup's) or ADD (its shows and
-films join the ones here, what is here wins; the settings stay). The download history is added
-either way. A key or password the file doesn't hold keeps its value: a load never wipes one.
+REPLACE (the people, their shows and watchlists and the settings become the backup's) or ADD
+(its people's shows and films join theirs here, what is here wins; the settings stay). The
+backup's people are matched to the people here by name, then in order; the ones left over are
+added (and with REPLACE, people here the backup lacks are removed). A backup from before people
+is one person's lists: they go to the selected person (BackupRepository.restore). The download
+history is added either way. A key or password the file doesn't hold keeps its value: a load never wipes one.
 Where downloads go (LOCAL_DOWNLOAD_FIELDS) stays as it is on this PC when either PC sends its
 downloads to its own qBittorrent, the one AirGrabber set up (app/services/qbittorrent_local.py):
 that one's port and password only work on its own PC (`kept_downloads`). A NAS or another
@@ -63,8 +67,8 @@ from app.models.backup import (
     LoadMode,
 )
 from app.services.qbittorrent_local import set_up_by_airgrabber
+from app.services.profiles import ProfileService
 from app.services.settings import SettingsService
-from app.services.watchlist import WatchlistService
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +100,7 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "tray_notice_shown",
         "start_with_windows",  # mirrors the Startup-folder shortcut on this PC
         "prowlarr_seeded_url",  # the Prowlarr on this PC that got AirGrabber's sites
+        "current_profile",  # who is selected on this PC (the people themselves are in it)
     }
 )
 # Where downloads go: kept as on this PC when either PC uses its own qBittorrent that AirGrabber
@@ -216,6 +221,7 @@ def replace_changes(loaded: Settings, current: Settings) -> dict[str, Any]:
 
 def summarize(backup: BackupFile) -> BackupSummary:
     return BackupSummary(
+        people=max(1, len(backup.profiles)),
         shows=len(backup.shows),
         films=len(backup.watchlist),
         grabs=len(backup.history),
@@ -317,16 +323,16 @@ class BackupService:
         self,
         repository: BackupRepository,
         settings: SettingsService,
-        watchlist: WatchlistService,
+        profiles: ProfileService,
         *,
         app_version: str = __version__,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
-        """`watchlist`: read again after a load (its films are kept in memory). `clock`: the
-        current UTC instant (tests)."""
+        """`profiles`: read again after a load (people may come or go; the selected person's
+        watchlist is kept in memory). `clock`: the current UTC instant (tests)."""
         self._repository = repository
         self._settings = settings
-        self._watchlist = watchlist
+        self._profiles = profiles
         self._app_version = app_version
         self._clock = clock
         self._listeners: list[BackupListener] = []
@@ -357,6 +363,7 @@ class BackupService:
             version=FORMAT_VERSION,
             app_version=self._app_version,
             created=self._clock(),
+            profiles=data.profiles,
             shows=data.shows,
             watchlist=data.films,
             history=data.grabs,
@@ -375,8 +382,9 @@ class BackupService:
             ) from None
         summary = summarize(backup)
         log.info(
-            "Saved a backup: %d shows, %d films, %d grabs, %s keys and passwords",
-            summary.shows, summary.films, summary.grabs, "with" if summary.secrets else "without",
+            "Saved a backup: %d people, %d shows, %d films, %d grabs, %s keys and passwords",
+            summary.people, summary.shows, summary.films, summary.grabs,
+            "with" if summary.secrets else "without",
         )
         return summary
 
@@ -403,17 +411,20 @@ class BackupService:
             downloads_kept = kept_downloads(loaded, current)
         if changes:  # would they store? Checked before anything changes.
             Settings.model_validate({**current.model_dump(), **changes})
-        counts = await self._repository.restore(backup.data, replace=replace, when=self._clock())
+        counts = await self._repository.restore(
+            backup.data, replace=replace, when=self._clock(), selected=self._profiles.current_id
+        )
         if changes:
             await self._settings.update(**changes)
-        await self._watchlist.load()
+        await self._profiles.reload()  # people may have come or gone; the watchlist again
         self._notify()
         updated = self._settings.current
         log.info(
-            "Loaded a backup (%s): %d shows added, %d removed; %d films added, %d removed; "
-            "%d grabs added; settings %s; download connection kept: %s",
-            mode.value, counts.shows_added, counts.shows_removed, counts.films_added,
-            counts.films_removed, counts.grabs_added,
+            "Loaded a backup (%s): %d people added, %d removed; %d shows added, %d removed; "
+            "%d films added, %d removed; %d grabs added; settings %s; download connection "
+            "kept: %s",
+            mode.value, counts.people_added, counts.people_removed, counts.shows_added,
+            counts.shows_removed, counts.films_added, counts.films_removed, counts.grabs_added,
             "replaced" if settings_replaced else "kept", downloads_kept.value,
         )
         return BackupLoadResult(

@@ -361,7 +361,7 @@ MARKED = (
 
 
 class MarkedLibrary(ShowLibrary):
-    async def show_details(self, show_id: int) -> ShowDetails:
+    async def show_details(self, show_id: int, *, profile_id: int) -> ShowDetails:
         ids = [episode.id for episode in MARKED]
         return ShowDetails(
             show=SHOW,
@@ -395,6 +395,7 @@ class ShowWindowMenuTests(WindowsTestCase):
                 download=lambda entry: None, choose=lambda entry: None, states=DownloadStates()
             ),
             downloads_changed=no_subscribe,
+            profile=lambda: 1,
             missing_actions=missing,
         )
         self.addCleanup(shows.close)

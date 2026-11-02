@@ -16,7 +16,8 @@ reload keeps them open.
 
 "⬇ Download all" fetches the episodes still needed (aired, not downloaded, not marked "I
 already have this": `needed_entries`) one after another through the one-click download
-(`DownloadActions.download_all`: the main window runs `download_in_turn`), so each episode
+(`DownloadActions.download_all`: the main window queues them as one batch in the download
+queue, app/ui/queue_link.py), so each episode
 keeps its own state everywhere (the show window too); meanwhile the row shows "Downloading 2 of
 3…" (the batch's `BatchState`, which a card rebuilt mid-run picks up as well), afterwards the
 usual outcome. Once every aired episode is downloaded the row is a ✓ like a single card's; a
@@ -92,6 +93,7 @@ from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TITLE_MIN, CardScale
 from app.ui.download_control import (
     DOWNLOAD_SHORT,
     GRABBED_TEXT,
+    QUEUED_TEXT,
     WORKING_SHORT,
     WORKING_TEXT,
     Base,
@@ -282,7 +284,10 @@ def stack_look(
     """A stack's bottom row: "Downloading 2 of 3…" while its "Download all" runs, the working
     label while one of its episodes is fetched on its own, "⬇ Download all (2)" while episodes
     are still needed, else a ✓ like a single card's (a click unfolds the rows: "choose");
-    disabled "Not Aired" when none has aired."""
+    disabled "Not Aired" when none has aired. "Queued" while they wait in the download queue
+    (the batch, or an episode on its own)."""
+    if batch is not None and batch.queued:
+        return Look("label", t(QUEUED_TEXT), text_color=theme.TEXT_MUTED)
     if batch is not None:
         first, *rest = progress_texts(batch.index, batch.total)
         return Look("label", first, text_color=theme.TEXT_MUTED, short=tuple(rest))
@@ -291,6 +296,8 @@ def stack_look(
         return Look(
             "label", t(WORKING_TEXT), text_color=theme.TEXT_MUTED, short=(t(WORKING_SHORT),)
         )
+    if any(state is not None and state.phase is Phase.QUEUED for state in states):
+        return Look("label", t(QUEUED_TEXT), text_color=theme.TEXT_MUTED)
     needed = len(needed_entries(entries, state_of, had))
     if needed:
         text, *short = download_all_texts(needed)

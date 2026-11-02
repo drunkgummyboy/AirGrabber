@@ -252,21 +252,25 @@ class _Library:
         self.entries = entries
         self.missing = missing
         self.removed_ended = 0
+        self.removed_for: list[int] = []  # whose ended shows went
+        self.people: list[int] = []  # whose shows each load asked for
 
-    async def tracked(self) -> list[LibraryEntry]:
+    async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
+        self.people.append(profile_id)
         return self.entries
 
-    async def activity(self) -> dict[int, ShowActivity]:
+    async def activity(self, *, profile_id: int) -> dict[int, ShowActivity]:
         return {}
 
-    async def missing_counts(self) -> dict[int, int]:
+    async def missing_counts(self, *, profile_id: int) -> dict[int, int]:
         return self.missing
 
     async def last_downloads(self) -> dict[int, datetime]:
         return {2: NOW - timedelta(days=3), 3: NOW - timedelta(days=1)}
 
-    async def remove_ended(self) -> int:
+    async def remove_ended(self, *, profile_id: int) -> int:
         self.removed_ended += 1
+        self.removed_for.append(profile_id)
         return 1
 
 

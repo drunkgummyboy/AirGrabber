@@ -108,9 +108,28 @@ class ChooseTest(unittest.TestCase):
         state, chosen = choose(results, "기생충", 2019)
         assert (state, chosen and chosen.id) == (MatchState.CONFIDENT, 2)
 
-    def test_choose_single_result_confident(self) -> None:
-        state, chosen = choose([res(5, "Something Else")], "Dune", None)
+    def test_choose_single_result_confident_only_on_its_own_name(self) -> None:
+        # The file's name (no year): sure.
+        state, chosen = choose([res(5, "Dune", "2021-10-22")], "dune", None)
         assert (state, chosen and chosen.id) == (MatchState.CONFIDENT, 5)
+        # Its original title counts too.
+        state, chosen = choose([res(6, "Parasite", "2019-05-30", original="기생충")], "기생충", None)
+        assert (state, chosen and chosen.id) == (MatchState.CONFIDENT, 6)
+
+    def test_choose_single_result_with_another_name_is_uncertain(self) -> None:
+        # A home video or a course in a watched folder: TMDB's only hit is some film.
+        state, chosen = choose([res(5, "Something Else")], "Dune", None)
+        assert (state, chosen and chosen.id) == (MatchState.UNCERTAIN, 5)
+        state, chosen = choose([res(7, "Holiday in Spain", "1960-01-01")], "Holiday 2023", None)
+        assert (state, chosen and chosen.id) == (MatchState.UNCERTAIN, 7)
+
+    def test_choose_single_result_with_another_year_is_uncertain(self) -> None:
+        state, chosen = choose([res(5, "Dune", "1984-12-14")], "Dune", 2021)
+        assert (state, chosen and chosen.id) == (MatchState.UNCERTAIN, 5)
+        state, _ = choose([res(5, "Dune")], "Dune", 2021)  # TMDB has no date for it
+        assert state is MatchState.UNCERTAIN
+        state, _ = choose([res(5, "Dune", "2021-10-22")], "Dune", 2021)
+        assert state is MatchState.CONFIDENT
 
     def test_choose_uncertain_takes_top(self) -> None:
         state, chosen = choose(

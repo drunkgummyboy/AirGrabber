@@ -1,5 +1,5 @@
 """Forge's own database file, `forge.db`: settings, presets, remembered matches, the TMDB cache,
-the undo history and (from v3) the move records.
+the undo history, (from v3) the move records and (from v4) the ignored files and folders.
 
 MediaForge's schema v1 and v2 are kept exactly, so an old `mediaforge.db` copied in opens and
 is migrated on; new migrations continue from v3. The connection follows AirGrabber's pattern
@@ -99,6 +99,18 @@ CREATE INDEX moves_op ON moves(op_id);
 CREATE INDEX moves_moved_at ON moves(moved_at);
 """
 
+# v4 (AirGrabber 3.0.1): what Auto-rename leaves alone (app/forge/db/ignored.py). `path_key` is
+# the path's `ignored.ignore_key` (os.path.normcase, no trailing slash); `folder` 1 = everything
+# under the folder; `added_at` a Unix time.
+_SCHEMA_V4 = """
+CREATE TABLE ignored (
+    path_key    TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
+    folder      INTEGER NOT NULL,
+    added_at    REAL NOT NULL
+);
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     _SCHEMA_V1,
@@ -106,6 +118,8 @@ MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE runs ADD COLUMN kinds TEXT NOT NULL DEFAULT '';",
     # v3 (AirGrabber 3.0.0): the move records.
     _SCHEMA_V3,
+    # v4 (AirGrabber 3.0.1): the ignored files and folders.
+    _SCHEMA_V4,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

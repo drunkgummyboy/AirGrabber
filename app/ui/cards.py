@@ -23,6 +23,7 @@ from app.i18n import N_, day_short, month_short, t
 from app.models import DownloadRecord, Episode, Show, ShowActivity
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
+from app.ui.download_control import QUEUED_TEXT
 from app.ui.missing_control import (
     MISSING_COLOR,
     SEASON_MENU_TIP,
@@ -126,12 +127,14 @@ def card_info_line(activity: ShowActivity | None, now: datetime) -> str | None:
 def run_line(state: MissingRunState | None) -> tuple[tuple[str, ...], theme.Color] | None:
     """What a My shows card says instead of its info line while "Download missing" runs for the
     show and for a while after: the texts (longest first, the card shows the first that fits)
-    and their colour. "Downloading 2 of 3…" muted; then the outcome: in green with episodes
-    downloaded, red when the run stopped on an error, amber when nothing was found. None
-    without a run."""
+    and their colour. "Queued" (waiting in the download queue), "Downloading 2 of 3…" muted;
+    then the outcome: in green with episodes downloaded, red when the run stopped on an error,
+    amber when nothing was found. None without a run."""
     if state is None:
         return None
     report = state.report
+    if report is None and state.queued:
+        return (t(QUEUED_TEXT),), theme.TEXT_MUTED
     if report is None:
         return progress_texts(state.index, state.total), theme.TEXT_MUTED
     if report.error is not None:

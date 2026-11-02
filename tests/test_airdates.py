@@ -254,7 +254,8 @@ class FindMatchesTests(LibraryTestCase):
     async def test_exact_name(self) -> None:
         progress: list[tuple[int, int]] = []
         matches = await self.service.find_matches(
-            ["Severance", " ", "Severance "], lambda d, t: progress.append((d, t))
+            ["Severance", " ", "Severance "], lambda d, t: progress.append((d, t)),
+            profile_id=1,
         )
         self.assertEqual(
             matches,
@@ -270,7 +271,7 @@ class FindMatchesTests(LibraryTestCase):
         )
         self.assertEqual(progress, [(1, 1)])
         self.assertEqual(self.notifications, 0)
-        self.assertEqual(await self.service.tracked(), [])  # nothing tracked
+        self.assertEqual(await self.service.tracked(profile_id=1), [])  # nothing tracked
 
     async def test_year_suffix_prefers_that_year(self) -> None:
         self.serve_search(
@@ -278,7 +279,7 @@ class FindMatchesTests(LibraryTestCase):
             search_hit(1, "Dark Matter", premiered="2015-06-12"),
             search_hit(2, "Dark Matter", premiered="2024-05-08"),
         )
-        (match,) = await self.service.find_matches(["Dark Matter (2024)"])
+        (match,) = await self.service.find_matches(["Dark Matter (2024)"], profile_id=1)
         self.assertEqual(
             (match.source_name, match.show_id, match.year), ("Dark Matter (2024)", 2, 2024)
         )
@@ -291,19 +292,19 @@ class FindMatchesTests(LibraryTestCase):
         )
         self.serve_search("The Office", search_hit(20, "The Office", country="US"))
         self.server.searches["the office"].append(search_hit(21, "The Office", country="GB"))
-        matches = await self.service.find_matches(["The Traitors (US)", "The Office (UK)"])
+        matches = await self.service.find_matches(["The Traitors (US)", "The Office (UK)"], profile_id=1)
         self.assertEqual([m.show_id for m in matches], [11, 21])
         self.assertEqual(matches[0].network, "Net US")
 
     async def test_suffix_without_a_matching_hit_takes_the_best_hit(self) -> None:
         self.serve_search("Ghosts", search_hit(30, "Ghosts", premiered="2019-04-15"))
-        (match,) = await self.service.find_matches(["Ghosts (2021)"])
+        (match,) = await self.service.find_matches(["Ghosts (2021)"], profile_id=1)
         self.assertEqual(match.show_id, 30)
 
     async def test_suffix_that_is_part_of_the_name(self) -> None:
         # Nothing for the bare name: the full name is searched as well.
         self.serve_search("Blink (1999)", search_hit(40, "Blink (1999)"))
-        (match,) = await self.service.find_matches(["Blink (1999)"])
+        (match,) = await self.service.find_matches(["Blink (1999)"], profile_id=1)
         self.assertEqual(match.show_id, 40)
 
     async def test_unicode_minus_and_quotes_are_searched_as_ascii(self) -> None:
@@ -315,7 +316,8 @@ class FindMatchesTests(LibraryTestCase):
         )
         self.serve_search("Grey's Anatomy", search_hit(51, "Grey's Anatomy"))
         matches = await self.service.find_matches(
-            [source, "Grey’s  Anatomy", "“Grey’s Anatomy”"]
+            [source, "Grey’s  Anatomy", "“Grey’s Anatomy”"],
+            profile_id=1,
         )
         self.assertEqual([m.show_id for m in matches], [50, 51, None])
         self.assertEqual(matches[0].source_name, source)  # shown as airdates.tv wrote it
@@ -327,7 +329,7 @@ class FindMatchesTests(LibraryTestCase):
         year, or with the initialism dotted."""
         self.server.searches.update(load("search_name_variants.json")["searches"])
         names = ["Shameless US", "Agents of S H I E L D", "MacGyver 2016", "The Agency 2024"]
-        matches = await self.service.find_matches(names)
+        matches = await self.service.find_matches(names, profile_id=1)
         self.assertEqual(
             [(m.source_name, m.show_id, m.show_name, m.year) for m in matches],
             [
@@ -342,19 +344,19 @@ class FindMatchesTests(LibraryTestCase):
 
     async def test_a_bare_suffix_prefers_that_year_or_country(self) -> None:
         self.server.searches.update(load("search_name_variants.json")["searches"])
-        matches = await self.service.find_matches(["Shameless UK", "MacGyver 1985", "Shameless AU"])
+        matches = await self.service.find_matches(["Shameless UK", "MacGyver 1985", "Shameless AU"], profile_id=1)
         # The UK one; the 1985 one; no Australian one: TVMaze's best hit for the name.
         self.assertEqual([m.show_id for m in matches], [746, 821, 150])
 
     async def test_a_year_that_is_part_of_the_name(self) -> None:
         self.serve_search("Space: 1999", search_hit(60, "Space: 1999", premiered="1975-09-04"))
-        (match,) = await self.service.find_matches(["Space: 1999"])
+        (match,) = await self.service.find_matches(["Space: 1999"], profile_id=1)
         self.assertEqual(match.show_id, 60)
         self.assertEqual(self.server.requests["/search/shows"], 1)  # its own name: no more
 
     async def test_dotted_letters_are_also_tried_joined(self) -> None:
         self.serve_search("SWAT", search_hit(70, "S.W.A.T.", premiered="2017-11-02"))
-        (match,) = await self.service.find_matches(["S.W.A.T."])
+        (match,) = await self.service.find_matches(["S.W.A.T."], profile_id=1)
         self.assertEqual(match.show_id, 70)
 
     def test_name_hints(self) -> None:
@@ -402,7 +404,7 @@ class FindMatchesTests(LibraryTestCase):
         self.assertEqual(search_name("ＡＢ C"), "AB C")  # NFKC: full-width, nbsp
 
     async def test_not_found(self) -> None:
-        (match,) = await self.service.find_matches(["Nothing Matches"])
+        (match,) = await self.service.find_matches(["Nothing Matches"], profile_id=1)
         self.assertEqual(match, ImportMatch(source_name="Nothing Matches"))
         self.assertFalse(match.found)
 
@@ -410,14 +412,14 @@ class FindMatchesTests(LibraryTestCase):
         await self.store_tracked(load("web_show.json"))  # House of the Dragon
         dragon = load("web_show.json")
         self.serve_search("House of the Dragon", {"score": 1.0, "show": dragon})
-        (match,) = await self.service.find_matches(["House of the Dragon"])
+        (match,) = await self.service.find_matches(["House of the Dragon"], profile_id=1)
         self.assertEqual(match.show_id, DRAGON)
         self.assertTrue(match.already_tracked)
 
     async def test_failed_lookup(self) -> None:
         self.server.failures["/search/shows"] = 500
         with self.assertLogs(LOGGER, "WARNING"):
-            (match,) = await self.service.find_matches(["Severance"])
+            (match,) = await self.service.find_matches(["Severance"], profile_id=1)
         self.assertEqual(match, ImportMatch(source_name="Severance", failed=True))
 
     async def test_import_shows_by_tvmaze_ids(self) -> None:
@@ -425,13 +427,14 @@ class FindMatchesTests(LibraryTestCase):
         await self.store_tracked(load("web_show.json"))
         progress: list[tuple[int, int]] = []
         result = await self.service.import_shows(
-            [str(DUNE), str(DRAGON)], lambda d, t: progress.append((d, t))
+            [str(DUNE), str(DRAGON)], lambda d, t: progress.append((d, t)),
+            profile_id=1,
         )
         self.assertEqual(result.added, ("Dune: Prophecy",))
         self.assertEqual(result.already_tracked, ("House of the Dragon",))
         self.assertEqual(progress, [(1, 2), (2, 2)])
         self.assertEqual(self.server.requests["/search/shows"], 0)
-        self.assertEqual({e.show.id for e in await self.service.tracked()}, {DUNE, DRAGON})
+        self.assertEqual({e.show.id for e in await self.service.tracked(profile_id=1)}, {DUNE, DRAGON})
 
     async def test_import_shows_uses_the_suffix_rule_too(self) -> None:
         self.serve_search(
@@ -440,7 +443,7 @@ class FindMatchesTests(LibraryTestCase):
             search_hit(2, "Dark Matter", premiered="2024-05-08"),
         )
         self.server.shows[2] = show_payload(2, "Dark Matter")
-        result = await self.service.import_shows(["Dark Matter (2024)"])
+        result = await self.service.import_shows(["Dark Matter (2024)"], profile_id=1)
         self.assertEqual(result.added, ("Dark Matter",))
         self.assertEqual(self.server.requests["/shows/1"], 0)
 
@@ -468,7 +471,7 @@ class AirdatesImportServiceTests(LibraryTestCase):
     async def find(self, text: str) -> tuple[AirdatesPreview, list[tuple[int, int]], list[str]]:
         progress: list[tuple[int, int]] = []
         with self.assertLogs(LOGGER, "DEBUG") as logs:
-            preview = await self.importer.find(text, lambda d, t: progress.append((d, t)))
+            preview = await self.importer.find(text, lambda d, t: progress.append((d, t)), profile_id=1)
         return preview, progress, logs.output
 
     async def test_end_to_end(self) -> None:
@@ -490,7 +493,7 @@ class AirdatesImportServiceTests(LibraryTestCase):
         self.assertEqual(preview.failed, 1)
         # 4 ids: 4 lookups, then 2 names to match (the 2 others count as done at once).
         self.assertEqual(progress, [(1, 8), (2, 8), (3, 8), (4, 8), (6, 8), (7, 8), (8, 8)])
-        self.assertEqual(await self.service.tracked(), [])
+        self.assertEqual(await self.service.tracked(profile_id=1), [])
         self.assertEqual(self.notifications, 0)
         logged = "\n".join(output)
         for secret in ("airdates.tv/s", "info:", "#ffcc00", "7fa2c4"):
@@ -499,7 +502,7 @@ class AirdatesImportServiceTests(LibraryTestCase):
 
         # Importing the ticked matches goes through import_shows with their TVMaze ids.
         self.server.shows[2] = show_payload(2, "Dark Matter")
-        result = await self.service.import_shows([str(m.show_id) for m in preview.matches[:1]])
+        result = await self.service.import_shows([str(m.show_id) for m in preview.matches[:1]], profile_id=1)
         self.assertEqual(result.added, ("Dark Matter",))
 
     async def test_every_id_named_and_found(self) -> None:
@@ -518,7 +521,7 @@ class AirdatesImportServiceTests(LibraryTestCase):
 
     async def test_bad_export_raises_before_any_request(self) -> None:
         with self.assertRaises(AirdatesError):
-            await self.importer.find("not an export")
+            await self.importer.find("not an export", profile_id=1)
         self.assertEqual(sum(self.airdates.requests.values()), 0)
 
 

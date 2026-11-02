@@ -63,13 +63,11 @@ from app.ui.card_scale import FULL, CardScale, line_height
 from app.ui.download_control import (
     BatchKey,
     BatchState,
-    BatchStep,
     DownloadActions,
     DownloadKey,
     DownloadStates,
     Phase,
     RunState,
-    download_in_turn,
 )
 
 NOW = datetime.now(UTC)
@@ -333,73 +331,11 @@ class Painted:
         return True
 
 
-class BatchTests(unittest.IsolatedAsyncioTestCase):
+class BatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.states = DownloadStates()
         self.entries = (ep(1, 1, 7), ep(1, 1, 8), ep(1, 1, 9))
         self.batch: BatchKey = tuple(entry_key(entry) for entry in self.entries)
-        self.seen: list[tuple[str, BatchState | None]] = []
-
-    def step(self, entry: CalendarEntry, result: bool = True) -> BatchStep:
-        key = entry_key(entry)
-
-        async def run() -> bool:
-            self.seen.append((entry.episode.code, self.states.batch(self.batch)))
-            self.states.set(key, RunState(Phase.WORKING))
-            await asyncio.sleep(0)
-            self.states.set(key, RunState(Phase.DONE, GrabOutcome.SENT) if result else None)
-            return result
-
-        return key, run
-
-    async def test_one_after_another_with_the_progress(self) -> None:
-        steps = [self.step(entry) for entry in self.entries]
-        await download_in_turn(self.states, self.batch, steps)
-        self.assertEqual(
-            self.seen,
-            [
-                ("S01E07", BatchState(1, 3)),
-                ("S01E08", BatchState(2, 3)),
-                ("S01E09", BatchState(3, 3)),
-            ],
-        )
-        self.assertIsNone(self.states.batch(self.batch))  # over
-        for key in self.batch:
-            state = self.states.get(key)
-            assert state is not None
-            self.assertIs(state.phase, Phase.DONE)  # each episode's own state
-
-    async def test_a_failure_stops_the_batch(self) -> None:
-        first, second, third = self.entries
-        steps = [self.step(first), self.step(second, result=False), self.step(third)]
-        await download_in_turn(self.states, self.batch, steps)
-        self.assertEqual([code for code, _ in self.seen], ["S01E07", "S01E08"])
-        self.assertIsNone(self.states.get(entry_key(third)))
-        self.assertIsNone(self.states.batch(self.batch))
-
-    async def test_an_episode_already_being_fetched_is_left_to_its_run(self) -> None:
-        busy = entry_key(self.entries[1])
-        self.states.set(busy, RunState(Phase.WORKING))
-        await download_in_turn(self.states, self.batch, [self.step(e) for e in self.entries])
-        self.assertEqual([code for code, _ in self.seen], ["S01E07", "S01E09"])
-
-    async def test_cancelled_it_still_ends(self) -> None:
-        started = asyncio.Event()
-
-        async def hang() -> bool:
-            started.set()
-            await asyncio.Event().wait()
-            return True
-
-        task = asyncio.create_task(
-            download_in_turn(self.states, self.batch, [(self.batch[0], hang)])
-        )
-        await started.wait()
-        self.assertEqual(self.states.batch(self.batch), BatchState(1, 1))
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        self.assertIsNone(self.states.batch(self.batch))
 
     def test_the_batch_repaints_its_titles_controls_once_each(self) -> None:
         first, second = Painted(self.batch[0]), Painted(self.batch[1])

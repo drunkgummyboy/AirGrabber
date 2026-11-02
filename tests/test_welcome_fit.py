@@ -24,6 +24,7 @@ from app.ui import dialog_kit
 from app.ui.dialog_kit import SCREEN_MARGIN, WINDOW_FRAME, fit_height, on_screen
 from app.ui.quick_setup import QuickSetupDialog
 from app.ui.welcome_dialog import Page, WelcomeDialog
+from tests.people import FakePeople
 
 
 class FakeRepository:
@@ -107,6 +108,7 @@ class WelcomeFitTests(FitTestCase):
             discovery=mock.MagicMock(),
             airdates=mock.MagicMock(),
             library=mock.MagicMock(),
+            profiles=FakePeople(),
         )
         dialog.attributes("-alpha", 0.0)
         self.addCleanup(self.close, dialog)

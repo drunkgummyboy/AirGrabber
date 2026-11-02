@@ -48,6 +48,7 @@ from app.ui.settings_dialog import (
     section_for_field,
 )
 from app.ui.welcome_dialog import REMOTE_NOTE, REMOTE_TITLE, changes_error, download_changes
+from tests.people import FakePeople
 
 
 class FakeClient:
@@ -665,6 +666,7 @@ class WelcomeOptionTests(GuiTestCase):
             airdates=mock.MagicMock(),
             library=mock.MagicMock(),
             remote=remote,
+            profiles=FakePeople(),
         )
         self.addCleanup(self.close, dialog)
         labels = [

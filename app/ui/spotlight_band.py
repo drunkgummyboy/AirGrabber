@@ -5,8 +5,10 @@ the bottom (as the info window's: app/ui/backdrop.py) under a left-to-right scri
 background (darkest behind the logo), or without one a soft glow in the accent colour. Over it,
 on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left,
 the search field, 🔨 MediaForge (with a copper badge while MediaForge's renamer needs the owner:
-`set_forge_count`), ⬇ Downloads (with its badge while downloads are on their way) and the
-settings button on the right. Under them the
+`set_forge_count`), ⬇ Downloads (with its badge while downloads are on their way), the
+settings button and, at the right end, the name button (the selected person's avatar, name and
+▾, `set_person`; a click calls `on_person`, the people menu) on the right. The Series side's
+titles are the selected person's (`profile`). Under them the
 spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the title, a muted line
 ("3 episodes today", a film's "2026 · ★ 7.0") and a dot per title. The titles come from
 app/services/spotlight.py: Series and Movies each have their own; the Downloads page keeps the
@@ -62,6 +64,7 @@ from app.ui.backdrop import (
 )
 from app.ui.branding import load_logo
 from app.ui.icons import sliders_icon
+from app.ui.people import avatar_image
 from app.ui.poster_card import rgb
 from app.ui.spotlight import (
     BADGE_HEIGHT,
@@ -75,6 +78,11 @@ from app.ui.spotlight import (
     POSTER_TOP,
     POSTER_WIDTH,
     PAD_X,
+    PERSON_ARROW,
+    PERSON_ARROW_GAP,
+    PERSON_FONT_SIZE,
+    PERSON_NAME_GAP,
+    PERSON_NAME_MAX,
     SEGMENT_FONT_SIZE,
     SEGMENT_PAD_X,
     WORD_SIZE,
@@ -86,6 +94,7 @@ from app.ui.spotlight import (
     SwitchLayout,
     band_layout,
     hit_target,
+    person_width,
     sub_line,
     switch_hit,
     switch_layout,
@@ -117,7 +126,14 @@ _TIPS = {
     HitKind.SETTINGS: SETTINGS_TIP,
 }
 _CONTROLS = frozenset(
-    {HitKind.SEARCH, HitKind.FIELD, HitKind.FORGE, HitKind.DOWNLOADS, HitKind.SETTINGS}
+    {
+        HitKind.SEARCH,
+        HitKind.FIELD,
+        HitKind.FORGE,
+        HitKind.DOWNLOADS,
+        HitKind.SETTINGS,
+        HitKind.PERSON,
+    }
 )
 
 SPACE_NOTICE_MS = 15_000  # how long the "almost full" notice stays in the status bar
@@ -144,7 +160,8 @@ class SpotlightBand(tk.Canvas):
     `select` when the page changes (whose titles show; None: the Downloads page), `reload` when
     the library, a download or a setting changed, and `set_motion` for Settings'
     `spotlight_motion` and `set_forge_count` with MediaForge's "needs you" count; a click on
-    🔨 calls `on_forge`. `entry` is the search field's text box."""
+    🔨 calls `on_forge`. `set_person` puts the selected person on the name button (none until
+    then); a click on it calls `on_person`. `entry` is the search field's text box."""
 
     def __init__(
         self,
@@ -160,9 +177,12 @@ class SpotlightBand(tk.Canvas):
         on_search: Callable[[], None],
         on_open: Callable[[SpotlightItem], None],
         report: Callable[[str, int], None],
+        profile: Callable[[], int],
+        on_person: Callable[[], None] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now().astimezone(),
     ) -> None:
-        """`clock`: the local time now, aware (the tag's day and time; tests set it)."""
+        """`profile`: the selected person, read at every load (the Series side's episodes are
+        theirs). `clock`: the local time now, aware (the tag's day and time; tests set it)."""
         super().__init__(
             master,
             highlightthickness=0,
@@ -179,6 +199,10 @@ class SpotlightBand(tk.Canvas):
         self._on_search = on_search
         self._on_open = on_open
         self._report = report
+        self._profile = profile
+        self._on_person = on_person
+        # The name button's person: (name, initial, colour); None: no button.
+        self._person: tuple[str, str, theme.Pair] | None = None
         self._clock = clock
         self._started = False
         self._closed = False
@@ -221,6 +245,8 @@ class SpotlightBand(tk.Canvas):
             "magnifier": theme.font(15),
             "glyph": theme.font(20),
             "badge": theme.font(10, bold=True),
+            "person": theme.font(PERSON_FONT_SIZE),
+            "arrow": theme.font(12),
         }
 
         def text(anchor: Literal["nw", "w", "center"] = "nw") -> int:
@@ -242,6 +268,10 @@ class SpotlightBand(tk.Canvas):
         self._badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
         self._forge_badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._forge_badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
+        self._person_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._avatar_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._person_name = self.create_text(0, 0, anchor="w", text="", state="hidden")
+        self._person_arrow = self.create_text(0, 0, anchor="w", text="", state="hidden")
         self._dot_items: list[int] = []
 
         # The search field's text box: flat, in the field's own colour.
@@ -326,6 +356,28 @@ class SpotlightBand(tk.Canvas):
             self._forge_needs = count
             self._paint_forge_badge()
 
+    def set_person(self, name: str, initial: str, colour: theme.Pair) -> None:
+        """The selected person on the name button: their `name`, the `initial` on their
+        avatar, their `colour` (a theme.PERSON_* token)."""
+        person = (name, initial, colour)
+        if person != self._person:
+            self._person = person
+            self._relayout(texts=False)
+
+    def person_box(self) -> tuple[int, int, int, int] | None:
+        """The name button on the screen (x, y, width, height in physical pixels): where its
+        menu opens under; None without one."""
+        layout = self._layout
+        if layout is None or layout.person.w <= 0:
+            return None
+        rect = layout.person
+        return (
+            self.winfo_rootx() + self._px(rect.x),
+            self.winfo_rooty() + self._px(rect.y),
+            self._px(rect.w),
+            self._px(rect.h),
+        )
+
     def jump(self, index: int) -> None:
         """Show the side's `index`th title (its dot)."""
         if self._rotation.jump(index, time.monotonic()):
@@ -397,7 +449,7 @@ class SpotlightBand(tk.Canvas):
             self._load_tasks[side] = task
 
     async def _fetch(self, side: SpotlightSide) -> None:
-        spotlight = await self._service.spotlight(side)
+        spotlight = await self._service.spotlight(side, profile_id=self._profile())
         if not self._closed and _exists(self):
             self._apply(spotlight)
 
@@ -627,6 +679,7 @@ class SpotlightBand(tk.Canvas):
             word_width=self._fonts["word"].measure(APP_NAME),
             dots=count,
             current=self._rotation.index,
+            person_width=self._person_width(),
         )
         self._layout = layout
         px = self._px
@@ -648,6 +701,8 @@ class SpotlightBand(tk.Canvas):
             (self._downloads_glyph, "glyph"),
             (self._badge_text, "badge"),
             (self._forge_badge_text, "badge"),
+            (self._person_name, "person"),
+            (self._person_arrow, "arrow"),
         ):
             self.itemconfigure(item, font=self._scaled(name))
         entry = layout.entry
@@ -727,6 +782,46 @@ class SpotlightBand(tk.Canvas):
         )
         self._paint_badge()
         self._paint_forge_badge()
+        self._paint_person()
+
+    def _person_width(self) -> float:
+        """The name button's width (units); 0 without a person."""
+        if self._person is None or self._on_person is None:
+            return 0.0
+        name = self._fonts["person"].measure(self._person[0])
+        return person_width(name, self._fonts["arrow"].measure(PERSON_ARROW))
+
+    def _paint_person(self) -> None:
+        """The name button: a pill like the other buttons, the person's avatar at its left
+        end, their name (cut short past PERSON_NAME_MAX) and ▾."""
+        layout, person = self._layout, self._person
+        items = (self._person_item, self._avatar_item, self._person_name, self._person_arrow)
+        if layout is None or person is None or layout.person.w <= 0:
+            for item in items:
+                self.itemconfigure(item, state="hidden")
+            return
+        name, initial, colour = person
+        px = self._px
+        rect, disc = layout.person, layout.avatar
+        fill = theme.HOVER if self._hovered(HitKind.PERSON) else theme.SURFACE
+        self.coords(self._person_item, px(rect.x), px(rect.y))
+        image = self._box(rect, px(rect.h) / 2, self._rgba(fill), self._rgba(theme.EDGE))
+        self._set_image(self._person_item, "person", image)
+        self.coords(self._avatar_item, px(disc.x), px(disc.y))
+        picture = avatar_image(initial, rgb(self, colour), px(disc.w))
+        self._set_image(self._avatar_item, "avatar", picture)
+        shown = elide_to_width(name, PERSON_NAME_MAX, self._fonts["person"].measure)
+        name_x = disc.right + PERSON_NAME_GAP
+        middle = px(rect.y + rect.h / 2)
+        self.coords(self._person_name, px(name_x), middle)
+        self.itemconfigure(self._person_name, text=shown, fill=theme.pick(theme.BUTTON_TEXT))
+        arrow_x = name_x + min(self._fonts["person"].measure(name), PERSON_NAME_MAX)
+        self.coords(self._person_arrow, px(arrow_x + PERSON_ARROW_GAP), middle)
+        self.itemconfigure(
+            self._person_arrow, text=PERSON_ARROW, fill=theme.pick(theme.TEXT_MUTED)
+        )
+        for item in items:
+            self.itemconfigure(item, state="normal")
 
     def _paint_badge(self) -> None:
         """⬇'s green badge: how many downloads are on their way."""
@@ -890,6 +985,9 @@ class SpotlightBand(tk.Canvas):
             self._on_downloads()
         elif kind is HitKind.SETTINGS:
             self._on_settings()
+        elif kind is HitKind.PERSON:
+            if self._on_person is not None:
+                self._on_person()
         elif kind is HitKind.DOT:
             self.jump(hit.dot)
         elif (item := self.current) is not None:

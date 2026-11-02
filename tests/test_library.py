@@ -171,15 +171,15 @@ class LibraryTestCase(unittest.IsolatedAsyncioTestCase):
         """Serve `payload` and track it via the service, or (never synced) straight in SQLite."""
         self.server.shows[payload["id"]] = payload
         if synced:
-            await self.service.track(payload["id"])
+            await self.service.track(payload["id"], profile_id=1)
         else:
             wire = TVMazeShow.model_validate(payload)
             await self.db.library.save_show(wire.to_show(), wire.to_episodes())
-            await self.db.library.track(wire.id)
+            await self.db.library.track(wire.id, profile_id=1)
         self.notifications = 0
 
     async def synced_at(self) -> dict[int, datetime | None]:
-        return {entry.show.id: entry.synced_at for entry in await self.service.tracked()}
+        return {entry.show.id: entry.synced_at for entry in await self.service.tracked(profile_id=1)}
 
 
 class ListenerTests(LibraryTestCase):
@@ -192,7 +192,7 @@ class ListenerTests(LibraryTestCase):
         self.service.subscribe(broken)
         self.service.subscribe(lambda: calls.append("after"))
         with self.assertLogs(LOGGER, "ERROR"):
-            await self.service.untrack(DUNE)
+            await self.service.untrack(DUNE, profile_id=1)
         self.assertEqual(calls, ["after"])
         self.assertEqual(self.notifications, 1)
 
@@ -202,37 +202,37 @@ class ListenerTests(LibraryTestCase):
         self.service.subscribe(lambda: calls.append("b"))
         unsubscribe()
         unsubscribe()
-        await self.service.untrack(DUNE)
+        await self.service.untrack(DUNE, profile_id=1)
         self.assertEqual(calls, ["b"])
 
     async def test_remove_ended_notifies_only_when_it_removed_something(self) -> None:
-        await self.service.track(DUNE)
+        await self.service.track(DUNE, profile_id=1)
         self.notifications = 0
-        self.assertEqual(await self.service.remove_ended(), 0)
+        self.assertEqual(await self.service.remove_ended(profile_id=1), 0)
         self.assertEqual(self.notifications, 0)
         await self.store_tracked(show_payload(1, status="Ended"))
-        self.assertEqual(await self.service.remove_ended(), 1)
+        self.assertEqual(await self.service.remove_ended(profile_id=1), 1)
         self.assertEqual(self.notifications, 1)
-        self.assertEqual([e.show.id for e in await self.service.tracked()], [DUNE])
+        self.assertEqual([e.show.id for e in await self.service.tracked(profile_id=1)], [DUNE])
 
 
 class TrackTests(LibraryTestCase):
     async def test_track_saves_show_and_episodes(self) -> None:
-        show = await self.service.track(DUNE)
+        show = await self.service.track(DUNE, profile_id=1)
         self.assertEqual((show.id, show.name), (DUNE, "Dune: Prophecy"))
-        [entry] = await self.service.tracked()
+        [entry] = await self.service.tracked(profile_id=1)
         self.assertEqual(entry.show, show)
         self.assertIsNotNone(entry.synced_at)
         self.assertEqual(len(await self.db.library.episodes(DUNE)), 6)
         self.assertEqual(self.notifications, 1)
 
     async def test_track_is_idempotent_and_refreshes(self) -> None:
-        await self.service.track(DUNE)
+        await self.service.track(DUNE, profile_id=1)
         first_sync = (await self.synced_at())[DUNE]
         self.server.shows[DUNE]["name"] = "Dune: Prophecy (renamed)"
-        show = await self.service.track(DUNE)
+        show = await self.service.track(DUNE, profile_id=1)
         self.assertEqual(show.name, "Dune: Prophecy (renamed)")
-        [entry] = await self.service.tracked()
+        [entry] = await self.service.tracked(profile_id=1)
         self.assertEqual(entry.show.name, "Dune: Prophecy (renamed)")
         assert entry.synced_at is not None and first_sync is not None
         self.assertGreaterEqual(entry.synced_at, first_sync)
@@ -242,24 +242,24 @@ class TrackTests(LibraryTestCase):
 
     async def test_track_propagates_tvmaze_errors(self) -> None:
         with self.assertRaises(TVMazeNotFound):
-            await self.service.track(12345)
-        self.assertEqual(await self.service.tracked(), [])
+            await self.service.track(12345, profile_id=1)
+        self.assertEqual(await self.service.tracked(profile_id=1), [])
         self.assertEqual(self.notifications, 0)
 
 
 class SearchTests(LibraryTestCase):
     async def test_search_flags_tracked_shows(self) -> None:
         await self.store_tracked(show_payload(SEVERANCE, "Severance"))
-        results = await self.service.search("severance")
+        results = await self.service.search("severance", profile_id=1)
         self.assertEqual([r.show.id for r in results], [SEVERANCE, 85532, 70294])
         self.assertEqual([r.is_tracked for r in results], [True, False, False])
 
     async def test_search_applies_limit(self) -> None:
-        results = await self.service.search("severance", limit=2)
+        results = await self.service.search("severance", limit=2, profile_id=1)
         self.assertEqual(len(results), 2)
 
     async def test_search_without_hits(self) -> None:
-        self.assertEqual(await self.service.search("nothing like this"), [])
+        self.assertEqual(await self.service.search("nothing like this", profile_id=1), [])
 
 
 class ImportTests(LibraryTestCase):
@@ -284,6 +284,7 @@ class ImportTests(LibraryTestCase):
                     "   ",
                 ],
                 lambda done, total: progress.append((done, total)),
+                profile_id=1,
             )
 
         self.assertEqual(result.added, ("Dune: Prophecy", "Severance"))
@@ -293,13 +294,13 @@ class ImportTests(LibraryTestCase):
         self.assertEqual(progress, [(n, 7) for n in range(1, 8)])
         self.assertEqual(self.notifications, 1)
         self.assertEqual(
-            {e.show.id for e in await self.service.tracked()}, {DUNE, DRAGON, SEVERANCE}
+            {e.show.id for e in await self.service.tracked(profile_id=1)}, {DUNE, DRAGON, SEVERANCE}
         )
         self.assertEqual(self.server.requests[f"/shows/{DRAGON}"], 1)  # only the initial track
         self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 1)
 
     async def test_nothing_added_means_no_notification(self) -> None:
-        result = await self.service.import_shows(["Nothing Matches", ""])
+        result = await self.service.import_shows(["Nothing Matches", ""], profile_id=1)
         self.assertEqual(result.not_found, ("Nothing Matches",))
         self.assertEqual(self.notifications, 0)
 
@@ -318,12 +319,12 @@ class SuggestionTests(LibraryTestCase):
         days = [today + timedelta(days=n) for n in range(3)]
         self.serve_schedule(*days)
 
-        entries = await self.service.suggestions(days[0], days[-1], per_day=3)
+        entries = await self.service.suggestions(days[0], days[-1], per_day=3, profile_id=1)
         self.assertEqual([e.episode.air_date for e in entries], days)
         self.assertTrue(all(not e.is_tracked for e in entries))
         self.assertEqual(sum(self.server.requests.values()), 3)
 
-        again = await self.service.suggestions(days[0], days[-1], per_day=3)
+        again = await self.service.suggestions(days[0], days[-1], per_day=3, profile_id=1)
         self.assertEqual(again, entries)
         self.assertEqual(sum(self.server.requests.values()), 3)
 
@@ -339,7 +340,7 @@ class SuggestionTests(LibraryTestCase):
         # today + 2 was never fetched
 
         start, end = today - timedelta(days=3), today + timedelta(days=2)
-        await self.service.suggestions(start, end, per_day=3)
+        await self.service.suggestions(start, end, per_day=3, profile_id=1)
 
         fetched = {key.removeprefix("/schedule?") for key in self.server.requests}
         expected = {today - timedelta(days=1), today, today + timedelta(days=2)}
@@ -354,14 +355,14 @@ class SuggestionTests(LibraryTestCase):
         self.server.failures[failing] = 500
 
         with self.assertLogs(LOGGER, "WARNING"):
-            entries = await self.service.suggestions(days[0], days[-1], per_day=3)
+            entries = await self.service.suggestions(days[0], days[-1], per_day=3, profile_id=1)
         self.assertEqual([e.episode.air_date for e in entries], [days[0], days[2]])
         fetched = await self.db.library.schedule_fetches(days[0], days[-1])
         self.assertEqual(set(fetched), {days[0], days[2]})
 
         del self.server.failures[failing]
         self.server.requests.clear()
-        entries = await self.service.suggestions(days[0], days[-1], per_day=3)
+        entries = await self.service.suggestions(days[0], days[-1], per_day=3, profile_id=1)
         self.assertEqual(list(self.server.requests), [failing])
         self.assertEqual([e.episode.air_date for e in entries], days)
 
@@ -370,7 +371,7 @@ class SuggestionTests(LibraryTestCase):
         broken = RuntimeError("db")
         with mock.patch.object(self.db.library, "save_schedule_day", side_effect=broken):
             with self.assertRaisesRegex(RuntimeError, "db"):
-                await self.service.suggestions(today, today, per_day=3)
+                await self.service.suggestions(today, today, per_day=3, profile_id=1)
 
     async def test_concurrent_calls_share_in_flight_fetches(self) -> None:
         today = date.today()
@@ -378,9 +379,9 @@ class SuggestionTests(LibraryTestCase):
         self.serve_schedule(*days)
         gate = self.server.gates["/schedule"] = asyncio.Event()
 
-        first = asyncio.create_task(self.service.suggestions(days[0], days[1], per_day=3))
+        first = asyncio.create_task(self.service.suggestions(days[0], days[1], per_day=3, profile_id=1))
         await until(lambda: self.server.in_flight == 2)
-        second = asyncio.create_task(self.service.suggestions(days[0], days[1], per_day=3))
+        second = asyncio.create_task(self.service.suggestions(days[0], days[1], per_day=3, profile_id=1))
         for _ in range(10):
             await asyncio.sleep(0)
         gate.set()
@@ -394,7 +395,7 @@ class SuggestionTests(LibraryTestCase):
         today = date.today()
         self.server.gates["/schedule"] = asyncio.Event()
         tomorrow = today + timedelta(days=1)
-        task = asyncio.create_task(self.service.suggestions(today, tomorrow, per_day=3))
+        task = asyncio.create_task(self.service.suggestions(today, tomorrow, per_day=3, profile_id=1))
         await until(lambda: self.server.in_flight == 2)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -406,9 +407,9 @@ class SuggestionTests(LibraryTestCase):
         today = date.today()
         self.serve_schedule(today)
         gate = self.server.gates["/schedule"] = asyncio.Event()
-        first = asyncio.create_task(self.service.suggestions(today, today, per_day=3))
+        first = asyncio.create_task(self.service.suggestions(today, today, per_day=3, profile_id=1))
         await until(lambda: self.server.in_flight == 1)
-        second = asyncio.create_task(self.service.suggestions(today, today, per_day=3))
+        second = asyncio.create_task(self.service.suggestions(today, today, per_day=3, profile_id=1))
         for _ in range(10):
             await asyncio.sleep(0)
         first.cancel()
@@ -432,7 +433,7 @@ class SuggestionTests(LibraryTestCase):
         self.server.schedules[SATURDAY] = load("schedule_saturday.json")
         await self.store_tracked(show_payload(ON_PATROL, "On Patrol: Live"))
 
-        entries = await self.service.suggestions(week[0], week[-1], per_day=8)
+        entries = await self.service.suggestions(week[0], week[-1], per_day=8, profile_id=1)
 
         per_day = Counter(entry.episode.air_date for entry in entries)
         self.assertEqual([per_day[day] for day in week], [3, 3, 3, 3, 3, 8, 3])
@@ -455,7 +456,8 @@ class SuggestionTests(LibraryTestCase):
         self.assertTrue(all(not entry.is_tracked for entry in saturday))
         # Scripted and animated shows alone (the rule before) leave this Saturday empty.
         scripted_only = await self.db.library.suggestions(
-            SATURDAY, SATURDAY, per_day=8, fallback_types=()
+            SATURDAY, SATURDAY, per_day=8, fallback_types=(),
+            profile_id=1,
         )
         self.assertEqual(scripted_only, [])
 
@@ -471,20 +473,20 @@ class SuggestionTests(LibraryTestCase):
             schedule_item(7, 607, today, weight=100, kind="Sports"),
             schedule_item(8, 608, today, weight=39, kind="Reality"),  # below the minimum weight
         ]
-        entries = await self.service.suggestions(today, today, per_day=8)
+        entries = await self.service.suggestions(today, today, per_day=8, profile_id=1)
         self.assertEqual([entry.show.id for entry in entries], [604, 602, 601, 603])
         # A day with enough scripted shows never reaches the fallback.
-        entries = await self.service.suggestions(today, today, per_day=2)
+        entries = await self.service.suggestions(today, today, per_day=2, profile_id=1)
         self.assertEqual([entry.show.id for entry in entries], [604, 602])
 
     async def test_schedule_never_overwrites_tracked_shows(self) -> None:
-        await self.service.track(DUNE)
+        await self.service.track(DUNE, profile_id=1)
         today = date.today()
         self.server.schedules[today] = [
             schedule_item(1, DUNE, today, updated=DUNE_UPDATED + 999),
             schedule_item(2, 600, today),
         ]
-        await self.service.suggestions(today, today, per_day=3)
+        await self.service.suggestions(today, today, per_day=3, profile_id=1)
         stored = await self.db.library.get_show(DUNE)
         assert stored is not None
         self.assertEqual(stored.updated, DUNE_UPDATED)
@@ -494,8 +496,8 @@ class SuggestionTests(LibraryTestCase):
 class SyncTests(LibraryTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        await self.service.track(DUNE)
-        await self.service.track(DRAGON)
+        await self.service.track(DUNE, profile_id=1)
+        await self.service.track(DRAGON, profile_id=1)
         self.server.requests.clear()
         self.notifications = 0
 
@@ -601,7 +603,7 @@ class SyncTests(LibraryTestCase):
     async def test_sync_prunes_old_untracked_schedule_data(self) -> None:
         old = date.today() - timedelta(days=90)
         self.server.schedules[old] = [schedule_item(1, 600, old)]
-        await self.service.suggestions(old, old, per_day=3)
+        await self.service.suggestions(old, old, per_day=3, profile_id=1)
         self.assertIsNotNone(await self.db.library.get_show(600))
         await self.service.sync()
         self.assertIsNone(await self.db.library.get_show(600))
@@ -636,7 +638,7 @@ class PeriodicSyncTests(LibraryTestCase):
         self.assertEqual(len(logs.records), 2)
 
     async def test_runs_real_syncs(self) -> None:
-        await self.service.track(DUNE)
+        await self.service.track(DUNE, profile_id=1)
         progress: list[SyncProgress] = []
         task = asyncio.create_task(
             self.service.run_periodic_sync(
@@ -651,7 +653,7 @@ class PeriodicSyncTests(LibraryTestCase):
 
 class PruneScheduleTests(LibraryTestCase):
     async def test_never_deletes_tracked_shows_episodes(self) -> None:
-        await self.service.track(DUNE)  # every episode aired in 2024
+        await self.service.track(DUNE, profile_id=1)  # every episode aired in 2024
         today = date.today()
         old, recent = today - timedelta(days=90), today - timedelta(days=5)
         self.server.schedules[old] = [
@@ -660,8 +662,8 @@ class PruneScheduleTests(LibraryTestCase):
             schedule_item(3, DUNE, old),  # a tracked show's episode
         ]
         self.server.schedules[recent] = [schedule_item(4, 601, recent)]
-        await self.service.suggestions(old, old, per_day=3)
-        await self.service.suggestions(recent, recent, per_day=3)
+        await self.service.suggestions(old, old, per_day=3, profile_id=1)
+        await self.service.suggestions(recent, recent, per_day=3, profile_id=1)
 
         deleted = await self.db.library.prune_schedule(today - timedelta(days=60))
 
@@ -671,7 +673,7 @@ class PruneScheduleTests(LibraryTestCase):
         self.assertEqual(len(await self.db.library.episodes(DUNE)), 7)
         self.assertEqual(await self.db.library.schedule_fetches(old, old), {})
         self.assertEqual(set(await self.db.library.schedule_fetches(recent, recent)), {recent})
-        self.assertEqual([e.show.id for e in await self.service.tracked()], [DUNE])
+        self.assertEqual([e.show.id for e in await self.service.tracked(profile_id=1)], [DUNE])
 
     async def test_mark_synced_many(self) -> None:
         await self.store_tracked(show_payload(1), synced=False)
@@ -705,13 +707,13 @@ class ShowDetailsTests(LibraryTestCase):
         )
 
     async def test_tracked_show_comes_from_the_library(self) -> None:
-        await self.service.track(DRAGON)
-        await self.service.set_auto_download(DRAGON, True)
+        await self.service.track(DRAGON, profile_id=1)
+        await self.service.set_auto_download(DRAGON, True, profile_id=1)
         await self.grab(DRAGON, 1, None)  # a season pack
         await self.grab(DRAGON, 3, 2)
         await self.grab(DUNE, 1, 1)  # another show's
 
-        details = await self.service.show_details(DRAGON, now=SHOW_DETAILS_NOW)
+        details = await self.service.show_details(DRAGON, now=SHOW_DETAILS_NOW, profile_id=1)
 
         self.assertEqual(self.server.requests[f"/shows/{DRAGON}"], 1)  # only the track
         self.assertEqual(details.show.name, "House of the Dragon")
@@ -729,7 +731,7 @@ class ShowDetailsTests(LibraryTestCase):
     async def test_untracked_show_is_fetched_and_not_stored(self) -> None:
         await self.grab(DUNE, 1, 2)  # downloaded from its details window, say
 
-        details = await self.service.show_details(DUNE, now=SHOW_DETAILS_NOW)
+        details = await self.service.show_details(DUNE, now=SHOW_DETAILS_NOW, profile_id=1)
 
         self.assertFalse(details.tracked)
         self.assertFalse(details.auto_download)
@@ -739,22 +741,22 @@ class ShowDetailsTests(LibraryTestCase):
         self.assertIsNone(details.next_episode)  # every episode aired in 2024
         self.assertIsNone(await self.db.library.get_show(DUNE))
         self.assertEqual(await self.db.library.episodes(DUNE), [])
-        self.assertEqual(await self.service.tracked(), [])
+        self.assertEqual(await self.service.tracked(profile_id=1), [])
         self.assertEqual(self.notifications, 0)
 
     async def test_untracked_show_is_kept_in_memory_until_tracked(self) -> None:
-        await self.service.show_details(DUNE)
-        await self.service.show_details(DUNE)
+        await self.service.show_details(DUNE, profile_id=1)
+        await self.service.show_details(DUNE, profile_id=1)
         self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 1)
-        await self.service.track(DUNE)
-        await self.service.untrack(DUNE)
-        await self.service.show_details(DUNE)  # the copy from before tracking is dropped
+        await self.service.track(DUNE, profile_id=1)
+        await self.service.untrack(DUNE, profile_id=1)
+        await self.service.show_details(DUNE, profile_id=1)  # the copy from before tracking is dropped
         self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 3)
 
     async def test_tracked_show_without_cached_episodes_is_fetched(self) -> None:
         await self.store_tracked(show_payload(DUNE, "Dune"), synced=False)  # no episodes stored
         self.server.shows[DUNE] = load("show_embed.json")
-        details = await self.service.show_details(DUNE)
+        details = await self.service.show_details(DUNE, profile_id=1)
         self.assertTrue(details.tracked)
         self.assertEqual(len(details.episodes), 6)
         self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 1)
@@ -762,10 +764,10 @@ class ShowDetailsTests(LibraryTestCase):
 
     async def test_tvmaze_errors_propagate(self) -> None:
         with self.assertRaises(TVMazeNotFound):
-            await self.service.show_details(12345)
+            await self.service.show_details(12345, profile_id=1)
         self.server.failures[f"/shows/{DUNE}"] = 500
         with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(TVMazeError):
-            await self.service.show_details(DUNE)
+            await self.service.show_details(DUNE, profile_id=1)
 
 
 def numbered(
@@ -844,13 +846,13 @@ class ServicesTests(unittest.IsolatedAsyncioTestCase):
             services = await Services.create(self.paths)
         try:
             self.assertIsInstance(services.settings.current, Settings)
-            self.assertEqual((await services.library.stats()).tracked_shows, 0)
+            self.assertEqual((await services.library.stats(profile_id=1)).tracked_shows, 0)
             self.assertIn("AirGrabber/", services._http.headers["User-Agent"])
         finally:
             await services.aclose()
         self.assertTrue(services._http.is_closed)
         with self.assertRaises(ValueError):  # the aiosqlite connection is closed
-            await services.library.stats()
+            await services.library.stats(profile_id=1)
 
     async def test_failed_create_closes_what_it_opened(self) -> None:
         real_close = Database.close

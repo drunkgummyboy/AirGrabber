@@ -17,11 +17,12 @@ from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportS
 from app.services.auto_download import AutoDownloadService
 from app.services.backup import BackupService
 from app.services.discovery import DiscoveryService
+from app.services.download_queue import DownloadQueue
 from app.services.download_status import DownloadStatusService, forge_moves
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
-from app.services.missing import MissingDownloadService
+from app.services.profiles import ProfileService
 from app.services.prowlarr_setup import ProwlarrSetupService
 from app.services.qbittorrent_local import QBittorrentStarter
 from app.services.qbittorrent_setup import QBittorrentSetup
@@ -62,12 +63,13 @@ class Services:
         "auto_download",
         "backup",
         "discovery",
+        "download_queue",
         "download_status",
         "downloads",
         "forge",
         "images",
         "library",
-        "missing",
+        "profiles",
         "prowlarr_setup",
         "quick_download",
         "remote",
@@ -111,14 +113,19 @@ class Services:
         self.search = search
         # One-click Download: search, pick the best release, grab it.
         self.quick_download = QuickDownloadService(search, downloads, settings)
-        # "Download missing": a tracked show's missing episodes, one at a time.
-        self.missing = MissingDownloadService(library, self.quick_download)
-        # The movie watchlist (in memory once `load`ed; Services.create does that).
+        # Every one-click download the user asks for, a couple at a time; as long as the app
+        # runs (closing a window never cancels one).
+        self.download_queue = DownloadQueue(self.quick_download)
+        # The film watchlists (the selected person's in memory once `load`ed: profiles.load).
         self.watchlist = WatchlistService(db.watchlist, discovery, downloads)
-        # Settings → Backup: shows, watchlist, download history and settings in one file.
-        self.backup = BackupService(BackupRepository(db), settings, self.watchlist)
+        # The people sharing AirGrabber and who is selected (Services.create `load`s them):
+        # each has their own followed series, watchlist and calendar.
+        self.profiles = ProfileService(db.profiles, settings, self.watchlist)
+        # Settings → Backup: people, shows, watchlists, download history and settings in one
+        # file.
+        self.backup = BackupService(BackupRepository(db), settings, self.profiles)
         # Downloads new episodes of the shows whose switch is on, and the watchlist films whose
-        # "Download when it's out" is on (`run_periodic` from the UI).
+        # "Download when it's out" is on, on everyone's lists (`run_periodic` from the UI).
         self.auto_download = AutoDownloadService(
             db.library, self.quick_download, settings, watchlist=self.watchlist
         )
@@ -222,7 +229,7 @@ class Services:
                 # the poster cache; nothing of it is imported or opened until it starts.
                 forge=ForgeRuntime(paths, http, tmdb, images, settings),
             )
-            await services.watchlist.load()
+            await services.profiles.load()  # also the selected person's watchlist
             await services.torrent_app.refresh_qbittorrent_theme()  # after an update: new files
             cleanup.pop_all()
         return services
@@ -233,6 +240,8 @@ class Services:
         return self.remote
 
     async def aclose(self) -> None:
+        # The queue is kept in memory only: what still waits is dropped (the log says how many).
+        self.download_queue.close()
         try:
             # First: Forge uses the HTTP client, and forge.db's aiosqlite thread is no daemon.
             await self.forge.aclose()
@@ -283,7 +292,7 @@ __all__ = [
     "DownloadStationClient",
     "ImageCache",
     "LibraryService",
-    "MissingDownloadService",
+    "ProfileService",
     "ProwlarrSetupService",
     "QuickDownloadService",
     "RemoteDownloads",

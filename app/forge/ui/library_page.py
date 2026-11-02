@@ -10,7 +10,7 @@ Then three steps, each marked done once it is:
 2. Put renamed files here — the Series and the Movies library folder, each with Browse.
 3. How files are named — the preset Series and Movies are moved with (`series_preset` /
    `movies_preset`).
-And "More in Settings…" as a small link (AirGrabber's Settings at MediaForge › Library &
+And "More in Settings…" as a small link (MediaForge's own Settings window at Library &
 watching, the window's callback).
 
 Every change is saved at once, with the safety of Settings' Library & watching: a watched folder

@@ -242,10 +242,10 @@ class DiscoveryTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def add_tracked(self, show_id: int, name: str) -> None:
         await self.db.library.save_show(Show(id=show_id, name=name))
-        await self.db.library.track(show_id)
+        await self.db.library.track(show_id, profile_id=1)
 
     async def tracked_ids(self) -> list[int]:
-        return [entry.show.id for entry in await self.library.tracked()]
+        return [entry.show.id for entry in await self.library.tracked(profile_id=1)]
 
 
 class TVDashboardTests(DiscoveryTestCase):
@@ -253,7 +253,7 @@ class TVDashboardTests(DiscoveryTestCase):
         self.server.tmdb[TV_TRENDING]["results"][1]["name"] = "The Office"
         await self.add_tracked(1, "Office")
         await self.add_tracked(2, "Law and Order - Special Victims Unit")
-        dashboard = await self.service.tv_dashboard()
+        dashboard = await self.service.tv_dashboard(profile_id=1)
 
         trending = self.server.tmdb[TV_TRENDING]["results"]
         on_air = self.server.tmdb[TV_ON_AIR]["results"]
@@ -268,7 +268,7 @@ class TVDashboardTests(DiscoveryTestCase):
         self.assertFalse(any(e.is_tracked for e in dashboard.premieres))
 
     async def test_requests_and_date_window(self) -> None:
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         self.assertEqual([self.server.count(path) for path in TV_PATHS], [1, 1, 1])
         [premieres] = self.server.of(TV_DISCOVER)
         params = premieres.url.params
@@ -278,45 +278,45 @@ class TVDashboardTests(DiscoveryTestCase):
         )
 
     async def test_cached_for_30_minutes(self) -> None:
-        first = await self.service.tv_dashboard()
+        first = await self.service.tv_dashboard(profile_id=1)
         self.now += timedelta(minutes=29, seconds=59)
-        self.assertEqual(await self.service.tv_dashboard(), first)
+        self.assertEqual(await self.service.tv_dashboard(profile_id=1), first)
         self.assertEqual(self.server.count(*TV_PATHS), 3)
         self.now += timedelta(seconds=1)
-        self.assertEqual(await self.service.tv_dashboard(), first)
+        self.assertEqual(await self.service.tv_dashboard(profile_id=1), first)
         self.assertEqual(self.server.count(*TV_PATHS), 6)
 
     async def test_force_refetches(self) -> None:
-        await self.service.tv_dashboard()
-        await self.service.tv_dashboard(force=True)
+        await self.service.tv_dashboard(profile_id=1)
+        await self.service.tv_dashboard(force=True, profile_id=1)
         self.assertEqual(self.server.count(*TV_PATHS), 6)
-        await self.service.tv_dashboard()  # the forced fetch was cached
+        await self.service.tv_dashboard(profile_id=1)  # the forced fetch was cached
         self.assertEqual(self.server.count(*TV_PATHS), 6)
 
     async def test_new_day_refetches(self) -> None:
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         self.now += timedelta(days=1)
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(self.server.count(*TV_PATHS), 6)
 
     async def test_tracked_flags_follow_the_library_while_cached(self) -> None:
         def flagged(entries: tuple[DiscoverShowEntry, ...]) -> list[str]:
             return [entry.show.name for entry in entries if entry.is_tracked]
 
-        dashboard = await self.service.tv_dashboard()
+        dashboard = await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(flagged(dashboard.trending), [])
         await self.add_tracked(7, "Link Click")
-        dashboard = await self.service.tv_dashboard()
+        dashboard = await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(flagged(dashboard.trending), ["LINK CLICK"])
-        await self.library.untrack(7)
-        dashboard = await self.service.tv_dashboard()
+        await self.library.untrack(7, profile_id=1)
+        dashboard = await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(flagged(dashboard.trending), [])
         self.assertEqual(self.server.count(*TV_PATHS), 3)  # all from the cache
 
     async def test_failed_shelf_is_empty_and_not_cached(self) -> None:
         self.server.failures[TV_ON_AIR] = 503
         with self.assertLogs(LOGGER, "WARNING") as logs:
-            dashboard = await self.service.tv_dashboard()
+            dashboard = await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(dashboard.on_air, ())
         self.assertEqual(dashboard.failed, ("on_air",))
         self.assertEqual(len(dashboard.trending), 18)
@@ -325,26 +325,26 @@ class TVDashboardTests(DiscoveryTestCase):
 
         del self.server.failures[TV_ON_AIR]
         before = self.server.count(*TV_PATHS)
-        dashboard = await self.service.tv_dashboard()
+        dashboard = await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(self.server.count(*TV_PATHS), before + 3)  # nothing was cached
         self.assertEqual((len(dashboard.on_air), dashboard.failed), (18, ()))
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(self.server.count(*TV_PATHS), before + 3)  # now it is
 
     async def test_every_shelf_failing_raises_the_first_error(self) -> None:
         for path in TV_PATHS:
             self.server.failures[path] = 422
         with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(TMDBError) as caught:
-            await self.service.tv_dashboard()
+            await self.service.tv_dashboard(profile_id=1)
         self.assertIn("/trending/tv/week", str(caught.exception))
         self.server.failures.clear()
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(self.server.count(*TV_PATHS), 6)
 
     async def test_missing_key_propagates(self) -> None:
         self.key = ""
         with self.assertRaises(TMDBNotConfigured):
-            await self.service.tv_dashboard()
+            await self.service.tv_dashboard(profile_id=1)
         with self.assertRaises(TMDBNotConfigured):
             await self.service.movie_dashboard()
         self.assertEqual(self.server.requests, [])
@@ -352,7 +352,7 @@ class TVDashboardTests(DiscoveryTestCase):
     async def test_rejected_key_propagates(self) -> None:
         self.server.failures[TV_ON_AIR] = 401
         with self.assertRaises(TMDBAuthError):
-            await self.service.tv_dashboard()
+            await self.service.tv_dashboard(profile_id=1)
         self.server.failures = {MOVIE_TRENDING: 401}
         with self.assertRaises(TMDBAuthError):
             await self.service.movie_dashboard()
@@ -613,12 +613,12 @@ class DetailsTests(DiscoveryTestCase):
 
 class ClearCacheTests(DiscoveryTestCase):
     async def test_clear_cache_forgets_lists_and_details(self) -> None:
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         await self.service.movie_dashboard()
         await self.service.movie_details(SPIDER_MAN)
         await self.service.tv_details(LINK_CLICK_TMDB)
         self.service.clear_cache()
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         await self.service.movie_dashboard()
         await self.service.movie_details(SPIDER_MAN)
         await self.service.tv_details(LINK_CLICK_TMDB)
@@ -633,7 +633,7 @@ class ClearCacheTests(DiscoveryTestCase):
         gates = {path: asyncio.Event() for path in (details_path, TV_TRENDING)}
         self.server.gates.update(gates)
         details = asyncio.create_task(self.service.movie_details(SPIDER_MAN))
-        dashboard = asyncio.create_task(self.service.tv_dashboard())
+        dashboard = asyncio.create_task(self.service.tv_dashboard(profile_id=1))
         await until(lambda: self.server.count(details_path, TV_TRENDING) == 2)
         self.service.clear_cache()
         for gate in gates.values():
@@ -641,7 +641,7 @@ class ClearCacheTests(DiscoveryTestCase):
         self.assertEqual((await details).id, SPIDER_MAN)  # the callers still get their data
         self.assertEqual(len((await dashboard).trending), 18)
         await self.service.movie_details(SPIDER_MAN)
-        await self.service.tv_dashboard()
+        await self.service.tv_dashboard(profile_id=1)
         self.assertEqual(self.server.count(details_path), 2)
         self.assertEqual(self.server.count(*TV_PATHS), 6)
 
@@ -689,7 +689,7 @@ class TrackTests(DiscoveryTestCase):
         ]
 
     async def test_track_by_imdb_id(self) -> None:
-        show = await self.service.track(LINK_CLICK)
+        show = await self.service.track(LINK_CLICK, profile_id=1)
         self.assertEqual((show.id, show.name), (LINK_CLICK_TVMAZE, "LINK CLICK"))
         self.assertEqual(await self.tracked_ids(), [LINK_CLICK_TVMAZE])
         self.assertEqual(self.lookups(), [("imdb", LINK_CLICK_IMDB)])
@@ -697,7 +697,7 @@ class TrackTests(DiscoveryTestCase):
 
     async def test_falls_back_to_the_tvdb_id(self) -> None:
         del self.server.lookups[("imdb", LINK_CLICK_IMDB)]
-        show = await self.service.track(LINK_CLICK)
+        show = await self.service.track(LINK_CLICK, profile_id=1)
         self.assertEqual(show.id, LINK_CLICK_TVMAZE)
         self.assertEqual(
             self.lookups(), [("imdb", LINK_CLICK_IMDB), ("thetvdb", str(LINK_CLICK_TVDB))]
@@ -706,7 +706,7 @@ class TrackTests(DiscoveryTestCase):
 
     async def test_without_an_imdb_id_looks_up_the_tvdb_id_only(self) -> None:
         self.server.tmdb[f"/3/tv/{LINK_CLICK_TMDB}"]["external_ids"]["imdb_id"] = None
-        await self.service.track(LINK_CLICK)
+        await self.service.track(LINK_CLICK, profile_id=1)
         self.assertEqual(self.lookups(), [("thetvdb", str(LINK_CLICK_TVDB))])
 
     def search_hits(self) -> list[dict[str, Any]]:
@@ -719,7 +719,7 @@ class TrackTests(DiscoveryTestCase):
     async def test_falls_back_to_name_and_year(self) -> None:
         self.server.lookups.clear()
         self.server.searches["LINK CLICK"] = self.search_hits()
-        show = await self.service.track(LINK_CLICK)
+        show = await self.service.track(LINK_CLICK, profile_id=1)
         self.assertEqual(show.id, LINK_CLICK_TVMAZE)  # the 2021 hit, not the first one
         self.assertEqual(await self.tracked_ids(), [LINK_CLICK_TVMAZE])
         self.assertEqual(len(self.lookups()), 2)
@@ -728,7 +728,7 @@ class TrackTests(DiscoveryTestCase):
         self.server.lookups.clear()
         self.server.searches["LINK CLICK"] = self.search_hits()[:1]  # only the 2019 namesake
         with self.assertRaises(NoTVMazeMatch) as caught:
-            await self.service.track(LINK_CLICK)
+            await self.service.track(LINK_CLICK, profile_id=1)
         self.assertIn("LINK CLICK", str(caught.exception))
         self.assertEqual(await self.tracked_ids(), [])
         self.assertEqual(self.server.count(f"/shows/{LINK_CLICK_TVMAZE}", "/shows/999"), 0)
@@ -738,17 +738,17 @@ class TrackTests(DiscoveryTestCase):
         self.server.searches["LINK CLICK"] = self.search_hits()
         undated = LINK_CLICK.model_copy(update={"first_air_date": None})
         with self.assertRaises(NoTVMazeMatch):
-            await self.service.track(undated)
+            await self.service.track(undated, profile_id=1)
         self.assertEqual(self.server.count("/search/shows"), 0)
 
     async def test_errors_propagate(self) -> None:
         self.server.failures[f"/3/tv/{LINK_CLICK_TMDB}"] = 404
         with self.assertRaises(TMDBNotFound):
-            await self.service.track(LINK_CLICK)
+            await self.service.track(LINK_CLICK, profile_id=1)
         del self.server.failures[f"/3/tv/{LINK_CLICK_TMDB}"]
         self.server.failures["/lookup/shows"] = 500
         with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(TVMazeError):
-            await self.service.track(LINK_CLICK)
+            await self.service.track(LINK_CLICK, profile_id=1)
         self.assertEqual(await self.tracked_ids(), [])
 
     async def test_tracked_show_is_flagged_despite_a_different_name(self) -> None:
@@ -757,12 +757,12 @@ class TrackTests(DiscoveryTestCase):
         def link_click_flag(entries: tuple[DiscoverShowEntry, ...]) -> bool:
             return next(e.is_tracked for e in entries if e.show.id == LINK_CLICK_TMDB)
 
-        self.assertFalse(link_click_flag((await self.service.tv_dashboard()).trending))
-        show = await self.service.track(LINK_CLICK)
+        self.assertFalse(link_click_flag((await self.service.tv_dashboard(profile_id=1)).trending))
+        show = await self.service.track(LINK_CLICK, profile_id=1)
         self.assertEqual(show.name, "Shiguang Dailiren")
-        self.assertTrue(link_click_flag((await self.service.tv_dashboard()).trending))
-        await self.library.untrack(LINK_CLICK_TVMAZE)
-        self.assertFalse(link_click_flag((await self.service.tv_dashboard()).trending))
+        self.assertTrue(link_click_flag((await self.service.tv_dashboard(profile_id=1)).trending))
+        await self.library.untrack(LINK_CLICK_TVMAZE, profile_id=1)
+        self.assertFalse(link_click_flag((await self.service.tv_dashboard(profile_id=1)).trending))
         self.assertEqual(self.server.count(*TV_PATHS), 3)  # flags changed on cached lists
 
 
@@ -784,8 +784,8 @@ class ResolveTests(DiscoveryTestCase):
         # Tracked from the details window: through the library, under another name.
         self.server.shows[LINK_CLICK_TVMAZE]["name"] = "Shiguang Dailiren"
         show = await self.service.resolve(LINK_CLICK)
-        await self.library.track(show.id)
-        trending = (await self.service.tv_dashboard()).trending
+        await self.library.track(show.id, profile_id=1)
+        trending = (await self.service.tv_dashboard(profile_id=1)).trending
         self.assertTrue(next(e.is_tracked for e in trending if e.show.id == LINK_CLICK_TMDB))
 
 
@@ -806,7 +806,7 @@ class ServicesWiringTests(unittest.IsolatedAsyncioTestCase):
                 # One TVMaze client, shared by the library and discovery.
                 self.assertIs(services.discovery._tvmaze, services.library._tvmaze)
                 with self.assertRaises(TMDBNotConfigured):  # a fresh profile has no key
-                    await services.discovery.tv_dashboard()
+                    await services.discovery.tv_dashboard(profile_id=1)
             finally:
                 await services.aclose()
         self.assertTrue(services._http.is_closed)

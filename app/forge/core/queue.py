@@ -300,6 +300,11 @@ class Queue:
             task.cancel()
         self._on_change(QueueEvent(kind="removed", ids=(item_id,)))
 
+    def remove_many(self, item_ids: Sequence[int]) -> int:
+        """Take these items out (the owner ignored them); one event. Returns how many went."""
+        wanted = set(item_ids)
+        return self._drop([i for i in self.items if i.id in wanted])
+
     def clear(self) -> None:
         self._generation += 1
         for task in self._tasks.values():

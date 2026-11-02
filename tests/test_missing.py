@@ -1,10 +1,9 @@
 """Missing episodes: the latest-season rule, its SQL twin (missing counts), the v4
-`have_episodes` table, LibraryService's marks and details, "Download missing" runs against a
-fake one-click Download, and the UI's pure helpers."""
+`have_episodes` table, LibraryService's marks and details, and the UI's pure helpers. ("Download
+missing" goes through the download queue: tests/test_download_queue.py, test_queue_link.py.)"""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import gc
 import sqlite3
@@ -20,23 +19,15 @@ import httpx
 
 from app.database import MIGRATIONS, Database
 from app.models import (
-    CalendarEntry,
     DownloadRecord,
     Episode,
-    GrabOutcome,
     MediaType,
-    MissingProgress,
     MissingRunReport,
-    QuickDownloadResult,
     Show,
     ShowDetails,
 )
-from app.services.downloads import GrabError
 from app.services.library import LibraryService, downloaded_ids
 from app.services.missing import (
-    MAX_PER_RUN,
-    MissingDownloadService,
-    MissingRunBusy,
     MISSING_AFTER,
     is_new,
     is_overdue,
@@ -45,18 +36,14 @@ from app.services.missing import (
     missing_episodes,
     new_episodes,
 )
-from app.services.synology import DownloadStationError
 from app.services.tvmaze import TVMazeClient
 from app.ui.missing_control import (
     FAILED_TEXT,
     NOTHING_MISSING_TEXT,
-    MissingActions,
-    MissingButton,
     MissingRuns,
     MissingRunState,
     download_missing_text,
     have_status_text,
-    missing_look,
     menu_position,
     missing_text,
     outcome_status_text,
@@ -65,7 +52,6 @@ from app.ui.missing_control import (
     progress_texts,
 )
 from app.ui.show_details import row_mark, season_marks, season_menu_items
-from tests.test_auto_download import FOUND, NOTHING, FakeQuickDownload
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
@@ -98,9 +84,10 @@ def ids(episodes: list[Episode]) -> list[int]:
 
 
 def cutoffs(now: datetime) -> dict[str, Any]:
-    """The SQL twins' `missing_by` / `missing_day` for `now` (app.services.missing)."""
+    """The SQL twins' `missing_by` / `missing_day` for `now` (app.services.missing), for
+    person 1."""
     missing_by, missing_day = missing_cutoffs(now)
-    return {"missing_by": missing_by, "missing_day": missing_day}
+    return {"profile_id": 1, "missing_by": missing_by, "missing_day": missing_day}
 
 
 def missing_ids(
@@ -268,7 +255,7 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
         show = Show(id=show_id, name=name or f"Show {show_id}")
         await self.db.library.save_show(show, episodes)
         if tracked:
-            await self.db.library.track(show_id)
+            await self.db.library.track(show_id, profile_id=1)
         return show
 
     async def grab(self, show_id: int, season: int, number: int | None) -> None:
@@ -395,7 +382,7 @@ class MissingCountsTests(DatabaseTestCase):
 
     async def python_counts(self, now: datetime = NOW) -> dict[int, int]:
         result: dict[int, int] = {}
-        for show_id in await self.db.library.tracked_ids():
+        for show_id in await self.db.library.tracked_ids(profile_id=1):
             episodes = await self.db.library.episodes(show_id)
             downloaded = downloaded_ids(episodes, await self.db.history.show_grabs(show_id))
             have = await self.db.library.have_ids(show_id)
@@ -516,7 +503,7 @@ class LibraryMissingTests(ServiceTestCase):
         await self.severance()
         await self.grab(1, 2, 1)
         await self.library.mark_have([22])
-        details = await self.library.show_details(1, now=NOW)
+        details = await self.library.show_details(1, now=NOW, profile_id=1)
         self.assertEqual(details.latest_season, 2)
         self.assertEqual(details.missing, frozenset({23}))
         self.assertEqual(details.have, frozenset({22}))
@@ -533,156 +520,46 @@ class LibraryMissingTests(ServiceTestCase):
                 return show, episodes
 
         library = LibraryService(self.db.library, self.db.history, _TVMaze(self.http))
-        await library.track(7)
+        await library.track(7, profile_id=1)
         self.assertEqual(await self.db.library.have_ids(7), frozenset({71}))
         await library.unmark_have([71])
-        await library.track(7)  # following it again (a refresh) doesn't mark it again
+        await library.track(7, profile_id=1)  # following it again (a refresh) doesn't mark it again
         self.assertEqual(await self.db.library.have_ids(7), frozenset())
-        self.assertEqual(await library.missing_counts(now=now + 3 * DAY), {7: 2})
+        self.assertEqual(await library.missing_counts(now=now + 3 * DAY, profile_id=1), {7: 2})
 
     async def test_an_untracked_show_has_nothing_missing(self) -> None:
         await self.severance()
-        await self.db.library.untrack(1)
-        self.assertEqual(await self.library.missing_episodes(1, now=NOW), [])
-        self.assertEqual(await self.library.missing_counts(now=NOW), {})
+        await self.db.library.untrack(1, profile_id=1)
+        self.assertEqual(await self.library.missing_episodes(1, now=NOW, profile_id=1), [])
+        self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {})
 
     async def test_marks_notify_and_change_the_counts(self) -> None:
         await self.severance()
-        self.assertEqual(await self.library.missing_counts(now=NOW), {1: 3})
+        self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {1: 3})
         await self.library.mark_have([21, 22, 23])
-        self.assertEqual(await self.library.missing_counts(now=NOW), {})
+        self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {})
         await self.library.unmark_have([22])
-        self.assertEqual(await self.library.missing_counts(now=NOW), {1: 1})
+        self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {1: 1})
         self.assertEqual(self.notifications, 2)
 
     async def test_missing_episodes_oldest_first_with_the_show(self) -> None:
         await self.severance()
-        entries = await self.library.missing_episodes(1, now=NOW)
+        entries = await self.library.missing_episodes(1, now=NOW, profile_id=1)
         self.assertEqual([entry.episode.code for entry in entries], ["S02E01", "S02E02", "S02E03"])
         self.assertTrue(all(entry.show.name == "Severance" for entry in entries))
 
     async def test_an_episode_due_for_auto_download_is_missing_until_grabbed(self) -> None:
         await self.severance()
-        await self.db.library.set_auto_download(1, True, since=NOW - 30 * DAY)
+        await self.db.library.set_auto_download(1, True, since=NOW - 30 * DAY, profile_id=1)
         due = await self.db.library.auto_due(
             aired_from=NOW - 10 * DAY, aired_until=NOW, limit=10
         )
         self.assertIn(23, [entry.episode.id for entry in due])
-        self.assertIn(23, ids([e.episode for e in await self.library.missing_episodes(1, now=NOW)]))
+        self.assertIn(23, ids([e.episode for e in await self.library.missing_episodes(1, now=NOW, profile_id=1)]))
         await self.grab(1, 2, 3)
         self.assertNotIn(
-            23, ids([e.episode for e in await self.library.missing_episodes(1, now=NOW)])
+            23, ids([e.episode for e in await self.library.missing_episodes(1, now=NOW, profile_id=1)])
         )
-
-
-# -- "Download missing" ------------------------------------------------------------------------
-
-
-class _PinnedLibrary(LibraryService):
-    """`missing_episodes` as of NOW (the run asks without a `now`)."""
-
-    async def missing_episodes(
-        self, show_id: int, *, now: datetime | None = None
-    ) -> list[CalendarEntry]:
-        return await super().missing_episodes(show_id, now=NOW)
-
-
-class DownloadMissingTests(ServiceTestCase):
-    async def asyncSetUp(self) -> None:
-        await super().asyncSetUp()
-        self.library = _PinnedLibrary(
-            self.db.library, self.db.history, TVMazeClient(self.http, retry_delay=0)
-        )
-        self.quick = FakeQuickDownload(self.db.history)
-        self.service = MissingDownloadService(self.library, self.quick)
-        self.steps: list[MissingProgress] = []
-
-    async def run_missing(self, **kwargs: int) -> MissingRunReport:
-        return await self.service.download_missing(1, self.steps.append, **kwargs)
-
-    async def test_fetches_oldest_first_and_carries_on_past_nothing_found(self) -> None:
-        await self.severance()
-        self.quick.outcomes["Severance S02E02"] = NOTHING
-        report = await self.run_missing()
-        self.assertEqual(self.quick.labels, ["Severance S02E01", "Severance S02E02", "Severance S02E03"])
-        self.assertEqual(report.downloaded, ("Severance S02E01", "Severance S02E03"))
-        self.assertEqual(report.not_found, ("Severance S02E02",))
-        self.assertEqual((report.total, report.left_over, report.error), (3, 0, None))
-        self.assertEqual(await self.library.missing_counts(now=NOW), {1: 1})
-        # Each episode is announced, then finished.
-        self.assertEqual(
-            [(s.index, s.total, s.result is not None) for s in self.steps],
-            [(1, 3, False), (1, 3, True), (2, 3, False), (2, 3, True), (3, 3, False), (3, 3, True)],
-        )
-        target = self.quick.calls[0][1]
-        self.assertEqual((target.media_id, target.season, target.episode), (1, 2, 1))
-
-    async def test_a_failed_grab_stops_the_run(self) -> None:
-        await self.severance()
-        for error in (GrabError("No torrent program"), DownloadStationError("NAS refused")):
-            with self.subTest(error=type(error).__name__):
-                self.quick.calls.clear()
-                self.steps.clear()
-                self.quick.outcomes = {"Severance S02E02": error}
-                self.quick.default = NOTHING
-                with self.assertLogs("app.services.missing", "WARNING"):
-                    report = await self.run_missing()
-                self.assertEqual(report.error, str(error))
-                self.assertEqual(len(self.quick.calls), 2)
-                self.assertTrue(self.steps[-1].failed)
-                self.assertFalse(self.service.is_running(1))
-
-    async def test_already_downloaded_meanwhile_is_counted_apart(self) -> None:
-        await self.severance(1)
-        self.quick.default = QuickDownloadResult(found=False, already_downloaded=True)
-        report = await self.run_missing()
-        self.assertEqual((report.already, report.downloaded), (("Severance S02E01",), ()))
-
-    async def test_at_most_the_cap_per_run(self) -> None:
-        await self.severance(MAX_PER_RUN + 3)
-        report = await self.run_missing()
-        self.assertEqual((report.total, report.left_over), (MAX_PER_RUN, 3))
-        self.assertEqual(len(self.quick.calls), MAX_PER_RUN)
-        report = await self.run_missing(limit=2)
-        self.assertEqual((report.total, report.left_over, len(report.downloaded)), (2, 1, 2))
-
-    async def test_one_run_per_show(self) -> None:
-        await self.severance()
-        self.quick.gate = gate = asyncio.Event()
-        first = asyncio.create_task(self.run_missing())
-        while not self.quick.calls:
-            await asyncio.sleep(0.001)
-        self.assertTrue(self.service.is_running(1))
-        with self.assertRaises(MissingRunBusy):
-            await self.service.download_missing(1)
-        gate.set()
-        report = await first
-        self.assertEqual(len(report.downloaded), 3)
-        self.assertFalse(self.service.is_running(1))
-
-    async def test_nothing_missing_or_untracked_is_an_empty_run(self) -> None:
-        report = await self.service.download_missing(42)
-        self.assertEqual(report, MissingRunReport(show_id=42))
-        self.assertEqual(self.quick.calls, [])
-
-    async def test_a_failing_progress_listener_does_not_stop_the_run(self) -> None:
-        await self.severance(2)
-
-        def broken(step: MissingProgress) -> None:
-            raise RuntimeError("boom")
-
-        with self.assertLogs("app.services.missing", "ERROR"):
-            report = await self.service.download_missing(1, broken)
-        self.assertEqual(len(report.downloaded), 2)
-
-    async def test_found_result_is_reported_in_the_step(self) -> None:
-        await self.severance(1)
-        await self.run_missing()
-        result = self.steps[-1].result
-        assert result is not None
-        self.assertEqual(result, FOUND)
-        assert result.grab is not None
-        self.assertIs(result.grab.outcome, GrabOutcome.SAVED)
 
 
 # -- UI helpers --------------------------------------------------------------------------------
@@ -727,33 +604,7 @@ class TextTests(unittest.TestCase):
         )
 
 
-class LookTests(unittest.TestCase):
-    def test_nothing_missing_and_no_run_is_hidden(self) -> None:
-        self.assertIsNone(missing_look(0, None, with_count=True))
-
-    def test_the_download_button(self) -> None:
-        look = missing_look(3, None, with_count=True)
-        assert look is not None
-        self.assertEqual((look.layout, look.text, look.action), ("button", "⬇ Download missing (3)", "download"))
-        card = missing_look(3, None, with_count=False)
-        assert card is not None
-        self.assertEqual(card.text, "⬇ Download missing")
-
-    def test_a_working_run_wins(self) -> None:
-        look = missing_look(0, MissingRunState(2, 3), with_count=True)
-        assert look is not None
-        self.assertEqual((look.layout, look.text, look.action), ("label", "Downloading 2 of 3…", None))
-
-    def test_a_finished_run_starts_another_only_while_episodes_are_missing(self) -> None:
-        done = MissingRunState(3, 3, report(total=3, downloaded=("a", "b", "c")))
-        look = missing_look(0, done, with_count=True)
-        assert look is not None
-        self.assertEqual((look.text, look.action), ("✓ 3 downloaded", None))
-        partly = MissingRunState(3, 3, report(total=3, downloaded=("a",), not_found=("b", "c")))
-        look = missing_look(2, partly, with_count=True)
-        assert look is not None
-        self.assertEqual(look.action, "download")
-
+class RunStateTests(unittest.TestCase):
     def test_run_states_expire_only_when_unchanged(self) -> None:
         runs = MissingRuns()
         done = MissingRunState(1, 1, report(total=1))
@@ -833,52 +684,13 @@ class WidgetTests(unittest.TestCase):
             self.skipTest(f"Tk unavailable: {exc}")
         self.root.withdraw()
         self.addCleanup(self._destroy_root)
-        self.started: list[int] = []
         self.marked: list[tuple[int, ...]] = []
-        self.runs = MissingRuns()
-        self.actions = MissingActions(
-            download=lambda show: self.started.append(show.id),
-            mark_have=lambda show, ids: self.marked.append(ids),
-            unmark_have=lambda show, ids: None,
-            runs=self.runs,
-        )
-        self.show = Show(id=7, name="Severance")
 
     def _destroy_root(self) -> None:
         for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
             self.root.after_cancel(job)
         self.root.destroy()
         gc.collect()
-
-    def button(self, count: int) -> MissingButton:
-        button = MissingButton(
-            self.root, show=self.show, count=count, actions=self.actions, with_count=True,
-            height=36, font_size=14, width=250,
-        )
-        button.pack()
-        self.root.update()
-        return button
-
-    def test_the_button_follows_the_run_and_survives_a_rebuild(self) -> None:
-        button = self.button(3)
-        assert button.look is not None
-        self.assertEqual(button.look.text, "⬇ Download missing (3)")
-        button._click()
-        self.assertEqual(self.started, [7])
-        self.runs.set(7, MissingRunState(1, 3))
-        self.assertEqual(button.look.text, "Downloading 1 of 3…")
-        button.destroy()  # the page reloads mid-run
-        rebuilt = self.button(2)
-        assert rebuilt.look is not None
-        self.assertEqual(rebuilt.look.text, "Downloading 1 of 3…")
-        rebuilt._click()  # working: no second run
-        self.assertEqual(self.started, [7])
-        done = MissingRunState(3, 3, report(total=3, downloaded=("a", "b", "c")))
-        self.runs.set(7, done)
-        self.assertEqual(rebuilt.look.text, "✓ 3 downloaded")
-        rebuilt.set_count(0)
-        self.runs.expire(7, done)
-        self.assertIsNone(rebuilt.look)  # nothing missing, nothing to tell
 
     def test_popup_menu_runs_the_choice_and_closes(self) -> None:
         anchor = ctk.CTkButton(self.root, text="⋯")

@@ -57,9 +57,14 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         # The cards on screen by TMDB id: a show can sit on more than one shelf.
         self._cards: dict[int, list[DiscoverShowCard]] = {}
         self._tracking: set[int] = set()  # TMDB ids being tracked right now
+        # The person whose "already following" marks the shelves show (read at every fetch):
+        # a card's + Track adds to their library.
+        self._profile_id = settings.current.current_profile
 
     async def _fetch_shelves(self, *, force: bool) -> list[Shelf[DiscoverShowEntry]]:
-        dashboard = await self._discovery.tv_dashboard(force=force)
+        profile_id = self._settings.current.current_profile
+        dashboard = await self._discovery.tv_dashboard(profile_id=profile_id, force=force)
+        self._profile_id = profile_id
         failed = set(dashboard.failed)
         return [
             Shelf(
@@ -120,7 +125,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         # On success the library notifies its listeners and the window reloads this page,
         # whose cards then come back flagged as tracked.
         try:
-            await self._discovery.track(show)
+            await self._discovery.track(show, profile_id=self._profile_id)
         except NoTVMazeMatch:
             self._set_track_state(show.id, "missing")
             self._report(t("{name} isn't on TVMaze yet", name=show.name), clear_after_ms=6000)

@@ -1,7 +1,7 @@
-"""Settings › MediaForge › Naming (app/forge/ui/settings_naming.py) inside AirGrabber's Settings
-dialog: the naming and remembered-matches parts of MediaForge's tests/ui/test_settings_view.py
+"""MediaForge Settings › Naming (app/forge/ui/settings_naming.py) in MediaForge's own Settings
+window (app/forge/ui/settings_window.py): the naming and remembered-matches parts of MediaForge's tests/ui/test_settings_view.py
 (save / rename / delete a preset, the format sample, forgetting a match, the edited preset
-highlighted), plus what the section adds in AirGrabber: changes kept until Save (D9; Cancel /
+highlighted), plus what the section adds inside AirGrabber: changes kept until Save (D9; Cancel /
 ✕ change nothing), only the changed settings stored, the presets merged onto what is stored by
 then, the Series / Movies presets, the names language, the right-click menu's hook, waiting for
 Forge, and Dutch."""
@@ -43,17 +43,14 @@ from app.forge.ui.settings_naming import (
     presets_change,
     sample_lines,
 )
+from app.forge.ui.look import forge_look
 from app.forge.ui.settings_pages import FORGE_SECTIONS, SAVE_FAILED, SECTION_LIBRARY
+from app.forge.ui.settings_window import ForgeSettingsWindow
 from app.i18n import Language
-from app.models import Settings
-from app.services import SettingsService
-from app.ui import theme
-from app.ui.settings_dialog import SECTION_WHERE, SettingsDialog
 from app.ui.widgets import install_window_release
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.tk import pump, pump_until
 from tests.forge.ui.test_settings_library import NOT_READY_TEXT, FakeSettings, labels
-from tests.test_settings_dialog import FakeProwlarr, FakeRepository, FakeShortcut
 
 OFFICE = RememberedMatch(
     kind=MediaKind.EPISODE,
@@ -171,28 +168,12 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.root.destroy()
         gc.collect()  # the dialog's Tk variables, on the main thread
 
-    def dialog(self, forge: FakeForge | None) -> SettingsDialog:
-        settings = SettingsService(
-            FakeRepository(),  # type: ignore[arg-type]
-            Settings(download_dir=self.tmp),
-        )
-        return SettingsDialog(
-            self.root,
-            settings,
-            search=mock.MagicMock(),
-            station=mock.MagicMock(),
-            updates=SimpleNamespace(current="3.0.0"),  # type: ignore[arg-type]
-            torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
-            discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
-            prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
-            startup_shortcut=FakeShortcut(),
-            forge=cast(Any, forge),
-            section=SECTION_NAMING,
-        )
+    def dialog(self, forge: FakeForge) -> ForgeSettingsWindow:
+        return ForgeSettingsWindow(self.root, cast(Any, forge), section=SECTION_NAMING)
 
     @staticmethod
-    def section(dialog: SettingsDialog) -> NamingSection:
-        part = dialog._forge_parts[SECTION_NAMING]
+    def section(dialog: ForgeSettingsWindow) -> NamingSection:
+        part = dialog.parts[SECTION_NAMING]
         assert isinstance(part, NamingSection)
         return part
 
@@ -201,7 +182,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         settings: ForgeSettings | None = None,
         presets: Sequence[Preset] = DEFAULT_PRESETS,
         matches: Sequence[RememberedMatch] = (),
-    ) -> tuple[SettingsDialog, NamingSection, FakeForge]:
+    ) -> tuple[ForgeSettingsWindow, NamingSection, FakeForge]:
         forge = FakeForge(
             FakeSettings(settings or ForgeSettings()), FakePresets(presets), FakeMatches(matches)
         )
@@ -264,14 +245,14 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         # The edited preset is highlighted (MediaForge: test_edited_preset_is_highlighted).
         assert part.editing is not None
         self.assertEqual(part.editing.preset.name, "Auto")
-        self.assertEqual(part.preset_buttons[0].cget("fg_color"), theme.SELECTED)
+        self.assertEqual(part.preset_buttons[0].cget("fg_color"), forge_look().SELECTED)
         self.assertEqual(part.preset_buttons[1].cget("fg_color"), "transparent")
         self.assertEqual(part.name_entry.get(), "Auto")
         self.assertEqual(part.format_entry.get(), "{ny}")
         self.assertEqual(part.type_switch.get(), "Auto")
         self.assertEqual(str(part.delete_button.cget("state")), "normal")
         self.select(part, "Series (Folder)")
-        self.assertEqual(part.preset_buttons[3].cget("fg_color"), theme.SELECTED)
+        self.assertEqual(part.preset_buttons[3].cget("fg_color"), forge_look().SELECTED)
         self.assertEqual(part.type_switch.get(), "TV")
         self.assertTrue(part._options["season_poster"].get())
         self.assertFalse(part._options["trailer"].get())
@@ -330,7 +311,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         part.new_button.invoke()
         assert part.editing is not None
         self.assertEqual(part.editing.preset.name, "New preset")
-        self.assertEqual(part.preset_buttons[-1].cget("fg_color"), theme.SELECTED)
+        self.assertEqual(part.preset_buttons[-1].cget("fg_color"), forge_look().SELECTED)
         part._name.set("Mine")
         part.set_type(TypeHint.TV)
         part._format.set("{t} {s00e00}")
@@ -442,7 +423,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
 
     async def test_a_preset_needs_a_name_of_its_own(self) -> None:
         dialog, part, forge = await self.ready()
-        dialog.show_section(SECTION_WHERE)
+        dialog.show_section(SECTION_LIBRARY)
         part._name.set("  ")
         self.assertEqual(part.name_problem.cget("text"), "Give this preset a name.")
         self.assertTrue(part.name_problem.winfo_manager())

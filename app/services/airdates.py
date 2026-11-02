@@ -182,7 +182,11 @@ class AirdatesImportService:
         self._library = library
 
     async def find(
-        self, export_text: str, progress: Callable[[int, int], None] | None = None
+        self,
+        export_text: str,
+        progress: Callable[[int, int], None] | None = None,
+        *,
+        profile_id: int,
     ) -> AirdatesPreview:
         """Parse `export_text`, name its ids on airdates.tv and match the names on TVMaze.
 
@@ -223,7 +227,7 @@ class AirdatesImportService:
         if matched_from > len(ids):
             report(matched_from)
         matches = await self._library.find_matches(
-            unique, lambda done, _total: report(matched_from + done)
+            unique, lambda done, _total: report(matched_from + done), profile_id=profile_id
         )
         failed += sum(match.failed for match in matches)
         kept = tuple(match for match in matches if not match.failed)

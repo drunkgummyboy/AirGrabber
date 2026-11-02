@@ -2,6 +2,12 @@
 
 Reads come straight from SQLite. Tracking, search, import, calendar suggestions and the
 incremental background sync go through TVMaze and cache what they fetch.
+
+Each person follows their own shows (app/services/profiles.py): every call about what someone
+follows names them (`profile_id`), read by the caller when it started, so a call that finishes
+after a switch still belongs to the person it was made for. The shows' cache, their episodes,
+"I already have this" and the downloads are shared; the sync refreshes every show anyone
+follows.
 """
 
 from __future__ import annotations
@@ -128,14 +134,16 @@ class LibraryService:
 
     # -- reads ---------------------------------------------------------------------------------
 
-    async def tracked(self) -> list[LibraryEntry]:
-        return await self._library.tracked()
+    async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
+        """The shows a person follows, by name."""
+        return await self._library.tracked(profile_id=profile_id)
 
-    async def stats(self) -> LibraryStats:
-        return await self._library.stats()
+    async def stats(self, *, profile_id: int) -> LibraryStats:
+        return await self._library.stats(profile_id=profile_id)
 
-    async def calendar(self, start: date, end: date) -> list[CalendarEntry]:
-        return await self._library.calendar(start, end)
+    async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
+        """The episodes of the shows a person follows airing between `start` and `end`."""
+        return await self._library.calendar(start, end, profile_id=profile_id)
 
     async def episodes(self, show_id: int) -> list[Episode]:
         """The stored episodes of a show, by season and number (specials have no number)."""
@@ -146,16 +154,20 @@ class LibraryService:
         already have")."""
         return await self._history.movie_ids()
 
-    async def activity(self, *, now: datetime | None = None) -> dict[int, ShowActivity]:
-        """Per tracked show id: its latest grab within RECENT_GRAB_WINDOW and its next episode
-        (see ShowActivity). Shows with neither are left out. `now`: an aware instant (tests);
-        its time zone decides which day "today" is."""
+    async def activity(
+        self, *, profile_id: int, now: datetime | None = None
+    ) -> dict[int, ShowActivity]:
+        """Per id of a show the person follows: its latest grab within RECENT_GRAB_WINDOW and
+        its next episode (see ShowActivity). Shows with neither are left out. `now`: an aware
+        instant (tests); its time zone decides which day "today" is."""
         now = now if now is not None else datetime.now().astimezone()
         grabs = await self._history.latest_tv_grabs(now - RECENT_GRAB_WINDOW)
-        upcoming = await self._library.next_episodes(now=now, today=now.date())
+        upcoming = await self._library.next_episodes(
+            profile_id=profile_id, now=now, today=now.date()
+        )
         last = {record.media_id: record for record in grabs}
         following = {episode.show_id: episode for episode in upcoming}
-        tracked = await self._library.tracked_ids()
+        tracked = await self._library.tracked_ids(profile_id=profile_id)
         return {
             show_id: ShowActivity(
                 show_id=show_id, last_grab=last.get(show_id), next_episode=following.get(show_id)
@@ -169,17 +181,19 @@ class LibraryService:
         grabs = await self._history.latest_tv_grabs(datetime(1970, 1, 1, tzinfo=UTC))
         return {record.media_id: record.downloaded_at for record in grabs}
 
-    async def show_details(self, show_id: int, *, now: datetime | None = None) -> ShowDetails:
-        """A TVMaze show with its episodes, tracked state, downloads and next episode (see
-        ShowDetails), for the show details window.
+    async def show_details(
+        self, show_id: int, *, profile_id: int, now: datetime | None = None
+    ) -> ShowDetails:
+        """A TVMaze show with its episodes, whether the person follows it, downloads and next
+        episode (see ShowDetails), for the show details window.
 
-        A tracked show comes from the library's cache. Any other show (or a tracked one whose
-        cache holds no episodes yet) is fetched from TVMaze and kept in memory for DETAILS_TTL;
-        nothing is written to the database. TVMaze errors propagate. `now`: an aware instant
-        (tests); its time zone decides which day "today" is.
+        A show the person follows comes from the library's cache. Any other show (or a followed
+        one whose cache holds no episodes yet) is fetched from TVMaze and kept in memory for
+        DETAILS_TTL; nothing is written to the database. TVMaze errors propagate. `now`: an
+        aware instant (tests); its time zone decides which day "today" is.
         """
         now = now if now is not None else datetime.now().astimezone()
-        entry = await self._library.tracked_entry(show_id)
+        entry = await self._library.tracked_entry(show_id, profile_id=profile_id)
         episodes = await self._library.episodes(show_id) if entry is not None else []
         if entry is not None and episodes:
             show = entry.show
@@ -211,12 +225,13 @@ class LibraryService:
         )
 
     async def missing_episodes(
-        self, show_id: int, *, now: datetime | None = None
+        self, show_id: int, *, profile_id: int, now: datetime | None = None
     ) -> list[CalendarEntry]:
-        """A tracked show's missing episodes (app.services.missing), oldest first, from the
-        library alone; [] for a show that isn't tracked. `now`: an aware instant (tests)."""
+        """The missing episodes (app.services.missing) of a show the person follows, oldest
+        first, from the library alone; [] for a show they don't follow. `now`: an aware
+        instant (tests)."""
         now = now if now is not None else datetime.now().astimezone()
-        entry = await self._library.tracked_entry(show_id)
+        entry = await self._library.tracked_entry(show_id, profile_id=profile_id)
         if entry is None:
             return []
         episodes = await self._library.episodes(show_id)
@@ -227,18 +242,24 @@ class LibraryService:
             for episode in missing_episodes(episodes, downloaded=downloaded, have=have, now=now)
         ]
 
-    async def missing_counts(self, *, now: datetime | None = None) -> dict[int, int]:
-        """Per tracked show id, how many of its latest season's episodes are missing (one
-        query for every show); shows with none are left out. `now`: an aware instant (tests);
-        its time zone decides which day "today" is."""
+    async def missing_counts(
+        self, *, profile_id: int, now: datetime | None = None
+    ) -> dict[int, int]:
+        """Per id of a show the person follows, how many of its latest season's episodes are
+        missing (one query for every show); shows with none are left out. `now`: an aware
+        instant (tests); its time zone decides which day "today" is."""
         now = now if now is not None else datetime.now().astimezone()
         missing_by, missing_day = missing_cutoffs(now)
         return await self._library.missing_counts(
-            now=now, today=now.date(), missing_by=missing_by, missing_day=missing_day
+            profile_id=profile_id,
+            now=now,
+            today=now.date(),
+            missing_by=missing_by,
+            missing_day=missing_day,
         )
 
     async def missing_between(
-        self, start: date, end: date, *, now: datetime | None = None
+        self, start: date, end: date, *, profile_id: int, now: datetime | None = None
     ) -> frozenset[int]:
         """Ids of the missing episodes (app.services.missing's rule) airing between `start`
         and `end`, inclusive: the calendar's amber "Not downloaded yet" marks. `now`: an aware
@@ -246,11 +267,17 @@ class LibraryService:
         now = now if now is not None else datetime.now().astimezone()
         missing_by, missing_day = missing_cutoffs(now)
         return await self._library.missing_between(
-            start, end, now=now, today=now.date(), missing_by=missing_by, missing_day=missing_day
+            start,
+            end,
+            profile_id=profile_id,
+            now=now,
+            today=now.date(),
+            missing_by=missing_by,
+            missing_day=missing_day,
         )
 
     async def new_between(
-        self, start: date, end: date, *, now: datetime | None = None
+        self, start: date, end: date, *, profile_id: int, now: datetime | None = None
     ) -> frozenset[int]:
         """Ids of the new episodes (aired less than a day ago, not downloaded or marked; see
         app.services.missing) airing between `start` and `end`, inclusive: the calendar's blue
@@ -258,7 +285,13 @@ class LibraryService:
         now = now if now is not None else datetime.now().astimezone()
         missing_by, missing_day = missing_cutoffs(now)
         return await self._library.new_between(
-            start, end, now=now, today=now.date(), missing_by=missing_by, missing_day=missing_day
+            start,
+            end,
+            profile_id=profile_id,
+            now=now,
+            today=now.date(),
+            missing_by=missing_by,
+            missing_day=missing_day,
         )
 
     async def have_between(self, start: date, end: date) -> frozenset[int]:
@@ -280,22 +313,33 @@ class LibraryService:
             del self._fetched[next(iter(self._fetched))]
         return show, episodes
 
-    async def search(self, query: str, *, limit: int = 12) -> list[ShowSearchResult]:
-        """TVMaze shows matching `query`, best match first, flagged when already tracked."""
+    async def search(
+        self, query: str, *, profile_id: int, limit: int = 12
+    ) -> list[ShowSearchResult]:
+        """TVMaze shows matching `query`, best match first, flagged when the person follows
+        them already."""
         shows = await self._tvmaze.search_shows(query, limit=limit)
-        tracked = await self._library.tracked_ids() if shows else frozenset[int]()
+        tracked = (
+            await self._library.tracked_ids(profile_id=profile_id) if shows else frozenset[int]()
+        )
         return [ShowSearchResult(show=show, is_tracked=show.id in tracked) for show in shows]
 
     # -- library changes -----------------------------------------------------------------------
 
-    async def untrack(self, show_id: int) -> None:
-        await self._library.untrack(show_id)
+    async def untrack(self, show_id: int, *, profile_id: int) -> None:
+        """Stop following a show (the person's own follow only: the show's cache, episodes and
+        marks stay while anyone follows it)."""
+        await self._library.untrack(show_id, profile_id=profile_id)
         self._notify()
 
-    async def set_auto_download(self, show_id: int, on: bool) -> None:
-        """Switch a tracked show's automatic downloads of new episodes on (from now) or off."""
-        await self._library.set_auto_download(show_id, on)
-        log.info("Automatic downloads %s for TVMaze show %d", "on" if on else "off", show_id)
+    async def set_auto_download(self, show_id: int, on: bool, *, profile_id: int) -> None:
+        """Switch a person's automatic downloads of new episodes of a show they follow on (from
+        now) or off."""
+        await self._library.set_auto_download(show_id, on, profile_id=profile_id)
+        log.info(
+            "Automatic downloads %s for TVMaze show %d (person %d)",
+            "on" if on else "off", show_id, profile_id,
+        )
         self._notify()
 
     async def mark_have(self, episode_ids: Iterable[int]) -> None:
@@ -312,33 +356,39 @@ class LibraryService:
         log.info("Marked %d of %d episodes as missing again", unmarked, len(ids))
         self._notify()
 
-    async def remove_ended(self) -> int:
-        removed = await self._library.untrack_ended()
+    async def remove_ended(self, *, profile_id: int) -> int:
+        """Stop following every ended show the person follows (others keep theirs)."""
+        removed = await self._library.untrack_ended(profile_id=profile_id)
         if removed:
             self._notify()
         return removed
 
-    async def track(self, show_id: int) -> Show:
-        """Fetch a show with all its episodes from TVMaze and add it to the library.
+    async def track(self, show_id: int, *, profile_id: int) -> Show:
+        """Fetch a show with all its episodes from TVMaze and add it to a person's library.
 
         A newly followed show starts with automatic downloads on when the
-        `auto_download_new_shows` setting says so. Tracking a show that is already tracked
-        refreshes it (and keeps its switch). TVMaze errors propagate.
+        `auto_download_new_shows` setting says so. Tracking a show the person follows already
+        refreshes it (and keeps their switch). TVMaze errors propagate.
         """
-        show = await self._fetch_and_track(show_id)
+        show = await self._fetch_and_track(show_id, profile_id=profile_id)
         self._notify()
         return show
 
     async def import_shows(
-        self, entries: Sequence[str], progress: Callable[[int, int], None] | None = None
+        self,
+        entries: Sequence[str],
+        progress: Callable[[int, int], None] | None = None,
+        *,
+        profile_id: int,
     ) -> ImportResult:
-        """Track the shows listed in `entries`: TVMaze ids, or names (the best search hit wins).
+        """Add the shows listed in `entries` to a person's library: TVMaze ids, or names (the
+        best search hit wins).
 
         Entries are handled one by one to stay within TVMaze's rate limit; `progress(done, total)`
         follows each. Listeners are notified once, at the end, if anything was added.
         """
         pending = list(dict.fromkeys(entry.strip() for entry in entries if entry.strip()))
-        tracked = set(await self._library.tracked_ids())
+        tracked = set(await self._library.tracked_ids(profile_id=profile_id))
         added: list[str] = []
         already_tracked: list[str] = []
         not_found: list[str] = []
@@ -346,7 +396,7 @@ class LibraryService:
         try:
             for done, entry in enumerate(pending, start=1):
                 try:
-                    outcome = await self._import_entry(entry, tracked)
+                    outcome = await self._import_entry(entry, tracked, profile_id=profile_id)
                 except TVMazeNotFound:
                     not_found.append(entry)
                 except TVMazeError as exc:
@@ -370,7 +420,9 @@ class LibraryService:
             failed=tuple(failed),
         )
 
-    async def _import_entry(self, entry: str, tracked: set[int]) -> tuple[str, bool] | None:
+    async def _import_entry(
+        self, entry: str, tracked: set[int], *, profile_id: int
+    ) -> tuple[str, bool] | None:
         """Resolve and track one import line.
 
         Returns (display name, newly added), or None when nothing matched. Adds newly tracked
@@ -388,21 +440,28 @@ class LibraryService:
             show_id = hit.id
             if show_id in tracked:
                 return hit.name, False
-        show = await self._fetch_and_track(show_id)
+        show = await self._fetch_and_track(show_id, profile_id=profile_id)
         tracked.add(show.id)
         return show.name, True
 
     async def find_matches(
-        self, names: Sequence[str], progress: Callable[[int, int], None] | None = None
+        self,
+        names: Sequence[str],
+        progress: Callable[[int, int], None] | None = None,
+        *,
+        profile_id: int,
     ) -> tuple[ImportMatch, ...]:
-        """Match show names (from another app) to TVMaze shows without tracking anything.
+        """Match show names (from another app) to TVMaze shows without tracking anything
+        (`already_tracked`: the person follows the show).
 
         Uses the same best-hit rule as `import_shows`. Blank and repeated names are dropped;
         the rest are looked up one by one (TVMaze's rate limit), `progress(done, total)` after
         each. A failed lookup gives a match with `failed` set instead of raising.
         """
         pending = list(dict.fromkeys(name.strip() for name in names if name.strip()))
-        tracked = await self._library.tracked_ids() if pending else frozenset[int]()
+        tracked = (
+            await self._library.tracked_ids(profile_id=profile_id) if pending else frozenset[int]()
+        )
         matches: list[ImportMatch] = []
         for done, name in enumerate(pending, start=1):
             try:
@@ -453,17 +512,18 @@ class LibraryService:
                 break
         return fallback
 
-    async def _fetch_and_track(self, show_id: int) -> Show:
+    async def _fetch_and_track(self, show_id: int, *, profile_id: int) -> Show:
         show, episodes = await self._tvmaze.get_show_with_episodes(show_id)
         settings = self._settings
         auto_download = settings is not None and settings.current.auto_download_new_shows
         async with self._tracking:
-            newly_tracked = await self._library.tracked_entry(show.id) is None
+            newly_followed = show.id not in await self._library.followed_ids()
             await self._library.save_show(show, episodes)
-            await self._library.track(show.id, auto_download=auto_download)
-            if newly_tracked:
+            await self._library.track(show.id, profile_id=profile_id, auto_download=auto_download)
+            if newly_followed:
                 # AirGrabber can't know what the user already got: what aired before the show
-                # was followed counts as had, so only later episodes can become missing.
+                # was followed counts as had, so only later episodes can become missing. The
+                # marks are shared: a show someone follows already keeps theirs.
                 now = datetime.now(UTC)
                 await self._library.mark_aired_have(
                     show.id, now=now, today=now.astimezone().date(), when=now
@@ -474,13 +534,18 @@ class LibraryService:
 
     # -- calendar suggestions ------------------------------------------------------------------
 
-    async def suggestions(self, start: date, end: date, *, per_day: int) -> list[CalendarEntry]:
-        """The most popular untracked shows airing each day, from TVMaze's cached US schedule,
+    async def suggestions(
+        self, start: date, end: date, *, profile_id: int, per_day: int
+    ) -> list[CalendarEntry]:
+        """The most popular shows the person doesn't follow airing each day, from TVMaze's
+        cached US schedule,
         best first: scripted and animated series, then (filling quiet days such as Saturdays,
         when the networks air hardly any new ones) popular reality, variety and documentary
         shows (`LibraryRepository.suggestions`)."""
         await self._ensure_schedule(start, end)
-        return await self._library.suggestions(start, end, per_day=per_day)
+        return await self._library.suggestions(
+            start, end, profile_id=profile_id, per_day=per_day
+        )
 
     async def _ensure_schedule(self, start: date, end: date) -> None:
         """Fetch every day in [start, end] whose cached schedule is missing or may be outdated.
@@ -522,9 +587,9 @@ class LibraryService:
             log.warning("Skipping the TVMaze schedule of %s: %s", day, exc)
             return
         async with self._tracking:
-            # Tracked shows' rows are left to sync: storing their change stamp from here would
-            # make sync believe their (unrefreshed) episode lists are current.
-            tracked = await self._library.tracked_ids()
+            # Followed shows' rows (anyone's) are left to sync: storing their change stamp from
+            # here would make sync believe their (unrefreshed) episode lists are current.
+            tracked = await self._library.followed_ids()
             shows = {show.id: show for show, _ in items if show.id not in tracked}
             await self._library.save_schedule_day(
                 day, shows.values(), [episode for _, episode in items]
@@ -535,7 +600,8 @@ class LibraryService:
     async def sync(
         self, progress: Callable[[SyncProgress], None] | None = None, *, force: bool = False
     ) -> SyncReport:
-        """Refresh tracked shows from TVMaze, refetching only those that may have changed.
+        """Refresh the shows anyone follows from TVMaze, refetching only those that may have
+        changed.
 
         A show is refetched when `force` is set, when it was never synced or not within
         UPDATES_WINDOW, or when TVMaze's updates feed stamps it newer than the stored copy
@@ -559,7 +625,7 @@ class LibraryService:
         self, progress: Callable[[SyncProgress], None] | None, *, force: bool
     ) -> SyncReport:
         started_at = datetime.now(UTC)
-        entries = await self._library.tracked()
+        entries = await self._library.followed()
         stale = await self._stale_shows(entries, force=force, now=started_at)
         await self._library.mark_synced_many(
             entry.show.id for entry in entries if entry.show.id not in stale

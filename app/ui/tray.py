@@ -304,16 +304,20 @@ class TrayHost:
         show_requests: Callable[[], bool] | None = None,
         on_open_forge: Callable[[], None] | None = None,
         on_quit: Callable[[], None] | None = None,
+        on_reopen: Callable[[], None] | None = None,
     ) -> None:
         """`on_open_forge`: the menu's Open MediaForge (no such item without it). `on_quit`:
         what quitting does (the main window's, which first waits for MediaForge); without it
-        the window is destroyed at once."""
+        the window is destroyed at once. `on_reopen`: called when a plain Open (the menu's
+        Open, a second start) brings the window back from the tray (the main window's start
+        page: Series › Calendar)."""
         self._window = window
         self._settings = settings
         self._on_check_now = on_check_now
         self._show_requests = show_requests
         self._on_open_forge = on_open_forge
         self._on_quit = on_quit
+        self._on_reopen = on_reopen
         self._icon: TrayIcon | None = None
         self._notice: TrayNotice | None = None
         self._forge_count = 0
@@ -369,6 +373,18 @@ class TrayHost:
         window.lift()
         window.focus_force()
 
+    def open_window(self) -> None:
+        """A plain Open (the tray menu's Open, a second start of AirGrabber): the window back
+        from the tray at its start page (`on_reopen`), then shown and raised. A window already
+        on screen (or minimised) keeps its page. `show_window` is for a window shown for a
+        purpose (Settings from MediaForge): it keeps its page."""
+        window = self._window
+        if not _alive(window):
+            return
+        if self._on_reopen is not None and window.state() == "withdrawn":
+            self._on_reopen()
+        self.show_window()
+
     def quit(self) -> None:
         """Close for good: main.py then runs the full shutdown (and installs a staged update).
         With `on_quit`, that decides when (MediaForge first finishes its current file)."""
@@ -395,7 +411,7 @@ class TrayHost:
         icon = TrayIcon(
             asyncio.get_running_loop(),
             image,
-            on_open=self.show_window,
+            on_open=self.open_window,
             on_open_forge=self._on_open_forge,
             on_check_now=self._on_check_now,
             on_quit=self.quit,
@@ -421,7 +437,7 @@ class TrayHost:
             await asyncio.sleep(_SHOW_POLL_S)
             if requested() and _alive(self._window):
                 log.info("AirGrabber was started again: showing the window")
-                self.show_window()
+                self.open_window()
 
 
 def _alive(widget: tk.Misc) -> bool:

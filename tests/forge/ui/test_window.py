@@ -38,6 +38,7 @@ from app.forge.ui.history_view import HistoryView
 from app.forge.ui.library_page import LibraryPage
 from app.forge.ui.look import forge_look
 from app.forge.ui.queue_view import QueueView
+from app.forge.ui.settings_pages import SECTION_LIBRARY
 from app.forge.ui.window import (
     ICON_FILE,
     LOGO_FILE,
@@ -242,8 +243,8 @@ class PagesTests(WindowCase):
     ) -> None:
         # Orchestrator note (F-18): in a short window with the Activity panel open.
         window = await self.window()
-        clicks: list[int] = []
-        window.on_more_settings = lambda: clicks.append(1)
+        clicks: list[str | None] = []
+        window.on_settings = clicks.append
         assert window.library is not None
         self.assertIsInstance(window.library.master, ctk.CTkScrollableFrame)
         window.show_activity()
@@ -251,7 +252,7 @@ class PagesTests(WindowCase):
         window.show_page("auto")
         await pump(window, 0.2)
         window.library.more_button.invoke()
-        self.assertEqual(clicks, [1])
+        self.assertEqual(clicks, [SECTION_LIBRARY])  # MediaForge's Settings at that section
 
 
 class BadgeTests(WindowCase):
@@ -494,16 +495,16 @@ class WatchingChipTests(WindowCase):
         window.set_watch_status(WatchStatus("off", guard))
         self.assertEqual(band.chip_text, guard)
 
-    async def test_settings_opens_airgrabbers_settings(self) -> None:
+    async def test_settings_opens_mediaforges_settings(self) -> None:
         window = await self.window()
-        clicks: list[int] = []
-        window.on_more_settings = lambda: clicks.append(1)
+        clicks: list[str | None] = []
+        window.on_settings = clicks.append
         button = window.band.settings_button
         self.assertEqual(button.cget("text"), "⚙")
         button.invoke()
-        self.assertEqual(clicks, [1])
+        self.assertEqual(clicks, [None])  # its own Settings, at the first section
         window.band.click("settings")
-        self.assertEqual(clicks, [1, 1])
+        self.assertEqual(clicks, [None, None])
         # The same style as Activity, and a tooltip.
         activity = window.band.activity_button
         for option in ("fg_color", "border_color", "corner_radius", "height"):

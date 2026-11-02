@@ -629,7 +629,10 @@ def _open_on_click(
     def clicked() -> None:
         open_show(show)
 
-    label.configure(cursor="hand2")
+    label.configure(cursor="hand2")  # CTk gives it only to the inner tk.Label
+    # The label's frame too, and with it the canvas around the text (its cursor "" follows
+    # the frame's), which the click binding covers as well.
+    tk.Frame.configure(label, cursor="hand2")
     label.bind("<Button-1>", lambda _event: clicked())
     add_tooltip(label, t(SHOW_TIP))
     return clicked
@@ -870,7 +873,8 @@ def _descendants(widget: tk.Misc) -> list[tk.Misc]:
 
 class SuggestionCard(ctk.CTkFrame):
     """A popular untracked show airing that day, toned down below the tracked episodes, with a
-    button to track it. Clicking the name opens the show's window (`on_open_show`)."""
+    button to track it. A click anywhere on it but "+ Track" opens the show's window
+    (`on_open_show`)."""
 
     def __init__(
         self,
@@ -879,9 +883,12 @@ class SuggestionCard(ctk.CTkFrame):
         *,
         library: LibraryService,
         status: StatusReporter,
+        profile_id: int,
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
     ) -> None:
+        """`profile_id`: the person whose calendar suggests the show; "+ Track" adds it to
+        their library."""
         super().__init__(
             master,
             fg_color=theme.SUGGESTION_BG,
@@ -894,6 +901,7 @@ class SuggestionCard(ctk.CTkFrame):
         self._show = entry.show
         self._library = library
         self._status = status
+        self._profile_id = profile_id
         code_font = theme.font(scale.font(_CODE_SIZE, SMALL_TEXT_MIN))
 
         inner = ctk.CTkFrame(self, fg_color="transparent")
@@ -943,6 +951,22 @@ class SuggestionCard(ctk.CTkFrame):
             command=self._track,
         )
         self._track_button.pack(side="right")
+        if self.open_show is not None:
+            self._open_everywhere(self.open_show)
+
+    def _open_everywhere(self, open_show: Callable[[], None]) -> None:
+        """The whole card opens the show, with the hand pointer, except "+ Track" (its own
+        action). The name already opens it (`_open_on_click`, its own binding)."""
+        own = {str(w) for w in (self._track_button, *_descendants(self._track_button))}
+        named = {str(w) for w in _descendants(self.name_label)}
+        widgets: list[tk.Misc] = [self, *_descendants(self)]
+        for widget in widgets:
+            if str(widget) in own:
+                continue
+            # Tk's own option (a CTk widget's configure() keeps it to its inner label).
+            widget.tk.call(str(widget), "configure", "-cursor", "hand2")
+            if str(widget) not in named:
+                tk.Misc.bind(widget, "<Button-1>", lambda _event: open_show(), add="+")
 
     def _track(self) -> None:
         self._track_button.configure(text="…", state="disabled")
@@ -952,7 +976,7 @@ class SuggestionCard(ctk.CTkFrame):
         # On success the library notifies its listeners and the window reloads the calendar,
         # which replaces this card with the show's tracked episode.
         try:
-            await self._library.track(self._show.id)
+            await self._library.track(self._show.id, profile_id=self._profile_id)
         except TVMazeError as exc:
             if self._track_button.winfo_exists():
                 self._track_button.configure(text=t("+ Track"), state="normal")

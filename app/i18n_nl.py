@@ -451,6 +451,18 @@ NL: dict[str, str] = {
     "Choose a download yourself": "Kies zelf een download",
     "Download": "Downloaden",
     "Finding the best one…": "De beste zoeken…",
+    "Queued": "In de wachtrij",
+    "No season pack found; the episodes are queued.":
+        "Geen seizoenspakket gevonden; de afleveringen staan in de wachtrij.",
+    "Something went wrong with {label} ({error})": "Er ging iets mis met {label} ({error})",
+    "⬇ Whole season": "⬇ Hele seizoen",
+    "Download the whole season in one go (a season pack). Without one, the episodes you still need are queued one by one.":
+        "Download het hele seizoen in één keer (een seizoenspakket). Is er geen, dan komen de afleveringen die je nog nodig hebt een voor een in de wachtrij.",
+    "⬇ All missing ({n})": "⬇ Alles wat ontbreekt ({n})",
+    "Download every aired episode of this season you don't have yet":
+        "Download elke uitgezonden aflevering van dit seizoen die je nog niet hebt",
+    "Waiting ({n})": "Wachtend ({n})",
+    "Remove from the queue": "Uit de wachtrij halen",
     "✓ Grabbed": "✓ Gehaald",
     "✓ Opened": "✓ Geopend",
     "✓ Saved": "✓ Bewaard",
@@ -1305,7 +1317,46 @@ NL: dict[str, str] = {
     "Load a backup…": "Back-up laden…",
     # app/ui/welcome_dialog.py (Backup)
     "Moving from another PC? Load a backup": "Kom je van een andere pc? Laad een back-up",
+    # app/services/profiles.py, app/ui/people.py, app/ui/people_dialogs.py (people)
+    "Type a name": "Typ een naam",
+    "Use at most {count} characters": "Gebruik hoogstens {count} tekens",
+    "Someone is called {name} already": "Er heet al iemand {name}",
+    "That person isn't there any more": "Die persoon is er niet meer",
+    "The last person can't be removed": "De laatste persoon kan niet weg",
+    "Me": "Ik",
+    "＋ Add a person…": "＋ Persoon toevoegen…",
+    "✎ Rename or change colour…": "✎ Naam of kleur wijzigen…",
+    "🗑 Remove a person…": "🗑 Persoon verwijderen…",
+    "Now showing {name}'s list": "Je ziet nu de lijst van {name}",
+    "Add a person": "Persoon toevoegen",
+    "They start with an empty list. Downloads and settings are shared.":
+        "Deze persoon begint met een lege lijst. Downloads en instellingen worden gedeeld.",
+    "Rename or change colour": "Naam of kleur wijzigen",
+    "Remove a person": "Persoon verwijderen",
+    "Who do you want to remove?": "Wie wil je verwijderen?",
+    "Remove {name}? Their followed series and watchlist are removed. Downloads stay.":
+        "{name} verwijderen? De gevolgde series en de kijklijst gaan weg. Downloads blijven.",
+    "Colour": "Kleur",
+    # ("Add" and "Remove": Forge's catalog has them, app/i18n_nl_forge.py.)
+    # app/ui/welcome_dialog.py (people)
+    "Who uses AirGrabber?": "Wie gebruikt AirGrabber?",
+    "Each person gets their own followed series, watchlist and calendar. Downloads and settings are shared.":
+        "Iedereen krijgt eigen gevolgde series, een eigen kijklijst en kalender. Downloads en instellingen worden gedeeld.",
+    "Your name": "Je naam",
+    "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "Everyone at home can have their own series, watchlist and calendar: click your name at the top right.":
+        "Iedereen thuis kan eigen series, een eigen kijklijst en kalender hebben: klik rechtsboven op je naam.",
+    "Downloads now wait in a queue: click a whole season and close the window; the Downloads page shows what's waiting.":
+        "Downloads wachten nu in een wachtrij: klik een heel seizoen aan en sluit het venster, de Downloads-pagina toont wat er wacht.",
+    "Each season has a \"Whole season\" button that looks for a season pack first.":
+        "Elk seizoen heeft een knop \"Hele seizoen\" die eerst een seizoenspakket zoekt.",
+    "MediaForge has its own Settings (⚙), and every item in its queue can have its own preset.":
+        "MediaForge heeft eigen instellingen (⚙), en elk item in de wachtrij kan een eigen voorinstelling krijgen.",
+    "Ignore keeps a file or folder out of MediaForge's Auto-rename, which now only renames videos whose name matches.":
+        "Met Negeren blijft een bestand of map buiten automatisch hernoemen in MediaForge, dat nu alleen video's met een kloppende naam hernoemt.",
+    "AirGrabber opens on the calendar, and a series opened from search comes to the front.":
+        "AirGrabber opent op de kalender, en een serie die je uit de zoekresultaten opent komt naar voren.",
     "MediaForge is now part of AirGrabber: open it with the 🔨 button, from the tray or from the Start menu.":
         "MediaForge zit nu in AirGrabber: open het met de 🔨-knop, vanuit het systeemvak of vanuit het Startmenu.",
     "Your old MediaForge's presets, folders and history come along the first time you open it.":

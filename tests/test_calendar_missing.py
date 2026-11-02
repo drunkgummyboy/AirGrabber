@@ -27,7 +27,7 @@ class MissingBetweenTests(DatabaseTestCase):
     ) -> frozenset[int]:
         rule = new_episodes if new else missing_episodes
         found: set[int] = set()
-        for show_id in await self.db.library.tracked_ids():
+        for show_id in await self.db.library.tracked_ids(profile_id=1):
             episodes = await self.db.library.episodes(show_id)
             downloaded = downloaded_ids(episodes, await self.db.history.show_grabs(show_id))
             have = await self.db.library.have_ids(show_id)
@@ -106,10 +106,10 @@ class LibraryMissingBetweenTests(ServiceTestCase):
     async def test_marks_and_grabs_take_episodes_off(self) -> None:
         await self.severance()  # season 2: episodes 21-23 aired, 99 still to come
         start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
-        self.assertEqual(await self.library.missing_between(start, end, now=NOW), {21, 22, 23})
+        self.assertEqual(await self.library.missing_between(start, end, now=NOW, profile_id=1), {21, 22, 23})
         await self.library.mark_have([21])
         await self.grab(1, 2, 2)
-        self.assertEqual(await self.library.missing_between(start, end, now=NOW), {23})
+        self.assertEqual(await self.library.missing_between(start, end, now=NOW, profile_id=1), {23})
 
     async def test_have_between_lists_the_marked_episodes_of_the_range(self) -> None:
         await self.severance()  # season 1 long ago; season 2: 21-23 aired, 99 to come

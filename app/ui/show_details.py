@@ -14,6 +14,15 @@ the trailer, the cast and the synopsis and genres in the app's language come fro
 TMDB counterpart (`DiscoveryService.show_extras`); without one the poster stands in, blurred,
 for the backdrop and TVMaze's summary is the synopsis; without a TMDB key there is no backdrop
 and a plain hint says what a key adds.
+
+Above the selected season's rows its bar (3.0.1): on a tracked show's latest season "3 missing"
+with its ⋯, and for any season its download control (SeasonActions, in the rows' style):
+"⬇ Whole season" + "☰ Choose…" once it has finished airing (the season pack through the
+download queue; when none is good enough the queue fetches its episodes still needed instead
+and the status bar says so; ☰ Choose… shows the pack's releases), "⬇ All missing (3)" while
+it airs (its episodes still needed, the calendar stack's rule, queued as one batch; hidden at
+0). Their looks follow the queue: "Queued", "Finding the best one…" / "Downloading 2 of 3…",
+then the outcome.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ import logging
 import tkinter as tk
 import webbrowser
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -59,10 +69,19 @@ from app.ui.download_control import (
 from app.ui.download_control import (
     ROW_HEIGHT as CONTROL_HEIGHT,
 )
+from app.ui.calendar_stack import StateOf, entry_key, needed_entries
 from app.ui.download_control import (
+    QUEUED_TEXT,
+    WORKING_SHORT,
+    WORKING_TEXT,
     Base,
+    BatchState,
     DownloadActions,
+    DownloadKey,
+    Phase,
+    RunState,
     episode_key,
+    outcome_text,
 )
 from app.ui.missing_control import (
     CHIP_MISSING_TEXT,
@@ -80,15 +99,16 @@ from app.ui.missing_control import (
     SEASON_MENU_TIP,
     MenuItem,
     MissingActions,
-    MissingButton,
     mark_label,
     missing_text,
     popup_menu,
+    progress_texts,
 )
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
 from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
+from app.ui.row_actions import DOWNLOADED_TEXT, NOTHING_SHORT, NOTHING_TEXT, RowLook
 from app.ui.row_actions import FONT_SIZE as ACTIONS_FONT_SIZE
-from app.ui.row_actions import RowActions
+from app.ui.row_actions import RowActions, button_width
 from app.ui.row_actions import slot_width as actions_slot_width
 from app.ui.subtitle_control import CCControl, SubtitleActions
 from app.ui.tasks import spawn
@@ -138,7 +158,6 @@ MARK_HEIGHT = 26
 MORE_WIDTH = 30  # the ⋯ at the end of a row that has options
 ROW_RADIUS = 8
 STRIPE = 3  # a missing episode's amber line along its row's left edge
-MISSING_BUTTON_WIDTH = 300  # the season bar's "⬇ Download missing (3)"
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
 CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's title
 CC_GAP = 8
@@ -157,6 +176,14 @@ ADDING_TEXT = N_("Adding…")
 NOT_ON_TVMAZE_TEXT = N_("Couldn't find this show on TVMaze")
 NO_EPISODES_TEXT = N_("No episodes listed yet.")
 UNKNOWN_DATE_TEXT = N_("TBA")
+# The season bar's download control (3.0.1).
+WHOLE_SEASON_TEXT = N_("⬇ Whole season")
+WHOLE_SEASON_TIP = N_(
+    "Download the whole season in one go (a season pack). Without one, the episodes you "
+    "still need are queued one by one."
+)
+ALL_MISSING_TEXT = N_("⬇ All missing ({n})")
+ALL_MISSING_TIP = N_("Download every aired episode of this season you don't have yet")
 # TVMaze's show statuses in plain words (another status shows as TVMaze writes it).
 _STATUS_NAMES = {
     "Running": N_("Running"),
@@ -335,6 +362,67 @@ def season_menu_items(missing: Sequence[int], have: Sequence[int]) -> list[tuple
     if have:
         items.append((t(MARK_MISSING_TEXT), "unmark"))
     return items
+
+
+# What the season bar's download control offers: "whole" = ⬇ Whole season (a season pack, its
+# episodes still needed when there is none) + ☰ Choose… (the pack's releases); "missing" =
+# ⬇ All missing (n) (the episodes still needed).
+SeasonKind = Literal["whole", "missing"]
+
+
+def season_kind(episodes: Iterable[Episode], season: int, now: datetime) -> SeasonKind | None:
+    """"whole" once `season` has finished airing (it lists numbered episodes and all of them
+    have aired), "missing" while it airs (some have), None before any has."""
+    aired = [e.has_aired(now) for e in episodes if e.season == season and e.number is not None]
+    if not any(aired):
+        return None
+    return "whole" if all(aired) else "missing"
+
+
+def season_entries(details: ShowDetails, season: int) -> tuple[CalendarEntry, ...]:
+    """The season's episodes as the download controls know them (the rows' entries)."""
+    return tuple(
+        CalendarEntry(
+            show=details.show,
+            episode=episode,
+            is_tracked=details.tracked,
+            is_downloaded=details.is_downloaded(episode),
+        )
+        for episode in season_episodes(details.episodes, season)
+    )
+
+
+def season_needed(
+    details: ShowDetails, season: int, state_of: StateOf
+) -> tuple[CalendarEntry, ...]:
+    """The season's episodes still needed: aired, not downloaded (before, or by a run just
+    now) and not marked "I already have this", with a number to download by; the calendar
+    stack's "Download all" rule (`needed_entries`)."""
+    return needed_entries(season_entries(details, season), state_of, details.have)
+
+
+def season_look(kind: SeasonKind, state: RunState | None, batch: BatchState | None) -> RowLook:
+    """The season control's look: its pack's run ("Queued", the working label, then the
+    outcome; amber "No good release found" + ☰ Choose… when no pack was good enough and no
+    episode was needed instead), else the run of a batch of its episodes ("All missing", or
+    the episodes the pack queued instead: "Queued" until one starts, then "Downloading 2 of
+    3…"), else its buttons."""
+    if state is not None and state.phase is Phase.WORKING:
+        return RowLook("working", (t(WORKING_TEXT), t(WORKING_SHORT)))
+    if state is not None and state.phase is Phase.QUEUED:
+        return RowLook("queued", (t(QUEUED_TEXT),))
+    if batch is not None:
+        if batch.queued:
+            return RowLook("queued", (t(QUEUED_TEXT),))
+        return RowLook("working", progress_texts(batch.index, batch.total))
+    if state is not None and state.phase is Phase.DONE:
+        text = outcome_text(state.outcome) if state.outcome is not None else t(DOWNLOADED_TEXT)
+        return RowLook("done", (text,), theme.SUCCESS)
+    if state is not None and state.phase is Phase.NOTHING:
+        return RowLook(
+            "nothing", (t(NOTHING_TEXT), t(NOTHING_SHORT)), theme.PENDING, ("choose",), alert=True
+        )
+    return RowLook("download", buttons=("auto", "choose") if kind == "whole" else ("auto",))
 
 
 def new_text(episode: Episode, now: datetime) -> str:
@@ -760,6 +848,112 @@ class _EpisodeRow(ctk.CTkFrame):
         super().destroy()
 
 
+# -- a season's download control ---------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonItem:
+    """What a season's download control works on: the season, what it offers (`kind`), its
+    episodes still needed (`needed`) and every numbered episode's key (`keys`: the control
+    follows their runs)."""
+
+    show: Show
+    season: int
+    kind: SeasonKind
+    needed: tuple[CalendarEntry, ...]
+    keys: tuple[DownloadKey, ...]
+
+    @property
+    def key(self) -> DownloadKey:
+        """The season pack's key."""
+        return episode_key(self.show.id, self.season, None)
+
+
+class _Follow:
+    """Repaints a SeasonActions when one of its episodes' runs changes (DownloadStates keeps
+    one per key and only uses its `key`, `repaint()` and `winfo_exists()`)."""
+
+    def __init__(self, key: DownloadKey, owner: SeasonActions) -> None:
+        self.key = key
+        self._owner = owner
+
+    def repaint(self) -> None:
+        self._owner.repaint()
+
+    def winfo_exists(self) -> bool:
+        return _exists(self._owner)
+
+
+class SeasonActions(RowActions[SeasonItem]):
+    """A season's download control in the show window's season bar, in the rows' style (an
+    outlined button, a text-style ☰ Choose…): "⬇ Whole season" + "☰ Choose…" once the season
+    has finished airing, "⬇ All missing (3)" while it airs; while they run the queue's states
+    (`season_look`)."""
+
+    def __init__(
+        self, master: Any, *, item: SeasonItem, actions: DownloadActions[SeasonItem]
+    ) -> None:
+        self._season = item  # before RowActions paints the first look
+        self._follows: list[_Follow] = []
+        super().__init__(
+            master,
+            item=item,
+            key=item.key,
+            base=Base("download"),
+            actions=actions,
+            height=CONTROL_HEIGHT,
+            align="left",
+            choose=item.kind == "whole",
+        )
+        self._show_text()
+        self._follow(item.keys)
+
+    @property
+    def season_item(self) -> SeasonItem:
+        return self._season
+
+    def set_item(self, item: SeasonItem) -> None:
+        """The same season and kind, its episodes as they are now (a reload)."""
+        keys_changed = item.keys != self._season.keys
+        self._season = self._item = item
+        self._show_text()
+        if keys_changed:
+            self._follow(item.keys)
+        self.repaint()
+
+    def current_look(self) -> RowLook:
+        states = self._actions.states
+        batch = states.batch_for(self._season.keys)
+        return season_look(self._season.kind, states.get(self.key), batch)
+
+    def _show_text(self) -> None:
+        item = self._season
+        if item.kind == "whole":
+            text = t(WHOLE_SEASON_TEXT)
+        else:
+            text = t(ALL_MISSING_TEXT, n=len(item.needed))
+        self.auto.configure(text=text, width=button_width(text, self._font.measure))
+        self._update_auto_tip()
+
+    def _update_auto_tip(self, _event: Any = None) -> None:
+        tip = WHOLE_SEASON_TIP if self._season.kind == "whole" else ALL_MISSING_TIP
+        self._auto_tip.set_text(t(tip))
+
+    def _follow(self, keys: Iterable[DownloadKey]) -> None:
+        states = self._actions.states
+        for follow in self._follows:
+            states.detach(follow)
+        self._follows = [_Follow(key, self) for key in keys]
+        for follow in self._follows:
+            states.attach(follow)
+
+    def destroy(self) -> None:
+        for follow in self._follows:
+            self._actions.states.detach(follow)
+        self._follows = []
+        super().destroy()
+
+
 # -- the window --------------------------------------------------------------------------------
 
 
@@ -776,6 +970,7 @@ class ShowDetailsWindow(TitleInfoWindow):
         images: ImageCache,
         status: StatusReporter,
         episode_actions: DownloadActions[CalendarEntry],
+        profile_id: int,
         missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
         discovery: DiscoveryService | None = None,
@@ -784,7 +979,9 @@ class ShowDetailsWindow(TitleInfoWindow):
         releases: PanelServices | None = None,
         on_fix_match: Callable[[TvTarget], None] | None = None,
     ) -> None:
-        """`subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
+        """`profile_id`: the person the window shows the show for (followed or not, its Track
+        button and switch; ShowWindows closes it when another person is selected).
+        `subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
         without it no row gets one. `discovery`: the TMDB extras (backdrop, trailer, cast);
         without it the window shows only what TVMaze knows. `subtitle_actions`: the downloaded
         rows' CC ▾ menus (without it only the marks). `releases`: what the releases panel
@@ -801,6 +998,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             on_fix_match=on_fix_match,
         )
         self._show = show
+        self._profile_id = profile_id
         self._discovery = discovery
         self._extras: TitleExtras | None = None
         self._extras_task: asyncio.Task[None] | None = None
@@ -813,7 +1011,8 @@ class ShowDetailsWindow(TitleInfoWindow):
         )
         self._mark_width = mark_slot_width(theme.font(MARK_FONT_SIZE).measure)
         self._missing_actions = missing_actions
-        self._missing_button: MissingButton | None = None
+        # The season bar's download control (⬇ Whole season / ⬇ All missing), while it shows.
+        self._season_actions: SeasonActions | None = None
         self._library = library
         self._images = images
         self._status = status
@@ -869,8 +1068,10 @@ class ShowDetailsWindow(TitleInfoWindow):
     # -- layout ------------------------------------------------------------------------------
 
     def _build_season_bar(self, master: Any) -> ctk.CTkFrame:
-        """"3 missing" + "⬇ Download missing (3)" + ⋯, above the latest season's rows (packed
-        while it applies, see `_paint_season_bar`)."""
+        """The bar above the selected season's rows: on a tracked show's latest season "3
+        missing" and its ⋯; the season's download control (SeasonActions: "⬇ Whole season" +
+        "☰ Choose…", or "⬇ All missing (3)"). Packed while any of it applies, see
+        `_paint_season_bar`."""
         bar = ctk.CTkFrame(master, fg_color="transparent", height=CONTROL_HEIGHT)
         self._missing_label = ctk.CTkLabel(
             bar, text="", font=theme.font(15, bold=True), text_color=MISSING_COLOR, anchor="w"
@@ -891,17 +1092,6 @@ class ShowDetailsWindow(TitleInfoWindow):
             command=self._open_season_menu,
         )
         add_tooltip(self._season_more, t(SEASON_MENU_TIP))
-        if self._missing_actions is not None:
-            self._missing_button = MissingButton(
-                bar,
-                show=self._show,
-                count=0,
-                actions=self._missing_actions,
-                with_count=True,
-                height=CONTROL_HEIGHT,
-                font_size=CONTROL_FONT_SIZE,
-                width=MISSING_BUTTON_WIDTH,
-            )
         return bar
 
     def _paint_header(self, show: Show, details: ShowDetails | None) -> None:
@@ -1009,7 +1199,9 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     async def _load(self) -> None:
         try:
-            details = await self._library.show_details(self._show.id)
+            details = await self._library.show_details(
+                self._show.id, profile_id=self._profile_id
+            )
         except TVMazeError as exc:
             log.warning("Show details of TVMaze show %d: %s", self._show.id, exc)
             if self.winfo_exists() and self._details is None:
@@ -1181,30 +1373,100 @@ class ShowDetailsWindow(TitleInfoWindow):
         )
 
     def _paint_season_bar(self) -> None:
-        """Shown on a tracked show's latest season while episodes are missing or marked "I
-        already have this", or a "Download missing" run has something to tell."""
-        details, actions = self._details, self._missing_actions
-        if details is None or actions is None or not self._marks_shown():
+        """Shown while the selected season has something for it: on a tracked show's latest
+        season the missing episodes or those marked "I already have this" (with the ⋯), and
+        the season's download control while it applies (`_season_item`)."""
+        details, season = self._details, self._season
+        if details is None or season is None:
             self._season_bar.pack_forget()
             return
-        missing, have = season_marks(details, self._season)
-        if not (missing or have or actions.runs.get(details.show.id) is not None):
+        marked = self._missing_actions is not None and self._marks_shown()
+        missing, have = season_marks(details, season) if marked else ([], [])
+        item = self._season_item(details, season)
+        self._paint_season_actions(item)
+        if not (missing or have or item is not None):
             self._season_bar.pack_forget()
             return
-        self._missing_label.configure(
-            text=missing_text(len(missing)) if missing else t(NOTHING_MISSING_TEXT),
-            text_color=MISSING_COLOR if missing else theme.TEXT_MUTED,
-        )
+        if missing or have:
+            self._missing_label.configure(
+                text=missing_text(len(missing)) if missing else t(NOTHING_MISSING_TEXT),
+                text_color=MISSING_COLOR if missing else theme.TEXT_MUTED,
+            )
+        else:
+            self._missing_label.configure(text="")
         self._season_more.pack_forget()
-        if self._missing_button is not None:
-            self._missing_button.pack_forget()
-        if season_menu_items(missing, have):
+        if self._season_actions is not None:
+            self._season_actions.pack_forget()
+        more = bool(season_menu_items(missing, have))
+        if more:
             self._season_more.pack(side="right")
-        if self._missing_button is not None:
-            self._missing_button.set_count(len(missing))
-            self._missing_button.pack(side="right", padx=(0, 8))
+        if self._season_actions is not None:
+            # Beside the ⋯, else in line with the rows' controls (their ⋯'s room kept or not).
+            room = 8 if more else 2 + MORE_WIDTH + 8 if self._missing_actions is not None else 10
+            self._season_actions.pack(side="right", padx=(0, room))
         if not self._season_bar.winfo_manager():
             self._season_bar.pack(fill="x", pady=(12, 0), before=self._episode_list)
+
+    def _season_item(self, details: ShowDetails, season: int) -> SeasonItem | None:
+        """What the season's download control works on, while it shows: "⬇ Whole season" once
+        the season has finished airing (when the main window offers season packs), else "⬇ All
+        missing (n)" while it airs; either only while episodes are still needed or its run has
+        something to tell."""
+        kind = season_kind(details.episodes, season, _now())
+        if kind is None or (kind == "whole" and self._episode_actions.download_season is None):
+            return None
+        states = self._episode_actions.states
+        needed = season_needed(details, season, states.get)
+        keys = tuple(
+            entry_key(entry) for entry in season_entries(details, season)
+            if entry.episode.number is not None
+        )
+        item = SeasonItem(details.show, season, kind, needed, keys)
+        running = states.batch_for(keys) is not None
+        own = kind == "whole" and states.get(item.key) is not None
+        return item if needed or running or own else None
+
+    def _paint_season_actions(self, item: SeasonItem | None) -> None:
+        """The season's download control for `item` (None: none): updated in place for the
+        same season and kind, else made anew."""
+        current = self._season_actions
+        if current is not None and (
+            item is None
+            or (current.season_item.season, current.season_item.kind) != (item.season, item.kind)
+            or not current.winfo_exists()
+        ):
+            current.destroy()
+            current = self._season_actions = None
+        if item is None:
+            return
+        if current is None:
+            self._season_actions = SeasonActions(
+                self._season_bar, item=item, actions=self._season_download_actions()
+            )
+        else:
+            current.set_item(item)
+
+    def _season_download_actions(self) -> DownloadActions[SeasonItem]:
+        """What the season control's buttons do: the season pack (its episodes still needed
+        when there is none) or the episodes still needed, queued as one batch; ☰ Choose… shows
+        the pack's releases here."""
+        episodes = self._episode_actions
+
+        def download(item: SeasonItem) -> None:
+            if not item.needed and item.kind != "whole":
+                return
+            if item.kind == "whole" and episodes.download_season is not None:
+                episodes.download_season(item.show, item.season, item.needed)
+            elif episodes.download_all is not None:
+                episodes.download_all(tuple(entry_key(e) for e in item.needed), item.needed)
+            else:  # not offered: each on its own
+                for entry in item.needed:
+                    episodes.download(entry)
+
+        def choose(item: SeasonItem) -> None:
+            self.choose(TvTarget(item.show, item.season, None))
+
+        return DownloadActions(download=download, choose=choose, states=episodes.states)
 
     def _open_season_menu(self) -> None:
         details, actions = self._details, self._missing_actions
@@ -1252,7 +1514,7 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     async def _track_show(self, show: Show) -> None:
         try:
-            await self._library.track(show.id)
+            await self._library.track(show.id, profile_id=self._profile_id)
         except TVMazeError as exc:
             self._report(t("Couldn't track {name}: {error}", name=show.name, error=exc), 6000)
         else:
@@ -1271,7 +1533,7 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     async def _set_auto(self, show: Show, on: bool) -> None:
         try:
-            await self._library.set_auto_download(show.id, on)
+            await self._library.set_auto_download(show.id, on, profile_id=self._profile_id)
         except Exception:
             log.exception("Switching automatic downloads for TVMaze show %d failed", show.id)
             text = (
@@ -1308,7 +1570,10 @@ def _now() -> datetime:
 
 class ShowWindows:
     """Opens show details windows, one per TVMaze show: opening an open show raises its window.
-    Every open window reloads when the library or the download history changes."""
+    Every open window reloads when the library or the download history changes. A window shows
+    the show for the person selected when it opened (`profile`); MainWindow closes them all
+    when another person is selected (`close_windows`), so none follows or switches anything
+    for the wrong person."""
 
     def __init__(
         self,
@@ -1320,6 +1585,7 @@ class ShowWindows:
         status: StatusReporter,
         episode_actions: DownloadActions[CalendarEntry],
         downloads_changed: Subscribe,
+        profile: Callable[[], int],
         missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
         subtitles_changed: Subscribe | None = None,
@@ -1330,6 +1596,7 @@ class ShowWindows:
         change (subtitles saved); `subtitle_actions`: their CC ▾ menus. `releases`: the
         releases panels' services; its settings say the layout a new window opens in."""
         self._master = master
+        self._profile = profile
         self._missing_actions = missing_actions
         self._subtitle_marks = subtitle_marks
         self._subtitle_actions = subtitle_actions
@@ -1377,6 +1644,7 @@ class ShowWindows:
             images=self._images,
             status=self._status,
             episode_actions=self._episode_actions,
+            profile_id=self._profile(),
             missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
             discovery=self._discovery,
@@ -1418,8 +1686,14 @@ class ShowWindows:
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe = []
+        self.close_windows()
+
+    def close_windows(self) -> None:
+        """Cancel lookups and close every window (another person was selected); later ones
+        open for the person selected then."""
         for task in list(self._tasks):
             task.cancel()
+        self._resolving.clear()
         for window in self._live().values():
             window.destroy()
         self._windows = {}

@@ -1,28 +1,27 @@
 """Preferences dialog in plain words: a sidebar of sections (Downloading: where downloads go,
-quality, automatic, subtitles; App: movie & show info, looks, updates, advanced; MediaForge:
-its sections from app/forge/ui/settings_pages.py, when given Forge) and one scrolling page per
-section, its settings grouped in boxes that each say what they are for. Every change goes through
-SettingsService (MediaForge's through ForgeSettingsService), which validates first."""
+quality, automatic, subtitles; App: movie & show info, looks, updates, advanced) and one
+scrolling page per section, its settings grouped in boxes that each say what they are for (the
+layout is app/ui/settings_layout.py's, shared with MediaForge's own Settings window,
+app/forge/ui/settings_window.py). Every change goes through SettingsService, which validates
+first. MediaForge's settings are in its own window; the ones both share (language, theme, the
+TMDB key, updates, tray, Start with Windows) are only here."""
 
 from __future__ import annotations
 
 import asyncio
 import functools
 import logging
-import math
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from tkinter import filedialog
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import customtkinter as ctk
 from pydantic import ValidationError
 
-# Settings › MediaForge: the group's sections come from this registry (a light import).
-from app.forge.ui.settings_pages import FORGE_GROUP, FORGE_SECTIONS, ForgeSection, ForgeSectionPart
 from app.i18n import N_, Language, capitalized, current_language, day_name, number, t
 from app.indexers import (
     ApibayIndexer,
@@ -68,7 +67,7 @@ from app.services.backup import BackupService
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.accent_picker import AccentSwatches
-from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM, make_borderless
+from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.backup_dialog import LoadBackupDialog, SaveBackupDialog, load_backup
 from app.ui.card_preview import CardSizePreview
@@ -96,7 +95,23 @@ from app.ui.remote_program_form import (
     RemoteProgramForm,
     folder_note,
 )
-from app.ui.scrollable import ScrollableFrame
+from app.ui.settings_layout import (
+    BOX_GAP,
+    BOX_INNER,
+    PAGE_BOTTOM,
+    PAGE_PAD_LEFT,
+    PAGE_WIDTH,
+    TEXT_SIZE,
+    SettingsBox,
+    SettingsPage,
+    build_layout,
+    fill_sidebar,
+    fit_window,
+    page_height,
+)
+from app.ui.settings_layout import SCREEN_RESERVE as SCREEN_RESERVE
+from app.ui.settings_layout import dialog_height as dialog_height
+from app.ui.settings_layout import sidebar_width as _sidebar_width
 from app.ui.subtitle_settings import (
     ACCOUNT_HINT,
     ACCOUNT_LABEL,
@@ -121,9 +136,6 @@ from app.ui.tasks import async_command, spawn
 from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
 
-if TYPE_CHECKING:
-    from app.forge.runtime import ForgeRuntime
-
 log = logging.getLogger(__name__)
 
 # -- sections ----------------------------------------------------------------------------------
@@ -147,13 +159,10 @@ SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         N_("App"),
         (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_BACKUP, SECTION_ADVANCED),
     ),
-    # Shown when the dialog is given Forge; the sections, icons and pages come from
-    # app/forge/ui/settings_pages.py (FORGE_SECTIONS).
-    (FORGE_GROUP, tuple(FORGE_SECTIONS)),
+    # MediaForge's sections are in its own Settings window (app/forge/ui/settings_window.py).
 )
 SECTIONS: tuple[str, ...] = tuple(name for _group, names in SECTION_GROUPS for name in names)
 SECTION_ICONS: dict[str, str] = {
-    **{name: section.icon for name, section in FORGE_SECTIONS.items()},
     SECTION_WHERE: "⬇",
     SECTION_QUALITY: "🎚",
     SECTION_AUTOMATIC: "⏱",
@@ -279,31 +288,14 @@ _BACKUP_BUTTON_WIDTH = 190
 
 # -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
 
-_SIDEBAR_WIDTH = 220  # at least; wider when a section's name in bold needs it
-_SIDEBAR_PAD = 12
-_ITEM_HEIGHT = 36
-_ICON_WIDTH = 30
-_ITEM_PAD = (8, 4, 10)  # left of the icon, between icon and name, right of the name
-# The page column's content: the boxes' outer width. With the sidebar the dialog stays about
-# 880 wide, so it fits a 1366 x 768 screen at 150 % (910 wide).
-_PAGE_WIDTH = 580
-_PAGE_PAD_LEFT = 22
-_PAGE_PAD_RIGHT = 8  # the scrollbar has its own inset
-# The page (and the sidebar, level with it) starts under the close button (no title bar,
-# app/ui/borderless.py): what scrolls never passes under it.
-_PAGE_TOP = CLOSE_ROOM + CLOSE_GAP
-_PAGE_BOTTOM = 20  # under a page's last box
-_MAX_PAGE_HEIGHT = 680  # a taller page scrolls; the dialog stays about as tall as it was
-SCREEN_RESERVE = 80  # left free for the taskbar and the title bar
-_HEADING_SIZE = 20
-_BOX_RADIUS = 12  # as the Prowlarr panel's
-_BOX_PAD_X = 18
-_BOX_PAD_Y = 16
-_BOX_GAP = 14  # between boxes
-_FIRST_BOX_GAP = 18  # under a page's muted line
-_TEXT_SIZE = SMALL_SIZE + 1  # a box's explanation
-_BOX_INNER = _PAGE_WIDTH - 2 * (_BOX_PAD_X + 1)  # inside a box's border and padding
-_CONTROL_GAP = 12  # between a box's explanation and its controls
+# The sidebar, the pages and their boxes: app/ui/settings_layout.py (shared with MediaForge's
+# Settings window); the names this dialog uses below.
+_PAGE_WIDTH = PAGE_WIDTH
+_PAGE_PAD_LEFT = PAGE_PAD_LEFT
+_PAGE_BOTTOM = PAGE_BOTTOM
+_BOX_GAP = BOX_GAP
+_TEXT_SIZE = TEXT_SIZE
+_BOX_INNER = BOX_INNER
 _INDENT = 30  # under a radio button's text
 _ROW_GAP = 14  # between two controls in one box
 _TEST_BUTTON_WIDTH = 160
@@ -498,12 +490,6 @@ def disabled_indexers(
     return (*off, *unknown)
 
 
-def dialog_height(wanted: int, screen_height: int, *, reserve: int = SCREEN_RESERVE) -> int:
-    """The dialog's height (logical units): what its content wants, but never taller than the
-    screen minus room for the taskbar and title bar (the pages scroll instead)."""
-    return max(1, min(wanted, screen_height - reserve))
-
-
 class StartupShortcut(Protocol):
     """Start with Windows (app/services/startup.py); tests inject a fake."""
 
@@ -651,186 +637,15 @@ def _first_section(error: ValidationError) -> str:
 
 # -- layout pieces ---------------------------------------------------------------------------------
 
-
-class _Box:
-    """A rounded block of related settings: a bold name, a short muted explanation, then the
-    controls (`add`, one below the other)."""
-
-    def __init__(self, master: Any, title: str | None = None, text: str | None = None) -> None:
-        self.frame = ctk.CTkFrame(
-            master,
-            fg_color=theme.TAB_BG,
-            border_width=1,
-            border_color=theme.PANEL_EDGE,
-            corner_radius=_BOX_RADIUS,
-        )
-        self.body = ctk.CTkFrame(self.frame, fg_color="transparent")
-        self.body.pack(fill="both", expand=True, padx=_BOX_PAD_X, pady=_BOX_PAD_Y)
-        self.body.grid_columnconfigure(0, weight=1)
-        self._next_row = 0
-        self._labels: list[tuple[ctk.CTkLabel, theme.Color]] = []  # greyed by `set_enabled`
-        if title is not None:
-            heading = ctk.CTkLabel(
-                self.body,
-                text=title,
-                font=theme.font(16, bold=True),
-                text_color=theme.TEXT,
-                anchor="w",
-            )
-            self.add(heading, gap=0, sticky="w")
-            self._labels.append((heading, theme.TEXT))
-        if text is not None:
-            line = self.text(text)
-            self.add(line, gap=2, sticky="w")
-            self._labels.append((line, theme.TEXT_MUTED))
-
-    def set_enabled(self, enabled: bool) -> None:
-        """Its name and explanation in their colours, or greyed (its controls are disabled by
-        the caller)."""
-        for label, color in self._labels:
-            label.configure(text_color=color if enabled else theme.TEXT_FAINT)
-
-    def text(self, text: str, *, indent: int = 0) -> ctk.CTkLabel:
-        """A muted explanation line in this box (not placed yet)."""
-        return text_label(
-            self.body, text, size=_TEXT_SIZE, color=theme.TEXT_MUTED, wraplength=_BOX_INNER - indent
-        )
-
-    def add(
-        self, widget: Any, *, gap: int = _CONTROL_GAP, sticky: str = "ew", padx: int = 0
-    ) -> int:
-        """Place `widget` (a child of `body`) on the next row, `gap` below the previous one.
-        Returns its row."""
-        row = self.take_row()
-        widget.grid(
-            row=row, column=0, sticky=sticky, padx=(padx, 0), pady=(0 if row == 0 else gap, 0)
-        )
-        return row
-
-    def frame_row(self, *, gap: int = _CONTROL_GAP) -> ctk.CTkFrame:
-        """A transparent frame on the next row, for a line of controls."""
-        row = ctk.CTkFrame(self.body, fg_color="transparent")
-        self.add(row, gap=gap)
-        return row
-
-    def take_row(self) -> int:
-        row = self._next_row
-        self._next_row += 1
-        return row
-
-
-class _Page:
-    """One section's page: a heading, its muted line, then boxes (`box`) and other blocks
-    (`add`), one below the other."""
-
-    def __init__(self, master: Any, title: str, note: str) -> None:
-        self.frame = ctk.CTkFrame(master, fg_color="transparent")
-        self.frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            self.frame,
-            text=title,
-            font=theme.font(_HEADING_SIZE, bold=True),
-            text_color=theme.TEXT,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="w")
-        text_label(
-            self.frame, note, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=_PAGE_WIDTH
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self._next_row = 2
-
-    def box(self, title: str | None = None, text: str | None = None) -> _Box:
-        box = _Box(self.frame, title, text)
-        self.add(box.frame)
-        return box
-
-    def add(self, widget: Any, *, gap: int | None = None) -> None:
-        if gap is None:
-            gap = _FIRST_BOX_GAP if self._next_row == 2 else _BOX_GAP
-        widget.grid(row=self._next_row, column=0, sticky="ew", pady=(gap, 0))
-        self._next_row += 1
-
-
-# The public names Forge's sections build with (app/forge/ui/settings_pages.py).
-SettingsBox = _Box
-SettingsPage = _Page
-
-
-class _SidebarItem(ctk.CTkFrame):
-    """One section in the sidebar: its icon and name; a click shows its page."""
-
-    def __init__(self, master: Any, section: str, on_click: Callable[[str], None]) -> None:
-        super().__init__(master, fg_color="transparent", corner_radius=8, cursor="hand2")
-        self.section = section
-        self._on_click = on_click
-        self._selected = False
-        self._hovered = False
-        self._icon = ctk.CTkLabel(
-            self,
-            text=SECTION_ICONS[section],
-            width=_ICON_WIDTH,
-            height=_ITEM_HEIGHT,
-            font=theme.font(DETAIL_SIZE),
-            text_color=theme.TEXT_MUTED,
-        )
-        self._icon.pack(side="left", padx=(_ITEM_PAD[0], _ITEM_PAD[1]))
-        self._name = ctk.CTkLabel(
-            self,
-            text=t(section),
-            height=_ITEM_HEIGHT,
-            anchor="w",
-            font=theme.font(DETAIL_SIZE),
-            text_color=theme.TEXT,
-        )
-        self._name.pack(side="left", fill="x", expand=True, padx=(0, _ITEM_PAD[2]))
-        for widget in (self, self._icon, self._name):
-            widget.bind("<Button-1>", lambda _event: self.click(), add="+")
-            widget.bind("<Enter>", lambda _event: self._hover(True), add="+")
-            widget.bind("<Leave>", self._on_leave, add="+")
-
-    @property
-    def selected(self) -> bool:
-        return self._selected
-
-    def click(self) -> None:
-        self._on_click(self.section)
-
-    def set_selected(self, selected: bool) -> None:
-        self._selected = selected
-        self._paint()
-
-    def _on_leave(self, event: tk.Event[Any]) -> None:
-        # Moving between the item's own labels is not leaving it.
-        try:
-            inside = self.winfo_containing(event.x_root, event.y_root)
-        except (KeyError, tk.TclError):
-            inside = None
-        while inside is not None:
-            if inside is self:
-                return
-            inside = inside.master
-        self._hover(False)
-
-    def _hover(self, hovered: bool) -> None:
-        self._hovered = hovered
-        self._paint()
-
-    def _paint(self) -> None:
-        color: theme.Color
-        if self._selected:
-            color = theme.ROW_SELECTED
-        else:
-            color = theme.CHIP if self._hovered else "transparent"
-        self.configure(fg_color=color)
-        self._name.configure(font=theme.font(DETAIL_SIZE, bold=self._selected))
+# The shared layout's page and box (app/ui/settings_layout.py), by the names this dialog uses.
+_Box = SettingsBox
+_Page = SettingsPage
 
 
 def sidebar_width() -> int:
     """The sidebar's width (logical): room for the longest section name in bold (the selected
     one), so the pages don't shift when another section is chosen."""
-    bold = theme.font(DETAIL_SIZE, bold=True)
-    widest = max(int(bold.measure(t(section))) for section in SECTIONS)
-    item = sum(_ITEM_PAD) + _ICON_WIDTH + widest + 4  # + a little slack
-    return max(_SIDEBAR_WIDTH, item + 2 * _SIDEBAR_PAD)
+    return _sidebar_width(SECTIONS)
 
 
 def _paint_background(widget: ctk.CTkFrame, color: theme.Color) -> None:
@@ -868,18 +683,15 @@ class SettingsDialog(ctk.CTkToplevel):
         images: ImageCache | None = None,
         library: LibraryService | None = None,
         backup: BackupService | None = None,
-        forge: ForgeRuntime | None = None,
         section: str | None = None,
     ) -> None:
         """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
         `images`: the Card size box's preview card (none without it); `library`: a followed
         show's poster for it (the placeholder card without one). `backup`: the Backup section
-        shows when it is given. `forge` (Services.forge): the MediaForge group shows when it is
-        given. `section`: the page it opens at (Where downloads go when not given or not shown;
-        the Forge window's "More in Settings…" opens Library & watching)."""
+        shows when it is given. `section`: the page it opens at (Where downloads go when not
+        given or not shown)."""
         super().__init__(master, fg_color=theme.BG)
-        self._forge_parts: dict[str, ForgeSectionPart] = {}
         self._backup = backup
         self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
         self._images = images
@@ -965,43 +777,10 @@ class SettingsDialog(ctk.CTkToplevel):
             value=choice_name(SUBTITLES_FOR_NAMES, current.subtitles_for)
         )
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True)
-        scaling = ctk.ScalingTracker.get_widget_scaling(body)
-        # Plain Tk grid options are not DPI-scaled by CTk.
-        body.grid_columnconfigure(0, minsize=round(sidebar_width() * scaling))
-        body.grid_columnconfigure(2, weight=1)
-        body.grid_rowconfigure(0, weight=1)
-
-        self._sidebar = ctk.CTkFrame(body, fg_color="transparent")
-        self._sidebar.grid(
-            row=0, column=0, rowspan=2, sticky="nsew", padx=_SIDEBAR_PAD, pady=(_PAGE_TOP, 12)
-        )
-        # A 1-pixel line between the sidebar and the page (a CTkFrame that thin draws nothing).
-        line = tk.Frame(body, width=1, highlightthickness=0)
-        line.grid(row=0, column=1, rowspan=2, sticky="ns")
-
-        def paint_line() -> None:
-            line.configure(background=theme.pick(theme.PANEL_EDGE))
-
-        paint_line()
-        theme.on_mode_change(line, paint_line)
-        self._scroll = ScrollableFrame(
-            body,
-            width=_PAGE_WIDTH,
-            height=200,
-            fg_color="transparent",
-            scrollbar_button_color=theme.SCROLLBAR,
-            scrollbar_button_hover_color=theme.EDGE,
-        )
-        self._scroll.grid(
-            row=0,
-            column=2,
-            sticky="nsew",
-            padx=(_PAGE_PAD_LEFT, _PAGE_PAD_RIGHT),
-            pady=(_PAGE_TOP, 0),
-        )
-        self._scroll.grid_columnconfigure(0, weight=1)
+        layout = build_layout(self, sidebar_width())
+        body = layout.body
+        self._sidebar = layout.sidebar
+        self._scroll = layout.scroll
 
         # Save / Cancel under the page, with the error line above them.
         footer = ctk.CTkFrame(body, fg_color="transparent")
@@ -1037,14 +816,14 @@ class SettingsDialog(ctk.CTkToplevel):
             builders[SECTION_SUBTITLES] = lambda: self._build_subtitles(subtitles_service)
         if self._backup is not None:
             builders[SECTION_BACKUP] = self._build_backup
-        if forge is not None:
-            for name, forge_section in FORGE_SECTIONS.items():
-                builders[name] = functools.partial(self._build_forge, name, forge_section, forge)
         for name in SECTIONS:
             if name in builders:
                 self._pages[name] = builders[name]()
-        self._items: dict[str, _SidebarItem] = {}
-        self._build_sidebar()
+        shown = [
+            (group, [name for name in names if name in self._pages])
+            for group, names in SECTION_GROUPS
+        ]
+        self._items = fill_sidebar(self._sidebar, shown, SECTION_ICONS, self._show_section)
         self._section = section if section in self._pages else SECTION_WHERE
         self._show_section(self._section)
         if update_info is not None:
@@ -1068,28 +847,9 @@ class SettingsDialog(ctk.CTkToplevel):
         return self._pages[section].frame
 
     def show_section(self, section: str) -> None:
-        """Show `section`'s page (an open dialog asked for MediaForge › Library & watching);
-        a section that isn't shown changes nothing."""
+        """Show `section`'s page (an open dialog asked for another one); a section that isn't
+        shown changes nothing."""
         self._show_section(section)
-
-    def _build_sidebar(self) -> None:
-        first = True
-        for group, sections in SECTION_GROUPS:
-            shown = [section for section in sections if section in self._pages]
-            if not shown:
-                continue
-            ctk.CTkLabel(
-                self._sidebar,
-                text=t(group).upper(),
-                font=theme.font(12, bold=True),
-                text_color=theme.TEXT_MUTED,
-                anchor="w",
-            ).pack(fill="x", padx=(10, 0), pady=(0 if first else 14, 4))
-            first = False
-            for section in shown:
-                item = _SidebarItem(self._sidebar, section, self._show_section)
-                item.pack(fill="x", pady=(0, 2))
-                self._items[section] = item
 
     def _show_section(self, section: str) -> None:
         if section not in self._pages:
@@ -1105,13 +865,6 @@ class SettingsDialog(ctk.CTkToplevel):
             if name != section:
                 page.frame.grid_remove()
         self._pages[section].frame.grid(row=0, column=0, sticky="ew", pady=(0, _PAGE_BOTTOM))
-
-    def _build_forge(self, name: str, section: ForgeSection, forge: ForgeRuntime) -> _Page:
-        """A MediaForge section: its page, filled by its builder (app/forge/ui/settings_pages.py),
-        which keeps its changes until Save (`_save_all`)."""
-        page = self._new_page(name, section.note)
-        self._forge_parts[name] = section.build(page, forge)
-        return page
 
     def _new_page(self, section: str, note: str | None = None) -> _Page:
         shown = note if note is not None else SECTION_NOTES[section]
@@ -1731,7 +1484,7 @@ class SettingsDialog(ctk.CTkToplevel):
     async def _preview_show(self, library: LibraryService) -> None:
         """The first followed show with a poster for the preview card (its poster is most
         likely in the poster cache already)."""
-        entries = await library.tracked()
+        entries = await library.tracked(profile_id=self._settings.current.current_profile)
         show = next((entry.show for entry in entries if entry.show.poster_url), None)
         if show is not None and self._card_preview is not None and self.winfo_exists():
             self._card_preview.use_show(show)
@@ -2035,7 +1788,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def _fit_size(self) -> None:
         """Fix the dialog at the size of its tallest page in its tallest state (any download
         choice, with the program's button, the magnet note and its form, the Subtitles rows), at
-        most _MAX_PAGE_HEIGHT, so it doesn't change between pages or choices; on a short screen
+        most MAX_PAGE_HEIGHT (app/ui/settings_layout.py), so it doesn't change between pages or choices; on a short screen
         at the screen's height instead, the pages scrolling."""
         self._torrent.show(TorrentStatus.SETUP_NEEDED)  # its tallest: the line and a button
         if self._subtitle_rows is not None:
@@ -2056,14 +1809,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._show_subtitle_rows()
         self._show_section(self._section)
         scaling = ctk.ScalingTracker.get_window_scaling(self)
-        page_height = min(math.ceil(content / scaling) + _PAGE_BOTTOM, _MAX_PAGE_HEIGHT)
-        self._scroll.configure(height=page_height)
-        self.update_idletasks()
-        width = math.ceil(self.winfo_reqwidth() / scaling)
-        wanted = math.ceil(self.winfo_reqheight() / scaling)
-        _screen_width, screen_height = self.wm_maxsize()  # physical pixels
-        height = dialog_height(wanted, int(screen_height / scaling))
-        self.geometry(f"{width}x{height}")  # CTk scales the size (not the position)
+        fit_window(self, self._scroll, page_height(content, scaling))
 
     # -- Prowlarr ------------------------------------------------------------------------------
 
@@ -2163,11 +1909,6 @@ class SettingsDialog(ctk.CTkToplevel):
         if problem is not None:
             self._show_problem(problem, SECTION_SUBTITLES)
             return False
-        for name, part in self._forge_parts.items():  # MediaForge's sections: checked first too
-            problem = part.problem()
-            if problem is not None:
-                self._show_problem(problem, name)
-                return False
         self._save_button.configure(state="disabled")
         if self._own_key is not None and self._own_key.needs_check:
             problem = await self._own_key.verify()  # a new own key: does OpenSubtitles take it?
@@ -2190,13 +1931,6 @@ class SettingsDialog(ctk.CTkToplevel):
                     self._reveal_remote_form()  # the form with the problem shows
                 self._save_button.configure(state="normal")
             return False
-        for name, part in self._forge_parts.items():  # MediaForge's settings (D9: on Save)
-            problem = await part.save()
-            if problem is not None:
-                if self.winfo_exists():
-                    self._show_problem(problem, name)
-                    self._save_button.configure(state="normal")
-                return False
         return await self._save_startup()
 
     async def _save_startup(self) -> bool:

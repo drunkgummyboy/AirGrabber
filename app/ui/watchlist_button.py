@@ -128,12 +128,14 @@ class WatchlistButton(ctk.CTkButton):
 
     def _click(self) -> None:
         movie, watchlist = self._movie, self._watchlist
-        # Not cancelled with the button: the shelf may rebuild it mid-change, and the change
-        # itself touches no widget.
+        # The list the button shows (and repaints with): the one in memory, the selected
+        # person's. Not cancelled with the button: the shelf may rebuild it mid-change, and the
+        # change itself touches no widget.
+        person = watchlist.profile_id
         if watchlist.contains(movie.id):
-            spawn(watchlist.remove(movie.id), name="watchlist-remove")
+            spawn(watchlist.remove(movie.id, profile_id=person), name="watchlist-remove")
         else:
-            spawn(watchlist.add(movie), name="watchlist-add")
+            spawn(watchlist.add(movie, profile_id=person), name="watchlist-add")
 
     def destroy(self) -> None:
         self._unsubscribe()

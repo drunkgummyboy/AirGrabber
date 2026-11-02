@@ -331,7 +331,7 @@ class MediaForgeFileTest(MovesTestCase):
             await conn.commit()
         db = await Database.open(path)
         try:
-            self.assertEqual((await db.fetch_one("PRAGMA user_version") or [0])[0], 3)
+            self.assertEqual((await db.fetch_one("PRAGMA user_version") or [0])[0], 4)
             moves = ForgeMoveService(MoveRepository(db), settings=lambda: self.settings)
             self.assertEqual(await moves.moves_from(self.downloads), [])  # no records before v3
             history = HistoryRepo(db, on_moves_change=moves.changed)

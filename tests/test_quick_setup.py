@@ -164,7 +164,7 @@ class FakeLibrary:
     def __init__(self, *shows: Show) -> None:
         self.shows = shows
 
-    async def tracked(self) -> list[LibraryEntry]:
+    async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
         from datetime import UTC, datetime
 
         now = datetime(2026, 10, 26, tzinfo=UTC)

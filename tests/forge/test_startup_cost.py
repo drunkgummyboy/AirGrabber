@@ -42,18 +42,10 @@ from tests.forge.ui.test_host import HostCase
 ROOT = Path(__file__).resolve().parents[2]
 NEVER_AT_START = ("guessit", "rebulk", "babelfish", "app.forge.services", "app.forge.db")
 # The Forge UI modules AirGrabber's main window imports at start (all light: no window, no
-# Inbox, no Pillow work): the host it owns (F-21), the Forge look of the band and the tray
-# (F-22), and the MediaForge group of its Settings (F-24 / F-25). Anything else is a regression.
-LIGHT_AT_START = frozenset(
-    {
-        "app.forge.ui",
-        "app.forge.ui.host",
-        "app.forge.ui.look",
-        "app.forge.ui.settings_pages",
-        "app.forge.ui.settings_menu",
-        "app.forge.ui.settings_naming",
-    }
-)
+# Inbox, no Pillow work): the host it owns (F-21) and the Forge look of the band and the tray
+# (F-22). MediaForge's Settings sections (F-24 / F-25) are its own Settings window's since
+# 2026-11-02, loaded with that window. Anything else is a regression.
+LIGHT_AT_START = frozenset({"app.forge.ui", "app.forge.ui.host", "app.forge.ui.look"})
 _PROBE = (
     "import json, sys\n"
     "import main\n"
@@ -95,6 +87,8 @@ class StartPathImportsTest(unittest.TestCase):
         heavy = sorted(set(_loaded(("app.forge.ui",), self.modules)) - LIGHT_AT_START)
         self.assertEqual(heavy, [], "Forge UI modules imported at AirGrabber's start")
         self.assertNotIn("app.forge.ui.window", self.modules)
+        self.assertNotIn("app.forge.ui.settings_window", self.modules)
+        self.assertNotIn("app.forge.ui.settings_pages", self.modules)
 
 
 class _Parts:

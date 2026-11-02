@@ -9,7 +9,7 @@ is still registered and a remover is wired (`on_remove_old`, F-27's action).
 
 The Forge window's host (app/forge/ui/host.py) shows it at an open of the Forge window while
 the old data exists and nothing was imported; "Not now" means it asks again at the next open
-(D13). BringOverBox is Settings › MediaForge's "Bring over…" row (in the Library section's foot)
+(D13). BringOverBox is MediaForge Settings' "Bring over…" row (in the Library section's foot)
 for the same case. RemoveOldBox, below it in that foot, is the guard's notice with "Remove the
 old MediaForge" while the old install is registered (F-27, app/forge/old_install.py).
 
@@ -402,7 +402,7 @@ class ImportStep(ctk.CTkToplevel):
 
 
 class BringOverBox:
-    """Settings › MediaForge › Library & watching: "Bring over…" in the section's foot while
+    """MediaForge Settings › Library & watching: "Bring over…" in the section's foot while
     the old MediaForge's data exists and nothing was imported (D13). Shows nothing for a
     services object that can't import (a test's fake) or when there is no old data."""
 
@@ -503,7 +503,7 @@ class BringOverBox:
 
 
 class RemoveOldBox:
-    """Settings › MediaForge › Library & watching: the guard's notice and "Remove the old
+    """MediaForge Settings › Library & watching: the guard's notice and "Remove the old
     MediaForge" in the section's foot while the old install is still registered (D4, F-27).
     The removal is app/forge/old_install.py's shared remover: it carries on (and lifts the
     guard) when Settings closes. Finding the old install already gone lifts the guard too.

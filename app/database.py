@@ -21,6 +21,7 @@ import aiosqlite
 from pydantic import BaseModel, ValidationError
 
 from app.models import (
+    FIRST_PROFILE_ID,
     CalendarEntry,
     DownloadRecord,
     Episode,
@@ -28,13 +29,22 @@ from app.models import (
     LibraryStats,
     MediaType,
     Movie,
+    Profile,
+    ProfileColour,
     Settings,
     Show,
     SubtitleFile,
     SubtitleGrab,
     WatchlistEntry,
 )
-from app.models.backup import BackupData, BackupFilm, BackupGrab, BackupShow, RestoreCounts
+from app.models.backup import (
+    BackupData,
+    BackupFilm,
+    BackupGrab,
+    BackupProfile,
+    BackupShow,
+    RestoreCounts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +86,68 @@ CLEARED_MIGRATION = """
         history_id INTEGER PRIMARY KEY REFERENCES download_history (id) ON DELETE CASCADE,
         cleared_at TEXT    NOT NULL                         -- UTC ISO-8601
     ) STRICT;
+"""
+
+# v8: people (app/services/profiles.py). Each has their own followed series and film watchlist;
+# the rest stays shared. The first person (no name: shown as "Me") gets every row there was.
+# tracked_shows and watchlist are rebuilt with the person in their primary key (SQLite can't
+# change a key in place); removing a person removes their rows. Per show, `synced_at` stays the
+# same in every person's row (sync stamps them all); per film, the release dates and the
+# automatic tries likewise (app.database.WatchlistRepository): they are the show's and the film's,
+# not a person's. Nothing references the two tables, so dropping the old ones is safe with the
+# foreign keys on.
+PROFILES_MIGRATION = """
+    CREATE TABLE profiles (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT,                                    -- NULL: never named ("Me")
+        colour     TEXT    NOT NULL,                        -- app.models.ProfileColour
+        created_at TEXT    NOT NULL                         -- UTC ISO-8601
+    ) STRICT;
+    INSERT INTO profiles (id, name, colour, created_at)
+    VALUES (1, NULL, 'blue', strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'));
+
+    CREATE TABLE tracked_shows_v8 (
+        profile_id    INTEGER NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+        show_id       INTEGER NOT NULL REFERENCES shows (id) ON DELETE CASCADE,
+        tracked_at    TEXT    NOT NULL,
+        auto_download INTEGER NOT NULL DEFAULT 0 CHECK (auto_download IN (0, 1)),
+        synced_at     TEXT,                                 -- NULL = never synced from TVMaze
+        auto_since    TEXT,                                 -- UTC ISO-8601; NULL while off
+        PRIMARY KEY (profile_id, show_id)
+    ) STRICT;
+    INSERT INTO tracked_shows_v8
+        (profile_id, show_id, tracked_at, auto_download, synced_at, auto_since)
+    SELECT 1, show_id, tracked_at, auto_download, synced_at, auto_since FROM tracked_shows;
+    DROP TABLE tracked_shows;
+    ALTER TABLE tracked_shows_v8 RENAME TO tracked_shows;
+    CREATE INDEX ix_tracked_shows_show ON tracked_shows (show_id);
+
+    CREATE TABLE watchlist_v8 (
+        profile_id         INTEGER NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+        movie_id           INTEGER NOT NULL,                -- TMDB movie id
+        title              TEXT    NOT NULL,
+        movie              TEXT    NOT NULL,                -- JSON of the Movie model
+        added_at           TEXT    NOT NULL,                -- UTC ISO-8601
+        auto_download      INTEGER NOT NULL DEFAULT 1 CHECK (auto_download IN (0, 1)),
+        imdb_id            TEXT,
+        digital_release    TEXT,                            -- YYYY-MM-DD, TMDB client's region
+        theatrical_release TEXT,                            -- YYYY-MM-DD
+        details_at         TEXT,                            -- UTC; NULL = never read from TMDB
+        tries              INTEGER NOT NULL DEFAULT 0,      -- automatic searches without a grab
+        first_try          TEXT,                            -- UTC
+        last_try           TEXT,                            -- UTC
+        gave_up            INTEGER NOT NULL DEFAULT 0 CHECK (gave_up IN (0, 1)),
+        PRIMARY KEY (profile_id, movie_id)
+    ) STRICT;
+    INSERT INTO watchlist_v8
+        (profile_id, movie_id, title, movie, added_at, auto_download, imdb_id, digital_release,
+         theatrical_release, details_at, tries, first_try, last_try, gave_up)
+    SELECT 1, movie_id, title, movie, added_at, auto_download, imdb_id, digital_release,
+           theatrical_release, details_at, tries, first_try, last_try, gave_up
+    FROM watchlist;
+    DROP TABLE watchlist;
+    ALTER TABLE watchlist_v8 RENAME TO watchlist;
+    CREATE INDEX ix_watchlist_movie ON watchlist (movie_id);
 """
 
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
@@ -221,6 +293,8 @@ MIGRATIONS: tuple[str, ...] = (
     SUBTITLES_MIGRATION,
     # v7: grabs taken off the Downloads page; see CLEARED_MIGRATION above.
     CLEARED_MIGRATION,
+    # v8: people, each with their own followed series and watchlist; see PROFILES_MIGRATION.
+    PROFILES_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -282,13 +356,14 @@ _IS_DOWNLOADED = """
 _CALENDAR_SQL = f"""
     SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, {_IS_DOWNLOADED} AS is_downloaded
     FROM episodes AS e
-    JOIN tracked_shows AS t ON t.show_id = e.show_id
+    JOIN tracked_shows AS t ON t.show_id = e.show_id AND t.profile_id = :profile
     JOIN shows AS s ON s.id = e.show_id
     WHERE e.air_date BETWEEN :start AND :end
     ORDER BY e.air_date, e.airstamp, s.name COLLATE NOCASE, e.season, e.number
 """
 
-# Popular untracked shows airing in the range: one episode per show per day, best `per_day` per day.
+# Popular shows the person (:profile) doesn't follow airing in the range: one episode per show per
+# day, best `per_day` per day.
 # Shows of :types rank first; shows of :fallback_types only after them, so they fill the days with
 # few of the first kind (US networks air hardly any new scripted episodes on a Saturday).
 _SUGGESTIONS_SQL = f"""
@@ -301,7 +376,7 @@ _SUGGESTIONS_SQL = f"""
         FROM episodes AS e
         JOIN shows AS s ON s.id = e.show_id
         WHERE e.air_date BETWEEN :start AND :end
-          AND e.show_id NOT IN (SELECT show_id FROM tracked_shows)
+          AND e.show_id NOT IN (SELECT show_id FROM tracked_shows WHERE profile_id = :profile)
           AND s.language = :language
           AND s.weight >= :min_weight
           AND (
@@ -326,17 +401,21 @@ _SUGGESTIONS_SQL = f"""
 """
 
 # Episodes the automatic downloads look after: numbered, non-special episodes with an airstamp,
-# of a tracked show whose switch is on, aired after the switch went on, never grabbed (an episode
-# or its season pack) and not given up. Instants are compared through julianday(), which reads
-# both the 'Z' and the '+00:00' spelling of UTC.
+# of a show anyone follows with the switch on, aired after the earliest moment one of them
+# switched it on, never grabbed (an episode or its season pack) and not given up: everyone's lists
+# at once, each episode once (its tries are the episode's, not a person's). Instants are compared
+# through julianday(), which reads both the 'Z' and the '+00:00' spelling of UTC.
 _AUTO_ELIGIBLE = f"""
     FROM episodes AS e
-    JOIN tracked_shows AS t ON t.show_id = e.show_id
+    JOIN (
+        SELECT show_id, MIN(julianday(auto_since)) AS since FROM tracked_shows
+        WHERE auto_download = 1 AND auto_since IS NOT NULL
+        GROUP BY show_id
+    ) AS t ON t.show_id = e.show_id
     JOIN shows AS s ON s.id = e.show_id
     LEFT JOIN auto_attempts AS a ON a.episode_id = e.id
-    WHERE t.auto_download = 1 AND t.auto_since IS NOT NULL
-      AND e.season > 0 AND e.number IS NOT NULL AND e.airstamp IS NOT NULL
-      AND julianday(e.airstamp) > julianday(t.auto_since)
+    WHERE e.season > 0 AND e.number IS NOT NULL AND e.airstamp IS NOT NULL
+      AND julianday(e.airstamp) > t.since
       AND COALESCE(a.gave_up, 0) = 0
       AND NOT {_IS_DOWNLOADED}
 """
@@ -361,7 +440,8 @@ _AUTO_OVERDUE_SQL = f"""
 """
 
 
-# Per tracked show, its first numbered episode still to air (the Tracked cards' "Next: …").
+# Per show the person (:profile) follows, its first numbered episode still to air (the Tracked
+# cards' "Next: …").
 _NEXT_EPISODES_SQL = f"""
     SELECT {_EPISODE_FIELDS} FROM (
         SELECT e.id,
@@ -370,7 +450,7 @@ _NEXT_EPISODES_SQL = f"""
                    ORDER BY e.air_date, julianday(e.airstamp), e.season, e.number
                ) AS nth
         FROM episodes AS e
-        JOIN tracked_shows AS t ON t.show_id = e.show_id
+        JOIN tracked_shows AS t ON t.show_id = e.show_id AND t.profile_id = :profile
         WHERE e.season > 0 AND e.number IS NOT NULL
           AND (
               (e.airstamp IS NOT NULL AND julianday(e.airstamp) > julianday(:now))
@@ -382,7 +462,8 @@ _NEXT_EPISODES_SQL = f"""
 """
 
 
-# The tracked shows' missing episodes, as the CTE `missing` (id, show_id, air_date): the regular
+# The missing episodes of the shows one person (:profile) follows, as the CTE `missing` (id,
+# show_id, air_date): the regular
 # numbered episodes (seasons from 1) of each show's latest season — the highest with such an
 # episode aired (an airstamp up to :now, or without one an air date up to :today) — that aren't
 # downloaded (the episode or its season pack), aren't marked "I already have this" (together the
@@ -394,7 +475,7 @@ _MISSING_CTE = f"""
     WITH aired AS (
         SELECT e.id, e.show_id, e.season, e.number, e.air_date, e.airstamp
         FROM episodes AS e
-        JOIN tracked_shows AS t ON t.show_id = e.show_id
+        JOIN tracked_shows AS t ON t.show_id = e.show_id AND t.profile_id = :profile
         WHERE e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
           AND (
               (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(:now))
@@ -435,9 +516,10 @@ _NEW_BETWEEN_SQL = f"""{_MISSING_CTE}
 
 
 def _missing_params(
-    now: datetime, today: date, missing_by: datetime, missing_day: date
-) -> dict[str, str]:
+    profile_id: int, now: datetime, today: date, missing_by: datetime, missing_day: date
+) -> dict[str, str | int]:
     return {
+        "profile": profile_id,
         "now": _utc(now),
         "today": today.isoformat(),
         "missing_by": _utc(missing_by),
@@ -448,6 +530,17 @@ def _missing_params(
 _TRACKED_SQL = f"""
     SELECT {_SHOW_FIELDS}, t.tracked_at, t.auto_download, t.synced_at
     FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id
+    WHERE t.profile_id = :profile
+"""
+
+# Every show anyone follows, once (the sync): its earliest follow, whether anyone has its switch on,
+# and when it was synced (NULL while any person's row was never synced; sync stamps them all).
+_FOLLOWED_SQL = f"""
+    SELECT {_SHOW_FIELDS}, MIN(t.tracked_at) AS tracked_at, MAX(t.auto_download) AS auto_download,
+           CASE WHEN COUNT(t.synced_at) < COUNT(*) THEN NULL ELSE MIN(t.synced_at) END AS synced_at
+    FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id
+    GROUP BY t.show_id
+    ORDER BY s.name COLLATE NOCASE
 """
 
 
@@ -479,6 +572,7 @@ class Database:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
         self._lock = asyncio.Lock()
+        self.profiles = ProfileRepository(self)
         self.library = LibraryRepository(self)
         self.history = HistoryRepository(self)
         self.settings = SettingsRepository(self)
@@ -566,8 +660,60 @@ class Database:
                 )
 
 
+def _profile(row: sqlite3.Row) -> Profile:
+    try:
+        colour = ProfileColour(row["colour"])
+    except ValueError:  # a newer version's colour
+        colour = ProfileColour.BLUE
+    return Profile(id=row["id"], name=row["name"], colour=colour, created_at=row["created_at"])
+
+
+class ProfileRepository:
+    """The people who share AirGrabber (app/services/profiles.py). Removing a person removes
+    their followed shows and watchlist (the foreign keys cascade); the last one is never
+    removed."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def all(self) -> list[Profile]:
+        """Every person, oldest first."""
+        rows = await self._db.fetch_all("SELECT * FROM profiles ORDER BY id")
+        return [_profile(row) for row in rows]
+
+    async def add(self, name: str | None, colour: ProfileColour, when: datetime) -> Profile:
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO profiles (name, colour, created_at) VALUES (?, ?, ?)",
+                (name, colour.value, _utc(when)),
+            )
+            row_id = cursor.lastrowid
+            rows = await conn.execute_fetchall("SELECT * FROM profiles WHERE id = ?", (row_id,))
+        return _profile(list(rows)[0])
+
+    async def update(self, profile_id: int, *, name: str | None, colour: ProfileColour) -> bool:
+        """A person's name (None: unnamed, "Me") and colour; False when they are gone."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "UPDATE profiles SET name = ?, colour = ? WHERE id = ?",
+                (name, colour.value, profile_id),
+            )
+            return cursor.rowcount > 0
+
+    async def remove(self, profile_id: int) -> bool:
+        """Remove a person with their lists; never the last one. Returns whether they went."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM profiles WHERE id = ? AND (SELECT COUNT(*) FROM profiles) > 1",
+                (profile_id,),
+            )
+            return cursor.rowcount > 0
+
+
 class LibraryRepository:
-    """Shows, their episodes, and which of them the user tracks."""
+    """Shows and their episodes (shared), and which of them each person follows (per person:
+    every method that takes `profile_id`; the automatic downloads, the sync and the cleanup of
+    the schedule cache look at everyone's)."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -602,40 +748,52 @@ class LibraryRepository:
                 (day.isoformat(), _now()),
             )
 
-    async def track(self, show_id: int, *, auto_download: bool = False) -> None:
-        """Add a show to the library. The show must already be saved (`save_show`).
+    async def track(self, show_id: int, *, profile_id: int, auto_download: bool = False) -> None:
+        """Add a show to a person's library. The show must already be saved (`save_show`).
 
-        `auto_download` switches its automatic downloads on from now. A show that is already
-        tracked keeps its switch.
+        `auto_download` switches its automatic downloads on from now. A show the person
+        already follows keeps its switch. A show another person follows is synced already:
+        this follow starts with the same `synced_at`.
         """
         now = _now()
         async with self._db.transaction() as conn:
             await conn.execute(
-                "INSERT INTO tracked_shows (show_id, tracked_at, auto_download, auto_since) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT (show_id) DO NOTHING",
-                (show_id, now, auto_download, now if auto_download else None),
+                "INSERT INTO tracked_shows "
+                "(profile_id, show_id, tracked_at, auto_download, auto_since, synced_at) "
+                "VALUES (:profile, :show, :now, :auto, :since, "
+                "        (SELECT MIN(synced_at) FROM tracked_shows WHERE show_id = :show)) "
+                "ON CONFLICT (profile_id, show_id) DO NOTHING",
+                {
+                    "profile": profile_id,
+                    "show": show_id,
+                    "now": now,
+                    "auto": auto_download,
+                    "since": now if auto_download else None,
+                },
             )
 
     async def set_auto_download(
-        self, show_id: int, on: bool, *, since: datetime | None = None
+        self, show_id: int, on: bool, *, profile_id: int, since: datetime | None = None
     ) -> None:
-        """Switch a tracked show's automatic downloads on (from `since`, default now) or off.
+        """Switch a person's automatic downloads of a show they follow on (from `since`,
+        default now) or off.
 
         Switching on a switch that is already on keeps the moment it went on; switching off
-        forgets it. Untracked shows are ignored.
+        forgets it. A show the person doesn't follow is ignored.
         """
         async with self._db.transaction() as conn:
             if on:
                 await conn.execute(
                     "UPDATE tracked_shows SET auto_download = 1, auto_since = ? "
-                    "WHERE show_id = ? AND (auto_download = 0 OR auto_since IS NULL)",
-                    (_now() if since is None else _utc(since), show_id),
+                    "WHERE profile_id = ? AND show_id = ? "
+                    "AND (auto_download = 0 OR auto_since IS NULL)",
+                    (_now() if since is None else _utc(since), profile_id, show_id),
                 )
             else:
                 await conn.execute(
                     "UPDATE tracked_shows SET auto_download = 0, auto_since = NULL "
-                    "WHERE show_id = ?",
-                    (show_id,),
+                    "WHERE profile_id = ? AND show_id = ?",
+                    (profile_id, show_id),
                 )
 
     async def auto_due(
@@ -644,9 +802,10 @@ class LibraryRepository:
         """Episodes the automatic downloads should fetch now, at most `limit`: least tried
         first, then the one tried longest ago, then oldest first.
 
-        Those of a tracked show whose switch is on, numbered and not specials (season 0), with
-        an airstamp after the switch went on and within [aired_from, aired_until], not in the
-        download history (nor their season pack) and not given up.
+        Those of a show anyone follows with the switch on, numbered and not specials (season
+        0), with an airstamp after the earliest moment one of them switched it on and within
+        [aired_from, aired_until], not in the download history (nor their season pack) and not
+        given up. Each episode once, however many people follow its show.
         """
         rows = await self._db.fetch_all(
             _AUTO_DUE_SQL,
@@ -684,16 +843,24 @@ class LibraryRepository:
             )
         return entries
 
-    async def untrack(self, show_id: int) -> None:
+    async def untrack(self, show_id: int, *, profile_id: int) -> None:
+        """Take a show off a person's library. The show, its episodes and their "I already have
+        this" marks stay: they are shared (another person may follow it; `prune_schedule`
+        forgets what nobody follows)."""
         async with self._db.transaction() as conn:
-            await conn.execute("DELETE FROM tracked_shows WHERE show_id = ?", (show_id,))
+            await conn.execute(
+                "DELETE FROM tracked_shows WHERE profile_id = ? AND show_id = ?",
+                (profile_id, show_id),
+            )
 
-    async def untrack_ended(self) -> int:
-        """Drop every tracked show whose status is Ended. Returns how many were removed."""
+    async def untrack_ended(self, *, profile_id: int) -> int:
+        """Drop every show a person follows whose status is Ended (other people keep theirs).
+        Returns how many were removed."""
         async with self._db.transaction() as conn:
             cursor = await conn.execute(
-                "DELETE FROM tracked_shows "
-                "WHERE show_id IN (SELECT id FROM shows WHERE status = 'Ended')"
+                "DELETE FROM tracked_shows WHERE profile_id = ? "
+                "AND show_id IN (SELECT id FROM shows WHERE status = 'Ended')",
+                (profile_id,),
             )
             return cursor.rowcount
 
@@ -712,11 +879,11 @@ class LibraryRepository:
             await conn.executemany("UPDATE tracked_shows SET synced_at = ? WHERE show_id = ?", rows)
 
     async def prune_schedule(self, before: date) -> int:
-        """Forget cached schedule data from before `before` for shows the user doesn't track.
+        """Forget cached schedule data from before `before` for shows nobody follows.
 
-        Deletes those shows' older episodes, untracked shows left without any episode, and the
-        matching `schedule_fetches` rows. Tracked shows keep every episode. Returns how many
-        episodes were deleted.
+        Deletes those shows' older episodes, shows nobody follows left without any episode,
+        and the matching `schedule_fetches` rows. A show anyone follows keeps every episode
+        (and so their "I already have this" marks). Returns how many episodes were deleted.
         """
         cutoff = before.isoformat()
         async with self._db.transaction() as conn:
@@ -737,17 +904,35 @@ class LibraryRepository:
         row = await self._db.fetch_one("SELECT * FROM shows WHERE id = ?", (show_id,))
         return _show_from_row(dict(row)) if row else None
 
-    async def tracked(self) -> list[LibraryEntry]:
-        rows = await self._db.fetch_all(f"{_TRACKED_SQL} ORDER BY s.name COLLATE NOCASE")
+    async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
+        """The shows a person follows, by name."""
+        rows = await self._db.fetch_all(
+            f"{_TRACKED_SQL} ORDER BY s.name COLLATE NOCASE", {"profile": profile_id}
+        )
         return [_library_entry(row) for row in rows]
 
-    async def tracked_entry(self, show_id: int) -> LibraryEntry | None:
-        """The library entry of one show; None when it isn't tracked."""
-        row = await self._db.fetch_one(f"{_TRACKED_SQL} WHERE t.show_id = ?", (show_id,))
+    async def tracked_entry(self, show_id: int, *, profile_id: int) -> LibraryEntry | None:
+        """A person's library entry of one show; None when they don't follow it."""
+        row = await self._db.fetch_one(
+            f"{_TRACKED_SQL} AND t.show_id = :show", {"profile": profile_id, "show": show_id}
+        )
         return _library_entry(row) if row else None
 
-    async def tracked_ids(self) -> frozenset[int]:
-        rows = await self._db.fetch_all("SELECT show_id FROM tracked_shows")
+    async def tracked_ids(self, *, profile_id: int) -> frozenset[int]:
+        """The shows a person follows."""
+        rows = await self._db.fetch_all(
+            "SELECT show_id FROM tracked_shows WHERE profile_id = ?", (profile_id,)
+        )
+        return frozenset(row["show_id"] for row in rows)
+
+    async def followed(self) -> list[LibraryEntry]:
+        """Every show anyone follows, once, by name (the sync): see _FOLLOWED_SQL."""
+        rows = await self._db.fetch_all(_FOLLOWED_SQL)
+        return [_library_entry(row) for row in rows]
+
+    async def followed_ids(self) -> frozenset[int]:
+        """The shows anyone follows."""
+        rows = await self._db.fetch_all("SELECT DISTINCT show_id FROM tracked_shows")
         return frozenset(row["show_id"] for row in rows)
 
     async def episodes(self, show_id: int) -> list[Episode]:
@@ -756,23 +941,34 @@ class LibraryRepository:
         )
         return [Episode.model_validate(dict(row)) for row in rows]
 
-    async def next_episodes(self, *, now: datetime, today: date) -> list[Episode]:
-        """Per tracked show, its first numbered episode still to air: an airstamp after `now`,
-        or (without one) an air date from `today` on. Shows with nothing upcoming are left out."""
+    async def next_episodes(
+        self, *, profile_id: int, now: datetime, today: date
+    ) -> list[Episode]:
+        """Per show a person follows, its first numbered episode still to air: an airstamp
+        after `now`, or (without one) an air date from `today` on. Shows with nothing upcoming
+        are left out."""
         rows = await self._db.fetch_all(
-            _NEXT_EPISODES_SQL, {"now": _utc(now), "today": today.isoformat()}
+            _NEXT_EPISODES_SQL,
+            {"profile": profile_id, "now": _utc(now), "today": today.isoformat()},
         )
         return [Episode.model_validate(_section(row, "ep__")) for row in rows]
 
     async def missing_counts(
-        self, *, now: datetime, today: date, missing_by: datetime, missing_day: date
+        self,
+        *,
+        profile_id: int,
+        now: datetime,
+        today: date,
+        missing_by: datetime,
+        missing_day: date,
     ) -> dict[int, int]:
-        """Per tracked show id, how many episodes of its latest season are missing (see
+        """Per id of a show the person follows, how many episodes of its latest season are
+        missing (see
         _MISSING_CTE): the latest season by what aired by `now` (without an airstamp: by
         `today`), missing when aired by `missing_by` (without an airstamp: by `missing_day`).
         Shows with none are left out."""
         rows = await self._db.fetch_all(
-            _MISSING_COUNTS_SQL, _missing_params(now, today, missing_by, missing_day)
+            _MISSING_COUNTS_SQL, _missing_params(profile_id, now, today, missing_by, missing_day)
         )
         return {row["show_id"]: row["missing"] for row in rows}
 
@@ -781,17 +977,18 @@ class LibraryRepository:
         start: date,
         end: date,
         *,
+        profile_id: int,
         now: datetime,
         today: date,
         missing_by: datetime,
         missing_day: date,
     ) -> frozenset[int]:
-        """Ids of the missing episodes (see _MISSING_CTE, `missing_counts`) airing between
-        `start` and `end` (inclusive)."""
+        """Ids of the missing episodes of the shows a person follows (see _MISSING_CTE,
+        `missing_counts`) airing between `start` and `end` (inclusive)."""
         rows = await self._db.fetch_all(
             _MISSING_BETWEEN_SQL,
             {
-                **_missing_params(now, today, missing_by, missing_day),
+                **_missing_params(profile_id, now, today, missing_by, missing_day),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
             },
@@ -803,17 +1000,19 @@ class LibraryRepository:
         start: date,
         end: date,
         *,
+        profile_id: int,
         now: datetime,
         today: date,
         missing_by: datetime,
         missing_day: date,
     ) -> frozenset[int]:
-        """Ids of the new episodes (aired, not downloaded or marked, not yet missing; see
-        _MISSING_CTE) airing between `start` and `end` (inclusive)."""
+        """Ids of the new episodes of the shows a person follows (aired, not downloaded or
+        marked, not yet missing; see _MISSING_CTE) airing between `start` and `end`
+        (inclusive)."""
         rows = await self._db.fetch_all(
             _NEW_BETWEEN_SQL,
             {
-                **_missing_params(now, today, missing_by, missing_day),
+                **_missing_params(profile_id, now, today, missing_by, missing_day),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
             },
@@ -856,8 +1055,8 @@ class LibraryRepository:
         self, show_id: int, *, now: datetime, today: date, when: datetime
     ) -> int:
         """Mark the show's regular numbered episodes that aired by `now` (without an airstamp:
-        by `today`) and aren't downloaded as "I already have this": a newly tracked show starts
-        with nothing missing. Returns how many were newly marked."""
+        by `today`) and aren't downloaded as "I already have this": a show nobody followed
+        before starts with nothing missing. Returns how many were newly marked."""
         async with self._db.transaction() as conn:
             cursor = await conn.execute(
                 f"""
@@ -891,10 +1090,12 @@ class LibraryRepository:
             )
             return cursor.rowcount
 
-    async def calendar(self, start: date, end: date) -> list[CalendarEntry]:
-        """Tracked episodes airing between `start` and `end` (inclusive), in airing order."""
+    async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
+        """The episodes of the shows a person follows airing between `start` and `end`
+        (inclusive), in airing order."""
         rows = await self._db.fetch_all(
-            _CALENDAR_SQL, {"start": start.isoformat(), "end": end.isoformat()}
+            _CALENDAR_SQL,
+            {"profile": profile_id, "start": start.isoformat(), "end": end.isoformat()},
         )
         return [_calendar_entry(row, is_tracked=True) for row in rows]
 
@@ -903,6 +1104,7 @@ class LibraryRepository:
         start: date,
         end: date,
         *,
+        profile_id: int,
         per_day: int,
         language: str = "English",
         types: Sequence[str] = ("Scripted", "Animation"),
@@ -915,14 +1117,15 @@ class LibraryRepository:
         ),
         min_weight: int = 40,
     ) -> list[CalendarEntry]:
-        """The most popular untracked shows airing each day, from the cached TVMaze schedule,
-        best first. A day's shows of `types` come first, its shows of `fallback_types` after
-        them: those fill the days with few of the first kind, such as Saturdays, when the US
-        networks air hardly any new scripted episodes. (News, talk shows, sports and award
-        shows are never suggested.)"""
+        """The most popular shows the person doesn't follow airing each day, from the cached
+        TVMaze schedule, best first. A day's shows of `types` come first, its shows of
+        `fallback_types` after them: those fill the days with few of the first kind, such as
+        Saturdays, when the US networks air hardly any new scripted episodes. (News, talk shows,
+        sports and award shows are never suggested.)"""
         rows = await self._db.fetch_all(
             _SUGGESTIONS_SQL,
             {
+                "profile": profile_id,
                 "start": start.isoformat(),
                 "end": end.isoformat(),
                 "language": language,
@@ -945,14 +1148,19 @@ class LibraryRepository:
             for row in rows
         }
 
-    async def stats(self) -> LibraryStats:
+    async def stats(self, *, profile_id: int) -> LibraryStats:
+        """How many shows a person follows, their episodes, and the latest sync (anyone's: the
+        sync covers everyone's shows)."""
         row = await self._db.fetch_one(
             """
-            SELECT (SELECT COUNT(*) FROM tracked_shows) AS tracked_shows,
+            SELECT (SELECT COUNT(*) FROM tracked_shows WHERE profile_id = :profile)
+                       AS tracked_shows,
                    (SELECT COUNT(*) FROM episodes AS e
-                      JOIN tracked_shows AS t ON t.show_id = e.show_id) AS episodes,
+                      JOIN tracked_shows AS t ON t.show_id = e.show_id
+                      WHERE t.profile_id = :profile) AS episodes,
                    (SELECT MAX(synced_at) FROM tracked_shows) AS last_synced
-            """
+            """,
+            {"profile": profile_id},
         )
         assert row is not None  # an aggregate-only SELECT always yields one row
         return LibraryStats.model_validate(dict(row))
@@ -967,8 +1175,8 @@ class HistoryRepository:
     async def add(self, record: DownloadRecord) -> bool:
         """Record a grab. Returns False if this exact torrent (info hash) was already recorded.
 
-        A film's grab also takes it off the watchlist, in the same transaction and however it
-        was grabbed: a downloaded film leaves the list.
+        A film's grab also takes it off every person's watchlist, in the same transaction and
+        however it was grabbed: a downloaded film is on the shared PC, it leaves every list.
         """
         columns = [column for column in HISTORY_COLUMNS if column != "id"]
         sql = (
@@ -1076,6 +1284,46 @@ _WATCHLIST_SQL = """
     SELECT movie_id, movie, added_at, auto_download, imdb_id, digital_release,
            theatrical_release, details_at, tries, first_try, last_try, gave_up
     FROM watchlist
+    WHERE profile_id = :profile
+"""
+
+# Every film anyone has on their list, once (the automatic downloads): its switch is on while
+# anyone's is. The release dates and the tries are the film's (kept the same in every row).
+def _films_sql(where: str = "") -> str:
+    return f"""
+    SELECT movie_id, movie, MIN(added_at) AS added_at, MAX(auto_download) AS auto_download,
+           imdb_id, digital_release, theatrical_release, MAX(details_at) AS details_at,
+           MAX(tries) AS tries, MIN(first_try) AS first_try, MAX(last_try) AS last_try,
+           MAX(gave_up) AS gave_up
+    FROM watchlist
+    {where}
+    GROUP BY movie_id
+    ORDER BY movie_id
+"""
+
+
+_FILMS_SQL = _films_sql()
+_FILM_SQL = _films_sql("WHERE movie_id = :id")
+
+# A film onto a person's list (:profile). When someone else has it already, the film's own
+# columns (release dates, the automatic tries, given up) come from their row: they are the
+# film's, not a person's; a film given up starts with its switch off, as given-up films have
+# it. (The WHERE keeps SQLite from reading ON CONFLICT as the join's ON.)
+_ADD_FILM_SQL = """
+    INSERT INTO watchlist (profile_id, movie_id, title, movie, added_at, auto_download, imdb_id,
+                           digital_release, theatrical_release, details_at, tries, first_try,
+                           last_try, gave_up)
+    SELECT :profile, :id, :title, :movie, :when,
+           CASE WHEN COALESCE(o.gave_up, 0) THEN 0 ELSE :auto END,
+           COALESCE(o.imdb_id, :imdb_id), o.digital_release, o.theatrical_release, o.details_at,
+           COALESCE(o.tries, 0), o.first_try, o.last_try, COALESCE(o.gave_up, 0)
+    FROM (SELECT 1) AS one
+    LEFT JOIN (
+        SELECT * FROM watchlist WHERE movie_id = :id
+        ORDER BY details_at IS NULL, julianday(details_at) DESC LIMIT 1
+    ) AS o ON 1
+    WHERE 1
+    ON CONFLICT (profile_id, movie_id) DO NOTHING
 """
 
 
@@ -1099,68 +1347,108 @@ def _iso_date(day: date | None) -> str | None:
     return day.isoformat() if day is not None else None
 
 
+def _readable(rows: Iterable[sqlite3.Row]) -> list[WatchlistEntry]:
+    """The rows as entries; a row whose stored film no longer reads as a `Movie` is skipped
+    (and logged) rather than hiding the whole list."""
+    entries: list[WatchlistEntry] = []
+    for row in rows:
+        try:
+            entries.append(_watchlist_entry(row))
+        except ValidationError:
+            log.warning("Skipping watchlist film %d: its stored data no longer reads", row[0])
+    return entries
+
+
 class WatchlistRepository:
-    """The movie watchlist: films by TMDB id, with their release dates and automatic tries."""
+    """The film watchlists, a person's each (every method that takes `profile_id`): films by
+    TMDB id, with their release dates and automatic tries. Those two are the film's: they are
+    written to every row of the film (whoever's list it is on) and come along when another
+    person adds it, so a film is searched for (and given up) once, not once per person."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def entries(self) -> list[WatchlistEntry]:
-        """Every film on the list, newest first. A row whose stored film no longer reads as a
-        `Movie` is skipped (and logged) rather than hiding the whole list."""
+    async def entries(self, *, profile_id: int) -> list[WatchlistEntry]:
+        """Every film on a person's list, newest first (see `_readable`)."""
         rows = await self._db.fetch_all(
-            f"{_WATCHLIST_SQL} ORDER BY julianday(added_at) DESC, movie_id DESC"
+            f"{_WATCHLIST_SQL} ORDER BY julianday(added_at) DESC, movie_id DESC",
+            {"profile": profile_id},
         )
-        entries: list[WatchlistEntry] = []
-        for row in rows:
-            try:
-                entries.append(_watchlist_entry(row))
-            except ValidationError:
-                log.warning("Skipping watchlist film %d: its stored data no longer reads", row[0])
-        return entries
+        return _readable(rows)
 
-    async def entry(self, movie_id: int) -> WatchlistEntry | None:
-        row = await self._db.fetch_one(f"{_WATCHLIST_SQL} WHERE movie_id = ?", (movie_id,))
+    async def entry(self, movie_id: int, *, profile_id: int) -> WatchlistEntry | None:
+        row = await self._db.fetch_one(
+            f"{_WATCHLIST_SQL} AND movie_id = :id", {"profile": profile_id, "id": movie_id}
+        )
         return _watchlist_entry(row) if row else None
 
-    async def add(self, movie: Movie, *, auto_download: bool, when: datetime) -> bool:
-        """Put a film on the list. A film already on it keeps its row (and switch); returns
-        whether it was added."""
+    async def films(self) -> list[WatchlistEntry]:
+        """Every film on anyone's list, once (see _FILMS_SQL)."""
+        return _readable(await self._db.fetch_all(_FILMS_SQL))
+
+    async def film(self, movie_id: int) -> WatchlistEntry | None:
+        """One film as `films` has it; None when it is on nobody's list."""
+        row = await self._db.fetch_one(_FILM_SQL, {"id": movie_id})
+        return _watchlist_entry(row) if row else None
+
+    async def add(
+        self, movie: Movie, *, profile_id: int, auto_download: bool, when: datetime
+    ) -> bool:
+        """Put a film on a person's list. A film already on it keeps its row (and switch);
+        returns whether it was added. See _ADD_FILM_SQL."""
         async with self._db.transaction() as conn:
             cursor = await conn.execute(
-                "INSERT INTO watchlist (movie_id, title, movie, added_at, auto_download, imdb_id) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (movie_id) DO NOTHING",
-                (
-                    movie.id,
-                    movie.title,
-                    movie.model_dump_json(),
-                    _utc(when),
-                    auto_download,
-                    movie.imdb_id,
-                ),
+                _ADD_FILM_SQL,
+                {
+                    "profile": profile_id,
+                    "id": movie.id,
+                    "title": movie.title,
+                    "movie": movie.model_dump_json(),
+                    "when": _utc(when),
+                    "auto": auto_download,
+                    "imdb_id": movie.imdb_id,
+                },
             )
             return cursor.rowcount > 0
 
-    async def remove(self, movie_id: int) -> bool:
-        """Take a film off the list; returns whether it was on it."""
+    async def remove(self, movie_id: int, *, profile_id: int) -> bool:
+        """Take a film off a person's list; returns whether it was on it."""
         async with self._db.transaction() as conn:
-            cursor = await conn.execute("DELETE FROM watchlist WHERE movie_id = ?", (movie_id,))
+            cursor = await conn.execute(
+                "DELETE FROM watchlist WHERE profile_id = ? AND movie_id = ?",
+                (profile_id, movie_id),
+            )
             return cursor.rowcount > 0
 
-    async def set_auto_download(self, movie_id: int, on: bool) -> None:
-        """Switch "Download when it's out" on or off. Switching it on starts afresh: the tries
-        and a given-up mark are forgotten."""
+    async def set_auto_download(self, movie_id: int, on: bool, *, profile_id: int) -> None:
+        """Switch a person's "Download when it's out" on or off. Switching it on starts
+        afresh: the film's tries and a given-up mark are forgotten (on every list)."""
         async with self._db.transaction() as conn:
             if on:
-                await conn.execute(
-                    "UPDATE watchlist SET auto_download = 1, tries = 0, first_try = NULL, "
-                    "last_try = NULL, gave_up = 0 WHERE movie_id = ? AND auto_download = 0",
-                    (movie_id,),
+                cursor = await conn.execute(
+                    "UPDATE watchlist SET auto_download = 1 "
+                    "WHERE profile_id = ? AND movie_id = ? AND auto_download = 0",
+                    (profile_id, movie_id),
                 )
+                if cursor.rowcount > 0:
+                    await conn.execute(
+                        "UPDATE watchlist SET tries = 0, first_try = NULL, last_try = NULL, "
+                        "gave_up = 0 WHERE movie_id = ?",
+                        (movie_id,),
+                    )
             else:
                 await conn.execute(
-                    "UPDATE watchlist SET auto_download = 0 WHERE movie_id = ?", (movie_id,)
+                    "UPDATE watchlist SET auto_download = 0 WHERE profile_id = ? AND movie_id = ?",
+                    (profile_id, movie_id),
                 )
+
+    async def switch_off(self, movie_id: int) -> None:
+        """Switch "Download when it's out" off on every list that has the film (the automatic
+        downloads found it downloaded already)."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE watchlist SET auto_download = 0 WHERE movie_id = ?", (movie_id,)
+            )
 
     async def set_release_dates(
         self,
@@ -1171,8 +1459,8 @@ class WatchlistRepository:
         theatrical: date | None,
         when: datetime,
     ) -> None:
-        """Store what TMDB's details say about a film; an IMDb id already known is kept when
-        the details name none."""
+        """Store what TMDB's details say about a film (on every list that has it); an IMDb id
+        already known is kept when the details name none."""
         async with self._db.transaction() as conn:
             await conn.execute(
                 "UPDATE watchlist SET imdb_id = COALESCE(?, imdb_id), digital_release = ?, "
@@ -1181,8 +1469,9 @@ class WatchlistRepository:
             )
 
     async def record_try(self, movie_id: int, when: datetime, *, give_up: bool) -> None:
-        """Count one more automatic try at a film; with `give_up` the automatic downloads stop
-        looking and its switch goes off. Ignored for a film that isn't on the list."""
+        """Count one more automatic try at a film (on every list that has it); with `give_up`
+        the automatic downloads stop looking and every switch of it goes off. Ignored for a
+        film that is on nobody's list."""
         async with self._db.transaction() as conn:
             await conn.execute(
                 "UPDATE watchlist SET tries = tries + 1, first_try = COALESCE(first_try, :when), "
@@ -1420,19 +1709,26 @@ class SubtitleRepository:
 # -- backups (app/services/backup.py) -------------------------------------------------------------
 
 _BACKUP_SHOWS_SQL = f"""
-    SELECT {_SHOW_FIELDS}, t.tracked_at, t.auto_download, t.auto_since
+    SELECT {_SHOW_FIELDS}, t.profile_id, t.tracked_at, t.auto_download, t.auto_since
     FROM tracked_shows AS t JOIN shows AS s ON s.id = t.show_id
-    ORDER BY s.name COLLATE NOCASE, s.id
+    ORDER BY t.profile_id, s.name COLLATE NOCASE, s.id
 """
 _BACKUP_EPISODES_SQL = """
-    SELECT e.* FROM episodes AS e JOIN tracked_shows AS t ON t.show_id = e.show_id
+    SELECT e.* FROM episodes AS e
+    WHERE e.show_id IN (SELECT show_id FROM tracked_shows)
     ORDER BY e.show_id, e.season, e.number, e.id
 """
 _BACKUP_HAVE_SQL = """
     SELECT e.show_id, m.episode_id FROM have_episodes AS m
     JOIN episodes AS e ON e.id = m.episode_id
-    JOIN tracked_shows AS t ON t.show_id = e.show_id
+    WHERE e.show_id IN (SELECT show_id FROM tracked_shows)
     ORDER BY m.episode_id
+"""
+_BACKUP_FILMS_SQL = """
+    SELECT movie_id, movie, added_at, auto_download, imdb_id, digital_release,
+           theatrical_release, details_at, tries, first_try, last_try, gave_up, profile_id
+    FROM watchlist
+    ORDER BY profile_id, julianday(added_at), movie_id
 """
 _BACKUP_HISTORY_SQL = """
     SELECT h.*, EXISTS (SELECT 1 FROM cleared_downloads AS c WHERE c.history_id = h.id) AS cleared
@@ -1457,17 +1753,17 @@ _RESTORE_GRAB_SQL = """
                AND julianday(h.downloaded_at) = julianday(:downloaded_at))
     )
 """
-# A film from a backup onto the watchlist, unless it was downloaded (a downloaded film leaves
-# the list) or is on it already.
+# A film from a backup onto a person's watchlist, unless it was downloaded (a downloaded film
+# leaves every list) or is on their list already.
 _RESTORE_FILM_SQL = """
-    INSERT INTO watchlist (movie_id, title, movie, added_at, auto_download, imdb_id,
+    INSERT INTO watchlist (profile_id, movie_id, title, movie, added_at, auto_download, imdb_id,
                            digital_release, theatrical_release)
-    SELECT :movie_id, :title, :movie, :added_at, :auto_download, :imdb_id, :digital_release,
-           :theatrical_release
+    SELECT :profile_id, :movie_id, :title, :movie, :added_at, :auto_download, :imdb_id,
+           :digital_release, :theatrical_release
     WHERE NOT EXISTS (
         SELECT 1 FROM download_history WHERE media_type = 'movie' AND media_id = :movie_id
     )
-    ON CONFLICT (movie_id) DO NOTHING
+    ON CONFLICT (profile_id, movie_id) DO NOTHING
 """
 
 
@@ -1475,6 +1771,7 @@ def _backup_show(
     row: sqlite3.Row, episodes: Sequence[Episode], have: Sequence[int]
 ) -> BackupShow:
     return BackupShow(
+        profile=row["profile_id"],
         show=_show_from_row(_section(row, "show__")),
         tracked_at=row["tracked_at"],
         auto_download=bool(row["auto_download"]),
@@ -1489,8 +1786,9 @@ def _backup_grab(row: sqlite3.Row) -> BackupGrab:
     return BackupGrab(record=DownloadRecord.model_validate(fields), cleared=bool(row["cleared"]))
 
 
-def _film_row(film: BackupFilm) -> dict[str, Any]:
+def _film_row(film: BackupFilm, profile_id: int) -> dict[str, Any]:
     return {
+        "profile_id": profile_id,
         "movie_id": film.movie.id,
         "title": film.movie.title,
         "movie": film.movie.model_dump_json(),
@@ -1502,10 +1800,45 @@ def _film_row(film: BackupFilm) -> dict[str, Any]:
     }
 
 
+def _backup_colour(person: BackupProfile) -> ProfileColour:
+    try:
+        return ProfileColour(person.colour)
+    except ValueError:  # a newer version's colour
+        return ProfileColour.BLUE
+
+
+def match_people(
+    backup: Sequence[BackupProfile], here: Sequence[Profile]
+) -> tuple[dict[int, int], list[BackupProfile], list[Profile]]:
+    """Which person here each of a backup's people is: first by name (ignoring case, both
+    named), then the rest in order, oldest first. Returns ({backup id: id here}, the backup's
+    people nobody here matches, the people here nobody in the backup matches)."""
+    left = list(here)
+    by_name = {person.name.casefold(): person for person in here if person.name}
+    mapping: dict[int, int] = {}
+    unmatched: list[BackupProfile] = []
+    ordered = sorted(backup, key=lambda person: person.id)
+    for person in ordered:
+        match = by_name.get(person.name.casefold()) if person.name else None
+        if match is not None and match in left:
+            mapping[person.id] = match.id
+            left.remove(match)
+        else:
+            unmatched.append(person)
+    extra: list[BackupProfile] = []
+    for person in unmatched:
+        if left:
+            mapping[person.id] = left.pop(0).id
+        else:
+            extra.append(person)
+    return mapping, extra, left
+
+
 class BackupRepository:
-    """A backup's database part (app/services/backup.py): the followed shows with their
-    episodes, automatic-download switches and "I already have this" marks, the film watchlist
-    and the download history. Read in one go; written back in one transaction."""
+    """A backup's database part (app/services/backup.py): the people, the shows each follows
+    with their episodes, automatic-download switches and "I already have this" marks, each
+    person's film watchlist and the download history. Read in one go; written back in one
+    transaction."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1514,13 +1847,21 @@ class BackupRepository:
         """Everything a backup holds from the database, as one consistent snapshot. A
         watchlist film whose stored data no longer reads is left out (and logged)."""
         async with self._db.transaction() as conn:
+            profile_rows = await conn.execute_fetchall("SELECT * FROM profiles ORDER BY id")
             show_rows = await conn.execute_fetchall(_BACKUP_SHOWS_SQL)
             episode_rows = await conn.execute_fetchall(_BACKUP_EPISODES_SQL)
             have_rows = await conn.execute_fetchall(_BACKUP_HAVE_SQL)
-            film_rows = await conn.execute_fetchall(
-                f"{_WATCHLIST_SQL} ORDER BY julianday(added_at), movie_id"
-            )
+            film_rows = await conn.execute_fetchall(_BACKUP_FILMS_SQL)
             grab_rows = await conn.execute_fetchall(_BACKUP_HISTORY_SQL)
+        people = tuple(
+            BackupProfile(
+                id=person.id,
+                name=person.name,
+                colour=person.colour.value,
+                created_at=person.created_at,
+            )
+            for person in (_profile(row) for row in profile_rows)
+        )
         episodes: dict[int, list[Episode]] = {}
         for row in episode_rows:
             episode = Episode.model_validate(dict(row))
@@ -1537,6 +1878,7 @@ class BackupRepository:
                 continue
             films.append(
                 BackupFilm(
+                    profile=row["profile_id"],
                     movie=entry.movie,
                     added_at=entry.added_at,
                     auto_download=entry.auto_download,
@@ -1546,59 +1888,149 @@ class BackupRepository:
                 )
             )
         shows = []
+        carried: set[int] = set()  # shows whose episodes and marks are in the file already
         for row in show_rows:
             show_id = row["show__id"]
-            shows.append(_backup_show(row, episodes.get(show_id, ()), have.get(show_id, ())))
+            first = show_id not in carried
+            carried.add(show_id)
+            shows.append(
+                _backup_show(
+                    row,
+                    episodes.get(show_id, ()) if first else (),
+                    have.get(show_id, ()) if first else (),
+                )
+            )
         return BackupData(
-            shows=tuple(shows), films=tuple(films), grabs=tuple(_backup_grab(r) for r in grab_rows)
+            profiles=people,
+            shows=tuple(shows),
+            films=tuple(films),
+            grabs=tuple(_backup_grab(r) for r in grab_rows),
         )
 
-    async def restore(self, data: BackupData, *, replace: bool, when: datetime) -> RestoreCounts:
+    async def restore(
+        self, data: BackupData, *, replace: bool, when: datetime, selected: int
+    ) -> RestoreCounts:
         """Write a backup's database part, all or nothing.
 
-        `replace`: the followed shows and the watchlist become the backup's (shows it lacks are
-        no longer followed, films it lacks leave the list; a show followed here too takes the
-        backup's switch and marks, and keeps the episodes stored here). Else the backup's shows
-        and films are added and what is here wins (a show followed here keeps its switch and
-        marks). Either way the backup's download history is added to this one (no grab twice);
-        a downloaded film leaves the watchlist. A newly followed show is synced from TVMaze at
-        the next sync. `when`: the moment marks and cleared grabs are stamped with.
+        People: a backup from before people (no `profiles`) is one person's lists, written to
+        the `selected` person; no one is added or removed. Else its people are matched to the
+        people here (`match_people`) and those nobody here matches are added. `replace`: the
+        people become the backup's (a match takes its name and colour; people here nobody in
+        it matches are removed, with their lists).
+
+        Per matched person, as before people: `replace`: their followed shows and watchlist
+        become the backup's (shows it lacks are no longer followed, films it lacks leave the
+        list; a show followed here too takes the backup's switch). Else the backup's shows and
+        films are added and what is here wins (a show followed here keeps its switch). A show's
+        "I already have this" marks (shared) become the backup's with `replace`, or when nobody
+        here followed it yet; a show anyone here follows keeps the episodes stored here. Either
+        way the backup's download history is added to this one (no grab twice); a downloaded
+        film leaves every watchlist. A newly followed show is synced from TVMaze at the next
+        sync. `when`: the moment marks, cleared grabs and new people are stamped with.
         """
         async with self._db.transaction() as conn:
-            rows = await conn.execute_fetchall("SELECT show_id FROM tracked_shows")
-            tracked = {row[0] for row in rows}
+            rows = await conn.execute_fetchall("SELECT * FROM profiles ORDER BY id")
+            here = [_profile(row) for row in rows]
+            people_added = people_removed = 0
+            if not data.profiles:
+                mapping = {FIRST_PROFILE_ID: selected}
+            else:
+                mapping, extra, unmatched = match_people(data.profiles, here)
+                backup_people = {person.id: person for person in data.profiles}
+                if replace:
+                    for backup_id, here_id in mapping.items():
+                        person = backup_people[backup_id]
+                        created = _opt_utc(person.created_at)
+                        await conn.execute(
+                            "UPDATE profiles SET name = ?, colour = ?, "
+                            "created_at = COALESCE(?, created_at) WHERE id = ?",
+                            (person.name, _backup_colour(person).value, created, here_id),
+                        )
+                for person in extra:
+                    created = _utc(person.created_at or when)
+                    cursor = await conn.execute(
+                        "INSERT INTO profiles (name, colour, created_at) VALUES (?, ?, ?)",
+                        (person.name, _backup_colour(person).value, created),
+                    )
+                    assert cursor.lastrowid is not None
+                    mapping[person.id] = cursor.lastrowid
+                    people_added += 1
+                if replace and unmatched:
+                    gone = json.dumps(sorted(person.id for person in unmatched))
+                    cursor = await conn.execute(
+                        "DELETE FROM profiles WHERE id IN (SELECT value FROM json_each(?))",
+                        (gone,),
+                    )
+                    people_removed = cursor.rowcount
+
+            rows = await conn.execute_fetchall("SELECT profile_id, show_id FROM tracked_shows")
+            tracked = {(row[0], row[1]) for row in rows}
+            followed = {show_id for _, show_id in tracked}  # by anyone, before this load
+            episodes: dict[int, dict[int, Episode]] = {}
+            have: dict[int, set[int]] = {}
+            for item in data.shows:
+                episodes.setdefault(item.show.id, {}).update((e.id, e) for e in item.episodes)
+                have.setdefault(item.show.id, set()).update(item.have)
+
             shows_removed = 0
             if replace:
-                wanted = json.dumps(sorted({item.show.id for item in data.shows}))
-                cursor = await conn.execute(
-                    "DELETE FROM tracked_shows "
-                    "WHERE show_id NOT IN (SELECT value FROM json_each(?))",
-                    (wanted,),
-                )
-                shows_removed = cursor.rowcount
+                for backup_id, here_id in mapping.items():
+                    wanted = json.dumps(
+                        sorted({item.show.id for item in data.shows if item.profile == backup_id})
+                    )
+                    cursor = await conn.execute(
+                        "DELETE FROM tracked_shows WHERE profile_id = ? "
+                        "AND show_id NOT IN (SELECT value FROM json_each(?))",
+                        (here_id, wanted),
+                    )
+                    shows_removed += cursor.rowcount
             shows_added = 0
+            saved: set[int] = set()  # shows (and episodes) written from the backup
+            marked: set[int] = set()  # shows whose marks are done
             for item in data.shows:
+                local_id = mapping.get(item.profile)
+                if local_id is None:
+                    continue  # a person the file doesn't list
                 show_id = item.show.id
                 since = (item.auto_since or when) if item.auto_download else None
-                if show_id in tracked:
-                    if not replace:
-                        continue  # what is here wins
-                    await conn.execute(
-                        "UPDATE tracked_shows SET tracked_at = ?, auto_download = ?, "
-                        "auto_since = ? WHERE show_id = ?",
-                        (_utc(item.tracked_at), item.auto_download, _opt_utc(since), show_id),
-                    )
+                if (local_id, show_id) in tracked:
+                    if replace:
+                        await conn.execute(
+                            "UPDATE tracked_shows SET tracked_at = ?, auto_download = ?, "
+                            "auto_since = ? WHERE profile_id = ? AND show_id = ?",
+                            (
+                                _utc(item.tracked_at),
+                                item.auto_download,
+                                _opt_utc(since),
+                                local_id,
+                                show_id,
+                            ),
+                        )
                 else:
-                    await conn.execute(_SHOW_UPSERT, _show_to_row(item.show))
-                    await conn.executemany(
-                        _EPISODE_UPSERT, [_episode_to_row(episode) for episode in item.episodes]
-                    )
+                    if show_id not in followed and show_id not in saved:
+                        saved.add(show_id)
+                        await conn.execute(_SHOW_UPSERT, _show_to_row(item.show))
+                        await conn.executemany(
+                            _EPISODE_UPSERT,
+                            [_episode_to_row(episode) for episode in episodes[show_id].values()],
+                        )
                     await conn.execute(
                         "INSERT INTO tracked_shows "
-                        "(show_id, tracked_at, auto_download, auto_since) VALUES (?, ?, ?, ?)",
-                        (show_id, _utc(item.tracked_at), item.auto_download, _opt_utc(since)),
+                        "(profile_id, show_id, tracked_at, auto_download, auto_since) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            local_id,
+                            show_id,
+                            _utc(item.tracked_at),
+                            item.auto_download,
+                            _opt_utc(since),
+                        ),
                     )
+                    tracked.add((local_id, show_id))
                     shows_added += 1
+                if show_id in marked or (not replace and show_id in followed):
+                    continue  # once a show; what is here wins when adding
+                marked.add(show_id)
                 # Its "I already have this" marks become the backup's.
                 await conn.execute(
                     "DELETE FROM have_episodes "
@@ -1610,7 +2042,7 @@ class BackupRepository:
                     "SELECT id, ? FROM episodes "
                     "WHERE show_id = ? AND id IN (SELECT value FROM json_each(?)) "
                     "ON CONFLICT (episode_id) DO NOTHING",
-                    (_utc(when), show_id, json.dumps(sorted(set(item.have)))),
+                    (_utc(when), show_id, json.dumps(sorted(have[show_id]))),
                 )
 
             grabs_added = 0
@@ -1631,22 +2063,30 @@ class BackupRepository:
                         "ON CONFLICT (history_id) DO NOTHING",
                         (cursor.lastrowid, _utc(when)),
                     )
-            if downloaded_films:  # as HistoryRepository.add: a downloaded film leaves the list
+            if downloaded_films:  # as HistoryRepository.add: a downloaded film leaves every list
                 await conn.execute(
                     "DELETE FROM watchlist WHERE movie_id IN (SELECT value FROM json_each(?))",
                     (json.dumps(sorted(downloaded_films)),),
                 )
 
-            rows = await conn.execute_fetchall("SELECT movie_id FROM watchlist")
-            listed = {row[0] for row in rows}
+            rows = await conn.execute_fetchall("SELECT profile_id, movie_id FROM watchlist")
+            listed = {(row[0], row[1]) for row in rows}
             films_removed = 0
             if replace:
-                await conn.execute("DELETE FROM watchlist")
-                films_removed = len(listed - {film.movie.id for film in data.films})
+                for backup_id, here_id in mapping.items():
+                    wanted_films = {
+                        film.movie.id for film in data.films if film.profile == backup_id
+                    }
+                    had = {movie_id for person, movie_id in listed if person == here_id}
+                    await conn.execute("DELETE FROM watchlist WHERE profile_id = ?", (here_id,))
+                    films_removed += len(had - wanted_films)
             films_added = 0
             for film in data.films:
-                cursor = await conn.execute(_RESTORE_FILM_SQL, _film_row(film))
-                if cursor.rowcount > 0 and film.movie.id not in listed:
+                local_id = mapping.get(film.profile)
+                if local_id is None:
+                    continue
+                cursor = await conn.execute(_RESTORE_FILM_SQL, _film_row(film, local_id))
+                if cursor.rowcount > 0 and (local_id, film.movie.id) not in listed:
                     films_added += 1
         return RestoreCounts(
             shows_added=shows_added,
@@ -1654,6 +2094,8 @@ class BackupRepository:
             films_added=films_added,
             films_removed=films_removed,
             grabs_added=grabs_added,
+            people_added=people_added,
+            people_removed=people_removed,
         )
 
 

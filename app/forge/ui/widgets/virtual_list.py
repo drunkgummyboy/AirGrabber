@@ -15,7 +15,10 @@ The queue's bands (app/forge/ui/queue_view.py, mockups/forge-chosen.html 3C): a 
 a status-coloured edge, the poster, the title and its subtitle with the destination in the link
 colour, the status as a dot and a word, and the band's buttons, which show only while the pointer
 is over the band or one of its lines (`hover_actions`; a band that needs the owner always shows
-them). A done band is drawn quieter (`Row.faded`). Sizes come from `Sizes` (the queue's are bigger
+them). A done band is drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always
+shown) sits under its status, the status moving up to the title's line; a click on it is the
+band's action "preset" (`chip_box` gives where it is). `select_bands`: a click on a band selects
+its first line. Sizes come from `Sizes` (the queue's are bigger
 than the confirm window's and History's).
 """
 
@@ -38,6 +41,8 @@ from app.ui import palettes, theme
 
 MONO_FAMILY = "Consolas"  # old file names, as the release list's table
 BACKDROP_WIDTH = 420  # a band's picture strip, in unscaled pixels
+CHIP_MAX = 190  # a band's preset chip at most (CTk units; a longer name is cut with "…")
+CHIP_HEIGHT = 26
 _MEASURE_CACHE = 4000  # remembered text widths / fitted texts before starting over
 _FADED = 0.45  # a done band's fill: this much of the list's ground over the band colour
 _ARC_STEPS = 6  # points on a rounded corner's quarter circle
@@ -96,6 +101,7 @@ class Row(BaseModel):
     backdrop: str | None = None  # a band's backdrop (TMDB path)
     actions: tuple[tuple[str, str], ...] = ()  # a band's buttons: (id, label), the last filled
     note: str = ""  # a band's quiet text on the right (a time)
+    chip: str = ""  # a band's preset chip under its status ("Series (Folder) ▾"): action "preset"
     code: str = ""  # an episode line's code ("S04E03"), in the link colour (readable accent)
     faint: str = ""  # a line's current (old) file name, washed out on the right
     faint_label: str = ""  # a quiet word before it ("Now:"), translated
@@ -204,6 +210,7 @@ class VirtualList(ctk.CTkFrame):
         # window's, so a resize never needs new pictures), or None while not (yet) loaded.
         self.images: Callable[[Row, int, int], tuple[Any, Any]] = lambda row, w, h: (None, None)
         self._hits: list[tuple[int, int, int, int, int, str]] = []  # buttons, canvas coordinates
+        self.select_bands = False  # a click on a band selects its first line (the queue)
         self.removable = removable
         self.thumbnails = thumbnails
         self.selected: int | None = None
@@ -591,7 +598,9 @@ class VirtualList(ctk.CTkFrame):
             self._draw_buttons(p, row, buttons, middle, fill)
         if buttons:
             right = buttons[-1][0] - self._px(14)
-        if row.state_text:
+        if row.chip:
+            right = self._draw_state_and_chip(p, row, right, y0, y1, fill)
+        elif row.state_text:
             right = self._draw_state(p, row, right, middle)
         if row.note:
             c.create_text(
@@ -675,6 +684,39 @@ class VirtualList(ctk.CTkFrame):
                 tags=("band-button-text",),
             )
             self._hits.append((bx0, by0, bx1, by1, row.key, action))
+
+    def _draw_state_and_chip(
+        self, p: _Colours, row: Row, right: int, y0: int, y1: int, fill: str
+    ) -> int:
+        """The status on the title's line and the preset chip under it, both ending at `right`
+        (one column as wide as the wider); returns the x left of them."""
+        c, box_h = self.canvas, y1 - y0
+        title_y, sub_y = (0.36, 0.72) if self.sizes.poster is None else (0.40, 0.64)
+        state_left = right
+        if row.state_text:
+            state_left = self._draw_state(p, row, right, y0 + box_h * title_y) + self._px(14)
+        pad = self._px(10)
+        text = self._fit(row.chip, self._note_font, self._px(CHIP_MAX) - 2 * pad)
+        width = self._measure(self._note_font, text) + 2 * pad
+        middle = y0 + box_h * sub_y
+        height = self._px(CHIP_HEIGHT)
+        cx0, cy0, cy1 = right - width, round(middle - height / 2), round(middle + height / 2)
+        self.round_rect(
+            cx0, cy0, right, cy1, self._px(8), fill=fill, outline=p.line, width=1, tags=("chip",)
+        )
+        c.create_text(
+            right - pad, middle, text=text, anchor="e", fill=p.muted, font=self._note_font,
+            tags=("chip-text",),
+        )  # fmt: skip
+        self._hits.append((cx0, cy0, right, cy1, row.key, "preset"))
+        return min(state_left, cx0) - self._px(14)
+
+    def chip_box(self, key: int) -> tuple[int, int, int, int] | None:
+        """Where band `key`'s preset chip was drawn last (canvas coordinates), or None."""
+        for x0, y0, x1, y1, hit_key, action in self._hits:
+            if hit_key == key and action == "preset":
+                return x0, y0, x1, y1
+        return None
 
     def _draw_state(self, p: _Colours, row: Row, right: int, middle: float) -> int:
         """A band's status as a coloured dot and word ending at `right`; returns the x left of
@@ -887,6 +929,12 @@ class VirtualList(ctk.CTkFrame):
                 self.on_action(key, action)
                 return
         index = self._row_at(cy)
+        if index is not None and self.select_bands and self._rows[index].kind == "band":
+            band = self._rows[index].key
+            first = next((r.key for r in self._rows if r.band == band), None)
+            if first is not None:
+                self.select(first)
+            return
         if index is None or self._rows[index].kind != "item":
             return
         row = self._rows[index]

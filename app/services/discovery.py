@@ -275,11 +275,12 @@ class DiscoveryService:
 
     # -- dashboards ----------------------------------------------------------------------------
 
-    async def tv_dashboard(self, *, force: bool = False) -> TVDashboard:
+    async def tv_dashboard(self, *, profile_id: int, force: bool = False) -> TVDashboard:
         """Trending shows, shows on the air, and premieres in the next 90 days; 18 at most each.
 
         TMDB's lists are cached for DASHBOARD_TTL and for the current local day (`force`
-        refetches them); the tracked flags are recomputed from the library on every call. A
+        refetches them); the tracked flags (the shows the person follows) are recomputed from
+        the library on every call. A
         fetch with failed shelves is returned but not cached (nor does it evict the previous
         complete one). See `_load_shelves` for errors.
         """
@@ -296,7 +297,7 @@ class DiscoveryService:
             lists, failed = await self._load_shelves("TV", fetchers)
             if not failed and generation == self._generation:
                 self._tv_shelves = _Shelves(today, lists, self._clock())
-        is_tracked = await self._tracked_matcher()
+        is_tracked = await self._tracked_matcher(profile_id)
         shelves = {
             name: tuple(DiscoverShowEntry(show=show, is_tracked=is_tracked(show)) for show in shows)
             for name, shows in lists.items()
@@ -426,10 +427,10 @@ class DiscoveryService:
             raise failures[0][1]
         return loaded, tuple(name for name, _ in failures)
 
-    async def _tracked_matcher(self) -> Callable[[DiscoverShow], bool]:
-        """Flags a TMDB show as tracked when track() added it and its TVMaze show is still
-        tracked, or when its name matches a tracked show's (see normalize_title)."""
-        entries = await self._library.tracked()
+    async def _tracked_matcher(self, profile_id: int) -> Callable[[DiscoverShow], bool]:
+        """Flags a TMDB show as tracked when its TVMaze match (`resolve`) is one the person
+        follows, or when its name matches such a show's (see normalize_title)."""
+        entries = await self._library.tracked(profile_id=profile_id)
         tracked_ids = {entry.show.id for entry in entries}
         tracked_names = {key for entry in entries if (key := normalize_title(entry.show.name))}
 
@@ -568,14 +569,14 @@ class DiscoveryService:
         self._tracked_via_tmdb[show.id] = match.id
         return match
 
-    async def track(self, show: DiscoverShow) -> Show:
-        """Add a TMDB show to the library through its TVMaze counterpart (`resolve`); returns
-        that show.
+    async def track(self, show: DiscoverShow, *, profile_id: int) -> Show:
+        """Add a TMDB show to a person's library through its TVMaze counterpart (`resolve`);
+        returns that show.
 
         Raises NoTVMazeMatch when no counterpart is found. TMDB and TVMaze errors propagate.
         """
         match = await self.resolve(show)
-        tracked = await self._library.track(match.id)
+        tracked = await self._library.track(match.id, profile_id=profile_id)
         self._tracked_via_tmdb[show.id] = tracked.id
         return tracked
 

@@ -1,4 +1,6 @@
-"""Download new episodes automatically, for the tracked shows whose switch is on.
+"""Download new episodes automatically, for the shows whose switch is on, on everyone's lists
+(whoever is selected: an episode is fetched once when any person follows its show with the
+switch on, from the earliest moment one of them switched it on; app/services/profiles.py).
 
 A run (at startup, then every 30 minutes; one at a time) first gives up on the episodes that
 were not found within GIVE_UP_AFTER of airing, then fetches the due ones through the one-click
@@ -9,7 +11,8 @@ it is neither downloaded nor given up. Nothing found: the try is counted and the
 again. Downloaded meanwhile by hand: skipped, not counted. A failed grab (no torrent program, unwritable folder, the remote torrent program refusing) is
 counted too, reported as one AutoError and ends the run.
 
-Then, unless a grab failed, the watchlist films whose "Download when it's out" switch is on:
+Then, unless a grab failed, the watchlist films whose "Download when it's out" switch is on
+(on anyone's list, each film once):
 their release dates are refreshed from TMDB when stale, and the films that are out and not
 searched within the last few hours (`app.services.watchlist.is_due`) are fetched the same way,
 at most MAX_MOVIES_PER_RUN. Nothing found: the try is counted, and a film searched for long
@@ -219,7 +222,7 @@ class AutoDownloadService:
         run = _MovieRun()
         await watchlist.refresh_release_dates()
         now = self._clock()
-        due = watchlist.due(now, MAX_MOVIES_PER_RUN)
+        due = await watchlist.due(now, MAX_MOVIES_PER_RUN)
         for entry in due:
             movie = entry.movie
             title = movie.title
@@ -238,7 +241,7 @@ class AutoDownloadService:
                 break
             if result.already_downloaded:  # in the history from before it was put on the list
                 log.info("Auto-download %s: downloaded before, switching it off", title)
-                await watchlist.set_auto_download(movie.id, False)
+                await watchlist.switch_off(movie.id)
                 continue
             if result.grab is None:
                 if await watchlist.record_try(movie.id, when=self._clock()):

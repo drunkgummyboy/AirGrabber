@@ -1,7 +1,7 @@
-"""Settings › MediaForge › Naming: MediaForge's Settings › Naming tab (`ui/settings_view.py`:
+"""MediaForge Settings › Naming: the old MediaForge's Settings › Naming tab (`ui/settings_view.py`:
 `_build_presets`, the editor, `_update_sample`, `_build_matches`), the names language from its
-TMDB tab and the Series / Movies presets from its Library tab, as a section of AirGrabber's
-Settings (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FORGE_SECTIONS`).
+TMDB tab and the Series / Movies presets from its Library tab, as a section of MediaForge's
+Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FORGE_SECTIONS`).
 
 - **Presets**: the list in order; the chosen one is edited in place: its name, type Auto /
   Movie / TV, the format with a live sample on a sample episode and film (a `{code}` the
@@ -22,9 +22,9 @@ renamed or deleted: `last_preset_after`), then forgets the matches. Cancel and �
 nothing. After a Save that changed the presets, every listener connected with
 `on_presets_saved` is told (the right-click menu refreshes its entries, F-25).
 
-The dialog imports this module with `settings_pages` at AirGrabber's start: at import time it
-loads only Forge's models (the formatter and the Inbox's option texts load when a section is
-built), so Forge's core, forge.db and guessit stay unloaded (INTEGRATION.md 3.6).
+The Settings window imports this module with `settings_pages`: at import time it loads only
+Forge's models (the formatter and the Inbox's option texts load when a section is built), so
+Forge's core, forge.db and guessit stay unloaded (INTEGRATION.md 3.6).
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ from app.forge.models.preset import Preset, PresetOptions
 from app.forge.models.settings import ForgeSettings
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
+from app.ui.settings_layout import BOX_INNER
 from app.ui.tasks import spawn
 
 if TYPE_CHECKING:
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
     from app.forge.runtime import ForgeRuntime
     from app.forge.ui.library_page import SettingsSource
     from app.forge.ui.settings_pages import ForgeSectionPart
-    from app.ui.settings_dialog import SettingsBox, SettingsPage
+    from app.ui.settings_layout import SettingsBox, SettingsPage
 
 log = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ FIELDS: tuple[str, ...] = ("series_preset", "movies_preset", "tmdb_language")
 # Which preset type takes over a Series / Movies choice whose preset is deleted here.
 _CHOICE_TYPES: dict[str, TypeHint] = {"series_preset": TypeHint.TV, "movies_preset": TypeHint.MOVIE}
 
-_BOX_INNER = 580 - 2 * (18 + 1)  # the dialog's page width inside a box's border and padding
+_BOX_INNER = BOX_INNER  # the page's width inside a box's border and padding
 _LIST_WIDTH = 170  # the presets list
 _LIST_PAD = 4
 _ITEM_HEIGHT = 32
@@ -413,10 +414,11 @@ class NamingSection:
     def __init__(self, page: SettingsPage, forge: _Starter) -> None:
         # Not at import time (see the top): the Inbox's option texts, the dialog's shared texts.
         from app.forge.ui.queue_view import OPTION_LABELS
-        from app.forge.ui.settings_pages import GETTING_READY
+        from app.forge.ui.settings_pages import GETTING_READY, section_look
 
         self._page = page
         self._forge = forge
+        self._look = look = section_look(page)
         self._parts: _Parts | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._task: asyncio.Task[None] | None = None
@@ -446,10 +448,10 @@ class NamingSection:
         side.grid(row=0, column=0, sticky="nw")
         self.preset_list = ctk.CTkFrame(
             side,
-            fg_color=theme.SURFACE,
+            fg_color=look.SURFACE,
             corner_radius=dialog_kit.BUTTON_RADIUS,
             border_width=1,
-            border_color=theme.PANEL_EDGE,
+            border_color=look.PLACEHOLDER,  # theme.PANEL_EDGE in the look
         )
         self.preset_list.grid(row=0, column=0, sticky="ew")
         self.preset_list.grid_columnconfigure(0, weight=1)
@@ -475,11 +477,11 @@ class NamingSection:
             height=dialog_kit.BUTTON_HEIGHT,
             corner_radius=dialog_kit.BUTTON_RADIUS,
             font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
-            fg_color=theme.SURFACE,
-            selected_color=theme.SELECTED,
-            selected_hover_color=theme.SELECTED_HOVER,
-            unselected_color=theme.SURFACE,
-            unselected_hover_color=theme.CHIP_HOVER,
+            fg_color=look.SURFACE,
+            selected_color=look.SELECTED,
+            selected_hover_color=look.SELECTED_HOVER,
+            unselected_color=look.SURFACE,
+            unselected_hover_color=look.CHIP_HOVER,
             text_color=theme.BUTTON_TEXT,
             dynamic_resizing=False,
             command=self._type_clicked,
@@ -558,17 +560,15 @@ class NamingSection:
 
     # --- widgets ---------------------------------------------------------------------------------
 
-    @staticmethod
     def _button(
-        master: Any, text: str, command: Callable[[], None], *, width: int = _BUTTON_WIDTH
+        self, master: Any, text: str, command: Callable[[], None], *, width: int = _BUTTON_WIDTH
     ) -> ctk.CTkButton:
-        button = dialog_kit.secondary_button(master, text, command, width=width)
+        button = dialog_kit.secondary_button(master, text, command, width=width, look=self._look)
         button.configure(text_color=theme.BUTTON_TEXT)
         return button
 
-    @staticmethod
     def _checkbox(
-        master: Any, text: str, variable: tk.BooleanVar, command: Callable[[], None]
+        self, master: Any, text: str, variable: tk.BooleanVar, command: Callable[[], None]
     ) -> ctk.CTkCheckBox:
         return ctk.CTkCheckBox(
             master,
@@ -581,9 +581,9 @@ class NamingSection:
             checkbox_height=20,
             corner_radius=5,
             font=theme.font(_TEXT_SIZE),
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            border_color=theme.EDGE,
+            fg_color=self._look.ACCENT,
+            hover_color=self._look.ACCENT_HOVER,
+            border_color=self._look.EDGE,
         )
 
     def _entry(self, variable: tk.StringVar) -> ctk.CTkEntry:
@@ -593,12 +593,11 @@ class NamingSection:
             height=dialog_kit.BUTTON_HEIGHT,
             corner_radius=dialog_kit.BUTTON_RADIUS,
             font=theme.font(dialog_kit.DETAIL_SIZE),
-            fg_color=theme.SURFACE,
-            border_color=theme.EDGE,
+            fg_color=self._look.SURFACE,
+            border_color=self._look.EDGE,
         )
 
-    @staticmethod
-    def _option_menu(master: Any, command: Callable[[str], None]) -> ctk.CTkOptionMenu:
+    def _option_menu(self, master: Any, command: Callable[[str], None]) -> ctk.CTkOptionMenu:
         return ctk.CTkOptionMenu(
             master,
             values=[""],
@@ -608,9 +607,9 @@ class NamingSection:
             corner_radius=dialog_kit.BUTTON_RADIUS,
             font=theme.font(dialog_kit.DETAIL_SIZE),
             dropdown_font=theme.font(dialog_kit.DETAIL_SIZE),
-            fg_color=theme.SURFACE,
-            button_color=theme.EDGE,
-            button_hover_color=theme.HOVER,
+            fg_color=self._look.SURFACE,
+            button_color=self._look.EDGE,
+            button_hover_color=self._look.HOVER,
             text_color=theme.BUTTON_TEXT,
             dynamic_resizing=False,
         )
@@ -842,8 +841,8 @@ class NamingSection:
                 width=_LIST_WIDTH - 2 * _LIST_PAD,
                 height=_ITEM_HEIGHT,
                 corner_radius=6,
-                fg_color=theme.SELECTED if chosen else "transparent",
-                hover_color=theme.SELECTED_HOVER if chosen else theme.CHIP_HOVER,
+                fg_color=self._look.SELECTED if chosen else "transparent",
+                hover_color=self._look.SELECTED_HOVER if chosen else self._look.CHIP_HOVER,
                 text_color=theme.BUTTON_TEXT,
                 font=theme.font(_TEXT_SIZE, bold=chosen),
                 command=functools.partial(self.select_preset, draft),

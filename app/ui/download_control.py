@@ -12,16 +12,19 @@ Hovering "⬇ Download" tells what the one-click download looks for, from Settin
 Full HD (1080p), 2.5–4 GB", `looks_for_text`); once a run grabbed something, the button's tip
 tells what it picked ("Picked 1080p · 2.8 GB", `picked_text`).
 
-Several titles can be downloaded one after another (`download_in_turn`: the calendar's
-"⬇ Download all" of a stack card): each through the same one-click run, each with its own
-state, and the batch's progress ("2 of 3") in DownloadStates as well (`BatchState`, keyed by
-the batch's titles), so a card rebuilt mid-batch picks it up too.
+Since 3.0.1 the one-click runs go through the app's download queue (app/services/
+download_queue.py; app/ui/queue_link.py mirrors it here): a title waiting for its turn shows
+"Queued" (`Phase.QUEUED`). Several titles can be downloaded one after another (the calendar
+stack's "⬇ Download all", the show window's "⬇ All missing", "Download missing"): queued as
+one batch, each with its own state, and the batch's progress ("2 of 3") in DownloadStates as
+well (`BatchState`, keyed by the batch's titles; `queued` while none has started yet), so a
+card rebuilt mid-batch picks it up too.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, Literal, Protocol, TypeVar
@@ -29,7 +32,14 @@ from typing import Any, Generic, Literal, Protocol, TypeVar
 import customtkinter as ctk
 
 from app.i18n import N_, number, t, tn
-from app.models import GrabOutcome, MediaType, QualityProfile, QuickDownloadResult, Settings
+from app.models import (
+    GrabOutcome,
+    MediaType,
+    QualityProfile,
+    QuickDownloadResult,
+    Settings,
+    Show,
+)
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
 from app.ui.text_fit import SLACK, Measure, elide_to_width, unscaled_width
@@ -55,6 +65,7 @@ MORE_TIP = N_("Choose a download yourself")
 DOWNLOAD_TIP = N_("Download")  # when the button shows only "⬇" (before what it looks for)
 WORKING_TEXT = N_("Finding the best one…")
 WORKING_SHORT = N_("Finding…")
+QUEUED_TEXT = N_("Queued")  # waiting in the download queue for its turn
 CHOOSE_TEXT = N_("Choose…")  # nothing was good enough: pick one in the search window
 GRABBED_TEXT = N_("✓ Grabbed")
 _OUTCOME_TEXT = {
@@ -88,6 +99,7 @@ def movie_key(movie_id: int) -> DownloadKey:
 
 
 class Phase(StrEnum):
+    QUEUED = "queued"  # waiting in the download queue
     WORKING = "working"
     DONE = "done"  # grabbed (by this run, or already before it)
     NOTHING = "nothing"  # no release was good enough
@@ -108,6 +120,7 @@ class BatchState:
 
     index: int
     total: int
+    queued: bool = False  # none of its titles has started yet: they wait in the queue
 
 
 def grabbed_state(result: QuickDownloadResult) -> RunState:
@@ -174,6 +187,8 @@ def control_look(base: Base, state: RunState | None) -> Look:
         return Look(
             "label", t(WORKING_TEXT), text_color=theme.TEXT_MUTED, short=(t(WORKING_SHORT),)
         )
+    if state is not None and state.phase is Phase.QUEUED:
+        return Look("label", t(QUEUED_TEXT), text_color=theme.TEXT_MUTED)
     if state is not None and state.phase is Phase.DONE:
         text = outcome_text(state.outcome) if state.outcome is not None else t(GRABBED_TEXT)
         return Look("button", text, theme.GRABBED, action="choose")
@@ -309,6 +324,15 @@ class DownloadStates:
         """The progress of the batch of `key`'s titles, while it runs."""
         return self._batches.get(key)
 
+    def batch_for(self, keys: Iterable[DownloadKey]) -> BatchState | None:
+        """The progress of a running batch holding any of `keys` (the show window's season
+        controls: their batch's key is whatever was still needed when it started)."""
+        wanted = set(keys)
+        for batch, state in self._batches.items():
+            if wanted.intersection(batch):
+                return state
+        return None
+
     def set_batch(self, key: BatchKey, state: BatchState | None) -> None:
         """Record a batch's progress (None: it ended) and repaint its titles' controls."""
         if state is None:
@@ -329,9 +353,10 @@ class DownloadStates:
             return ""
         return looks_for_text(self._settings(), key[0])
 
-    def is_working(self, key: DownloadKey) -> bool:
+    def is_active(self, key: DownloadKey) -> bool:
+        """Waiting in the download queue or working."""
         state = self._states.get(key)
-        return state is not None and state.phase is Phase.WORKING
+        return state is not None and state.phase in (Phase.QUEUED, Phase.WORKING)
 
     def set(self, key: DownloadKey, state: RunState | None) -> None:
         """Record `state` (None: back to the card's own look) and repaint the title's cards."""
@@ -373,34 +398,14 @@ class DownloadActions(Generic[T]):
     choose: Callable[[T], None]  # open the search window
     states: DownloadStates
     # One-click downloads of several titles, one after another, as the batch of the given key
-    # (`download_in_turn`); None: not offered.
+    # (the main window queues them as one batch: app/ui/queue_link.py); None: not offered.
     download_all: Callable[[BatchKey, Sequence[T]], None] | None = None
     # A one-click download of a title that was downloaded before (↻ Again → Auto); None: not
     # offered.
     download_again: Callable[[T], None] | None = None
-
-
-# One title of a batch: its key and its one-click run, which returns False when the grab
-# failed (no torrent program, an unwritable folder...): that ends the batch.
-BatchStep = tuple[DownloadKey, Callable[[], Awaitable[bool]]]
-
-
-async def download_in_turn(
-    states: DownloadStates, batch: BatchKey, steps: Sequence[BatchStep]
-) -> None:
-    """Run `steps` one after another, with the batch's progress in `states` ("2 of 3") while
-    they run. A title already being fetched on its own is left to that run; a step that fails
-    ends the batch (nothing found is no failure: on to the next)."""
-    total = len(steps)
-    try:
-        for index, (key, run) in enumerate(steps, start=1):
-            if states.is_working(key):
-                continue
-            states.set_batch(batch, BatchState(index, total))
-            if not await run():
-                break
-    finally:
-        states.set_batch(batch, None)
+    # A season pack of a show's season, with the season's titles still needed to queue instead
+    # when no pack is good enough (the show window's "⬇ Whole season"); None: not offered.
+    download_season: Callable[[Show, int, Sequence[T]], None] | None = None
 
 
 class DownloadControl(ctk.CTkFrame, Generic[T]):

@@ -1,5 +1,5 @@
-"""Settings › MediaForge › Right-click menu (app/forge/ui/settings_menu.py) inside AirGrabber's
-Settings dialog: on / off, which presets, whose menu Explorer has, the .reg files, changes kept
+"""MediaForge Settings › Right-click menu (app/forge/ui/settings_menu.py) in MediaForge's own
+Settings window: on / off, which presets, whose menu Explorer has, the .reg files, changes kept
 until Save (D9), Naming's saved presets carried along. The registry is a fake
 (tests/forge/test_context_menu.py's); the guard in tests/forge/base.py keeps the real one out."""
 
@@ -33,13 +33,10 @@ from app.forge.ui.settings_menu import (
 from app.forge.ui.settings_naming import PresetsChange
 from app.forge.ui.settings_pages import FORGE_SECTIONS
 from app.i18n import Language, t
-from app.models import Settings
-from app.services import SettingsService
-from app.ui.settings_dialog import SettingsDialog
+from app.forge.ui.settings_window import ForgeSettingsWindow
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.test_context_menu import FakeRegistry, old_mediaforge_menu
 from tests.forge.tk import pump
-from tests.test_settings_dialog import FakeProwlarr, FakeRepository, FakeShortcut
 
 NAMES = ["Auto", "Series (Folder)", "Movie (Folder)"]
 NOT_READY_TEXT = "MediaForge isn't ready yet (test)."
@@ -160,25 +157,9 @@ class MenuSettingsTests(ForgeAsyncTestCase):
             matches=FakeMatches(),
         )
 
-    async def dialog(self, forge: FakeForge) -> tuple[SettingsDialog, MenuSection]:
-        settings = SettingsService(
-            FakeRepository(),  # type: ignore[arg-type]
-            Settings(download_dir=self.tmp),
-        )
-        dialog = SettingsDialog(
-            self.root,
-            settings,
-            search=mock.MagicMock(),
-            station=mock.MagicMock(),
-            updates=SimpleNamespace(current="3.0.0"),  # type: ignore[arg-type]
-            torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
-            discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
-            prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
-            startup_shortcut=FakeShortcut(),
-            forge=cast(Any, forge),
-            section=SECTION_MENU,
-        )
-        part = dialog._forge_parts[SECTION_MENU]
+    async def dialog(self, forge: FakeForge) -> tuple[ForgeSettingsWindow, MenuSection]:
+        dialog = ForgeSettingsWindow(self.root, cast(Any, forge), section=SECTION_MENU)
+        part = dialog.parts[SECTION_MENU]
         assert isinstance(part, MenuSection)
         part.ask_save = self._ask_save
         for _ in range(50):
@@ -187,7 +168,9 @@ class MenuSettingsTests(ForgeAsyncTestCase):
             await pump(self.root, 0.02)
         return dialog, part
 
-    async def ready(self, settings: ForgeSettings | None = None) -> tuple[SettingsDialog, MenuSection, Any]:
+    async def ready(
+        self, settings: ForgeSettings | None = None
+    ) -> tuple[ForgeSettingsWindow, MenuSection, Any]:
         parts = self.parts(settings)
         dialog, part = await self.dialog(FakeForge(parts))
         self.assertTrue(part.ready)

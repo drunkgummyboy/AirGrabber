@@ -1,4 +1,4 @@
-"""Settings › MediaForge › Right-click menu: MediaForge in Explorer's right-click menu, on or off,
+"""MediaForge Settings › Right-click menu: MediaForge in Explorer's right-click menu, on or off,
 which presets it shows, and whose menu Explorer has now (MediaForge's Settings › Right-click
 menu, `ui/settings_view.py`'s `_build_menu`).
 
@@ -41,11 +41,11 @@ from app.ui.tasks import spawn
 if TYPE_CHECKING:
     from app.forge.models.preset import Preset
     from app.forge.models.settings import ForgeSettings
-    from app.ui.settings_dialog import SettingsPage
+    from app.ui.settings_layout import SettingsPage
 
 log = logging.getLogger(__name__)
 
-# -- its place in Settings (FORGE_SECTIONS in app/forge/ui/settings_pages.py) -------------------
+# -- its place in MediaForge's Settings (FORGE_SECTIONS in app/forge/ui/settings_pages.py) ------
 
 SECTION_MENU = N_("Right-click menu")
 MENU_ICON = "🖱"
@@ -149,8 +149,11 @@ class MenuSection:
         main_py: Path = MAIN_PY,
         ask_save: AskSave | None = None,
     ) -> None:
+        from app.forge.ui.settings_pages import section_look  # it imports this module
+
         self._page = page
         self._forge = forge
+        self._look = section_look(page)
         self._registry = registry
         self._main_py = main_py
         self.ask_save: AskSave = ask_save if ask_save is not None else self._ask_save
@@ -203,14 +206,14 @@ class MenuSection:
 
     # --- widgets ---------------------------------------------------------------------------------
 
-    @staticmethod
-    def _button(master: Any, text: str, command: Callable[[], None]) -> ctk.CTkButton:
-        button = dialog_kit.secondary_button(master, text, command, width=_BUTTON_WIDTH)
+    def _button(self, master: Any, text: str, command: Callable[[], None]) -> ctk.CTkButton:
+        button = dialog_kit.secondary_button(
+            master, text, command, width=_BUTTON_WIDTH, look=self._look
+        )
         button.configure(text_color=theme.BUTTON_TEXT)
         return button
 
-    @staticmethod
-    def _checkbox(master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
+    def _checkbox(self, master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
         # As Library & watching's options (app/forge/ui/settings_pages.py).
         return ctk.CTkCheckBox(
             master,
@@ -222,13 +225,13 @@ class MenuSection:
             checkbox_height=22,
             corner_radius=6,
             font=theme.font(dialog_kit.DETAIL_SIZE),
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            border_color=theme.EDGE,
+            fg_color=self._look.ACCENT,
+            hover_color=self._look.ACCENT_HOVER,
+            border_color=self._look.EDGE,
         )
 
     def _ask_save(self, title: str, name: str) -> str:
-        # Native modal dialog: the event loop pauses until it closes (as the dialog's Browse).
+        # Native modal dialog: the event loop pauses until it closes (as Settings' Browse).
         return filedialog.asksaveasfilename(
             parent=self._page.frame.winfo_toplevel(),
             title=title,

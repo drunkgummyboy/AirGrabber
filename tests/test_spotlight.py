@@ -163,9 +163,11 @@ class FakeLibrary:
     def __init__(self, entries: list[CalendarEntry]) -> None:
         self.entries = entries
         self.asked: list[tuple[date, date]] = []
+        self.people: list[int] = []  # the person each calendar was asked for
 
-    async def calendar(self, start: date, end: date) -> list[CalendarEntry]:
+    async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
         self.asked.append((start, end))
+        self.people.append(profile_id)
         return list(self.entries)
 
 
@@ -187,7 +189,7 @@ class FakeDiscovery:
         self.calls: list[str] = []
         self.show_extras_result: TitleExtras | None = extras("/show.jpg")
 
-    async def tv_dashboard(self) -> TVDashboard:
+    async def tv_dashboard(self, *, profile_id: int) -> TVDashboard:
         self.calls.append("tv_dashboard")
         if self.error:
             raise self.error
@@ -276,7 +278,7 @@ class PickingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_series_asks_a_day_either_side(self) -> None:
         spotlight_service = service([entry(1, "Tonight", airstamp=at(TODAY, 21))])
-        spotlight = await spotlight_service.spotlight(SpotlightSide.SERIES)
+        spotlight = await spotlight_service.spotlight(SpotlightSide.SERIES, profile_id=1)
         self.assertEqual(spotlight.side, SpotlightSide.SERIES)
         self.assertEqual(spotlight.airing, 1)
         self.assertEqual(spotlight.reason, SpotlightReason.TODAY)
@@ -285,7 +287,7 @@ class PickingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_episodes_trending_shows(self) -> None:
         discovery = FakeDiscovery()
-        spotlight = await service([], discovery).spotlight(SpotlightSide.SERIES)
+        spotlight = await service([], discovery).spotlight(SpotlightSide.SERIES, profile_id=1)
         self.assertEqual([item.title for item in spotlight.items], [f"Trend {i}" for i in range(1, 6)])
         self.assertTrue(all(item.reason is SpotlightReason.TRENDING for item in spotlight.items))
         self.assertEqual(spotlight.airing, 0)
@@ -293,19 +295,19 @@ class PickingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_key_or_tmdb_failing_nothing(self) -> None:
         no_key = FakeDiscovery(key=False)
-        spotlight = await service([], no_key).spotlight(SpotlightSide.SERIES)
+        spotlight = await service([], no_key).spotlight(SpotlightSide.SERIES, profile_id=1)
         self.assertEqual(spotlight.items, ())
         self.assertEqual(no_key.calls, [])  # nothing asked without a key
-        self.assertEqual((await service([], no_key).spotlight(SpotlightSide.MOVIES)).items, ())
+        self.assertEqual((await service([], no_key).spotlight(SpotlightSide.MOVIES, profile_id=1)).items, ())
         failing = FakeDiscovery()
         failing.error = TMDBError("TMDB is down")
-        self.assertEqual((await service([], failing).spotlight(SpotlightSide.SERIES)).items, ())
-        self.assertEqual((await service([], failing).spotlight(SpotlightSide.MOVIES)).items, ())
+        self.assertEqual((await service([], failing).spotlight(SpotlightSide.SERIES, profile_id=1)).items, ())
+        self.assertEqual((await service([], failing).spotlight(SpotlightSide.MOVIES, profile_id=1)).items, ())
 
     async def test_followed_episodes_without_a_key(self) -> None:
         spotlight = await service(
             [entry(1, "Mine", airstamp=at(TODAY, 21))], FakeDiscovery(key=False)
-        ).spotlight(SpotlightSide.SERIES)
+        ).spotlight(SpotlightSide.SERIES, profile_id=1)
         self.assertEqual([item.title for item in spotlight.items], ["Mine"])
 
     def test_films_new_first_then_trending(self) -> None:
@@ -323,7 +325,7 @@ class PickingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(i.title, i.reason) for i in only_trending], [("Nine", SpotlightReason.TRENDING)])
 
     async def test_movies_side(self) -> None:
-        spotlight = await service([]).spotlight(SpotlightSide.MOVIES)
+        spotlight = await service([]).spotlight(SpotlightSide.MOVIES, profile_id=1)
         self.assertEqual(spotlight.side, SpotlightSide.MOVIES)
         self.assertEqual(len(spotlight.items), MAX_ITEMS)
         self.assertEqual(spotlight.reason, SpotlightReason.NEW_TO_STREAM)
@@ -728,6 +730,7 @@ class FakeImages:
 
 class FakeSpotlight:
     def __init__(self) -> None:
+        self.people: list[int] = []  # the person each side was asked for
         self.sides: dict[SpotlightSide, Spotlight] = {
             SpotlightSide.SERIES: Spotlight(
                 side=SpotlightSide.SERIES,
@@ -752,7 +755,8 @@ class FakeSpotlight:
         }
         self.backdrops: dict[str, str | None] = {}
 
-    async def spotlight(self, side: SpotlightSide) -> Spotlight:
+    async def spotlight(self, side: SpotlightSide, *, profile_id: int) -> Spotlight:
+        self.people.append(profile_id)
         return self.sides[side]
 
     async def backdrop_url(self, item: SpotlightItem, size: str) -> str | None:
@@ -810,6 +814,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.service = FakeSpotlight()
         self.images = FakeImages()
         self.events: list[Any] = []
+        self.person = 1  # the selected person the band reads
 
     def band(self, *, motion: bool = True) -> SpotlightBand:
         band = SpotlightBand(
@@ -824,6 +829,8 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             on_search=lambda: self.events.append("search"),
             on_open=lambda item: self.events.append(("open", item.title)),
             report=lambda text, ms: self.events.append(("report", text, ms)),
+            profile=lambda: self.person,
+            on_person=lambda: self.events.append("person"),
             clock=lambda: NOW,
         )
         band.pack(fill="x")

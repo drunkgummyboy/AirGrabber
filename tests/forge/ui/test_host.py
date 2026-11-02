@@ -28,6 +28,9 @@ from app.forge.runtime import FAILED_REASON, ForgeRuntime, ForgeState
 from app.forge.services import ForgeServices
 from app.forge.ui.confirm_window import ConfirmWindow
 from app.forge.ui.host import GUESSIT, NOT_READY_TEXT, ForgeHost
+from app.forge.ui.settings_menu import SECTION_MENU
+from app.forge.ui.settings_pages import FORGE_SECTIONS, SECTION_LIBRARY
+from app.forge.ui.settings_window import ForgeSettingsWindow
 from app.forge.ui.window import ForgeWindow, parse_geometry
 from app.services.images import ImageCache
 from app.services.settings import SettingsService
@@ -60,13 +63,13 @@ class HostCase(TkCase):
             parser_ready=lambda: self.ready,
         )
         self.addAsyncCleanup(self.runtime.aclose)
-        self.settings_opened: list[int] = []
+        self.airgrabber_settings: list[int] = []
         self.restarts: list[int] = []
         self.retried: list[str] = []
         self.host = ForgeHost(
             self.root,
             self.runtime,
-            open_settings=lambda: self.settings_opened.append(1),
+            open_airgrabber_settings=lambda: self.airgrabber_settings.append(1),
             restart=lambda: self.restarts.append(1),
             retry_install=self.retried.append,
         )
@@ -141,11 +144,72 @@ class OpenTests(HostCase):
         assert saved is not None
         self.assertEqual(saved[:2], (1100, 700))
 
-    async def test_more_in_settings_opens_airgrabbers_settings(self) -> None:
+    async def test_more_in_settings_opens_mediaforges_settings_at_library(self) -> None:
         window = await self.open()
         assert window.library is not None
         window.library.more_button.invoke()
-        self.assertEqual(self.settings_opened, [1])
+        settings = self.host.settings_window
+        assert settings is not None
+        self.assertIsInstance(settings, ForgeSettingsWindow)
+        self.assertEqual(settings.section, SECTION_LIBRARY)
+        self.assertIs(settings.master, window)
+        self.assertEqual(self.airgrabber_settings, [])  # not AirGrabber's Settings
+
+
+class SettingsWindowTests(HostCase):
+    """MediaForge's own Settings window (app/forge/ui/settings_window.py) through the host."""
+
+    async def settings(self) -> tuple[ForgeWindow, ForgeSettingsWindow]:
+        window = await self.open()
+        window.band.settings_button.invoke()  # ⚙
+        settings = self.host.settings_window
+        assert settings is not None
+        settings.attributes("-alpha", 0.0)
+        await pump(window, 0.05)
+        return window, settings
+
+    async def test_the_gear_opens_it_at_its_first_section(self) -> None:
+        window, settings = await self.settings()
+        self.assertEqual(settings.section, next(iter(FORGE_SECTIONS)))
+        self.assertEqual(settings.sections, list(FORGE_SECTIONS))
+        self.assertEqual(str(settings.transient()), str(window))  # it belongs to the Forge window
+        self.assertEqual(settings.title(), "MediaForge Settings")
+        self.assertEqual(self.airgrabber_settings, [])
+
+    async def test_a_second_open_raises_the_same_one_at_the_asked_section(self) -> None:
+        window, settings = await self.settings()
+        self.assertIs(self.host.open_settings(SECTION_MENU), settings)
+        self.assertEqual(settings.section, SECTION_MENU)
+        self.assertIs(self.host.open_settings(), settings)  # ⚙ again: the page it is on
+        self.assertEqual(settings.section, SECTION_MENU)
+        assert window.library is not None
+        window.library.more_button.invoke()
+        self.assertIs(self.host.settings_window, settings)
+        self.assertEqual(settings.section, SECTION_LIBRARY)
+        tops = [w for w in window.winfo_children() if isinstance(w, ForgeSettingsWindow)]
+        self.assertEqual(tops, [settings])
+
+    async def test_open_airgrabbers_settings_calls_the_hosts_callback(self) -> None:
+        _window, settings = await self.settings()
+        settings.airgrabber_button.invoke()
+        self.assertEqual(self.airgrabber_settings, [1])
+        self.assertTrue(settings.winfo_exists())  # MediaForge's own stays open
+
+    async def test_closing_the_forge_window_closes_it_too(self) -> None:
+        window, settings = await self.settings()
+        self.host.close()
+        await pump(window, 0.05)
+        self.assertFalse(settings.winfo_exists())
+        self.assertIsNone(self.host.settings_window)
+        window = await self.open()
+        self.host.open_settings()
+        self.assertIsNotNone(self.host.settings_window)
+        await self.host.shutdown()
+        self.assertIsNone(self.host.settings_window)
+
+    async def test_without_a_forge_window_nothing_opens(self) -> None:
+        self.assertIsNone(self.host.open_settings())
+        self.assertIsNone(self.host.settings_window)
 
 
 class NotReadyTests(HostCase):
@@ -258,7 +322,7 @@ class RequestTests(HostCase):
     async def test_a_plain_request_opens_the_queue_with_its_files_and_preset(self) -> None:
         paths = self.files("in", "Dune.2021.mkv", "Heat.1995.mkv")
         self.host.handle(
-            ForgeRequest(paths=tuple(str(p) for p in paths), preset="Movie (Folder)")
+            ForgeRequest(paths=tuple(str(p) for p in paths), preset="Movie (Flat)")
         )
         self.assertTrue(self.host.windows_open)  # on its way
         await pump_until(self.root, lambda: self.host.window is not None)
@@ -269,10 +333,12 @@ class RequestTests(HostCase):
         assert window is not None and window.queue is not None
         queue = window.queue
         await pump_until(window, lambda: queue.loaded)
-        preset = queue.choices["movies"].preset
-        assert preset is not None
-        self.assertEqual(preset.name, "Movie (Folder)")
-        self.assertEqual(queue.side, "movies")
+
+        def named() -> list[str]:
+            return [getattr(queue.choice_for(i).preset, "name", "") for i in services.queue.items]
+
+        # The request's preset names the files it added (each film's band).
+        await pump_until(window, lambda: named() == ["Movie (Flat)", "Movie (Flat)"])
         self.assertEqual(window.current_page, "queue")
 
     async def test_forge_alone_opens_the_window(self) -> None:

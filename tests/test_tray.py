@@ -8,6 +8,7 @@ import threading
 import unittest
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -375,6 +376,64 @@ class TrayHostTests(unittest.TestCase):
         host.set_forge_count(5)
         self.assertEqual(icon.counts, [5])
         self.assertEqual(host._forge_count, 5)
+
+
+class TrayHostOpenTests(unittest.TestCase):
+    """A plain Open brings the window back at its start page; a show for a purpose doesn't."""
+
+    def setUp(self) -> None:
+        self.calls: list[str] = []
+        self.state = "withdrawn"
+
+    def host(self) -> TrayHost:
+        calls = self.calls
+        window: Any = SimpleNamespace(
+            winfo_exists=lambda: True,
+            state=lambda: self.state,
+            deiconify=lambda: calls.append("deiconify"),
+            lift=lambda: calls.append("lift"),
+            focus_force=lambda: calls.append("focus"),
+        )
+        settings: Any = SimpleNamespace(current=Settings())
+        return TrayHost(
+            window,
+            settings=settings,
+            on_check_now=lambda: None,
+            on_reopen=lambda: calls.append("home"),
+        )
+
+    def test_open_from_the_tray_goes_home_first(self) -> None:
+        self.host().open_window()
+        self.assertEqual(self.calls, ["home", "deiconify", "lift", "focus"])
+
+    def test_open_keeps_the_page_of_a_window_on_screen(self) -> None:
+        for state in ("normal", "zoomed", "iconic"):
+            with self.subTest(state=state):
+                self.calls.clear()
+                self.state = state
+                self.host().open_window()
+                self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
+
+    def test_show_window_keeps_the_page(self) -> None:
+        # Shown for a purpose (MediaForge's "Open AirGrabber's Settings"): no start page.
+        self.host().show_window()
+        self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
+
+    def test_a_second_start_goes_home(self) -> None:
+        host = self.host()
+        requested = iter([True])
+
+        async def run() -> None:
+            with patch("app.ui.tray._SHOW_POLL_S", 0):
+                task = asyncio.ensure_future(
+                    host._watch_show_requests(lambda: next(requested, False))
+                )
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                task.cancel()
+
+        asyncio.run(run())
+        self.assertEqual(self.calls, ["home", "deiconify", "lift", "focus"])
 
 
 def _alpha(image: Image.Image, xy: tuple[int, int]) -> int:
