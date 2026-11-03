@@ -16,7 +16,7 @@ is stored, then each `save()`; Cancel and ✕ change nothing. A section waits fo
 
 The first section, **Library & watching**, is MediaForge's Settings › Library tab
 (`ui/library_tab.py`): the download folders to watch (add / remove), what is ignored (the
-queue's Ignore: each entry with "Stop ignoring", applied on Save like the rest; app/forge/core/
+queue's Ignore: each entry's name, its path as a tooltip, with "Stop ignoring", applied on Save like the rest; app/forge/core/
 ignored.py's IgnoreService, `services.ignored`), "Use AirGrabber's downloads"
 with AirGrabber's folders and why each is (not) watched, a suggested one's Add, and what to choose
 (B-01, app/forge/core/airgrabber_folders.py), the Series and Movies library
@@ -50,6 +50,7 @@ from app.forge.ui.settings_naming import NAMING_ICON, NAMING_NOTE, SECTION_NAMIN
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
 from app.ui.tasks import spawn
+from app.ui.tooltip import add_tooltip
 
 if TYPE_CHECKING:
     import asyncio
@@ -145,7 +146,7 @@ _LABEL_WIDTH = 90  # "Series" / "Movies"
 _PATH_WRAP = 330  # a folder's path next to its label and button (CTk units)
 _LIST_WRAP = 420  # a watched folder's path next to its Remove button
 _STOP_WIDTH = 150  # "Stop ignoring"
-_IGNORED_WRAP = 380  # an ignored path next to its Stop ignoring button
+_IGNORED_WRAP = 380  # an ignored name next to its Stop ignoring button
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
 
 
@@ -187,8 +188,9 @@ def _same_folder(a: str, b: str) -> bool:
 
 
 def ignored_text(entry: IgnoredPath) -> str:
-    """An ignored entry as the list shows it: the path, a folder with 📁 before it."""
-    return f"{FOLDER_MARK}  {entry.path}" if entry.folder else str(entry.path)
+    """An ignored entry as the list shows it: its name (the whole path is its tooltip), a folder
+    with 📁 before it."""
+    return f"{FOLDER_MARK}  {entry.name}" if entry.folder else entry.name
 
 
 # -- Library & watching ---------------------------------------------------------------------------
@@ -594,7 +596,7 @@ class LibrarySection:
             ).grid(row=0, column=0, sticky="w")
         for row_no, entry in enumerate(shown):
             pady = (0 if row_no == 0 else _ROW_GAP // 2, 0)
-            ctk.CTkLabel(
+            label = ctk.CTkLabel(
                 self.ignored_list,
                 text=ignored_text(entry),
                 font=theme.font(_TEXT_SIZE),
@@ -602,7 +604,9 @@ class LibrarySection:
                 anchor="w",
                 justify="left",
                 wraplength=_IGNORED_WRAP,
-            ).grid(row=row_no, column=0, sticky="w", pady=pady)
+            )
+            label.grid(row=row_no, column=0, sticky="w", pady=pady)
+            add_tooltip(label, str(entry.path))
             button = self._button(
                 self.ignored_list,
                 t(STOP_IGNORING),

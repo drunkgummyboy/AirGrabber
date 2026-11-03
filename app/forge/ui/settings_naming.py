@@ -5,8 +5,8 @@ Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FO
 
 - **Presets**: the list in order; the chosen one is edited in place: its name, type Auto /
   Movie / TV, the format with a live sample on a sample episode and film (a `{code}` the
-  formatter doesn't know is flagged) and its extras. New adds one at the end; Delete removes the
-  chosen one, never the last.
+  formatter doesn't know is flagged), buttons that add a code at the format's cursor, and its
+  extras. New adds one at the end; Delete removes the chosen one, never the last.
 - **Library presets**: which preset names what is moved into the Series and Movies folders. The
   choice follows a preset renamed here; a preset deleted here hands it to the first one of the
   same type.
@@ -48,6 +48,7 @@ from app.i18n import N_, t
 from app.ui import dialog_kit, theme
 from app.ui.settings_layout import BOX_INNER
 from app.ui.tasks import spawn
+from app.ui.tooltip import add_tooltip
 
 if TYPE_CHECKING:
     import asyncio
@@ -81,16 +82,23 @@ TYPE_LABELS: dict[TypeHint, str] = {
     TypeHint.TV: N_("TV"),
 }
 UNKNOWN_CODES = N_("⚠ Not a known code: {codes}")
-CODES_INTRO = N_("Codes:")
-CODES: tuple[tuple[str, str], ...] = (
-    ("{ny}", N_("name (year)")),
-    ("{t}", N_("title")),
-    ("{s}", N_("season")),
-    ("{e}", N_("episode")),
-    ("{s00e00}", "S01E02"),  # an example, not a text
-    ("{en}", N_("episode name")),
+CODES_CAPTION = N_("Click to add to the format:")
+FOLDER_INSERT = "/"
+DASH_INSERT = " - "
+# The buttons under the format, row by row: what each is called and what it adds.
+FORMAT_CODES: tuple[tuple[str, str], ...] = (
+    (N_("Name (year)"), "{ny}"),
+    (N_("Title"), "{t}"),
+    (N_("Episode name"), "{en}"),
+    (N_("Season + episode"), "{s00e00}"),
+    (N_("Season"), "{s}"),
+    (N_("Episode"), "{e}"),
+    (N_("New folder"), FOLDER_INSERT),
+    (N_("Dash"), DASH_INSERT),
 )
-FOLDER_CODE = N_("/ makes a folder")
+_FIXED_EXAMPLES: dict[str, str] = {FOLDER_INSERT: "\\", DASH_INSERT: "-"}
+CODE_TIP = N_("Adds {code} to the format")
+FOLDER_TIP = N_("Whatever comes before it becomes a folder")
 NAME_NEEDED = N_("Give every preset a name.")
 NAME_MISSING = N_("Give this preset a name.")
 NAME_TWICE = N_("Two presets are called “{name}”. Give each its own name.")
@@ -175,6 +183,11 @@ _LABEL_WIDTH = 90  # "Series" / "Movies"
 _MENU_WIDTH = 260
 _BUTTON_WIDTH = 110
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
+_CODE_COLUMNS = 3
+_CODE_GAP = 4  # between the code buttons
+_CODE_LABEL_SIZE = 12
+_CODE_EXAMPLE_SIZE = 10
+_CODE_PAD_X = 7  # inside a code button; "Season + episode" just fits
 _MATCH_WRAP = _BOX_INNER - _BUTTON_WIDTH - 10
 
 
@@ -241,10 +254,15 @@ def sample_lines(fmt: str, type_hint: TypeHint) -> tuple[list[str], list[str]]:
     return lines, unknown
 
 
-def codes_hint() -> str:
-    """The codes a format can use, translated."""
-    parts = [f"{code} {t(what) if code != '{s00e00}' else what}" for code, what in CODES]
-    return f"{t(CODES_INTRO)} {' · '.join([*parts, t(FOLDER_CODE)])}"
+def code_example(code: str) -> str:
+    """What a code button's `code` gives: the formatter's own answer on the sample episode, so
+    it can't drift; the folder separator and the dash as they show in a path."""
+    fixed = _FIXED_EXAMPLES.get(code)
+    if fixed is not None:
+        return fixed
+    from app.forge.core.formatter import render  # not at import time: see the top
+
+    return "\\".join(render(code, SAMPLE_EPISODE, "").parts)
 
 
 def new_preset_name(taken: Iterable[str]) -> str:
@@ -407,6 +425,82 @@ class _Starter(Protocol):
 # -- the section -----------------------------------------------------------------------------------
 
 
+class CodeChip(ctk.CTkFrame):
+    """A button under the format: the plain word, under it what it gives. All of it is clickable;
+    the hover colour stays while the pointer moves between its parts."""
+
+    def __init__(
+        self, master: Any, look: theme.Look, text: str, code: str, on_click: Callable[[str], None]
+    ) -> None:
+        super().__init__(
+            master,
+            fg_color=look.SURFACE,
+            corner_radius=dialog_kit.BUTTON_RADIUS,
+            border_width=1,
+            border_color=look.EDGE,
+        )
+        self.code = code
+        self._on_click = on_click
+        self._surface = look.SURFACE
+        self._hover = look.CHIP_HOVER
+        self.grid_columnconfigure(0, weight=1)
+        self.title_label = ctk.CTkLabel(
+            self,
+            text=text,
+            height=0,
+            font=theme.font(_CODE_LABEL_SIZE, bold=True),
+            text_color=theme.TEXT,
+            anchor="w",
+        )
+        self.title_label.grid(row=0, column=0, sticky="ew", padx=_CODE_PAD_X, pady=(4, 0))
+        self.example_label = ctk.CTkLabel(
+            self,
+            text=code_example(code),
+            height=0,
+            font=theme.font(_CODE_EXAMPLE_SIZE),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+        )
+        self.example_label.grid(row=1, column=0, sticky="ew", padx=_CODE_PAD_X, pady=(0, 4))
+        parts: list[tk.Misc] = [self, *self._descendants(self)]
+        for widget in parts:
+            # Tk's own option: a CTk widget's configure() keeps it to its inner label.
+            widget.tk.call(str(widget), "configure", "-cursor", "hand2")
+            tk.Misc.bind(widget, "<Button-1>", self._clicked, add="+")
+            tk.Misc.bind(widget, "<Enter>", self._entered, add="+")
+            tk.Misc.bind(widget, "<Leave>", self._left, add="+")
+        shown = code.strip()  # the dash without its spaces
+        tip = t(FOLDER_TIP) if code == FOLDER_INSERT else t(CODE_TIP, code=shown)
+        self._tip = add_tooltip(self, tip)
+
+    @classmethod
+    def _descendants(cls, widget: tk.Misc) -> list[tk.Misc]:
+        found: list[tk.Misc] = []
+        # tk.Misc's: a CTkFrame's own leaves out the canvas that is most of the chip.
+        for child in tk.Misc.winfo_children(widget):
+            found += [child, *cls._descendants(child)]
+        return found
+
+    def _clicked(self, _event: tk.Event[Any]) -> str:
+        """"break": CTk's click on "all" would give the keyboard to the clicked label, after
+        `on_click` put it in the format field. The tooltip's click on "all" is skipped with it."""
+        self._tip.hide()
+        self._on_click(self.code)
+        return "break"
+
+    def _entered(self, _event: tk.Event[Any]) -> None:
+        self.configure(fg_color=self._hover)
+
+    def _left(self, event: tk.Event[Any]) -> None:
+        left, top = self.winfo_rootx(), self.winfo_rooty()
+        inside = (
+            left <= event.x_root < left + self.winfo_width()
+            and top <= event.y_root < top + self.winfo_height()
+        )
+        if not inside:  # moving between the chip's own parts is no leave
+            self.configure(fg_color=self._surface)
+
+
 class NamingSection:
     """The Naming page's contents. Changes stay in the form until Save (`problem` / `save`); a
     setting saved elsewhere meanwhile shows here unless the same setting was changed here."""
@@ -495,9 +589,25 @@ class NamingSection:
         self._place(self.format_sample, gap=6, sticky="w")
         self.unknown_label = self._note(theme.WARNING)
         self._unknown_row = self._place(self.unknown_label, gap=4, sticky="w")
-        self.codes_label = self._note(theme.TEXT_MUTED, size=dialog_kit.SMALL_SIZE)
-        self.codes_label.configure(text=codes_hint())
-        self._place(self.codes_label, gap=6, sticky="w")
+        self.codes_caption = self._note(theme.TEXT_MUTED, size=dialog_kit.SMALL_SIZE)
+        self.codes_caption.configure(text=t(CODES_CAPTION))
+        self._place(self.codes_caption, gap=6, sticky="w")
+        self.code_chips = ctk.CTkFrame(self.editor, fg_color="transparent")
+        self._place(self.code_chips, gap=4)
+        self.chips: list[CodeChip] = []
+        for column in range(_CODE_COLUMNS):
+            self.code_chips.grid_columnconfigure(column, weight=1, uniform="codes")
+        for index, (label, code) in enumerate(FORMAT_CODES):
+            chip = CodeChip(self.code_chips, look, t(label), code, self.insert_code)
+            row_no, column = divmod(index, _CODE_COLUMNS)
+            chip.grid(
+                row=row_no,
+                column=column,
+                sticky="ew",
+                padx=(_CODE_GAP if column else 0, 0),
+                pady=(_CODE_GAP if row_no else 0, 0),
+            )
+            self.chips.append(chip)
         self._caption(t(EXTRAS_CAPTION))
         checks = ctk.CTkFrame(self.editor, fg_color="transparent")
         self._place(checks, gap=2, sticky="w")
@@ -918,6 +1028,22 @@ class NamingSection:
             return
         self._edit(format=self._format.get().strip() or DEFAULT_FORMAT)
         self._refresh_editor()
+
+    def insert_code(self, code: str) -> None:
+        """Put `code` at the format field's cursor, over its selection if it has one, with the
+        cursor right after it and the keyboard back in the field. The field's trace does the rest,
+        as when typing."""
+        if self._editing is None:
+            return
+        entry = self.format_entry
+        if entry.select_present():
+            start = entry.index("sel.first")
+            entry.delete("sel.first", "sel.last")
+            entry.icursor(start)
+        position = entry.index("insert")
+        entry.insert(position, code)
+        entry.icursor(position + len(code))
+        entry.focus_set()
 
     def _type_clicked(self, label: str) -> None:
         if self._filling:

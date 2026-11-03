@@ -34,6 +34,7 @@ from app.forge.ui.settings_naming import (
     NamingSection,
     PresetDraft,
     PresetsChange,
+    code_example,
     last_preset_after,
     match_text,
     merged_presets,
@@ -206,6 +207,10 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         assert forge.parts is not None
         return cast(FakeMatches, forge.parts.matches)
 
+    @staticmethod
+    def click(part: NamingSection, code: str) -> None:
+        next(c for c in part.chips if c.code == code)._clicked(cast(Any, None))
+
     def select(self, part: NamingSection, name: str) -> None:
         draft = next(d for d in part._drafts if d.preset.name == name)
         part.preset_buttons[part._drafts.index(draft)].invoke()
@@ -303,6 +308,139 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         )
         part._format.set("{ny}")
         self.assertEqual(part.unknown_label.winfo_manager(), "")
+
+    # --- the code buttons under the format --------------------------------------------------------
+
+    async def test_the_code_chips_in_order(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        self.assertEqual(part.codes_caption.cget("text"), "Click to add to the format:")
+        self.assertEqual(
+            [(chip.title_label.cget("text"), chip.code) for chip in part.chips],
+            [
+                ("Name (year)", "{ny}"),
+                ("Title", "{t}"),
+                ("Episode name", "{en}"),
+                ("Season + episode", "{s00e00}"),
+                ("Season", "{s}"),
+                ("Episode", "{e}"),
+                ("New folder", "/"),
+                ("Dash", " - "),
+            ],
+        )
+        self.assertEqual(
+            [chip.example_label.cget("text") for chip in part.chips],
+            [code_example(chip.code) for chip in part.chips],
+        )
+        self.assertEqual(
+            [(c.grid_info()["row"], c.grid_info()["column"]) for c in part.chips],
+            [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1)],
+        )
+
+    async def test_a_click_adds_at_the_cursor(self) -> None:
+        _dialog, part, forge = await self.ready()
+        self.select(part, "Series (Flat)")
+        part._format.set("{ny}{en}")
+        part.format_entry.icursor(4)
+        self.click(part, " - ")
+        self.assertEqual(part.format_entry.get(), "{ny} - {en}")
+        self.assertEqual(part.format_entry.index("insert"), 7)
+        self.click(part, "{s00e00}")
+        self.assertEqual(part.format_entry.get(), "{ny} - {s00e00}{en}")
+        self.assertEqual(part.format_entry.index("insert"), 15)
+        # The preset and its sample follow, as when typing; stored on Save only.
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.format, "{ny} - {s00e00}{en}")
+        self.assertEqual(
+            part.format_sample.cget("text"), "↳ VisionQuest (2026) - S01E02Theseus.mkv"
+        )
+        self.assertEqual(self.stored(forge).replaced, [])
+
+    async def test_a_click_replaces_the_selection_with_the_cursor_after_it(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        part._format.set("{ny}/{t}/{e}")
+        part.format_entry.icursor(0)  # the cursor elsewhere than the selection's end
+        part.format_entry.select_range(5, 8)
+        self.click(part, "{s00e00}")
+        self.assertEqual(part.format_entry.get(), "{ny}/{s00e00}/{e}")
+        self.assertEqual(part.format_entry.index("insert"), 13)
+        self.assertFalse(part.format_entry.select_present())
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.format, "{ny}/{s00e00}/{e}")
+
+    async def test_the_selection_and_cursor_survive_losing_focus(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        part._format.set("{ny}{t}")
+        part.format_entry.focus_set()
+        part.format_entry.select_range(4, 7)
+        part.format_entry.icursor(7)
+        part.name_entry.focus_set()
+        await pump(self.root, 0.02)
+        part.insert_code("{en}")
+        self.assertEqual(part.format_entry.get(), "{ny}{en}")
+        self.assertEqual(part.format_entry.index("insert"), 8)
+
+    async def test_a_click_puts_the_keyboard_in_the_field(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        with mock.patch.object(part.format_entry, "focus_set") as focus_set:
+            result = part.chips[0]._clicked(cast(Any, None))
+        focus_set.assert_called_once_with()
+        self.assertEqual(result, "break")  # CTk's click on "all" would take the focus back
+
+    async def test_all_of_a_chip_is_clickable(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        chip = part.chips[0]
+        parts = (
+            chip,
+            chip._canvas,
+            chip.title_label._label,
+            chip.title_label._canvas,
+            chip.example_label._label,
+            chip.example_label._canvas,
+        )
+        for widget in parts:
+            bound = tk.Misc.bind(widget)
+            for sequence in ("<Button-1>", "<Enter>", "<Leave>"):
+                self.assertIn(sequence, bound)
+            self.assertEqual(str(widget.tk.call(str(widget), "cget", "-cursor")), "hand2")
+
+    async def test_a_click_without_a_preset_does_nothing(self) -> None:
+        _dialog, part, _forge = await self.ready()
+        before = part.format_entry.get()
+        part._editing = None
+        part.insert_code("{t}")
+        self.assertEqual(part.format_entry.get(), before)
+
+    async def test_the_chip_keeps_its_hover_colour_between_its_parts(self) -> None:
+        dialog, part, _forge = await self.ready()
+        dialog.update()
+        chip = part.chips[0]
+        look = forge_look()
+        self.assertEqual(chip.cget("fg_color"), look.SURFACE)
+        chip._entered(cast(Any, None))
+        self.assertEqual(chip.cget("fg_color"), look.CHIP_HOVER)
+        x, y = chip.winfo_rootx(), chip.winfo_rooty()
+        chip._left(cast(Any, SimpleNamespace(x_root=x, y_root=y)))  # on to the label
+        self.assertEqual(chip.cget("fg_color"), look.CHIP_HOVER)
+        chip._left(cast(Any, SimpleNamespace(x_root=x - 1, y_root=y)))  # off the chip
+        self.assertEqual(chip.cget("fg_color"), look.SURFACE)
+
+    async def test_dutch_chips(self) -> None:
+        i18n.set_language(Language.NL)
+        _dialog, part, _forge = await self.ready()
+        self.assertEqual(part.codes_caption.cget("text"), "Klik om toe te voegen aan de opmaak:")
+        self.assertEqual(
+            [chip.title_label.cget("text") for chip in part.chips],
+            [
+                "Naam (jaar)",
+                "Titel",
+                "Afleveringsnaam",
+                "Seizoen + afl.",
+                "Seizoen",
+                "Aflevering",
+                "Nieuwe map",
+                "Streepje",
+            ],
+        )
 
     # --- new / edit / rename / delete, stored on Save ---------------------------------------------
 
@@ -715,6 +853,21 @@ class NamingRulesTests(ForgeTestCase):
         lines, unknown = sample_lines("{ny}/{x}{x}", TypeHint.TV)
         self.assertEqual(lines, [r"VisionQuest (2026)\{x}{x}.mkv"])
         self.assertEqual(unknown, ["x"])
+
+    def test_code_examples_come_from_the_formatter(self) -> None:
+        for code, example in (
+            ("{ny}", "VisionQuest (2026)"),
+            ("{t}", "VisionQuest"),
+            ("{en}", "Theseus"),
+            ("{s00e00}", "S01E02"),
+            ("{s}", "01"),
+            ("{e}", "02"),
+        ):
+            self.assertEqual(code_example(code), example)
+            lines, _unknown = sample_lines(code, TypeHint.TV)
+            self.assertEqual(lines, [example + settings_naming.SAMPLE_EXTENSION])
+        self.assertEqual(code_example("/"), "\\")
+        self.assertEqual(code_example(" - "), "-")
 
     def test_match_texts(self) -> None:
         self.assertEqual(match_text(OFFICE), "the office → The Office (2005) · show")

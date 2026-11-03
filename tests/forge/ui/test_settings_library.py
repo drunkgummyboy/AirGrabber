@@ -434,6 +434,7 @@ class IgnoredBoxTests(LibrarySettingsCase):
 
     COURSE = r"D:\Downloads\tv\Python Course"
     CLIP = r"D:\Downloads\tv\Holiday.Clip.mp4"
+    CLIP_NAME = "Holiday.Clip.mp4"
 
     def ignored_ready(
         self, ignored: FakeIgnored
@@ -463,18 +464,24 @@ class IgnoredBoxTests(LibrarySettingsCase):
     async def test_lists_entries_and_stop_ignoring_waits_for_save(self) -> None:
         source = FakeIgnored(ignored_entry(self.COURSE, folder=True), ignored_entry(self.CLIP))
         dialog, part, fake = self.ignored_ready(source)
-        self.assertEqual(labels(part.ignored_list), [f"📁  {self.COURSE}", self.CLIP])
+        self.assertEqual(labels(part.ignored_list), ["📁  Python Course", self.CLIP_NAME])
         buttons = [w for w in part.ignored_list.winfo_children() if isinstance(w, ctk.CTkButton)]
         self.assertEqual([b.cget("text") for b in buttons], ["Stop ignoring", "Stop ignoring"])
         buttons[0].invoke()
-        self.assertEqual(labels(part.ignored_list), [self.CLIP])
+        self.assertEqual(labels(part.ignored_list), [self.CLIP_NAME])
         self.assertEqual(source.stopped, [])  # kept until Save
         self.assertEqual(part.unignored, [Path(self.COURSE)])
         self.assertTrue(await dialog._save_all())
         self.assertEqual(source.stopped, [Path(self.COURSE)])
         self.assertEqual(fake.updates, [])  # no setting changed
         self.assertEqual(part.unignored, [])
-        self.assertEqual(labels(part.ignored_list), [self.CLIP])
+        self.assertEqual(labels(part.ignored_list), [self.CLIP_NAME])
+
+    async def test_the_whole_path_is_the_tooltip(self) -> None:
+        source = FakeIgnored(ignored_entry(self.COURSE, folder=True), ignored_entry(self.CLIP))
+        with mock.patch("app.forge.ui.settings_pages.add_tooltip") as tip:
+            self.ignored_ready(source)
+        self.assertEqual([call.args[1] for call in tip.call_args_list], [self.COURSE, self.CLIP])
 
     async def test_cancel_keeps_them_ignored(self) -> None:
         source = FakeIgnored(ignored_entry(self.CLIP))
@@ -490,7 +497,7 @@ class IgnoredBoxTests(LibrarySettingsCase):
         source = FakeIgnored()
         _dialog, part, _fake = self.ignored_ready(source)
         source.set(ignored_entry(self.CLIP))
-        self.assertEqual(labels(part.ignored_list), [self.CLIP])
+        self.assertEqual(labels(part.ignored_list), [self.CLIP_NAME])
 
     async def test_dutch(self) -> None:
         i18n.set_language(Language.NL)

@@ -227,6 +227,33 @@ class SeasonControlTests(SeasonWindowTestCase):
         control.choose.invoke()
         self.assertEqual(chosen, [TvTarget(SHOW, 1, None)])  # the pack's releases
 
+    async def test_with_plex_the_whole_season_shows_after_an_earlier_grab(self) -> None:
+        info = details(downloaded=frozenset(e.id for e in S1))
+        window = self.open(self.actions, info)
+        await self.ready(window, 1)
+        control = self.control(window)  # grabbed isn't had: only what's in Plex counts
+        assert control is not None
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
+        control.auto.invoke()
+        # The pack again; its fallback still leaves out what was grabbed before.
+        self.assertEqual(self.seasons, [(SHOW.id, 1, [])])
+
+    async def test_with_plex_the_whole_season_shows_while_part_is_in_plex(self) -> None:
+        info = details(in_plex=frozenset({S1[0].id, S1[1].id}), downloaded=frozenset({S1[2].id}))
+        window = self.open(self.actions, info)
+        await self.ready(window, 1)
+        self.assertIsNotNone(self.control(window))
+
+    async def test_with_plex_the_whole_season_shows_when_plex_has_it_all(self) -> None:
+        info = details(in_plex=frozenset(e.id for e in S1))
+        window = self.open(self.actions, info)
+        await self.ready(window, 1)
+        control = self.control(window)
+        assert control is not None
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
+        control.auto.invoke()
+        self.assertEqual(self.seasons, [(SHOW.id, 1, [])])  # the pack; no episode as fallback
+
     async def test_an_airing_season_offers_all_missing(self) -> None:
         window = self.open(self.actions)
         await self.ready(window)
@@ -240,11 +267,13 @@ class SeasonControlTests(SeasonWindowTestCase):
         control.auto.invoke()
         self.assertEqual(self.batches, [((key(2, 2),), ["S02E02"])])
 
-    async def test_nothing_needed_or_nothing_aired_no_control(self) -> None:
+    async def test_nothing_missing_the_whole_season_and_nothing_aired_no_control(self) -> None:
         info = details(in_plex=frozenset({S2[0].id, S2[1].id}), missing=frozenset())
         window = self.open(self.actions, info)
         await self.ready(window, 2)
-        self.assertIsNone(self.control(window))  # All missing (0): hidden
+        control = self.control(window)  # All missing (0) gives way
+        assert control is not None
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
         assert window._missing_label is not None
         self.assertEqual(window._missing_label.cget("text"), "Nothing missing")
         window._select_season(3)
@@ -268,7 +297,9 @@ class SeasonControlTests(SeasonWindowTestCase):
         info = details(tracked=False, latest_season=None, missing=frozenset(), in_plex=frozenset())
         window = self.open(self.actions, info)
         await self.ready(window, 2)
-        self.assertIsNone(self.control(window))
+        control = self.control(window)
+        assert control is not None
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
         self.assertIsNone(window._missing_label)
 
     async def test_without_plex_only_the_whole_season(self) -> None:
@@ -277,9 +308,10 @@ class SeasonControlTests(SeasonWindowTestCase):
         )
         window = self.open(self.actions, info)
         await self.ready(window, 2)
-        self.assertIsNone(self.control(window))  # no "All missing" without Plex
+        airing = self.control(window)  # no "All missing" without Plex
+        assert airing is not None
+        self.assertEqual(airing.auto.cget("text"), "⬇ Whole season")
         self.assertIsNone(window._missing_label)
-        self.assertFalse(window._season_bar.winfo_manager())
         self.assertTrue(all(row._mark_slot is None for row in window._rows.values()))
         window._select_season(1)
         for _ in range(3):

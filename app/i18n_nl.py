@@ -1409,6 +1409,12 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "The show window always has a season's download buttons, also when it's already in Plex.":
+        "Het serievenster heeft altijd de downloadknoppen van een seizoen, ook als het al in Plex staat.",
+    "MediaForge's format codes are now buttons: click one to add it to the format.":
+        "De codes voor de opmaak in MediaForge zijn nu knoppen: klik erop om ze aan de opmaak toe te voegen.",
+    "MediaForge's Ignored list shows just the names; hover over one for its whole path.":
+        "De lijst Genegeerd in MediaForge toont alleen de namen; wijs er een aan voor het hele pad.",
     "New here? \"Let's get started\" lets you pick a few current series to follow in one go.":
         "Nieuw hier? Met \"Aan de slag\" kies je in één keer een paar actuele series om te volgen.",
     "It opens from the empty calendar or from My shows (+ Pick shows…).":

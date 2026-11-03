@@ -19,11 +19,11 @@ and a plain hint says what a key adds.
 
 Above the selected season's rows its bar (3.0.1): with Plex, on a tracked show's latest season
 "3 missing", and for any season its download control (SeasonActions, in the rows' style):
-"⬇ Whole season" + "☰ Choose…" once it has finished airing (the season pack through the
-download queue; when none is good enough the queue fetches its episodes not grabbed yet instead
-and the status bar says so; ☰ Choose… shows the pack's releases), with Plex "⬇ All missing (3)"
-while it airs (exactly the missing episodes the bar above counts, not the new ones; queued as
-one batch; hidden at 0). Their looks follow the queue: "Queued", "Finding the best one…" / "Downloading 2
+"⬇ Whole season" + "☰ Choose…" once an episode has aired, also when it was grabbed before or
+Plex has it all (the season pack through the download queue; when none is good enough the queue
+fetches its episodes not grabbed yet instead and the status bar says so; ☰ Choose… shows the
+pack's releases), with Plex "⬇ All missing (3)" in its place while it airs and episodes are
+missing (exactly the ones the bar above counts, not the new ones; queued as one batch). Their looks follow the queue: "Queued", "Finding the best one…" / "Downloading 2
 of 3…", then the outcome.
 """
 
@@ -349,7 +349,7 @@ def season_marks(details: ShowDetails, season: int | None) -> tuple[list[int], l
 
 # What the season bar's download control offers: "whole" = ⬇ Whole season (a season pack, its
 # episodes not grabbed yet when there is none) + ☰ Choose… (the pack's releases); "missing" =
-# ⬇ All missing (n) (the season's missing episodes; only with Plex).
+# ⬇ All missing (n) (the season's missing episodes; only with Plex, while it airs).
 SeasonKind = Literal["whole", "missing"]
 
 
@@ -811,8 +811,8 @@ class _Follow:
 
 class SeasonActions(RowActions[SeasonItem]):
     """A season's download control in the show window's season bar, in the rows' style (an
-    outlined button, a text-style ☰ Choose…): "⬇ Whole season" + "☰ Choose…" once the season
-    has finished airing, "⬇ All missing (3)" while it airs; while they run the queue's states
+    outlined button, a text-style ☰ Choose…): "⬇ Whole season" + "☰ Choose…", or
+    "⬇ All missing (3)" while it airs with episodes missing; while they run the queue's states
     (`season_look`)."""
 
     def __init__(
@@ -1307,30 +1307,28 @@ class ShowDetailsWindow(TitleInfoWindow):
         )
 
     def _season_item(self, details: ShowDetails, season: int) -> SeasonItem | None:
-        """What the season's download control works on, while it shows: "⬇ Whole season" once
-        the season has finished airing (when the main window offers season packs), else, with
-        Plex, "⬇ All missing (n)" while it airs. With Plex either only while episodes are still
-        needed or its run has something to tell; without Plex "⬇ Whole season" always (what
-        is had or missing isn't shown), its fallback the episodes not grabbed yet."""
+        """What the season's download control works on: "⬇ All missing (n)" while the season
+        airs, Plex is connected and episodes are missing (or that run has something to tell),
+        else "⬇ Whole season" (when the main window offers season packs), always once an
+        episode has aired, also when it was grabbed before or Plex has it all (owner's decision,
+        as a row's ⬇ Auto); its fallback the episodes not grabbed yet and not in Plex."""
         kind = season_kind(details.episodes, season, _now())
-        if kind is None or (kind == "whole" and self._episode_actions.download_season is None):
-            return None
-        if kind == "missing" and not details.plex_connected:
+        if kind is None:
             return None
         states = self._episode_actions.states
         needed = season_needed(details, season, states.get)
-        if kind == "missing":  # exactly what "N missing" counts: not the new ones
-            needed = tuple(entry for entry in needed if details.is_missing(entry.episode))
         keys = tuple(
             entry_key(entry) for entry in season_entries(details, season)
             if entry.episode.number is not None
         )
-        item = SeasonItem(details.show, season, kind, needed, keys)
-        if not details.plex_connected:
-            return item
-        running = states.batch_for(keys) is not None
-        own = kind == "whole" and states.get(item.key) is not None
-        return item if needed or running or own else None
+        if kind == "missing" and details.plex_connected:
+            # Exactly what "N missing" counts: not the new ones.
+            missing = tuple(entry for entry in needed if details.is_missing(entry.episode))
+            if missing or states.batch_for(keys) is not None:
+                return SeasonItem(details.show, season, "missing", missing, keys)
+        if self._episode_actions.download_season is None:
+            return None
+        return SeasonItem(details.show, season, "whole", needed, keys)
 
     def _paint_season_actions(self, item: SeasonItem | None) -> None:
         """The season's download control for `item` (None: none): updated in place for the

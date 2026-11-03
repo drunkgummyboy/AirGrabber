@@ -464,7 +464,9 @@ class ShowWindowTests(SeasonWindowTestCase):
         await self.ready(window)
         self.assertTrue(all(r.mark is None and r._mark_slot is None for r in window._rows.values()))
         self.assertIsNone(window._missing_label)
-        self.assertIsNone(window._season_actions)  # no "All missing" without Plex
+        control = window._season_actions  # no "All missing" without Plex
+        assert control is not None
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
         # Connected again: the cues come back.
         self.library.info = details()
         for listener in listeners:
