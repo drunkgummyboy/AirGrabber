@@ -72,7 +72,6 @@ from app.ui.missing_control import (
     MissingActions,
     MissingRuns,
     MissingRunState,
-    have_status_text,
     outcome_status_text,
     queued_run_report,
 )
@@ -169,6 +168,14 @@ _OFF_PAGE_SETTINGS = frozenset(
         # Who is selected: a switch reloads the pages itself (_on_profiles_changed), once that
         # person's watchlist is read.
         "current_profile",
+        # Plex's link: connecting, disconnecting and a check that changes what counts as had
+        # reload the pages themselves (through the library's listeners, app/services/plex.py).
+        "plex_client_id",
+        "plex_token",
+        "plex_server_id",
+        "plex_server_name",
+        "plex_server_uri",
+        "plex_sections_off",
     }
 )
 
@@ -378,14 +385,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
             choose=self._search_episode,
             states=self._download_states,
             download_all=self._download_episodes,  # calendar stacks, the show window's seasons
-            download_again=self._download_episode_again,  # ↻ Again (show window)
             download_season=self._download_season,  # the show window's "⬇ Whole season"
         )
         self._movie_actions: DownloadActions[Movie] = DownloadActions(
             download=self._download_movie,
             choose=self._grab_movie,
             states=self._download_states,
-            download_again=self._download_movie_again,  # ↻ Again (film window)
         )
         # Subtitles asked for by hand (CC ▾): their state per title, shared by every view.
         self._subtitle_runs = SubtitleRuns()
@@ -395,13 +400,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             fetch=self._fetch_subtitles,
             runs=self._subtitle_runs,
         )
-        # "Download missing": its run state per show, shared by every button that shows it.
+        # "Download missing" (with Plex): its run state per show, shared by every button that
+        # shows it.
         self._missing_runs = MissingRuns()
         self._missing_actions = MissingActions(
-            download=self._download_missing,
-            mark_have=self._mark_have,
-            unmark_have=self._unmark_have,
-            runs=self._missing_runs,
+            download=self._download_missing, runs=self._missing_runs
         )
         # What the info windows' releases panels work with ("☰ Choose…" shows them there).
         releases = PanelServices(
@@ -423,7 +426,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             episode_actions=self._episode_actions,
             downloads_changed=services.downloads.subscribe,
             profile=lambda: services.profiles.current_id,  # a window is for the person then
-            missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
             subtitles_changed=self._on_subtitles_saved,
             subtitle_actions=self._subtitle_actions,
@@ -443,6 +445,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             subtitle_mark=self._film_subtitle_mark,
             subtitles_changed=self._on_subtitles_saved,
             releases=releases,
+            in_plex=self._film_in_plex,
+            plex_changed=services.library.subscribe,  # a Plex check that changed something
         )
 
         self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))
@@ -464,7 +468,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._settings_seen = services.settings.current
         self._unsubscribe_settings = services.settings.subscribe(self._on_settings_changed)
         self._unsubscribe_library = services.library.subscribe(self._on_library_changed)
-        # A grab flags episodes ("✓ Grabbed") and films as downloaded.
+        # A grab changes what is still missing (with Plex) and offers subtitles.
         self._unsubscribe_downloads = services.downloads.subscribe(self._reload_pages)
         # The automatic downloads: a tray notification (or the status bar) per event.
         self._auto_throttle = AutoNoticeThrottle()
@@ -703,6 +707,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
         # Its problems arrive in _on_subtitle_event.
         spawn(self._services.subtitles.run_periodic(), name="subtitles")
+        # What is in Plex: checked now, then every 30 minutes (a change reloads the pages).
+        spawn(self._services.plex.run_periodic(), name="plex")
         # The Downloads page's progress and the header badge (they listen to it themselves).
         spawn(self._services.download_status.run_periodic(), name="download-status")
         spawn(self._services.images.prune(), name="poster-prune")
@@ -861,9 +867,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         found = await self._services.subtitles.movie_languages(movie_id)
         return subtitle_mark(found, self._services.settings.current.subtitle_languages)
 
+    async def _film_in_plex(self, movie_id: int, imdb_id: str | None) -> bool:
+        """Whether a film is in Plex (its window's quiet ✓)."""
+        return (await self._services.library.plex_films()).has(movie_id, imdb_id)
+
     async def _film_downloaded(self, movie_id: int) -> bool:
-        """Whether a film is in the download history (its window's ✓ Downloaded)."""
-        return movie_id in await self._services.library.downloaded_movie_ids()
+        """Whether a film is in the download history (its window offers its subtitles; it
+        never shows it as had)."""
+        return await self._services.library.film_downloaded(movie_id)
 
     def _fetch_subtitles(self, key: DownloadKey, languages: tuple[str, ...]) -> None:
         """A CC menu's request: fetch the title's subtitles now (forced: a request by hand
@@ -1064,25 +1075,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     # Every one-click download goes into the app's download queue (QueueLink), which no
     # window owns: closing a window never cancels one, and they run a couple at a time.
+    # A click by hand on one title (⬇ / ⬇ Auto, ⬇ Whole season's pack) downloads it also when
+    # it was grabbed before (`again`: the user asked for it; 3.1.0 never shows a grab); the
+    # batches that fetch what is missing ("All missing", "Download missing", a stack's
+    # "Download all", a season's fallback) skip what the download history has.
 
     def _download_episode(self, entry: CalendarEntry) -> None:
-        item = self._episode_item(entry)
-        if item is None:  # a special: nothing to download by (its card says Search)
-            self._search_episode(entry)
-            return
-        self._queue_link.download(item)
-
-    def _download_episode_again(self, entry: CalendarEntry) -> None:
-        """↻ Again → Auto: the one-click download of an episode downloaded before."""
         item = self._episode_item(entry, again=True)
-        if item is None:
+        if item is None:  # a special: nothing to download by (its card says Search)
             self._search_episode(entry)
             return
         self._queue_link.download(item)
 
     def _episode_item(self, entry: CalendarEntry, *, again: bool = False) -> QueuedDownload | None:
         """An episode's one-click download (None for a special, which has no number to
-        download by). `again`: also when downloaded before."""
+        download by). `again`: also when it was grabbed before (a click by hand)."""
         show, episode = entry.show, entry.episode
         if episode.number is None:
             return None
@@ -1105,15 +1112,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
         return QueuedDownload(label=label, target=target, request=request, again=again)
 
     def _download_season(self, show: Show, season: int, needed: Sequence[CalendarEntry]) -> None:
-        """The show window's "⬇ Whole season": the season's pack; when none is good enough,
-        the episodes still `needed` instead (the queue does that, and says so)."""
+        """The show window's "⬇ Whole season": the season's pack (a click by hand: also when
+        grabbed before); when none is good enough, the episodes still `needed` (not grabbed
+        yet) instead (the queue does that, and says so)."""
         fallback = tuple(
             item for entry in needed if (item := self._episode_item(entry)) is not None
         )
         pack = self._tv_item(show, season, None)
         self._queue_link.download(
             QueuedDownload(
-                label=pack.label, target=pack.target, request=pack.request, fallback=fallback
+                label=pack.label,
+                target=pack.target,
+                request=pack.request,
+                again=True,
+                fallback=fallback,
             )
         )
 
@@ -1149,7 +1161,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.info("Film %d: no TMDB description to download it again: %s", movie_id, exc)
             self._report(t("Couldn't look up {title} on TMDB", title=title), _DOWNLOAD_STATUS_MS)
             return
-        self._download_movie_again(movie)
+        self._download_movie(movie)
 
     def _download_episodes(self, batch: BatchKey, entries: Sequence[CalendarEntry]) -> None:
         """A calendar stack's "⬇ Download all" (and the show window's "⬇ All missing"): its
@@ -1158,19 +1170,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
         items = [item for entry in entries if (item := self._episode_item(entry)) is not None]
         self._queue_link.download_batch(batch, items)
 
-    def _download_movie(self, movie: Movie, *, again: bool = False) -> None:
+    def _download_movie(self, movie: Movie) -> None:
+        """A film's ⬇ / ⬇ Auto (a click by hand: also when it was grabbed before)."""
+
         async def request() -> SearchRequest:  # when its turn comes
             details = await self._movie_details(movie)
             return self._services.search.movie_request(movie, details)
 
         target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie.id)
         self._queue_link.download(
-            QueuedDownload(label=movie_title(movie), target=target, request=request, again=again)
+            QueuedDownload(label=movie_title(movie), target=target, request=request, again=True)
         )
-
-    def _download_movie_again(self, movie: Movie) -> None:
-        """↻ Again → Auto: the one-click download of a film downloaded before."""
-        self._download_movie(movie, again=True)
 
     async def _movie_details(self, movie: Movie) -> MovieDetails | None:
         """The film's TMDB details (for its IMDb id), as the releases panel waits for them."""
@@ -1186,9 +1196,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- missing episodes ----------------------------------------------------------------------
 
     def _download_missing(self, show: Show) -> None:
-        """Start "Download missing" for a tracked show, unless its run is going already: its
-        missing episodes (at most MAX_PER_RUN, oldest first) queued as one batch in the
-        download queue."""
+        """Start "Download missing" for a tracked show (offered only with Plex), unless its run
+        is going already: its missing episodes (at most MAX_PER_RUN, oldest first) queued as
+        one batch in the download queue."""
         runs = self._missing_runs
         if runs.is_working(show.id):
             return
@@ -1229,23 +1239,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if not self._queue_link.download_batch(batch, items, on_progress=progress, on_done=done):
             runs.set(show.id, None)  # the same episodes are queued already as a batch
 
-    def _mark_have(self, show: Show, episode_ids: tuple[int, ...]) -> None:
-        """ "I already have this": the episodes no longer count as missing."""
-        spawn(self._set_have(show, episode_ids, have=True), name="mark-have")
-
-    def _unmark_have(self, show: Show, episode_ids: tuple[int, ...]) -> None:
-        """ "Mark as missing again"."""
-        spawn(self._set_have(show, episode_ids, have=False), name="unmark-have")
-
-    async def _set_have(self, show: Show, episode_ids: tuple[int, ...], *, have: bool) -> None:
-        library = self._services.library
-        if have:
-            await library.mark_have(episode_ids)
-        else:
-            await library.unmark_have(episode_ids)
-        # The library's listeners reload the pages and the show windows.
-        self._report(have_status_text(show.name, len(episode_ids), have=have), 6000)
-
     def _report(self, text: str, clear_after_ms: int) -> None:
         try:
             self.set_status(text, clear_after_ms=clear_after_ms)
@@ -1281,6 +1274,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             images=self._services.images,
             library=self._services.library,
             backup=self._services.backup,
+            plex=self._services.plex,
             section=section,
         )
 

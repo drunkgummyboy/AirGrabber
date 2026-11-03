@@ -1,9 +1,11 @@
 """Weekly episode calendar: tracked episodes from SQL, plus suggested shows per day. Both are
 the selected person's (Settings' `current_profile`, read at every load; app/services/profiles.py).
 
-Missing episodes (`LibraryService.missing_between`: aired at least a day ago, not downloaded,
-not marked "I already have this") get the cards' amber note; new ones (`new_between`: aired
-less than a day ago) a quiet blue "New" note. Several episodes of one show on one day share a
+While Plex is connected (`LibraryService.plex_connected`; without it the page shows nothing of
+what you have or miss, owner's decision for 3.1.0), missing episodes (`missing_between`: aired
+at least a day ago, neither in Plex nor downloaded) get the cards' amber note; new ones
+(`new_between`: aired less than a day ago) a quiet blue "New" note; the stack cards' rows say
+which are in Plex (`plex_between`). Several episodes of one show on one day share a
 stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
 unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
 
@@ -521,9 +523,11 @@ class CalendarView(BaseView):
             self._note.configure(text="")
 
         entries = await self._library.calendar(start, end, profile_id=profile_id)
+        # What you have and miss: with Plex only (the calls answer "nothing" without it).
+        marks = self._library.plex_connected
         missing = await self._library.missing_between(start, end, profile_id=profile_id)
         new = await self._library.new_between(start, end, profile_id=profile_id)
-        had = await self._library.have_between(start, end)
+        in_plex = await self._library.plex_between(start, end)
         if not self.winfo_exists():
             return
         self._profile_id = profile_id
@@ -534,9 +538,10 @@ class CalendarView(BaseView):
             by_day(entries),
             today=today,
             scale=scale,
+            marks=marks,
             missing=missing,
-            had=had,
             new=new,
+            in_plex=in_plex,
         )
 
         failed = False
@@ -637,14 +642,16 @@ class CalendarView(BaseView):
         *,
         today: date,
         scale: CardScale,
+        marks: bool = False,
         missing: Collection[int] = frozenset(),
-        had: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
+        in_plex: Collection[int] = frozenset(),
     ) -> dict[date, ctk.CTkFrame]:
         """Fill the empty grid `weeks` (`_new_grid`): one cell per day with its tracked
-        episodes, a show's episodes of one day on one stack card (`missing`: the ids of the
-        episodes that get the amber note; `had`: those marked "I already have this"; `new`:
-        those aired less than a day ago, a blue "New" note). Returns the cells.
+        episodes, a show's episodes of one day on one stack card. `marks`: Plex is connected
+        (what you have and miss shows); then `missing`: the ids of the episodes that get the
+        amber note; `new`: those aired less than a day ago, a blue "New" note; `in_plex`:
+        those in Plex. Returns the cells.
 
         Yields to the event loop after each day: a whole week of poster cards takes Tk ~250 ms
         to draw. Cancelled at a yield, it leaves a partial grid for the next load to destroy.
@@ -669,7 +676,14 @@ class CalendarView(BaseView):
             style = card_style(day, today=today)
             for group in stack_entries(tracked.get(day, ())):
                 card = self._episode_card(
-                    cell, group, style=style, scale=scale, missing=missing, had=had, new=new
+                    cell,
+                    group,
+                    style=style,
+                    scale=scale,
+                    marks=marks,
+                    missing=missing,
+                    new=new,
+                    in_plex=in_plex,
                 )
                 card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()
@@ -682,14 +696,15 @@ class CalendarView(BaseView):
         *,
         style: CardStyle,
         scale: CardScale,
-        missing: Collection[int],
-        had: Collection[int],
+        marks: bool = False,
+        missing: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
+        in_plex: Collection[int] = frozenset(),
     ) -> ctk.CTkFrame:
         """The card of one show's episodes of the day: a single episode's card, or a stack
-        card for more."""
-        marked = any(entry.episode.id in missing for entry in group)
-        fresh = any(entry.episode.id in new for entry in group)
+        card for more. Without Plex (`marks` False) no note: nothing is missing or new."""
+        marked = marks and any(entry.episode.id in missing for entry in group)
+        fresh = marks and any(entry.episode.id in new for entry in group)
         if len(group) == 1:
             entry = group[0]
             if style == "full":
@@ -722,9 +737,10 @@ class CalendarView(BaseView):
                 actions=self._episode_actions,
                 scale=scale,
                 on_open_show=self._on_open_show,
-                had=had,
                 unfolded=key in self._unfolded,
                 on_fold=lambda unfolded: self._remember_fold(key, unfolded),
+                marks=marks,
+                in_plex=in_plex,
                 new=new,
             )
         return CompactStackCard(
@@ -734,7 +750,8 @@ class CalendarView(BaseView):
             scale=scale,
             on_open_show=self._on_open_show,
             missing=marked,
-            had=had,
+            marks=marks,
+            in_plex=in_plex,
             new=new,
         )
 

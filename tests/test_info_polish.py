@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any, cast
 
 import customtkinter as ctk
@@ -20,7 +19,7 @@ from PIL import Image
 from app.models import CalendarEntry, Episode, InfoLayout, ShowDetails
 from app.ui import theme
 from app.ui.download_control import Base, DownloadActions, DownloadStates
-from app.ui.missing_control import MissingActions, MissingRuns, PopupMenu
+from app.ui.missing_control import PopupMenu
 from app.ui.row_actions import RowActions
 from app.ui.show_details import (
     EPISODE_ROW_HEIGHT,
@@ -225,8 +224,9 @@ NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 
 
 class EpisodeMarkTests(WidgetTestCase):
-    def row(self, **kwargs: Any) -> tuple[_EpisodeRow, list[tuple[Any, ...]]]:
-        calls: list[tuple[Any, ...]] = []
+    """With Plex (the window passes the marks): an episode's quiet mark, no options."""
+
+    def row(self, **kwargs: Any) -> _EpisodeRow:
         actions = DownloadActions[CalendarEntry](
             download=lambda item: None, choose=lambda item: None, states=DownloadStates()
         )
@@ -236,16 +236,15 @@ class EpisodeMarkTests(WidgetTestCase):
             state=kwargs.pop("state", "downloadable"),
             now=NOW,
             actions=actions,
-            on_mark=lambda *args: calls.append(args),
             **kwargs,
         )
         row.pack(fill="x")
-        return row, calls
+        return row
 
-    async def test_missing_a_dot_an_amber_line_and_the_options_under_the_dots(self) -> None:
-        row, calls = self.row(mark="missing", marks_shown=True)
+    async def test_missing_a_dot_and_an_amber_line(self) -> None:
+        row = self.row(mark="missing", marks_shown=True)
         await self.settle()
-        assert row._mark_slot is not None and row.more is not None and row._stripe is not None
+        assert row._mark_slot is not None and row._stripe is not None
         [label] = row._mark_slot.winfo_children()
         self.assertEqual(str(label.cget("text")), "Missing")
         self.assertIsNotNone(label.cget("image"))  # the dot
@@ -253,18 +252,10 @@ class EpisodeMarkTests(WidgetTestCase):
         self.assertEqual(label.cget("text_color"), theme.WARNING)
         self.assertEqual(row._stripe.winfo_x(), 0)  # along the left edge
         self.assertEqual(row._stripe.winfo_height(), row.winfo_height())
-        # ⋯ right after ⬇ Auto (and ☰ Choose…), at the row's end.
-        assert row.row_actions is not None
-        self.assertGreater(row.more.winfo_rootx(), row.row_actions.auto.winfo_rootx())
-        self.assertEqual(row.more.cget("fg_color"), "transparent")
-        self.assertEqual(row.more.cget("text_color"), theme.BUTTON_TEXT)
-        row.more.invoke()
-        self.assertEqual(calls, [(EPISODE, "missing", row.more, None)])
-        row._row_right_clicked(SimpleNamespace(x_root=40, y_root=50))
-        self.assertEqual(calls[-1], (EPISODE, "missing", row, (40, 50)))
+        self.assertFalse(hasattr(row, "more"))  # no ⋯: no marks of your own (3.1.0)
 
-    async def test_have_is_a_quiet_check_new_is_blue_without_the_line(self) -> None:
-        row, calls = self.row(mark="have", marks_shown=True)
+    async def test_in_plex_is_a_quiet_check_new_is_blue_without_the_line(self) -> None:
+        row = self.row(mark="plex", marks_shown=True)
         await self.settle()
         assert row._mark_slot is not None
         [label] = row._mark_slot.winfo_children()
@@ -272,7 +263,6 @@ class EpisodeMarkTests(WidgetTestCase):
         self.assertIsNone(label.cget("image"))
         self.assertEqual(label.cget("text_color"), theme.TEXT_MUTED)
         self.assertIsNone(row._stripe)
-        self.assertIsNotNone(row.more)
         later = EPISODE.model_copy(update={"airstamp": NOW - timedelta(hours=2)})
         row.set_state(ENTRY.model_copy(update={"episode": later}), "downloadable", NOW, mark="new", marks_shown=True)
         await self.settle()
@@ -281,31 +271,29 @@ class EpisodeMarkTests(WidgetTestCase):
         self.assertIsNotNone(label.cget("image"))
         self.assertEqual(label.cget("text_color"), theme.LINK)
         self.assertIsNone(row._stripe)
-        row.open_options()
-        self.assertEqual(calls[-1][:2], (later, "new"))
 
-    async def test_rows_without_options_keep_the_dots_room(self) -> None:
-        marked, _ = self.row(mark="missing", marks_shown=True, slot_width=220)
-        plain, calls = self.row(mark=None, marks_shown=True, state="downloaded", slot_width=220)
+    async def test_rows_without_a_mark_keep_its_room(self) -> None:
+        marked = self.row(mark="missing", marks_shown=True, slot_width=220)
+        plain = self.row(mark=None, marks_shown=True, slot_width=220)
         later = EPISODE.model_copy(update={"airstamp": NOW + timedelta(days=3)})
-        upcoming, _ = self.row(mark=None, marks_shown=True, state="upcoming", slot_width=220)
+        upcoming = self.row(mark=None, marks_shown=True, state="upcoming", slot_width=220)
         upcoming.set_state(ENTRY.model_copy(update={"episode": later}), "upcoming", NOW, marks_shown=True)
         await self.settle()
-        self.assertIsNone(plain.more)
-        self.assertIsNone(upcoming.more)
-        plain.open_options()
-        plain._row_right_clicked(SimpleNamespace(x_root=1, y_root=1))
-        self.assertEqual(calls, [])  # no options: nothing opens
         xs = {row._slot.winfo_rootx() for row in (marked, plain, upcoming)}
         self.assertEqual(len(xs), 1)  # the rows stay aligned
 
-    async def test_a_marked_row_turning_plain_loses_its_line_and_dots(self) -> None:
-        row, _calls = self.row(mark="missing", marks_shown=True)
+    async def test_without_plex_no_mark_slot_at_all(self) -> None:
+        row = self.row()  # the window shows no marks without Plex
         await self.settle()
-        row.set_state(ENTRY, "downloaded", NOW, mark=None, marks_shown=True)
+        self.assertIsNone(row._mark_slot)
+        self.assertIsNone(row._stripe)
+
+    async def test_a_marked_row_turning_plain_loses_its_line(self) -> None:
+        row = self.row(mark="missing", marks_shown=True)
+        await self.settle()
+        row.set_state(ENTRY, "downloadable", NOW, mark=None, marks_shown=True, grabbed=True)
         await self.settle()
         self.assertIsNone(row._stripe)
-        self.assertIsNone(row.more)
 
     def test_the_stripe_image(self) -> None:
         image = stripe_image((12, 78), 12, 4, line=(200, 150, 0), fill=(36, 36, 36), outside=BG)
@@ -320,7 +308,7 @@ class EpisodeMarkTests(WidgetTestCase):
 
 
 class RowActionsTests(WidgetTestCase):
-    async def test_without_choose_only_auto_shows_and_again_still_offers_a_pick(self) -> None:
+    async def test_without_choose_only_auto_shows(self) -> None:
         actions = DownloadActions[CalendarEntry](
             download=lambda item: None, choose=lambda item: None, states=DownloadStates()
         )
@@ -332,13 +320,7 @@ class RowActionsTests(WidgetTestCase):
         await self.settle()
         self.assertTrue(row.auto.winfo_manager())
         self.assertFalse(row.choose.winfo_manager())
-        row.set_base(Base("grabbed"))
-        await self.settle()
-        row.open_again()
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("☰ Choose a release…",))
-        menu.close()
+        self.assertIsNone(PopupMenu._open)
 
 
 # -- the show window's ⋯ menu -------------------------------------------------------------------
@@ -355,39 +337,38 @@ def marked_episode(number: int, *, hours_ago: float) -> Episode:
 MARKED = (
     marked_episode(1, hours_ago=24 * 9),  # downloaded
     marked_episode(2, hours_ago=24 * 6),  # missing
-    marked_episode(3, hours_ago=24 * 3),  # I already have it
+    marked_episode(3, hours_ago=24 * 3),  # in Plex
     marked_episode(4, hours_ago=3),  # new
 )
 
 
 class MarkedLibrary(ShowLibrary):
+    plex = True
+
     async def show_details(self, show_id: int, *, profile_id: int) -> ShowDetails:
         ids = [episode.id for episode in MARKED]
+        if not self.plex:
+            return ShowDetails(
+                show=SHOW, episodes=MARKED, tracked=True, downloaded=frozenset({ids[0]})
+            )
         return ShowDetails(
             show=SHOW,
             episodes=MARKED,
             tracked=True,
+            plex_connected=True,
             latest_season=3,
             downloaded=frozenset({ids[0]}),
             missing=frozenset({ids[1]}),
-            have=frozenset({ids[2]}),
+            in_plex=frozenset({ids[2]}),
             new=frozenset({ids[3]}),
         )
 
 
-class ShowWindowMenuTests(WindowsTestCase):
-    async def test_the_dots_and_a_right_click_open_the_rows_options(self) -> None:
-        marked: list[tuple[int, ...]] = []
-        unmarked: list[tuple[int, ...]] = []
-        missing = MissingActions(
-            download=lambda show: None,
-            mark_have=lambda show, ids: marked.append(ids),
-            unmark_have=lambda show, ids: unmarked.append(ids),
-            runs=MissingRuns(),
-        )
+class ShowWindowMarkTests(WindowsTestCase):
+    async def open_marked(self, library: MarkedLibrary) -> ShowDetailsWindow:
         shows = ShowWindows(
             self.root,
-            library=cast_to(Any, MarkedLibrary()),
+            library=cast_to(Any, library),
             discovery=cast_to(Any, WindowDiscovery()),
             images=cast(Any, FakeImages()),
             status=no_status,
@@ -396,7 +377,6 @@ class ShowWindowMenuTests(WindowsTestCase):
             ),
             downloads_changed=no_subscribe,
             profile=lambda: 1,
-            missing_actions=missing,
         )
         self.addCleanup(shows.close)
         shows.open_show(SHOW)
@@ -404,25 +384,30 @@ class ShowWindowMenuTests(WindowsTestCase):
             await self.settle()
         window = shows._live().get(SHOW.id)
         assert isinstance(window, ShowDetailsWindow)
+        return window
+
+    async def test_with_plex_the_marks_and_no_options(self) -> None:
+        window = await self.open_marked(MarkedLibrary())
         rows = [window._rows[episode.id] for episode in MARKED]
-        self.assertEqual([row.mark for row in rows], [None, "missing", "have", "new"])
-        self.assertEqual([row.more is not None for row in rows], [False, True, True, True])
+        # The downloaded one gets no ✓: only Plex counts as had.
+        self.assertEqual([row.mark for row in rows], [None, "missing", "plex", "new"])
         self.assertEqual([row._stripe is not None for row in rows], [False, True, False, False])
-        assert rows[1].more is not None
-        rows[1].more.invoke()
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("I already have this",))
-        menu.buttons[0].invoke()
-        self.assertEqual(marked, [(MARKED[1].id,)])
-        rows[2]._row_right_clicked(SimpleNamespace(x_root=200, y_root=200))
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("Mark as missing again",))
-        menu.buttons[0].invoke()
-        self.assertEqual(unmarked, [(MARKED[2].id,)])
-        # The season's own ⋯ is as it was.
-        self.assertTrue(window._season_more.winfo_manager())
+        rows[2].event_generate("<Button-3>", x=5, y=5)  # a right-click opens nothing
+        self.assertIsNone(PopupMenu._open)
+        assert window._missing_label is not None
+        self.assertEqual(window._missing_label.cget("text"), "1 missing")
+
+    async def test_without_plex_no_marks_at_all(self) -> None:
+        library = MarkedLibrary()
+        library.plex = False
+        window = await self.open_marked(library)
+        rows = [window._rows[episode.id] for episode in MARKED]
+        self.assertEqual([row.mark for row in rows], [None] * 4)
+        self.assertTrue(all(row._mark_slot is None and row._stripe is None for row in rows))
+        self.assertIsNone(window._missing_label)
+        # The first was grabbed: its controls look like any other (no ✓ Downloaded).
+        kinds = [row.row_actions.look.kind for row in rows if row.row_actions and row.row_actions.look]
+        self.assertEqual(kinds, ["download"] * 4)
 
 
 if __name__ == "__main__":

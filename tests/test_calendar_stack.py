@@ -179,15 +179,26 @@ class RangeTextTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
-    def test_row_states(self) -> None:
+    def test_row_states_with_plex(self) -> None:
+        def state(entry: CalendarEntry, run: RunState | None = None, **kw: Any) -> str:
+            return row_state(entry, run, kw.get("in_plex", ()), kw.get("new", ()), marks=True)
+
+        self.assertEqual(state(ep(1, 1, 1, aired=False)), "not_aired")
+        # Grabbed (before, or by a run just now) and not in Plex yet: on its way, nothing said.
+        self.assertEqual(state(ep(1, 1, 1, done=True)), "quiet")
+        self.assertEqual(state(ep(1, 1, 1), RunState(Phase.DONE, GrabOutcome.SENT)), "quiet")
+        in_plex = ep(1, 1, 1, done=True)
+        self.assertEqual(state(in_plex, in_plex={in_plex.episode.id}), "plex")
+        self.assertEqual(state(ep(1, 1, 1)), "needed")
+        self.assertEqual(state(ep(1, 1, 1), RunState(Phase.NOTHING)), "needed")
+        self.assertEqual(state(ep(1, 1, 1), RunState(Phase.WORKING)), "needed")
+        fresh = ep(1, 1, 1)
+        self.assertEqual(state(fresh, new={fresh.episode.id}), "new")
+
+    def test_row_states_without_plex_say_nothing(self) -> None:
+        for entry in (ep(1, 1, 1), ep(1, 1, 2, done=True)):
+            self.assertEqual(row_state(entry, None, (), marks=False), "quiet")
         self.assertEqual(row_state(ep(1, 1, 1, aired=False), None, ()), "not_aired")
-        self.assertEqual(row_state(ep(1, 1, 1, done=True), None, ()), "downloaded")
-        self.assertEqual(row_state(ep(1, 1, 1), RunState(Phase.DONE), ()), "downloaded")
-        had = ep(1, 1, 1)
-        self.assertEqual(row_state(had, None, {had.episode.id}), "have")
-        self.assertEqual(row_state(ep(1, 1, 1), None, ()), "needed")
-        self.assertEqual(row_state(ep(1, 1, 1), RunState(Phase.NOTHING), ()), "needed")
-        self.assertEqual(row_state(ep(1, 1, 1), RunState(Phase.WORKING), ()), "needed")
 
     def test_download_all_fetches_the_aired_episodes_still_needed(self) -> None:
         done, needed, had, later, special, grabbed_now = (
@@ -207,12 +218,20 @@ class StateTests(unittest.TestCase):
 class LookTests(LanguageTestCase):
     def test_download_all_counts_the_episodes_still_needed(self) -> None:
         entries = (ep(1, 1, 7, done=True), ep(1, 1, 8), ep(1, 1, 9))
-        look = stack_look(entries, no_states, None, ())
+        look = stack_look(entries, no_states, None, (), marks=True)
         self.assertEqual((look.layout, look.action), ("button", "download"))
         self.assertEqual(look.texts, ("⬇ Download all (2)", "⬇ Download (2)", "⬇ All (2)", "⬇ 2"))
         self.assertEqual(look.color, theme.ACCENT)
-        had = stack_look(entries, no_states, None, {entries[1].episode.id})
-        self.assertEqual(had.text, "⬇ Download all (1)")
+        in_plex = stack_look(entries, no_states, None, {entries[1].episode.id}, marks=True)
+        self.assertEqual(in_plex.text, "⬇ Download all (1)")
+
+    def test_without_plex_no_download_all(self) -> None:
+        # "Download all (n)" counts the missing ones: without Plex there are none to count.
+        entries = (ep(1, 1, 7, done=True), ep(1, 1, 8), ep(1, 1, 9))
+        look = stack_look(entries, no_states, None, ())
+        self.assertEqual((look.layout, look.text, look.action), ("label", "", None))
+        # The queue's states still show: a download happening isn't tracking.
+        self.assertEqual(stack_look(entries, no_states, BatchState(1, 2), ()).text, "Downloading 1 of 2…")
 
     def test_the_batch_at_work(self) -> None:
         entries = (ep(1, 1, 7), ep(1, 1, 8), ep(1, 1, 9))
@@ -227,18 +246,20 @@ class LookTests(LanguageTestCase):
         look = stack_look(entries, state, None, ())
         self.assertEqual((look.layout, look.text), ("label", "Finding the best one…"))
 
-    def test_all_downloaded_is_a_check_like_a_single_card(self) -> None:
+    def test_all_downloaded_shows_no_check(self) -> None:
+        # No "✓ Grabbed" (3.1.0), with Plex or without: nothing to say.
         entries = (ep(1, 1, 7, done=True), ep(1, 1, 8, done=True), ep(1, 1, 9, aired=False))
-        look = stack_look(entries, no_states, None, ())
-        self.assertEqual(
-            (look.text, look.action, look.color), ("✓ Grabbed", "choose", theme.GRABBED)
-        )
+        for marks in (True, False):
+            look = stack_look(entries, no_states, None, (), marks=marks)
+            self.assertEqual((look.layout, look.text, look.action), ("label", "", None))
         # Grabbed by this session's runs, all sent the same way: their outcome.
         fresh = (ep(1, 1, 7), ep(1, 1, 8))
         sent = {entry_key(entry): RunState(Phase.DONE, GrabOutcome.SENT) for entry in fresh}
+        look = stack_look(fresh, states_of(sent), None, (), marks=True)
+        self.assertEqual((look.text, look.action, look.color), ("✓ Sent", "choose", theme.GRABBED))
         self.assertEqual(stack_look(fresh, states_of(sent), None, ()).text, "✓ Sent")
         mixed = {**sent, entry_key(fresh[0]): RunState(Phase.DONE, GrabOutcome.SAVED)}
-        self.assertEqual(stack_look(fresh, states_of(mixed), None, ()).text, "✓ Grabbed")
+        self.assertEqual(stack_look(fresh, states_of(mixed), None, (), marks=True).text, "")
 
     def test_nothing_aired(self) -> None:
         entries = (ep(1, 1, 7, aired=False), ep(1, 1, 8, aired=False))
@@ -247,15 +268,18 @@ class LookTests(LanguageTestCase):
 
     def test_the_compact_cards_icon(self) -> None:
         entries = (ep(1, 1, 7), ep(1, 1, 8))
-        download = stack_icon(stack_look(entries, no_states, None, ()))
+        download = stack_icon(stack_look(entries, no_states, None, (), marks=True))
         self.assertEqual((download.text, download.action), ("⬇", "download"))
         self.assertEqual(download.tip, "⬇ Download all (2)")
+        self.assertEqual(stack_icon(stack_look(entries, no_states, None, ())).text, "")  # no Plex
         working = stack_icon(stack_look(entries, no_states, BatchState(1, 2), ()))
         self.assertEqual(
             (working.text, working.action, working.tip), ("…", None, "Downloading 1 of 2…")
         )
         done = tuple(entry.model_copy(update={"is_downloaded": True}) for entry in entries)
-        check = stack_icon(stack_look(done, no_states, None, ()))
+        self.assertEqual(stack_icon(stack_look(done, no_states, None, (), marks=True)).text, "")
+        sent = {entry_key(entry): RunState(Phase.DONE, GrabOutcome.SENT) for entry in entries}
+        check = stack_icon(stack_look(entries, states_of(sent), None, ()))
         self.assertEqual((check.text, check.action, check.color), ("✓", "choose", theme.GRABBED))
         later = tuple(ep(1, 1, n, aired=False) for n in (7, 8))
         self.assertEqual(stack_icon(stack_look(later, no_states, None, ())).text, "")
@@ -266,11 +290,12 @@ class TextTests(LanguageTestCase):
         self.assertEqual(pill_texts(3, False), ("3 episodes ▾", "3 ▾"))
         self.assertEqual(pill_texts(2, True), ("2 episodes ▴", "2 ▴"))
         self.assertEqual(
-            [row_text(kind) for kind in ("downloaded", "needed", "not_aired", "have")],
-            ["✓ downloaded", "still needed", "not aired", "✓ have it"],
+            [row_text(kind) for kind in ("plex", "needed", "not_aired", "new", "quiet")],
+            ["✓ in Plex", "still needed", "not aired", "new", ""],
         )
         entry = ep(1, 1, 8)
-        self.assertEqual(menu_label(entry, None, ()), "S01E08 · still needed")
+        self.assertEqual(menu_label(entry, None, (), marks=True), "S01E08 · still needed")
+        self.assertEqual(menu_label(entry, None, ()), "S01E08")  # without Plex
 
     def test_dutch(self) -> None:
         i18n.set_language(Language.NL)
@@ -280,8 +305,8 @@ class TextTests(LanguageTestCase):
             ("⬇ Alle downloaden (2)", "⬇ Download (2)", "⬇ Alle (2)", "⬇ 2"),
         )
         self.assertEqual(
-            [row_text(kind) for kind in ("downloaded", "needed", "not_aired", "have")],
-            ["✓ gedownload", "nog nodig", "niet uitgezonden", "✓ heb ik"],
+            [row_text(kind) for kind in ("plex", "needed", "not_aired", "new")],
+            ["✓ in Plex", "nog nodig", "niet uitgezonden", "nieuw"],
         )
         look = stack_look((ep(1, 1, 7), ep(1, 1, 8)), no_states, BatchState(2, 2), ())
         self.assertEqual(look.text, "2 van 2 downloaden…")
@@ -529,7 +554,7 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         opened: list[Show] = []
         images = FakeImages()
         stack = self.stack()
-        card = self.card(stack, images, on_open_show=opened.append)
+        card = self.card(stack, images, on_open_show=opened.append, marks=True)
         await self.lay_out(card)
         self.assertEqual(self.text(card, card._code), "S01E07 – E09")
         self.assertEqual(self.text(card, card._pill_text), "3 episodes ▾")
@@ -553,9 +578,23 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         card._open()  # the poster or the name
         self.assertEqual(opened, [stack.show])
 
+    async def test_without_plex_the_wide_stack_card_says_nothing_of_have_or_missing(self) -> None:
+        stack = self.stack()
+        card = self.card(stack, unfolded=True)  # no `marks`: Plex isn't connected
+        await self.lay_out(card)
+        self.assertEqual(self.text(card, card._note), "")
+        control = card._control
+        assert isinstance(control, StackControl)
+        look = control.current_look()
+        self.assertEqual((look.layout, look.text, look.action), ("label", "", None))
+        control._click()
+        self.assertEqual(self.batches, [])
+        self.assertEqual([self.text(card, row.state) for row in card._rows], ["", "", ""])
+        self.assertEqual([row.look.text if row.look else "" for row in card.rows], ["⬇"] * 3)
+
     async def test_pill_unfolds_and_folds_the_rows(self) -> None:
         folds: list[bool] = []
-        card = self.card(self.stack(), on_fold=folds.append)
+        card = self.card(self.stack(), on_fold=folds.append, marks=True)
         await self.lay_out(card)
         folded = int(card.cget("height"))
         self.assertEqual(card.rows, [])
@@ -568,20 +607,23 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         codes = [self.text(card, row.code) for row in card._rows]
         states = [self.text(card, row.state) for row in card._rows]
         self.assertEqual(codes, ["S01E07", "S01E08", "S01E09"])
-        self.assertEqual(states, ["✓ downloaded", "still needed", "still needed"])
+        # E07 was grabbed and isn't in Plex yet: neither ✓ nor still needed.
+        self.assertEqual(states, ["", "still needed", "still needed"])
         canvas: Any = card._art
         self.assertEqual(canvas.itemcget(card._rows[1].state, "fill"), theme.pick(theme.WARNING))
         looks = [row.look.text if row.look else "" for row in card.rows]
-        self.assertEqual(looks, ["✓", "⬇", "⬇"])
+        self.assertEqual(looks, ["⬇", "⬇", "⬇"])
         # Rows sit under the pill.
         self.assertGreater(canvas.coords(card._rows[0].code)[1], canvas.coords(card._pill)[1])
         # A right-click on a row's buttons: its search window; its ⬇: that episode.
         card.rows[1].choose()
         card.rows[2].main.invoke()
         self.assertEqual(self.asked, ["choose S01E08", "download S01E09"])
-        # A run's outcome shows in the row.
-        self.actions.states.set(entry_key(card._rows[2].entry), RunState(Phase.DONE))
-        self.assertEqual(self.text(card, card._rows[2].state), "✓ downloaded")
+        # Grabbed by a run: it is no longer needed (on its way), its button shows the outcome.
+        sent = RunState(Phase.DONE, GrabOutcome.SENT)
+        self.actions.states.set(entry_key(card._rows[2].entry), sent)
+        self.assertEqual(self.text(card, card._rows[2].state), "")
+        self.assertEqual(card.rows[2].look.text if card.rows[2].look else "", "✓")
         card.toggle()
         self.assertEqual(card.rows, [])
         self.assertEqual(int(card.cget("height")), folded)
@@ -641,7 +683,12 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         opened: list[Show] = []
         stack = self.stack(ep(8, 1, 7), ep(8, 1, 8), ep(8, 1, 9, done=True))
         card = CompactStackCard(
-            self.root, stack, actions=self.actions, missing=True, on_open_show=opened.append
+            self.root,
+            stack,
+            actions=self.actions,
+            missing=True,
+            marks=True,
+            on_open_show=opened.append,
         )
         self.assertEqual(card.badge.cget("text"), "3")
         self.assertEqual(card.range_label.cget("text"), "S01E07 – E09")
@@ -659,7 +706,7 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         # A right-click lists the episodes; each opens its search window.
         self.assertEqual(
             [label for label, _ in card.menu_items()],
-            ["S01E07 · still needed", "S01E08 · still needed", "S01E09 · ✓ downloaded"],
+            ["S01E07 · still needed", "S01E08 · still needed", "S01E09"],
         )
         with mock.patch("app.ui.calendar_stack.popup_menu") as popup:
             card._right_click()
@@ -672,12 +719,24 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card.look.text, "…")
         self.actions.states.set_batch(stack.keys, None)
         for entry in entries:
-            self.actions.states.set(entry_key(entry), RunState(Phase.DONE))
+            self.actions.states.set(entry_key(entry), RunState(Phase.DONE, GrabOutcome.SENT))
+        # E09 was grabbed before, not by a run now: no ✓ for the stack (that would tell).
+        self.assertEqual(card.look.text, "")
+        self.actions.states.set(entry_key(stack.entries[2]), RunState(Phase.DONE, GrabOutcome.SENT))
         self.assertEqual(card.look.text, "✓")
         with mock.patch("app.ui.calendar_stack.popup_menu") as popup:
             card.main.invoke()
         popup.assert_called_once()
         self.assertNotEqual(card.name_label._label.bind("<Button-3>"), "")
+
+    async def test_compact_stack_card_without_plex(self) -> None:
+        stack = self.stack(ep(9, 1, 7), ep(9, 1, 8), ep(9, 1, 9, done=True))
+        card = CompactStackCard(self.root, stack, actions=self.actions)
+        self.assertIsNone(card.note)  # no note line at all
+        assert card.look is not None
+        self.assertEqual(card.look.text, "")  # no "download all", no ✓
+        self.assertFalse(card.main.winfo_manager())
+        self.assertEqual([label for label, _ in card.menu_items()], ["S01E07", "S01E08", "S01E09"])
 
 
 if __name__ == "__main__":

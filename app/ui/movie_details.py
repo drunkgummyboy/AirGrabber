@@ -1,10 +1,12 @@
 """The film info window: the shared info look (app/ui/title_info.py: the backdrop with "▶ Watch
 trailer", the poster, title, meta line, genres, synopsis, cast) with a film's actions: ⬇ Auto
 (the one-click download) and, in "tabs", ☰ Choose… (its Releases tab; "side" shows the
-releases right beside the actions, so it has none), or once downloaded ✓ Downloaded with
-↻ Again and the subtitles' CC ▾ (app/ui/row_actions.py, app/ui/subtitle_control.py); the
-watchlist button and IMDb. Its releases (app/ui/release_panel.py) are searched as soon as the
-window opens: beside the info ("side") or in the Releases tab ("tabs"), which says how many
+releases right beside the actions, so it has none) (app/ui/row_actions.py), once grabbed the
+subtitles' CC ▾ (app/ui/subtitle_control.py); the watchlist button and IMDb, and a quiet ✓
+(tip "In Plex") while Plex is connected and the film is in the user's Plex libraries
+(app/services/plex.py), the only thing that counts as had: a film AirGrabber downloaded gets no
+✓ (owner's decision for 3.1.0). Its releases (app/ui/release_panel.py) are searched as soon as
+the window opens: beside the info ("side") or in the Releases tab ("tabs"), which says how many
 there are ("Releases (18)").
 
 Opened from the film cards' cover and title (the Movies page, the watchlist shelf, search
@@ -27,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.i18n import t
 from app.models import InfoLayout, Movie, MovieDetails, TitleExtras
 from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.ui import theme
@@ -41,11 +44,13 @@ from app.ui.media_cards import (
     tmdb_poster_size,
     tmdb_rating,
 )
+from app.ui.missing_control import HAVE_MARK, PLEX_TIP, mark_label
 from app.ui.release_panel import MovieTarget, PanelServices, ReleasePanel
 from app.ui.row_actions import RowActions
 from app.ui.shelf_filter import MOVIE_GENRES, Genre, genre_name, genres_of
 from app.ui.subtitle_control import CCControl, SubtitleActions
 from app.ui.tasks import spawn
+from app.ui.tooltip import add_tooltip
 from app.ui.title_info import (
     TitleInfoWindow,
     exists,
@@ -132,11 +137,13 @@ class MovieDetailsWindow(TitleInfoWindow):
         subtitle_mark: Callable[[int], Awaitable[str]] | None = None,
         layout: InfoLayout = InfoLayout.SIDE,
         releases: PanelServices | None = None,
+        in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
     ) -> None:
-        """`downloaded(tmdb_id)`: whether the film is in the download history (✓ Downloaded
-        and its subtitles); `subtitle_actions` / `subtitle_mark(tmdb_id)`: its CC ▾ menu and
-        the subtitles saved for it ("CC EN NL"). `releases`: what its releases panel works
-        with (without it there is none)."""
+        """`downloaded(tmdb_id)`: whether the film is in the download history (its subtitles
+        are offered; it is never shown as had); `subtitle_actions` / `subtitle_mark(tmdb_id)`:
+        its CC ▾ menu and the subtitles saved for it ("CC EN NL"). `releases`: what its
+        releases panel works with (without it there is none). `in_plex(tmdb_id, imdb_id)`:
+        whether the film is in Plex (the quiet ✓ `plex_mark`, made only then)."""
         super().__init__(
             master,
             title=movie.title,
@@ -149,14 +156,15 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._discovery = discovery
         self._today = today
         self._downloaded_lookup = downloaded
+        self._in_plex_lookup = in_plex
         self._subtitle_mark = subtitle_mark
-        self._is_downloaded = False
+        self._is_in_plex = False
         self._details: MovieDetails | None = None
         self._extras: TitleExtras | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._state_task: asyncio.Task[None] | None = None
 
-        # As wide as what it shows (⬇ Auto + ☰ Choose…, ✓ Downloaded + ↻ Again, …).
+        # As wide as what it shows (⬇ Auto + ☰ Choose…, a run's outcome, …).
         self.download = RowActions(
             self.buttons,
             item=movie,
@@ -167,7 +175,7 @@ class MovieDetailsWindow(TitleInfoWindow):
             align="left",
             choose=self.layout is not InfoLayout.SIDE,  # "side": the releases are beside it
         )
-        # The subtitles of a downloaded film (CC ▾), right of the download controls.
+        # The subtitles of a grabbed film (CC ▾), right of the download controls.
         self.cc_control = CCControl(
             self.buttons, key=movie_key(movie.id), actions=subtitle_actions, height=ROW_HEIGHT
         )
@@ -194,6 +202,8 @@ class MovieDetailsWindow(TitleInfoWindow):
             border_color=theme.EDGE,
             command=self._open_imdb,
         )
+        # In Plex: the quiet ✓ of an episode you have, after the buttons (made only then).
+        self.plex_mark: ctk.CTkLabel | None = None
         self._show_buttons()
         self._paint()
 
@@ -212,15 +222,24 @@ class MovieDetailsWindow(TitleInfoWindow):
         return panel
 
     def _show_buttons(self) -> None:
-        """⬇ Auto (+ ☰ Choose… in "tabs"; or ✓ Downloaded + ↻ Again), CC ▾ while it has
-        something to show, the watchlist button, IMDb."""
+        """⬇ Auto (+ ☰ Choose… in "tabs"), CC ▾ while it has something to show, the
+        watchlist button, IMDb, and the ✓ while it is in Plex."""
         cc = [self.cc_control] if self.cc_control.has_content else []
-        self.buttons.set_items([self.download, *cc, self.watch_button, self.imdb_button])
+        if self._is_in_plex and self.plex_mark is None:
+            self.plex_mark = mark_label(
+                self.buttons, HAVE_MARK, theme.TEXT_MUTED, dot=False, height=ROW_HEIGHT
+            )
+            add_tooltip(self.plex_mark, t(PLEX_TIP))
+        plex = [self.plex_mark] if self.plex_mark is not None else []
+        self.buttons.set_items([self.download, *cc, self.watch_button, self.imdb_button, *plex])
+        if not self._is_in_plex and self.plex_mark is not None:
+            self.plex_mark.destroy()
+            self.plex_mark = None
 
     def refresh_state(self) -> None:
         """Ask again whether the film was downloaded and which subtitles it has (a grab, or
-        subtitles saved)."""
-        if self._downloaded_lookup is None:
+        subtitles saved), and whether it is in Plex (Plex connected or disconnected too)."""
+        if self._downloaded_lookup is None and self._in_plex_lookup is None:
             return
         if self._state_task is not None and not self._state_task.done():
             self._state_task.cancel()
@@ -230,15 +249,17 @@ class MovieDetailsWindow(TitleInfoWindow):
 
     async def _load_state(self) -> None:
         lookup = self._downloaded_lookup
-        assert lookup is not None
-        downloaded = await lookup(self._movie.id)
+        downloaded = await lookup(self._movie.id) if lookup is not None else False
         mark = ""
         if downloaded and self._subtitle_mark is not None:
             mark = await self._subtitle_mark(self._movie.id)
+        in_plex = False
+        if self._in_plex_lookup is not None:
+            imdb_id = self._details.imdb_id if self._details is not None else None
+            in_plex = await self._in_plex_lookup(self._movie.id, imdb_id)
         if not self.winfo_exists():
             return
-        self._is_downloaded = downloaded
-        self.download.set_base(self.download_base(), downloaded=downloaded)
+        self._is_in_plex = in_plex
         self.cc_control.show(mark, shown=downloaded)
         self._show_buttons()
 
@@ -278,8 +299,10 @@ class MovieDetailsWindow(TitleInfoWindow):
         if not self.winfo_exists():
             return
         self._details = details
-        self.download.set_base(self.download_base(), downloaded=self._is_downloaded)
+        self.download.set_base(self.download_base())
         self._paint()
+        if details.imdb_id and not self._is_in_plex and self._in_plex_lookup is not None:
+            self.refresh_state()  # a film Plex knows only by its IMDb id
 
     async def _load_extras(self) -> None:
         try:
@@ -335,24 +358,28 @@ class MovieWindows:
         subtitle_mark: Callable[[int], Awaitable[str]] | None = None,
         subtitles_changed: Subscribe | None = None,
         releases: PanelServices | None = None,
+        in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
+        plex_changed: Subscribe | None = None,
     ) -> None:
         """`downloaded` / `downloads_changed`: whether a film is in the download history and
         when that changes; `subtitle_actions`, `subtitle_mark` / `subtitles_changed`: a
         downloaded film's CC ▾ and its saved subtitles (see MovieDetailsWindow). `releases`:
-        the releases panels' services; its settings say the layout a new window opens in."""
+        the releases panels' services; its settings say the layout a new window opens in.
+        `in_plex` / `plex_changed`: whether a film is in Plex and when that may have changed."""
         self._master = master
         self._images = images
         self._discovery = discovery
         self._watchlist = watchlist
         self._actions = actions
         self._downloaded = downloaded
+        self._in_plex = in_plex
         self._subtitle_actions = subtitle_actions
         self._subtitle_mark = subtitle_mark
         self._releases = releases
         self._windows: dict[int, MovieDetailsWindow] = {}
         self._unsubscribe = [
             subscribe(self.refresh_all)
-            for subscribe in (downloads_changed, subtitles_changed)
+            for subscribe in (downloads_changed, subtitles_changed, plex_changed)
             if subscribe is not None
         ]
 
@@ -411,6 +438,7 @@ class MovieWindows:
             subtitle_mark=self._subtitle_mark,
             layout=self.layout(),
             releases=self._releases,
+            in_plex=self._in_plex,
         )
 
     def close(self) -> None:

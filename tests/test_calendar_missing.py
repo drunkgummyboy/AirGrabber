@@ -1,11 +1,12 @@
 """The calendar's amber marks: which episodes in a date range are missing (the SQL query
-`missing_between`), in step with app.services.missing's rule, and the episodes marked "I
-already have this" in a range (`have_between`, the stack cards)."""
+`missing_between`), in step with app.services.missing's rule, and the episodes in Plex in a
+range (`plex_between`, the stack cards). Only with Plex connected (3.1.0)."""
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from app.models.plex import PlexScan
 from app.services.library import downloaded_ids
 from app.services.missing import missing_episodes, new_episodes
 from tests.test_missing import DAY, NOW, DatabaseTestCase, ServiceTestCase, cutoffs, ep
@@ -30,14 +31,14 @@ class MissingBetweenTests(DatabaseTestCase):
         for show_id in await self.db.library.tracked_ids(profile_id=1):
             episodes = await self.db.library.episodes(show_id)
             downloaded = downloaded_ids(episodes, await self.db.history.show_grabs(show_id))
-            have = await self.db.library.have_ids(show_id)
-            for episode in rule(episodes, downloaded=downloaded, have=have, now=now):
+            in_plex = await self.db.library.plex_ids(show_id)
+            for episode in rule(episodes, downloaded=downloaded, in_plex=in_plex, now=now):
                 if episode.air_date is not None and start <= episode.air_date <= end:
                     found.add(episode.id)
         return frozenset(found)
 
     async def test_matches_the_rule_on_every_edge_case(self) -> None:
-        # 1: latest season 2 (season 3 not aired yet), one episode grabbed, one marked, a special.
+        # 1: latest season 2 (season 3 not aired yet), one episode grabbed, one in Plex, a special.
         await self.add_show(
             1,
             [
@@ -51,7 +52,7 @@ class MissingBetweenTests(DatabaseTestCase):
             ],
         )
         await self.grab(1, 2, 2)
-        await self.db.library.mark_have([23], NOW)
+        await self.db.plex.replace(PlexScan(episodes=frozenset({(1, 2, 3)})), NOW)
         # 2: a season pack: nothing missing.
         await self.add_show(2, [ep(41, 1, 1, aired=NOW - DAY, show_id=2)])
         await self.grab(2, 1, None)
@@ -103,21 +104,21 @@ class MissingBetweenTests(DatabaseTestCase):
 
 
 class LibraryMissingBetweenTests(ServiceTestCase):
-    async def test_marks_and_grabs_take_episodes_off(self) -> None:
+    async def test_plex_and_grabs_take_episodes_off(self) -> None:
         await self.severance()  # season 2: episodes 21-23 aired, 99 still to come
         start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
-        self.assertEqual(await self.library.missing_between(start, end, now=NOW, profile_id=1), {21, 22, 23})
-        await self.library.mark_have([21])
+        missing = await self.library.missing_between(start, end, now=NOW, profile_id=1)
+        self.assertEqual(missing, {21, 22, 23})
+        await self.in_plex((2, 1))
         await self.grab(1, 2, 2)
-        self.assertEqual(await self.library.missing_between(start, end, now=NOW, profile_id=1), {23})
+        missing = await self.library.missing_between(start, end, now=NOW, profile_id=1)
+        self.assertEqual(missing, {23})
 
-    async def test_have_between_lists_the_marked_episodes_of_the_range(self) -> None:
+    async def test_plex_between_lists_the_episodes_in_plex_of_the_range(self) -> None:
         await self.severance()  # season 1 long ago; season 2: 21-23 aired, 99 to come
         start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
-        self.assertEqual(await self.library.have_between(start, end), frozenset())
-        await self.library.mark_have([10, 22, 99])
+        self.assertEqual(await self.library.plex_between(start, end), frozenset())
+        await self.in_plex((1, 1), (2, 2), (2, 4))
         # Episode 10 aired long before the range: left out.
-        self.assertEqual(await self.library.have_between(start, end), {22, 99})
-        self.assertEqual(await self.library.have_between(start, NOW.date()), {22})
-        await self.library.unmark_have([22])
-        self.assertEqual(await self.library.have_between(start, end), {99})
+        self.assertEqual(await self.library.plex_between(start, end), {22, 99})
+        self.assertEqual(await self.library.plex_between(start, NOW.date()), {22})

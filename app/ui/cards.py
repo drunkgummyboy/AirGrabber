@@ -1,11 +1,12 @@
 """Show cards: My shows' `ShowCard` and the search results' `SearchShowCard`, both tall poster
 cards (`PosterCard`) drawn at a `CardScale` (Settings, Card size: app/ui/card_scale.py).
 
-A My shows card: an amber "3 missing" badge in the cover's corner while episodes are missing;
-the title; the info line (`card_info_line`, or while "Download missing" runs for the show its
-progress and then its outcome: `run_line`); and a bottom row with the "Auto" switch (new
-episodes download by themselves) and a round ⋯ that opens the card's menu (`card_menu`: Open
-on IMDb, ⬇ Download missing (3), Remove show…).
+A My shows card: an amber "3 missing" badge in the cover's corner while episodes are missing
+(only with Plex: app/services/plex.py); the title; the info line (`card_info_line`: the next
+episode, or while "Download missing" runs for the show its progress and then its outcome:
+`run_line`); and a bottom row with the "Auto" switch (new episodes download by themselves) and
+a round ⋯ that opens the card's menu (`card_menu`: Open on IMDb, ⬇ Download missing (3),
+Remove show…). What AirGrabber downloaded is never shown as had (owner's decision, 3.1.0).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import customtkinter as ctk
 from PIL import ImageTk
 
 from app.i18n import N_, day_short, month_short, t
-from app.models import DownloadRecord, Episode, Show, ShowActivity
+from app.models import Episode, Show, ShowActivity
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
 from app.ui.download_control import QUEUED_TEXT
@@ -69,20 +70,12 @@ MENU_BUTTON_MIN = 20  # never smaller than this, so it stays easy to hit
 SWITCH_FONT = 14
 SWITCH_SIZE = (36, 18)  # CTkSwitch's own default track
 
-_RECENT_GRAB_DAYS = 6  # "today" … six days ago; older grabs aren't mentioned
 _NEAR_DAYS = 6  # a next episode up to this many days away is named by its weekday
 
 CardMenuKey = Literal["imdb", "download_missing", "remove"]
 
 
 # -- texts -----------------------------------------------------------------------------------
-
-
-def _grab_code(record: DownloadRecord) -> str:
-    season = record.season or 0
-    if record.episode is None:  # a season pack
-        return f"S{season:02d}"
-    return f"S{season:02d}E{record.episode:02d}"
 
 
 def _air_day(episode: Episode, now: datetime) -> date | None:
@@ -92,27 +85,16 @@ def _air_day(episode: Episode, now: datetime) -> date | None:
 
 
 def card_info_line(activity: ShowActivity | None, now: datetime) -> str | None:
-    """The My shows card's muted line under its title, the first that applies:
-    "✓ S02E08 · today" (downloaded within the past week: today / yesterday / weekday),
-    "Next: S02E04 · Thu" (the next episode; "23 Oct" when more than six days away), or None.
-    Short enough for the smallest card; a card shortens what still doesn't fit.
+    """The My shows card's muted line under its title: "Next: S02E04 · Thu" (the next
+    episode; "23 Oct" when more than six days away), or None. Short enough for the smallest
+    card; a card shortens what still doesn't fit. (A recent grab isn't mentioned: what
+    AirGrabber downloaded is never shown as had.)
 
     `now` is an aware instant; its time zone decides the days (the app passes local time).
     """
     if activity is None:
         return None
     today = now.date()
-    grab = activity.last_grab
-    if grab is not None:
-        grabbed = grab.downloaded_at.astimezone(now.tzinfo).date()
-        days_ago = (today - grabbed).days
-        if 0 <= days_ago <= _RECENT_GRAB_DAYS:
-            when = (
-                t("today")
-                if days_ago == 0
-                else t("yesterday") if days_ago == 1 else day_short(grabbed)
-            )
-            return f"✓ {_grab_code(grab)} · {when}"
     episode = activity.next_episode
     if episode is not None and (day := _air_day(episode, now)) is not None:
         days_ahead = (day - today).days

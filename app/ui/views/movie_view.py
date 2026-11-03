@@ -27,14 +27,18 @@ class MovieView(ShelvesView[Movie]):
 
     The watchlist shelf stays across reloads (and while TMDB loads or fails) and follows the
     watchlist by itself; it hides while the list is empty. The filter bar leaves it alone: it
-    filters TMDB's shelves only, and "Hide what I already have" hides the films in the
-    download history.
+    filters TMDB's shelves only, and "Hide what I already have" (offered only while Plex is
+    connected: app/services/plex.py, the only thing that counts as had) hides the films in
+    Plex (their cards' quiet ✓).
     """
 
     _body_pady = (0, 5)
     _hide_owned_setting = "hide_owned_movies"
-    _hide_owned_tip = N_("Hides the films you've already downloaded (your watchlist always stays)")
+    _hide_owned_tip = N_("Hides the films you have in Plex (your watchlist always stays)")
     _all_owned_text = N_("You already have every film here.")
+    # Whether Plex is connected, as the last load found it (the hide switch is offered); read
+    # by the base class while it builds the filter bar, before the first load.
+    _plex_connected = False
 
     def __init__(
         self,
@@ -66,7 +70,7 @@ class MovieView(ShelvesView[Movie]):
         self._movie_actions = movie_actions  # the cards' Download and ⋯ buttons
         self._watchlist = watchlist
         self._on_open_movie = on_open_movie
-        self._downloaded: frozenset[int] = frozenset()  # the last load's films in the history
+        self._in_plex: frozenset[int] = frozenset()  # the last load's films in Plex
         self.watchlist_shelf = WatchlistShelf(
             self._body,
             watchlist=watchlist,
@@ -74,6 +78,7 @@ class MovieView(ShelvesView[Movie]):
             actions=movie_actions,
             card_scale=card_scale,
             on_open=on_open_movie,
+            plex=discovery.plex_films,
         )
 
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -96,7 +101,8 @@ class MovieView(ShelvesView[Movie]):
 
     async def _fetch_shelves(self, *, force: bool) -> list[Shelf[Movie]]:
         dashboard = await self._discovery.movie_dashboard(force=force)
-        self._downloaded = dashboard.downloaded
+        self._plex_connected = dashboard.plex_connected
+        self._in_plex = dashboard.in_plex
         failed = set(dashboard.failed)
         return [
             Shelf(
@@ -130,7 +136,12 @@ class MovieView(ShelvesView[Movie]):
         return genres_of(item.genre_ids, MOVIE_GENRES)
 
     def _is_owned(self, item: Movie) -> bool:
-        return item.id in self._downloaded
+        """In Plex, the only thing that counts as had (app/services/plex.py)."""
+        return item.id in self._in_plex
+
+    def _hide_owned_offered(self) -> bool:
+        """Only with Plex: without it nothing counts as had, so there is nothing to hide."""
+        return self._plex_connected
 
     def _clear_body(self) -> None:
         for child in self._body.winfo_children():
@@ -147,4 +158,5 @@ class MovieView(ShelvesView[Movie]):
             watchlist=self._watchlist,
             scale=self._scale,
             on_open=self._on_open_movie,
+            in_plex=item.id in self._in_plex,
         )

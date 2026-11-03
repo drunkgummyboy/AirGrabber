@@ -98,5 +98,16 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   never in a URL, message or log. Signing in with an account is optional: the password only in the
   /login POST body, the session token in the `Authorization` header and in memory only; /download's
   temporary links are never logged.
+- Plex (`app/services/plex.py`): sign-in only through Plex's PIN flow (never a password). The token
+  (`plex_token`) is a secret: the `X-Plex-Token` header only, never in a URL, log line, message or
+  exception text; never in a backup, not even with keys and passwords (`MACHINE_SECRETS` in
+  `app/services/backup.py`; all `plex_*` settings are this PC's). Plex requests never follow redirects,
+  their URLs are never logged, nor `str(httpx_exc)`. Logs give ids and counts only. What is in Plex
+  is the only thing that counts as had (`plex_episodes` / `plex_movies`, replaced per check); without
+  Plex connected (no token) the UI shows no have / missing cues at all, not even for AirGrabber's own
+  grabs (owner's decision, 3.1.0): no ✓, "missing", counts or manual marks (`have_episodes` is kept,
+  never read). The download history only keeps things from being fetched twice. Connecting or
+  disconnecting reloads the pages (`on_change`). Tests use `tests/fixtures/plex/` and MockTransport
+  (`tests/plex_link.py` for settings with a token); never plex.tv or a real server.
 
 See `filemap.md` for where things live.

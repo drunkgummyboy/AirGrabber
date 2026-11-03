@@ -1,8 +1,10 @@
 """The one-click Download control of episode and movie cards, and the run states behind it.
 
 A card shows one 36-unit row: "⬇ Download" with a narrow "⋯" beside it that opens the search
-window, or a single button (✓ Grabbed, a disabled "Not Aired"...), or while a run works the
-label "Finding the best one…". Texts never get cut off: where a text doesn't fit, a shorter
+window, or a single button (a run's outcome "✓ Sent", a disabled "Not Aired"...), or while a run
+works the label "Finding the best one…". Whether a title was downloaded before is never shown
+(owner's decision for 3.1.0: only Plex says what you have): a title found in the download
+history by a one-click run goes back to its own look, the status bar saying so. Texts never get cut off: where a text doesn't fit, a shorter
 one stands in ("⬇", "Finding…"). The main window runs the downloads and keeps their state in a
 `DownloadStates`; every control showing a title attaches to it, so a card rebuilt mid-run (the
 calendar reloads after every grab) picks the run's state up, and a finished run repaints
@@ -67,7 +69,6 @@ WORKING_TEXT = N_("Finding the best one…")
 WORKING_SHORT = N_("Finding…")
 QUEUED_TEXT = N_("Queued")  # waiting in the download queue for its turn
 CHOOSE_TEXT = N_("Choose…")  # nothing was good enough: pick one in the search window
-GRABBED_TEXT = N_("✓ Grabbed")
 _OUTCOME_TEXT = {
     GrabOutcome.OPENED: N_("✓ Opened"),
     GrabOutcome.SAVED: N_("✓ Saved"),
@@ -101,14 +102,14 @@ def movie_key(movie_id: int) -> DownloadKey:
 class Phase(StrEnum):
     QUEUED = "queued"  # waiting in the download queue
     WORKING = "working"
-    DONE = "done"  # grabbed (by this run, or already before it)
+    DONE = "done"  # grabbed by this run (with its outcome)
     NOTHING = "nothing"  # no release was good enough
 
 
 @dataclass(frozen=True, slots=True)
 class RunState:
     phase: Phase
-    outcome: GrabOutcome | None = None  # DONE; None = it was already downloaded ("✓ Grabbed")
+    outcome: GrabOutcome | None = None  # DONE: what the grab did; a DONE without one shows nothing
     # DONE by a run that grabbed: the picked release's resolution ("1080p") and size, if known.
     quality: str | None = None
     size_bytes: int | None = None
@@ -130,9 +131,9 @@ def grabbed_state(result: QuickDownloadResult) -> RunState:
     return RunState(Phase.DONE, outcome, quality=result.quality, size_bytes=result.size_bytes)
 
 
-# What a card shows without a run: the Download split control, a "✓ Grabbed" or "Search" button
-# (both open the search window), or a disabled button such as "Not Aired".
-BaseKind = Literal["download", "grabbed", "search", "unavailable"]
+# What a card shows without a run: the Download split control, a "Search" button (it opens the
+# search window), or a disabled button such as "Not Aired".
+BaseKind = Literal["download", "search", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,8 +181,8 @@ def fit_text(texts: Sequence[str], room: float, measure: Measure) -> str:
 def control_look(base: Base, state: RunState | None) -> Look:
     """The row for a card's base look and the title's run state, if any.
 
-    A run working or done wins over everything; an episode already grabbed (from the search
-    window too) wins over an earlier "nothing found".
+    A run working or done (its outcome) wins over everything; then a disabled base; then an
+    earlier "nothing found".
     """
     if state is not None and state.phase is Phase.WORKING:
         return Look(
@@ -189,11 +190,8 @@ def control_look(base: Base, state: RunState | None) -> Look:
         )
     if state is not None and state.phase is Phase.QUEUED:
         return Look("label", t(QUEUED_TEXT), text_color=theme.TEXT_MUTED)
-    if state is not None and state.phase is Phase.DONE:
-        text = outcome_text(state.outcome) if state.outcome is not None else t(GRABBED_TEXT)
-        return Look("button", text, theme.GRABBED, action="choose")
-    if base.kind == "grabbed":
-        return Look("button", t(GRABBED_TEXT), theme.GRABBED, action="choose")
+    if state is not None and state.phase is Phase.DONE and state.outcome is not None:
+        return Look("button", outcome_text(state.outcome), theme.GRABBED, action="choose")
     if base.kind == "unavailable":
         return Look("button", base.text, theme.NOT_AIRED, theme.NOT_AIRED)
     if state is not None and state.phase is Phase.NOTHING:
@@ -400,9 +398,6 @@ class DownloadActions(Generic[T]):
     # One-click downloads of several titles, one after another, as the batch of the given key
     # (the main window queues them as one batch: app/ui/queue_link.py); None: not offered.
     download_all: Callable[[BatchKey, Sequence[T]], None] | None = None
-    # A one-click download of a title that was downloaded before (↻ Again → Auto); None: not
-    # offered.
-    download_again: Callable[[T], None] | None = None
     # A season pack of a show's season, with the season's titles still needed to queue instead
     # when no pack is good enough (the show window's "⬇ Whole season"); None: not offered.
     download_season: Callable[[Show, int, Sequence[T]], None] | None = None

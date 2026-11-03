@@ -5,9 +5,15 @@ incremental background sync go through TVMaze and cache what they fetch.
 
 Each person follows their own shows (app/services/profiles.py): every call about what someone
 follows names them (`profile_id`), read by the caller when it started, so a call that finishes
-after a switch still belongs to the person it was made for. The shows' cache, their episodes,
-"I already have this" and the downloads are shared; the sync refreshes every show anyone
-follows.
+after a switch still belongs to the person it was made for. The shows' cache, their episodes
+and the downloads are shared; the sync refreshes every show anyone follows.
+
+What you have and miss (owner's decision for 3.1.0): only while Plex is connected
+(`plex_connected`, app/services/plex.py) does anything count as had, and then only what is in
+Plex; missing is what aired and is neither in Plex nor grabbed by AirGrabber (app.services.
+missing). Without Plex the calls about it answer "nothing" (no missing, no new, nothing in
+Plex): the pages show no have / missing cues at all. The download history is still read where
+it keeps an episode from being fetched twice, but is never shown as "have it".
 """
 
 from __future__ import annotations
@@ -38,7 +44,9 @@ from app.models import (
     SyncReport,
     Weekday,
 )
+from app.models.plex import PlexFilms
 from app.services.missing import latest_season, missing_cutoffs, missing_episodes, new_episodes
+from app.services.plex import plex_connected
 from app.services.settings import SettingsService
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
@@ -56,8 +64,6 @@ UPDATES_WINDOW = timedelta(days=28)
 SYNC_CONCURRENCY = 3
 # After each sync, untracked shows' schedule episodes older than this are dropped.
 SCHEDULE_RETENTION = timedelta(days=60)
-# The Tracked cards mention a grab ("✓ S02E08 · today") for this long.
-RECENT_GRAB_WINDOW = timedelta(days=7)
 # Untracked shows opened in the details window are fetched from TVMaze and never stored: they are
 # kept in memory this long (at most DETAILS_CACHE_SIZE of them), so reopening one, or the window
 # reloading after a library change, needs no new request.
@@ -100,7 +106,8 @@ class LibraryService:
         settings: SettingsService | None = None,
     ) -> None:
         """`settings`: read for `auto_download_new_shows` whenever a show is newly followed
-        (without it, new shows start with automatic downloads off)."""
+        (without it, new shows start with automatic downloads off), and for whether Plex is
+        connected (`plex_connected`; without settings it never is)."""
         self._library = library
         self._history = history
         self._tvmaze = tvmaze
@@ -132,6 +139,18 @@ class LibraryService:
         for listener in list(self._listeners):
             _invoke(listener)
 
+    def notify_changed(self) -> None:
+        """Tell the listeners the library changed from elsewhere (a Plex check that changed
+        what counts as had, Plex connected or disconnected)."""
+        self._notify()
+
+    @property
+    def plex_connected(self) -> bool:
+        """Plex is connected (app/services/plex.py): only then do the pages show what you
+        have and miss (see the module docstring)."""
+        settings = self._settings
+        return settings is not None and plex_connected(settings.current)
+
     # -- reads ---------------------------------------------------------------------------------
 
     async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
@@ -149,30 +168,33 @@ class LibraryService:
         """The stored episodes of a show, by season and number (specials have no number)."""
         return await self._library.episodes(show_id)
 
-    async def downloaded_movie_ids(self) -> frozenset[int]:
-        """TMDB ids of the films in the download history (the Movies page's "Hide what I
-        already have")."""
-        return await self._history.movie_ids()
+    async def plex_films(self) -> PlexFilms:
+        """The films in Plex (Movies' "Hide what I already have", the cards' ✓ In Plex,
+        the automatic downloads); none while Plex isn't connected."""
+        if not self.plex_connected:
+            return PlexFilms()
+        return await self._library.plex_films()
+
+    async def film_downloaded(self, movie_id: int) -> bool:
+        """Whether a film (TMDB id) is in the download history: its window offers its
+        subtitles (CC ▾). Never shown as "have it"."""
+        return await self._history.has_movie(movie_id)
 
     async def activity(
         self, *, profile_id: int, now: datetime | None = None
     ) -> dict[int, ShowActivity]:
-        """Per id of a show the person follows: its latest grab within RECENT_GRAB_WINDOW and
-        its next episode (see ShowActivity). Shows with neither are left out. `now`: an aware
-        instant (tests); its time zone decides which day "today" is."""
+        """Per id of a show the person follows: its next episode (see ShowActivity). Shows
+        without one are left out. `now`: an aware instant (tests); its time zone decides which
+        day "today" is."""
         now = now if now is not None else datetime.now().astimezone()
-        grabs = await self._history.latest_tv_grabs(now - RECENT_GRAB_WINDOW)
         upcoming = await self._library.next_episodes(
             profile_id=profile_id, now=now, today=now.date()
         )
-        last = {record.media_id: record for record in grabs}
         following = {episode.show_id: episode for episode in upcoming}
         tracked = await self._library.tracked_ids(profile_id=profile_id)
         return {
-            show_id: ShowActivity(
-                show_id=show_id, last_grab=last.get(show_id), next_episode=following.get(show_id)
-            )
-            for show_id in sorted((last.keys() | following.keys()) & tracked)
+            show_id: ShowActivity(show_id=show_id, next_episode=following[show_id])
+            for show_id in sorted(following.keys() & tracked)
         }
 
     async def last_downloads(self) -> dict[int, datetime]:
@@ -185,7 +207,8 @@ class LibraryService:
         self, show_id: int, *, profile_id: int, now: datetime | None = None
     ) -> ShowDetails:
         """A TVMaze show with its episodes, whether the person follows it, downloads and next
-        episode (see ShowDetails), for the show details window.
+        episode, and while Plex is connected what of it is in Plex and missing (see
+        ShowDetails), for the show details window.
 
         A show the person follows comes from the library's cache. Any other show (or a followed
         one whose cache holds no episodes yet) is fetched from TVMaze and kept in memory for
@@ -202,14 +225,18 @@ class LibraryService:
         grabs = await self._history.show_grabs(show.id)
         downloaded = downloaded_ids(episodes, grabs)
         tracked = entry is not None
-        have = await self._library.have_ids(show.id) if tracked else frozenset[int]()
+        plex = self.plex_connected
+        marked = tracked and plex  # what you have and miss shows only with Plex
+        in_plex = await self._library.plex_ids(show.id) if marked else frozenset[int]()
         missing = (
-            missing_episodes(episodes, downloaded=downloaded, have=have, now=now)
-            if tracked
+            missing_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now)
+            if marked
             else []
         )
         new = (
-            new_episodes(episodes, downloaded=downloaded, have=have, now=now) if tracked else []
+            new_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now)
+            if marked
+            else []
         )
         return ShowDetails(
             show=show,
@@ -218,36 +245,44 @@ class LibraryService:
             auto_download=entry is not None and entry.auto_download,
             downloaded=downloaded,
             next_episode=next_episode(episodes, now),
-            latest_season=latest_season(episodes, now) if tracked else None,
+            plex_connected=plex,
+            latest_season=latest_season(episodes, now) if marked else None,
             missing=frozenset(episode.id for episode in missing),
             new=frozenset(episode.id for episode in new),
-            have=have,
+            in_plex=in_plex,
         )
 
     async def missing_episodes(
         self, show_id: int, *, profile_id: int, now: datetime | None = None
     ) -> list[CalendarEntry]:
         """The missing episodes (app.services.missing) of a show the person follows, oldest
-        first, from the library alone; [] for a show they don't follow. `now`: an aware
-        instant (tests)."""
+        first, from the library alone; [] for a show they don't follow, and without Plex.
+        `now`: an aware instant (tests)."""
+        if not self.plex_connected:
+            return []
         now = now if now is not None else datetime.now().astimezone()
         entry = await self._library.tracked_entry(show_id, profile_id=profile_id)
         if entry is None:
             return []
         episodes = await self._library.episodes(show_id)
         downloaded = downloaded_ids(episodes, await self._history.show_grabs(show_id))
-        have = await self._library.have_ids(show_id)
+        in_plex = await self._library.plex_ids(show_id)
         return [
             CalendarEntry(show=entry.show, episode=episode, is_tracked=True)
-            for episode in missing_episodes(episodes, downloaded=downloaded, have=have, now=now)
+            for episode in missing_episodes(
+                episodes, downloaded=downloaded, in_plex=in_plex, now=now
+            )
         ]
 
     async def missing_counts(
         self, *, profile_id: int, now: datetime | None = None
     ) -> dict[int, int]:
         """Per id of a show the person follows, how many of its latest season's episodes are
-        missing (one query for every show); shows with none are left out. `now`: an aware
-        instant (tests); its time zone decides which day "today" is."""
+        missing (one query for every show); shows with none are left out, and every show
+        without Plex. `now`: an aware instant (tests); its time zone decides which day "today"
+        is."""
+        if not self.plex_connected:
+            return {}
         now = now if now is not None else datetime.now().astimezone()
         missing_by, missing_day = missing_cutoffs(now)
         return await self._library.missing_counts(
@@ -262,8 +297,10 @@ class LibraryService:
         self, start: date, end: date, *, profile_id: int, now: datetime | None = None
     ) -> frozenset[int]:
         """Ids of the missing episodes (app.services.missing's rule) airing between `start`
-        and `end`, inclusive: the calendar's amber "Not downloaded yet" marks. `now`: an aware
-        instant (tests); its time zone decides which day "today" is."""
+        and `end`, inclusive: the calendar's amber "Not downloaded yet" marks; none without
+        Plex. `now`: an aware instant (tests); its time zone decides which day "today" is."""
+        if not self.plex_connected:
+            return frozenset()
         now = now if now is not None else datetime.now().astimezone()
         missing_by, missing_day = missing_cutoffs(now)
         return await self._library.missing_between(
@@ -279,9 +316,11 @@ class LibraryService:
     async def new_between(
         self, start: date, end: date, *, profile_id: int, now: datetime | None = None
     ) -> frozenset[int]:
-        """Ids of the new episodes (aired less than a day ago, not downloaded or marked; see
-        app.services.missing) airing between `start` and `end`, inclusive: the calendar's blue
-        "New" notes. `now`: an aware instant (tests)."""
+        """Ids of the new episodes (aired less than a day ago, neither in Plex nor downloaded;
+        see app.services.missing) airing between `start` and `end`, inclusive: the calendar's
+        blue "New" notes; none without Plex. `now`: an aware instant (tests)."""
+        if not self.plex_connected:
+            return frozenset()
         now = now if now is not None else datetime.now().astimezone()
         missing_by, missing_day = missing_cutoffs(now)
         return await self._library.new_between(
@@ -294,10 +333,13 @@ class LibraryService:
             missing_day=missing_day,
         )
 
-    async def have_between(self, start: date, end: date) -> frozenset[int]:
-        """Ids of the episodes airing between `start` and `end` (inclusive) marked "I already
-        have this": a calendar stack card doesn't count them as still needed."""
-        return await self._library.have_between(start, end)
+    async def plex_between(self, start: date, end: date) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) that are in Plex,
+        the only ones that count as had (a calendar stack card marks them "in Plex"); none
+        without Plex."""
+        if not self.plex_connected:
+            return frozenset()
+        return await self._library.plex_between(start, end)
 
     async def _fetch_show(self, show_id: int) -> tuple[Show, list[Episode]]:
         """The show and its episodes from TVMaze, or from memory when fetched recently."""
@@ -340,20 +382,6 @@ class LibraryService:
             "Automatic downloads %s for TVMaze show %d (person %d)",
             "on" if on else "off", show_id, profile_id,
         )
-        self._notify()
-
-    async def mark_have(self, episode_ids: Iterable[int]) -> None:
-        """Mark episodes "I already have this": they no longer count as missing."""
-        ids = list(episode_ids)
-        marked = await self._library.mark_have(ids, datetime.now(UTC))
-        log.info("Marked %d of %d episodes as already had", marked, len(ids))
-        self._notify()
-
-    async def unmark_have(self, episode_ids: Iterable[int]) -> None:
-        """Take the "I already have this" mark off episodes ("Mark as missing again")."""
-        ids = list(episode_ids)
-        unmarked = await self._library.unmark_have(ids)
-        log.info("Marked %d of %d episodes as missing again", unmarked, len(ids))
         self._notify()
 
     async def remove_ended(self, *, profile_id: int) -> int:
@@ -517,17 +545,8 @@ class LibraryService:
         settings = self._settings
         auto_download = settings is not None and settings.current.auto_download_new_shows
         async with self._tracking:
-            newly_followed = show.id not in await self._library.followed_ids()
             await self._library.save_show(show, episodes)
             await self._library.track(show.id, profile_id=profile_id, auto_download=auto_download)
-            if newly_followed:
-                # AirGrabber can't know what the user already got: what aired before the show
-                # was followed counts as had, so only later episodes can become missing. The
-                # marks are shared: a show someone follows already keeps theirs.
-                now = datetime.now(UTC)
-                await self._library.mark_aired_have(
-                    show.id, now=now, today=now.astimezone().date(), when=now
-                )
         await self._library.mark_synced(show.id)
         self._fetched.pop(show.id, None)  # the library's copy is the current one now
         return show

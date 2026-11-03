@@ -7,25 +7,28 @@ or more that day gets a stack card: the wide `StackCard` (recent days and later)
 `StackCard` is the wide episode card (`EpisodeCard`, app/ui/calendar_cards.py) with two card
 edges peeking out behind it at the bottom right (app/ui/calendar_face.py bakes their corners),
 the episodes' range under the name ("S01E07 – E09", `range_text`), a pill "3 episodes ▾" and the
-bottom row "⬇ Download all (2)" (`stack_look`). Clicking the pill unfolds a row per episode
-inside the card (the pill turns "▴"): its code with the compact cards' small buttons
-(`SlimDownload`: ⬇ with ⋯, ✓, …) and under it its state ("✓ downloaded", amber "still needed",
-"not aired": `row_state`); a right-click on a row opens the search window. Clicking the pill
-again folds them. The view remembers the unfolded stacks for the session (`on_fold`), so a
-reload keeps them open.
+bottom row (`stack_look`). Clicking the pill unfolds a row per episode inside the card (the pill
+turns "▴"): its code with the compact cards' small buttons (`SlimDownload`: ⬇ with ⋯, …) and
+under it its state ("not aired"; with Plex "✓ in Plex", amber "still needed", blue "new":
+`row_state`); a right-click on a row opens the search window. Clicking the pill again folds
+them. The view remembers the unfolded stacks for the session (`on_fold`), so a reload keeps
+them open.
 
-"⬇ Download all" fetches the episodes still needed (aired, not downloaded, not marked "I
-already have this": `needed_entries`) one after another through the one-click download
+What you have and miss shows only while Plex is connected (`marks`; owner's decision for 3.1.0,
+app/services/plex.py), and only Plex counts as had: an episode grabbed by AirGrabber that Plex
+doesn't have yet is on its way, neither ✓ nor still needed. With Plex the bottom row is
+"⬇ Download all (2)" while episodes are still needed (aired, neither in Plex nor grabbed:
+`needed_entries`); it fetches them one after another through the one-click download
 (`DownloadActions.download_all`: the main window queues them as one batch in the download
-queue, app/ui/queue_link.py), so each episode
-keeps its own state everywhere (the show window too); meanwhile the row shows "Downloading 2 of
-3…" (the batch's `BatchState`, which a card rebuilt mid-run picks up as well), afterwards the
-usual outcome. Once every aired episode is downloaded the row is a ✓ like a single card's; a
-click on it unfolds the rows.
+queue, app/ui/queue_link.py), so each episode keeps its own state everywhere (the show window
+too); meanwhile the row shows "Downloading 2 of 3…" (the batch's `BatchState`, which a card
+rebuilt mid-run picks up as well), afterwards the usual outcome. Otherwise (and always without
+Plex) the row shows only the queue's states and a finished run's outcome, nothing else.
 
 `CompactStackCard` is one slim line: the name, the range and a small "3" badge, then a small ⬇
-(download all still needed) or ✓. Clicking the name opens the show's window; a right-click (or
-the ✓) opens a small menu of the episodes, each opening its search window.
+(with Plex: download all still needed), … while one works, or a run's ✓. Clicking the name
+opens the show's window; a right-click (or the ✓) opens a small menu of the episodes, each
+opening its search window.
 """
 
 from __future__ import annotations
@@ -91,7 +94,6 @@ from app.ui.calendar_face import (
 from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TITLE_MIN, CardScale
 from app.ui.download_control import (
     DOWNLOAD_SHORT,
-    GRABBED_TEXT,
     QUEUED_TEXT,
     WORKING_SHORT,
     WORKING_TEXT,
@@ -117,15 +119,16 @@ if TYPE_CHECKING:
 
 FoldKey = tuple[int, date]  # (show id, air date): which stacks are unfolded
 StateOf = Callable[[DownloadKey], RunState | None]  # a title's one-click run state
-RowState = Literal["not_aired", "downloaded", "have", "new", "needed"]
+# "quiet": nothing to say (every aired episode without Plex; with Plex one grabbed by AirGrabber
+# that Plex doesn't have yet, on its way).
+RowState = Literal["not_aired", "plex", "new", "needed", "quiet"]
 
 # The texts are shown through t().
 DOWNLOAD_ALL_TEXT = N_("⬇ Download all ({n})")
 DOWNLOAD_ALL_SHORTER = (N_("⬇ Download ({n})"), N_("⬇ All ({n})"))  # when it doesn't fit
 ROW_TEXTS: dict[RowState, str] = {
     "not_aired": N_("not aired"),
-    "downloaded": N_("✓ downloaded"),
-    "have": N_("✓ have it"),
+    "plex": N_("✓ in Plex"),  # in the user's Plex libraries (app/services/plex.py)
     "new": N_("new"),
     "needed": N_("still needed"),
 }
@@ -221,21 +224,38 @@ def range_text(episodes: Sequence[Episode]) -> str:
     return ", ".join(parts)
 
 
+def is_needed(entry: CalendarEntry, state: RunState | None, in_plex: Collection[int]) -> bool:
+    """Aired and neither in Plex (`in_plex`: episode ids) nor grabbed (before: the download
+    history, or by a run that just finished). Without Plex nothing is in it: then this only
+    keeps the episodes grabbed before from being fetched again, and is never shown."""
+    return (
+        entry.episode.has_aired()
+        and entry.episode.id not in in_plex
+        and not entry.is_downloaded
+        and not (state is not None and state.phase is Phase.DONE)
+    )
+
+
 def row_state(
     entry: CalendarEntry,
     state: RunState | None,
-    had: Collection[int],
+    in_plex: Collection[int],
     new: Collection[int] = frozenset(),
+    *,
+    marks: bool = False,
 ) -> RowState:
-    """An episode's state in its unfolded row: not aired; downloaded (before, or by a run that
-    just finished); marked "I already have this" (`had`: episode ids); aired less than a day
-    ago (`new`: episode ids; a quiet blue "new", not missing yet); else still needed."""
+    """An episode's state in its unfolded row: not aired; without Plex (`marks` False) nothing
+    more; with Plex: in Plex (`in_plex`: episode ids), still needed (`is_needed`), unless aired
+    less than a day ago (`new`: episode ids; a quiet blue "new", not missing yet); a grabbed
+    one Plex doesn't have yet gets nothing."""
     if not entry.episode.has_aired():
         return "not_aired"
-    if entry.is_downloaded or (state is not None and state.phase is Phase.DONE):
-        return "downloaded"
-    if entry.episode.id in had:
-        return "have"
+    if not marks:
+        return "quiet"
+    if entry.episode.id in in_plex:
+        return "plex"
+    if not is_needed(entry, state, in_plex):
+        return "quiet"
     if entry.episode.id in new:
         return "new"
     return "needed"
@@ -251,20 +271,21 @@ def row_color(kind: RowState) -> theme.Color:
 
 
 def row_text(kind: RowState) -> str:
-    """"✓ downloaded", "still needed"..."""
-    return t(ROW_TEXTS[kind])
+    """"✓ in Plex", "still needed"...; "" for nothing to say."""
+    return t(ROW_TEXTS[kind]) if kind != "quiet" else ""
 
 
 def needed_entries(
-    entries: Iterable[CalendarEntry], state_of: StateOf, had: Collection[int]
+    entries: Iterable[CalendarEntry], state_of: StateOf, in_plex: Collection[int]
 ) -> tuple[CalendarEntry, ...]:
-    """The episodes "⬇ Download all" fetches: still needed (new ones too), with a number to
-    download by (a special is searched for in its own row)."""
+    """The episodes "⬇ Download all" (and a season's fallback) fetches: still needed
+    (`is_needed`, new ones too), with a number to download by (a special is searched for in
+    its own row)."""
     return tuple(
         entry
         for entry in entries
         if entry.episode.number is not None
-        and row_state(entry, state_of(entry_key(entry)), had) == "needed"
+        and is_needed(entry, state_of(entry_key(entry)), in_plex)
     )
 
 
@@ -274,17 +295,24 @@ def download_all_texts(count: int) -> tuple[str, ...]:
     return (t(DOWNLOAD_ALL_TEXT, n=count), *shorter, f"{DOWNLOAD_SHORT} {count}")
 
 
+# A stack's bottom row with nothing to say (no button, no text).
+QUIET_LOOK_TEXT = ""
+
+
 def stack_look(
     entries: Sequence[CalendarEntry],
     state_of: StateOf,
     batch: BatchState | None,
-    had: Collection[int],
+    in_plex: Collection[int],
+    *,
+    marks: bool = False,
 ) -> Look:
     """A stack's bottom row: "Downloading 2 of 3…" while its "Download all" runs, the working
-    label while one of its episodes is fetched on its own, "⬇ Download all (2)" while episodes
-    are still needed, else a ✓ like a single card's (a click unfolds the rows: "choose");
-    disabled "Not Aired" when none has aired. "Queued" while they wait in the download queue
-    (the batch, or an episode on its own)."""
+    label while one of its episodes is fetched on its own, with Plex (`marks`) "⬇ Download all
+    (2)" while episodes are still needed, disabled "Not Aired" when none has aired, the
+    outcome once every aired one was grabbed by a run (a click unfolds the rows: "choose"),
+    else an empty label (nothing to say: without Plex it never tells what you have or miss).
+    "Queued" while they wait in the download queue (the batch, or an episode on its own)."""
     if batch is not None and batch.queued:
         return Look("label", t(QUEUED_TEXT), text_color=theme.TEXT_MUTED)
     if batch is not None:
@@ -297,17 +325,21 @@ def stack_look(
         )
     if any(state is not None and state.phase is Phase.QUEUED for state in states):
         return Look("label", t(QUEUED_TEXT), text_color=theme.TEXT_MUTED)
-    needed = len(needed_entries(entries, state_of, had))
+    needed = len(needed_entries(entries, state_of, in_plex)) if marks else 0
     if needed:
         text, *short = download_all_texts(needed)
         return Look("button", text, action="download", short=tuple(short))
     aired = [state for entry, state in zip(entries, states) if entry.episode.has_aired()]
     if not aired:
         return Look("button", t("Not Aired"), theme.NOT_AIRED, theme.NOT_AIRED)
-    outcomes = {state.outcome if state is not None else None for state in aired}
+    outcomes = {
+        state.outcome if state is not None and state.phase is Phase.DONE else None
+        for state in aired
+    }
     outcome = outcomes.pop() if len(outcomes) == 1 else None
-    text = outcome_text(outcome) if outcome is not None else t(GRABBED_TEXT)
-    return Look("button", text, theme.GRABBED, action="choose")
+    if outcome is not None:
+        return Look("button", outcome_text(outcome), theme.GRABBED, action="choose")
+    return Look("label", QUIET_LOOK_TEXT, text_color=theme.TEXT_MUTED)
 
 
 def pill_texts(count: int, unfolded: bool) -> tuple[str, str]:
@@ -318,9 +350,11 @@ def pill_texts(count: int, unfolded: bool) -> tuple[str, str]:
 
 def stack_icon(look: Look) -> IconLook:
     """The compact stack card's small button for its row's `look`: … while working (the tip
-    says what), ⬇ = download all still needed, ✓ once all are there (a click lists the
-    episodes), none before any has aired."""
+    says what), ⬇ = download all still needed, ✓ once a run grabbed them all (a click lists the
+    episodes), none before any has aired or with nothing to say."""
     if look.layout == "label":
+        if not look.text:
+            return IconLook("")
         return IconLook(WORKING_ICON, look.text, "transparent", theme.SURFACE, theme.TEXT_MUTED)
     if look.action == "download":
         return IconLook(
@@ -331,9 +365,17 @@ def stack_icon(look: Look) -> IconLook:
     return IconLook("")
 
 
-def menu_label(entry: CalendarEntry, state: RunState | None, had: Collection[int]) -> str:
-    """An episode in the compact stack card's menu: "S01E07 · ✓ downloaded"."""
-    return f"{entry.episode.code} · {row_text(row_state(entry, state, had))}"
+def menu_label(
+    entry: CalendarEntry,
+    state: RunState | None,
+    in_plex: Collection[int],
+    *,
+    marks: bool = False,
+) -> str:
+    """An episode in the compact stack card's menu: "S01E07 · ✓ in Plex", or just "S01E07"
+    with nothing to say."""
+    text = row_text(row_state(entry, state, in_plex, marks=marks))
+    return f"{entry.episode.code} · {text}" if text else entry.episode.code
 
 
 def more_fits(room: float, code_width: float, look: IconLook) -> bool:
@@ -374,9 +416,11 @@ def slim_stack_rooms(
     return name + give, range_width - give
 
 
-def start_download_all(stack: Stack, actions: EpisodeActions, had: Collection[int]) -> None:
+def start_download_all(
+    stack: Stack, actions: EpisodeActions, in_plex: Collection[int]
+) -> None:
     """"⬇ Download all": the episodes still needed, one after another."""
-    needed = needed_entries(stack.entries, actions.states.get, had)
+    needed = needed_entries(stack.entries, actions.states.get, in_plex)
     if not needed:
         return
     if actions.download_all is not None:
@@ -425,21 +469,23 @@ def _unwatch(watches: Iterable[_Watch], actions: EpisodeActions) -> None:
 
 
 class StackControl(DownloadControl[CalendarEntry]):
-    """A stack card's bottom row (`stack_look`): "⬇ Download all (2)", the batch's progress,
-    or a ✓ that unfolds the rows (`on_choose`)."""
+    """A stack card's bottom row (`stack_look`): with Plex "⬇ Download all (2)", the batch's
+    progress, or a run's outcome that unfolds the rows (`on_choose`)."""
 
     def __init__(
         self,
         master: Any,
         stack: Stack,
         *,
-        had: Collection[int],
+        in_plex: Collection[int],
         actions: EpisodeActions,
         scale: CardScale = FULL,
         on_choose: Callable[[], None] | None = None,
+        marks: bool = False,
     ) -> None:
         self._stack = stack
-        self._had = had
+        self._in_plex = in_plex
+        self._marks = marks
         self._on_choose = on_choose
         super().__init__(
             master,
@@ -453,7 +499,11 @@ class StackControl(DownloadControl[CalendarEntry]):
     def current_look(self) -> Look:
         states = self._actions.states
         return stack_look(
-            self._stack.entries, states.get, states.batch(self._stack.keys), self._had
+            self._stack.entries,
+            states.get,
+            states.batch(self._stack.keys),
+            self._in_plex,
+            marks=self._marks,
         )
 
     def _click(self) -> None:
@@ -461,7 +511,7 @@ class StackControl(DownloadControl[CalendarEntry]):
         if look is None or look.action is None:
             return
         if look.action == "download":
-            start_download_all(self._stack, self._actions, self._had)
+            start_download_all(self._stack, self._actions, self._in_plex)
         elif self._on_choose is not None:
             self._on_choose()
 
@@ -483,8 +533,9 @@ class _EpisodeRow:
 
 class StackCard(EpisodeCard):
     """Several episodes of one show on one day as one wide card (see the module docstring).
-    `had`: the ids of the episodes marked "I already have this"; `unfolded`: the rows open from
-    the start; `on_fold(open)` hears every fold and unfold."""
+    `marks`: Plex is connected (what you have and miss shows); `in_plex`: the ids of the
+    episodes in Plex ("✓ in Plex"), `new`: those aired less than a day ago; `unfolded`: the
+    rows open from the start; `on_fold(open)` hears every fold and unfold."""
 
     def __init__(
         self,
@@ -495,14 +546,16 @@ class StackCard(EpisodeCard):
         actions: EpisodeActions,
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
-        had: Collection[int] = frozenset(),
         unfolded: bool = False,
         on_fold: Callable[[bool], None] | None = None,
+        marks: bool = False,
+        in_plex: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
     ) -> None:
         # What the overridden steps of EpisodeCard's set-up read.
         self._stack = stack
-        self._had = frozenset(had)
+        self._marks = marks
+        self._in_plex = frozenset(in_plex)
         self._new_ids = frozenset(new)
         self._unfolded = unfolded
         self._scale = scale
@@ -569,10 +622,11 @@ class StackCard(EpisodeCard):
         return StackControl(
             self,
             self._stack,
-            had=self._had,
+            in_plex=self._in_plex,
             actions=self._actions,
             scale=self._layout.row_scale,
             on_choose=self.toggle,
+            marks=self._marks,
         )
 
     def _stack_edges(self, scaling: float) -> StackEdges | None:
@@ -730,7 +784,13 @@ class StackCard(EpisodeCard):
                 row.code, text=elide_to_width(code, code_room, measure), font=code_font
             )
             canvas.coords(row.code, x, y + round(EPISODE_LINE * scaling / 2))
-            kind = row_state(row.entry, states.get(entry_key(row.entry)), self._had, self._new_ids)
+            kind = row_state(
+                row.entry,
+                states.get(entry_key(row.entry)),
+                self._in_plex,
+                self._new_ids,
+                marks=self._marks,
+            )
             canvas.itemconfigure(
                 row.state,
                 text=elide_to_width(row_text(kind), room, self._row_font.measure),
@@ -752,9 +812,10 @@ class StackCard(EpisodeCard):
 
 class CompactStackCard(ctk.CTkFrame):
     """Several episodes of one show on an older day, on one slim line: the name and the range
-    with a small "3" badge, then a small ⬇ (download all still needed) or ✓. Clicking the name
-    opens the show's window; a right-click, or the ✓, opens a menu of the episodes (each opens
-    its search window). `missing`: the amber note line under it."""
+    with a small "3" badge, then a small ⬇ (with Plex: download all still needed), … or a run's
+    ✓. Clicking the name opens the show's window; a right-click, or the ✓, opens a menu of the
+    episodes (each opens its search window). `missing` (with Plex): the amber note line under
+    it; `marks`, `in_plex`, `new`: as StackCard's."""
 
     def __init__(
         self,
@@ -765,7 +826,8 @@ class CompactStackCard(ctk.CTkFrame):
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
         missing: bool = False,
-        had: Collection[int] = frozenset(),
+        marks: bool = False,
+        in_plex: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
     ) -> None:
         any_new = not missing and any(entry.episode.id in new for entry in stack.entries)
@@ -781,7 +843,8 @@ class CompactStackCard(ctk.CTkFrame):
         self.pack_propagate(False)
         self._stack = stack
         self._actions = actions
-        self._had = frozenset(had)
+        self._marks = marks
+        self._in_plex = frozenset(in_plex)
         self._look: IconLook | None = None
         show = stack.show
         line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
@@ -882,7 +945,13 @@ class CompactStackCard(ctk.CTkFrame):
     def repaint(self) -> None:
         states = self._actions.states
         look = stack_icon(
-            stack_look(self._stack.entries, states.get, states.batch(self._stack.keys), self._had)
+            stack_look(
+                self._stack.entries,
+                states.get,
+                states.batch(self._stack.keys),
+                self._in_plex,
+                marks=self._marks,
+            )
         )
         if look == self._look:
             return
@@ -910,7 +979,10 @@ class CompactStackCard(ctk.CTkFrame):
             return lambda: choose(entry)
 
         return [
-            (menu_label(entry, states.get(entry_key(entry)), self._had), opener(entry))
+            (
+                menu_label(entry, states.get(entry_key(entry)), self._in_plex, marks=self._marks),
+                opener(entry),
+            )
             for entry in self._stack.entries
         ]
 
@@ -919,7 +991,7 @@ class CompactStackCard(ctk.CTkFrame):
         if look is None or look.action is None:
             return
         if look.action == "download":
-            start_download_all(self._stack, self._actions, self._had)
+            start_download_all(self._stack, self._actions, self._in_plex)
         else:
             self._right_click()
 

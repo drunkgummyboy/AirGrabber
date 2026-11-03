@@ -76,7 +76,7 @@ def target_key(target: GrabTarget) -> QueueKey:
 class QueuedDownload:
     """One one-click download: its `label` ("Severance S02E01"; the status bar and the
     Downloads page show it, the log too), what it is for (`target`), what it searches for
-    (`request`); `again`: also when it was downloaded before (↻ Again → Auto); `fallback`: a
+    (`request`); `again`: also when it was downloaded before (a click by hand on one title); `fallback`: a
     season pack's episodes still needed, queued instead when no pack is good enough."""
 
     label: str

@@ -201,7 +201,7 @@ class TrackedFilter(StrEnum):
     """Which shows the My shows grid shows."""
 
     ALL = "all"
-    MISSING = "missing"  # with missing episodes
+    MISSING = "missing"  # with missing episodes (offered only with Plex; else counts as ALL)
     AUTO = "auto"  # automatic downloads on
     ENDED = "ended"
 
@@ -352,8 +352,9 @@ class Settings(BaseModel):
     # My shows: the grid's order and which shows it shows (the bar under its heading).
     tracked_sort: TrackedSort = TrackedSort.NAME
     tracked_filter: TrackedFilter = TrackedFilter.ALL
-    # "Hide what I already have" above the shelves: Discover hides the shows you follow,
-    # Movies the films already downloaded (app/ui/shelf_filter.py).
+    # The hide switch above the shelves: Discover's "Hide shows I follow" hides the shows you
+    # follow, Movies' "Hide what I already have" (only while Plex is connected) the films in
+    # Plex (app/ui/shelf_filter.py).
     hide_owned_discover: bool = False
     hide_owned_movies: bool = False
     tmdb_api_key: StoredSecret = SecretStr("")
@@ -421,6 +422,16 @@ class Settings(BaseModel):
     # the top band's name button). AirGrabber opens as the last one chosen; a person that is
     # gone is the first one again. This PC's own: never in a backup.
     current_profile: int = Field(default=1, ge=1)
+    # Plex (app/services/plex.py): what is in the user's Plex libraries counts as had, and
+    # without a token nothing does (no have / missing cues at all). All of
+    # it is this PC's own, never in a backup (app/services/backup.py). The token is a secret:
+    # the X-Plex-Token header only, never in a URL, message or log; "" = not connected.
+    plex_client_id: str = ""  # X-Plex-Client-Identifier: a random UUID made once
+    plex_token: StoredSecret = SecretStr("")
+    plex_server_id: str = ""  # the chosen server's machine identifier
+    plex_server_name: str = ""
+    plex_server_uri: str = ""  # the server's connection that answered last
+    plex_sections_off: tuple[str, ...] = ()  # the libraries (section keys) switched off
 
     @property
     def remote_configured(self) -> bool:

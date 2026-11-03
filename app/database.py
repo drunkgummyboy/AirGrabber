@@ -37,6 +37,7 @@ from app.models import (
     SubtitleGrab,
     WatchlistEntry,
 )
+from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan
 from app.models.backup import (
     BackupData,
     BackupFilm,
@@ -166,6 +167,44 @@ SEEN_MIGRATION = """
     WHERE julianday(downloaded_at) <= julianday('now', '-1 hour');
 """
 
+# v10: Plex (app/services/plex.py): what is in the user's Plex libraries counts as had (since
+# 3.1.0 it is all that does: `have_episodes`, the "I already have this" marks of v4 / v5, is kept
+# as it is but no longer read). Each check replaces the three tables' contents in one transaction
+# (PlexRepository.replace); Disconnect empties them. Episodes by TVMaze show id, season and number
+# (they outlive a refresh of the show's episodes; a show that leaves the cache takes its rows
+# along), films by TMDB id and / or IMDb id (Plex's old IMDb agent knows only the second). Plex's
+# shows match TVMaze's by TheTVDB id, else IMDb id: the shows cache keeps TheTVDB's id from now
+# on, and the shows anyone follows are read from TVMaze once more at the next sync (their
+# `synced_at` cleared) to learn it.
+PLEX_MIGRATION = """
+    ALTER TABLE shows ADD COLUMN tvdb_id INTEGER;          -- TheTVDB id (TVMaze's externals)
+    UPDATE tracked_shows SET synced_at = NULL;
+
+    CREATE TABLE plex_episodes (
+        show_id INTEGER NOT NULL REFERENCES shows (id) ON DELETE CASCADE,
+        season  INTEGER NOT NULL,
+        episode INTEGER NOT NULL,
+        PRIMARY KEY (show_id, season, episode)
+    ) STRICT;
+
+    CREATE TABLE plex_movies (
+        tmdb_id INTEGER,                                    -- TMDB movie id
+        imdb_id TEXT,                                       -- "tt0111161"
+        CHECK (tmdb_id IS NOT NULL OR imdb_id IS NOT NULL)
+    ) STRICT;
+    CREATE INDEX ix_plex_movies_tmdb ON plex_movies (tmdb_id);
+    CREATE INDEX ix_plex_movies_imdb ON plex_movies (imdb_id);
+
+    CREATE TABLE plex_state (                               -- one row once a check succeeded
+        id              INTEGER PRIMARY KEY CHECK (id = 1),
+        checked_at      TEXT    NOT NULL,                   -- UTC ISO-8601
+        shows           INTEGER NOT NULL,                   -- Plex shows read
+        unmatched_shows INTEGER NOT NULL,                   -- ... AirGrabber doesn't know
+        unmatched_films INTEGER NOT NULL,                   -- films without a TMDB or IMDb id
+        libraries       TEXT    NOT NULL DEFAULT '[]'       -- JSON: the show and film libraries
+    ) STRICT;
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -278,7 +317,8 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     # v4: episodes the user marked "I already have this": no longer counted as missing (the
     # latest season's aired episodes that aren't downloaded; app.services.missing). A mark
-    # goes with its episode.
+    # goes with its episode. Not read since 3.1.0 (only Plex counts as had); kept, and still
+    # carried by backups.
     """
     CREATE TABLE have_episodes (
         episode_id INTEGER PRIMARY KEY REFERENCES episodes (id) ON DELETE CASCADE,
@@ -287,7 +327,8 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     # v5: AirGrabber never saw what the user got before (or elsewhere), so the episodes of the
     # tracked shows that aired before this upgrade count as had: only later ones can become
-    # missing. Newly tracked shows get the same start (LibraryRepository.mark_aired_have).
+    # missing. Newly tracked shows got the same start until 3.1.0, which reads only Plex as
+    # had and leaves these marks as they are, unread (app/services/plex.py).
     """
     INSERT INTO have_episodes (episode_id, marked_at)
     SELECT e.id, strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
@@ -313,6 +354,8 @@ MIGRATIONS: tuple[str, ...] = (
     PROFILES_MIGRATION,
     # v9: grabs the torrent program has had (the Downloads page in sync); see SEEN_MIGRATION.
     SEEN_MIGRATION,
+    # v10: what is in Plex; see PLEX_MIGRATION.
+    PLEX_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -371,6 +414,13 @@ _IS_DOWNLOADED = """
           AND (h.episode IS NULL OR h.episode = e.number)
     )"""
 
+# The episode `e` is in Plex (app/services/plex.py): the only thing that counts as had.
+_IN_PLEX = """
+    EXISTS (
+        SELECT 1 FROM plex_episodes AS p
+        WHERE p.show_id = e.show_id AND p.season = e.season AND p.episode = e.number
+    )"""
+
 _CALENDAR_SQL = f"""
     SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, {_IS_DOWNLOADED} AS is_downloaded
     FROM episodes AS e
@@ -420,9 +470,10 @@ _SUGGESTIONS_SQL = f"""
 
 # Episodes the automatic downloads look after: numbered, non-special episodes with an airstamp,
 # of a show anyone follows with the switch on, aired after the earliest moment one of them
-# switched it on, never grabbed (an episode or its season pack) and not given up: everyone's lists
-# at once, each episode once (its tries are the episode's, not a person's). Instants are compared
-# through julianday(), which reads both the 'Z' and the '+00:00' spelling of UTC.
+# switched it on, never grabbed (an episode or its season pack), not in Plex (empty without Plex)
+# and not given up: everyone's lists at once, each episode once (its tries are the episode's,
+# not a person's). Instants are compared through julianday(), which reads both the 'Z' and the
+# '+00:00' spelling of UTC.
 _AUTO_ELIGIBLE = f"""
     FROM episodes AS e
     JOIN (
@@ -436,6 +487,7 @@ _AUTO_ELIGIBLE = f"""
       AND julianday(e.airstamp) > t.since
       AND COALESCE(a.gave_up, 0) = 0
       AND NOT {_IS_DOWNLOADED}
+      AND NOT {_IN_PLEX}
 """
 _AUTO_ORDER = "ORDER BY julianday(e.airstamp), s.name COLLATE NOCASE, e.season, e.number"
 
@@ -484,11 +536,11 @@ _NEXT_EPISODES_SQL = f"""
 # show_id, air_date): the regular
 # numbered episodes (seasons from 1) of each show's latest season — the highest with such an
 # episode aired (an airstamp up to :now, or without one an air date up to :today) — that aren't
-# downloaded (the episode or its season pack), aren't marked "I already have this" (together the
-# CTE `pending`) and aired long enough ago (an airstamp up to :missing_by, or without one an air
-# date up to :missing_day; app.services.missing.missing_cutoffs). `pending` minus `missing` are
-# the "new" episodes. The SQL twin of app.services.missing.missing_episodes / new_episodes;
-# tests keep them in step.
+# downloaded (the episode or its season pack) nor in Plex (together the CTE `pending`) and aired
+# long enough ago (an airstamp up to :missing_by, or without one an air date up to :missing_day;
+# app.services.missing.missing_cutoffs). `pending` minus `missing` are the "new" episodes. The
+# SQL twin of app.services.missing.missing_episodes / new_episodes; tests keep them in step.
+# Only run while Plex is connected (LibraryService): without Plex nothing is missing.
 _MISSING_CTE = f"""
     WITH aired AS (
         SELECT e.id, e.show_id, e.season, e.number, e.air_date, e.airstamp
@@ -507,7 +559,7 @@ _MISSING_CTE = f"""
         SELECT e.id, e.show_id, e.air_date, e.airstamp
         FROM aired AS e
         JOIN latest AS l ON l.show_id = e.show_id AND l.season = e.season
-        WHERE NOT EXISTS (SELECT 1 FROM have_episodes AS m WHERE m.episode_id = e.id)
+        WHERE NOT {_IN_PLEX}
           AND NOT {_IS_DOWNLOADED}
     ),
     missing AS (
@@ -596,6 +648,7 @@ class Database:
         self.settings = SettingsRepository(self)
         self.watchlist = WatchlistRepository(self)
         self.subtitles = SubtitleRepository(self)
+        self.plex = PlexRepository(self)
 
     @classmethod
     async def open(cls, path: Path | str) -> Database:
@@ -822,8 +875,9 @@ class LibraryRepository:
 
         Those of a show anyone follows with the switch on, numbered and not specials (season
         0), with an airstamp after the earliest moment one of them switched it on and within
-        [aired_from, aired_until], not in the download history (nor their season pack) and not
-        given up. Each episode once, however many people follow its show.
+        [aired_from, aired_until], not in the download history (nor their season pack), not
+        marked "I already have this", not in Plex and not given up. Each episode once, however
+        many people follow its show.
         """
         rows = await self._db.fetch_all(
             _AUTO_DUE_SQL,
@@ -1024,8 +1078,8 @@ class LibraryRepository:
         missing_by: datetime,
         missing_day: date,
     ) -> frozenset[int]:
-        """Ids of the new episodes of the shows a person follows (aired, not downloaded or
-        marked, not yet missing; see _MISSING_CTE) airing between `start` and `end`
+        """Ids of the new episodes of the shows a person follows (aired, neither downloaded nor
+        in Plex, not yet missing; see _MISSING_CTE) airing between `start` and `end`
         (inclusive)."""
         rows = await self._db.fetch_all(
             _NEW_BETWEEN_SQL,
@@ -1037,76 +1091,29 @@ class LibraryRepository:
         )
         return frozenset(row["id"] for row in rows)
 
-    async def have_between(self, start: date, end: date) -> frozenset[int]:
-        """Ids of the episodes airing between `start` and `end` (inclusive) that are marked "I
-        already have this" (the calendar's stack cards)."""
+    async def plex_between(self, start: date, end: date) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) that are in Plex
+        (the calendar's stack cards)."""
         rows = await self._db.fetch_all(
-            "SELECT m.episode_id FROM have_episodes AS m "
-            "JOIN episodes AS e ON e.id = m.episode_id WHERE e.air_date BETWEEN ? AND ?",
+            f"SELECT e.id FROM episodes AS e WHERE e.air_date BETWEEN ? AND ? AND {_IN_PLEX}",
             (start.isoformat(), end.isoformat()),
         )
-        return frozenset(row["episode_id"] for row in rows)
+        return frozenset(row["id"] for row in rows)
 
-    async def have_ids(self, show_id: int) -> frozenset[int]:
-        """Ids of the show's episodes marked "I already have this"."""
+    async def plex_ids(self, show_id: int) -> frozenset[int]:
+        """Ids of the show's episodes that are in Plex."""
         rows = await self._db.fetch_all(
-            "SELECT m.episode_id FROM have_episodes AS m "
-            "JOIN episodes AS e ON e.id = m.episode_id WHERE e.show_id = ?",
-            (show_id,),
+            f"SELECT e.id FROM episodes AS e WHERE e.show_id = ? AND {_IN_PLEX}", (show_id,)
         )
-        return frozenset(row["episode_id"] for row in rows)
+        return frozenset(row["id"] for row in rows)
 
-    async def mark_have(self, episode_ids: Iterable[int], when: datetime) -> int:
-        """Mark episodes "I already have this" (unknown episodes are ignored, marked ones keep
-        their mark). Returns how many were newly marked."""
-        ids = json.dumps(sorted(set(episode_ids)))
-        async with self._db.transaction() as conn:
-            cursor = await conn.execute(
-                "INSERT INTO have_episodes (episode_id, marked_at) "
-                "SELECT id, ? FROM episodes WHERE id IN (SELECT value FROM json_each(?)) "
-                "ON CONFLICT (episode_id) DO NOTHING",
-                (_utc(when), ids),
-            )
-            return cursor.rowcount
-
-    async def mark_aired_have(
-        self, show_id: int, *, now: datetime, today: date, when: datetime
-    ) -> int:
-        """Mark the show's regular numbered episodes that aired by `now` (without an airstamp:
-        by `today`) and aren't downloaded as "I already have this": a show nobody followed
-        before starts with nothing missing. Returns how many were newly marked."""
-        async with self._db.transaction() as conn:
-            cursor = await conn.execute(
-                f"""
-                INSERT INTO have_episodes (episode_id, marked_at)
-                SELECT e.id, :when FROM episodes AS e
-                WHERE e.show_id = :show_id
-                  AND e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
-                  AND (
-                      (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(:now))
-                      OR (e.airstamp IS NULL AND e.air_date <= :today)
-                  )
-                  AND NOT {_IS_DOWNLOADED}
-                ON CONFLICT (episode_id) DO NOTHING
-                """,
-                {
-                    "show_id": show_id,
-                    "now": _utc(now),
-                    "today": today.isoformat(),
-                    "when": _utc(when),
-                },
-            )
-            return cursor.rowcount
-
-    async def unmark_have(self, episode_ids: Iterable[int]) -> int:
-        """Take the "I already have this" mark off episodes. Returns how many had one."""
-        ids = json.dumps(sorted(set(episode_ids)))
-        async with self._db.transaction() as conn:
-            cursor = await conn.execute(
-                "DELETE FROM have_episodes WHERE episode_id IN (SELECT value FROM json_each(?))",
-                (ids,),
-            )
-            return cursor.rowcount
+    async def plex_films(self) -> PlexFilms:
+        """The films in Plex, by TMDB id and IMDb id."""
+        rows = await self._db.fetch_all("SELECT tmdb_id, imdb_id FROM plex_movies")
+        return PlexFilms(
+            tmdb=frozenset(row["tmdb_id"] for row in rows if row["tmdb_id"] is not None),
+            imdb=frozenset(row["imdb_id"] for row in rows if row["imdb_id"] is not None),
+        )
 
     async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
         """The episodes of the shows a person follows airing between `start` and `end`
@@ -1233,14 +1240,6 @@ class HistoryRepository:
         )
         return bool(row and row[0])
 
-    async def movie_ids(self) -> frozenset[int]:
-        """TMDB ids of every film in the history."""
-        rows = await self._db.fetch_all(
-            "SELECT DISTINCT media_id FROM download_history WHERE media_type = ?",
-            (MediaType.MOVIE,),
-        )
-        return frozenset(row["media_id"] for row in rows)
-
     async def recent(self, limit: int = 50) -> list[DownloadRecord]:
         rows = await self._db.fetch_all(
             "SELECT * FROM download_history ORDER BY downloaded_at DESC LIMIT ?", (limit,)
@@ -1325,13 +1324,6 @@ class HistoryRepository:
             DownloadRecord.model_validate({k: row[k] for k in row.keys() if k != "nth"})
             for row in rows
         ]
-
-    async def info_hashes(self) -> frozenset[str]:
-        """Info hashes (lowercase hex) of every recorded grab that has one."""
-        rows = await self._db.fetch_all(
-            "SELECT info_hash FROM download_history WHERE info_hash IS NOT NULL"
-        )
-        return frozenset(row["info_hash"] for row in rows)
 
 
 _WATCHLIST_SQL = """
@@ -1534,6 +1526,119 @@ class WatchlistRepository:
                 "WHERE movie_id = :id",
                 {"id": movie_id, "when": _utc(when), "give_up": give_up},
             )
+
+
+def _plex_library(item: Any) -> PlexLibrary | None:
+    """A library as plex_state.libraries keeps it; None for one that doesn't read."""
+    try:
+        return PlexLibrary.model_validate(item)
+    except ValidationError:
+        return None
+
+
+class PlexRepository:
+    """What is in the user's Plex libraries (app/services/plex.py): the episodes of the shows
+    AirGrabber knows, the films, and the last check's state. Shared by everyone."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def known_shows(self) -> list[tuple[int, int | None, str | None]]:
+        """Every show in the cache with a TheTVDB or IMDb id: (show id, tvdb id, imdb id)."""
+        rows = await self._db.fetch_all(
+            "SELECT id, tvdb_id, imdb_id FROM shows "
+            "WHERE tvdb_id IS NOT NULL OR imdb_id IS NOT NULL ORDER BY id"
+        )
+        return [(row["id"], row["tvdb_id"], row["imdb_id"]) for row in rows]
+
+    async def contents(
+        self,
+    ) -> tuple[frozenset[tuple[int, int, int]], frozenset[tuple[int | None, str | None]]]:
+        """What is stored: the episodes (show id, season, episode) and the films (TMDB id,
+        IMDb id)."""
+        episodes = await self._db.fetch_all("SELECT show_id, season, episode FROM plex_episodes")
+        films = await self._db.fetch_all("SELECT tmdb_id, imdb_id FROM plex_movies")
+        return (
+            frozenset((row["show_id"], row["season"], row["episode"]) for row in episodes),
+            frozenset((row["tmdb_id"], row["imdb_id"]) for row in films),
+        )
+
+    async def replace(self, scan: PlexScan, when: datetime) -> None:
+        """Make `scan` what is stored, in one transaction: its episodes (of shows still in the
+        cache), its films and the state row."""
+        libraries = json.dumps([library.model_dump(mode="json") for library in scan.libraries])
+        async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM plex_episodes")
+            await conn.execute("DELETE FROM plex_movies")
+            await conn.executemany(
+                "INSERT INTO plex_episodes (show_id, season, episode) "
+                "SELECT id, ?, ? FROM shows WHERE id = ? "
+                "ON CONFLICT (show_id, season, episode) DO NOTHING",
+                [(season, episode, show_id) for show_id, season, episode in sorted(scan.episodes)],
+            )
+            await conn.executemany(
+                "INSERT INTO plex_movies (tmdb_id, imdb_id) VALUES (?, ?)",
+                sorted(scan.films, key=lambda film: (film[0] or 0, film[1] or "")),
+            )
+            await conn.execute(
+                "INSERT INTO plex_state "
+                "(id, checked_at, shows, unmatched_shows, unmatched_films, libraries) "
+                "VALUES (1, :when, :shows, :unmatched_shows, :unmatched_films, :libraries) "
+                "ON CONFLICT (id) DO UPDATE SET checked_at = excluded.checked_at, "
+                "shows = excluded.shows, unmatched_shows = excluded.unmatched_shows, "
+                "unmatched_films = excluded.unmatched_films, libraries = excluded.libraries",
+                {
+                    "when": _utc(when),
+                    "shows": scan.shows,
+                    "unmatched_shows": scan.unmatched_shows,
+                    "unmatched_films": scan.unmatched_films,
+                    "libraries": libraries,
+                },
+            )
+
+    async def clear(self) -> None:
+        """Forget everything (Disconnect)."""
+        async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM plex_episodes")
+            await conn.execute("DELETE FROM plex_movies")
+            await conn.execute("DELETE FROM plex_state")
+
+    async def counts(self) -> PlexCounts:
+        """The Settings box's counts: the stored episodes of the shows anyone follows and how
+        many of those shows have any, the films, and the last check."""
+        row = await self._db.fetch_one(
+            """
+            SELECT (SELECT COUNT(*) FROM plex_episodes
+                      WHERE show_id IN (SELECT show_id FROM tracked_shows)) AS episodes,
+                   (SELECT COUNT(DISTINCT show_id) FROM plex_episodes
+                      WHERE show_id IN (SELECT show_id FROM tracked_shows)) AS shows,
+                   (SELECT COUNT(*) FROM plex_movies) AS films,
+                   (SELECT unmatched_shows FROM plex_state WHERE id = 1) AS unmatched_shows,
+                   (SELECT checked_at FROM plex_state WHERE id = 1) AS checked_at
+            """
+        )
+        assert row is not None  # an aggregate-only SELECT always yields one row
+        return PlexCounts(
+            episodes=row["episodes"],
+            shows=row["shows"],
+            films=row["films"],
+            unmatched_shows=row["unmatched_shows"] or 0,
+            checked_at=row["checked_at"],
+        )
+
+    async def libraries(self) -> tuple[PlexLibrary, ...]:
+        """The show and film libraries the last check saw."""
+        row = await self._db.fetch_one("SELECT libraries FROM plex_state WHERE id = 1")
+        if row is None:
+            return ()
+        try:
+            items = json.loads(row["libraries"])
+        except ValueError:
+            return ()
+        if not isinstance(items, list):
+            return ()
+        found = (_plex_library(item) for item in items)
+        return tuple(library for library in found if library is not None)
 
 
 class SettingsRepository:

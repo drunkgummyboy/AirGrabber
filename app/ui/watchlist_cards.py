@@ -17,8 +17,9 @@ when the size changed since it was built.
 
 from __future__ import annotations
 
+import asyncio
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -27,12 +28,13 @@ import customtkinter as ctk
 
 from app.i18n import N_, month_short, t, tn
 from app.models import Movie, WatchlistEntry
+from app.models.plex import PlexFilms
 from app.services.watchlist import GIVE_UP_AFTER, available_on, is_out
 from app.ui import theme
 from app.ui.card_scale import FULL, SMALL_TEXT_MIN, CardScale, grid_item_width
 from app.ui.cards import auto_switch_color
 from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
-from app.ui.media_cards import imdb_search_url, tmdb_poster_size, tmdb_rating
+from app.ui.media_cards import PlexMark, imdb_search_url, plex_mark, tmdb_poster_size, tmdb_rating
 from app.ui.poster_card import (
     POSTER_CARD_WIDTH,
     PosterCard,
@@ -189,6 +191,7 @@ class WatchlistCard(PosterCard):
             scale=scale,
         )
         self.movie_id = movie.id
+        self.plex_mark: PlexMark | None = None  # the quiet ✓ while the film is in Plex
         self._entry = entry
         self._watchlist = watchlist
         self._today = today
@@ -269,6 +272,18 @@ class WatchlistCard(PosterCard):
         self._entry = entry
         self._paint()
 
+    @property
+    def imdb_id(self) -> str | None:
+        return self._entry.imdb_id
+
+    def set_in_plex(self, in_plex: bool) -> None:
+        """The quiet ✓ "In Plex" on the cover's corner, or not (app/ui/media_cards.py)."""
+        if in_plex and self.plex_mark is None:
+            self.plex_mark = plex_mark(self)
+        elif not in_plex and self.plex_mark is not None:
+            self.plex_mark.destroy()
+            self.plex_mark = None
+
     def _paint(self) -> None:
         entry = self._entry
         status = watch_status(entry, self._today(), self._now())
@@ -332,7 +347,8 @@ class WatchlistCard(PosterCard):
 
 class WatchlistShelf(ctk.CTkFrame):
     """The "📌 My watchlist" section: packed first in its master while the list has films,
-    unpacked while it is empty. Starts out unpacked until `start()`."""
+    unpacked while it is empty. Starts out unpacked until `start()`, which also reads the films
+    in Plex again (`plex`): their cards get the quiet ✓ "In Plex"."""
 
     def __init__(
         self,
@@ -344,11 +360,16 @@ class WatchlistShelf(ctk.CTkFrame):
         pady: tuple[int, int] = (0, 25),
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_open: Callable[[Movie], None] | None = None,
+        plex: Callable[[], Awaitable[PlexFilms]] | None = None,
     ) -> None:
         """`card_scale`: the card size to draw the cards at, read at every rebuild. `on_open`:
-        what a click on a card's cover or title does (the film's info window)."""
+        what a click on a card's cover or title does (the film's info window). `plex`: the
+        films in Plex (none without it)."""
         super().__init__(master, fg_color="transparent")
         self._on_open = on_open
+        self._plex = plex
+        self._in_plex = PlexFilms()
+        self._plex_task: asyncio.Task[None] | None = None
         self._watchlist = watchlist
         self._images = images
         self._actions = actions
@@ -376,6 +397,20 @@ class WatchlistShelf(ctk.CTkFrame):
         if self._unsubscribe is None:
             self._unsubscribe = self._watchlist.subscribe(self.sync)
         self.sync()
+        if self._plex is not None:
+            if self._plex_task is not None:
+                self._plex_task.cancel()
+            self._plex_task = spawn(self._read_plex(self._plex), name="WatchlistShelf.plex")
+
+    async def _read_plex(self, plex: Callable[[], Awaitable[PlexFilms]]) -> None:
+        films = await plex()
+        if self.winfo_exists():
+            self._in_plex = films
+            self._mark_plex()
+
+    def _mark_plex(self) -> None:
+        for card in self._cards.values():
+            card.set_in_plex(self._in_plex.has(card.movie_id, card.imdb_id))
 
     @property
     def cards(self) -> dict[int, WatchlistCard]:
@@ -397,6 +432,7 @@ class WatchlistShelf(ctk.CTkFrame):
                 self._cards[entry.movie_id].update_entry(entry)
         else:
             self._rebuild(entries)
+        self._mark_plex()
         if not self.winfo_manager():
             others = [child for child in self.master.pack_slaves() if child is not self]
             options: dict[str, Any] = {"before": others[0]} if others else {}
@@ -434,4 +470,6 @@ class WatchlistShelf(ctk.CTkFrame):
     def destroy(self) -> None:
         if self._unsubscribe is not None:
             self._unsubscribe()
+        if self._plex_task is not None:
+            self._plex_task.cancel()
         super().destroy()

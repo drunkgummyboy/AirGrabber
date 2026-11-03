@@ -15,7 +15,7 @@ from app.ui import theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.media_cards import DiscoverShowCard
 from app.ui.poster_card import TrackState
-from app.ui.shelf_filter import TV_GENRES, Genre, genres_of
+from app.ui.shelf_filter import HIDE_FOLLOWED_TEXT, TV_GENRES, Genre, genres_of
 from app.ui.views.base import StatusReporter
 from app.ui.views.shelves import Shelf, ShelvesView
 from app.ui.widgets import FlexGrid
@@ -23,9 +23,11 @@ from app.ui.widgets import FlexGrid
 
 class DiscoverView(ShelvesView[DiscoverShowEntry]):
     """TMDB's TV shelves; "+ Track" adds a show to the library through its TVMaze counterpart.
-    "Hide what I already have" hides the shows the user follows."""
+    "Hide shows I follow" hides the shows the user follows (following, not having: it doesn't
+    depend on Plex)."""
 
     _hide_owned_setting = "hide_owned_discover"
+    _hide_owned_text = HIDE_FOLLOWED_TEXT
     _hide_owned_tip = N_("Hides the shows you already follow")
     _all_owned_text = N_("You already follow every show here.")
 
@@ -98,7 +100,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
 
     def _owned_changed(self, items: Sequence[DiscoverShowEntry]) -> bool:
         """Followed or no longer followed (a quiet reload): the cards' Track buttons follow;
-        with "Hide what I already have" on, a newly followed show's cards go. False when a
+        with "Hide shows I follow" on, a newly followed show's cards go. False when a
         shelf would be left empty or a card would have to come back."""
         for item in items:
             if self._hide_owned:

@@ -35,6 +35,7 @@ from app.models import (
     TVDetails,
     Video,
 )
+from app.models.plex import PlexFilms
 from app.services.library import LibraryService
 from app.services.tmdb import TMDBAuthError, TMDBClient, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeClient
@@ -309,13 +310,19 @@ class DiscoveryService:
             failed=failed,
         )
 
+    async def plex_films(self) -> PlexFilms:
+        """The films in Plex (the film cards' quiet ✓ "In Plex", app/services/plex.py); none
+        without Plex."""
+        return await self._library.plex_films()
+
     async def movie_dashboard(self, *, force: bool = False) -> MovieDashboard:
         """Films first released digitally in the last 14 days, trending films, and films first
         released digitally in the next 21 days; 18 at most each.
 
         The digital shelves are filtered on each film's details (see `_first_digital_releases`).
-        Cached like `tv_dashboard`, filtered; `downloaded` (the shelves' films in the download
-        history) is recomputed on every call, as the TV dashboard's tracked flags are.
+        Cached like `tv_dashboard`, filtered; whether Plex is connected and `in_plex` (the
+        shelves' films in Plex, none without Plex) are recomputed on every call, as the TV
+        dashboard's tracked flags are.
         """
         today = self._today()
         lists = None if force else self._fresh(self._movie_shelves, today)
@@ -334,14 +341,15 @@ class DiscoveryService:
             lists, failed = await self._load_shelves("Movie", fetchers)
             if not failed and generation == self._generation:
                 self._movie_shelves = _Shelves(today, lists, self._clock())
-        history = await self._library.downloaded_movie_ids()
+        plex = await self._library.plex_films()
         on_shelves = {movie.id for movies in lists.values() for movie in movies}
         return MovieDashboard(
             just_dropped=lists.get("just_dropped", ()),
             trending=lists.get("trending", ()),
             upcoming=lists.get("upcoming", ()),
             failed=failed,
-            downloaded=frozenset(on_shelves & history),
+            plex_connected=self._library.plex_connected,
+            in_plex=frozenset(movie_id for movie_id in on_shelves if plex.has(movie_id)),
         )
 
     async def _first_digital_releases(self, start: date, end: date) -> list[Movie]:

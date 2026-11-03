@@ -157,10 +157,6 @@ class DownloadService:
             except Exception:
                 log.exception("Download listener %r failed", listener)
 
-    async def grabbed_hashes(self) -> frozenset[str]:
-        """Info hashes (lowercase hex) of the releases in the download history."""
-        return await self._history.info_hashes()
-
     async def has_grabbed(self, target: GrabTarget) -> bool:
         """Whether the download history has `target`: the film, the episode or its season's
         pack, or (a season target) the season pack."""

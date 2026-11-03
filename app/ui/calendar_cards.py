@@ -4,10 +4,12 @@ All three are drawn at the page's `CardScale` (Settings → Card size). The full
 baked images are in app/ui/calendar_face.py; the compact and suggestion cards keep their look,
 only their fonts follow the card size (never below the readable minimums).
 
-A missing episode (app.services.missing's rule: aired at least a day ago, not downloaded, not
-marked "I already have this"; the view hands the cards `missing`) gets an amber "Not downloaded
-yet" under its code, on the full and the compact cards alike; a new one (aired less than a day
-ago, `new`) a quiet blue "New" there instead. Clicking a show's
+While Plex is connected (app/services/plex.py; without it nothing is missing or new, owner's
+decision for 3.1.0), a missing episode (app.services.missing's rule: aired at least a day ago,
+neither in Plex nor downloaded; the view hands the cards `missing`) gets an amber "Not
+downloaded yet" under its code, on the full and the compact cards alike; a new one (aired less
+than a day ago, `new`) a quiet blue "New" there instead. Whether an episode was downloaded is
+never shown (no "✓ Grabbed"); a run's outcome is. Clicking a show's
 name (full cards: also the poster) opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
@@ -87,9 +89,7 @@ NOT_AIRED_TEXT = N_("Not aired")
 SHOW_TIP = N_("More about this show")  # a card's show name (it opens the show's window)
 # A missing episode's amber note, with shorter texts for when it doesn't fit.
 MISSING_TEXTS = (N_("Not downloaded yet"), N_("Not downloaded"), N_("Missing"))
-MISSING_TIP = N_(
-    "Aired, but not downloaded yet. Already have it? Mark it in the show's window."
-)
+MISSING_TIP = N_("Aired, but not in Plex and not downloaded yet.")
 CHOOSE_TIP = N_("Nothing good enough was found. Choose a download yourself.")
 # A new episode's quiet note (aired less than a day ago: not missing yet).
 NEW_NOTE_TEXT = N_("New")
@@ -148,12 +148,11 @@ def _keep_elided(label: ctk.CTkLabel, text: str, font: ctk.CTkFont, *, reserve: 
 
 
 def episode_base(entry: CalendarEntry) -> Base:
-    """A disabled Not Aired; ✓ Grabbed (aired and downloaded); Search for an aired special,
-    which has no episode number to download by; else the Download control."""
+    """A disabled Not Aired; Search for an aired special, which has no episode number to
+    download by; else the Download control (also for an episode downloaded before: that is
+    never shown)."""
     if not entry.episode.has_aired():
         return Base("unavailable", t("Not Aired"))
-    if entry.is_downloaded:
-        return Base("grabbed")
     if entry.episode.number is None:
         return Base("search")
     return Base("download")
@@ -259,9 +258,10 @@ def buttons_width(look: IconLook) -> int:
 
 def icon_look(base: Base, state: RunState | None) -> IconLook:
     """The compact card's button, in the colours of the Download row (`control_look`): ⬇
-    with the ⋯ beside it; ✓ once grabbed (a click opens the search window, as ✓ Grabbed
-    does); … while a run works; ⋯ alone where the row offers a search ("Choose…" after
-    nothing good enough was found, "Search" for a special); none before the episode airs."""
+    with the ⋯ beside it; ✓ once a run grabbed it (a click opens the search window, as the
+    outcome's button does); … while a run works; ⋯ alone where the row offers a search
+    ("Choose…" after nothing good enough was found, "Search" for a special); none before the
+    episode airs."""
     look = control_look(base, state)
     if look.layout == "label":
         return IconLook(
@@ -298,7 +298,8 @@ class EpisodeCard(ctk.CTkFrame):
     left side and fades into the card; the show's name, the episode code and the bottom row
     (a muted "Not aired", else the Download row) sit on the right, over the faded part.
     Clicking the poster or the name opens the show's window (`on_open_show`). A `missing`
-    episode gets the amber note under its code, a `new` one the blue "New" note.
+    episode gets the amber note under its code, a `new` one the blue "New" note (both only
+    with Plex: the view passes them).
 
     Everything but the Download row is drawn on one canvas (see app/ui/calendar_face.py): the
     baked poster piece and right cap, the stretch between them, and the texts. Switching
@@ -642,7 +643,7 @@ def _as_control(widget: SlimDownload) -> DownloadControl[Any]:
 
 class SlimDownload(ctk.CTkFrame):
     """A compact card's download buttons (`icon_look`): a small ⬇ with a small ⋯ beside it,
-    ✓ once grabbed, … while a run works. Follows the title's run state like the Download row
+    ✓ once a run grabbed it, … while a run works. Follows the title's run state like the Download row
     (it attaches to the same DownloadStates)."""
 
     def __init__(self, master: Any, entry: CalendarEntry, actions: EpisodeActions) -> None:

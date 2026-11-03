@@ -6,7 +6,9 @@ buttons ask for and mirrors its events into the main window's DownloadStates, so
 button, row and stack card of a title shows where it is, also one opened later: "Queued" while
 it waits (`Phase.QUEUED`), the working label while it searches or sends, then the outcome as
 before ("✓ Sent" with what it picked, amber "No good release found", or back to ⬇ with the
-reason in the status bar when the grab failed). The status bar hears each outcome as it did.
+reason in the status bar when the grab failed). A title found in the download history already
+goes back to its own look too (no "✓ Grabbed": since 3.1.0 only Plex says what you have); the
+status bar says it was downloaded before. The status bar hears each outcome as it did.
 
 A batch (a calendar stack's "Download all", the show window's "All missing", My shows'
 "Download missing", and the episodes a season pack queued instead when none was found) keeps
@@ -114,7 +116,7 @@ class QueueLink:
             states.set(key, grabbed_state(result))
             self._report(download_status_text(event.label, result))
         elif state is QueueState.DONE:  # downloaded already, e.g. meanwhile from elsewhere
-            states.set(key, RunState(Phase.DONE))
+            states.set(key, None)
             self._report(already_downloaded_text(event.label))
         elif state is QueueState.NOTHING and event.fallback:
             states.set(key, None)  # the season's control follows its episodes' batch now

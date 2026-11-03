@@ -1,9 +1,12 @@
-"""Missing episodes of tracked shows: the rules.
+"""Missing episodes of tracked shows: the rules. They apply only while Plex is connected
+(app/services/plex.py; owner's decision for 3.1.0): without Plex AirGrabber shows nothing of what
+you have or miss, and nothing is missing.
 
 Only a show's latest season counts: the highest season with at least one aired regular,
 numbered episode (a new season whose first episode hasn't aired yet leaves the previous one the
-latest). Its missing episodes are the aired regular numbered ones that are neither downloaded
-(the episode or its season pack in the download history) nor marked "I already have this".
+latest). Its missing episodes are the aired regular numbered ones that are neither in Plex nor
+downloaded by AirGrabber (the episode or its season pack in the download history: a grabbed
+episode Plex doesn't have yet is on its way, neither had nor missing).
 "Aired" is `Episode.has_aired`, the rule of the show details window: the airstamp has passed,
 or without one the air date is today or earlier; an episode with neither never counts. Specials
 (no number, or not of type "regular") and season 0 never count.
@@ -83,12 +86,11 @@ def missing_episodes(
     episodes: Iterable[Episode],
     *,
     downloaded: Collection[int],
-    have: Collection[int],
+    in_plex: Collection[int],
     now: datetime,
 ) -> list[Episode]:
     """The latest season's regular numbered episodes that aired at least MISSING_AFTER ago
-    (`is_overdue`) and whose id is in neither `downloaded` nor `have` (marked "I already have
-    this"), oldest first."""
+    (`is_overdue`) and whose id is in neither `downloaded` nor `in_plex`, oldest first."""
     episodes = list(episodes)
     season = latest_season(episodes, now)
     if season is None:
@@ -101,7 +103,7 @@ def missing_episodes(
             and counts_as_missing_candidate(episode)
             and is_overdue(episode, now)
             and episode.id not in downloaded
-            and episode.id not in have
+            and episode.id not in in_plex
         ),
         key=_oldest_first,
     )
@@ -111,11 +113,11 @@ def new_episodes(
     episodes: Iterable[Episode],
     *,
     downloaded: Collection[int],
-    have: Collection[int],
+    in_plex: Collection[int],
     now: datetime,
 ) -> list[Episode]:
     """The latest season's regular numbered episodes that aired, but less than MISSING_AFTER
-    ago (`is_new`), and whose id is in neither `downloaded` nor `have`, oldest first: the
+    ago (`is_new`), and whose id is in neither `downloaded` nor `in_plex`, oldest first: the
     ones that become missing once their day has passed."""
     episodes = list(episodes)
     season = latest_season(episodes, now)
@@ -129,7 +131,7 @@ def new_episodes(
             and counts_as_missing_candidate(episode)
             and is_new(episode, now)
             and episode.id not in downloaded
-            and episode.id not in have
+            and episode.id not in in_plex
         ),
         key=_oldest_first,
     )

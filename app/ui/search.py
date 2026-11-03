@@ -628,6 +628,9 @@ class SearchResultsWindow(ctk.CTkToplevel):
         if not movies:
             self._message(self._movies_section, t("No movies found."), theme.TEXT_QUIET)
             return
+        plex = await self._discovery.plex_films()  # the cards' quiet ✓ "In Plex"
+        if not self.winfo_exists() or query != self._query:
+            return
         item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
         grid = FlexGrid(self._movies_section, item_width=item_width, pad_x=8, pad_y=10)
         grid.pack(fill="x")
@@ -641,6 +644,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 watchlist=self._watchlist,
                 scale=self._scale,
                 on_open=self._on_open_movie,
+                in_plex=plex.has(movie.id),
             )
         grid.relayout()
 

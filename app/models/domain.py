@@ -40,6 +40,7 @@ class Show(DomainModel):
     rating: float | None = None
     weight: int = 0  # TVMaze popularity, 0-100
     imdb_id: ImdbId = None
+    tvdb_id: int | None = None  # TheTVDB's id (TVMaze's externals): Plex's shows match by it
     poster_url: str | None = None
     poster_url_original: str | None = None
     summary: str = ""
@@ -319,7 +320,10 @@ class MovieDashboard(DomainModel):
     trending: tuple[Movie, ...] = ()
     upcoming: tuple[Movie, ...] = ()
     failed: tuple[str, ...] = ()  # names of the shelves that couldn't be loaded
-    downloaded: frozenset[int] = frozenset()  # TMDB ids of its films in the download history
+    # Plex is connected (app/services/plex.py): only then do the films in it count as had (their
+    # ids: `in_plex`, recomputed on every call) and can the page hide them.
+    plex_connected: bool = False
+    in_plex: frozenset[int] = frozenset()
 
 
 class SearchKind(StrEnum):
@@ -432,11 +436,10 @@ class DownloadRecord(DomainModel):
 
 
 class ShowActivity(DomainModel):
-    """What a tracked show's card says under its title: its latest grab of the past week and its
-    next episode, as far as the history and the cached episodes know."""
+    """What a tracked show's card says under its title: its next episode, as far as the cached
+    episodes know."""
 
     show_id: int
-    last_grab: DownloadRecord | None = None  # the latest TV grab within the recent window
     next_episode: Episode | None = None  # the first numbered episode still to air
 
 
@@ -450,16 +453,20 @@ class ShowDetails(DomainModel):
     tracked: bool = False
     auto_download: bool = False
     # Ids of the episodes in the download history: the episode itself or its season's pack.
+    # Never shown as such (owner's decision, 3.1.0): it only keeps "missing" and the downloads
+    # from fetching an episode twice, and offers a grabbed episode's subtitles.
     downloaded: frozenset[int] = frozenset()
     next_episode: Episode | None = None  # the first numbered episode still to air
-    # Tracked shows only (see app.services.missing): the latest season (the highest with an
-    # aired regular numbered episode), its episodes not downloaded and not marked "I already
-    # have this" (ids) that aired at least a day ago (`missing`) or less (`new`), and every
-    # episode marked so (ids, any season).
+    # Plex is connected (app/services/plex.py): only then does the window show what you have
+    # and miss. Then, for tracked shows (see app.services.missing): the latest season (the
+    # highest with an aired regular numbered episode), its episodes neither in Plex nor
+    # downloaded (ids) that aired at least a day ago (`missing`) or less (`new`), and the
+    # episodes in Plex (`in_plex`, ids, any season), the only ones that count as had.
+    plex_connected: bool = False
     latest_season: int | None = None
     missing: frozenset[int] = frozenset()
     new: frozenset[int] = frozenset()
-    have: frozenset[int] = frozenset()
+    in_plex: frozenset[int] = frozenset()
 
     def is_downloaded(self, episode: Episode) -> bool:
         return episode.id in self.downloaded
@@ -468,12 +475,12 @@ class ShowDetails(DomainModel):
         return episode.id in self.missing
 
     def is_new(self, episode: Episode) -> bool:
-        """Aired less than a day ago and not downloaded or marked: not missing yet."""
+        """Aired less than a day ago and neither in Plex nor downloaded: not missing yet."""
         return episode.id in self.new
 
-    def has_it(self, episode: Episode) -> bool:
-        """Marked "I already have this"."""
-        return episode.id in self.have
+    def is_in_plex(self, episode: Episode) -> bool:
+        """In the user's Plex libraries."""
+        return episode.id in self.in_plex
 
 
 class GrabTarget(DomainModel):

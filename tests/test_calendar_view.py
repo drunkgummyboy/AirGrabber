@@ -58,22 +58,28 @@ def _within(entries: list[CalendarEntry], start: date, end: date) -> list[Calend
 
 
 class FakeLibrary:
+    """LibraryService's calendar calls; what you have and miss only while `plex_connected`
+    (3.1.0: the real service answers "nothing" without Plex)."""
+
     def __init__(
         self,
         tracked: list[CalendarEntry],
         suggestions: list[CalendarEntry],
         missing: frozenset[int] = frozenset(),
-        had: frozenset[int] = frozenset(),
+        in_plex: frozenset[int] = frozenset(),
         new: frozenset[int] = frozenset(),
+        *,
+        plex: bool = True,
     ) -> None:
         self._tracked = tracked
         self._suggestions = suggestions
         self._missing = missing
-        self._had = had
+        self._in_plex = in_plex
         self._new = new
+        self.plex_connected = plex
         self.calendar_calls: list[tuple[date, date]] = []
         self.missing_calls: list[tuple[date, date]] = []
-        self.have_calls: list[tuple[date, date]] = []
+        self.plex_calls: list[tuple[date, date]] = []
         self.suggestion_calls: list[tuple[date, date, int]] = []
         self.people: list[int] = []  # the person each calendar was asked for
         self.gate: asyncio.Event | None = None
@@ -90,14 +96,14 @@ class FakeLibrary:
         self, start: date, end: date, *, profile_id: int
     ) -> frozenset[int]:
         self.missing_calls.append((start, end))
-        return self._missing
-
-    async def have_between(self, start: date, end: date) -> frozenset[int]:
-        self.have_calls.append((start, end))
-        return self._had
+        return self._missing if self.plex_connected else frozenset()
 
     async def new_between(self, start: date, end: date, *, profile_id: int) -> frozenset[int]:
-        return self._new
+        return self._new if self.plex_connected else frozenset()
+
+    async def plex_between(self, start: date, end: date) -> frozenset[int]:
+        self.plex_calls.append((start, end))
+        return self._in_plex if self.plex_connected else frozenset()
 
     async def suggestions(
         self, start: date, end: date, *, profile_id: int, per_day: int
@@ -425,6 +431,32 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         (compact,) = self.card_widgets(view, GRID_START)
         self.assertIsNotNone(compact.note)
 
+    async def test_without_plex_no_notes_and_connecting_brings_them(self) -> None:
+        library = self.library(missing=frozenset({100, 300}))
+        library.plex_connected = False
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        first, second, _suggestion = self.card_widgets(view, TODAY)
+        self.assertFalse(first._layout.note)  # no room for a note: none is drawn
+        (compact,) = self.card_widgets(view, GRID_START)
+        self.assertIsNone(compact.note)  # not even made
+        # Plex connected: the pages reload (PlexService's on_change) and the notes come.
+        library.plex_connected = True
+        view.refresh_quietly()
+        assert view._load_task is not None
+        await view._load_task
+        first, _second, _suggestion = self.card_widgets(view, TODAY)
+        self.assertTrue(first._layout.note)
+        (compact,) = self.card_widgets(view, GRID_START)
+        self.assertIsNotNone(compact.note)
+        # Disconnected: gone again.
+        library.plex_connected = False
+        view.refresh_quietly()
+        assert view._load_task is not None
+        await view._load_task
+        (compact,) = self.card_widgets(view, GRID_START)
+        self.assertIsNone(compact.note)
+
     async def test_a_shows_episodes_of_one_day_share_a_stack_card(self) -> None:
         def episode(show_id: int, number: int, day: date) -> CalendarEntry:
             return CalendarEntry(
@@ -447,10 +479,10 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             episode(6, 7, GRID_START),
             episode(6, 8, GRID_START),
         ]
-        library = FakeLibrary(tracked, [], missing=frozenset({402}), had=frozenset({403}))
+        library = FakeLibrary(tracked, [], missing=frozenset({402}), in_plex=frozenset({403}))
         view = self.view(library, FakeSettings(Settings(weeks_to_show=1, show_suggestions=False)))
         await view.load()
-        self.assertEqual(library.have_calls, library.calendar_calls)
+        self.assertEqual(library.plex_calls, library.calendar_calls)
         stack, single = self.card_widgets(view, TODAY)
         self.assertIsInstance(stack, StackCard)
         self.assertIsInstance(single, EpisodeCard)
@@ -458,7 +490,7 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [entry.episode.number for entry in stack._stack.entries], [1, 2, 3]
         )
-        self.assertEqual(stack._had, {403})
+        self.assertEqual((stack._in_plex, stack._marks), ({403}, True))
         (compact,) = self.card_widgets(view, GRID_START)
         self.assertIsInstance(compact, CompactStackCard)
         self.assertEqual(compact.badge.cget("text"), "2")

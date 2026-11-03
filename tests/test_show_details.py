@@ -139,18 +139,17 @@ class SeasonTests(unittest.TestCase):
 
 
 class RowStateTests(unittest.TestCase):
-    def test_aired_and_downloaded(self) -> None:
+    def test_aired_is_downloadable_downloaded_before_or_not(self) -> None:
+        # Whether it was downloaded is never shown (3.1.0: only Plex says what you have).
         aired = episode(1, 1, 1, airs=NOW - timedelta(hours=1))
-        self.assertEqual(episode_row_state(aired, downloaded=True, now=NOW), "downloaded")
+        self.assertEqual(episode_row_state(aired, now=NOW), "downloadable")
+        by_date = episode(1, 1, 1, air_date=NOW.date())  # no airstamp: aired from its date on
+        self.assertEqual(episode_row_state(by_date, now=NOW), "downloadable")
 
-    def test_aired_not_downloaded(self) -> None:
-        aired = episode(1, 1, 1, air_date=NOW.date())  # no airstamp: aired from its date on
-        self.assertEqual(episode_row_state(aired, downloaded=False, now=NOW), "downloadable")
-
-    def test_not_aired_is_upcoming_even_when_a_pack_covers_it(self) -> None:
+    def test_not_aired_is_upcoming(self) -> None:
         later = episode(1, 1, 1, airs=NOW + timedelta(hours=1))
-        self.assertEqual(episode_row_state(later, downloaded=True, now=NOW), "upcoming")
-        self.assertEqual(episode_row_state(episode(2, 1, 2), downloaded=False, now=NOW), "upcoming")
+        self.assertEqual(episode_row_state(later, now=NOW), "upcoming")
+        self.assertEqual(episode_row_state(episode(2, 1, 2), now=NOW), "upcoming")
 
     def test_upcoming_text_counts_the_days(self) -> None:
         def text(day: date) -> str:
@@ -171,8 +170,8 @@ class RowStateTests(unittest.TestCase):
 
 
 class MarkTests(unittest.TestCase):
-    """The latest season's chips: amber Missing, blue New (aired less than a day ago), muted
-    ✓ Have it."""
+    """With Plex, the latest season's marks: amber Missing, blue New (aired less than a day
+    ago), the muted ✓ of an episode in Plex."""
 
     def details(self) -> ShowDetails:
         return ShowDetails(
@@ -184,16 +183,17 @@ class MarkTests(unittest.TestCase):
                 episode(4, 1, 4, airs=NOW + timedelta(days=1)),
             ),
             tracked=True,
+            plex_connected=True,
             latest_season=1,
             missing=frozenset({1}),
             new=frozenset({2}),
-            have=frozenset({3}),
+            in_plex=frozenset({3}),
         )
 
     def test_row_marks(self) -> None:
         details = self.details()
         marks = [row_mark(details, e) for e in details.episodes]
-        self.assertEqual(marks, ["missing", "new", "have", None])
+        self.assertEqual(marks, ["missing", "new", "plex", None])
         self.assertEqual(season_marks(details, 1), ([1], [3]))  # new ones aren't missing
 
     def test_new_text_today_or_yesterday(self) -> None:
@@ -209,11 +209,11 @@ class MarkTests(unittest.TestCase):
     def test_texts_and_colours(self) -> None:
         aired = episode(1, 1, 1, airs=NOW - timedelta(hours=1))
         self.assertEqual(mark_text("missing", aired, NOW), "Missing")
-        self.assertEqual(mark_text("have", aired, NOW), "✓")
+        self.assertEqual(mark_text("plex", aired, NOW), "✓")
         self.assertEqual(mark_text("new", aired, NOW), "New · aired today")
         self.assertEqual(mark_color("missing"), theme.WARNING)
         self.assertEqual(mark_color("new"), theme.LINK)
-        self.assertEqual(mark_color("have"), theme.TEXT_MUTED)
+        self.assertEqual(mark_color("plex"), theme.TEXT_MUTED)
 
     def test_the_mark_slot_fits_the_dot_and_the_longest_text(self) -> None:
         width = mark_slot_width(lambda text: 7.0 * len(text))

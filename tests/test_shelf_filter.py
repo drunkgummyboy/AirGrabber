@@ -149,6 +149,7 @@ class FakeMoviesView(ShelvesView[Movie]):
         self.shown: list[int] = []  # the films with a card, in order
 
     async def _fetch_shelves(self, *, force: bool) -> list[Shelf[Movie]]:
+        self.offered = self.plex  # as MovieView reads it from the dashboard
         return self.shelves
 
     def _card(self, master: Any, item: Movie) -> None:
@@ -164,6 +165,12 @@ class FakeMoviesView(ShelvesView[Movie]):
 
     def _is_owned(self, item: Movie) -> bool:
         return item.id in self.owned
+
+    plex = True  # Plex connected, as the next fetch finds it
+    offered = True  # the Movies page offers its switch only with Plex (the last fetch's)
+
+    def _hide_owned_offered(self) -> bool:
+        return self.offered
 
 
 class PageTests(unittest.IsolatedAsyncioTestCase):
@@ -244,7 +251,8 @@ class PageTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.view.filter_bar.hide_owned)
         self.assertEqual(self.view.shown, [1, 2, 3, 4])
 
-        self.view.filter_bar._switch.toggle()
+        assert self.view.filter_bar.switch is not None
+        self.view.filter_bar.switch.toggle()
         await self.settle()
         self.assertEqual(self.view.shown, [2, 3])
         self.assertTrue(self.settings.current.hide_owned_movies)
@@ -266,7 +274,36 @@ class PageTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(child, ctk.CTkLabel)
         ]
         self.assertEqual(texts, ["You already have every film here."])
-        self.assertEqual(view.filter_bar._switch.cget("text"), HIDE_OWNED_TEXT)
+        assert view.filter_bar.switch is not None
+        self.assertEqual(view.filter_bar.switch.cget("text"), HIDE_OWNED_TEXT)
+
+    async def test_without_plex_the_movies_page_offers_no_switch_and_hides_nothing(self) -> None:
+        await self.settings.update(hide_owned_movies=True)
+        view = FakeMoviesView(self.root, self.settings, self.view.shelves)
+        view.plex = view.offered = False  # Plex not connected: nothing counts as had
+        view.owned = {1, 2}
+        await view.load()
+        self.assertIsNone(view.filter_bar.switch)  # not made at all
+        self.assertFalse(view.hiding)
+        self.assertEqual(view.shown, [1, 2, 3, 4])
+        # Plex connected (the page reloads): the switch comes, and the stored choice hides.
+        view.plex = True
+        view.refresh_quietly()
+        assert view._load_task is not None
+        await view._load_task
+        await self.settle()
+        self.assertIsNotNone(view.filter_bar.switch)
+        self.assertEqual(view.shown, [3, 4])
+        # Disconnected again: the switch goes, everything shows.
+        view.plex = False
+        view.owned = set()
+        view.refresh_quietly()
+        assert view._load_task is not None
+        await view._load_task
+        await self.settle()
+        self.assertIsNone(view.filter_bar.switch)
+        self.assertEqual(view.shown, [1, 2, 3, 4])
+        self.assertTrue(self.settings.current.hide_owned_movies)  # the choice is kept
 
     async def test_a_friendly_line_when_nothing_is_left(self) -> None:
         self.view.owned = {3}

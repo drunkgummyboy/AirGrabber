@@ -4,7 +4,9 @@ tab. Both are tall poster cards (`PosterCard`): films with the one-click Downloa
 IMDb without one; a show's calls `on_open_show`, or opens the show on IMDb without one.
 
 A film's card also carries the watchlist button (`WatchlistButton`); the watchlist shelf's own
-cards are in `watchlist_cards`.
+cards are in `watchlist_cards`. A film in the user's Plex libraries (`in_plex`) gets the quiet ✓
+of an episode they have in the cover's top-right corner, its tip "In Plex" (`PlexMark`,
+`plex_mark`; the watchlist shelf's cards and the search results' get it too).
 
 Each card fetches its title's TMDB details itself through an injected loader: a film's decide
 whether it can be downloaded yet, and both name the title's IMDb page.
@@ -29,8 +31,10 @@ from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
+from app.ui.missing_control import HAVE_MARK, MARK_FONT_SIZE, PLEX_TIP
 from app.ui.poster_card import PosterCard, TrackButton, TrackState, year_rating_line
 from app.ui.tasks import spawn
+from app.ui.tooltip import add_tooltip
 from app.ui.watchlist_button import WATCH_ROW_GAP, WATCH_ROW_HEIGHT, WatchlistButton
 
 if TYPE_CHECKING:
@@ -42,6 +46,11 @@ log = logging.getLogger(__name__)
 D = TypeVar("D")
 
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
+# A film in Plex: the quiet ✓ in a small square on the cover's top-right corner (CTk units at
+# the card's scale).
+PLEX_MARK_SIDE = 24
+PLEX_MARK_RADIUS = 7
+PLEX_MARK_INSET = 8
 # TMDB's poster widths, smallest first ("original" beyond them).
 TMDB_POSTER_WIDTHS = (92, 154, 185, 342, 500, 780)
 
@@ -137,12 +146,39 @@ def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
     return Base("download") if can_grab else Base("unavailable", label)
 
 
+class PlexMark(ctk.CTkLabel):
+    """The quiet ✓ of a film in Plex, on a small square of the card's ground so it reads on
+    any cover; its tip says "In Plex"."""
+
+    def __init__(self, master: Any, *, scale: CardScale = FULL) -> None:
+        side = scale.px(PLEX_MARK_SIDE)
+        super().__init__(
+            master,
+            text=HAVE_MARK,
+            width=side,
+            height=side,
+            corner_radius=scale.px(PLEX_MARK_RADIUS),
+            fg_color=theme.BG,
+            text_color=theme.TEXT_MUTED,
+            font=theme.font(scale.font(MARK_FONT_SIZE, MARK_FONT_SIZE - 2), bold=True),
+        )
+        self.tip = add_tooltip(self, t(PLEX_TIP))
+
+
+def plex_mark(card: PosterCard) -> PlexMark:
+    """A film card's PlexMark, placed on its cover's top-right corner (at the card's scale)."""
+    inset = card.scale.px(PLEX_MARK_INSET)
+    mark = PlexMark(card, scale=card.scale)
+    mark.place(relx=1.0, x=-inset, y=inset, anchor="ne")
+    return mark
+
+
 class MovieCard(_TmdbCard):
     """A film: year and rating, the watchlist button ("+ Watchlist" / "✓ On watchlist") and a
     Download row ("⬇ Download" and "⋯" for the search window) that unlocks once the film is out
     digitally. Clicking the cover or the title calls `on_open(movie)` (the film's info window);
     without it, it opens the film on IMDb: its own page once the details name it, IMDb's search
-    until then."""
+    until then. `in_plex`: the film is in the user's Plex libraries (`plex_mark`, a quiet ✓)."""
 
     def __init__(
         self,
@@ -155,6 +191,7 @@ class MovieCard(_TmdbCard):
         watchlist: WatchlistService,
         scale: CardScale = FULL,
         on_open: Callable[[Movie], None] | None = None,
+        in_plex: bool = False,
     ) -> None:
         gap = scale.px(WATCH_ROW_GAP)
         super().__init__(
@@ -179,6 +216,7 @@ class MovieCard(_TmdbCard):
         self._pack_action(self._control)
         self.watch_button = WatchlistButton(self, movie=movie, watchlist=watchlist, scale=scale)
         self._pack_above_action(self.watch_button, gap)
+        self.plex_mark: PlexMark | None = plex_mark(self) if in_plex else None
         if on_open is not None:
             self._set_open(lambda: on_open(movie))
         else:

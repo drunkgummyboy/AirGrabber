@@ -1,5 +1,5 @@
 """Preferences dialog in plain words: a sidebar of sections (Downloading: where downloads go,
-quality, automatic, subtitles; App: movie & show info, looks, updates, advanced) and one
+quality, automatic, subtitles, Plex; App: movie & show info, looks, updates, advanced) and one
 scrolling page per section, its settings grouped in boxes that each say what they are for (the
 layout is app/ui/settings_layout.py's, shared with MediaForge's own Settings window,
 app/forge/ui/settings_window.py). Every change goes through SettingsService, which validates
@@ -64,6 +64,7 @@ from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
 from app.models.backup import BackupLoadResult
 from app.services.backup import BackupService
+from app.services.plex import PlexService
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.accent_picker import AccentSwatches
@@ -84,6 +85,7 @@ from app.ui.dialog_kit import (
     secondary_button,
     text_label,
 )
+from app.ui.plex_settings import PlexBox
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
 from app.ui.quick_setup import OPEN_TEXT as QUICK_SETUP_TEXT
 from app.ui.quick_setup import QuickSetupDialog
@@ -151,10 +153,14 @@ SECTION_LOOKS = N_("Looks")
 SECTION_UPDATES = N_("Updates")
 SECTION_ADVANCED = N_("Advanced")
 SECTION_BACKUP = N_("Backup")
+SECTION_PLEX = N_("Plex")  # app/ui/plex_settings.py: what is in Plex counts as had
 
 # The sidebar: a small group label above each part of the list, then its sections in order.
 SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (N_("Downloading"), (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES)),
+    (
+        N_("Downloading"),
+        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES, SECTION_PLEX),
+    ),
     (
         N_("App"),
         (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_BACKUP, SECTION_ADVANCED),
@@ -167,6 +173,7 @@ SECTION_ICONS: dict[str, str] = {
     SECTION_QUALITY: "🎚",
     SECTION_AUTOMATIC: "⏱",
     SECTION_SUBTITLES: "💬",
+    SECTION_PLEX: "▶",
     SECTION_INFO: "🎬",
     SECTION_LOOKS: "🖼",
     SECTION_UPDATES: "⟳",
@@ -180,6 +187,10 @@ SECTION_NOTES: dict[str, str] = {
         "Which release AirGrabber picks when you click Download, and for automatic downloads."
     ),
     SECTION_AUTOMATIC: N_("What AirGrabber does on its own, without you clicking anything."),
+    SECTION_PLEX: N_(
+        "What's in your Plex libraries counts as something you already have: it isn't missing "
+        "and isn't downloaded again."
+    ),
     SECTION_INFO: N_(
         "The Movies and Discover pages get their lists, posters and release dates from TMDB, "
         "a free film database."
@@ -684,6 +695,7 @@ class SettingsDialog(ctk.CTkToplevel):
         library: LibraryService | None = None,
         backup: BackupService | None = None,
         section: str | None = None,
+        plex: PlexService | None = None,
     ) -> None:
         """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
@@ -693,6 +705,8 @@ class SettingsDialog(ctk.CTkToplevel):
         given or not shown)."""
         super().__init__(master, fg_color=theme.BG)
         self._backup = backup
+        self._plex = plex  # the Plex section shows when it is given
+        self.plex_box: PlexBox | None = None
         self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
         self._images = images
         self._library = library
@@ -816,6 +830,9 @@ class SettingsDialog(ctk.CTkToplevel):
             builders[SECTION_SUBTITLES] = lambda: self._build_subtitles(subtitles_service)
         if self._backup is not None:
             builders[SECTION_BACKUP] = self._build_backup
+        if self._plex is not None:
+            plex_service = self._plex
+            builders[SECTION_PLEX] = lambda: self._build_plex(plex_service)
         for name in SECTIONS:
             if name in builders:
                 self._pages[name] = builders[name]()
@@ -1588,6 +1605,14 @@ class SettingsDialog(ctk.CTkToplevel):
         secondary_button(
             line, t(LOAD_BACKUP_BUTTON), self._load_backup, width=_BACKUP_BUTTON_WIDTH
         ).pack(side="left", padx=(12, 0))
+        return page
+
+    # -- Plex ----------------------------------------------------------------------------------
+
+    def _build_plex(self, plex: PlexService) -> _Page:
+        """The Plex box (app/ui/plex_settings.py); it acts at once, not on Save."""
+        page = self._new_page(SECTION_PLEX)
+        self.plex_box = PlexBox(page, plex)
         return page
 
     def _backup_dialog_open(self) -> bool:

@@ -1,0 +1,18 @@
+{
+  "MediaContainer": {
+    "size": 8,
+    "totalSize": 8,
+    "offset": 0,
+    "librarySectionID": 1,
+    "Metadata": [
+      {"ratingKey": "2001", "type": "episode", "title": "Episode 8", "grandparentRatingKey": "1001", "grandparentTitle": "The Ark", "parentIndex": 2, "index": 8},
+      {"ratingKey": "2002", "type": "episode", "title": "Episode 9", "grandparentRatingKey": "1001", "grandparentTitle": "The Ark", "parentIndex": 2, "index": 9},
+      {"ratingKey": "2003", "type": "episode", "title": "A special", "grandparentRatingKey": "1001", "grandparentTitle": "The Ark", "parentIndex": 2},
+      {"ratingKey": "2004", "type": "episode", "title": "Woe's Hollow", "grandparentRatingKey": "1002", "grandparentTitle": "Severance", "parentIndex": "2", "index": "4"},
+      {"ratingKey": "2005", "type": "episode", "title": "Episode 1", "grandparentRatingKey": "1003", "grandparentTitle": "Slow Horses", "parentIndex": 4, "index": 1},
+      {"ratingKey": "2006", "type": "episode", "title": "Episode 1", "grandparentRatingKey": "1004", "grandparentTitle": "Frieren", "parentIndex": 1, "index": 1},
+      {"ratingKey": "2007", "type": "episode", "title": "Episode 1", "grandparentRatingKey": "1005", "grandparentTitle": "Unknown", "parentIndex": 1, "index": 1},
+      {"ratingKey": "2008", "type": "episode", "title": "Episode 1", "grandparentRatingKey": "1006", "grandparentTitle": "Only a TMDB id", "parentIndex": 1, "index": 1}
+    ]
+  }
+}

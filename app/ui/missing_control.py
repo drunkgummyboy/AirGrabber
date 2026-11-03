@@ -1,6 +1,8 @@
 """Missing episodes in the UI: the amber "3 missing", "Download missing"'s texts and the run
-states behind it, an episode's quiet mark ("● Missing", "● New", a grey ✓: `mark_label`) and
-the small option menus ("I already have this").
+states behind it, an episode's quiet mark ("● Missing", "● New", a grey ✓ "In Plex":
+`mark_label`) and the small popup menus. Since 3.1.0 they show only while Plex is connected,
+and only Plex counts as had (owner's decision; app/services/plex.py): there are no marks of
+your own ("I already have this" is gone).
 
 The main window runs "Download missing" (one run per show at a time; since 3.0.1 its episodes
 go into the download queue as one batch, `queued_run_report` sums up how it went) and keeps
@@ -20,7 +22,7 @@ from typing import Any, Literal, Protocol
 import customtkinter as ctk
 from PIL import Image
 
-from app.i18n import N_, t, tn
+from app.i18n import N_, t
 from app.models import MissingRunReport, QueueEvent, QueueState, Show
 from app.ui import theme
 from app.ui.borderless import disc_image
@@ -40,12 +42,10 @@ STARTING_SHORT = N_("Starting…")
 FAILED_TEXT = N_("Couldn't download")
 NOTHING_MISSING_TEXT = N_("Nothing missing")
 CHIP_MISSING_TEXT = N_("Missing")
-HAVE_MARK = "✓"  # an episode marked "I already have this": a quiet ✓, no text
-HAVE_TIP = N_("You have this")
-CHIP_TIP = N_("Options")
-HAVE_EPISODE_TEXT = N_("I already have this")
-HAVE_SEASON_TEXT = N_("I already have this season")
-MARK_MISSING_TEXT = N_("Mark as missing again")
+# An episode or film in the user's Plex libraries (app/services/plex.py), the only thing that
+# counts as had: a quiet ✓, no text, this tip.
+HAVE_MARK = "✓"
+PLEX_TIP = N_("In Plex")
 SEASON_MENU_TIP = N_("More options")
 
 
@@ -125,14 +125,6 @@ def outcome_status_text(show_name: str, report: MissingRunReport) -> str:
     if not parts:
         parts.append(t("nothing missing"))
     return f"{show_name}: " + " · ".join(parts)
-
-
-def have_status_text(show_name: str, count: int, *, have: bool) -> str:
-    """The status bar after "I already have this" / "Mark as missing again"."""
-    episodes = tn("{n} episode", "{n} episodes", count)
-    if have:
-        return t("{show}: {episodes} marked as already had", show=show_name, episodes=episodes)
-    return t("{show}: {episodes} marked as missing again", show=show_name, episodes=episodes)
 
 
 # -- run states --------------------------------------------------------------------------------
@@ -250,8 +242,6 @@ class MissingActions:
     """What the missing-episode controls do (the main window provides them)."""
 
     download: Callable[[Show], None]  # start "Download missing" for the show
-    mark_have: Callable[[Show, tuple[int, ...]], None]  # "I already have this" (episode ids)
-    unmark_have: Callable[[Show, tuple[int, ...]], None]  # "Mark as missing again"
     runs: MissingRuns
 
 
@@ -280,7 +270,7 @@ def mark_label(
     master: Any, text: str, color: theme.Color, *, dot: bool, height: int
 ) -> ctk.CTkLabel:
     """A quiet episode mark, no box: `text` in `color`, after a small dot of that colour with
-    `dot` ("● Missing", "● New"), else alone (the ✓ of "I already have this")."""
+    `dot` ("● Missing", "● New"), else alone (the ✓ of "In Plex")."""
     return ctk.CTkLabel(
         master,
         text=text,

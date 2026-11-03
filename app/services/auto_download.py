@@ -11,6 +11,11 @@ it is neither downloaded nor given up. Nothing found: the try is counted and the
 again. Downloaded meanwhile by hand: skipped, not counted. A failed grab (no torrent program, unwritable folder, the remote torrent program refusing) is
 counted too, reported as one AutoError and ends the run.
 
+Nothing is fetched twice: an episode grabbed before (the download history, also its season
+pack) isn't due, nor, while Plex is connected, one in Plex (app/services/plex.py; the SQL of
+LibraryRepository.auto_due leaves both out), and a film in Plex is skipped (its switch stays as
+it is). None of it is shown: without Plex AirGrabber marks nothing as had.
+
 Then, unless a grab failed, the watchlist films whose "Download when it's out" switch is on
 (on anyone's list, each film once):
 their release dates are refreshed from TMDB when stale, and the films that are out and not
@@ -45,6 +50,7 @@ from app.models import (
     GrabTarget,
     MediaType,
     MovieDetails,
+    WatchlistEntry,
 )
 from app.services.downloads import GrabError
 from app.services.quick_download import QuickDownloadService
@@ -222,7 +228,18 @@ class AutoDownloadService:
         run = _MovieRun()
         await watchlist.refresh_release_dates()
         now = self._clock()
-        due = await watchlist.due(now, MAX_MOVIES_PER_RUN)
+        plex = await self._library.plex_films()
+        skipped: list[int] = []
+
+        def in_plex(entry: WatchlistEntry) -> bool:
+            if plex.has(entry.movie_id, entry.imdb_id):
+                skipped.append(entry.movie_id)
+                return True
+            return False
+
+        due = await watchlist.due(now, MAX_MOVIES_PER_RUN, skip=in_plex)
+        if skipped:
+            log.info("Auto-download watchlist: %d film(s) in Plex skipped", len(skipped))
         for entry in due:
             movie = entry.movie
             title = movie.title

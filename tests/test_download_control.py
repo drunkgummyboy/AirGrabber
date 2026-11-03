@@ -30,7 +30,6 @@ from app.ui.download_control import (
     DOWNLOAD_SHORT,
     DOWNLOAD_TEXT,
     DOWNLOAD_TIP,
-    GRABBED_TEXT,
     LOOKS_FOR_QUALITY,
     WORKING_SHORT,
     WORKING_TEXT,
@@ -79,7 +78,7 @@ class ControlLookTests(unittest.TestCase):
         self.assertEqual(DOWNLOAD_SHORT, "⬇")
 
     def test_working_is_one_muted_label(self) -> None:
-        for base in (DOWNLOAD, Base("grabbed"), Base("search")):
+        for base in (DOWNLOAD, Base("search")):
             look = control_look(base, WORKING)
             self.assertEqual((look.layout, look.text, look.action), ("label", WORKING_TEXT, None))
             self.assertEqual(look.text_color, theme.TEXT_MUTED)
@@ -96,18 +95,13 @@ class ControlLookTests(unittest.TestCase):
                 look = control_look(DOWNLOAD, done(outcome))
                 self.assertEqual((look.layout, look.text), ("button", text))
                 self.assertEqual(look.color, theme.GRABBED)
-                # Like an already-grabbed episode: the button opens the search window.
+                # The button opens the search window.
                 self.assertEqual(look.action, "choose")
-        # A card rebuilt after the grab (flagged as downloaded now) keeps showing the outcome.
-        self.assertEqual(control_look(Base("grabbed"), done(GrabOutcome.SENT)).text, "✓ Sent")
 
-    def test_already_downloaded_shows_grabbed(self) -> None:
-        for base in (DOWNLOAD, Base("grabbed"), Base("search")):
-            look = control_look(base, RunState(Phase.DONE))
-            self.assertEqual(
-                (look.layout, look.text, look.color, look.action),
-                ("button", GRABBED_TEXT, theme.GRABBED, "choose"),
-            )
+    def test_downloaded_before_shows_the_cards_own_look(self) -> None:
+        # No "✓ Grabbed" (3.1.0: only Plex says what you have).
+        for base in (DOWNLOAD, Base("search")):
+            self.assertEqual(control_look(base, RunState(Phase.DONE)), control_look(base, None))
 
     def test_every_outcome_has_a_text(self) -> None:
         for outcome in GrabOutcome:
@@ -120,12 +114,6 @@ class ControlLookTests(unittest.TestCase):
         self.assertEqual(
             (look.color, look.border, look.text_color),
             ("transparent", theme.PENDING, theme.PENDING),
-        )
-
-    def test_grabbed_from_the_search_window_wins_over_nothing_found(self) -> None:
-        look = control_look(Base("grabbed"), NOTHING)
-        self.assertEqual(
-            (look.text, look.color, look.action), (GRABBED_TEXT, theme.GRABBED, "choose")
         )
 
     def test_unavailable_is_disabled(self) -> None:
@@ -170,7 +158,7 @@ class BaseTests(unittest.TestCase):
     def test_episode_bases(self) -> None:
         self.assertEqual(episode_base(self.entry()), Base("download"))
         self.assertEqual(episode_base(self.entry(aired=False)), Base("unavailable", "Not Aired"))
-        self.assertEqual(episode_base(self.entry(downloaded=True)), Base("grabbed"))
+        self.assertEqual(episode_base(self.entry(downloaded=True)), Base("download"))
         self.assertEqual(episode_base(self.entry(number=None)), Base("search"))
 
     def test_movie_bases(self) -> None:
@@ -313,12 +301,10 @@ class HoverTipTests(unittest.TestCase):
             control_tip(control_look(DOWNLOAD, picked), picked, looks_for, shortened=False),
             "Picked 720p · 1 GB",
         )
-        # Already downloaded, nothing found, working, a disabled button: no tip.
+        # Nothing found, working, a disabled button: no tip.
         for base, state in (
-            (DOWNLOAD, RunState(Phase.DONE)),
             (DOWNLOAD, NOTHING),
             (DOWNLOAD, WORKING),
-            (Base("grabbed"), None),
             (Base("unavailable", "Not Aired"), None),
         ):
             with self.subTest(base=base, state=state):

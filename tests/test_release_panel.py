@@ -195,13 +195,13 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(failure_text([status(IndexerState.EMPTY)]), "")
 
     def test_actions(self) -> None:
-        self.assertEqual(action_text(None, grabbed=False), "⬇")
-        self.assertEqual(action_text(None, grabbed=True), "✓")
-        self.assertEqual(action_text("grabbing", grabbed=True), "⏳")
-        self.assertEqual(action_text("opened", grabbed=False), "✓")
-        self.assertEqual(action_text("saved", grabbed=False), "✓")
-        self.assertEqual(action_text("sent", grabbed=False), "✓")
-        self.assertEqual(action_text("failed", grabbed=True), "✗")
+        # A release grabbed before is just "⬇" (3.1.0): only a grab from the panel now shows.
+        self.assertEqual(action_text(None), "⬇")
+        self.assertEqual(action_text("grabbing"), "⏳")
+        self.assertEqual(action_text("opened"), "✓")
+        self.assertEqual(action_text("saved"), "✓")
+        self.assertEqual(action_text("sent"), "✓")
+        self.assertEqual(action_text("failed"), "✗")
 
     def test_hidden_hint(self) -> None:
         self.assertEqual(
@@ -292,12 +292,7 @@ class FakeDownloads:
     def __init__(self) -> None:
         self.release = asyncio.Event()
         self.grabbed: list[str] = []
-        self.hash_calls = 0
         self.cancelled = False
-
-    async def grabbed_hashes(self) -> frozenset[str]:
-        self.hash_calls += 1
-        return frozenset()
 
     async def grab(self, item: TorrentRelease, target: GrabTarget) -> GrabResult:
         self.grabbed.append(item.title)
@@ -437,7 +432,6 @@ class PanelTests(TkTestCase):
         await self.settle()
         self.assertEqual(search.requests, [])
         self.assertEqual(library.episode_calls, [])
-        self.assertEqual(downloads.hash_calls, 0)
         self.assertEqual(counts, [])
         state: Any = panel
         self.assertIsNone(state._search_task)
@@ -450,7 +444,6 @@ class PanelTests(TkTestCase):
         await self.settle()
         self.assertEqual(search.requests, [("episode", 1, 2)])
         self.assertEqual(library.episode_calls, [1])
-        self.assertEqual(downloads.hash_calls, 1)
         panel.start()  # once only
         await self.settle()
         self.assertEqual(len(search.requests), 1)

@@ -1,0 +1,43 @@
+{
+  "MediaContainer": {
+    "size": 4,
+    "totalSize": 4,
+    "offset": 0,
+    "librarySectionID": 2,
+    "librarySectionTitle": "Movies",
+    "Metadata": [
+      {
+        "ratingKey": "3001",
+        "guid": "plex://movie/5d776d2b47dd6e001f6f3e38",
+        "type": "movie",
+        "title": "Dune: Part Two",
+        "year": 2024,
+        "Guid": [
+          {"id": "imdb://tt15239678"},
+          {"id": "tmdb://693134"},
+          {"id": "tvdb://12345"}
+        ]
+      },
+      {
+        "ratingKey": "3002",
+        "guid": "com.plexapp.agents.themoviedb://1022789?lang=en",
+        "type": "movie",
+        "title": "Inside Out 2",
+        "year": 2024
+      },
+      {
+        "ratingKey": "3003",
+        "guid": "com.plexapp.agents.imdb://tt0111161?lang=en",
+        "type": "movie",
+        "title": "The Shawshank Redemption",
+        "year": 1994
+      },
+      {
+        "ratingKey": "3004",
+        "guid": "local://3004",
+        "type": "movie",
+        "title": "Holiday 2019"
+      }
+    ]
+  }
+}

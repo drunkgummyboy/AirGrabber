@@ -1,6 +1,6 @@
-"""2.0.7's show and film window controls: ⬇ Auto / ☰ Choose… / ✓ Downloaded + ↻ Again
-(app/ui/row_actions.py), the subtitles' CC ▾ (app/ui/subtitle_control.py), and the info
-window's size (app/ui/title_info.py)."""
+"""2.0.7's show and film window controls: ⬇ Auto / ☰ Choose… (app/ui/row_actions.py; since
+3.1.0 a title downloaded before shows the same, no ✓ Downloaded / ↻ Again), the subtitles'
+CC ▾ (app/ui/subtitle_control.py), and the info window's size (app/ui/title_info.py)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from app.ui.download_control import (
 )
 from app.ui.missing_control import PopupMenu
 from app.ui.row_actions import (
-    AGAIN_TIP,
     MIN_WIDTH,
     NOTHING_TIP,
     RowActions,
@@ -74,33 +73,25 @@ class RowLookTests(unittest.TestCase):
     def test_a_special_only_chooses(self) -> None:
         self.assertEqual(row_look(Base("search"), None).buttons, ("choose",))
 
-    def test_downloaded_is_green_text_and_again(self) -> None:
-        for look in (
-            row_look(Base("download"), None, downloaded=True),
-            row_look(Base("grabbed"), None),
-            row_look(Base("download"), RunState(Phase.DONE)),  # found downloaded meanwhile
-        ):
-            self.assertEqual(look.kind, "downloaded")
-            self.assertEqual((look.status, look.buttons), (("✓ Downloaded",), ("again",)))
-            self.assertEqual(look.color, theme.SUCCESS)
-            self.assertTrue(look.clickable)
+    def test_downloaded_before_looks_like_any_other(self) -> None:
+        # Found in the download history meanwhile: no "✓ Downloaded", no "↻ Again" (3.1.0).
+        look = row_look(Base("download"), RunState(Phase.DONE))
+        self.assertEqual((look.kind, look.buttons, look.status), ("download", ("auto", "choose"), ()))
 
     def test_working_wins(self) -> None:
-        look = row_look(Base("download"), RunState(Phase.WORKING), downloaded=True)
+        look = row_look(Base("download"), RunState(Phase.WORKING))
         self.assertEqual((look.kind, look.status, look.buttons), ("working", ("Finding the best one…", "Finding…"), ()))
-        self.assertFalse(look.clickable)
 
-    def test_a_grab_shows_its_outcome_then_again(self) -> None:
+    def test_a_grab_shows_its_outcome_beside_choose(self) -> None:
         look = row_look(Base("download"), RunState(Phase.DONE, GrabOutcome.SENT))
-        self.assertEqual((look.kind, look.status, look.buttons), ("done", ("✓ Sent",), ("again",)))
+        self.assertEqual((look.kind, look.status, look.buttons), ("done", ("✓ Sent",), ("choose",)))
+        self.assertEqual(look.color, theme.SUCCESS)
 
     def test_nothing_found_is_amber_with_choose(self) -> None:
         look = row_look(Base("download"), RunState(Phase.NOTHING))
         self.assertEqual(look.kind, "nothing")
         self.assertEqual(look.status, ("No good release found", "None found"))
         self.assertEqual((look.buttons, look.alert, look.color), (("choose",), True, theme.PENDING))
-        # Downloaded meanwhile (the search window): that wins.
-        self.assertEqual(row_look(Base("download"), RunState(Phase.NOTHING), downloaded=True).kind, "downloaded")
 
     def test_not_released_is_a_plain_text(self) -> None:
         look = row_look(Base("unavailable", "Digital 15 Oct"), None)
@@ -109,12 +100,11 @@ class RowLookTests(unittest.TestCase):
     def test_tips(self) -> None:
         done = RunState(Phase.DONE, GrabOutcome.SAVED, quality="1080p", size_bytes=3 * 1024**3)
         self.assertEqual(status_tip(row_look(Base("download"), done), done), "Picked 1080p · 3 GB")
-        self.assertEqual(status_tip(row_look(Base("grabbed"), None), None), AGAIN_TIP)
         nothing = RunState(Phase.NOTHING)
         self.assertEqual(status_tip(row_look(Base("download"), nothing), nothing), NOTHING_TIP)
         self.assertEqual(status_tip(row_look(Base("download"), None), None), "")
 
-    def test_again_menu(self) -> None:
+    def test_the_downloads_pages_again_menu(self) -> None:
         calls: list[str] = []
         items = again_items(lambda: calls.append("auto"), lambda: calls.append("choose"))
         self.assertEqual([label for label, _ in items], ["⬇ Download again automatically", "☰ Choose a release…"])
@@ -133,7 +123,7 @@ class RowLookTests(unittest.TestCase):
             MIN_WIDTH,
             pair,
             8 * len("Finding the best one…"),
-            8 * len("✓ Downloaded") + 16 + 6 + button_width("↻ Again", measure),
+            8 * len("✓ Opened") + 16 + 6 + button_width("☰ Choose…", measure),
             8 * len("None found") + 16 + 6 + button_width("☰ Choose…", measure),
         )
         self.assertEqual(slot_width(measure), expected + 2)
@@ -229,20 +219,19 @@ class WidgetTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class RowActionsWidgetTests(WidgetTestCase):
-    async def test_buttons_follow_the_run_and_again_opens_its_menu(self) -> None:
+    async def test_buttons_follow_the_run(self) -> None:
         calls: list[str] = []
         states = DownloadStates()
         actions = DownloadActions[CalendarEntry](
             download=lambda item: calls.append("auto"),
             choose=lambda item: calls.append("choose"),
             states=states,
-            download_again=lambda item: calls.append("again"),
         )
         row = RowActions(self.root, item=ENTRY, key=KEY, base=Base("download"), actions=actions)
         row.pack(fill="x")
         await self.settle()
         self.assertTrue(row.auto.winfo_ismapped() and row.choose.winfo_ismapped())
-        self.assertFalse(row.again.winfo_ismapped())
+        self.assertFalse(hasattr(row, "again"))  # no ↻ Again (3.1.0)
         row.auto.invoke()
         row.choose.invoke()
         self.assertEqual(calls, ["auto", "choose"])
@@ -250,23 +239,15 @@ class RowActionsWidgetTests(WidgetTestCase):
         await self.settle()
         self.assertEqual(row.look.kind, "working")  # type: ignore[union-attr]
         self.assertFalse(row.auto.winfo_ismapped())
-        states.set(KEY, None)
-        row.set_base(Base("download"), downloaded=True)
+        states.set(KEY, RunState(Phase.DONE, GrabOutcome.SENT))
         await self.settle()
-        self.assertEqual(str(row.status.cget("text")), "✓ Downloaded")
-        self.assertTrue(row.again.winfo_ismapped())
-        row.status._label.event_generate("<Button-1>")  # a click on ✓ Downloaded itself
-        # Open at once. Read before Tk runs again: the menu closes when it loses the keyboard
-        # focus, which another window can take from a test's window at any moment.
-        menu = PopupMenu._open
-        assert menu is not None
-        menu.close()
-        row.again.invoke()
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a release…"))
-        menu.buttons[0].invoke()
-        self.assertEqual(calls, ["auto", "choose", "again"])
+        self.assertEqual(str(row.status.cget("text")), "✓ Sent")
+        self.assertFalse(row.auto.winfo_ismapped())
+        self.assertTrue(row.choose.winfo_ismapped())
+        row.status._label.event_generate("<Button-1>")  # the outcome opens nothing
+        self.assertIsNone(PopupMenu._open)
+        row.choose.invoke()
+        self.assertEqual(calls, ["auto", "choose", "choose"])
         row.destroy()
         states.set(KEY, None)  # a gone row is no longer painted
 
@@ -281,16 +262,11 @@ class RowActionsWidgetTests(WidgetTestCase):
         await self.settle()
         self.assertLess(row.auto.winfo_x(), row.choose.winfo_x())
         self.assertLessEqual(row.winfo_width(), row.auto.winfo_width() + row.choose.winfo_width() + 30)
-        # Without "download again", ↻ Again only offers the search window.
-        row.set_base(Base("grabbed"))
+        row._actions.states.set(KEY, RunState(Phase.DONE, GrabOutcome.SAVED))
         await self.settle()
-        self.assertEqual(str(row.status.cget("text")), "✓ Downloaded")  # never squeezed out
-        self.assertGreater(row.status.winfo_width(), 40)
-        row.open_again()
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("☰ Choose a release…",))
-        menu.close()
+        self.assertEqual(str(row.status.cget("text")), "✓ Saved")  # never squeezed out
+        self.assertGreater(row.status.winfo_width(), 30)
+        row._actions.states.set(KEY, None)
 
 
 class CCControlWidgetTests(WidgetTestCase):
@@ -372,7 +348,7 @@ class CCControlWidgetTests(WidgetTestCase):
 
 
 class ShowWindowRowTests(WidgetTestCase):
-    """The show window's episode row: the controls by state, the clickable downloaded row."""
+    """The show window's episode row: the controls by state, a grabbed episode's subtitles."""
 
     async def test_row_states(self) -> None:
         from app.ui.show_details import _EpisodeRow
@@ -382,7 +358,6 @@ class ShowWindowRowTests(WidgetTestCase):
             download=lambda item: calls.append("auto"),
             choose=lambda item: calls.append("choose"),
             states=DownloadStates(),
-            download_again=lambda item: calls.append("again"),
         )
         now = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
         subtitles = SubtitleActions(
@@ -394,18 +369,13 @@ class ShowWindowRowTests(WidgetTestCase):
         assert row.row_actions is not None
         self.assertEqual(row.row_actions.look.kind, "download")  # type: ignore[union-attr]
         self.assertFalse(row.cc_control.has_content)
-        row._row_clicked()  # not downloaded: a click does nothing
-        self.assertIsNone(PopupMenu._open)
-        row.set_state(ENTRY, "downloaded", now, cc="CC EN")
+        # Grabbed before: the same controls (no ✓ Downloaded), and its subtitles.
+        row.set_state(ENTRY, "downloadable", now, grabbed=True, cc="CC EN")
         await self.settle()
-        self.assertEqual(row.row_actions.look.kind, "downloaded")  # type: ignore[union-attr]
+        self.assertEqual(row.row_actions.look.kind, "download")  # type: ignore[union-attr]
         self.assertEqual(row.cc, "CC EN")
         self.assertTrue(row.cc_control.winfo_manager())
-        row._row_clicked()
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a release…"))
-        menu.close()
+        self.assertIsNone(PopupMenu._open)
         later = EPISODE.model_copy(update={"airstamp": now + timedelta(days=3), "air_date": (now + timedelta(days=3)).date()})
         row.set_state(ENTRY.model_copy(update={"episode": later}), "upcoming", now)
         await self.settle()
@@ -426,13 +396,15 @@ class CalendarNewTests(unittest.TestCase):
         from app.ui.calendar_stack import needed_entries, row_color, row_state, row_text
 
         aired = CalendarEntry(show=SHOW, episode=EPISODE, is_tracked=True)
-        self.assertEqual(row_state(aired, None, frozenset()), "needed")
-        self.assertEqual(row_state(aired, None, frozenset(), frozenset({EPISODE.id})), "new")
-        self.assertEqual(row_state(aired, None, frozenset({EPISODE.id}), frozenset({EPISODE.id})), "have")
+        self.assertEqual(row_state(aired, None, frozenset(), marks=True), "needed")
+        new = frozenset({EPISODE.id})
+        self.assertEqual(row_state(aired, None, frozenset(), new, marks=True), "new")
+        self.assertEqual(row_state(aired, None, new, new, marks=True), "plex")
+        self.assertEqual(row_state(aired, None, frozenset(), new), "quiet")  # without Plex
         self.assertEqual(row_text("new"), "new")
         self.assertEqual(row_color("new"), theme.LINK)
         self.assertEqual(row_color("needed"), theme.WARNING)
-        self.assertEqual(row_color("downloaded"), theme.TEXT_MUTED)
+        self.assertEqual(row_color("plex"), theme.TEXT_MUTED)
         # "Download all" still fetches a new one: the user asks for it.
         self.assertEqual(needed_entries([aired], lambda key: None, frozenset()), (aired,))
 

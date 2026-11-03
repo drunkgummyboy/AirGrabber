@@ -20,7 +20,7 @@ from app.ui import theme
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.poster_card import POSTER_CARD_WIDTH
 from app.ui.scrollable import ScrollableFrame
-from app.ui.shelf_filter import FilterBar, Genre, chip_genres, empty_text
+from app.ui.shelf_filter import HIDE_OWNED_TEXT, FilterBar, Genre, chip_genres, empty_text
 from app.ui.tasks import spawn
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, destroy_tree
@@ -88,13 +88,15 @@ class ShelvesView(BaseView, Generic[T]):
 
     The filter only re-renders the shelves the last load fetched. The genre chip is kept for
     the session (the page lives as long as the window); the switch is the Settings field
-    `_hide_owned_setting`.
+    `_hide_owned_setting`, offered while `_hide_owned_offered` (Movies: only with Plex, the
+    only thing that counts as had); without it nothing is hidden.
     """
 
     _body_pady: tuple[int, int] = (5, 5)
-    # The page's "Hide what I already have" setting, its switch's hover tip, and the page's
-    # line when that switch alone left every shelf empty (both in English: shown through t()).
+    # The page's "Hide what I already have" setting, its switch's text and hover tip, and the
+    # page's line when that switch alone left every shelf empty (in English: shown through t()).
     _hide_owned_setting: ClassVar[str]
+    _hide_owned_text: ClassVar[str] = HIDE_OWNED_TEXT
     _hide_owned_tip: ClassVar[str]
     _all_owned_text: ClassVar[str]
 
@@ -133,6 +135,8 @@ class ShelvesView(BaseView, Generic[T]):
             hide_tip=t(self._hide_owned_tip),
             on_genre=self._pick_genre,
             on_hide_owned=self._set_hide_owned,
+            hide_text=self._hide_owned_text,
+            offered=self._hide_owned_offered(),
         )
         # Gridded in row 1 once shelves are loaded (`_show_filter_bar`).
         self._body = ScrollableFrame(self, fg_color="transparent")
@@ -153,6 +157,15 @@ class ShelvesView(BaseView, Generic[T]):
     @abstractmethod
     def _is_owned(self, item: T) -> bool:
         """Whether "Hide what I already have" hides `item`."""
+
+    def _hide_owned_offered(self) -> bool:
+        """Whether the page offers its hide switch now (as the last load found it)."""
+        return True
+
+    @property
+    def hiding(self) -> bool:
+        """The switch is offered and on: what the user has is hidden."""
+        return self._hide_owned and self._hide_owned_offered()
 
     def _item_key(self, item: T) -> object:
         """`item` without what a quiet reload may change in place (`same_items`)."""
@@ -224,6 +237,7 @@ class ShelvesView(BaseView, Generic[T]):
         if loaded is None:
             return False
         owned = [[self._is_owned(item) for item in shelf.items] for shelf in loaded]
+        offered = self._hide_owned_offered()
         try:
             shelves = await self._fetch_shelves(force=False)
         except TMDBError:
@@ -232,6 +246,11 @@ class ShelvesView(BaseView, Generic[T]):
             return True
         if self._shelves is not loaded or not same_items(loaded, shelves, self._item_key):
             return False
+        if self._hide_owned_offered() != offered:  # the switch comes or goes (Plex)
+            self._shelves = shelves
+            self._render_generation += 1
+            await self._render(self._render_generation)
+            return True
         changed = [
             item
             for shelf, had in zip(shelves, owned, strict=True)
@@ -251,7 +270,7 @@ class ShelvesView(BaseView, Generic[T]):
 
     def _owner_filtered(self, shelves: Sequence[Shelf[T]]) -> Sequence[Shelf[T]]:
         """`shelves` without what the user has, while "Hide what I already have" is on."""
-        if self._hide_owned:
+        if self.hiding:
             return filter_shelves(shelves, lambda item: not self._is_owned(item))
         return shelves
 
@@ -271,7 +290,7 @@ class ShelvesView(BaseView, Generic[T]):
             shelves = filter_shelves(shelves, lambda item: genre in self._genres(item))
         self._clear_body()
         if not has_items(shelves) and has_items(loaded):
-            self._show_empty_line(empty_text(genre, self._hide_owned, t(self._all_owned_text)))
+            self._show_empty_line(empty_text(genre, self.hiding, t(self._all_owned_text)))
         for shelf in shelves:
             if shelf.failed or shelf.items:
                 self._render_shelf(shelf)
@@ -281,6 +300,7 @@ class ShelvesView(BaseView, Generic[T]):
                     return
 
     def _show_filter_bar(self, genres: Sequence[Genre]) -> None:
+        self.filter_bar.offer_hide(self._hide_owned_offered())
         self.filter_bar.show_genres(genres, self._genre)
         if not self.filter_bar.winfo_manager():
             self.filter_bar.grid(row=1, column=0, sticky="ew", padx=25, pady=(5, 0))

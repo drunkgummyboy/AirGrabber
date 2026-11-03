@@ -1,6 +1,7 @@
 """Missing episodes: the latest-season rule, its SQL twin (missing counts), the v4
-`have_episodes` table, LibraryService's marks and details, and the UI's pure helpers. ("Download
-missing" goes through the download queue: tests/test_download_queue.py, test_queue_link.py.)"""
+`have_episodes` table (kept, no longer read), LibraryService's details with and without Plex
+(only a connected Plex counts as had, 3.1.0), and the UI's pure helpers. ("Download missing"
+goes through the download queue: tests/test_download_queue.py, test_queue_link.py.)"""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from app.models import (
     Show,
     ShowDetails,
 )
+from app.models.plex import PlexScan
 from app.services.library import LibraryService, downloaded_ids
 from app.services.missing import (
     MISSING_AFTER,
@@ -43,7 +45,6 @@ from app.ui.missing_control import (
     MissingRuns,
     MissingRunState,
     download_missing_text,
-    have_status_text,
     menu_position,
     missing_text,
     outcome_status_text,
@@ -51,7 +52,8 @@ from app.ui.missing_control import (
     outcome_texts,
     progress_texts,
 )
-from app.ui.show_details import row_mark, season_marks, season_menu_items
+from app.ui.show_details import row_mark, season_marks
+from tests.plex_link import have_marks, mark_have, plex_settings
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
@@ -94,22 +96,22 @@ def missing_ids(
     episodes: list[Episode],
     *,
     grabs: frozenset[tuple[int, int | None]] = frozenset(),
-    have: frozenset[int] = frozenset(),
+    in_plex: frozenset[int] = frozenset(),
     now: datetime = NOW,
 ) -> list[int]:
     downloaded = downloaded_ids(episodes, grabs)
-    return ids(missing_episodes(episodes, downloaded=downloaded, have=have, now=now))
+    return ids(missing_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now))
 
 
 def new_ids(
     episodes: list[Episode],
     *,
     grabs: frozenset[tuple[int, int | None]] = frozenset(),
-    have: frozenset[int] = frozenset(),
+    in_plex: frozenset[int] = frozenset(),
     now: datetime = NOW,
 ) -> list[int]:
     downloaded = downloaded_ids(episodes, grabs)
-    return ids(new_episodes(episodes, downloaded=downloaded, have=have, now=now))
+    return ids(new_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now))
 
 
 # -- the rule ----------------------------------------------------------------------------------
@@ -196,11 +198,11 @@ class LatestSeasonTests(unittest.TestCase):
         self.assertFalse(is_new(ep(1, 1, 1), NOW))  # no date at all: neither
         self.assertFalse(is_overdue(ep(1, 1, 1), NOW))
 
-    def test_a_new_episode_is_neither_missing_nor_new_once_downloaded_or_marked(self) -> None:
+    def test_a_new_episode_is_neither_missing_nor_new_once_downloaded_or_in_plex(self) -> None:
         episodes = [ep(1, 1, 1, aired=NOW - timedelta(hours=2))]
         self.assertEqual(new_ids(episodes), [1])
         self.assertEqual(new_ids(episodes, grabs=frozenset({(1, 1)})), [])
-        self.assertEqual(new_ids(episodes, have=frozenset({1})), [])
+        self.assertEqual(new_ids(episodes, in_plex=frozenset({1})), [])
 
     def test_a_new_seasons_first_episode_makes_it_the_latest_at_once(self) -> None:
         episodes = [
@@ -233,8 +235,8 @@ class MissingEpisodesTests(unittest.TestCase):
         # A pack of an older season doesn't help the latest one.
         self.assertEqual(missing_ids(self.episodes, grabs=frozenset({(1, None)})), [21, 22, 23])
 
-    def test_marked_have_is_not_missing(self) -> None:
-        self.assertEqual(missing_ids(self.episodes, have=frozenset({21, 23})), [22])
+    def test_in_plex_is_not_missing(self) -> None:
+        self.assertEqual(missing_ids(self.episodes, in_plex=frozenset({21, 23})), [22])
 
 
 # -- database ----------------------------------------------------------------------------------
@@ -328,50 +330,28 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
                 )
         db = await Database.open(path)
         self.addAsyncCleanup(db.close)
-        self.assertEqual(await db.library.have_ids(1), frozenset({11}))
-        self.assertEqual(await db.library.have_ids(2), frozenset())
+        self.assertEqual(await have_marks(db, 1), frozenset({11}))
+        self.assertEqual(await have_marks(db, 2), frozenset())
 
 
-class HaveRepositoryTests(DatabaseTestCase):
-    async def test_mark_aired_have_marks_only_aired_regular_episodes_not_downloaded(self) -> None:
-        episodes = [
-            ep(11, 1, 1, aired=NOW - 9 * DAY),
-            ep(12, 1, 2, aired=NOW - 2 * DAY),
-            ep(13, 1, 3, air_date=(NOW - DAY).date()),  # no airstamp: by the air date
-            ep(14, 1, 4, aired=NOW + DAY),
-            ep(15, 0, None, aired=NOW - DAY, kind="significant_special"),
-        ]
-        await self.add_show(1, episodes)
-        await self.grab(1, 1, 2)
-        marked = await self.db.library.mark_aired_have(1, now=NOW, today=NOW.date(), when=NOW)
-        self.assertEqual(marked, 2)
-        self.assertEqual(await self.db.library.have_ids(1), frozenset({11, 13}))
-        self.assertEqual(
-            await self.db.library.missing_counts(now=NOW, today=NOW.date(), **cutoffs(NOW)), {}
-        )
+class OldMarksTests(DatabaseTestCase):
+    """"I already have this" (v4 / v5) is gone: its marks are kept as they are, unread."""
 
-    async def test_mark_and_unmark(self) -> None:
-        await self.add_show(1, [ep(1, 1, 1, aired=NOW), ep(2, 1, 2, aired=NOW)])
-        self.assertEqual(await self.db.library.mark_have([1, 2, 1, 999], NOW), 2)  # 999 unknown
-        self.assertEqual(await self.db.library.mark_have([1], NOW), 0)  # already marked
-        self.assertEqual(await self.db.library.have_ids(1), frozenset({1, 2}))
-        self.assertEqual(await self.db.library.unmark_have([2, 3]), 1)
-        self.assertEqual(await self.db.library.have_ids(1), frozenset({1}))
+    async def test_old_marks_no_longer_count(self) -> None:
+        await self.add_show(1, [ep(1, 1, 1, aired=NOW - 3 * DAY), ep(2, 1, 2, aired=NOW - 2 * DAY)])
+        await mark_have(self.db, [1], NOW.isoformat())
+        counts = await self.db.library.missing_counts(now=NOW, today=NOW.date(), **cutoffs(NOW))
+        self.assertEqual(counts, {1: 2})
+        await self.db.library.set_auto_download(1, True, since=NOW - 10 * DAY, profile_id=1)
+        due = await self.db.library.auto_due(aired_from=NOW - 9 * DAY, aired_until=NOW, limit=9)
+        self.assertEqual([entry.episode.id for entry in due], [1, 2])
+        self.assertEqual(await have_marks(self.db, 1), frozenset({1}))  # kept as it was
 
-    async def test_have_ids_are_per_show(self) -> None:
-        await self.add_show(1, [ep(1, 1, 1, aired=NOW)])
-        await self.add_show(2, [ep(5, 1, 1, aired=NOW, show_id=2)])
-        await self.db.library.mark_have([1, 5], NOW)
-        self.assertEqual(await self.db.library.have_ids(2), frozenset({5}))
-
-    async def test_a_mark_goes_with_its_episode_and_survives_a_refresh(self) -> None:
+    async def test_a_mark_still_goes_with_its_episode(self) -> None:
         show = await self.add_show(1, [ep(1, 1, 1, aired=NOW), ep(2, 1, 2, aired=NOW)])
-        await self.db.library.mark_have([1, 2], NOW)
+        await mark_have(self.db, [1, 2], NOW.isoformat())
         await self.db.library.save_show(show, [ep(1, 1, 1, aired=NOW)])  # episode 2 is gone
-        self.assertEqual(await self.db.library.have_ids(1), frozenset({1}))
-        row = await self.db.fetch_one("SELECT COUNT(*) FROM have_episodes")
-        assert row is not None
-        self.assertEqual(row[0], 1)
+        self.assertEqual(await have_marks(self.db, 1), frozenset({1}))
 
 
 class MissingCountsTests(DatabaseTestCase):
@@ -385,14 +365,16 @@ class MissingCountsTests(DatabaseTestCase):
         for show_id in await self.db.library.tracked_ids(profile_id=1):
             episodes = await self.db.library.episodes(show_id)
             downloaded = downloaded_ids(episodes, await self.db.history.show_grabs(show_id))
-            have = await self.db.library.have_ids(show_id)
-            count = len(missing_episodes(episodes, downloaded=downloaded, have=have, now=now))
+            in_plex = await self.db.library.plex_ids(show_id)
+            count = len(
+                missing_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now)
+            )
             if count:
                 result[show_id] = count
         return result
 
     async def test_counts_match_the_rule_on_every_edge_case(self) -> None:
-        # 1: latest season 2 (season 3 not aired yet), one episode grabbed, one marked.
+        # 1: latest season 2 (season 3 not aired yet), one episode grabbed, one in Plex.
         await self.add_show(
             1,
             [
@@ -406,7 +388,7 @@ class MissingCountsTests(DatabaseTestCase):
             ],
         )
         await self.grab(1, 2, 2)
-        await self.db.library.mark_have([23], NOW)
+        await self.db.plex.replace(PlexScan(episodes=frozenset({(1, 2, 3)})), NOW)
         # 2: a season pack of its latest season: nothing missing.
         await self.add_show(2, [ep(41, 1, 1, aired=NOW - DAY, show_id=2)])
         await self.grab(2, 1, None)
@@ -474,8 +456,12 @@ class ServiceTestCase(DatabaseTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.http = httpx.AsyncClient(transport=httpx.MockTransport(_no_network))
+        self.settings = plex_settings(self.db)  # Plex connected: what is missing shows
         self.library = LibraryService(
-            self.db.library, self.db.history, TVMazeClient(self.http, retry_delay=0)
+            self.db.library,
+            self.db.history,
+            TVMazeClient(self.http, retry_delay=0),
+            settings=self.settings,
         )
         self.notifications = 0
 
@@ -497,19 +483,27 @@ class ServiceTestCase(DatabaseTestCase):
         episodes.append(ep(99, 2, count + 1, aired=NOW + 7 * DAY))
         return await self.add_show(1, episodes, name="Severance")
 
+    async def in_plex(self, *episodes: tuple[int, int]) -> None:
+        """Severance's (season, number) episodes are in Plex."""
+        found = frozenset((1, season, number) for season, number in episodes)
+        await self.db.plex.replace(PlexScan(episodes=found), NOW)
+
 
 class LibraryMissingTests(ServiceTestCase):
     async def test_show_details_of_a_tracked_show(self) -> None:
         await self.severance()
         await self.grab(1, 2, 1)
-        await self.library.mark_have([22])
+        await self.in_plex((2, 2))
         details = await self.library.show_details(1, now=NOW, profile_id=1)
+        self.assertTrue(details.plex_connected)
         self.assertEqual(details.latest_season, 2)
         self.assertEqual(details.missing, frozenset({23}))
-        self.assertEqual(details.have, frozenset({22}))
-        self.assertTrue(details.has_it(details.episodes[2]))
+        self.assertEqual(details.in_plex, frozenset({22}))
+        self.assertTrue(details.is_in_plex(details.episodes[2]))
+        self.assertTrue(details.is_downloaded(details.episodes[1]))  # kept, never shown
 
-    async def test_a_newly_followed_show_starts_with_nothing_missing(self) -> None:
+    async def test_a_newly_followed_show_gets_no_marks(self) -> None:
+        # With Plex, what aired and isn't in Plex or grabbed is missing from the start.
         now = datetime.now(UTC)
         show = Show(id=7, name="New")
         episodes = [ep(71, 1, 1, aired=now - 2 * DAY, show_id=7)]
@@ -519,12 +513,12 @@ class LibraryMissingTests(ServiceTestCase):
             async def get_show_with_episodes(self, show_id: int) -> tuple[Show, list[Episode]]:
                 return show, episodes
 
-        library = LibraryService(self.db.library, self.db.history, _TVMaze(self.http))
+        library = LibraryService(
+            self.db.library, self.db.history, _TVMaze(self.http), settings=self.settings
+        )
         await library.track(7, profile_id=1)
-        self.assertEqual(await self.db.library.have_ids(7), frozenset({71}))
-        await library.unmark_have([71])
-        await library.track(7, profile_id=1)  # following it again (a refresh) doesn't mark it again
-        self.assertEqual(await self.db.library.have_ids(7), frozenset())
+        self.assertEqual(await have_marks(self.db, 7), frozenset())
+        self.assertEqual(await library.missing_counts(now=now, profile_id=1), {7: 1})
         self.assertEqual(await library.missing_counts(now=now + 3 * DAY, profile_id=1), {7: 2})
 
     async def test_an_untracked_show_has_nothing_missing(self) -> None:
@@ -533,14 +527,34 @@ class LibraryMissingTests(ServiceTestCase):
         self.assertEqual(await self.library.missing_episodes(1, now=NOW, profile_id=1), [])
         self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {})
 
-    async def test_marks_notify_and_change_the_counts(self) -> None:
+    async def test_plex_changes_the_counts(self) -> None:
         await self.severance()
         self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {1: 3})
-        await self.library.mark_have([21, 22, 23])
+        await self.in_plex((2, 1), (2, 2), (2, 3))
         self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {})
-        await self.library.unmark_have([22])
+        await self.in_plex((2, 1), (2, 3))
         self.assertEqual(await self.library.missing_counts(now=NOW, profile_id=1), {1: 1})
-        self.assertEqual(self.notifications, 2)
+
+    async def test_without_plex_nothing_is_had_or_missing(self) -> None:
+        await self.severance()
+        await self.in_plex((2, 1))  # left from before (Disconnect empties it)
+        await self.grab(1, 2, 2)
+        await self.settings.update(plex_token="")
+        self.assertFalse(self.library.plex_connected)
+        library = self.library
+        start, end = NOW.date() - 30 * DAY, NOW.date() + 30 * DAY
+        self.assertEqual(await library.missing_counts(now=NOW, profile_id=1), {})
+        self.assertEqual(await library.missing_episodes(1, now=NOW, profile_id=1), [])
+        self.assertEqual(await library.missing_between(start, end, now=NOW, profile_id=1), set())
+        self.assertEqual(await library.new_between(start, end, now=NOW, profile_id=1), set())
+        self.assertEqual(await library.plex_between(start, end), set())
+        self.assertEqual((await library.plex_films()).tmdb, set())
+        details = await library.show_details(1, now=NOW, profile_id=1)
+        self.assertFalse(details.plex_connected)
+        self.assertIsNone(details.latest_season)
+        self.assertEqual((details.missing, details.new, details.in_plex), (set(), set(), set()))
+        self.assertEqual(details.downloaded, frozenset({22}))  # still known: nothing twice
+        self.assertTrue(all(row_mark(details, e) is None for e in details.episodes))
 
     async def test_missing_episodes_oldest_first_with_the_show(self) -> None:
         await self.severance()
@@ -598,10 +612,6 @@ class TextTests(unittest.TestCase):
             "for those · stopped: No folder",
         )
         self.assertEqual(outcome_status_text("X", report()), "X: nothing missing")
-        self.assertEqual(have_status_text("X", 1, have=True), "X: 1 episode marked as already had")
-        self.assertEqual(
-            have_status_text("X", 3, have=False), "X: 3 episodes marked as missing again"
-        )
 
 
 class RunStateTests(unittest.TestCase):
@@ -630,34 +640,36 @@ class ShowWindowHelperTests(unittest.TestCase):
             ep(24, 2, 4, aired=NOW + 7 * DAY),
         )
 
-    def details(self, *, tracked: bool = True) -> ShowDetails:
+    def details(self, *, tracked: bool = True, plex: bool = True) -> ShowDetails:
         return ShowDetails(
             show=Show(id=1, name="Severance"),
             episodes=self.episodes,
             tracked=tracked,
             downloaded=frozenset({23}),
+            plex_connected=plex,
             latest_season=2 if tracked else None,
             missing=frozenset({21}) if tracked else frozenset(),
-            have=frozenset({22, 10}),
+            in_plex=frozenset({22, 10}),
         )
 
     def test_row_marks_on_the_latest_season_only(self) -> None:
         details = self.details()
         marks = {episode.id: row_mark(details, episode) for episode in self.episodes}
-        self.assertEqual(marks, {10: None, 21: "missing", 22: "have", 23: None, 24: None})
+        # 23 was grabbed and isn't in Plex yet: on its way, no mark at all.
+        self.assertEqual(marks, {10: None, 21: "missing", 22: "plex", 23: None, 24: None})
         untracked = self.details(tracked=False)
         self.assertTrue(all(row_mark(untracked, e) is None for e in self.episodes))
 
-    def test_season_marks_and_menu(self) -> None:
+    def test_no_marks_without_plex(self) -> None:
+        details = self.details(plex=False)
+        self.assertTrue(all(row_mark(details, e) is None for e in self.episodes))
+        self.assertEqual(season_marks(details, 2), ([], []))
+
+    def test_season_marks(self) -> None:
         details = self.details()
         self.assertEqual(season_marks(details, 2), ([21], [22]))
         self.assertEqual(season_marks(details, 1), ([], []))
         self.assertEqual(season_marks(details, None), ([], []))
-        self.assertEqual(
-            season_menu_items([21], [22]),
-            [("I already have this season", "mark"), ("Mark as missing again", "unmark")],
-        )
-        self.assertEqual(season_menu_items([], []), [])
 
 
 class MenuPositionTests(unittest.TestCase):
@@ -706,14 +718,14 @@ class WidgetTests(unittest.TestCase):
         anchor.pack()
         self.root.update()
         self.assertIsNone(popup_menu(anchor, []))
-        menu = popup_menu(anchor, [("I already have this", lambda: self.marked.append((1,)))])
+        menu = popup_menu(anchor, [("Open on IMDb", lambda: self.marked.append((1,)))])
         assert menu is not None
-        self.assertEqual(menu.labels, ("I already have this",))
-        second = popup_menu(anchor, [("Mark as missing again", lambda: None)])
+        self.assertEqual(menu.labels, ("Open on IMDb",))
+        second = popup_menu(anchor, [("Remove show…", lambda: None)])
         assert second is not None
         self.assertFalse(menu.is_open)  # one at a time
         second.close()
-        menu = popup_menu(anchor, [("I already have this", lambda: self.marked.append((1,)))])
+        menu = popup_menu(anchor, [("Open on IMDb", lambda: self.marked.append((1,)))])
         assert menu is not None
         menu.buttons[0].invoke()
         self.assertEqual(self.marked, [(1,)])

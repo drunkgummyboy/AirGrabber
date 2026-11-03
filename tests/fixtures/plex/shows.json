@@ -1,0 +1,62 @@
+{
+  "MediaContainer": {
+    "size": 6,
+    "totalSize": 6,
+    "offset": 0,
+    "librarySectionID": 1,
+    "librarySectionTitle": "TV Shows",
+    "Metadata": [
+      {
+        "ratingKey": "1001",
+        "key": "/library/metadata/1001/children",
+        "guid": "plex://show/5d9c086c46115600200aa2fe",
+        "type": "show",
+        "title": "The Ark",
+        "year": 2023,
+        "Guid": [
+          {"id": "imdb://tt13194362"},
+          {"id": "tmdb://202411"},
+          {"id": "tvdb://412345"}
+        ]
+      },
+      {
+        "ratingKey": "1002",
+        "guid": "plex://show/5d9c08544eefaa001f5daa50",
+        "type": "show",
+        "title": "Severance",
+        "year": 2022,
+        "Guid": [
+          {"id": "imdb://tt11280740"},
+          {"id": "tmdb://95396"}
+        ]
+      },
+      {
+        "ratingKey": 1003,
+        "guid": "com.plexapp.agents.thetvdb://399999?lang=en",
+        "type": "show",
+        "title": "Slow Horses",
+        "year": 2022
+      },
+      {
+        "ratingKey": "1004",
+        "guid": "com.plexapp.agents.hama://tvdb-424242?lang=en",
+        "type": "show",
+        "title": "Frieren",
+        "year": 2023
+      },
+      {
+        "ratingKey": "1005",
+        "guid": "plex://show/5d9c0000000000000000beef",
+        "type": "show",
+        "title": "A show AirGrabber doesn't know",
+        "Guid": [{"id": "tvdb://999999"}]
+      },
+      {
+        "ratingKey": "1006",
+        "guid": "com.plexapp.agents.themoviedb://88888?lang=en",
+        "type": "show",
+        "title": "Only a TMDB id"
+      }
+    ]
+  }
+}

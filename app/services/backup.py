@@ -92,6 +92,10 @@ SECRET_FIELDS: frozenset[str] = frozenset(
 # Settings whose names look like a secret's but aren't one.
 NOT_SECRET_FIELDS: frozenset[str] = frozenset({"excluded_keywords"})
 SECRET_NAME = re.compile(r"key|password|token|secret", re.IGNORECASE)
+# This PC's own secrets: never in a backup, not even with "Include keys and passwords", and a
+# load keeps this PC's (they are in MACHINE_FIELDS). The Plex token belongs to this PC's
+# `plex_client_id` (app/services/plex.py): another PC connects to Plex itself.
+MACHINE_SECRETS: frozenset[str] = frozenset({"plex_token"})
 # This PC's own markers, never in a backup (a load keeps this PC's values).
 MACHINE_FIELDS: frozenset[str] = frozenset(
     {
@@ -101,6 +105,13 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "start_with_windows",  # mirrors the Startup-folder shortcut on this PC
         "prowlarr_seeded_url",  # the Prowlarr on this PC that got AirGrabber's sites
         "current_profile",  # who is selected on this PC (the people themselves are in it)
+        # This PC's link to Plex: its identifier, the token and the server it found.
+        "plex_client_id",
+        *MACHINE_SECRETS,
+        "plex_server_id",
+        "plex_server_name",
+        "plex_server_uri",
+        "plex_sections_off",
     }
 )
 # Where downloads go: kept as on this PC when either PC uses its own qBittorrent that AirGrabber

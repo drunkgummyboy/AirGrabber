@@ -40,6 +40,7 @@ from app.ui.settings_dialog import (
     SECTION_ICONS,
     SECTION_INFO,
     SECTION_LOOKS,
+    SECTION_PLEX,
     SECTION_QUALITY,
     SECTION_SUBTITLES,
     SECTION_UPDATES,
@@ -148,7 +149,10 @@ class SectionTests(unittest.TestCase):
         self.assertEqual(
             [(group, list(names)) for group, names in SECTION_GROUPS],
             [
-                ("Downloading", ["Where downloads go", "Quality", "Automatic", "Subtitles"]),
+                (
+                    "Downloading",
+                    ["Where downloads go", "Quality", "Automatic", "Subtitles", "Plex"],
+                ),
                 ("App", ["Movie & show info", "Looks", "Updates", "Backup", "Advanced"]),
                 # No MediaForge group: MediaForge has its own Settings window (2026-11-02).
             ],
@@ -394,11 +398,11 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         dialog, _settings = self.dialog()
         self.assertEqual(dialog.section, SECTION_WHERE)
         self.assertTrue(dialog.page(SECTION_WHERE).winfo_manager())
-        # Without the subtitle service there is no Subtitles section; never a MediaForge
-        # group (MediaForge has its own Settings window).
+        # Without the subtitle service there is no Subtitles section (nor Backup or Plex
+        # without theirs); never a MediaForge group (MediaForge has its own Settings window).
         self.assertEqual(
             list(dialog._items),
-            [s for s in SECTIONS if s not in (SECTION_SUBTITLES, SECTION_BACKUP)],
+            [s for s in SECTIONS if s not in (SECTION_SUBTITLES, SECTION_BACKUP, SECTION_PLEX)],
         )
         self.assertNotIn("MEDIAFORGE", labels(dialog._sidebar))
         dialog._items[SECTION_LOOKS].click()

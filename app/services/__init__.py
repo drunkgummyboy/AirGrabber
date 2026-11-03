@@ -22,6 +22,7 @@ from app.services.download_status import DownloadStatusService, forge_moves
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.plex import PlexClient, PlexService
 from app.services.profiles import ProfileService
 from app.services.prowlarr_setup import ProwlarrSetupService
 from app.services.qbittorrent_local import QBittorrentStarter
@@ -69,6 +70,7 @@ class Services:
         "forge",
         "images",
         "library",
+        "plex",
         "profiles",
         "prowlarr_setup",
         "quick_download",
@@ -170,6 +172,14 @@ class Services:
         # MediaForge inside AirGrabber: off until something awaits `forge.start()` (the delayed
         # start after the main window shows, or the Forge window opened earlier).
         self.forge = forge
+        # What is in the user's Plex libraries counts as had (Settings → Plex; `run_periodic`
+        # from the UI). A check that changes it reloads the pages, as a library change does.
+        self.plex = PlexService(
+            PlexClient(http, client_id=lambda: settings.current.plex_client_id),
+            db.plex,
+            settings,
+            on_change=library.notify_changed,
+        )
 
     @classmethod
     async def create(cls, paths: AppPaths) -> Services:
@@ -303,6 +313,7 @@ __all__ = [
     "DownloadStationClient",
     "ImageCache",
     "LibraryService",
+    "PlexService",
     "ProfileService",
     "ProwlarrSetupService",
     "QuickDownloadService",

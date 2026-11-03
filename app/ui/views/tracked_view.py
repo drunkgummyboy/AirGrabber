@@ -4,7 +4,10 @@ switches, removals and imports go to the person whose shows it shows.
 
 Under the heading a bar sorts the grid (A–Z / Next episode / Recently downloaded) and filters
 it (All / Has missing / Auto on / Ended); both choices are kept in Settings (`tracked_sort`,
-`tracked_filter`) and only re-order the cards already there. Next to Import Shows a ⋯ menu
+`tracked_filter`) and only re-order the cards already there. Missing episodes (the cards'
+"3 missing", "Has missing") exist only while Plex is connected (owner's decision for 3.1.0,
+app/services/plex.py): without Plex the filter offers no "Has missing" (a stored choice of it
+counts as All until Plex is back) and the cards show no counts. Next to Import Shows a ⋯ menu
 holds "Remove ended shows…".
 """
 
@@ -144,6 +147,16 @@ def show_rows(
     return rows
 
 
+def filter_choices(plex: bool) -> list[TrackedFilter]:
+    """The filters the bar offers: "Has missing" only while Plex is connected."""
+    return [choice for choice in FILTER_LABELS if plex or choice is not TrackedFilter.MISSING]
+
+
+def shown_filter(choice: TrackedFilter, plex: bool) -> TrackedFilter:
+    """The filter in effect: the stored "Has missing" counts as All without Plex."""
+    return TrackedFilter.ALL if choice is TrackedFilter.MISSING and not plex else choice
+
+
 def matches(row: ShowRow, show_filter: TrackedFilter) -> bool:
     """Whether the filter lets the show through."""
     if show_filter is TrackedFilter.MISSING:
@@ -272,8 +285,9 @@ class TrackedView(BaseView):
         self._grid: FlexGrid | None = None  # None while loading or without shows
         self._no_match: ctk.CTkLabel | None = None  # the line when the filter leaves nothing
         prefs = settings.current
+        self._plex = library.plex_connected  # "Has missing" is offered
         self._sort = prefs.tracked_sort
-        self._filter = prefs.tracked_filter
+        self._filter = shown_filter(prefs.tracked_filter, self._plex)
         # Switch changes in flight: the library change they cause needs no reload of this page.
         self._own_changes = 0
 
@@ -320,13 +334,16 @@ class TrackedView(BaseView):
         self._sort_choice.pack(side="left")
         self._bar_label(t(FILTER_TEXT)).pack(side="left", padx=(BAR_GROUP_GAP, BAR_LABEL_GAP))
         self._filter_choice = _choices(
-            self._bar, [t(label) for label in FILTER_LABELS.values()], self._choose_filter
+            self._bar, self._filter_labels(), self._choose_filter
         )
         self._filter_choice.pack(side="left")
         self._show_choices()
 
         self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
+
+    def _filter_labels(self) -> list[str]:
+        return [t(FILTER_LABELS[choice]) for choice in filter_choices(self._plex)]
 
     def _bar_label(self, text: str) -> ctk.CTkLabel:
         return ctk.CTkLabel(
@@ -354,7 +371,12 @@ class TrackedView(BaseView):
         # Only over cards on screen (not the line a filter leaves when it matches nothing).
         quiet = self.quiet_load and self._showing_cards()  # before the first await
         prefs = self._settings.current
-        self._sort, self._filter = prefs.tracked_sort, prefs.tracked_filter
+        plex = self._library.plex_connected
+        if plex != self._plex:  # Plex connected or disconnected: "Has missing" comes or goes
+            self._plex = plex
+            self._filter_choice.configure(values=self._filter_labels())
+        self._sort = prefs.tracked_sort
+        self._filter = shown_filter(prefs.tracked_filter, plex)
         self._show_choices()
         if not quiet:
             self._clear_body()
@@ -362,6 +384,7 @@ class TrackedView(BaseView):
         profile_id = prefs.current_profile
         entries = await self._library.tracked(profile_id=profile_id)
         activity = await self._library.activity(profile_id=profile_id)
+        # With Plex only: the service has none without it.
         missing = (
             await self._library.missing_counts(profile_id=profile_id)
             if self._missing_actions is not None

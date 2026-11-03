@@ -248,9 +248,12 @@ class _Repository:
 
 
 class _Library:
-    def __init__(self, entries: list[LibraryEntry], missing: dict[int, int]) -> None:
+    def __init__(
+        self, entries: list[LibraryEntry], missing: dict[int, int], *, plex: bool = True
+    ) -> None:
         self.entries = entries
         self.missing = missing
+        self.plex_connected = plex  # missing episodes exist only with Plex (3.1.0)
         self.removed_ended = 0
         self.removed_for: list[int] = []  # whose ended shows went
         self.people: list[int] = []  # whose shows each load asked for
@@ -263,7 +266,7 @@ class _Library:
         return {}
 
     async def missing_counts(self, *, profile_id: int) -> dict[int, int]:
-        return self.missing
+        return self.missing if self.plex_connected else {}  # as LibraryService answers
 
     async def last_downloads(self) -> dict[int, datetime]:
         return {2: NOW - timedelta(days=3), 3: NOW - timedelta(days=1)}
@@ -296,21 +299,18 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.root.destroy()
         gc.collect()
 
-    async def view(self, *, missing: dict[int, int], **settings: Any) -> TrackedView:
+    async def view(
+        self, *, missing: dict[int, int], plex: bool = True, **settings: Any
+    ) -> TrackedView:
         entries = [
             LibraryEntry(show=_show(1, "Charlie"), tracked_at=NOW, auto_download=True),
             LibraryEntry(show=_show(2, "alpha", status="Ended"), tracked_at=NOW),
             LibraryEntry(show=_show(3, "Bravo"), tracked_at=NOW),
         ]
-        self.library = _Library(entries, missing)
+        self.library = _Library(entries, missing, plex=plex)
         repository: Any = _Repository()
         self.settings = SettingsService(repository, Settings(**settings))
-        actions = MissingActions(
-            download=lambda show: None,
-            mark_have=lambda show, ids: None,
-            unmark_have=lambda show, ids: None,
-            runs=MissingRuns(),
-        )
+        actions = MissingActions(download=lambda show: None, runs=MissingRuns())
         images: Any = _NoImages()
         library: Any = self.library
         view = TrackedView(
@@ -388,6 +388,30 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
             assert view._load_task is not None
             await view._load_task
         loading.assert_called_once()
+
+    async def test_without_plex_no_missing_filter_nor_counts(self) -> None:
+        view = await self.view(missing={3: 2}, plex=False, tracked_filter="missing")
+        self.assertEqual(view._filter_choice.cget("values"), ["All", "Auto on", "Ended"])
+        self.assertEqual(view._filter_choice.get(), "All")  # the stored choice counts as All
+        self.assertEqual(self.shown(view), ["alpha", "Bravo", "Charlie"])
+        self.assertTrue(all(card.badge_text is None for card in view._cards.values()))
+        labels = [label for label, _ in view._cards[3].menu_items()]
+        self.assertNotIn("⬇ Download missing (2)", labels)
+        self.assertIs(self.settings.current.tracked_filter, TrackedFilter.MISSING)  # kept
+        # Plex connected: the next load (the pages reload) offers it again, and its counts.
+        self.library.plex_connected = True
+        await view.load()
+        self.assertEqual(
+            view._filter_choice.cget("values"), ["All", "Has missing", "Auto on", "Ended"]
+        )
+        self.assertEqual(view._filter_choice.get(), "Has missing")
+        self.assertEqual(self.shown(view), ["Bravo"])
+        self.assertEqual(view._cards[3].badge_text, "2 missing")
+        # Disconnected again: gone again.
+        self.library.plex_connected = False
+        await view.load()
+        self.assertEqual(view._filter_choice.cget("values"), ["All", "Auto on", "Ended"])
+        self.assertEqual(self.shown(view), ["alpha", "Bravo", "Charlie"])
 
     async def test_a_filter_without_shows_says_so(self) -> None:
         view = await self.view(missing={}, tracked_filter="missing")

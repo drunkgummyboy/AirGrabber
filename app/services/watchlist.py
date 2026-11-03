@@ -177,11 +177,21 @@ class WatchlistService:
             )
         )
 
-    async def due(self, now: datetime, limit: int) -> list[WatchlistEntry]:
+    async def due(
+        self,
+        now: datetime,
+        limit: int,
+        *,
+        skip: Callable[[WatchlistEntry], bool] | None = None,
+    ) -> list[WatchlistEntry]:
         """The films the automatic downloads should search for now (`is_due`), on anyone's
         list (each film once, its switch on when anyone's is), at most `limit`, in
-        `due_order`."""
-        due = [entry for entry in await self._repository.films() if is_due(entry, now)]
+        `due_order`; without those `skip` names (films in Plex)."""
+        due = [
+            entry
+            for entry in await self._repository.films()
+            if is_due(entry, now) and not (skip is not None and skip(entry))
+        ]
         return sorted(due, key=due_order)[:limit]
 
     # -- changes ---------------------------------------------------------------------------------

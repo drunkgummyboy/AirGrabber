@@ -14,6 +14,12 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.1.0": (
+        N_("Connect Plex in Settings → Plex: what's in your Plex libraries counts as something you already have."),
+        N_("Episodes in Plex are no longer missing, and automatic downloads skip episodes and films you have in Plex."),
+        N_("A quiet ✓ \"In Plex\" shows on those episodes and films."),
+        N_("Without Plex, AirGrabber no longer marks what you have or what you're missing."),
+    ),
     "3.0.2": (
         N_("The Downloads page now shows everything in your torrent program, also what you added there yourself."),
         N_("Pause, resume or remove a download from its ⋯ menu; AirGrabber never deletes your files."),

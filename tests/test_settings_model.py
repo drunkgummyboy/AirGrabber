@@ -99,6 +99,7 @@ class SettingsModelTests(unittest.TestCase):
                 "remote_password",
                 "opensubtitles_password",
                 "opensubtitles_own_key",
+                "plex_token",  # this PC's own: never in a backup (app/services/backup.py)
             },
         )
         settings = Settings(**{name: f"value-{name}" for name in secrets})

@@ -546,13 +546,16 @@ class HistoryTests(DownloadTestCase):
         self.assertTrue(await self.service.has_grabbed(pack))
         self.assertTrue(await self.service.has_grabbed(in_pack))
 
-    async def test_grabbed_hashes(self) -> None:
-        self.assertEqual(await self.service.grabbed_hashes(), frozenset())
+    async def test_a_release_grabbed_before_is_grabbed_again(self) -> None:
+        # A pick by hand (☰ Choose…) is never refused (3.1.0): the history doesn't stop it.
         self.serve(ITORRENTS, CACHED)
         self.serve(OTHER_ITORRENTS, OTHER_TORRENT)
         await self.service.grab(release(), EPISODE)
         await self.service.grab(release(title="Other", info_hash=OTHER_HASH), EPISODE)
-        self.assertEqual(await self.service.grabbed_hashes(), {HASH, OTHER_HASH})
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual(self.notifications, 3)
+        hashes = {record.info_hash for record in await self.history()}
+        self.assertEqual(hashes, {HASH, OTHER_HASH})
 
     async def test_failing_listener_is_logged_and_unsubscribe_works(self) -> None:
         def broken() -> None:
@@ -665,7 +668,6 @@ class AppModeTests(DownloadTestCase):
         self.assertEqual(record.info_hash, HASH)
         self.assertEqual(record.season, 1)
         self.assertEqual(self.notifications, 1)
-        self.assertEqual(await self.service.grabbed_hashes(), frozenset({HASH}))
 
     async def test_open_failure_is_a_grab_error_without_the_magnet(self) -> None:
         def refuse(target: str) -> None:

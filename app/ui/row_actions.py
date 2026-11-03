@@ -2,16 +2,16 @@
 
 Two quiet controls instead of one big filled button: an outlined "⬇ Auto" (the one-click
 download: AirGrabber picks the best release) and a text-style "☰ Choose…" (the info window's
-releases, to pick one yourself), each with a hover tip. A downloaded title shows a green
-"✓ Downloaded" and a quiet "↻ Again", both opening a small menu with the same two again
-(`again_items`).
+releases, to pick one yourself), each with a hover tip. Whether a title was downloaded before
+is never shown (owner's decision for 3.1.0: only Plex says what you have): its row offers the
+same two.
 
 The one-click runs keep their state in the main window's DownloadStates (shared with the
 cards' DownloadControl), so a row rebuilt mid-run picks it up: while it works "Finding the best
-one…", once it grabbed the green outcome ("✓ Sent", what it picked as the tip, then "↻ Again"),
-when nothing was good enough an amber "No good release found" beside "☰ Choose…" outlined
-in amber; waiting in the download queue (3.0.1) "Queued". `row_look` is the rule; RowActions
-draws it.
+one…", once it grabbed the green outcome ("✓ Sent", what it picked as the tip) beside
+"☰ Choose…", when nothing was good enough an amber "No good release found" beside "☰ Choose…"
+outlined in amber; waiting in the download queue (3.0.1) "Queued". `row_look` is the rule;
+RowActions draws it.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.ui import theme
+from app.models import GrabOutcome
 from app.ui.download_control import (
     QUEUED_TEXT,
     WORKING_SHORT,
@@ -38,7 +39,7 @@ from app.ui.download_control import (
     outcome_text,
     picked_text,
 )
-from app.ui.missing_control import MenuItem, popup_menu
+from app.ui.missing_control import MenuItem
 from app.ui.text_fit import SLACK, Measure, unscaled_width
 from app.ui.tooltip import add_tooltip
 
@@ -58,52 +59,41 @@ AUTO_TEXT = N_("⬇ Auto")
 AUTO_TIP = N_("Download automatically: AirGrabber picks the best release")
 CHOOSE_TEXT = N_("☰ Choose…")
 CHOOSE_TIP = N_("Choose a release yourself from the search results")
-DOWNLOADED_TEXT = N_("✓ Downloaded")
-AGAIN_TEXT = N_("↻ Again")
-AGAIN_TIP = N_("Download it again")
+# The Downloads page's "Download again…" menu (`again_items`).
 AGAIN_AUTO_TEXT = N_("⬇ Download again automatically")
 AGAIN_CHOOSE_TEXT = N_("☰ Choose a release…")
 NOTHING_TEXT = N_("No good release found")
 NOTHING_SHORT = N_("None found")
 NOTHING_TIP = N_("Nothing good enough was found. Choose a download yourself.")
 
-RowKind = Literal[
-    "download", "search", "queued", "working", "nothing", "done", "downloaded", "unavailable"
-]
-Button = Literal["auto", "choose", "again"]
+RowKind = Literal["download", "search", "queued", "working", "nothing", "done", "unavailable"]
+Button = Literal["auto", "choose"]
 
 
 @dataclass(frozen=True, slots=True)
 class RowLook:
     """How the controls look: a status text (longest first, then shorter ones; none = no
-    status) in `color`, then buttons. `clickable`: the status opens the ↻ Again menu; `alert`:
-    ☰ Choose… outlined in amber (nothing was good enough)."""
+    status) in `color`, then buttons. `alert`: ☰ Choose… outlined in amber (nothing was good
+    enough)."""
 
     kind: RowKind
     status: tuple[str, ...] = ()
     color: theme.Color = theme.TEXT_MUTED
     buttons: tuple[Button, ...] = ()
-    clickable: bool = False
     alert: bool = False
 
 
-def row_look(base: Base, state: RunState | None, *, downloaded: bool = False) -> RowLook:
-    """The controls for a title's base look, its run state and whether it is in the download
-    history. A run working or done wins; then downloaded; then a disabled base ("Not
-    Released"); then a run that found nothing; else ⬇ Auto + ☰ Choose… (☰ Choose… alone for a
-    title without a number to download by)."""
+def row_look(base: Base, state: RunState | None) -> RowLook:
+    """The controls for a title's base look and its run state. A run working or done (its
+    outcome, beside ☰ Choose…) wins; then a disabled base ("Not Released"); then a run that
+    found nothing; else ⬇ Auto + ☰ Choose… (☰ Choose… alone for a title without a number to
+    download by)."""
     if state is not None and state.phase is Phase.WORKING:
         return RowLook("working", (t(WORKING_TEXT), t(WORKING_SHORT)))
     if state is not None and state.phase is Phase.QUEUED:
         return RowLook("queued", (t(QUEUED_TEXT),))
     if state is not None and state.phase is Phase.DONE and state.outcome is not None:
-        return RowLook(
-            "done", (outcome_text(state.outcome),), theme.SUCCESS, ("again",), clickable=True
-        )
-    if downloaded or base.kind == "grabbed" or (state is not None and state.phase is Phase.DONE):
-        return RowLook(
-            "downloaded", (t(DOWNLOADED_TEXT),), theme.SUCCESS, ("again",), clickable=True
-        )
+        return RowLook("done", (outcome_text(state.outcome),), theme.SUCCESS, ("choose",))
     if base.kind == "unavailable":
         return RowLook("unavailable", (base.text,))
     if state is not None and state.phase is Phase.NOTHING:
@@ -122,13 +112,13 @@ def button_width(text: str, measure: Measure) -> int:
 
 def slot_width(measure: Measure) -> int:
     """The room the controls take in a row (logical units, in the current language): the
-    widest of ⬇ Auto + ☰ Choose…, ✓ Downloaded + ↻ Again, "None found" + ☰ Choose… and the
-    working text."""
+    widest of ⬇ Auto + ☰ Choose…, a run's outcome + ☰ Choose…, "None found" + ☰ Choose… and
+    the working text."""
     choose = button_width(t(CHOOSE_TEXT), measure)
-    again = button_width(t(AGAIN_TEXT), measure)
+    outcome = max(round(measure(outcome_text(done))) for done in GrabOutcome)
     pairs = (
         button_width(t(AUTO_TEXT), measure) + GAP + choose,
-        round(measure(t(DOWNLOADED_TEXT))) + LABEL_PAD + GAP + again,
+        outcome + LABEL_PAD + GAP + choose,
         round(measure(t(NOTHING_SHORT))) + LABEL_PAD + GAP + choose,
         round(measure(t(WORKING_TEXT))),
         round(measure(t(QUEUED_TEXT))),
@@ -139,7 +129,8 @@ def slot_width(measure: Measure) -> int:
 def again_items(
     download_again: Callable[[], None] | None, choose: Callable[[], None]
 ) -> list[MenuItem]:
-    """↻ Again's menu: download again automatically (when offered), choose a release."""
+    """The Downloads page's "Download again…" menu: download again automatically (when
+    offered), choose a release."""
     items: list[MenuItem] = []
     if download_again is not None:
         items.append((t(AGAIN_AUTO_TEXT), download_again))
@@ -148,12 +139,10 @@ def again_items(
 
 
 def status_tip(look: RowLook, state: RunState | None) -> str:
-    """The status text's hover tip: what a finished run picked, why nothing was downloaded,
-    or that a downloaded title can be downloaded again."""
+    """The status text's hover tip: what a finished run picked, or why nothing was
+    downloaded."""
     if look.kind == "done" and state is not None:
-        return picked_text(state.quality, state.size_bytes) or t(AGAIN_TIP)
-    if look.kind == "downloaded":
-        return t(AGAIN_TIP)
+        return picked_text(state.quality, state.size_bytes)
     if look.kind == "nothing":
         return t(NOTHING_TIP)
     return ""
@@ -170,7 +159,6 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         key: DownloadKey,
         base: Base,
         actions: DownloadActions[T],
-        downloaded: bool = False,
         height: int = HEIGHT,
         align: Literal["left", "right"] = "right",
         choose: bool = True,
@@ -187,7 +175,6 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         self._height = height
         self._item = item
         self._base = base
-        self._downloaded = downloaded
         self._actions = actions
         self._look: RowLook | None = None
         self._width: float | None = None  # unscaled, once laid out
@@ -198,16 +185,12 @@ class RowActions(ctk.CTkFrame, Generic[T]):
             self, text="", height=height, font=self._font, text_color=theme.TEXT_MUTED, anchor="e"
         )
         self._status_tip = add_tooltip(self.status, "")
-        # CTk's own bind: the click lands on the label's inner Tk label.
-        self.status.bind("<Button-1>", self._status_clicked, add="+")
         self.auto = self._button(t(AUTO_TEXT), measure, outlined=True, command=self._auto)
         self.choose = self._button(t(CHOOSE_TEXT), measure, outlined=False, command=self._choose)
-        self.again = self._button(t(AGAIN_TEXT), measure, outlined=False, command=self.open_again)
         # Before the tip's own <Enter>: the tip reads Settings as they are when hovered.
         tk.Misc.bind(self.auto, "<Enter>", self._update_auto_tip, add="+")
         self._auto_tip = add_tooltip(self.auto, t(AUTO_TIP))
         add_tooltip(self.choose, t(CHOOSE_TIP))
-        add_tooltip(self.again, t(AGAIN_TIP))
         self.bind("<Configure>", self._on_resize, add="+")
         actions.states.attach(self)
         self.repaint()
@@ -232,15 +215,13 @@ class RowActions(ctk.CTkFrame, Generic[T]):
 
     # -- state ---------------------------------------------------------------------------------
 
-    def set_base(self, base: Base, *, downloaded: bool = False) -> None:
-        if (base, downloaded) != (self._base, self._downloaded):
-            self._base, self._downloaded = base, downloaded
+    def set_base(self, base: Base) -> None:
+        if base != self._base:
+            self._base = base
             self.repaint()
 
     def current_look(self) -> RowLook:
-        return row_look(
-            self._base, self._actions.states.get(self.key), downloaded=self._downloaded
-        )
+        return row_look(self._base, self._actions.states.get(self.key))
 
     @property
     def look(self) -> RowLook | None:
@@ -257,12 +238,12 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         if look == self._look:
             return
         self._look = look
-        for widget in (self.status, self.auto, self.choose, self.again):
+        for widget in (self.status, self.auto, self.choose):
             widget.pack_forget()
-        widgets = {"auto": self.auto, "choose": self.choose, "again": self.again}
+        widgets = {"auto": self.auto, "choose": self.choose}
         buttons = self.shown_buttons(look)
         if look.status:
-            self.status.configure(text_color=look.color, cursor="hand2" if look.clickable else "")
+            self.status.configure(text_color=look.color)
         if self._align == "right":
             for name in reversed(buttons):
                 widgets[name].pack(side="right", padx=(GAP, 0))
@@ -296,7 +277,7 @@ class RowActions(ctk.CTkFrame, Generic[T]):
         text = look.status[0]
         # On the left the frame is as wide as what it shows: nothing to fit into.
         if self._width is not None and self._align == "right":
-            shown = {"auto": self.auto, "choose": self.choose, "again": self.again}
+            shown = {"auto": self.auto, "choose": self.choose}
             buttons = sum(
                 unscaled_width(self, shown[name].winfo_reqwidth()) + GAP
                 for name in self.shown_buttons(look)
@@ -315,22 +296,6 @@ class RowActions(ctk.CTkFrame, Generic[T]):
 
     def _choose(self) -> None:
         self._actions.choose(self._item)
-
-    def _status_clicked(self, _event: Any = None) -> None:
-        if self._look is not None and self._look.clickable:
-            self.open_again()
-
-    def open_again(self) -> None:
-        """↻ Again's menu, under the ↻ Again button (also a click on ✓ Downloaded or on the
-        downloaded row)."""
-        look = self._look
-        if look is None or not (look.clickable or "again" in look.buttons):
-            return
-        again = self._actions.download_again
-        item = self._item
-        download_again = (lambda: again(item)) if again is not None else None
-        anchor = self.again if self.again.winfo_ismapped() else self
-        popup_menu(anchor, again_items(download_again, self._choose))
 
     def destroy(self) -> None:
         self._actions.states.detach(self)

@@ -58,6 +58,7 @@ from app.services.quick_download import Progress
 from app.services.tmdb import TMDBNotConfigured
 from app.services.tvmaze import TVMazeClient
 from app.services.watchlist import WatchlistService
+from tests.plex_link import have_marks, mark_have, plex_settings
 from tests.test_auto_download import FOUND, FakeQuickDownload
 from tests.test_library import DRAGON, DUNE, FakeTVMaze
 
@@ -234,12 +235,19 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
                 [(p.id, p.name, p.colour) for p in people], [(1, None, ProfileColour.BLUE)]
             )
             for table, order in shared.items():  # untouched
-                self.assertEqual(_dump(self.path, table, order), before[table], table)
+                after = _dump(self.path, table, order)
+                if table == "shows":  # v10 (3.1.0) adds an empty tvdb_id at the end
+                    self.assertTrue(all(row[-1] is None for row in after))
+                    after = [row[:-1] for row in after]
+                self.assertEqual(after, before[table], table)
             rows = await db.fetch_all(
                 "SELECT show_id, tracked_at, auto_download, synced_at, auto_since, profile_id "
                 "FROM tracked_shows ORDER BY show_id"
             )
-            self.assertEqual([tuple(row) for row in rows], [(*row, 1) for row in tracked])
+            # v10 clears synced_at: the next sync reads every followed show (TheTVDB ids).
+            self.assertEqual(
+                [tuple(row) for row in rows], [(*row[:3], None, *row[4:], 1) for row in tracked]
+            )
             columns = (
                 "movie_id, title, movie, added_at, auto_download, imdb_id, digital_release, "
                 "theatrical_release, details_at, tries, first_try, last_try, gave_up"
@@ -315,7 +323,9 @@ class PerPersonTests(DatabaseCase):
         await self.save(2, episode(21, 2, aired))
         await self.db.library.track(1, profile_id=ME)
         await self.db.library.track(2, profile_id=SANNE)
-        library = LibraryService(self.db.library, self.db.history, mock.MagicMock())
+        library = LibraryService(
+            self.db.library, self.db.history, mock.MagicMock(), settings=plex_settings(self.db)
+        )  # Plex connected: what is missing shows
         day = aired.date()
         mine = await library.calendar(day, day, profile_id=ME)
         hers = await library.calendar(day, day, profile_id=SANNE)
@@ -376,13 +386,13 @@ class PerPersonTests(DatabaseCase):
         await self.save(1, episode(11, 1, old), status="Ended")
         await self.db.library.track(1, profile_id=ME)
         await self.db.library.track(1, profile_id=SANNE)
-        await self.db.library.mark_have([11], NOW)
+        await mark_have(self.db, [11], NOW.isoformat())  # an old mark (kept, unread since 3.1.0)
         await self.db.library.untrack(1, profile_id=ME)
         self.assertEqual(await self.db.library.untrack_ended(profile_id=ME), 0)
         await self.db.library.prune_schedule(NOW.date())
         self.assertIsNotNone(await self.db.library.get_show(1))
         self.assertEqual([e.id for e in await self.db.library.episodes(1)], [11])
-        self.assertEqual(await self.db.library.have_ids(1), {11})
+        self.assertEqual(await have_marks(self.db, 1), {11})
         # "Cleanup Ended" is the person's own: the last follow goes, then the cache with it.
         self.assertEqual(await self.db.library.untrack_ended(profile_id=SANNE), 1)
         await self.db.library.prune_schedule(NOW.date())
@@ -411,20 +421,15 @@ class LibraryServiceTests(DatabaseCase):
         tvmaze = TVMazeClient(self.http, retry_delay=0)
         self.library = LibraryService(self.db.library, self.db.history, tvmaze)
 
-    async def test_a_second_follower_keeps_the_shared_marks(self) -> None:
+    async def test_a_second_follower_shares_the_show(self) -> None:
         await self.library.track(DUNE, profile_id=ME)
-        marked = await self.db.library.have_ids(DUNE)
-        self.assertTrue(marked)  # what aired before counts as had
-        some = sorted(marked)[:1]
-        await self.library.unmark_have(some)  # Me wants one again
+        self.assertEqual(await have_marks(self.db, DUNE), frozenset())  # no marks since 3.1.0
         await self.library.track(DUNE, profile_id=SANNE)
-        self.assertEqual(await self.db.library.have_ids(DUNE), marked - set(some))
         details = await self.library.show_details(DUNE, profile_id=SANNE)
         self.assertTrue(details.tracked)
         self.assertFalse((await self.library.show_details(DRAGON, profile_id=SANNE)).tracked)
         await self.library.untrack(DUNE, profile_id=ME)
         self.assertTrue((await self.library.show_details(DUNE, profile_id=SANNE)).tracked)
-        self.assertEqual(await self.db.library.have_ids(DUNE), marked - set(some))
 
     async def test_import_goes_to_the_person_it_was_started_for(self) -> None:
         result = await self.library.import_shows([str(DUNE), str(DRAGON)], profile_id=SANNE)
@@ -665,7 +670,7 @@ class BackupPeopleTests(unittest.IsolatedAsyncioTestCase):
         await db.library.track(1, profile_id=1, auto_download=True)
         await db.library.track(1, profile_id=sanne.id)
         await db.library.track(2, profile_id=sanne.id)
-        await db.library.mark_have([11], NOW)
+        await mark_have(db, [11], NOW.isoformat())  # an old mark: backups still carry it
         await db.watchlist.add(film(7), profile_id=sanne.id, auto_download=False, when=NOW)
         return db, profiles, backup
 
@@ -692,7 +697,7 @@ class BackupPeopleTests(unittest.IsolatedAsyncioTestCase):
         sanne = profiles.people[1].id
         self.assertEqual(await db.library.tracked_ids(profile_id=1), {1})
         self.assertEqual(await db.library.tracked_ids(profile_id=sanne), {1, 2})
-        self.assertEqual(await db.library.have_ids(1), {11})
+        self.assertEqual(await have_marks(db, 1), {11})
         self.assertEqual([e.movie_id for e in await db.watchlist.entries(profile_id=sanne)], [7])
         self.assertEqual(await BackupRepository(db).read(), await BackupRepository(_a_db).read())
 

@@ -15,7 +15,7 @@ from typing import Any, cast
 import customtkinter as ctk
 from PIL import Image
 
-from app.models import CalendarEntry, CardSize, Episode, Show
+from app.models import CalendarEntry, CardSize, Episode, GrabOutcome, Show
 from app.services import ImageCache
 from app.ui import theme
 from app.ui.calendar_cards import (
@@ -362,14 +362,16 @@ class IconLookTests(unittest.TestCase):
         self.assertEqual((look.text, look.action, look.more), ("…", None, False))
         self.assertEqual(look.text_color, theme.TEXT_MUTED)
 
-    def test_grabbed_opens_the_search_window(self) -> None:
-        for look in (
-            icon_look(Base("grabbed"), None),
-            icon_look(Base("download"), RunState(Phase.DONE)),
-        ):
-            self.assertEqual((look.text, look.action, look.more), ("✓", "choose", False))
-            self.assertEqual(look.color, theme.GRABBED)
-            self.assertEqual(look.tip, "✓ Grabbed")
+    def test_a_runs_outcome_opens_the_search_window(self) -> None:
+        look = icon_look(Base("download"), RunState(Phase.DONE, GrabOutcome.SENT))
+        self.assertEqual((look.text, look.action, look.more), ("✓", "choose", False))
+        self.assertEqual(look.color, theme.GRABBED)
+        self.assertEqual(look.tip, "✓ Sent")
+
+    def test_downloaded_before_is_never_shown(self) -> None:
+        # No "✓ Grabbed" (3.1.0): a DONE without an outcome is no state to show.
+        look = icon_look(Base("download"), RunState(Phase.DONE))
+        self.assertEqual((look.text, look.action, look.more), ("⬇", "download", True))
 
     def test_nothing_found_and_specials_choose_one(self) -> None:
         nothing = icon_look(Base("download"), RunState(Phase.NOTHING))
@@ -569,7 +571,7 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(buttons.shows_more)
         buttons.main.invoke()  # disabled while it works
         self.assertEqual(asked, ["download"])
-        actions.states.set(key, RunState(Phase.DONE))
+        actions.states.set(key, RunState(Phase.DONE, GrabOutcome.SENT))
         self.assertEqual(icon(), "✓")
         self.assertEqual(buttons.main.cget("fg_color"), theme.GRABBED)
         self.assertEqual(buttons.width_units, SLIM_ICON)
@@ -581,14 +583,15 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         card.destroy()
         actions.states.set(key, None)  # the card is gone: nothing to repaint
 
-    async def test_compact_card_of_a_grabbed_episode(self) -> None:
+    async def test_compact_card_of_a_grabbed_episode_shows_no_mark(self) -> None:
         entry = calendar_entry(aired=True).model_copy(update={"is_downloaded": True})
-        self.assertEqual(episode_base(entry), Base("grabbed"))
+        self.assertEqual(episode_base(entry), Base("download"))  # no ✓ Grabbed (3.1.0)
         actions, _asked = self.actions()
         card = CompactEpisodeCard(self.root, entry, actions=actions)
         assert card.buttons.look is not None
-        self.assertEqual(card.buttons.look.text, "✓")
-        self.assertFalse(card.buttons.shows_more)
+        self.assertEqual(card.buttons.look.text, "⬇")
+        self.assertTrue(card.buttons.shows_more)
+        self.assertIsNone(card.note)  # no note without Plex: the view passes none
 
     async def test_bakes_the_poster_at_physical_size_and_lays_out_the_text(self) -> None:
         images = FakeImages()

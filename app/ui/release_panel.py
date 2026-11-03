@@ -16,8 +16,8 @@ on_target_change=None, on_count=None, on_fix_match=None)``
     Building it only builds widgets: nothing is loaded or searched (and no task is started)
     before ``start()``.
 ``panel.start()``
-    Loads the grabbed releases, a show's episodes (for the chips) or a film's TMDB details (its
-    IMDb id, for the search), and searches. Later calls do nothing. Call it once the asyncio
+    Loads a show's episodes (for the chips) or a film's TMDB details (its IMDb id, for the
+    search), and searches. Later calls do nothing. Call it once the asyncio
     loop runs (it spawns tasks).
 ``panel.set_target(target)``
     Another episode, season pack, show or film: the chips follow and, once started, the panel
@@ -379,11 +379,12 @@ def failure_text(statuses: Iterable[IndexerStatus]) -> str:
     return " · ".join(parts)
 
 
-def action_text(state: RowState | None, *, grabbed: bool) -> str:
-    """The action cell: "⬇", or a mark for a release being / already grabbed."""
+def action_text(state: RowState | None) -> str:
+    """The action cell: "⬇", or a mark for a release being grabbed or grabbed from this panel
+    just now. A release grabbed before gets no ✓ (3.1.0: only Plex says what you have)."""
     if state is not None:
         return _ACTION_TEXT[state]
-    return "✓" if grabbed else "⬇"
+    return "⬇"
 
 
 def selection_detail(release: TorrentRelease) -> str:
@@ -647,7 +648,6 @@ class ReleasePanel(ctk.CTkFrame):
         self._sort_column: SortColumn = "size"
         self._sort_descending = True
         self._show_hidden = False
-        self._grabbed: frozenset[str] = frozenset()
         self._row_states: dict[str, RowState] = {}
         self._rows: dict[str, tuple[TorrentRelease, bool]] = {}  # id -> (release, hidden)
         # id -> (name, picture key, the other cells, tags) as the table shows them
@@ -701,7 +701,6 @@ class ReleasePanel(ctk.CTkFrame):
         if self._started:
             return
         self._started = True
-        self._start(self._load_grabbed(), "grabbed")
         self._load_target_data()
         self._start_search()
 
@@ -1579,7 +1578,6 @@ class ReleasePanel(ctk.CTkFrame):
 
     def _render_row(self, iid: str, settings: Settings, now: datetime) -> None:
         release, hidden = self._rows[iid]
-        grabbed = release.info_hash is not None and release.info_hash in self._grabbed
         state = self._row_states.get(iid)
         values = (
             format_size(release.size_bytes),
@@ -1587,11 +1585,11 @@ class ReleasePanel(ctk.CTkFrame):
             str(release.leechers),
             release.source.upper(),
             format_age(release.published_at, now),
-            action_text(state, grabbed=grabbed),
+            action_text(state),
         )
         recommended = iid == self._recommended_iid
         picture = picture_key(speed(release), recommended=recommended)
-        if grabbed or state in _DONE_STATES:
+        if state in _DONE_STATES:  # grabbed from here just now
             tags: tuple[str, ...] = ("grabbed",)
         elif hidden:
             tags = ("hidden",)
@@ -1755,7 +1753,6 @@ class ReleasePanel(ctk.CTkFrame):
             raise  # logged and reported by the task runner
         state = _OUTCOME_STATES[result.outcome]
         self._finish_grab(iid, state, result.message, theme.SUCCESS, 6000)
-        await self._load_grabbed()
 
     def _finish_grab(
         self, iid: str, state: RowState, message: str, color: theme.Color, clear_after_ms: int
@@ -1766,12 +1763,6 @@ class ReleasePanel(ctk.CTkFrame):
         self._row_states[iid] = state
         self._refresh_row(iid)
         self._set_message(message, color)
-
-    async def _load_grabbed(self) -> None:
-        grabbed = await self._downloads.grabbed_hashes()
-        if self.winfo_exists() and grabbed != self._grabbed:
-            self._grabbed = grabbed
-            self._render_rows()
 
     # -- teardown ------------------------------------------------------------------------------
 

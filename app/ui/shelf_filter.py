@@ -6,7 +6,9 @@ names (`Genre`); ids outside it (Thriller, Mystery, Reality, News...) get no chi
 offers the genres that at least one title on the page has (`chip_genres`).
 
 Picking a chip or flipping the switch only filters what the page already loaded: nothing is
-fetched again. The page remembers its chip for the session and its switch in Settings.
+fetched again. The page remembers its chip for the session and its switch in Settings. The
+page names its switch (Discover: "Hide shows I follow") and may offer none (Movies without
+Plex: nothing counts as had, so there is nothing to hide; `offer_hide`).
 """
 
 from __future__ import annotations
@@ -79,6 +81,7 @@ _GENRE_NAMES: Mapping[Genre, str] = {
 
 ALL_TEXT = N_("All")
 HIDE_OWNED_TEXT = N_("Hide what I already have")
+HIDE_FOLLOWED_TEXT = N_("Hide shows I follow")  # Discover's: about following, not having
 
 CHIP_HEIGHT = 28
 CHIP_FONT_SIZE = 13
@@ -110,7 +113,7 @@ def chip_genres(titles: Iterable[frozenset[Genre]], selected: Genre | None) -> t
 
 def empty_text(genre: Genre | None, hide_owned: bool, all_owned: str) -> str:
     """The page's one line when the filter left every shelf empty. `all_owned`: what the page
-    says when only "Hide what I already have" did it ("You already follow every show here.")."""
+    says when only its hide switch did it ("You already follow every show here.")."""
     if genre is None:
         return all_owned
     if hide_owned:
@@ -135,8 +138,9 @@ def chip_color(selected: bool) -> tuple[theme.Color, theme.Color]:
 
 
 class FilterBar(ctk.CTkFrame):
-    """"All" and the page's genre chips on the left, the "Hide what I already have" switch on
-    the right (under the chips when the line is too narrow for both).
+    """"All" and the page's genre chips on the left, the page's hide switch ("Hide what I
+    already have", `hide_text`) on the right (under the chips when the line is too narrow for
+    both), while the page offers one (`offer_hide`; made only then).
 
     A click on a chip selects it at once and calls `on_genre` (None = All); the switch calls
     `on_hide_owned`. The page hands the bar its chips with `show_genres`.
@@ -150,10 +154,15 @@ class FilterBar(ctk.CTkFrame):
         hide_tip: str,
         on_genre: Callable[[Genre | None], None],
         on_hide_owned: Callable[[bool], None],
+        hide_text: str = HIDE_OWNED_TEXT,
+        offered: bool = True,
     ) -> None:
+        """`hide_text`: the switch's text in English (shown through t())."""
         super().__init__(master, fg_color="transparent")
         self._on_genre = on_genre
         self._on_hide_owned = on_hide_owned
+        self._hide_text = hide_text
+        self._hide_tip = hide_tip
         self._genres: tuple[Genre, ...] | None = None
         self._selected: Genre | None = None
         self._chips: dict[Genre | None, ctk.CTkButton] = {}
@@ -164,21 +173,33 @@ class FilterBar(ctk.CTkFrame):
         self._chip_row = ctk.CTkFrame(self, fg_color="transparent")
         self._chip_row.grid(row=0, column=0, sticky="w")
         self._hide_var = ctk.BooleanVar(value=hide_owned)
-        switch_w, switch_h = SWITCH_SIZE
-        self._switch = ctk.CTkSwitch(
-            self,
-            text=t(HIDE_OWNED_TEXT),
-            variable=self._hide_var,
-            font=theme.font(CHIP_FONT_SIZE),
-            text_color=theme.TEXT_MUTED,
-            switch_width=switch_w,
-            switch_height=switch_h,
-            progress_color=theme.ACCENT,
-            command=self._hide_toggled,
-        )
-        add_tooltip(self._switch, hide_tip)
-        self._place_switch(wrapped=False)
+        self.switch: ctk.CTkSwitch | None = None
+        self.offer_hide(offered)
         self.bind("<Configure>", self._on_resize, add="+")
+
+    def offer_hide(self, offered: bool) -> None:
+        """Make the hide switch (placed beside or under the chips), or take it away."""
+        if offered and self.switch is None:
+            switch_w, switch_h = SWITCH_SIZE
+            self.switch = ctk.CTkSwitch(
+                self,
+                text=t(self._hide_text),
+                variable=self._hide_var,
+                font=theme.font(CHIP_FONT_SIZE),
+                text_color=theme.TEXT_MUTED,
+                switch_width=switch_w,
+                switch_height=switch_h,
+                progress_color=theme.ACCENT,
+                command=self._hide_toggled,
+            )
+            add_tooltip(self.switch, self._hide_tip)
+            self._wrapped = None
+            self._place_switch(wrapped=False)
+            self._fit()
+        elif not offered and self.switch is not None:
+            self.switch.destroy()
+            self.switch = None
+            self._wrapped = None
 
     @property
     def genres(self) -> tuple[Genre, ...]:
@@ -247,21 +268,21 @@ class FilterBar(ctk.CTkFrame):
         """The switch beside the chips when both fit on one line, else under them."""
         if width is None:
             width = self.winfo_width()
-        if width <= 1:
+        if width <= 1 or self.switch is None:
             return
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
         needed = (
             self._chip_row.winfo_reqwidth()
-            + self._switch.winfo_reqwidth()
+            + self.switch.winfo_reqwidth()
             + round(SWITCH_GAP * scaling)
         )
         self._place_switch(wrapped=needed > width)
 
     def _place_switch(self, *, wrapped: bool) -> None:
-        if wrapped == self._wrapped:
+        if wrapped == self._wrapped or self.switch is None:
             return
         self._wrapped = wrapped
         if wrapped:
-            self._switch.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            self.switch.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         else:
-            self._switch.grid(row=0, column=1, sticky="e", padx=(SWITCH_GAP, 0))
+            self.switch.grid(row=0, column=1, sticky="e", padx=(SWITCH_GAP, 0))

@@ -25,6 +25,7 @@ from app.services import SettingsService
 from app.services.backup import (
     LOCAL_DOWNLOAD_FIELDS,
     MACHINE_FIELDS,
+    MACHINE_SECRETS,
     NOT_SECRET_FIELDS,
     SECRET_FIELDS,
     SECRET_NAME,
@@ -42,6 +43,7 @@ from app.services.backup import (
 )
 from app.services.profiles import ProfileService
 from app.services.watchlist import WatchlistService
+from tests.plex_link import have_marks, mark_have
 
 NOW = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
 AUTO_SINCE = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
@@ -154,7 +156,7 @@ class BackupTestCase(unittest.IsolatedAsyncioTestCase):
         await db.library.save_show(show(1, "Fargo"), episodes(1, 6))
         await db.library.track(1, profile_id=1)
         await db.library.set_auto_download(1, True, since=AUTO_SINCE, profile_id=1)
-        await db.library.mark_have([101, 102], NOW)
+        await mark_have(db, [101, 102], NOW.isoformat())  # old marks: kept, unread since 3.1.0
         await db.library.save_show(show(2, "Severance"), episodes(2, 3))
         await db.library.track(2, profile_id=1)
         await db.library.save_show(show(9, "Not followed"), episodes(9, 2))  # schedule cache
@@ -208,6 +210,7 @@ class SecretFieldTests(unittest.TestCase):
             if SECRET_NAME.search(name)
             and name not in SECRET_FIELDS
             and name not in NOT_SECRET_FIELDS
+            and name not in MACHINE_SECRETS
         )
         self.assertEqual(
             unclassified, [], "add to SECRET_FIELDS (or NOT_SECRET_FIELDS) in app/services/backup.py"
@@ -219,7 +222,7 @@ class SecretFieldTests(unittest.TestCase):
             for name, field in Settings.model_fields.items()
             if isinstance(field.default, SecretStr)
         }
-        self.assertEqual(hidden - SECRET_FIELDS, set())
+        self.assertEqual(hidden - SECRET_FIELDS - MACHINE_SECRETS, set())
 
     def test_the_lists_name_real_settings(self) -> None:
         for names in (SECRET_FIELDS, NOT_SECRET_FIELDS, MACHINE_FIELDS):
@@ -227,6 +230,7 @@ class SecretFieldTests(unittest.TestCase):
                 self.assertLessEqual(names, set(Settings.model_fields))
         self.assertFalse(SECRET_FIELDS & NOT_SECRET_FIELDS)
         self.assertFalse(SECRET_FIELDS & MACHINE_FIELDS)
+        self.assertLessEqual(MACHINE_SECRETS, MACHINE_FIELDS)  # this PC's: never in a backup
 
     def test_the_secrets_the_brief_names(self) -> None:
         self.assertEqual(
@@ -471,7 +475,7 @@ class RoundTripTests(BackupTestCase):
         # Shows (switch, since when, episodes, marks), films and the history: as on PC A.
         self.assertEqual(await BackupRepository(b.db).read(), await BackupRepository(a.db).read())
         self.assertEqual(await self.tracked(b), {1: True, 2: False})
-        self.assertEqual(await b.db.library.have_ids(1), {101, 102})
+        self.assertEqual(await have_marks(b.db, 1), {101, 102})
         self.assertTrue(all(entry.synced_at is None for entry in await b.db.library.tracked(profile_id=1)))
         self.assertIsNone(await b.db.library.get_show(9))  # the cache stayed behind
         self.assertEqual(await self.films(b), {10: True, 11: False})
@@ -545,7 +549,7 @@ class ModeTests(BackupTestCase):
         await db.library.mark_synced(1)
         await db.library.save_show(show(3, "Mythic Quest"), episodes(3, 2))
         await db.library.track(3, auto_download=True, profile_id=1)
-        await db.library.mark_have([301], NOW)
+        await mark_have(db, [301], NOW.isoformat())
         await db.watchlist.add(movie(11, "Arrival"), auto_download=True, when=NOW, profile_id=1)
         await db.watchlist.add(movie(12, "Heat"), auto_download=True, when=NOW, profile_id=1)
         await db.watchlist.add(movie(20, "Past Lives"), auto_download=False, when=NOW, profile_id=1)
@@ -557,8 +561,8 @@ class ModeTests(BackupTestCase):
         b = await self.pc_b()
         result = await b.backup.load(await b.backup.open(self.file), LoadMode.ADD)
         self.assertEqual(await self.tracked(b), {1: False, 2: False, 3: True})
-        self.assertEqual(await b.db.library.have_ids(1), frozenset())  # B's (none) stay
-        self.assertEqual(await b.db.library.have_ids(3), {301})
+        self.assertEqual(await have_marks(b.db, 1), frozenset())  # B's (none) stay
+        self.assertEqual(await have_marks(b.db, 3), {301})
         self.assertEqual(len(await b.db.library.episodes(1)), 7)  # B's own episodes stay
         # Heat was downloaded on PC A: it leaves the list; Arrival keeps B's switch.
         self.assertEqual(await self.films(b), {10: True, 11: True, 20: False})
@@ -577,7 +581,7 @@ class ModeTests(BackupTestCase):
         b = await self.pc_b()
         result = await b.backup.load(await b.backup.open(self.file), LoadMode.REPLACE)
         self.assertEqual(await self.tracked(b), {1: True, 2: False})
-        self.assertEqual(await b.db.library.have_ids(1), {101, 102})
+        self.assertEqual(await have_marks(b.db, 1), {101, 102})
         entries = {entry.show.id: entry for entry in await b.db.library.tracked(profile_id=1)}
         self.assertIsNotNone(entries[1].synced_at)  # followed here already: its sync state stays
         self.assertEqual(len(await b.db.library.episodes(1)), 7)  # and its fresher episodes

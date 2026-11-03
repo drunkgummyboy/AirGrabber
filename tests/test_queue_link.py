@@ -101,7 +101,8 @@ class LinkTests(LinkTestCase):
             (done.phase, done.outcome, done.quality), (Phase.DONE, GrabOutcome.SENT, "1080p")
         )
         self.assertEqual(self.phase(2), Phase.NOTHING)
-        self.assertEqual(self.phase(3), Phase.DONE)
+        # Downloaded before: back to its own look (no "✓ Grabbed"); the status bar says so.
+        self.assertIsNone(self.states.get(key(17, 3)))
         self.assertEqual(
             self.reports,
             [

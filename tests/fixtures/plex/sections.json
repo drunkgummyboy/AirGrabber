@@ -1,0 +1,47 @@
+{
+  "MediaContainer": {
+    "size": 4,
+    "allowSync": false,
+    "title1": "Plex Library",
+    "Directory": [
+      {
+        "allowSync": true,
+        "art": "/:/resources/show-fanart.jpg",
+        "key": "1",
+        "type": "show",
+        "title": "TV Shows",
+        "agent": "tv.plex.agents.series",
+        "scanner": "Plex TV Series",
+        "language": "en-US",
+        "uuid": "11111111-aaaa-4bbb-8ccc-000000000001",
+        "Location": [{"id": 1, "path": "/volume1/video/TV"}]
+      },
+      {
+        "key": "2",
+        "type": "movie",
+        "title": "Movies",
+        "agent": "tv.plex.agents.movie",
+        "scanner": "Plex Movie",
+        "uuid": "11111111-aaaa-4bbb-8ccc-000000000002",
+        "Location": [{"id": 2, "path": "/volume1/video/Movies"}]
+      },
+      {
+        "key": "3",
+        "type": "movie",
+        "title": "Home videos",
+        "agent": "tv.plex.agents.none",
+        "scanner": "Plex Video Files Scanner",
+        "uuid": "11111111-aaaa-4bbb-8ccc-000000000003",
+        "Location": [{"id": 3, "path": "/volume1/video/Home"}]
+      },
+      {
+        "key": "4",
+        "type": "artist",
+        "title": "Music",
+        "agent": "tv.plex.agents.music",
+        "uuid": "11111111-aaaa-4bbb-8ccc-000000000004",
+        "Location": [{"id": 4, "path": "/volume1/music"}]
+      }
+    ]
+  }
+}

@@ -14,9 +14,7 @@ import customtkinter as ctk
 
 from app.models import (
     CardSize,
-    DownloadRecord,
     Episode,
-    MediaType,
     MissingRunReport,
     Show,
     ShowActivity,
@@ -47,54 +45,12 @@ from app.ui.text_fit import ELLIPSIS
 NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 
 
-def grabbed(when: datetime, *, season: int = 2, number: int | None = 8) -> ShowActivity:
-    record = DownloadRecord(
-        media_type=MediaType.TV,
-        media_id=1,
-        season=season,
-        episode=number,
-        release_title="x",
-        downloaded_at=when,
-    )
-    return ShowActivity(show_id=1, last_grab=record)
-
-
 def upcoming(airs: datetime | None = None, *, air_date: date | None = None) -> ShowActivity:
     episode = Episode(id=4, show_id=1, season=2, number=4, airstamp=airs, air_date=air_date)
     return ShowActivity(show_id=1, next_episode=episode)
 
 
 class InfoLineTests(unittest.TestCase):
-    def test_downloaded_today(self) -> None:
-        line = card_info_line(grabbed(NOW - timedelta(hours=11)), NOW)
-        self.assertEqual(line, "✓ S02E08 · today")
-
-    def test_downloaded_yesterday(self) -> None:
-        line = card_info_line(grabbed(NOW - timedelta(hours=13)), NOW)
-        self.assertEqual(line, "✓ S02E08 · yesterday")
-
-    def test_downloaded_earlier_this_week_names_the_weekday(self) -> None:
-        self.assertEqual(
-            card_info_line(grabbed(NOW - timedelta(days=2)), NOW), "✓ S02E08 · Sun"
-        )
-        self.assertEqual(
-            card_info_line(grabbed(NOW - timedelta(days=6)), NOW), "✓ S02E08 · Wed"
-        )
-
-    def test_a_week_old_grab_is_not_mentioned(self) -> None:
-        self.assertIsNone(card_info_line(grabbed(NOW - timedelta(days=7)), NOW))
-
-    def test_season_pack(self) -> None:
-        line = card_info_line(grabbed(NOW, season=3, number=None), NOW)
-        self.assertEqual(line, "✓ S03 · today")
-
-    def test_days_follow_the_given_time_zone(self) -> None:
-        # 23:30 UTC on the 12th is already the 13th in UTC+2: "today" there.
-        local = NOW.astimezone(timezone(timedelta(hours=2)))
-        when = datetime(2026, 10, 12, 23, 30, tzinfo=UTC)
-        self.assertEqual(card_info_line(grabbed(when), local), "✓ S02E08 · today")
-        self.assertEqual(card_info_line(grabbed(when), NOW), "✓ S02E08 · yesterday")
-
     def test_next_episode_within_six_days_names_the_weekday(self) -> None:
         self.assertEqual(
             card_info_line(upcoming(NOW + timedelta(days=2)), NOW), "Next: S02E04 · Thu"
@@ -116,11 +72,12 @@ class InfoLineTests(unittest.TestCase):
             card_info_line(upcoming(air_date=date(2026, 10, 15)), NOW), "Next: S02E04 · Thu"
         )
 
-    def test_a_recent_grab_comes_before_the_next_episode(self) -> None:
-        activity = grabbed(NOW - timedelta(days=1)).model_copy(
-            update={"next_episode": upcoming(NOW + timedelta(days=2)).next_episode}
-        )
-        self.assertEqual(card_info_line(activity, NOW), "✓ S02E08 · yesterday")
+    def test_days_follow_the_given_time_zone(self) -> None:
+        # 23:30 UTC on the 14th is already the 15th (Thursday) in UTC+2.
+        local = NOW.astimezone(timezone(timedelta(hours=2)))
+        airs = datetime(2026, 10, 14, 23, 30, tzinfo=UTC)
+        self.assertEqual(card_info_line(upcoming(airs), local), "Next: S02E04 · Thu")
+        self.assertEqual(card_info_line(upcoming(airs), NOW), "Next: S02E04 · Wed")
 
     def test_nothing(self) -> None:
         self.assertIsNone(card_info_line(None, NOW))
@@ -250,10 +207,7 @@ class ShowCardWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.switched: list[tuple[int, bool]] = []
         self.runs = MissingRuns()
         self.actions = MissingActions(
-            download=lambda show: self.started.append(show.id),
-            mark_have=lambda show, ids: None,
-            unmark_have=lambda show, ids: None,
-            runs=self.runs,
+            download=lambda show: self.started.append(show.id), runs=self.runs
         )
 
     def _destroy_root(self) -> None:
@@ -315,7 +269,7 @@ class ShowCardWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([label for label, _ in card.menu_items()], ["Remove show…"])
 
     async def test_info_lines_fit_every_card_size(self) -> None:
-        lines = ("✓ S12E10 · yesterday", "✓ S12 · yesterday", "Next: S12E10 · 20 Dec")
+        lines = ("Next: S12E10 · Wed", "Next: S12E10 · 20 Dec")
         for size in CardSize:
             for line in lines:
                 with self.subTest(size=size, line=line):

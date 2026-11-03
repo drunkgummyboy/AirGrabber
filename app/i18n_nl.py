@@ -403,8 +403,8 @@ NL: dict[str, str] = {
     "Not Released": "Nog niet uit",
     "Finding…": "Zoeken…",
     # app/ui/views/movie_view.py
-    "Hides the films you've already downloaded (your watchlist always stays)":
-        "Verbergt de films die je al gedownload hebt (je kijklijst blijft altijd staan)",
+    "Hides the films you have in Plex (your watchlist always stays)":
+        "Verbergt de films die je in Plex hebt (je kijklijst blijft altijd staan)",
     "You already have every film here.": "Je hebt alle films hier al.",
     "Movie Discovery": "Films ontdekken",
     "↻ Refresh": "↻ Vernieuwen",
@@ -442,6 +442,7 @@ NL: dict[str, str] = {
     "Horror": "Horror",
     "All": "Alles",
     "Hide what I already have": "Verberg wat ik al heb",
+    "Hide shows I follow": "Verberg series die ik volg",
     "Nothing new in {genre} here right now. Pick another genre or {all}.":
         "Hier staat nu niets nieuws in {genre}. Kies een ander genre of {all}.",
     "Nothing in {genre} here right now. Pick another genre or {all}.":
@@ -459,11 +460,10 @@ NL: dict[str, str] = {
     "Download the whole season in one go (a season pack). Without one, the episodes you still need are queued one by one.":
         "Download het hele seizoen in één keer (een seizoenspakket). Is er geen, dan komen de afleveringen die je nog nodig hebt een voor een in de wachtrij.",
     "⬇ All missing ({n})": "⬇ Alles wat ontbreekt ({n})",
-    "Download every aired episode of this season you don't have yet":
-        "Download elke uitgezonden aflevering van dit seizoen die je nog niet hebt",
+    "Download this season's missing episodes":
+        "Download de ontbrekende afleveringen van dit seizoen",
     "Waiting ({n})": "Wachtend ({n})",
     "Remove from the queue": "Uit de wachtrij halen",
-    "✓ Grabbed": "✓ Gehaald",
     "✓ Opened": "✓ Geopend",
     "✓ Saved": "✓ Bewaard",
     "✓ Sent": "✓ Verstuurd",
@@ -485,11 +485,8 @@ NL: dict[str, str] = {
     "Couldn't download": "Downloaden mislukt",
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
-    "You have this": "Deze heb je al",
+    "In Plex": "In Plex",
     "Options": "Opties",
-    "I already have this": "Deze heb ik al",
-    "I already have this season": "Dit seizoen heb ik al",
-    "Mark as missing again": "Weer als ontbrekend markeren",
     "More options": "Meer opties",
     "{n} missing": "{n} ontbrekend",
     "Downloading {index} of {total}…": "{index} van {total} downloaden…",
@@ -513,9 +510,6 @@ NL: dict[str, str] = {
     "nothing missing": "niets ontbreekt",
     "{n} episode": "{n} aflevering",
     "{n} episodes": "{n} afleveringen",
-    "{show}: {episodes} marked as already had": "{show}: {episodes} gemarkeerd als al in bezit",
-    "{show}: {episodes} marked as missing again":
-        "{show}: {episodes} weer als ontbrekend gemarkeerd",
     # app/ui/poster_card.py
     "✓ Following": "✓ Volgend",
     "+ Track": "+ Volgen",
@@ -526,8 +520,6 @@ NL: dict[str, str] = {
         "Automatisch downloaden: nieuwe afleveringen van deze serie downloaden vanzelf, ongeveer 2 uur na de uitzending.",
     "Open on IMDb": "Openen op IMDb",
     "Remove show…": "Serie verwijderen…",
-    "today": "vandaag",
-    "yesterday": "gisteren",
     "Next: {code} · {when}": "Volgende: {code} · {when}",
     "Adding…": "Toevoegen…",
     # app/ui/calendar_cards.py
@@ -535,8 +527,8 @@ NL: dict[str, str] = {
     "More about this show": "Meer over deze serie",
     "Not downloaded yet": "Nog niet gedownload",
     "Not downloaded": "Niet gedownload",
-    "Aired, but not downloaded yet. Already have it? Mark it in the show's window.":
-        "Uitgezonden, maar nog niet gedownload. Heb je hem al? Markeer hem in het venster van de serie.",
+    "Aired, but not in Plex and not downloaded yet.":
+        "Uitgezonden, maar nog niet in Plex en nog niet gedownload.",
     "Nothing good enough was found. Choose a download yourself.":
         "Er is niets goed genoeg gevonden. Kies zelf een download.",
     "Not Aired": "Niet uitgezonden",
@@ -546,8 +538,7 @@ NL: dict[str, str] = {
     "⬇ Download ({n})": "⬇ Download ({n})",
     "⬇ All ({n})": "⬇ Alle ({n})",
     "not aired": "niet uitgezonden",
-    "✓ downloaded": "✓ gedownload",
-    "✓ have it": "✓ heb ik",
+    "✓ in Plex": "✓ in Plex",
     "still needed": "nog nodig",
     # app/ui/watchlist_cards.py
     "📌 My watchlist": "📌 Mijn kijklijst",
@@ -580,7 +571,6 @@ NL: dict[str, str] = {
         "TMDB weigert de API-sleutel — kijk hem na bij ⚙ Instellingen.",
     "Couldn't reach TMDB: {error}": "TMDB is niet bereikbaar: {error}",
     # app/ui/show_details.py
-    "✓ Downloaded": "✓ Gedownload",
     "More": "Meer",
     "Couldn't find this show on TVMaze": "Deze serie staat niet op TVMaze",
     "No episodes listed yet.": "Nog geen afleveringen bekend.",
@@ -642,8 +632,6 @@ NL: dict[str, str] = {
         "Automatisch downloaden: AirGrabber kiest de beste release",
     "☰ Choose…": "☰ Kiezen…",
     "Choose a release yourself from the search results": "Kies zelf een release uit de zoekresultaten",
-    "↻ Again": "↻ Opnieuw",
-    "Download it again": "Opnieuw downloaden",
     "⬇ Download again automatically": "⬇ Automatisch opnieuw downloaden",
     "☰ Choose a release…": "☰ Zelf een release kiezen…",
     "No good release found": "Geen goede release gevonden",
@@ -1291,6 +1279,45 @@ NL: dict[str, str] = {
     "Couldn't read that file.": "Kon dat bestand niet lezen.",
     "Couldn't save the backup there. Choose another folder.":
         "Kon de back-up daar niet opslaan. Kies een andere map.",
+    # app/ui/plex_settings.py, app/ui/plex_connect.py and Settings' Plex page
+    "Plex": "Plex",
+    "What's in your Plex libraries counts as something you already have: it isn't missing and isn't downloaded again.":
+        "Wat in je Plex-bibliotheken staat, telt als iets wat je al hebt: het ontbreekt niet en wordt niet opnieuw gedownload.",
+    "Let AirGrabber see what's in your Plex libraries, so it never downloads something you already have. It only reads; your Plex password isn't needed.":
+        "Laat AirGrabber zien wat er in je Plex-bibliotheken staat, zodat het nooit iets downloadt wat je al hebt. Het leest alleen; je Plex-wachtwoord is niet nodig.",
+    "Connect to Plex…": "Verbinden met Plex…",
+    "↻ Check now": "↻ Nu controleren",
+    "Disconnect": "Verbinding verbreken",
+    "Libraries:": "Bibliotheken:",
+    "Server:": "Server:",
+    "Not checked yet": "Nog niet gecontroleerd",
+    "No show or film libraries found on this server":
+        "Geen serie- of filmbibliotheken gevonden op deze server",
+    "your Plex server": "je Plex-server",
+    "Connected to {server}": "Verbonden met {server}",
+    "Plex didn't answer": "Plex reageerde niet",
+    "Plex asks to connect again": "Plex vraagt om opnieuw te verbinden",
+    "Your Plex account has no server AirGrabber can read":
+        "Je Plex-account heeft geen server die AirGrabber kan lezen",
+    "Choose which Plex server AirGrabber reads": "Kies welke Plex-server AirGrabber leest",
+    "Plex's answer didn't read": "Het antwoord van Plex was onleesbaar",
+    "{reason}: the last list from {when} is used": "{reason}: de laatste lijst van {when} wordt gebruikt",
+    "{episodes} of {series} · {films} · checked {when}":
+        "{episodes} van {series} · {films} · laatst gekeken: {when}",
+    "{n} of your series": "{n} van je series",
+    "Disconnect from Plex?": "Verbinding met Plex verbreken?",
+    "AirGrabber forgets its Plex sign-in and what it read from Plex. Nothing changes in Plex itself.":
+        "AirGrabber vergeet de aanmelding bij Plex en wat het uit Plex las. In Plex zelf verandert niets.",
+    "Connect to Plex": "Verbinden met Plex",
+    "Go to plex.tv/link, sign in if asked, and enter this code:":
+        "Ga naar plex.tv/link, meld je aan als daarom gevraagd wordt en vul deze code in:",
+    "Open plex.tv/link": "plex.tv/link openen",
+    "Getting a code from Plex…": "Code ophalen bij Plex…",
+    "⟳ Waiting for you to enter the code…": "⟳ Wachten tot je de code invult…",
+    "This code has expired.": "Deze code is verlopen.",
+    "Get a new code": "Nieuwe code ophalen",
+    "Plex didn't answer. Check the internet connection and try again.":
+        "Plex reageerde niet. Controleer de internetverbinding en probeer het opnieuw.",
     # app/ui/backup_dialog.py
     "Save a backup": "Back-up opslaan",
     "Your followed shows, film watchlist, download history and settings go into one file. Load it on another PC in Settings → Backup.":
@@ -1382,6 +1409,14 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "Connect Plex in Settings → Plex: what's in your Plex libraries counts as something you already have.":
+        "Koppel Plex via Instellingen → Plex: wat in je Plex-bibliotheken staat, telt als iets wat je al hebt.",
+    "Episodes in Plex are no longer missing, and automatic downloads skip episodes and films you have in Plex.":
+        "Afleveringen in Plex ontbreken niet meer, en automatische downloads slaan afleveringen en films in Plex over.",
+    "A quiet ✓ \"In Plex\" shows on those episodes and films.":
+        "Een rustig ✓ \"In Plex\" staat bij die afleveringen en films.",
+    "Without Plex, AirGrabber no longer marks what you have or what you're missing.":
+        "Zonder Plex markeert AirGrabber niet meer wat je hebt of wat je mist.",
     "The Downloads page now shows everything in your torrent program, also what you added there yourself.":
         "De Downloads-pagina toont nu alles uit je torrentprogramma, ook wat je daar zelf hebt toegevoegd.",
     "Pause, resume or remove a download from its ⋯ menu; AirGrabber never deletes your files.":

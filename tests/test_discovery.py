@@ -27,7 +27,9 @@ from app.models import (
 )
 from app.services import Services
 from app.services.discovery import DiscoveryService, NoTVMazeMatch, normalize_title
+from app.models.plex import PlexScan
 from app.services.library import LibraryService
+from tests.plex_link import TOKEN, plex_settings
 from app.services.tmdb import (
     TMDBAuthError,
     TMDBClient,
@@ -228,7 +230,10 @@ class DiscoveryTestCase(unittest.IsolatedAsyncioTestCase):
         self.key = V3_KEY
         tmdb = TMDBClient(self.http, lambda: self.key, retry_delay=0)
         tvmaze = TVMazeClient(self.http, retry_delay=0)
-        self.library = LibraryService(self.db.library, self.db.history, tvmaze)
+        self.settings = plex_settings(self.db, connected=False)  # Plex: tests connect it
+        self.library = LibraryService(
+            self.db.library, self.db.history, tvmaze, settings=self.settings
+        )
         self.service = DiscoveryService(tmdb, tvmaze, self.library, clock=lambda: self.now)
 
     async def asyncTearDown(self) -> None:
@@ -404,19 +409,21 @@ class MovieDashboardTests(DiscoveryTestCase):
         await self.service.movie_dashboard()
         self.assertEqual(self.server.count(*MOVIE_PATHS), 15)
 
-    async def test_downloaded_films_follow_the_history_while_cached(self) -> None:
+    async def test_films_in_plex_follow_plex_while_cached(self) -> None:
         dashboard = await self.service.movie_dashboard()
-        self.assertEqual(dashboard.downloaded, frozenset())
+        self.assertFalse(dashboard.plex_connected)
         film = dashboard.trending[0].id
+        # A downloaded film is never "had" (3.1.0): only Plex says what you have.
         await self.db.history.add(
             DownloadRecord(media_type=MediaType.MOVIE, media_id=film, release_title="Film.1080p")
         )
-        # A film that is on no shelf isn't listed.
-        await self.db.history.add(
-            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="Other.720p")
-        )
+        await self.db.plex.replace(PlexScan(films=frozenset({(film, None), (1, None)})), self.now)
         dashboard = await self.service.movie_dashboard()
-        self.assertEqual(dashboard.downloaded, frozenset({film}))
+        self.assertEqual((dashboard.plex_connected, dashboard.in_plex), (False, frozenset()))
+        await self.settings.update(plex_token=TOKEN)  # connected
+        dashboard = await self.service.movie_dashboard()
+        # Plex connected: its films on the shelves (1 is on none).
+        self.assertEqual((dashboard.plex_connected, dashboard.in_plex), (True, frozenset({film})))
         self.assertEqual(self.server.count(MOVIE_TRENDING), 1)  # from the cache
 
     async def test_failed_shelf(self) -> None:

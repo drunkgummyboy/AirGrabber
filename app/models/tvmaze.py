@@ -117,6 +117,7 @@ class TVMazeShow(_Wire):
             rating=self.rating.average,
             weight=self.weight or 0,
             imdb_id=self.externals.imdb,
+            tvdb_id=self.externals.thetvdb,
             poster_url=self.image.medium if self.image else None,
             poster_url_original=self.image.original if self.image else None,
             summary=strip_html(self.summary),

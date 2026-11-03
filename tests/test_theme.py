@@ -78,6 +78,10 @@ DARK_BEFORE = {
     "PERSON_GREEN": "#47805A",
     "PERSON_COPPER": "#A0612B",
     "PERSON_PURPLE": "#7A5AA8",
+    # Plex's yellow (Settings → Plex), the same in both modes.
+    "PLEX": "#E5A00D",
+    "PLEX_HOVER": "#C98C0B",
+    "ON_PLEX": "#1B1B1B",
 }
 
 HEX = re.compile(r"#[0-9A-Fa-f]{6}")

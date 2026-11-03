@@ -1,8 +1,10 @@
 """The series info window: the shared info look (app/ui/title_info.py: the backdrop with the
 trailer, the poster, title, meta line, genres, synopsis, track state, the cast), and the show's
-episodes by season, each with its download state (✓ Downloaded with ↻ Again, ⬇ Auto with ☰
-Choose…: app/ui/row_actions.py; or when it airs) and, once downloaded, its subtitles (CC ▾:
-app/ui/subtitle_control.py). "☰ Choose…" shows that episode's releases (app/ui/release_panel.py)
+episodes by season, each with its download controls (⬇ Auto with ☰ Choose…: app/ui/
+row_actions.py; or when it airs) and, once grabbed, its subtitles (CC ▾: app/ui/
+subtitle_control.py). Whether an episode was downloaded is never shown as such (owner's
+decision for 3.1.0): only while Plex is connected does the window show what you have and miss,
+and then only Plex counts as had (a quiet ✓ "In Plex"; app/services/plex.py). "☰ Choose…" shows that episode's releases (app/ui/release_panel.py)
 in this window: in place of the episodes under a "← Episodes" bar ("S03E05 · The Crossing"),
 or in the Releases tab ("Releases · S03E05"), by the layout (Settings' `info_layout`).
 
@@ -15,20 +17,19 @@ TMDB counterpart (`DiscoveryService.show_extras`); without one the poster stands
 for the backdrop and TVMaze's summary is the synopsis; without a TMDB key there is no backdrop
 and a plain hint says what a key adds.
 
-Above the selected season's rows its bar (3.0.1): on a tracked show's latest season "3 missing"
-with its ⋯, and for any season its download control (SeasonActions, in the rows' style):
+Above the selected season's rows its bar (3.0.1): with Plex, on a tracked show's latest season
+"3 missing", and for any season its download control (SeasonActions, in the rows' style):
 "⬇ Whole season" + "☰ Choose…" once it has finished airing (the season pack through the
-download queue; when none is good enough the queue fetches its episodes still needed instead
-and the status bar says so; ☰ Choose… shows the pack's releases), "⬇ All missing (3)" while
-it airs (its episodes still needed, the calendar stack's rule, queued as one batch; hidden at
-0). Their looks follow the queue: "Queued", "Finding the best one…" / "Downloading 2 of 3…",
-then the outcome.
+download queue; when none is good enough the queue fetches its episodes not grabbed yet instead
+and the status bar says so; ☰ Choose… shows the pack's releases), with Plex "⬇ All missing (3)"
+while it airs (exactly the missing episodes the bar above counts, not the new ones; queued as
+one batch; hidden at 0). Their looks follow the queue: "Queued", "Finding the best one…" / "Downloading 2
+of 3…", then the outcome.
 """
 
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import tkinter as tk
 import webbrowser
@@ -61,12 +62,6 @@ from app.ui.cards import (
     tvmaze_poster_url,
 )
 from app.ui.download_control import (
-    CORNER_RADIUS as CONTROL_RADIUS,
-)
-from app.ui.download_control import (
-    FONT_SIZE as CONTROL_FONT_SIZE,
-)
-from app.ui.download_control import (
     ROW_HEIGHT as CONTROL_HEIGHT,
 )
 from app.ui.calendar_stack import StateOf, entry_key, needed_entries
@@ -85,28 +80,20 @@ from app.ui.download_control import (
 )
 from app.ui.missing_control import (
     CHIP_MISSING_TEXT,
-    CHIP_TIP,
-    HAVE_EPISODE_TEXT,
     HAVE_MARK,
-    HAVE_SEASON_TEXT,
-    HAVE_TIP,
     MARK_DOT,
     MARK_DOT_GAP,
     MARK_FONT_SIZE,
-    MARK_MISSING_TEXT,
     MISSING_COLOR,
     NOTHING_MISSING_TEXT,
-    SEASON_MENU_TIP,
-    MenuItem,
-    MissingActions,
+    PLEX_TIP,
     mark_label,
     missing_text,
-    popup_menu,
     progress_texts,
 )
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
 from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
-from app.ui.row_actions import DOWNLOADED_TEXT, NOTHING_SHORT, NOTHING_TEXT, RowLook
+from app.ui.row_actions import NOTHING_SHORT, NOTHING_TEXT, RowLook
 from app.ui.row_actions import FONT_SIZE as ACTIONS_FONT_SIZE
 from app.ui.row_actions import RowActions, button_width
 from app.ui.row_actions import slot_width as actions_slot_width
@@ -132,11 +119,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-RowState = Literal["downloaded", "downloadable", "upcoming"]
-# The latest season's amber "● Missing" / blue "● New · aired today" / muted "✓".
-Mark = Literal["missing", "new", "have"]
-# A row's mark menu: (episode, its mark, the widget it opens under, or the pointer's place).
-OnMark = Callable[[Episode, Mark, Any, tuple[int, int] | None], None]
+RowState = Literal["downloadable", "upcoming"]
+# With Plex, the latest season's amber "● Missing" / blue "● New · aired today" / the muted ✓ of
+# an episode in the user's Plex libraries ("plex", tipped "In Plex").
+Mark = Literal["missing", "new", "plex"]
 Listener = Callable[[], None]
 RGB = tuple[int, int, int]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
@@ -155,11 +141,10 @@ SLOT_WIDTH = 200  # the row's right side (at least): its download controls, or w
 MARK_WIDTH = 72  # the latest season's mark, left of that (at least; `mark_slot_width`)
 MARK_PAD = 12  # beyond a mark's dot and text (the text renders a little wider when scaled)
 MARK_HEIGHT = 26
-MORE_WIDTH = 30  # the ⋯ at the end of a row that has options
 ROW_RADIUS = 8
 STRIPE = 3  # a missing episode's amber line along its row's left edge
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
-CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a downloaded episode's title
+CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a grabbed episode's title
 CC_GAP = 8
 
 # Shown through t().
@@ -183,7 +168,7 @@ WHOLE_SEASON_TIP = N_(
     "still need are queued one by one."
 )
 ALL_MISSING_TEXT = N_("⬇ All missing ({n})")
-ALL_MISSING_TIP = N_("Download every aired episode of this season you don't have yet")
+ALL_MISSING_TIP = N_("Download this season's missing episodes")
 # TVMaze's show statuses in plain words (another status shows as TVMaze writes it).
 _STATUS_NAMES = {
     "Running": N_("Running"),
@@ -294,9 +279,9 @@ def season_numbers(episodes: Iterable[Episode]) -> list[int]:
 
 
 def default_season(details: ShowDetails, now: datetime) -> int | None:
-    """The season shown first: the latest season while it has missing episodes, else the next
-    episode's, else the latest with an aired episode, else the first; None when the show lists
-    no seasons."""
+    """The season shown first: the latest season while it has missing episodes (with Plex), else
+    the next episode's, else the latest with an aired episode, else the first; None when the
+    show lists no seasons."""
     seasons = season_numbers(details.episodes)
     if not seasons:
         return None
@@ -317,56 +302,54 @@ def season_episodes(episodes: Iterable[Episode], season: int) -> list[Episode]:
     )
 
 
-def episode_row_state(episode: Episode, *, downloaded: bool, now: datetime) -> RowState:
-    """upcoming (not aired yet), downloaded (aired and in the history) or downloadable."""
-    if not episode.has_aired(now):
-        return "upcoming"
-    return "downloaded" if downloaded else "downloadable"
+def episode_row_state(episode: Episode, *, now: datetime) -> RowState:
+    """upcoming (not aired yet) or downloadable. Whether it was downloaded before is never
+    shown."""
+    return "downloadable" if episode.has_aired(now) else "upcoming"
+
+
+def marks_shown(details: ShowDetails, season: int | None) -> bool:
+    """Whether `season`'s rows keep a slot for the marks: Plex is connected and it is the
+    tracked show's latest season."""
+    return (
+        details.plex_connected
+        and details.tracked
+        and season is not None
+        and season == details.latest_season
+    )
 
 
 def row_mark(details: ShowDetails, episode: Episode) -> Mark | None:
-    """The mark a row of a tracked show's latest season gets: "missing" (see
-    app.services.missing), "new" (aired less than a day ago, not missing yet), "have" (marked
-    "I already have this" and not downloaded), else None. Older seasons never get one."""
-    if not details.tracked or episode.season != details.latest_season:
+    """The mark a row of a tracked show's latest season gets while Plex is connected:
+    "missing" (see app.services.missing), "new" (aired less than a day ago, not missing yet),
+    "plex" (in Plex), else None (a grabbed episode Plex doesn't have yet is on its way: no
+    mark). Older seasons never get one, nor does any row without Plex."""
+    if not marks_shown(details, episode.season):
         return None
     if details.is_missing(episode):
         return "missing"
     if details.is_new(episode):
         return "new"
-    if details.has_it(episode) and not details.is_downloaded(episode):
-        return "have"
+    if details.is_in_plex(episode):
+        return "plex"
     return None
 
 
 def season_marks(details: ShowDetails, season: int | None) -> tuple[list[int], list[int]]:
-    """The ids of `season`'s missing episodes (oldest first) and of its episodes marked "I
-    already have this"; both empty unless it is the tracked show's latest season."""
-    if not details.tracked or season is None or season != details.latest_season:
+    """The ids of `season`'s missing episodes (oldest first) and of its episodes in Plex; both
+    empty unless Plex is connected and it is the tracked show's latest season."""
+    if not marks_shown(details, season):
         return [], []
+    assert season is not None
     episodes = season_episodes(details.episodes, season)
     missing = [e.id for e in episodes if details.is_missing(e)]
-    have = [e.id for e in episodes if row_mark(details, e) == "have"]
-    return missing, have
-
-
-SeasonAction = Literal["mark", "unmark"]
-
-
-def season_menu_items(missing: Sequence[int], have: Sequence[int]) -> list[tuple[str, SeasonAction]]:
-    """The season bar's ⋯ menu: "I already have this season" while episodes are missing,
-    "Mark as missing again" while some are marked."""
-    items: list[tuple[str, SeasonAction]] = []
-    if missing:
-        items.append((t(HAVE_SEASON_TEXT), "mark"))
-    if have:
-        items.append((t(MARK_MISSING_TEXT), "unmark"))
-    return items
+    in_plex = [e.id for e in episodes if row_mark(details, e) == "plex"]
+    return missing, in_plex
 
 
 # What the season bar's download control offers: "whole" = ⬇ Whole season (a season pack, its
-# episodes still needed when there is none) + ☰ Choose… (the pack's releases); "missing" =
-# ⬇ All missing (n) (the episodes still needed).
+# episodes not grabbed yet when there is none) + ☰ Choose… (the pack's releases); "missing" =
+# ⬇ All missing (n) (the season's missing episodes; only with Plex).
 SeasonKind = Literal["whole", "missing"]
 
 
@@ -396,9 +379,9 @@ def season_needed(
     details: ShowDetails, season: int, state_of: StateOf
 ) -> tuple[CalendarEntry, ...]:
     """The season's episodes still needed: aired, not downloaded (before, or by a run just
-    now) and not marked "I already have this", with a number to download by; the calendar
+    now) and not in Plex (none are without Plex), with a number to download by; the calendar
     stack's "Download all" rule (`needed_entries`)."""
-    return needed_entries(season_entries(details, season), state_of, details.have)
+    return needed_entries(season_entries(details, season), state_of, details.in_plex)
 
 
 def season_look(kind: SeasonKind, state: RunState | None, batch: BatchState | None) -> RowLook:
@@ -415,9 +398,8 @@ def season_look(kind: SeasonKind, state: RunState | None, batch: BatchState | No
         if batch.queued:
             return RowLook("queued", (t(QUEUED_TEXT),))
         return RowLook("working", progress_texts(batch.index, batch.total))
-    if state is not None and state.phase is Phase.DONE:
-        text = outcome_text(state.outcome) if state.outcome is not None else t(DOWNLOADED_TEXT)
-        return RowLook("done", (text,), theme.SUCCESS)
+    if state is not None and state.phase is Phase.DONE and state.outcome is not None:
+        return RowLook("done", (outcome_text(state.outcome),), theme.SUCCESS)
     if state is not None and state.phase is Phase.NOTHING:
         return RowLook(
             "nothing", (t(NOTHING_TEXT), t(NOTHING_SHORT)), theme.PENDING, ("choose",), alert=True
@@ -438,10 +420,10 @@ def new_text(episode: Episode, now: datetime) -> str:
 
 
 def mark_text(mark: Mark, episode: Episode, now: datetime) -> str:
-    """The mark's text: "Missing", "✓" (I already have it) or "New · aired today"."""
+    """The mark's text: "Missing", "✓" (in Plex) or "New · aired today"."""
     if mark == "missing":
         return t(CHIP_MISSING_TEXT)
-    if mark == "have":
+    if mark == "plex":
         return HAVE_MARK
     return new_text(episode, now)
 
@@ -518,14 +500,11 @@ _exists = exists
 
 
 class _EpisodeRow(ctk.CTkFrame):
-    """"S02E01  Title  17 Jan" with its state on the right: ⬇ Auto + ☰ Choose…, ✓ Downloaded +
-    ↻ Again (app/ui/row_actions.py), or when it airs ("airs in 7 days"). A downloaded row (and
-    its ✓) opens ↻ Again's menu when clicked; beside its title the subtitles (CC ▾, app/ui/
-    subtitle_control.py). In a tracked show's latest season, a quiet mark left of that, no box:
-    amber "● Missing" (and a thin amber line along the row's left edge), blue "● New · aired
-    today" or a grey ✓ ("You have this"). A marked row's options ("I already have this", "Mark
-    as missing again": `on_mark`) open from the ⋯ at its end, or a right-click on the row; with
-    `on_mark` every row keeps the ⋯'s room, so the rows stay aligned."""
+    """"S02E01  Title  17 Jan" with its state on the right: ⬇ Auto + ☰ Choose… (app/ui/
+    row_actions.py), or when it airs ("airs in 7 days"); beside the title of a grabbed episode
+    its subtitles (CC ▾, app/ui/subtitle_control.py). With Plex, in a tracked show's latest
+    season, a quiet mark left of that, no box: amber "● Missing" (and a thin amber line along
+    the row's left edge), blue "● New · aired today" or a grey ✓ ("In Plex")."""
 
     def __init__(
         self,
@@ -537,7 +516,7 @@ class _EpisodeRow(ctk.CTkFrame):
         actions: DownloadActions[CalendarEntry],
         mark: Mark | None = None,
         marks_shown: bool = False,
-        on_mark: OnMark | None = None,
+        grabbed: bool = False,
         cc: str = "",
         subtitles: SubtitleActions | None = None,
         slot_width: int = SLOT_WIDTH,
@@ -552,13 +531,11 @@ class _EpisodeRow(ctk.CTkFrame):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self._actions = actions
-        self._on_mark = on_mark
         self._mark_width = mark_width
         self._state: RowState | None = None
         self._mark: tuple[Mark | None, bool, str] | None = None
         self._mark_slot: ctk.CTkFrame | None = None
         self._stripe: ctk.CTkLabel | None = None  # a missing row's amber line
-        self.more: ctk.CTkButton | None = None  # the ⋯ (rows with options)
         self.row_actions: RowActions[CalendarEntry] | None = None
         self._upcoming: ctk.CTkLabel | None = None
         episode = entry.episode
@@ -581,7 +558,7 @@ class _EpisodeRow(ctk.CTkFrame):
             holder, text="", font=title_font, text_color=theme.TEXT, anchor="w", height=24
         )
         title.pack(side="left", fill="x", expand=True)
-        # The subtitles right of the title (downloaded rows only): CC ▾ or the plain mark.
+        # The subtitles right of the title (grabbed episodes only): CC ▾ or the plain mark.
         self.cc_control = CCControl(
             holder,
             key=episode_key(entry.show.id, episode.season, episode.number),
@@ -611,20 +588,10 @@ class _EpisodeRow(ctk.CTkFrame):
             self, fg_color="transparent", width=slot_width, height=CONTROL_HEIGHT
         )
         self._slot.pack_propagate(False)
-        self._slot.grid(row=0, column=4, padx=(0, 10 if on_mark is None else 2))
-        self._more_slot: ctk.CTkFrame | None = None
-        if on_mark is not None:  # the ⋯'s room, on every row
-            self._more_slot = ctk.CTkFrame(
-                self, fg_color="transparent", width=MORE_WIDTH, height=CONTROL_HEIGHT
-            )
-            self._more_slot.pack_propagate(False)
-            self._more_slot.grid(row=0, column=5, padx=(0, 8))
-        # A downloaded row opens ↻ Again's menu wherever it is clicked (not on its buttons); a
-        # marked row its options when right-clicked.
-        for widget in (self, code, holder, title, self._date):
-            widget.bind("<Button-1>", self._row_clicked, add="+")
-            widget.bind("<Button-3>", self._row_right_clicked, add="+")
-        self.set_state(entry, state, now, mark=mark, marks_shown=marks_shown, cc=cc)
+        self._slot.grid(row=0, column=4, padx=(0, 10))
+        self.set_state(
+            entry, state, now, mark=mark, marks_shown=marks_shown, grabbed=grabbed, cc=cc
+        )
 
     def set_state(
         self,
@@ -634,24 +601,22 @@ class _EpisodeRow(ctk.CTkFrame):
         *,
         mark: Mark | None = None,
         marks_shown: bool = False,
+        grabbed: bool = False,
         cc: str = "",
     ) -> None:
         """Show `state` on the right and `mark` (in a slot kept while `marks_shown`, so
-        the season's rows stay aligned), and `cc` ("CC EN NL") beside the title of a
-        downloaded row; nothing changes when they already show."""
+        the season's rows stay aligned), and `cc` ("CC EN NL") beside the title of an aired,
+        `grabbed` episode (its subtitles); nothing changes when they already show."""
         episode = entry.episode
         self._set_mark(episode, mark, marks_shown, now)
-        self.cc_control.show(cc, shown=state == "downloaded" and episode.number is not None)
+        subtitles = grabbed and state == "downloadable" and episode.number is not None
+        self.cc_control.show(cc, shown=subtitles)
         self._date.configure(text=date_text(episode, now))
         if state == self._state:
             if state == "upcoming" and self._upcoming is not None:
                 self._upcoming.configure(text=upcoming_text(episode, now))
             return
         self._state = state
-        downloaded = state == "downloaded"
-        cursor = "hand2" if downloaded else ""
-        for widget in (self, self._title, self._date):
-            widget.configure(cursor=cursor)
         if state == "upcoming":
             if self.row_actions is not None:
                 self.row_actions.destroy()
@@ -680,11 +645,10 @@ class _EpisodeRow(ctk.CTkFrame):
                 key=episode_key(entry.show.id, episode.season, episode.number),
                 base=base,
                 actions=self._actions,
-                downloaded=downloaded,
             )
             self.row_actions.pack(side="right", fill="x", expand=True)
         else:
-            self.row_actions.set_base(base, downloaded=downloaded)
+            self.row_actions.set_base(base)
 
     @property
     def state(self) -> RowState | None:
@@ -696,23 +660,8 @@ class _EpisodeRow(ctk.CTkFrame):
 
     @property
     def cc(self) -> str:
-        """The subtitle mark showing ("CC EN NL"), "" for none (or a row not downloaded)."""
+        """The subtitle mark showing ("CC EN NL"), "" for none (or an episode not grabbed)."""
         return self.cc_control.mark if self.cc_control.has_content else ""
-
-    def _row_clicked(self, _event: Any = None) -> None:
-        if self._state == "downloaded" and self.row_actions is not None:
-            self.row_actions.open_again()
-
-    def _row_right_clicked(self, event: Any) -> None:
-        self.open_options(point=(event.x_root, event.y_root))
-
-    def open_options(self, *, point: tuple[int, int] | None = None) -> None:
-        """A marked row's options: under its ⋯, or at the pointer's `point` (screen pixels)."""
-        mark = self.mark
-        if mark is None or self._on_mark is None:
-            return
-        anchor = self.more if point is None and self.more is not None else self
-        self._on_mark(self._episode, mark, anchor, point)
 
     def _cc_changed(self) -> None:
         """The subtitles beside the title changed: show or hide them, then fit the title
@@ -742,7 +691,6 @@ class _EpisodeRow(ctk.CTkFrame):
             return
         self._mark = (mark, marks_shown, text)
         self._paint_stripe(mark == "missing")
-        self._paint_more(mark is not None and self._on_mark is not None)
         if not marks_shown and mark is None:
             if self._mark_slot is not None:
                 self._mark_slot.destroy()
@@ -754,44 +702,22 @@ class _EpisodeRow(ctk.CTkFrame):
             )
             self._mark_slot.pack_propagate(False)
             self._mark_slot.grid(row=0, column=3, padx=(0, 8))
-            self._mark_slot.bind("<Button-3>", self._row_right_clicked, add="+")
         for child in self._mark_slot.winfo_children():
             child.destroy()
         if mark is None:
             return
         label = mark_label(
-            self._mark_slot, text, mark_color(mark), dot=mark != "have", height=MARK_HEIGHT
+            self._mark_slot,
+            text,
+            mark_color(mark),
+            dot=mark != "plex",
+            height=MARK_HEIGHT,
         )
         label.pack(side="left", fill="y")
-        label.bind("<Button-3>", self._row_right_clicked, add="+")
-        if mark == "have":
-            add_tooltip(label, t(HAVE_TIP))
+        if mark == "plex":
+            add_tooltip(label, t(PLEX_TIP))
         elif mark == "new":
             add_tooltip(label, t(NEW_TIP))
-
-    def _paint_more(self, shown: bool) -> None:
-        """The ⋯ at the row's end while it has options (in the room kept for it)."""
-        if self._more_slot is None:
-            return
-        if shown and self.more is None:
-            self.more = ctk.CTkButton(
-                self._more_slot,
-                text="⋯",
-                width=MORE_WIDTH,
-                height=CONTROL_HEIGHT,
-                corner_radius=CONTROL_RADIUS,
-                font=theme.font(CONTROL_FONT_SIZE, bold=True),
-                fg_color="transparent",
-                hover_color=theme.CHIP_HOVER,
-                text_color=theme.BUTTON_TEXT,
-                border_width=0,
-                command=self.open_options,
-            )
-            self.more.pack(fill="both", expand=True)
-            add_tooltip(self.more, t(CHIP_TIP))
-        elif not shown and self.more is not None:
-            self.more.destroy()
-            self.more = None
 
     def _paint_stripe(self, shown: bool) -> None:
         """A missing row's thin amber line along its left edge, inside its rounded corners: the
@@ -836,7 +762,6 @@ class _EpisodeRow(ctk.CTkFrame):
             fg_color="transparent",
         )
         self._stripe.place(x=0, y=0)
-        self._stripe.bind("<Button-3>", self._row_right_clicked, add="+")
 
     def destroy(self) -> None:
         if self._fit_job is not None:
@@ -971,7 +896,6 @@ class ShowDetailsWindow(TitleInfoWindow):
         status: StatusReporter,
         episode_actions: DownloadActions[CalendarEntry],
         profile_id: int,
-        missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
         discovery: DiscoveryService | None = None,
         subtitle_actions: SubtitleActions | None = None,
@@ -983,8 +907,8 @@ class ShowDetailsWindow(TitleInfoWindow):
         button and switch; ShowWindows closes it when another person is selected).
         `subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
         without it no row gets one. `discovery`: the TMDB extras (backdrop, trailer, cast);
-        without it the window shows only what TVMaze knows. `subtitle_actions`: the downloaded
-        rows' CC ▾ menus (without it only the marks). `releases`: what the releases panel
+        without it the window shows only what TVMaze knows. `subtitle_actions`: the grabbed
+        episodes' CC ▾ menus (without it only the marks). `releases`: what the releases panel
         works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
         "✎ Fix Match" found the right show (its window should open on that target)."""
         super().__init__(
@@ -1010,7 +934,6 @@ class ShowDetailsWindow(TitleInfoWindow):
             SLOT_WIDTH, actions_slot_width(theme.font(ACTIONS_FONT_SIZE, bold=True).measure)
         )
         self._mark_width = mark_slot_width(theme.font(MARK_FONT_SIZE).measure)
-        self._missing_actions = missing_actions
         # The season bar's download control (⬇ Whole season / ⬇ All missing), while it shows.
         self._season_actions: SeasonActions | None = None
         self._library = library
@@ -1068,30 +991,12 @@ class ShowDetailsWindow(TitleInfoWindow):
     # -- layout ------------------------------------------------------------------------------
 
     def _build_season_bar(self, master: Any) -> ctk.CTkFrame:
-        """The bar above the selected season's rows: on a tracked show's latest season "3
-        missing" and its ⋯; the season's download control (SeasonActions: "⬇ Whole season" +
-        "☰ Choose…", or "⬇ All missing (3)"). Packed while any of it applies, see
+        """The bar above the selected season's rows: with Plex, on a tracked show's latest
+        season "3 missing"; the season's download control (SeasonActions: "⬇ Whole season" +
+        "☰ Choose…", or with Plex "⬇ All missing (3)"). Packed while any of it applies, see
         `_paint_season_bar`."""
         bar = ctk.CTkFrame(master, fg_color="transparent", height=CONTROL_HEIGHT)
-        self._missing_label = ctk.CTkLabel(
-            bar, text="", font=theme.font(15, bold=True), text_color=MISSING_COLOR, anchor="w"
-        )
-        self._missing_label.pack(side="left")
-        self._season_more = ctk.CTkButton(
-            bar,
-            text="⋯",
-            width=CONTROL_HEIGHT,
-            height=CONTROL_HEIGHT,
-            corner_radius=CONTROL_RADIUS,
-            font=theme.font(CONTROL_FONT_SIZE, bold=True),
-            fg_color="transparent",
-            hover_color=theme.HOVER,
-            text_color=theme.BUTTON_TEXT,
-            border_width=1,
-            border_color=theme.EDGE,
-            command=self._open_season_menu,
-        )
-        add_tooltip(self._season_more, t(SEASON_MENU_TIP))
+        self._missing_label: ctk.CTkLabel | None = None  # "3 missing": with Plex only
         return bar
 
     def _paint_header(self, show: Show, details: ShowDetails | None) -> None:
@@ -1292,16 +1197,17 @@ class ShowDetailsWindow(TitleInfoWindow):
         episodes = tuple(season_episodes(details.episodes, self._season))
         now = _now()
         if episodes == self._row_episodes and self._rows:
-            marks_shown = self._marks_shown()
+            shown = self._marks_shown()
             for episode in episodes:
                 row = self._rows.get(episode.id)
                 if row is not None and row.winfo_exists():
                     row.set_state(
                         self._entry(episode),
-                        self._row_state(episode, now),
+                        episode_row_state(episode, now=now),
                         now,
                         mark=row_mark(details, episode),
-                        marks_shown=marks_shown,
+                        marks_shown=shown,
+                        grabbed=details.is_downloaded(episode),
                         cc=self._cc_for(episode),
                     )
             return
@@ -1315,7 +1221,6 @@ class ShowDetailsWindow(TitleInfoWindow):
     async def _build_rows(self, episodes: Sequence[Episode]) -> None:
         """Build the rows a batch at a time, so a long season doesn't freeze the window."""
         now = _now()
-        on_mark = self._open_mark_menu if self._missing_actions is not None else None
         for start in range(0, len(episodes), ROWS_PER_BATCH):
             if start:
                 await asyncio.sleep(0.001)
@@ -1323,17 +1228,17 @@ class ShowDetailsWindow(TitleInfoWindow):
                     return
             details = self._details
             assert details is not None
-            marks_shown = self._marks_shown()
+            shown = self._marks_shown()
             for episode in episodes[start : start + ROWS_PER_BATCH]:
                 row = _EpisodeRow(
                     self._episode_list,
                     self._entry(episode),
-                    state=self._row_state(episode, now),
+                    state=episode_row_state(episode, now=now),
                     now=now,
                     actions=self._episode_actions,
                     mark=row_mark(details, episode),
-                    marks_shown=marks_shown,
-                    on_mark=on_mark,
+                    marks_shown=shown,
+                    grabbed=details.is_downloaded(episode),
                     cc=self._cc_for(episode),
                     subtitles=self._subtitle_actions,
                     slot_width=self._slot_width,
@@ -1353,75 +1258,76 @@ class ShowDetailsWindow(TitleInfoWindow):
             is_downloaded=details.is_downloaded(episode),
         )
 
-    def _row_state(self, episode: Episode, now: datetime) -> RowState:
-        details = self._details
-        assert details is not None
-        return episode_row_state(episode, downloaded=details.is_downloaded(episode), now=now)
-
     # -- missing episodes --------------------------------------------------------------------
 
     def _marks_shown(self) -> bool:
-        """Whether the rows keep a slot for the "Missing" / "✓" marks: the tracked
-        show's latest season is selected (and missing episodes are shown at all)."""
+        """Whether the rows keep a slot for the "Missing" / "✓" marks: Plex is connected and
+        the tracked show's latest season is selected (`marks_shown`)."""
         details = self._details
-        return (
-            self._missing_actions is not None
-            and details is not None
-            and details.tracked
-            and self._season is not None
-            and self._season == details.latest_season
-        )
+        return details is not None and marks_shown(details, self._season)
 
     def _paint_season_bar(self) -> None:
-        """Shown while the selected season has something for it: on a tracked show's latest
-        season the missing episodes or those marked "I already have this" (with the ⋯), and
-        the season's download control while it applies (`_season_item`)."""
+        """Shown while the selected season has something for it: with Plex, on a tracked
+        show's latest season its missing episodes ("Nothing missing" when none is but some
+        are in Plex), and the season's download control while it applies (`_season_item`)."""
         details, season = self._details, self._season
         if details is None or season is None:
             self._season_bar.pack_forget()
             return
-        marked = self._missing_actions is not None and self._marks_shown()
-        missing, have = season_marks(details, season) if marked else ([], [])
+        missing, in_plex = season_marks(details, season)
         item = self._season_item(details, season)
         self._paint_season_actions(item)
-        if not (missing or have or item is not None):
+        self._paint_missing_label(missing, in_plex)
+        if not (missing or in_plex or item is not None):
             self._season_bar.pack_forget()
             return
-        if missing or have:
-            self._missing_label.configure(
-                text=missing_text(len(missing)) if missing else t(NOTHING_MISSING_TEXT),
-                text_color=MISSING_COLOR if missing else theme.TEXT_MUTED,
-            )
-        else:
-            self._missing_label.configure(text="")
-        self._season_more.pack_forget()
         if self._season_actions is not None:
             self._season_actions.pack_forget()
-        more = bool(season_menu_items(missing, have))
-        if more:
-            self._season_more.pack(side="right")
-        if self._season_actions is not None:
-            # Beside the ⋯, else in line with the rows' controls (their ⋯'s room kept or not).
-            room = 8 if more else 2 + MORE_WIDTH + 8 if self._missing_actions is not None else 10
-            self._season_actions.pack(side="right", padx=(0, room))
+            # In line with the rows' controls.
+            self._season_actions.pack(side="right", padx=(0, 10))
         if not self._season_bar.winfo_manager():
             self._season_bar.pack(fill="x", pady=(12, 0), before=self._episode_list)
 
+    def _paint_missing_label(self, missing: Sequence[int], in_plex: Sequence[int]) -> None:
+        """"3 missing" (amber), or "Nothing missing" (muted) when none is but some are in
+        Plex; no label at all otherwise (always without Plex)."""
+        if not (missing or in_plex):
+            if self._missing_label is not None:
+                self._missing_label.destroy()
+                self._missing_label = None
+            return
+        if self._missing_label is None:
+            self._missing_label = ctk.CTkLabel(
+                self._season_bar, text="", font=theme.font(15, bold=True), anchor="w"
+            )
+            self._missing_label.pack(side="left")
+        self._missing_label.configure(
+            text=missing_text(len(missing)) if missing else t(NOTHING_MISSING_TEXT),
+            text_color=MISSING_COLOR if missing else theme.TEXT_MUTED,
+        )
+
     def _season_item(self, details: ShowDetails, season: int) -> SeasonItem | None:
         """What the season's download control works on, while it shows: "⬇ Whole season" once
-        the season has finished airing (when the main window offers season packs), else "⬇ All
-        missing (n)" while it airs; either only while episodes are still needed or its run has
-        something to tell."""
+        the season has finished airing (when the main window offers season packs), else, with
+        Plex, "⬇ All missing (n)" while it airs. With Plex either only while episodes are still
+        needed or its run has something to tell; without Plex "⬇ Whole season" always (what
+        is had or missing isn't shown), its fallback the episodes not grabbed yet."""
         kind = season_kind(details.episodes, season, _now())
         if kind is None or (kind == "whole" and self._episode_actions.download_season is None):
             return None
+        if kind == "missing" and not details.plex_connected:
+            return None
         states = self._episode_actions.states
         needed = season_needed(details, season, states.get)
+        if kind == "missing":  # exactly what "N missing" counts: not the new ones
+            needed = tuple(entry for entry in needed if details.is_missing(entry.episode))
         keys = tuple(
             entry_key(entry) for entry in season_entries(details, season)
             if entry.episode.number is not None
         )
         item = SeasonItem(details.show, season, kind, needed, keys)
+        if not details.plex_connected:
+            return item
         running = states.batch_for(keys) is not None
         own = kind == "whole" and states.get(item.key) is not None
         return item if needed or running or own else None
@@ -1467,35 +1373,6 @@ class ShowDetailsWindow(TitleInfoWindow):
             self.choose(TvTarget(item.show, item.season, None))
 
         return DownloadActions(download=download, choose=choose, states=episodes.states)
-
-    def _open_season_menu(self) -> None:
-        details, actions = self._details, self._missing_actions
-        if details is None or actions is None:
-            return
-        missing, have = season_marks(details, self._season)
-        show = details.show
-        items: list[MenuItem] = []
-        for label, kind in season_menu_items(missing, have):
-            ids = tuple(missing if kind == "mark" else have)
-            act = actions.mark_have if kind == "mark" else actions.unmark_have
-            items.append((label, functools.partial(act, show, ids)))
-        popup_menu(self._season_more, items)
-
-    def _open_mark_menu(
-        self, episode: Episode, mark: Mark, anchor: Any, point: tuple[int, int] | None = None
-    ) -> None:
-        """A row's options (its ⋯, or right-clicked at `point`)."""
-        details, actions = self._details, self._missing_actions
-        if details is None or actions is None:
-            return
-        ids = (episode.id,)
-        if mark in ("missing", "new"):
-            item = (t(HAVE_EPISODE_TEXT), functools.partial(actions.mark_have, details.show, ids))
-        else:
-            item = (
-                t(MARK_MISSING_TEXT), functools.partial(actions.unmark_have, details.show, ids)
-            )
-        popup_menu(anchor, [item], point=point)
 
     def _cancel_rows(self) -> None:
         if self._rows_task is not None and not self._rows_task.done():
@@ -1586,7 +1463,6 @@ class ShowWindows:
         episode_actions: DownloadActions[CalendarEntry],
         downloads_changed: Subscribe,
         profile: Callable[[], int],
-        missing_actions: MissingActions | None = None,
         subtitle_marks: SubtitleMarks | None = None,
         subtitles_changed: Subscribe | None = None,
         subtitle_actions: SubtitleActions | None = None,
@@ -1597,7 +1473,6 @@ class ShowWindows:
         releases panels' services; its settings say the layout a new window opens in."""
         self._master = master
         self._profile = profile
-        self._missing_actions = missing_actions
         self._subtitle_marks = subtitle_marks
         self._subtitle_actions = subtitle_actions
         self._library = library
@@ -1645,7 +1520,6 @@ class ShowWindows:
             status=self._status,
             episode_actions=self._episode_actions,
             profile_id=self._profile(),
-            missing_actions=self._missing_actions,
             subtitle_marks=self._subtitle_marks,
             discovery=self._discovery,
             subtitle_actions=self._subtitle_actions,

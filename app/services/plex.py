@@ -1,0 +1,790 @@
+"""Plex: what is in the user's Plex libraries is the only thing that counts as had ("have it")
+everywhere AirGrabber asks whether an episode or a film is still wanted, and the automatic
+downloads skip it. Without Plex connected (`plex_connected`: no token stored) AirGrabber shows
+nothing of what you have or miss (owner's decision for 3.1.0): no ✓, no "missing", no counts.
+
+Signing in uses Plex's PIN flow, never a password: `PlexClient.create_pin` asks plex.tv for a
+short code (4 characters, not a "strong" one), the user enters it at plex.tv/link, and
+`PlexService.wait_for_pin` asks plex.tv every PIN_POLL_S whether it was, until plex.tv hands
+over the token or the code expires. Every request carries X-Plex-Client-Identifier (a random
+UUID made once and kept in the settings, `plex_client_id`), X-Plex-Product, X-Plex-Version and
+`Accept: application/json`.
+
+Finding the server: plex.tv's resources (`includeHttps=1&includeRelay=0`) list the servers the
+account owns. With one it is picked; with several the user picks one in Settings
+(`choose_server`). Its connections are tried in `connection_order` (local https, the
+plex.direct addresses, first; then the other local ones; then the remote ones) and the first
+whose /identity names the server is kept (`plex_server_uri`); the next check tries it first and
+the others only when it stops answering.
+
+Reading (`check`): /library/sections lists the libraries; the show and film libraries count
+unless switched off in Settings (`plex_sections_off`). Shows (`type=2&includeGuids=1`), their
+episodes (`type=4`: the show's ratingKey, season and number) and films (`type=1`) are read
+PAGE_SIZE at a time (X-Plex-Container-Start / -Size), so a big library works. `match_scan` maps
+them to AirGrabber's ids: a Plex show is the TVMaze show of the shows cache with its TheTVDB id,
+else its IMDb id (`parse_guid` reads Plex's new agents' tvdb:// / imdb:// / tmdb:// guids and the
+old agents' com.plexapp.agents.thetvdb://12345?lang=en and the like); a show AirGrabber doesn't
+know is counted only. A film is kept by its TMDB id and IMDb id. Each check replaces what is
+stored in one transaction (PlexRepository.replace); Plex unreachable or the token refused
+keeps the last list, and `status().problem` says why.
+
+Checks run at start, every CHECK_INTERVAL_S (`run_periodic`) and on "↻ Check now"; one at a time
+(a caller during a check waits for that one). After a check that changed what is stored, and
+whenever Plex gets connected or disconnected, `on_change` runs (the pages reload: their have /
+missing cues appear or vanish without a restart).
+
+Secrets: the token goes in the X-Plex-Token header only, never in a URL, log line, message or
+exception text. Request URLs are never logged, no httpx exception (which may carry a URL) is
+chained to or left as the context of a PlexError, and redirects are never followed (a header
+would travel along). Logs name ids and counts only.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import re
+import uuid
+from collections.abc import Callable, Iterable, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+from pydantic import BaseModel, TypeAdapter, ValidationError
+
+from app import APP_NAME, __version__
+from app.database import PlexRepository
+from app.models.plex import (
+    LibraryKind,
+    PlexConnection,
+    PlexItemReply,
+    PlexLibrary,
+    PlexPin,
+    PlexPinReply,
+    PlexProblem,
+    PlexReply,
+    PlexResourceReply,
+    PlexScan,
+    PlexServer,
+    PlexStatus,
+)
+from app.models import Settings
+from app.services.settings import SettingsService
+
+log = logging.getLogger(__name__)
+
+PLEX_TV = "https://plex.tv"
+LINK_URL = "https://plex.tv/link"  # where the user enters the code
+PRODUCT = APP_NAME
+PIN_POLL_S = 2.0  # how often plex.tv is asked whether the code was entered
+PIN_LIFETIME = timedelta(minutes=15)  # when plex.tv's answer doesn't say
+CHECK_INTERVAL_S = 1800.0  # 30 minutes between checks
+PAGE_SIZE = 500  # items per library page
+MAX_PAGES = 400  # 200,000 items: a stop for a server that keeps sending pages
+IDENTITY_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # trying a connection
+LIBRARY_TIMEOUT = httpx.Timeout(30.0, connect=5.0)  # a page of a big library
+# The library types of /library/sections/{key}/all?type=…
+TYPE_MOVIE = 1
+TYPE_SHOW = 2
+TYPE_EPISODE = 4
+
+_RESOURCES = TypeAdapter(list[PlexResourceReply])
+_SECTION_KEY = re.compile(r"\d{1,9}")
+
+
+class PlexError(Exception):
+    """A Plex call that failed; its text is plain and holds no URL, address or token."""
+
+
+class PlexUnreachable(PlexError):
+    """plex.tv or the server didn't answer (or answered with a server error)."""
+
+
+class PlexAuthError(PlexError):
+    """The token was refused (401): connect again."""
+
+
+class PlexPinExpired(PlexError):
+    """plex.tv no longer knows the code."""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def plex_connected(settings: Settings) -> bool:
+    """Plex is connected: a token is stored (also while the server is briefly unreachable:
+    then the last list read counts). Only then does AirGrabber show what you have and miss."""
+    return bool(settings.plex_token.get_secret_value())
+
+
+# -- guids -------------------------------------------------------------------------------------
+
+# A guid's agent → the id it names. Plex's new agents write "tvdb://81189", "imdb://tt0903747",
+# "tmdb://1396"; the old ones "com.plexapp.agents.thetvdb://81189?lang=en" (an episode's adds
+# "/1/2"), "com.plexapp.agents.imdb://tt0903747?lang=en", "com.plexapp.agents.themoviedb://1396".
+_AGENTS: dict[str, str] = {
+    "tvdb": "tvdb",
+    "thetvdb": "tvdb",
+    "imdb": "imdb",
+    "tmdb": "tmdb",
+    "themoviedb": "tmdb",
+    "com.plexapp.agents.thetvdb": "tvdb",
+    "com.plexapp.agents.thetvdbdvdorder": "tvdb",
+    "com.plexapp.agents.imdb": "imdb",
+    "com.plexapp.agents.themoviedb": "tmdb",
+    "com.plexapp.agents.tmdb": "tmdb",
+}
+_GUID = re.compile(r"(?P<agent>[A-Za-z0-9_.-]+)://(?P<value>[^/?#]+)")
+_IMDB = re.compile(r"tt\d{5,10}")
+# Hama (anime): "com.plexapp.agents.hama://tvdb-81189?lang=en" (also tvdb2- … tvdb6-).
+_HAMA_TVDB = re.compile(r"tvdb\d?-(\d{1,9})")
+
+
+def parse_guid(text: str) -> tuple[str, str] | None:
+    """A guid's outside id: ("tvdb", "81189"), ("imdb", "tt0903747") or ("tmdb", "1396");
+    None for Plex's own ("plex://show/…"), a local item's or one that doesn't read."""
+    match = _GUID.match(text.strip())
+    if match is None:
+        return None
+    agent, value = match["agent"].lower(), match["value"]
+    if agent == "com.plexapp.agents.hama":
+        hama = _HAMA_TVDB.fullmatch(value)
+        return ("tvdb", str(int(hama[1]))) if hama else None
+    kind = _AGENTS.get(agent)
+    if kind is None:
+        return None
+    if kind == "imdb":
+        return ("imdb", value) if _IMDB.fullmatch(value) else None
+    return (kind, str(int(value))) if value.isdigit() and int(value) > 0 else None
+
+
+def external_ids(item: PlexItemReply) -> dict[str, list[str]]:
+    """The item's outside ids by kind ("tvdb", "imdb", "tmdb"), in the order Plex names them."""
+    found: dict[str, list[str]] = {}
+    for text in item.guid_texts():
+        parsed = parse_guid(text)
+        if parsed is not None and parsed[1] not in found.setdefault(parsed[0], []):
+            found[parsed[0]].append(parsed[1])
+    return found
+
+
+def _first_int(values: Sequence[str]) -> int | None:
+    return int(values[0]) if values else None
+
+
+def match_scan(
+    *,
+    shows: Iterable[PlexItemReply],
+    episodes: Iterable[PlexItemReply],
+    films: Iterable[PlexItemReply],
+    known: Iterable[tuple[int, int | None, str | None]],
+    libraries: Sequence[PlexLibrary] = (),
+) -> PlexScan:
+    """Plex's items as AirGrabber's ids. `known`: the shows cache's (TVMaze id, TheTVDB id,
+    IMDb id). A Plex show is the cached show with its TheTVDB id, else its IMDb id; one that
+    matches none is counted (`unmatched_shows`), its episodes dropped. An episode needs its
+    show, a season and a number. A film is kept with its TMDB and IMDb ids (one of them is
+    enough); one with neither is counted (`unmatched_films`)."""
+    by_tvdb: dict[int, int] = {}
+    by_imdb: dict[str, int] = {}
+    for known_id, tvdb_id, imdb_id in known:
+        if tvdb_id is not None:
+            by_tvdb.setdefault(tvdb_id, known_id)
+        if imdb_id:
+            by_imdb.setdefault(imdb_id, known_id)
+    show_of: dict[str, int] = {}  # Plex ratingKey → TVMaze id
+    read = unmatched = 0
+    for item in shows:
+        read += 1
+        ids = external_ids(item)
+        match = next((by_tvdb[int(v)] for v in ids.get("tvdb", ()) if int(v) in by_tvdb), None)
+        if match is None:
+            match = next((by_imdb[v] for v in ids.get("imdb", ()) if v in by_imdb), None)
+        if match is None or item.rating_key is None:
+            unmatched += 1
+            continue
+        show_of[item.rating_key] = match
+    found: set[tuple[int, int, int]] = set()
+    for episode in episodes:
+        owner = show_of.get(episode.grandparent_rating_key or "")
+        season, number = episode.parent_index, episode.index
+        if owner is None or season is None or number is None or season < 0 or number < 0:
+            continue
+        found.add((owner, season, number))
+    kept: set[tuple[int | None, str | None]] = set()
+    no_ids = 0
+    for film in films:
+        ids = external_ids(film)
+        tmdb_id = _first_int(ids.get("tmdb", []))
+        imdb_id = ids["imdb"][0] if ids.get("imdb") else None
+        if tmdb_id is None and imdb_id is None:
+            no_ids += 1
+            continue
+        kept.add((tmdb_id, imdb_id))
+    return PlexScan(
+        episodes=frozenset(found),
+        films=frozenset(kept),
+        shows=read,
+        unmatched_shows=unmatched,
+        unmatched_films=no_ids,
+        libraries=tuple(libraries),
+    )
+
+
+def connection_order(server: PlexServer) -> list[PlexConnection]:
+    """The order a server's connections are tried in: local https (the plex.direct
+    addresses) first, then the other local ones, then the remote ones."""
+    connections = list(server.connections)
+    return (
+        [c for c in connections if c.local and c.https]
+        + [c for c in connections if c.local and not c.https]
+        + [c for c in connections if not c.local]
+    )
+
+
+def library_kind(type_name: str) -> LibraryKind | None:
+    """A /library/sections type that counts: "show" or "movie"."""
+    if type_name == "show":
+        return "show"
+    if type_name == "movie":
+        return "movie"
+    return None
+
+
+# -- the client --------------------------------------------------------------------------------
+
+
+class PlexClient:
+    """plex.tv and the Plex Media Server over the shared HTTP client. `client_id` returns the
+    X-Plex-Client-Identifier (read on every call)."""
+
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        client_id: Callable[[], str],
+        version: str = __version__,
+        base_url: str = PLEX_TV,
+    ) -> None:
+        self._http = http
+        self._client_id = client_id
+        self._version = version
+        self._base = base_url.rstrip("/")
+
+    def _headers(self, token: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "X-Plex-Client-Identifier": self._client_id(),
+            "X-Plex-Product": PRODUCT,
+            "X-Plex-Version": self._version,
+        }
+        if token:
+            headers["X-Plex-Token"] = token
+        if extra:
+            headers.update(extra)
+        return headers
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        what: str,
+        token: str | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+    ) -> Any:
+        """The JSON of a call. `what` names it in errors and logs (never the URL)."""
+        error_name = ""
+        response: httpx.Response | None = None
+        try:
+            response = await self._http.request(
+                method,
+                url,
+                params=params,
+                headers=self._headers(token, headers),
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            error_name = type(exc).__name__
+        if response is None:
+            log.info("Plex %s: no answer (%s)", what, error_name)
+            raise PlexUnreachable(f"Plex didn't answer ({what})")
+        status = response.status_code
+        if status == 401:
+            raise PlexAuthError(f"Plex refused the sign-in ({what})")
+        if status == 404 and what == "pin":
+            raise PlexPinExpired("Plex no longer knows the code")
+        if status >= 500:
+            log.info("Plex %s: HTTP %d", what, status)
+            raise PlexUnreachable(f"Plex didn't answer ({what}, HTTP {status})")
+        if status >= 300:
+            log.info("Plex %s: HTTP %d", what, status)
+            raise PlexError(f"Plex said no ({what}, HTTP {status})")
+        try:
+            return response.json()
+        except ValueError:
+            pass
+        raise PlexError(f"Plex's answer didn't read ({what})")
+
+    # -- plex.tv ---------------------------------------------------------------------------
+
+    async def create_pin(self, *, now: datetime | None = None) -> PlexPin:
+        """A new short code for plex.tv/link."""
+        data = await self._request(
+            "POST", f"{self._base}/api/v2/pins", what="new pin", params={"strong": "false"}
+        )
+        reply = _read(PlexPinReply, data, "new pin")
+        now = now if now is not None else _utc_now()
+        if reply.expires_at is not None:
+            expires = reply.expires_at
+        elif reply.expires_in:
+            expires = now + timedelta(seconds=reply.expires_in)
+        else:
+            expires = now + PIN_LIFETIME
+        return PlexPin(id=reply.id, code=reply.code, expires_at=expires)
+
+    async def check_pin(self, pin_id: int) -> str | None:
+        """The token once the code was entered; None while it wasn't yet. PlexPinExpired once
+        plex.tv no longer knows the code."""
+        data = await self._request("GET", f"{self._base}/api/v2/pins/{int(pin_id)}", what="pin")
+        token = _read(PlexPinReply, data, "pin").auth_token
+        return token or None
+
+    async def servers(self, token: str) -> list[PlexServer]:
+        """The Plex Media Servers the account owns, with their connections (no relays)."""
+        data = await self._request(
+            "GET",
+            f"{self._base}/api/v2/resources",
+            what="resources",
+            token=token,
+            params={"includeHttps": 1, "includeRelay": 0},
+        )
+        try:
+            resources = _RESOURCES.validate_python(data)
+        except ValidationError:
+            raise PlexError("Plex's list of servers didn't read") from None
+        return [
+            PlexServer(
+                machine_id=resource.client_identifier,
+                name=resource.name,
+                connections=tuple(
+                    PlexConnection(
+                        uri=connection.uri.rstrip("/"),
+                        local=connection.local,
+                        https=connection.protocol.lower() == "https",
+                    )
+                    for connection in resource.connections
+                    if not connection.relay and connection.uri.startswith(("http://", "https://"))
+                ),
+            )
+            for resource in resources
+            if resource.is_server and resource.owned
+        ]
+
+    # -- the server ------------------------------------------------------------------------
+
+    async def identity(self, uri: str, token: str) -> str | None:
+        """The server's machine identifier, as the server at `uri` names it."""
+        data = await self._request(
+            "GET", f"{uri}/identity", what="identity", token=token, timeout=IDENTITY_TIMEOUT
+        )
+        return _read(PlexReply, data, "identity").container.machine_identifier
+
+    async def sections(self, uri: str, token: str) -> list[PlexLibrary]:
+        """The server's show and film libraries (all on)."""
+        data = await self._request(
+            "GET", f"{uri}/library/sections", what="libraries", token=token
+        )
+        libraries: list[PlexLibrary] = []
+        for directory in _read(PlexReply, data, "libraries").container.directories:
+            kind = library_kind(directory.type)
+            if kind is not None and _SECTION_KEY.fullmatch(directory.key):
+                libraries.append(PlexLibrary(key=directory.key, title=directory.title, kind=kind))
+        return libraries
+
+    async def items(
+        self, uri: str, token: str, section: str, item_type: int, *, guids: bool = False
+    ) -> list[PlexItemReply]:
+        """Every item of `item_type` in a library, PAGE_SIZE at a time."""
+        if not _SECTION_KEY.fullmatch(section):
+            raise PlexError("A library key that doesn't read")
+        params: dict[str, Any] = {"type": item_type}
+        if guids:
+            params["includeGuids"] = 1
+        found: list[PlexItemReply] = []
+        start = 0
+        for _ in range(MAX_PAGES):
+            data = await self._request(
+                "GET",
+                f"{uri}/library/sections/{section}/all",
+                what="library page",
+                token=token,
+                params=params,
+                headers={
+                    "X-Plex-Container-Start": str(start),
+                    "X-Plex-Container-Size": str(PAGE_SIZE),
+                },
+                timeout=LIBRARY_TIMEOUT,
+            )
+            container = _read(PlexReply, data, "library page").container
+            page = container.metadata
+            found.extend(page)
+            start += len(page)
+            total = container.total_size
+            if (
+                not page
+                or len(page) != PAGE_SIZE  # the last page, or a server that ignored the size
+                or (total is not None and start >= total)
+            ):
+                break
+        return found
+
+
+def _read[M: BaseModel](model: type[M], data: Any, what: str) -> M:
+    try:
+        return model.model_validate(data)
+    except ValidationError:
+        pass
+    raise PlexError(f"Plex's answer didn't read ({what})")
+
+
+# -- the service -------------------------------------------------------------------------------
+
+
+class _NoServer(PlexError):
+    def __init__(self, problem: PlexProblem) -> None:
+        super().__init__(problem.value)
+        self.problem = problem
+
+
+StatusListener = Callable[[], None]
+
+
+class PlexService:
+    """Connecting to Plex, the checks and what the Settings box shows (see the module
+    docstring)."""
+
+    def __init__(
+        self,
+        client: PlexClient,
+        repository: PlexRepository,
+        settings: SettingsService,
+        *,
+        on_change: Callable[[], None] | None = None,
+        clock: Callable[[], datetime] = _utc_now,
+        sleep: Callable[[float], Any] = asyncio.sleep,
+    ) -> None:
+        """`on_change`: after a check changed what is stored, and when Plex gets connected or
+        disconnected (the library's listeners: the pages reload, their have / missing cues
+        following). `clock` / `sleep`: tests move them."""
+        self._client = client
+        self._repository = repository
+        self._settings = settings
+        self._on_change = on_change
+        self._clock = clock
+        self._sleep = sleep
+        self._servers: tuple[PlexServer, ...] = ()
+        self._problem: PlexProblem | None = None
+        self._run: asyncio.Task[None] | None = None
+        self._listeners: list[StatusListener] = []
+
+    # -- listeners -----------------------------------------------------------------------------
+
+    def subscribe(self, listener: StatusListener) -> Callable[[], None]:
+        """Call `listener` whenever the status may have changed (a check starts or ends, a
+        connect, a choice, Disconnect). Returns a function that unsubscribes it."""
+        self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._listeners.remove(listener)
+
+        return unsubscribe
+
+    def _notify(self) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener()
+            except Exception:
+                log.exception("Plex listener %r failed", listener)
+
+    def _changed(self) -> None:
+        if self._on_change is not None:
+            try:
+                self._on_change()
+            except Exception:
+                log.exception("Plex change listener failed")
+
+    # -- state ---------------------------------------------------------------------------------
+
+    def _token(self) -> str:
+        return self._settings.current.plex_token.get_secret_value()
+
+    @property
+    def connected(self) -> bool:
+        """A token is stored (`plex_connected`)."""
+        return plex_connected(self._settings.current)
+
+    @property
+    def checking(self) -> bool:
+        return self._run is not None and not self._run.done()
+
+    async def status(self) -> PlexStatus:
+        """What the Settings box shows."""
+        current = self._settings.current
+        off = set(current.plex_sections_off)
+        libraries = tuple(
+            library.model_copy(update={"on": library.key not in off})
+            for library in await self._repository.libraries()
+        )
+        server = (
+            PlexServer(machine_id=current.plex_server_id, name=current.plex_server_name)
+            if current.plex_server_id
+            else None
+        )
+        return PlexStatus(
+            connected=self.connected,
+            server=server,
+            servers=self._servers,
+            libraries=libraries,
+            counts=await self._repository.counts(),
+            problem=self._problem if self.connected else None,
+            checking=self.checking,
+        )
+
+    async def _ensure_client_id(self) -> None:
+        if not self._settings.current.plex_client_id:
+            await self._settings.update(plex_client_id=str(uuid.uuid4()))
+
+    # -- connecting ----------------------------------------------------------------------------
+
+    async def new_pin(self) -> PlexPin:
+        """A new code for plex.tv/link (the connect window). Raises PlexError."""
+        await self._ensure_client_id()
+        pin = await self._client.create_pin(now=self._clock())
+        log.info("Plex: a new sign-in code, pin %d", pin.id)
+        return pin
+
+    async def wait_for_pin(self, pin: PlexPin) -> bool:
+        """Ask plex.tv every PIN_POLL_S whether `pin`'s code was entered: True once it was
+        (the token is stored, a server not chosen yet), False once the code expired. Cancel
+        the task to stop waiting. plex.tv not answering for a moment is waited out."""
+        while self._clock() < pin.expires_at:
+            try:
+                token = await self._client.check_pin(pin.id)
+            except PlexPinExpired:
+                break
+            except PlexAuthError:
+                break
+            except PlexError as exc:
+                log.info("Plex: asking about the code failed (%s), trying again", type(exc).__name__)
+                token = None
+            if token:
+                await self._signed_in(token)
+                return True
+            await self._sleep(PIN_POLL_S)
+        log.info("Plex: sign-in code %d expired", pin.id)
+        return False
+
+    async def _signed_in(self, token: str) -> None:
+        # Signing in again (the token was refused) keeps the server chosen.
+        kept = bool(self._settings.current.plex_server_id)
+        newly = not self.connected
+        await self._settings.update(plex_token=token)
+        self._problem = None
+        log.info("Plex: connected (server %s)", "kept" if kept else "not chosen yet")
+        self._notify()
+        if newly:
+            self._changed()  # the pages show what you have and miss from now on
+
+    async def choose_server(self, machine_id: str) -> None:
+        """Use the owned server `machine_id` (Settings' dropdown), then check."""
+        server = next((s for s in self._servers if s.machine_id == machine_id), None)
+        if server is None:
+            return
+        await self._settings.update(
+            plex_server_id=server.machine_id,
+            plex_server_name=server.name,
+            plex_server_uri="",
+            plex_sections_off=(),
+        )
+        log.info("Plex: server chosen (%d connections)", len(server.connections))
+        self._problem = None
+        self._notify()
+        await self.check(again=True)
+
+    async def set_library(self, key: str, on: bool) -> None:
+        """Count a library's titles or not (Settings' tick boxes), then check."""
+        off = [k for k in self._settings.current.plex_sections_off if k != key]
+        if not on:
+            off.append(key)
+        await self._settings.update(plex_sections_off=tuple(off))
+        self._notify()
+        await self.check(again=True)
+
+    async def disconnect(self) -> None:
+        """Forget the token, the server and everything read from Plex."""
+        run = self._run
+        if run is not None and not run.done():
+            run.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await run
+        await self._settings.update(
+            plex_token="",
+            plex_server_id="",
+            plex_server_name="",
+            plex_server_uri="",
+            plex_sections_off=(),
+        )
+        await self._repository.clear()
+        self._servers = ()
+        self._problem = None
+        log.info("Plex: disconnected, its lists forgotten")
+        self._notify()
+        self._changed()
+
+    # -- checks --------------------------------------------------------------------------------
+
+    async def run_periodic(self, interval_s: float = CHECK_INTERVAL_S) -> None:
+        """Check now (when connected), then every `interval_s` seconds, until cancelled."""
+        while True:
+            if self.connected:
+                try:
+                    await self.check()
+                except Exception:
+                    log.exception("Plex check failed")
+            await self._sleep(interval_s)
+
+    async def check(self, *, again: bool = False) -> None:
+        """Read Plex's libraries and store what matches (see the module docstring). One at a
+        time: a call during a check waits for that one (`again`: then checks once more, for a
+        change made meanwhile). Nothing without a token."""
+        if not self.connected:
+            return
+        run = self._run
+        if again and run is not None and not run.done():
+            await asyncio.wait({run})
+            run = self._run  # another caller may have started the next one meanwhile
+        if run is None or run.done():
+            run = asyncio.create_task(self._check(), name="plex-check")
+            self._run = run
+            self._notify()
+        # Waits without cancelling the check when the caller is cancelled; a check cancelled by
+        # Disconnect ends the wait quietly.
+        await asyncio.wait({run})
+        if not run.cancelled() and (error := run.exception()) is not None:
+            raise error
+
+    async def _check(self) -> None:
+        token = self._token()
+        try:
+            uri = await self._reach(token)
+            scan = await self._read(uri, token)
+            before = await self._repository.contents()
+            await self._repository.replace(scan, self._clock())
+        except _NoServer as exc:
+            self._problem = exc.problem
+            log.info("Plex check: %s", exc.problem.value)
+        except PlexAuthError:
+            self._problem = PlexProblem.SIGNED_OUT
+            log.warning("Plex check: the sign-in was refused, the last list stays")
+        except PlexUnreachable:
+            self._problem = PlexProblem.UNREACHABLE
+            log.warning("Plex check: Plex didn't answer, the last list stays")
+        except PlexError as exc:
+            self._problem = PlexProblem.FAILED
+            log.warning("Plex check failed (%s), the last list stays", type(exc).__name__)
+        else:
+            self._problem = None
+            log.info(
+                "Plex check: %d shows read (%d not known to AirGrabber), %d episodes, "
+                "%d films (%d without an id)",
+                scan.shows,
+                scan.unmatched_shows,
+                len(scan.episodes),
+                len(scan.films),
+                scan.unmatched_films,
+            )
+            if before != (scan.episodes, scan.films):
+                self._changed()
+        finally:
+            self._run = None
+            self._notify()
+
+    async def _reach(self, token: str) -> str:
+        """The address of the chosen server that answers (see the module docstring)."""
+        current = self._settings.current
+        servers: list[PlexServer] | None
+        try:
+            servers = await self._client.servers(token)
+        except PlexUnreachable:
+            servers = None  # plex.tv is away: the server's own address may still answer
+        chosen = current.plex_server_id
+        server: PlexServer | None = None
+        if servers is not None:
+            self._servers = tuple(servers)
+            if not chosen:
+                if not servers:
+                    raise _NoServer(PlexProblem.NO_SERVER)
+                if len(servers) > 1:
+                    raise _NoServer(PlexProblem.CHOOSE_SERVER)
+                chosen = servers[0].machine_id
+            server = next((s for s in servers if s.machine_id == chosen), None)
+            if server is None:
+                raise _NoServer(PlexProblem.NO_SERVER)
+            if (server.machine_id, server.name) != (
+                current.plex_server_id,
+                current.plex_server_name,
+            ):
+                await self._settings.update(
+                    plex_server_id=server.machine_id, plex_server_name=server.name
+                )
+        elif not chosen:
+            raise PlexUnreachable("plex.tv didn't answer")
+        stored = current.plex_server_uri
+        candidates = [stored] if stored else []
+        if server is not None:
+            candidates += [c.uri for c in connection_order(server) if c.uri != stored]
+        for uri in candidates:
+            if await self._answers(uri, chosen, token):
+                if uri != stored:
+                    await self._settings.update(plex_server_uri=uri)
+                    log.info("Plex: the server answered on connection %d", candidates.index(uri) + 1)
+                return uri
+        raise PlexUnreachable("The server didn't answer")
+
+    async def _answers(self, uri: str, machine_id: str, token: str) -> bool:
+        try:
+            found = await self._client.identity(uri, token)
+        except PlexError:
+            return False
+        return found == machine_id
+
+    async def _read(self, uri: str, token: str) -> PlexScan:
+        off = set(self._settings.current.plex_sections_off)
+        libraries = [
+            library.model_copy(update={"on": library.key not in off})
+            for library in await self._client.sections(uri, token)
+        ]
+        shows: list[PlexItemReply] = []
+        episodes: list[PlexItemReply] = []
+        films: list[PlexItemReply] = []
+        for library in libraries:
+            if not library.on:
+                continue
+            if library.kind == "show":
+                shows += await self._client.items(uri, token, library.key, TYPE_SHOW, guids=True)
+                episodes += await self._client.items(uri, token, library.key, TYPE_EPISODE)
+            else:
+                films += await self._client.items(uri, token, library.key, TYPE_MOVIE, guids=True)
+        known = await self._repository.known_shows()
+        # Stored with every library on: the tick boxes follow the settings.
+        listed = [library.model_copy(update={"on": True}) for library in libraries]
+        return match_scan(
+            shows=shows, episodes=episodes, films=films, known=known, libraries=listed
+        )

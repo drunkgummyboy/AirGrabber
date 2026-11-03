@@ -359,7 +359,8 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         # Every switch starts off after the upgrade, also those the 1.x import had on.
         self.assertFalse(entries[1].auto_download)
         self.assertFalse(entries[2].auto_download)
-        self.assertEqual(entries[1].synced_at, datetime(2025, 2, 1, 10, tzinfo=UTC))
+        # v10 (3.1.0) clears it: the next sync reads every followed show again (TheTVDB ids).
+        self.assertIsNone(entries[1].synced_at)
         self.assertEqual([e.id for e in await db.library.episodes(1)], [11, 12])
         self.assertTrue(await db.history.has_episode(1, 2, 1))
         self.assertFalse(await db.history.has_episode(1, 2, 2))
@@ -509,7 +510,7 @@ class ActivityTests(DatabaseTestCase):
             )
         )
 
-    async def test_latest_recent_grab_and_next_episode_per_show(self) -> None:
+    async def test_the_next_episode_per_show_and_no_grabs(self) -> None:
         await self.add_show(
             1,
             [
@@ -530,15 +531,12 @@ class ActivityTests(DatabaseTestCase):
 
         activity = await self.library.activity(now=NOW, profile_id=1)
 
-        self.assertEqual(sorted(activity), [1, 4])  # 2: nothing recent or upcoming; 3: untracked
+        # A grab is never mentioned (only Plex says what you have, 3.1.0): 2 and 4 have
+        # nothing upcoming; 3 is untracked.
+        self.assertEqual(sorted(activity), [1])
         first = activity[1]
-        assert first.last_grab is not None and first.next_episode is not None
-        self.assertEqual((first.last_grab.season, first.last_grab.episode), (1, 2))
+        assert first.next_episode is not None
         self.assertEqual(first.next_episode.id, 12)
-        pack = activity[4].last_grab
-        assert pack is not None
-        self.assertIsNone(pack.episode)
-        self.assertIsNone(activity[4].next_episode)
 
     async def test_an_episode_without_airstamp_counts_from_its_air_date(self) -> None:
         await self.db.library.save_show(

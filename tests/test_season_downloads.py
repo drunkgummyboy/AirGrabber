@@ -1,7 +1,7 @@
 """Season downloads in the show window (3.0.1): per season its download control in the
 season bar, in the rows' style: "⬇ Whole season" + "☰ Choose…" once it has finished airing
-(the season pack; the episodes still needed when there is none), "⬇ All missing (n)" while it
-airs (hidden at 0), their looks following the download queue ("Queued", the batch's progress,
+(the season pack; the episodes still needed when there is none), with Plex "⬇ All missing (n)"
+while it airs (hidden at 0; without Plex none), their looks following the download queue ("Queued", the batch's progress,
 the outcome). The rules (pure), the window on fake services, and the whole path through the
 real DownloadQueue + QueueLink with a fake one-click download. No network."""
 
@@ -34,7 +34,6 @@ from app.ui.download_control import (
     episode_key,
 )
 from app.ui.main_window import MainWindow
-from app.ui.missing_control import MissingActions, MissingRuns
 from app.ui.queue_link import NO_PACK_TEXT, QueueLink
 from app.ui.release_panel import TvTarget
 from app.ui.show_details import (
@@ -79,10 +78,11 @@ def details(**fields: Any) -> ShowDetails:
         "show": SHOW,
         "episodes": (*S1, SPECIAL, *S2, *S3),
         "tracked": True,
+        "plex_connected": True,
         "latest_season": 2,
         "downloaded": frozenset({S1[0].id}),
         "missing": frozenset({S2[1].id}),
-        "have": frozenset({S2[0].id}),
+        "in_plex": frozenset({S2[0].id}),
     }
     values.update(fields)
     return ShowDetails(**values)
@@ -171,12 +171,6 @@ class SeasonWindowTestCase(TkTestCase):
             episode_actions=actions,
             downloads_changed=no_subscribe,
             profile=lambda: 1,
-            missing_actions=MissingActions(
-                download=lambda show: None,
-                mark_have=lambda show, ids: None,
-                unmark_have=lambda show, ids: None,
-                runs=MissingRuns(),
-            ),
         )
         self.addCleanup(shows.close)
         self.shows = shows
@@ -225,7 +219,7 @@ class SeasonControlTests(SeasonWindowTestCase):
         assert control is not None
         self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
         self.assertTrue(control.choose.winfo_ismapped())
-        self.assertEqual(window._missing_label.cget("text"), "")  # not the latest season
+        self.assertIsNone(window._missing_label)  # not the latest season
         control.auto.invoke()
         self.assertEqual(self.seasons, [(SHOW.id, 1, ["S01E02", "S01E03"])])
         chosen: list[TvTarget] = []
@@ -241,30 +235,76 @@ class SeasonControlTests(SeasonWindowTestCase):
         assert control is not None
         self.assertEqual(control.auto.cget("text"), "⬇ All missing (1)")
         self.assertFalse(control.choose.winfo_ismapped())
+        assert window._missing_label is not None
         self.assertEqual(window._missing_label.cget("text"), "1 missing")
-        self.assertTrue(window._season_more.winfo_ismapped())  # the season's ⋯ as it was
         control.auto.invoke()
         self.assertEqual(self.batches, [((key(2, 2),), ["S02E02"])])
 
     async def test_nothing_needed_or_nothing_aired_no_control(self) -> None:
-        info = details(have=frozenset({S2[0].id, S2[1].id}), missing=frozenset())
+        info = details(in_plex=frozenset({S2[0].id, S2[1].id}), missing=frozenset())
         window = self.open(self.actions, info)
         await self.ready(window, 2)
         self.assertIsNone(self.control(window))  # All missing (0): hidden
+        assert window._missing_label is not None
         self.assertEqual(window._missing_label.cget("text"), "Nothing missing")
         window._select_season(3)
         await self.settle()
         self.assertIsNone(self.control(window))
         self.assertFalse(window._season_bar.winfo_manager())  # nothing aired: no bar
 
-    async def test_untracked_show_gets_the_controls_too(self) -> None:
-        info = details(tracked=False, latest_season=None, missing=frozenset(), have=frozenset())
+    async def test_all_missing_counts_exactly_the_missing_ones_not_the_new(self) -> None:
+        # S02E01 isn't in Plex here and counts as new: "1 missing" and "All missing (1)" agree.
+        info = details(in_plex=frozenset(), new=frozenset({S2[0].id}))
         window = self.open(self.actions, info)
         await self.ready(window, 2)
         control = self.control(window)
+        assert control is not None and window._missing_label is not None
+        self.assertEqual(window._missing_label.cget("text"), "1 missing")
+        self.assertEqual(control.auto.cget("text"), "⬇ All missing (1)")
+        control.auto.invoke()
+        self.assertEqual(self.batches, [((key(2, 2),), ["S02E02"])])
+
+    async def test_untracked_show_has_nothing_missing_so_no_all_missing(self) -> None:
+        info = details(tracked=False, latest_season=None, missing=frozenset(), in_plex=frozenset())
+        window = self.open(self.actions, info)
+        await self.ready(window, 2)
+        self.assertIsNone(self.control(window))
+        self.assertIsNone(window._missing_label)
+
+    async def test_without_plex_only_the_whole_season(self) -> None:
+        info = details(
+            plex_connected=False, latest_season=None, missing=frozenset(), in_plex=frozenset()
+        )
+        window = self.open(self.actions, info)
+        await self.ready(window, 2)
+        self.assertIsNone(self.control(window))  # no "All missing" without Plex
+        self.assertIsNone(window._missing_label)
+        self.assertFalse(window._season_bar.winfo_manager())
+        self.assertTrue(all(row._mark_slot is None for row in window._rows.values()))
+        window._select_season(1)
+        for _ in range(3):
+            await self.settle()
+        control = self.control(window)
         assert control is not None
-        self.assertEqual(control.auto.cget("text"), "⬇ All missing (2)")
-        self.assertFalse(window._season_more.winfo_ismapped())
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
+        control.auto.invoke()
+        # Its fallback leaves out what was grabbed before: nothing is fetched twice.
+        self.assertEqual(self.seasons, [(SHOW.id, 1, ["S01E02", "S01E03"])])
+        self.assertIsNone(window._missing_label)
+
+    async def test_without_plex_the_whole_season_shows_even_when_all_were_grabbed(self) -> None:
+        info = details(
+            plex_connected=False,
+            latest_season=None,
+            missing=frozenset(),
+            in_plex=frozenset(),
+            downloaded=frozenset(e.id for e in S1),
+        )
+        window = self.open(self.actions, info)
+        await self.ready(window, 1)
+        control = self.control(window)  # nothing tells it was all downloaded
+        assert control is not None
+        self.assertEqual(control.auto.cget("text"), "⬇ Whole season")
 
     async def test_its_look_follows_the_queue(self) -> None:
         window = self.open(self.actions)
@@ -321,6 +361,7 @@ class ThroughTheQueueTests(SeasonWindowTestCase):
         )
         for name in names:
             setattr(main, name, getattr(MainWindow, name).__get__(main))
+        self.main: Any = main
         self.actions = DownloadActions[CalendarEntry](
             download=main._download_episode,
             choose=lambda entry: None,
@@ -383,7 +424,7 @@ class ThroughTheQueueTests(SeasonWindowTestCase):
         self.assertEqual(self.reports, [report])
 
     async def test_all_missing_queues_the_episodes_as_a_batch(self) -> None:
-        info = details(tracked=False, latest_season=None, missing=frozenset(), have=frozenset())
+        info = details(in_plex=frozenset(), missing=frozenset({S2[0].id, S2[1].id}))
         self.quick.gate(key(2, 1))
         window = self.open(self.actions, info)
         await self.ready(window, 2)
@@ -398,6 +439,20 @@ class ThroughTheQueueTests(SeasonWindowTestCase):
         self.quick.open(key(2, 1))
         await self.idle()
         self.assertEqual(self.quick.started, [key(2, 1), key(2, 2)])
+        # What is missing skips what was grabbed before (never by hand: see below).
+        self.assertEqual(self.quick.again, [False, False])
+
+    async def test_a_click_by_hand_downloads_again_the_batches_skip(self) -> None:
+        main = self.main
+        entry = CalendarEntry(show=SHOW, episode=S1[0], is_tracked=True, is_downloaded=True)
+        main._download_episode(entry)  # ⬇ / ⬇ Auto on an episode grabbed before
+        await self.idle()
+        self.assertEqual((self.quick.started, self.quick.again), ([key(1, 1)], [True]))
+        self.quick.results[key(1, None)] = NOTHING  # no pack: the fallback episodes
+        main._download_season(SHOW, 1, [CalendarEntry(show=SHOW, episode=S1[1], is_tracked=True)])
+        await self.idle()
+        self.assertEqual(self.quick.started[1:], [key(1, None), key(1, 2)])
+        self.assertEqual(self.quick.again[1:], [True, False])  # the pack by hand, its fallback not
 
 
 if __name__ == "__main__":

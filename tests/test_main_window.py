@@ -76,6 +76,13 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "accent": "ocean",
     # Who is selected: a switch reloads the pages itself (MainWindow._on_profiles_changed).
     "current_profile": 2,
+    # Plex: a check that changes what counts as had reloads the pages itself.
+    "plex_client_id": "00000000-0000-4000-8000-000000000001",
+    "plex_token": "fake-plex-token",
+    "plex_server_id": "a1b2",
+    "plex_server_name": "Alex-NAS",
+    "plex_server_uri": "http://192.168.1.20:32400",
+    "plex_sections_off": ("3",),
 }
 
 PAGE_CHANGES: dict[str, Any] = {

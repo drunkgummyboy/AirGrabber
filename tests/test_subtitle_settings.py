@@ -554,27 +554,27 @@ class SettingsSectionTests(TkTestCase):
 
 
 class EpisodeRowMarkTests(TkTestCase):
-    def row(self, state: str, cc: str) -> _EpisodeRow:
+    def row(self, grabbed: bool, cc: str) -> _EpisodeRow:
         show = Show(id=7, name="Severance")
         episode = Episode(id=1, show_id=7, season=2, number=4, name="Woe's Hollow", air_date=date(2025, 2, 7))
-        entry = CalendarEntry(show=show, episode=episode, is_tracked=True, is_downloaded=state == "downloaded")
+        entry = CalendarEntry(show=show, episode=episode, is_tracked=True, is_downloaded=grabbed)
         row = _EpisodeRow(
-            self.root, entry, state=state, now=NOW,  # type: ignore[arg-type]
-            actions=mock.MagicMock(), cc=cc,
+            self.root, entry, state="downloadable", now=NOW,
+            actions=mock.MagicMock(), grabbed=grabbed, cc=cc,
         )
         self.addCleanup(row.destroy)
         return row
 
-    async def test_downloaded_rows_show_the_mark(self) -> None:
-        row = self.row("downloaded", "CC EN NL")
+    async def test_grabbed_episodes_show_the_mark(self) -> None:
+        row = self.row(True, "CC EN NL")
         self.assertEqual(row.cc, "CC EN NL")
         self.assertEqual(row.cc_control.mark_label.cget("text"), "CC EN NL")  # no CC ▾ here
 
     async def test_other_rows_never_do(self) -> None:
-        self.assertEqual(self.row("downloadable", "CC EN").cc, "")
+        self.assertEqual(self.row(False, "CC EN").cc, "")
 
     async def test_the_mark_follows_the_state(self) -> None:
-        row = self.row("downloaded", "")
+        row = self.row(True, "")
         self.assertEqual(row.cc, "")
         entry = CalendarEntry(
             show=Show(id=7, name="Severance"),
@@ -582,9 +582,9 @@ class EpisodeRowMarkTests(TkTestCase):
             is_tracked=True,
             is_downloaded=True,
         )
-        row.set_state(entry, "downloaded", NOW, cc="CC EN")
+        row.set_state(entry, "downloadable", NOW, grabbed=True, cc="CC EN")
         self.assertEqual(row.cc, "CC EN")
-        row.set_state(entry, "downloaded", NOW, cc="")
+        row.set_state(entry, "downloadable", NOW, grabbed=True, cc="")
         self.assertEqual(row.cc, "")
 
 
