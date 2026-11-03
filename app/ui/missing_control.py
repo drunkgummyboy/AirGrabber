@@ -15,7 +15,7 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import customtkinter as ctk
 from PIL import Image
@@ -302,7 +302,8 @@ class MenuEntry:
     """A popup menu item that can be greyed out: `action` None = not available now, `tip`
     says why (or what it does). `image`: a picture before the text (a CTkImage: a person's
     avatar); `checked`: a ✓ at the item's right end (the person selected); `separator`: a line
-    between items instead of an item (MENU_SEPARATOR)."""
+    between items instead of an item (MENU_SEPARATOR); `danger`: red text (a destructive item,
+    such as the Downloads page's "🗑 Remove from Download Station…")."""
 
     label: str
     action: Callable[[], None] | None
@@ -310,6 +311,7 @@ class MenuEntry:
     image: Any = None
     checked: bool = False
     separator: bool = False
+    danger: bool = False
 
 
 MENU_SEPARATOR = MenuEntry("", None, separator=True)
@@ -331,14 +333,18 @@ def menu_position(
     anchor: tuple[int, int, int, int],
     size: tuple[int, int],
     bounds: tuple[int, int, int, int],
+    *,
+    align: Literal["left", "right"] = "right",
 ) -> tuple[int, int]:
     """Where a popup menu of `size` goes for an `anchor` box (x, y, width, height): below it,
-    right edges aligned, kept within `bounds` (x, y, width, height: the anchor's window);
-    above the anchor when there is no room below. All in screen pixels."""
+    right edges aligned (left edges with `align="left"`), kept within `bounds` (x, y, width,
+    height: the anchor's window); above the anchor when there is no room below. All in screen
+    pixels."""
     ax, ay, aw, ah = anchor
     width, height = size
     bx, by, bw, bh = bounds
-    x = max(bx, min(ax + aw - width, bx + bw - width))
+    edge = ax if align == "left" else ax + aw - width
+    x = max(bx, min(edge, bx + bw - width))
     y = ay + ah + 2
     if y + height > by + bh and ay - height - 2 >= by:
         y = ay - height - 2
@@ -374,11 +380,12 @@ class PopupMenu:
         point: tuple[int, int] | None = None,
         under: tuple[int, int, int, int] | None = None,
         look: theme.Look | None = None,
+        align: Literal["left", "right"] = "right",
     ) -> None:
         """`point`: open at the pointer (screen pixels) instead of under `anchor`. `under`: open
         under this part of `anchor` instead (x, y, width, height in screen pixels: a button
         drawn on a canvas). `look`: a window's own accent tokens (the Forge window's copper)
-        instead of AirGrabber's."""
+        instead of AirGrabber's. `align`: which edges line up with what it opens under."""
         edge = theme.EDGE if look is None else look.EDGE
         surface = theme.SURFACE if look is None else look.SURFACE
         menu_hover = theme.MENU_HOVER if look is None else look.MENU_HOVER
@@ -416,7 +423,7 @@ class PopupMenu:
                 font=theme.font(MENU_FONT_SIZE),
                 fg_color="transparent",
                 hover_color=menu_hover,
-                text_color=theme.TEXT,
+                text_color=theme.DANGER if entry.danger else theme.TEXT,
                 text_color_disabled=theme.TEXT_FAINT,
                 state="normal" if action is not None else "disabled",
                 command=(lambda action=action: self._choose(action)) if action else None,
@@ -452,7 +459,7 @@ class PopupMenu:
                     anchor.winfo_width(),
                     anchor.winfo_height(),
                 )
-            x, y = menu_position(under, size, bounds)
+            x, y = menu_position(under, size, bounds, align=align)
         top.geometry(f"+{x}+{y}")
         top.deiconify()
         top.lift()
@@ -526,11 +533,12 @@ def popup_menu(
     point: tuple[int, int] | None = None,
     under: tuple[int, int, int, int] | None = None,
     look: theme.Look | None = None,
+    align: Literal["left", "right"] = "right",
 ) -> PopupMenu | None:
     """A small menu of `items` ((label, action) or a MenuEntry, which may be greyed out with a
     tip) under `anchor` (or `under` a part drawn on it), or at the pointer's `point`;
     none without items. `look`: a window's own accent tokens (the Forge window's copper)
-    instead of AirGrabber's."""
+    instead of AirGrabber's. `align`: right edges lined up (the default) or left edges."""
     if not items:
         return None
-    return PopupMenu(anchor, items, point=point, under=under, look=look)
+    return PopupMenu(anchor, items, point=point, under=under, look=look, align=align)

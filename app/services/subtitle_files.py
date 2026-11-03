@@ -116,6 +116,18 @@ def parse_episode(name: str) -> tuple[int, int] | None:
     return int(season), int(episode)
 
 
+def split_episode(name: str) -> tuple[str, int, int] | None:
+    """(the normalised words before the marker, season, episode) of "Show.Name.S02E04..." /
+    "Show Name 2x04"; None without a marker or without words before it."""
+    text = normalize(name)
+    match = _EPISODE_RE.search(text)
+    if match is None:
+        return None
+    season, episode = match.group(1) or match.group(3), match.group(2) or match.group(4)
+    words = text[: match.start()].strip()
+    return (words, int(season), int(episode)) if words else None
+
+
 def movie_identity(release_title: str) -> tuple[str, str] | None:
     """(normalised title, year) of a film's release title: "Dune.Part.Two.2024.1080p..." ->
     ("dune part two", "2024"). The year is the last one with a title before it ("Blade Runner

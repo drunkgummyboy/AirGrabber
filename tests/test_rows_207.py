@@ -444,7 +444,7 @@ class CalendarNewTests(unittest.TestCase):
 
 
 class CalendarCardWidgetTests(WidgetTestCase):
-    async def test_a_new_episode_gets_the_blue_note_not_the_amber_bar(self) -> None:
+    async def test_a_new_episode_gets_the_blue_note_not_the_amber_one(self) -> None:
         from app.ui.calendar_cards import CompactEpisodeCard
 
         actions = DownloadActions[CalendarEntry](
@@ -456,8 +456,7 @@ class CalendarCardWidgetTests(WidgetTestCase):
         missing.pack()
         await self.settle()
         assert new.note is not None and missing.note is not None
-        self.assertIsNone(new.mark)
         self.assertEqual(str(new.note.cget("text")), "New")
         self.assertEqual(new.note.cget("text_color"), theme.LINK)
-        self.assertIsNotNone(missing.mark)  # missing wins
-        self.assertEqual(str(missing.note.cget("text")), "Not downloaded yet")
+        self.assertEqual(str(missing.note.cget("text")), "Not downloaded yet")  # missing wins
+        self.assertEqual(missing.note.cget("text_color"), theme.WARNING)

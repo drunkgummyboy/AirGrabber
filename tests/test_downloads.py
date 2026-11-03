@@ -43,26 +43,23 @@ from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.torrent_app import TorrentAppService
 from app.services.settings import SettingsService
+from tests.test_torrent_file import info_hash_of, make_torrent, single_info
 
-HASH = "0123456789abcdef0123456789abcdef01234567"
-OTHER_HASH = "89abcdef0123456789abcdef0123456789abcdef"
+INFO = single_info()
+OTHER_INFO = single_info("Another.Show.S02E01")
+# Valid torrents (the stricter check of tests/test_torrent_file.py): TORRENT and CACHED share
+# their info dictionary, so both are the torrent for HASH, and differ only outside it.
+HASH = info_hash_of(INFO)
+OTHER_HASH = info_hash_of(OTHER_INFO)
 API_KEY = "PROWLARRKEY42"
 DIRECT_URL = f"https://prowlarr.local/api/v1/indexer/3/download?apikey={API_KEY}&file=x"
 ITORRENTS = f"https://itorrents.org/torrent/{HASH.upper()}.torrent"
+OTHER_ITORRENTS = f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent"
 EPISODE = GrabTarget(media_type=MediaType.TV, media_id=42846, season=1, episode=2)
 
-
-def torrent_bytes(name: str = "Some.Show.S01E02") -> bytes:
-    encoded = name.encode()
-    return (
-        b"d8:announce30:udp://tracker.example.org:1337"
-        b"4:infod6:lengthi1048576e4:name" + str(len(encoded)).encode() + b":" + encoded
-        + b"12:piece lengthi262144e6:pieces20:" + b"\x01" * 20 + b"ee"
-    )
-
-
-TORRENT = torrent_bytes()
-CACHED = torrent_bytes("cached copy")
+TORRENT = make_torrent(INFO)
+CACHED = make_torrent(INFO, announce="udp://cache.example.org:6969")
+OTHER_TORRENT = make_torrent(OTHER_INFO)
 
 
 def release(**changes: Any) -> TorrentRelease:
@@ -109,6 +106,12 @@ class FakeRemoteClient:
 def kind_hash(kind: RemoteKind) -> str:
     """A different info hash per kind (the history keeps one grab per hash)."""
     return str(list(RemoteKind).index(kind) + 1) * 40
+
+
+def kind_torrent(kind: RemoteKind) -> tuple[bytes, str]:
+    """A different valid .torrent per kind, and its info hash."""
+    info = single_info(f"Some.Show.S01E02.{kind.value}")
+    return make_torrent(info), info_hash_of(info)
 
 
 # What makes each kind of program configured.
@@ -284,6 +287,89 @@ class TorrentFileTests(DownloadTestCase):
         self.assertNotIn(API_KEY, str(caught.exception))
 
 
+class BrokenTorrentTests(DownloadTestCase):
+    """A fetched file that isn't a valid torrent for the release counts as no file."""
+
+    async def test_wrong_hash_direct_file_falls_back_to_itorrents(self) -> None:
+        self.serve(DIRECT_URL, OTHER_TORRENT)
+        self.serve(ITORRENTS, CACHED)
+        result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SAVED)
+        self.assertEqual(Path(result.path or "").read_bytes(), CACHED)
+        self.assertEqual(self.web.requests[ITORRENTS], 1)
+
+    async def test_folder_mode_sends_the_magnet_when_both_files_are_bad(self) -> None:
+        await self.set_up_remote()
+        self.serve(DIRECT_URL, OTHER_TORRENT)  # another torrent
+        self.serve(ITORRENTS, CACHED[:-7])  # truncated
+        item = release(download_url=DIRECT_URL)
+        with self.assertLogs("app.services.downloads", "INFO") as logs:
+            result = await self.service.grab(item, EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SENT)
+        self.assertEqual(self.station.magnets, [item.magnet])
+        self.assertEqual(self.station.torrents, [])
+        self.assertEqual(self.watch_files(), [])
+        self.assertEqual(self.web.requests[DIRECT_URL], 1)
+        self.assertEqual(self.web.requests[ITORRENTS], 1)
+        output = "\n".join(logs.output)
+        self.assertIn("No .torrent file from prowlarr (not a valid torrent: info hash differs)", output)
+        self.assertIn("No .torrent file from itorrents.org (not a valid torrent: truncated)", output)
+        for secret in (HASH, HASH.upper(), OTHER_HASH, API_KEY, "prowlarr.local", "itorrents.org/"):
+            self.assertNotIn(secret, output)
+
+    async def test_folder_mode_without_a_remote_program_fails(self) -> None:
+        self.serve(DIRECT_URL, OTHER_TORRENT)
+        self.serve(ITORRENTS, OTHER_TORRENT)
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(str(caught.exception), NO_REMOTE_FALLBACK)
+        self.assertEqual(self.watch_files(), [])
+
+    async def test_without_a_hash_the_structure_decides(self) -> None:
+        self.serve(DIRECT_URL, OTHER_TORRENT)  # any valid torrent will do
+        result = await self.service.grab(
+            release(info_hash=None, download_url=DIRECT_URL), EPISODE
+        )
+        self.assertEqual(Path(result.path or "").read_bytes(), OTHER_TORRENT)
+        await self.set_up_remote()
+        self.serve(DIRECT_URL, OTHER_TORRENT + b"junk")
+        with self.assertRaises(GrabError):  # no file, and no magnet without a hash
+            await self.service.grab(
+                release(title="Again", info_hash=None, download_url=DIRECT_URL), EPISODE
+            )
+        self.assertEqual(self.remote_calls(), 0)
+
+    async def test_hash_from_a_prowlarr_magnet_redirect_checks_itorrents(self) -> None:
+        magnet = f"magnet:?xt=urn:btih:{OTHER_HASH}&dn=x"
+        self.web.routes[DIRECT_URL] = lambda: httpx.Response(302, headers={"Location": magnet})
+        self.serve(OTHER_ITORRENTS, CACHED)  # the torrent for HASH, not OTHER_HASH
+        await self.set_up_remote()
+        result = await self.service.grab(
+            release(info_hash=None, download_url=DIRECT_URL), EPISODE
+        )
+        self.assertIs(result.outcome, GrabOutcome.SENT)
+        self.assertEqual(self.station.magnets, [magnet])
+        self.assertEqual(self.watch_files(), [])
+
+    async def test_gzipped_wrong_hash_file_is_refused(self) -> None:
+        self.serve(ITORRENTS, gzip.compress(OTHER_TORRENT))
+        await self.set_up_remote()
+        result = await self.service.grab(release(), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SENT)
+
+    async def test_app_and_remote_modes_check_too(self) -> None:
+        self.serve(DIRECT_URL, OTHER_TORRENT)
+        await self.set_up_remote()
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+        await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual((self.station.torrents, len(self.station.magnets)), ([], 1))
+        await self.settings.update(download_mode=DownloadMode.APP)
+        item = release(title="Other", info_hash="d" * 40, download_url=DIRECT_URL)
+        result = await self.service.grab(item, EPISODE)
+        self.assertIsNone(result.path)
+        self.assertEqual(self.opened, [item.magnet])
+
+
 class RemoteFallbackTests(DownloadTestCase):
     """FOLDER mode: a release without a .torrent file goes to the remote program, if any."""
 
@@ -380,9 +466,8 @@ class FileNameTests(DownloadTestCase):
     async def test_collisions_get_a_number(self) -> None:
         self.watch.mkdir(parents=True)
         (self.watch / "Same Title.torrent").write_bytes(b"existing")
-        other = f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent"
         self.serve(ITORRENTS, CACHED)
-        self.serve(other, TORRENT)
+        self.serve(OTHER_ITORRENTS, OTHER_TORRENT)
         first = await self.service.grab(release(title="Same Title"), EPISODE)
         renamed = release(title="Same: Title", info_hash=OTHER_HASH)  # same name once cleaned
         second = await self.service.grab(renamed, EPISODE)
@@ -447,7 +532,7 @@ class HistoryTests(DownloadTestCase):
         for target in (EPISODE, movie, pack, in_pack):
             self.assertFalse(await self.service.has_grabbed(target))
         self.serve(ITORRENTS, CACHED)
-        self.serve(f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent", TORRENT)
+        self.serve(OTHER_ITORRENTS, OTHER_TORRENT)
         await self.service.grab(release(), EPISODE)
         await self.service.grab(release(title="Spider-Man.2002", info_hash=OTHER_HASH), movie)
         self.assertTrue(await self.service.has_grabbed(EPISODE))
@@ -464,7 +549,7 @@ class HistoryTests(DownloadTestCase):
     async def test_grabbed_hashes(self) -> None:
         self.assertEqual(await self.service.grabbed_hashes(), frozenset())
         self.serve(ITORRENTS, CACHED)
-        self.serve(f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent", TORRENT)
+        self.serve(OTHER_ITORRENTS, OTHER_TORRENT)
         await self.service.grab(release(), EPISODE)
         await self.service.grab(release(title="Other", info_hash=OTHER_HASH), EPISODE)
         self.assertEqual(await self.service.grabbed_hashes(), {HASH, OTHER_HASH})
@@ -630,17 +715,18 @@ class RemoteModeTests(DownloadTestCase):
         await self.settings.update(download_mode=DownloadMode.REMOTE)
 
     async def test_the_torrent_file_is_sent_to_each_kind(self) -> None:
-        self.serve(DIRECT_URL, TORRENT)
         for kind in RemoteKind:
             with self.subTest(kind=kind):
                 client = await self.set_up_remote(kind)
-                item = release(download_url=DIRECT_URL, info_hash=kind_hash(kind))
+                content, info_hash = kind_torrent(kind)
+                self.serve(DIRECT_URL, content)
+                item = release(download_url=DIRECT_URL, info_hash=info_hash)
                 result = await self.service.grab(item, EPISODE)
                 self.assertIs(result.outcome, GrabOutcome.SENT)
                 self.assertEqual(result.message, f"Sent to {kind.program}")
                 self.assertIsNone(result.path)
                 self.assertEqual(
-                    client.torrents, [(TORRENT, "Some.Show.S01E02.1080p.WEB.h264-GRP.torrent")]
+                    client.torrents, [(content, "Some.Show.S01E02.1080p.WEB.h264-GRP.torrent")]
                 )
                 self.assertEqual(client.magnets, [])
         records = await self.history()
@@ -746,7 +832,7 @@ class FilmsLocationTests(DownloadTestCase):
     async def test_folder_mode_saves_a_film_in_the_films_folder(self) -> None:
         await self.settings.update(movie_download_dir=str(self.films))
         self.serve(ITORRENTS, CACHED)
-        self.serve(f"https://itorrents.org/torrent/{OTHER_HASH.upper()}.torrent", TORRENT)
+        self.serve(OTHER_ITORRENTS, OTHER_TORRENT)
         film = await self.service.grab(release(title="Gladiator.II.2024.1080p"), FILM)
         self.assertEqual(Path(film.path or "").parent, self.films)
         self.assertEqual(Path(film.path or "").read_bytes(), CACHED)
@@ -789,11 +875,12 @@ class FilmsLocationTests(DownloadTestCase):
 
     async def test_remote_mode_sends_a_film_as_a_film_to_each_kind(self) -> None:
         await self.settings.update(download_mode=DownloadMode.REMOTE)
-        self.serve(DIRECT_URL, TORRENT)
         for kind in RemoteKind:
             with self.subTest(kind=kind):
                 client = await self.set_up_remote(kind)
-                torrent = release(download_url=DIRECT_URL, info_hash=kind_hash(kind))
+                content, info_hash = kind_torrent(kind)
+                self.serve(DIRECT_URL, content)
+                torrent = release(download_url=DIRECT_URL, info_hash=info_hash)
                 await self.service.grab(torrent, FILM)  # the .torrent file
                 magnet = release(title=f"Film {kind}", info_hash=kind_hash(kind)[:-1] + "a")
                 await self.service.grab(magnet, FILM)  # nothing cached: a magnet

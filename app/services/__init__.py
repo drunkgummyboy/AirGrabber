@@ -12,7 +12,7 @@ from app.config import AppPaths
 from app.database import BackupRepository, Database
 from app.forge.runtime import ForgeRuntime
 from app.indexers import default_indexers
-from app.models import Settings
+from app.models import Movie, Settings, Show
 from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportService
 from app.services.auto_download import AutoDownloadService
 from app.services.backup import BackupService
@@ -155,6 +155,8 @@ class Services:
         # The Downloads page: recent grabs with the torrent program's progress, free space
         # (`run_periodic` from the UI); looks again soon after every grab.
         # Where Forge moved a finished download, once Forge runs (`forge_moves`).
+        # In sync with the torrent program: its tasks added there are recognised by anyone's
+        # followed shows and watchlist films (`known`).
         self.download_status = DownloadStatusService(
             db.history,
             db.subtitles,
@@ -162,6 +164,7 @@ class Services:
             remote,
             show=db.library.get_show,
             forge=forge_moves(forge),
+            known=functools.partial(_known_titles, db),
         )
         downloads.subscribe(self.download_status.after_grab)
         # MediaForge inside AirGrabber: off until something awaits `forge.start()` (the delayed
@@ -254,6 +257,14 @@ class Services:
 
 def _own_opensubtitles_key(settings: SettingsService) -> str:
     return settings.current.opensubtitles_own_key.get_secret_value().strip()
+
+
+async def _known_titles(db: Database) -> tuple[list[Show], list[Movie]]:
+    """The shows anyone follows and the films on anyone's watchlist (the Downloads page
+    recognises the tasks added in the torrent program by them)."""
+    followed = await db.library.followed()
+    films = await db.watchlist.films()
+    return [entry.show for entry in followed], [entry.movie for entry in films]
 
 
 async def _movie_imdb_id(discovery: DiscoveryService, movie_id: int) -> str | None:

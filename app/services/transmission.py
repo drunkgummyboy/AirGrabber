@@ -14,9 +14,12 @@ original ones, which Transmission 4.1's JSON-RPC 2.0 still accepts):
   `download-dir` (a film's own destination when Settings has one); the answer holds
   `torrent-added`, or `torrent-duplicate` (also a success);
 - the Downloads page (read-only): `torrent-get` with `fields` (hashString, name, percentDone,
-  status 0–6, error 0–3, isFinished) and, when every grab asked about has one, `ids` = their
-  hashes; `free-space` with `path` (the destination in Settings, else `session-get`'s
-  `download-dir`; the films destination too) → `size-bytes` and, from 4.0, `total_size`.
+  status 0–6, error 0–3, isFinished, totalSize, addedDate) and, when every grab asked about
+  has one, `ids` = their hashes; `free-space` with `path` (the destination in Settings, else
+  `session-get`'s `download-dir`; the films destination too) → `size-bytes` and, from 4.0,
+  `total_size`;
+- the page's ⋯ menu: `torrent-stop`, `torrent-start` and `torrent-remove` with `ids` = the
+  hashes, the last with `delete-local-data: false` (the files stay, finished or not).
 
 Secret hygiene as in remote.py: the password only travels in the Authorization header. The
 status calls keep the session id Transmission handed out (in memory, per address), so they
@@ -39,8 +42,10 @@ from app.services.remote import (
     DiskSpace,
     HttpClients,
     RemoteError,
+    byte_count,
     clamp_progress,
     destination,
+    epoch_time,
     failure_text,
     host_of,
     normal_hash,
@@ -55,7 +60,9 @@ PROGRAM = "Transmission"
 SESSION_HEADER = "X-Transmission-Session-Id"
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 _MAX_RESULT = 200  # characters of Transmission's own error text shown
-_FIELDS = ("hashString", "name", "percentDone", "status", "error", "isFinished")
+_FIELDS = (
+    "hashString", "name", "percentDone", "status", "error", "isFinished", "totalSize", "addedDate"
+)
 _LOCAL_ERROR = 3  # torrent "error" 3 = a local error (disk full, files gone); 1/2 = tracker's
 # torrent "status": 0 stopped, 1 check-wait, 2 checking, 3 download-wait, 4 downloading,
 # 5 seed-wait, 6 seeding.
@@ -123,6 +130,29 @@ class TransmissionClient:
             raise RemoteError(session.unexpected())
         tasks = [task for item in torrents if (task := _remote_task(item)) is not None]
         return RemoteStatus(program=PROGRAM, tasks=tuple(tasks))
+
+    async def pause(self, task_ids: Collection[str]) -> None:
+        """Stop these torrents (`torrent-stop`, by hash)."""
+        await self._act("torrent-stop", task_ids, {})
+
+    async def resume(self, task_ids: Collection[str]) -> None:
+        """Start these torrents (`torrent-start`, by hash)."""
+        await self._act("torrent-start", task_ids, {})
+
+    async def remove(self, task_ids: Collection[str]) -> None:
+        """Remove these torrents with `delete-local-data: false`: everything they downloaded,
+        finished or not, stays on the disk. An unknown hash is no error."""
+        await self._act("torrent-remove", task_ids, {"delete-local-data": False})
+
+    async def _act(
+        self, method: str, task_ids: Collection[str], arguments: Mapping[str, object]
+    ) -> None:
+        hashes = [task_id.lower() for task_id in dict.fromkeys(task_ids)]
+        if not hashes:
+            return
+        async with self._session(keep_id=True) as session:
+            await session.call(method, {"ids": hashes, **arguments})
+        log.info("Transmission: %s for %d torrent(s)", method, len(hashes))
 
     async def free_space(self) -> DiskSpace | None:
         """Free space where Transmission saves: the destination in Settings, else its own
@@ -309,11 +339,15 @@ def _remote_task(raw: object) -> RemoteTask | None:
     )
     if state is DownloadState.READY:
         progress = 1.0
+    info_hash = normal_hash(_field(raw, "hashString", "hash_string"))
     return RemoteTask(
         name=name if isinstance(name, str) else "",
-        info_hash=normal_hash(_field(raw, "hashString", "hash_string")),
+        info_hash=info_hash,
         progress=progress,
         state=state,
+        task_id=info_hash,  # the hash: Transmission's own ids change when it restarts
+        size=byte_count(_field(raw, "totalSize", "total_size")),
+        added_at=epoch_time(_field(raw, "addedDate", "added_date")),
     )
 
 

@@ -104,10 +104,11 @@ class MenuTests(unittest.TestCase):
         )
 
     def test_everything_available(self) -> None:
-        items = self.menu(Located("C:/finished/Fallout"))
+        # 3.0.2: the mockup's order, the removing item under a line.
+        items = [item for item in self.menu(Located("C:/finished/Fallout")) if not item.separator]
         self.assertEqual(
             [item.label for item in items],
-            ["Open the folder", "Download again…", "Get subtitles", "Remove from list"],
+            ["Download again…", "Open the folder", "Get subtitles", "Remove from list"],
         )
         self.assertTrue(all(item.action is not None for item in items))
 
@@ -118,13 +119,14 @@ class MenuTests(unittest.TestCase):
             ("unreachable", "The folder where finished downloads end up can't be reached"),
         ):
             located = Located(None, problem)  # type: ignore[arg-type]
-            folder = self.menu(located)[0]
+            folder = self.menu(located)[1]
             self.assertIsNone(folder.action)
             self.assertEqual((folder.tip, folder_tip(located)), (tip, tip))
         items = self.menu(Located(None, "not_found"), again=False, subtitles=False)
-        self.assertIsNone(items[1].action)
+        self.assertIsNone(items[0].action)
         self.assertEqual(items[2].tip, "no subtitles")
-        self.assertIsNotNone(items[3].action)  # Remove from list always works
+        self.assertTrue(items[3].separator)
+        self.assertIsNotNone(items[4].action)  # Remove from list always works
 
     def test_open_folder_calls_with_the_folder(self) -> None:
         opened: list[str] = []
@@ -137,8 +139,8 @@ class MenuTests(unittest.TestCase):
             subtitles_tip="",
             remove=lambda: None,
         )
-        assert items[0].action is not None
-        items[0].action()
+        assert items[1].action is not None
+        items[1].action()
         self.assertEqual(opened, ["C:/finished/Fallout"])
 
     def test_video_folder(self) -> None:
@@ -354,12 +356,12 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
         row = page._rows[0]
         items = page.menu_items(row, row.entry, Located(None, "not_found"))
         self.assertEqual(
-            [item.action is not None for item in items], [False, True, True, True]
+            [item.action is not None for item in items], [True, False, True, False, True]
         )
-        items[3].action()
+        items[4].action()  # Remove from list (no program to read: no task to remove)
         await self.settle()
         self.assertEqual(self.cleared, [[4]])
-        items[1].action()  # Download again… opens its two choices
+        items[0].action()  # Download again… opens its two choices
         await self.settle()
         from app.ui.missing_control import PopupMenu
 
@@ -396,7 +398,7 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         row = page._rows[0]
         items = page.menu_items(row, orphan, Located(None, "no_folder"))
-        self.assertIsNone(items[1].action)
+        self.assertIsNone(items[0].action)
 
 
 if __name__ == "__main__":

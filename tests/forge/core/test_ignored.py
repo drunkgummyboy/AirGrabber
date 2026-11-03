@@ -18,7 +18,7 @@ from app.forge.db.database import MIGRATIONS, SCHEMA_VERSION, Database
 from app.forge.db.ignored import IgnoredRepo, ignore_key
 from app.forge.models.ignored import IgnoredPath
 from app.i18n import Language, set_language, t
-from tests.forge.base import ForgeTestCase
+from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.core.test_auto_renamer import Clock, RenamerTestCase
 from tests.forge.db.base import ForgeDbTestCase
 
@@ -53,7 +53,7 @@ class RepoTest(ForgeDbTestCase):
         assert ignore_key("D:\\") == "d:\\"
 
 
-class MigrationTest(ForgeTestCase):
+class MigrationTest(ForgeAsyncTestCase):
     async def test_a_v3_forge_db_upgrades_and_keeps_its_rows(self) -> None:
         path = self.tmp / "forge.db"
         conn = sqlite3.connect(path)

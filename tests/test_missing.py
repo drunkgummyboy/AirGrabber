@@ -670,6 +670,15 @@ class MenuPositionTests(unittest.TestCase):
         self.assertEqual(menu_position((110, 100, 40, 40), (200, 80), self.WINDOW), (100, 142))
         self.assertEqual(menu_position((1390, 100, 40, 40), (200, 80), self.WINDOW)[0], 1200)
 
+    def test_left_edges_aligned_and_clamped(self) -> None:
+        self.assertEqual(
+            menu_position((500, 100, 40, 40), (200, 80), self.WINDOW, align="left"), (500, 142)
+        )
+        # Past the window's right edge: moved left until it fits.
+        self.assertEqual(
+            menu_position((1300, 100, 40, 40), (200, 80), self.WINDOW, align="left")[0], 1200
+        )
+
     def test_above_when_there_is_no_room_below(self) -> None:
         self.assertEqual(menu_position((500, 1000, 40, 30), (200, 80), self.WINDOW), (340, 918))
         # No room above either: below it stays.

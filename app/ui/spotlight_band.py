@@ -3,7 +3,8 @@
 Its picture is a title's TMDB backdrop, blurred, dimmed and fading into the page's background at
 the bottom (as the info window's: app/ui/backdrop.py) under a left-to-right scrim of that
 background (darkest behind the logo), or without one a soft glow in the accent colour. Over it,
-on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left,
+on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left
+(a click on either goes home, `on_home`: Series > Calendar),
 the search field, 🔨 MediaForge (with a copper badge while MediaForge's renamer needs the owner:
 `set_forge_count`), ⬇ Downloads (with its badge while downloads are on their way), the
 settings button and, at the right end, the name button (the selected person's avatar, name and
@@ -161,7 +162,8 @@ class SpotlightBand(tk.Canvas):
     the library, a download or a setting changed, and `set_motion` for Settings'
     `spotlight_motion` and `set_forge_count` with MediaForge's "needs you" count; a click on
     🔨 calls `on_forge`. `set_person` puts the selected person on the name button (none until
-    then); a click on it calls `on_person`. `entry` is the search field's text box."""
+    then); a click on it calls `on_person`. A click on the logo or "AirGrabber" calls
+    `on_home`. `entry` is the search field's text box."""
 
     def __init__(
         self,
@@ -179,6 +181,7 @@ class SpotlightBand(tk.Canvas):
         report: Callable[[str, int], None],
         profile: Callable[[], int],
         on_person: Callable[[], None] | None = None,
+        on_home: Callable[[], None] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now().astimezone(),
     ) -> None:
         """`profile`: the selected person, read at every load (the Series side's episodes are
@@ -201,6 +204,9 @@ class SpotlightBand(tk.Canvas):
         self._report = report
         self._profile = profile
         self._on_person = on_person
+        self._on_home = on_home
+        self._home_hover = False  # the pointer over the logo or "AirGrabber"
+        self._home_pressed = False
         # The name button's person: (name, initial, colour); None: no button.
         self._person: tuple[str, str, theme.Pair] | None = None
         self._clock = clock
@@ -296,7 +302,7 @@ class SpotlightBand(tk.Canvas):
 
         self.bind("<Configure>", self._on_configure, add="+")
         self.bind("<Motion>", self._on_motion, add="+")
-        self.bind("<Leave>", lambda _event: self._set_hover(None), add="+")
+        self.bind("<Leave>", self._on_leave, add="+")
         self.bind("<ButtonPress-1>", self._on_press, add="+")
         self.bind("<ButtonRelease-1>", self._on_release, add="+")
         theme.on_mode_change(self, self._repaint)
@@ -942,17 +948,45 @@ class SpotlightBand(tk.Canvas):
         items = len(spotlight.items) if spotlight is not None else 0
         return hit_target(layout, x / self._scale, y / self._scale, items=items)
 
+    def _on_home_at(self, x: int, y: int) -> bool:
+        """Whether (x, y) px is on the logo or "AirGrabber" (with an `on_home` to call)."""
+        layout = self._layout
+        if layout is None or self._on_home is None:
+            return False
+        return layout.brand.contains(x / self._scale, y / self._scale)
+
     def _on_motion(self, event: Any) -> None:
-        self._set_hover(self._hit_at(event.x, event.y))
+        home = self._on_home_at(event.x, event.y)
+        self._set_home_hover(home)
+        self._set_hover(None if home else self._hit_at(event.x, event.y))
+
+    def _on_leave(self, _event: Any) -> None:
+        self._set_home_hover(False)
+        self._set_hover(None)
+
+    def _set_home_hover(self, on: bool) -> None:
+        if on != self._home_hover:
+            self._home_hover = on
+            self._show_cursor()
+
+    def _show_cursor(self) -> bool:
+        """The pointer's look for what it is over; False once the band is gone."""
+        hit = self._hover
+        if self._home_hover:
+            cursor = "hand2"
+        else:
+            cursor = "" if hit is None else "xterm" if hit.kind is HitKind.FIELD else "hand2"
+        try:
+            self.configure(cursor=cursor)
+        except tk.TclError:
+            return False
+        return True
 
     def _set_hover(self, hit: Hit | None) -> None:
         if hit == self._hover:
             return
         previous, self._hover = self._hover, hit
-        cursor = "" if hit is None else "xterm" if hit.kind is HitKind.FIELD else "hand2"
-        try:
-            self.configure(cursor=cursor)
-        except tk.TclError:
+        if not self._show_cursor():
             return
         self._hide_tip()
         if hit is not None and hit.kind in _TIPS:
@@ -965,9 +999,15 @@ class SpotlightBand(tk.Canvas):
 
     def _on_press(self, event: Any) -> None:
         self._hide_tip()
-        self._pressed = self._hit_at(event.x, event.y)
+        self._home_pressed = self._on_home_at(event.x, event.y)
+        self._pressed = None if self._home_pressed else self._hit_at(event.x, event.y)
 
     def _on_release(self, event: Any) -> None:
+        if self._home_pressed:
+            self._home_pressed = False
+            if self._on_home is not None and self._on_home_at(event.x, event.y):
+                self._on_home()
+            return
         hit, pressed = self._hit_at(event.x, event.y), self._pressed
         self._pressed = None
         if hit is not None and hit == pressed:

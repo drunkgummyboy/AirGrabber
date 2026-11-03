@@ -11,8 +11,7 @@ no knee, so no hard line; where the text starts it is about 0.84, so the text st
 Under the Download row, a widget that can't be see-through, the poster fades out completely.
 
 A missing episode (aired, not downloaded, not marked "I already have this") adds an amber line
-under the code (`episode_layout(note=True)` makes room for it) and an amber left edge on the
-poster piece (`PosterFace.mark`).
+under the code (`episode_layout(note=True)` makes room for it).
 
 Several episodes of one show on one day share a stack card (app/ui/calendar_stack.py):
 `episode_layout(stack=True)` makes room for the "3 episodes ▾" pill under the code, and two
@@ -57,7 +56,6 @@ PAD_BOTTOM = 9
 CODE_GAP = 2  # between the name and the episode code
 ROW_GAP = 6  # at least, between the code (or the amber note under it) and the Download row
 BORDER = 1
-MARK_WIDTH = 3  # a missing episode's amber left edge
 CORNER_RADIUS = 8
 SOLID_MARGIN = 2  # around the Download row, the poster has faded out completely
 ROW_FADE = 16  # over this distance next to the Download row the poster fades out
@@ -126,7 +124,6 @@ class EpisodeLayout:
     radius: int
     title_size: int
     code_size: int
-    mark_width: int  # a missing episode's amber left edge
     note: bool = False  # room for the amber note under the code
     # A stack card: the pill's font size and height and the gap above it (all 0 otherwise),
     # and how much further right and down each card behind sits (0: not a stack).
@@ -217,7 +214,6 @@ def episode_layout(
         radius=scale.px(CORNER_RADIUS),
         title_size=titles,
         code_size=codes,
-        mark_width=scale.px(MARK_WIDTH, minimum=2),
         note=note,
         pill_size=pills,
         pill_height=pill_height,
@@ -297,8 +293,6 @@ class PosterFace:
     edge: RGB  # the border
     outside: RGB  # behind the rounded corners: what the card sits on
     placeholder: RGB  # the cover until it has loaded, or for a show without one
-    mark: RGB | None = None  # a missing episode: an amber left edge ...
-    mark_width: int = 0  # ... this wide, following the rounded corners
     stack: StackEdges | None = None  # a stack card: the cards behind it (the piece is taller)
     fade: str = FADE_CURVE  # the fade's shape: a new one never reuses an old bake
 
@@ -364,12 +358,11 @@ def poster_face(
     edge: RGB,
     outside: RGB,
     placeholder: RGB,
-    mark: RGB | None = None,
     stack: StackEdges | None = None,
 ) -> PosterFace:
     """The poster piece of a card `height` physical pixels tall (the front card of a stack) at
-    widget scaling `scaling` (DPI), with `layout`'s sizes and the poster in `area`; `mark`: the
-    colour of a missing episode's left edge; `stack`: the cards behind a stack card."""
+    widget scaling `scaling` (DPI), with `layout`'s sizes and the poster in `area`; `stack`:
+    the cards behind a stack card."""
     width = round(area.width * scaling)
     row_top = layout.pad_bottom + layout.row_height + SOLID_MARGIN
     return PosterFace(
@@ -384,8 +377,6 @@ def poster_face(
         edge=edge,
         outside=outside,
         placeholder=placeholder,
-        mark=mark,
-        mark_width=max(1, round(layout.mark_width * scaling)) if mark is not None else 0,
         stack=stack,
     )
 
@@ -418,8 +409,8 @@ def cap_face(
 def compose_poster(cover: Image.Image | None, face: PosterFace) -> Image.Image:
     """The poster piece in RGB: `cover` (None: the placeholder colour) cropped to fill it near
     its top, faded into `face.bg` to the right and around the Download row, inside a border
-    with rounded left corners on `face.outside`; with `face.mark`, a left edge in that colour;
-    with `face.stack`, the cards behind it below (the piece is `stack.depth` taller).
+    with rounded left corners on `face.outside`; with `face.stack`, the cards behind it below
+    (the piece is `stack.depth` taller).
 
     CPU-heavy: call it in a worker thread. Pure; `cover` is left alone.
     """
@@ -437,9 +428,6 @@ def compose_poster(cover: Image.Image | None, face: PosterFace) -> Image.Image:
     shade = Image.new("RGB", face.size, face.bg)
     faded = Image.composite(shade, base, _fade_mask(face))
     piece = _framed(faded, face.size, face.border, face.radius, face.edge, face.outside, "right")
-    if face.mark is not None and face.mark_width > 0:
-        edge_mask = _mark_mask(face.size, face.radius, face.mark_width)
-        piece.paste(face.mark, (0, 0, *face.size), edge_mask)
     if face.stack is not None:
         piece = _stacked(piece, face.border, face.radius, face.outside, face.stack, "right")
     return piece
@@ -536,15 +524,6 @@ def _fade_mask(face: PosterFace) -> Image.Image:
         Image.frombytes("L", (1, height), row_y).resize(face.size, nearest),
     )
     return ImageChops.screen(mask, corner)  # 1 - (1 - a) (1 - b)
-
-
-@lru_cache(maxsize=8)
-def _mark_mask(size: tuple[int, int], radius: int, width: int) -> Image.Image:
-    """An L mask of the card's left `width` pixels within its rounded left corners. Shared
-    between calls: read-only."""
-    column = Image.new("L", size, 0)
-    column.paste(255, (0, 0, width, size[1]))
-    return ImageChops.multiply(_rounded_mask(size, radius, 0, "right"), column)
 
 
 @lru_cache(maxsize=32)

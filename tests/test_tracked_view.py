@@ -355,6 +355,40 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.settings.current.tracked_sort, TrackedSort.NAME)
         self.assertIs(self.settings.current.tracked_filter, TrackedFilter.MISSING)
 
+    async def test_a_show_tracked_elsewhere_comes_in_quietly(self) -> None:
+        view = await self.view(missing={})
+        old = view._grid
+        assert old is not None
+        on_screen: list[bool] = []
+        tracked = self.library.tracked
+
+        async def still_showing(*, profile_id: int) -> list[LibraryEntry]:
+            on_screen.append(view._grid is old and old.winfo_manager() == "pack")
+            return await tracked(profile_id=profile_id)
+
+        self.library.tracked = still_showing  # type: ignore[method-assign]
+        self.library.entries.append(LibraryEntry(show=_show(4, "Delta"), tracked_at=NOW))
+        with mock.patch("app.ui.views.tracked_view.LoadingBar") as loading:
+            view.refresh_quietly()
+            assert view._load_task is not None
+            await view._load_task
+        loading.assert_not_called()
+        self.assertEqual(on_screen, [True])  # the cards stayed while the library was read
+        self.assertFalse(old.winfo_exists())
+        new = view._grid
+        assert new is not None and new is not old
+        self.assertEqual(new.winfo_manager(), "pack")
+        self.assertEqual(self.shown(view), ["alpha", "Bravo", "Charlie", "Delta"])
+        self.assertEqual(view._title.cget("text"), heading_text(4, 4, TrackedFilter.ALL))
+        # Under a filter that matches nothing there are no cards to keep: an ordinary load.
+        view._filter = TrackedFilter.MISSING
+        view._arrange()
+        with mock.patch("app.ui.views.tracked_view.LoadingBar") as loading:
+            view.refresh_quietly()
+            assert view._load_task is not None
+            await view._load_task
+        loading.assert_called_once()
+
     async def test_a_filter_without_shows_says_so(self) -> None:
         view = await self.view(missing={}, tracked_filter="missing")
         self.assertEqual(self.shown(view), [])

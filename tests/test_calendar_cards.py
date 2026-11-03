@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import tkinter as tk
 import unittest
+from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -28,6 +29,7 @@ from app.ui.calendar_cards import (
     CompactEpisodeCard,
     EpisodeCard,
     IconLook,
+    _rgb,
     buttons_width,
     card_title,
     compact_height,
@@ -78,7 +80,6 @@ BG = (36, 36, 36)
 EDGE = (78, 106, 133)
 OUTSIDE = (18, 22, 32)
 PLACEHOLDER = (51, 51, 51)
-AMBER = (243, 156, 18)
 
 
 def linespace(size: int, bold: bool) -> int:
@@ -88,6 +89,13 @@ def linespace(size: int, bold: bool) -> int:
 def close(actual: Any, expected: tuple[int, ...], tolerance: int = 3) -> bool:
     """`actual` (a pixel) within `tolerance` of `expected` in every channel."""
     return all(abs(a - e) <= tolerance for a, e in zip(actual, expected, strict=True))
+
+
+def placed_parts(card: ctk.CTkFrame) -> list[Any]:
+    """What is placed on a compact card besides CTk's own background canvas (the amber bar on
+    its left edge was)."""
+    own = getattr(card, "_canvas", None)
+    return [widget for widget in card.place_slaves() if widget is not own]
 
 
 def item_text(card: EpisodeCard, item: int) -> str:
@@ -165,7 +173,6 @@ class LayoutTests(unittest.TestCase):
                 self.assertFalse(plain.note)
                 self.assertGreaterEqual(noted.height, needed)
                 self.assertGreater(noted.height, plain.height)
-                self.assertGreaterEqual(noted.mark_width, 2)
                 # The same poster area: the texts of a day's cards start at one x.
                 self.assertEqual(noted.poster_max, plain.poster_max)
 
@@ -266,17 +273,14 @@ class ComposeTests(unittest.TestCase):
         self.assertTrue(close(image.getpixel((10, 12)), (0, 0, 200)))
         self.assertTrue(close(image.getpixel((10, 160)), RED, 8))
 
-    def test_missing_mark_is_an_amber_left_edge(self) -> None:
+    def test_no_coloured_left_edge(self) -> None:
+        # A missing episode used to get an amber left edge; now only its note says so.
+        self.assertNotIn("mark", {field.name for field in fields(PosterFace)})
         cover = Image.new("RGB", cover_size((138, 168)), RED)
-        image = compose_poster(cover, face(mark=AMBER, mark_width=4))
-        pixel = image.getpixel
-        self.assertTrue(close(pixel((0, 0)), OUTSIDE))  # still outside the rounded corner
-        self.assertTrue(close(pixel((1, 84)), AMBER))  # over the left border
-        self.assertTrue(close(pixel((3, 84)), AMBER))
-        self.assertTrue(close(pixel((5, 84)), RED))  # the poster right after it
-        self.assertTrue(close(pixel((120, 0)), EDGE))  # the top border stays
-        plain = compose_poster(cover, face())
-        self.assertTrue(close(plain.getpixel((3, 84)), RED))
+        pixel = compose_poster(cover, face()).getpixel
+        self.assertTrue(close(pixel((0, 0)), OUTSIDE))  # outside the rounded corner
+        self.assertTrue(close(pixel((1, 84)), EDGE))  # the left border
+        self.assertTrue(close(pixel((3, 84)), RED))  # the poster right after it
 
     def test_placeholder(self) -> None:
         image = compose_poster(None, face())
@@ -302,21 +306,6 @@ class ComposeTests(unittest.TestCase):
         self.assertLess(made.solid_left, round(area.text_x * 1.5))
         self.assertIsNone(made.stack)
         self.assertLess(made.solid_top, 168 - round(layout.row_height * 1.5))
-        self.assertIsNone(made.mark)
-        self.assertEqual(made.mark_width, 0)
-        marked = poster_face(
-            layout,
-            area,
-            1.5,
-            168,
-            bg=BG,
-            edge=EDGE,
-            outside=OUTSIDE,
-            placeholder=PLACEHOLDER,
-            mark=AMBER,
-        )
-        self.assertEqual(marked.mark, AMBER)
-        self.assertEqual(marked.mark_width, round(layout.mark_width * 1.5))
 
 
 class TextTests(unittest.TestCase):
@@ -502,7 +491,7 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         card = self.card(calendar_entry(aired=True), FakeImages())
         self.assertEqual(card._art.tag_bind("open", "<Button-1>"), "")
 
-    async def test_missing_card_has_the_amber_note_and_left_edge(self) -> None:
+    async def test_missing_card_has_the_amber_note(self) -> None:
         images = FakeImages()
         card = self.card(calendar_entry(aired=True), images, missing=True)
         plain = self.card(calendar_entry(aired=True), FakeImages())
@@ -520,10 +509,9 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         note_box = card._art.bbox(card._note)
         self.assertLessEqual(note_box[3], height - round(card._layout.row_height * scaling))
         (face_used,) = images.faces
-        self.assertIsNotNone(face_used.mark)
-        self.assertGreater(face_used.mark_width, 0)
+        self.assertEqual(face_used.edge, _rgb(card, theme.EDGE))  # no amber edge: the border
 
-    async def test_card_without_the_mark(self) -> None:
+    async def test_card_without_a_note(self) -> None:
         images = FakeImages()
         card = self.card(calendar_entry(aired=True), images)
         scaling = ctk.ScalingTracker.get_widget_scaling(card)
@@ -532,8 +520,6 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         assert card._art_task is not None
         await card._art_task
         self.assertEqual(item_text(card, card._note), "")
-        (face_used,) = images.faces
-        self.assertIsNone(face_used.mark)
 
     async def test_compact_card_is_slim_and_its_name_opens_the_show_window(self) -> None:
         opened: list[Show] = []
@@ -543,7 +529,6 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card.cget("height"), compact_height(False))
         self.assertLess(card.cget("height"), self.card(entry, FakeImages()).cget("height"))
         self.assertIsNone(card.note)
-        self.assertIsNone(card.mark)
         self.assertEqual(str(card.name_label.cget("cursor")), "hand2")
         self.assertNotEqual(card.name_label._label.bind("<Button-1>"), "")
         assert card.open_show is not None
@@ -559,10 +544,10 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
             self.root, calendar_entry(aired=True), actions=actions, missing=True
         )
         self.assertEqual(card.cget("height"), compact_height(True))
-        assert card.note is not None and card.mark is not None
+        assert card.note is not None
         self.assertEqual(card.note.cget("text"), MISSING_TEXTS[0])
         self.assertEqual(card.note.cget("text_color"), theme.WARNING)
-        self.assertEqual(card.mark.cget("fg_color"), theme.WARNING)
+        self.assertEqual(placed_parts(card), [])  # no amber bar on the left edge
 
     async def test_compact_buttons_follow_the_run_and_right_click_chooses(self) -> None:
         entry = calendar_entry(aired=True)

@@ -150,6 +150,22 @@ PROFILES_MIGRATION = """
     CREATE INDEX ix_watchlist_movie ON watchlist (movie_id);
 """
 
+# v9: the Downloads page in sync with the torrent program (app/services/download_status.py): a
+# grab its program has had at least once. Never had and less than an hour old: waiting for the
+# program to pick it up; never had and older: it never did. Had once and gone now: removed in
+# the program, so it leaves the page (a cleared_downloads mark). The grabs older than an hour at
+# the upgrade count as had: those the program no longer has leave the page at its first check
+# instead of turning into problems. A mark goes with its grab. Self-contained.
+SEEN_MIGRATION = """
+    CREATE TABLE seen_downloads (
+        history_id INTEGER PRIMARY KEY REFERENCES download_history (id) ON DELETE CASCADE,
+        seen_at    TEXT    NOT NULL                         -- UTC ISO-8601
+    ) STRICT;
+    INSERT INTO seen_downloads (history_id, seen_at)
+    SELECT id, strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now') FROM download_history
+    WHERE julianday(downloaded_at) <= julianday('now', '-1 hour');
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -295,6 +311,8 @@ MIGRATIONS: tuple[str, ...] = (
     CLEARED_MIGRATION,
     # v8: people, each with their own followed series and watchlist; see PROFILES_MIGRATION.
     PROFILES_MIGRATION,
+    # v9: grabs the torrent program has had (the Downloads page in sync); see SEEN_MIGRATION.
+    SEEN_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -1252,6 +1270,42 @@ class HistoryRepository:
             )
             return cursor.rowcount
 
+    async def every_grab(self) -> list[DownloadRecord]:
+        """The whole history, newest first (the Downloads page matches the torrent program's
+        older tasks to it; it reads it again only when `stamp` changes)."""
+        rows = await self._db.fetch_all(
+            "SELECT * FROM download_history ORDER BY downloaded_at DESC, id DESC"
+        )
+        return [DownloadRecord.model_validate(dict(row)) for row in rows]
+
+    async def stamp(self) -> tuple[int, int]:
+        """(how many grabs, the highest id): changes whenever a grab is added or removed."""
+        row = await self._db.fetch_one("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM download_history")
+        return (int(row[0]), int(row[1])) if row is not None else (0, 0)
+
+    async def seen(self, history_ids: Iterable[int]) -> frozenset[int]:
+        """Of these grabs, the ones their torrent program has had (`mark_seen`)."""
+        ids = json.dumps(sorted(set(history_ids)))
+        rows = await self._db.fetch_all(
+            "SELECT history_id FROM seen_downloads "
+            "WHERE history_id IN (SELECT value FROM json_each(?))",
+            (ids,),
+        )
+        return frozenset(row["history_id"] for row in rows)
+
+    async def mark_seen(self, history_ids: Iterable[int], when: datetime) -> int:
+        """Note that the torrent program has these grabs (the Downloads page). Unknown ids are
+        ignored. Returns how many were newly marked."""
+        ids = json.dumps(sorted(set(history_ids)))
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO seen_downloads (history_id, seen_at) "
+                "SELECT id, ? FROM download_history WHERE id IN (SELECT value FROM json_each(?)) "
+                "ON CONFLICT (history_id) DO NOTHING",
+                (_utc(when), ids),
+            )
+            return cursor.rowcount
+
     async def latest_tv_grabs(self, since: datetime) -> list[DownloadRecord]:
         """Per TV show, its latest grab at or after `since` (episodes and season packs)."""
         rows = await self._db.fetch_all(
@@ -2063,6 +2117,13 @@ class BackupRepository:
                         "ON CONFLICT (history_id) DO NOTHING",
                         (cursor.lastrowid, _utc(when)),
                     )
+                # As at the v9 upgrade: a restored grab counts as had by its torrent program, so
+                # one it no longer has leaves the Downloads page instead of becoming a problem.
+                await conn.execute(
+                    "INSERT INTO seen_downloads (history_id, seen_at) VALUES (?, ?) "
+                    "ON CONFLICT (history_id) DO NOTHING",
+                    (cursor.lastrowid, _utc(when)),
+                )
             if downloaded_films:  # as HistoryRepository.add: a downloaded film leaves every list
                 await conn.execute(
                     "DELETE FROM watchlist WHERE movie_id IN (SELECT value FROM json_each(?))",

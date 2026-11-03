@@ -14,7 +14,12 @@ Protocol, per qBittorrent's "WebUI API" wiki (v4.1 – v5.x) and its source:
 - the Downloads page (read-only): `GET /api/v2/torrents/info` (optionally `hashes=a|b`) → a JSON
   list of torrents with `hash` (`infohash_v1` from v4.4), `name`, `progress` (0…1) and `state`
   (downloading, stalledDL, queuedDL, pausedDL / stoppedDL (v5), uploading, …, error,
-  missingFiles); `GET /api/v2/sync/maindata` → `server_state.free_space_on_disk`.
+  missingFiles), `size` and `added_on`; `GET /api/v2/sync/maindata` →
+  `server_state.free_space_on_disk`;
+- the page's ⋯ menu: `POST /api/v2/torrents/stop` / `torrents/start` (v5; before it
+  `torrents/pause` / `torrents/resume`, used when the new name answers 404) and
+  `torrents/delete` with `deleteFiles=false` (the files stay, finished or not), each with
+  `hashes=a|b`, on the status calls' kept session.
 
 Without a user name AirGrabber doesn't sign in (qBittorrent can skip sign-in for this network:
 "Bypass authentication for clients in whitelisted IP subnets"). Secret hygiene as in remote.py:
@@ -42,8 +47,10 @@ from app.services.remote import (
     DiskSpace,
     HttpClients,
     RemoteError,
+    byte_count,
     clamp_progress,
     destination,
+    epoch_time,
     failure_text,
     host_of,
     normal_hash,
@@ -158,16 +165,61 @@ class QBittorrentClient:
         free = number(state.get("free_space_on_disk")) if isinstance(state, dict) else None
         return DiskSpace(int(free)) if free is not None and free >= 0 else None
 
+    async def pause(self, task_ids: Collection[str]) -> None:
+        """Stop these torrents (`torrents/stop`; `torrents/pause` before v5), on the kept
+        session."""
+        await self._act(("torrents/stop", "torrents/pause"), task_ids, {})
+
+    async def resume(self, task_ids: Collection[str]) -> None:
+        """Start these torrents (`torrents/start`; `torrents/resume` before v5), on the kept
+        session."""
+        await self._act(("torrents/start", "torrents/resume"), task_ids, {})
+
+    async def remove(self, task_ids: Collection[str]) -> None:
+        """Remove these torrents with `deleteFiles=false`: everything they downloaded, finished
+        or not, stays on the disk. qBittorrent answers 200 for a hash it doesn't know."""
+        await self._act(("torrents/delete",), task_ids, {"deleteFiles": "false"})
+
+    async def _act(
+        self, paths: tuple[str, ...], task_ids: Collection[str], fields: Mapping[str, str]
+    ) -> None:
+        """POST `hashes=a|b` (+ `fields`) to the first of `paths` this qBittorrent knows (5.0
+        renamed pause / resume to stop / start; an older one answers 404 to the new name)."""
+        hashes = [task_id.lower() for task_id in dict.fromkeys(task_ids)]
+        if not hashes:
+            return
+        data = {"hashes": "|".join(hashes), **fields}
+        for index, path in enumerate(paths):
+            try:
+                await self._call("POST", path, data=data)
+            except _Refused as exc:
+                if exc.status != 404 or index == len(paths) - 1:
+                    raise
+                continue
+            log.info("qBittorrent: %s for %d torrent(s)", path.rsplit("/", 1)[-1], len(hashes))
+            return
+
     async def _read(self, path: str, params: Mapping[str, str] | None) -> httpx.Response:
-        """GET a read-only API path on the kept session; when qBittorrent ended that session
-        (403), sign in once more and ask again."""
+        """GET a read-only API path on the kept session (see `_call`)."""
+        return await self._call("GET", path, params=params)
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        data: Mapping[str, str] | None = None,
+    ) -> httpx.Response:
+        """Send one API request on the kept session; when qBittorrent ended that session
+        (403), sign in once more and send it again."""
         settings = self._settings.current  # one snapshot for the whole operation
         key = _login_key(settings)
         kept = self._kept if self._kept is not None and self._kept.key == key else None
         if kept is not None:
             try:
                 async with self._session(sign_in=False, cookies=kept.cookies) as session:
-                    return await session.request("GET", path, params=params)
+                    return await session.request(method, path, params=params, data=data)
             except _Refused as exc:
                 if exc.status not in (401, 403):
                     raise
@@ -176,7 +228,7 @@ class QBittorrentClient:
         async with self._session(sign_out=False) as session:
             if session.cookies:
                 self._kept = _KeptCookies(key, session.cookies)
-            return await session.request("GET", path, params=params)
+            return await session.request(method, path, params=params, data=data)
 
     @contextlib.asynccontextmanager
     async def _session(
@@ -335,11 +387,15 @@ def _remote_task(raw: object) -> RemoteTask | None:
     state = qbittorrent_state(state_name if isinstance(state_name, str) else "", progress)
     if state is DownloadState.READY:
         progress = 1.0
+    task_id = raw.get("hash")  # the torrent's id in the API (v1 hash, or a v2 one cut short)
     return RemoteTask(
         name=name if isinstance(name, str) else "",
         info_hash=info_hash,
         progress=progress,
         state=state,
+        task_id=task_id.strip().lower() if isinstance(task_id, str) and task_id.strip() else None,
+        size=byte_count(raw.get("size", raw.get("total_size"))),
+        added_at=epoch_time(raw.get("added_on")),
     )
 
 

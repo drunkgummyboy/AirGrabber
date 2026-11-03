@@ -14,6 +14,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.0.2": (
+        N_("The Downloads page now shows everything in your torrent program, also what you added there yourself."),
+        N_("Pause, resume or remove a download from its ⋯ menu; AirGrabber never deletes your files."),
+        N_("A damaged or wrong .torrent file is no longer sent to your torrent program."),
+        N_("Search again right in the search results window, and click the logo to go back to the calendar."),
+        N_("A calmer calendar: no suggestions in past weeks, and \"+ Track\" no longer reloads the page."),
+        N_("MediaForge's Ignore menu stays open when you click it."),
+    ),
     "3.0.1": (
         N_("Everyone at home can have their own series, watchlist and calendar: click your name at the top right."),
         N_("Downloads now wait in a queue: click a whole season and close the window; the Downloads page shows what's waiting."),

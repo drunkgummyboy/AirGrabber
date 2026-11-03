@@ -2,7 +2,7 @@
 the selected person's (Settings' `current_profile`, read at every load; app/services/profiles.py).
 
 Missing episodes (`LibraryService.missing_between`: aired at least a day ago, not downloaded,
-not marked "I already have this") get the cards' amber mark; new ones (`new_between`: aired
+not marked "I already have this") get the cards' amber note; new ones (`new_between`: aired
 less than a day ago) a quiet blue "New" note. Several episodes of one show on one day share a
 stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
 unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
@@ -11,7 +11,15 @@ Suggestions (💡): every day gets its best-ranked one; then each week row's qui
 more, best first, as many as fit within the row's tallest day (`extra_suggestions`), so the
 grid looks fuller without growing. A show is suggested once a week row (`take_new`), on its
 first day there. (Days with few scripted shows, such as Saturdays, are filled with popular
-reality and variety shows: `LibraryService.suggestions`.)
+reality and variety shows: `LibraryService.suggestions`.) Week rows that have passed entirely
+get none, nor are they fetched (`suggestion_start`): those rows size to their tracked episodes.
+The current week keeps its suggestions on its earlier days too, so its row doesn't change
+shape midweek.
+
+A library change (a show tracked from a suggestion, say) reloads the page on screen through
+`refresh_quietly`: the new grid is built hidden under the one on screen and swapped in when
+it is complete, so the page doesn't blank, rebuild day by day or lose its scroll position.
+Other loads (another week, the week count, the card size, the first load) build in view.
 
 The top bar, in one line: the visible dates, ◀ Today ▶, and on the right the number of weeks
 (1–5) and the 💡 Suggestions toggle; on a window too narrow for one line the right-hand
@@ -24,7 +32,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import customtkinter as ctk
 
@@ -208,6 +216,47 @@ def extra_suggestions(used: Sequence[int], target: int, slot: int, *, cap: int) 
     return [min(cap, max(0, (target - height) // slot)) for height in used]
 
 
+def suggestion_start(start: date, end: date, *, today: date) -> date | None:
+    """The first day that gets suggestions on a grid of week rows from `start` to `end`: the
+    first day of the first row whose last day is `today` or later. None when every row has
+    passed."""
+    first = start
+    while first <= end:
+        if first + timedelta(days=6) >= today:
+            return first
+        first += timedelta(weeks=1)
+    return None
+
+
+def kept_scroll(
+    top: float, view: float, old_rows: Sequence[int], new_rows: Sequence[int]
+) -> float | None:
+    """Where to scroll a grid of week rows starting at `new_rows` (pixels from its top) so
+    that the row the view showed of the old grid (`old_rows`, scrolled to `top`, `view`
+    high) stays where it was: the first row that started in view, else the row the view was
+    inside of. None at the very top (it stays there) or without rows."""
+    if top <= 0 or not old_rows or len(old_rows) != len(new_rows):
+        return None
+    in_view = [row for row, start in enumerate(old_rows) if top <= start < top + view]
+    if in_view:
+        row = in_view[0]
+    else:
+        row = max((row for row, start in enumerate(old_rows) if start <= top), default=0)
+    return max(0.0, top - old_rows[row] + new_rows[row])
+
+
+class _Shown(NamedTuple):
+    """What a complete grid shows; a quiet reload of the same keeps it on screen until the
+    new one is built."""
+
+    start: date
+    end: date
+    today: date
+    profile_id: int
+    scale: CardScale
+    suggestions: bool
+
+
 def _days(start: date, end: date) -> list[date]:
     return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
@@ -275,8 +324,9 @@ def _cell_header(cell: ctk.CTkFrame, day: date, *, is_today: bool) -> ctk.CTkFra
 
 
 class CalendarView(BaseView):
-    """Weeks of tracked episodes in a 7-column grid, each day with one suggested show after
-    them (unless suggestions are switched off); ◀ / Today / ▶ move through the weeks.
+    """Weeks of tracked episodes in a 7-column grid, each day of the current and later weeks
+    with one suggested show after them (unless suggestions are switched off); ◀ / Today / ▶
+    move through the weeks.
 
     `card_scale`: the card size (Settings), read at every load. `on_open_show`: what a click on
     a card's poster or name (suggestions included) does, the show's window."""
@@ -303,6 +353,8 @@ class CalendarView(BaseView):
         self._card_scale = card_scale
         self._on_open_show = on_open_show
         self._weeks: ctk.CTkFrame | None = None  # the grid of day cells, rebuilt on every load
+        self._pending: ctk.CTkFrame | None = None  # a quiet load's grid, hidden until complete
+        self._shown: _Shown | None = None  # what the complete grid on screen shows
         self._rendered_for: date | None = None  # the "today" of the last load
         self._offset = 0  # weeks from the current one; this session only
         self._unfolded: set[FoldKey] = set()  # the stack cards unfolded; this session only
@@ -449,9 +501,9 @@ class CalendarView(BaseView):
         return super().is_stale() or self._rendered_for != date.today()
 
     async def load(self) -> None:
+        quiet = self.quiet_load  # before the first await (BaseView)
         prefs = self._settings.current
         self._sync_controls(prefs)
-        self._note.configure(text="")
         today = date.today()
         self._rendered_for = today
         scale = self._card_scale()
@@ -459,8 +511,15 @@ class CalendarView(BaseView):
             today, first_day=prefs.first_day, weeks=prefs.weeks_to_show, offset=self._offset
         )
         self._range.configure(text=range_label(start, end))
-
         profile_id = prefs.current_profile
+        shown = _Shown(start, end, today, profile_id, scale, prefs.show_suggestions)
+        # Quietly only over a complete grid of the same weeks; else built in view.
+        quiet = quiet and self._weeks is not None and self._shown == shown
+        self._drop_pending()
+        if not quiet:
+            self._shown = None
+            self._note.configure(text="")
+
         entries = await self._library.calendar(start, end, profile_id=profile_id)
         missing = await self._library.missing_between(start, end, profile_id=profile_id)
         new = await self._library.new_between(start, end, profile_id=profile_id)
@@ -468,7 +527,9 @@ class CalendarView(BaseView):
         if not self.winfo_exists():
             return
         self._profile_id = profile_id
+        weeks = self._new_grid(hidden=quiet)
         cells = await self._render_tracked(
+            weeks,
             _days(start, end),
             by_day(entries),
             today=today,
@@ -478,29 +539,99 @@ class CalendarView(BaseView):
             new=new,
         )
 
-        if not prefs.show_suggestions:
-            return
-        self._note.configure(text=t("Finding suggestions…"))
-        try:
-            suggestions = await self._library.suggestions(
-                start, end, profile_id=profile_id, per_day=SUGGESTION_POOL
-            )
-        except Exception:
-            log.exception("Couldn't load calendar suggestions for %s – %s", start, end)
-            if self.winfo_exists():
-                self._note.configure(text=t("Couldn't load suggestions"))
-            return
+        failed = False
+        first = suggestion_start(start, end, today=today) if prefs.show_suggestions else None
+        if first is not None:
+            if not quiet:
+                self._note.configure(text=t("Finding suggestions…"))
+            try:
+                suggestions = await self._library.suggestions(
+                    first, end, profile_id=profile_id, per_day=SUGGESTION_POOL
+                )
+            except Exception:
+                log.exception("Couldn't load calendar suggestions for %s – %s", first, end)
+                failed = True
+            else:
+                if not self.winfo_exists():
+                    return
+                await self._render_suggestions(
+                    {day: cell for day, cell in cells.items() if day >= first},
+                    day_suggestions(suggestions, cap=SUGGESTION_POOL),
+                    scale=scale,
+                )
         if not self.winfo_exists():
             return
-        await self._render_suggestions(
-            cells, day_suggestions(suggestions, cap=SUGGESTION_POOL), scale=scale
+        if quiet:
+            await self._swap_in(weeks)
+        self._shown = shown
+        self._note.configure(text=t("Couldn't load suggestions") if failed else "")
+
+    def _new_grid(self, *, hidden: bool) -> ctk.CTkFrame:
+        """An empty grid of 7 day columns. In view it replaces the grid on screen at once;
+        `hidden`, it is placed under that grid (which covers it: the scroll frame is as tall as
+        the packed grid and clips the rest) until `_swap_in`. Either way it is laid out, so its
+        cards size themselves and bake their images meanwhile."""
+        weeks = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        for column in range(7):
+            weeks.grid_columnconfigure(column, weight=1, uniform="day")
+        if hidden and self._weeks is not None:
+            weeks.place(x=0, y=0, relwidth=1)
+            weeks.tk.call("lower", str(weeks), str(self._weeks))
+            self._pending = weeks
+        else:
+            if self._weeks is not None:
+                destroy_tree(self._weeks)
+            weeks.pack(fill="both", expand=True)
+            self._weeks = weeks
+        return weeks
+
+    async def _swap_in(self, weeks: ctk.CTkFrame) -> None:
+        """Show the hidden grid in place of the one on screen, in one step, scrolled so the
+        week row at the top of the view stays where it was (a row above it may have grown:
+        a newly tracked show's earlier episodes)."""
+        await _yield_to_ui()  # the last cards' sizes and images
+        if not weeks.winfo_exists():
+            return
+        old, self._weeks, self._pending = self._weeks, weeks, None
+        if old is not None and old.winfo_exists():
+            self._keep_scroll(old, weeks)
+        weeks.place_forget()
+        weeks.pack(fill="both", expand=True)
+        if old is not None and old.winfo_exists():
+            destroy_tree(old)
+
+    def _keep_scroll(self, old: ctk.CTkFrame, new: ctk.CTkFrame) -> None:
+        """Scroll so that `new` (laid out, same rows as `old`) shows the week row the view
+        shows of `old` where it was: the first row that starts in view, else the row the view
+        is inside of. Before the swap, so no frame is drawn in between: both grids sit at the
+        scroll frame's top."""
+        canvas = self._scroll._parent_canvas  # CTk has no scroll API
+        rows = old.grid_size()[1]
+        if new.grid_size()[1] != rows:
+            return
+        target = kept_scroll(
+            canvas.canvasy(0),
+            canvas.winfo_height(),
+            [old.grid_bbox(0, row)[1] for row in range(rows)],
+            [new.grid_bbox(0, row)[1] for row in range(rows)],
         )
-        self._note.configure(text="")
+        if target is None:
+            return
+        height = max(new.winfo_reqheight(), 1)
+        canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), height))
+        canvas.yview_moveto(target / height)
+
+    def _drop_pending(self) -> None:
+        """A hidden grid an interrupted quiet load left behind."""
+        pending, self._pending = self._pending, None
+        if pending is not None and pending.winfo_exists():
+            destroy_tree(pending)
 
     # -- rendering -----------------------------------------------------------------------------
 
     async def _render_tracked(
         self,
+        weeks: ctk.CTkFrame,
         days: Sequence[date],
         tracked: Mapping[date, Sequence[CalendarEntry]],
         *,
@@ -510,23 +641,14 @@ class CalendarView(BaseView):
         had: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
     ) -> dict[date, ctk.CTkFrame]:
-        """Replace the grid: one cell per day with its tracked episodes, a show's episodes of
-        one day on one stack card (`missing`: the ids of the episodes that get the amber mark;
-        `had`: those marked "I already have this"; `new`: those aired less than a day ago, a
-        blue "New" note). Returns the cells.
+        """Fill the empty grid `weeks` (`_new_grid`): one cell per day with its tracked
+        episodes, a show's episodes of one day on one stack card (`missing`: the ids of the
+        episodes that get the amber note; `had`: those marked "I already have this"; `new`:
+        those aired less than a day ago, a blue "New" note). Returns the cells.
 
         Yields to the event loop after each day: a whole week of poster cards takes Tk ~250 ms
-        to draw. Cancelled at a yield, it leaves a partial grid in `self._weeks` for the next
-        load to destroy.
+        to draw. Cancelled at a yield, it leaves a partial grid for the next load to destroy.
         """
-        if self._weeks is not None:
-            destroy_tree(self._weeks)
-        weeks = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        weeks.pack(fill="both", expand=True)
-        for column in range(7):
-            weeks.grid_columnconfigure(column, weight=1, uniform="day")
-        self._weeks = weeks
-
         cells: dict[date, ctk.CTkFrame] = {}
         for index, day in enumerate(days):
             is_today = day == today
@@ -600,7 +722,6 @@ class CalendarView(BaseView):
                 actions=self._episode_actions,
                 scale=scale,
                 on_open_show=self._on_open_show,
-                missing=marked,
                 had=had,
                 unfolded=key in self._unfolded,
                 on_fold=lambda unfolded: self._remember_fold(key, unfolded),

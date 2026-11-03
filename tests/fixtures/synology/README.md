@@ -13,3 +13,11 @@ made up):
   list under `task`, numeric sizes and numbered states (2 = downloading; 100 and up = an error;
   other numbers are read by their progress, because Synology doesn't document them). The magnet
   carries its info hash in base32.
+- `task_action.json`: `SYNO.DownloadStation.Task` `pause` / `resume` / `delete` (guide: a list with
+  the `id` and an `error` code per task, 0 = done; the ids go in as `id=dbid_1,dbid_2`, a delete
+  with `force_complete=false`)
+- `task_action_refused.json`: the same with error 405 ("invalid task action") for one task; 404
+  ("invalid task id") is a task that is gone
+- `task2_action.json`: `SYNO.DownloadStation2.Task` `pause` / `resume` / `delete` with the ids as a
+  JSON list, assumed to answer like DSM 7's web client sees it (`failed_task`, empty when all went
+  well; not in Synology's guide)

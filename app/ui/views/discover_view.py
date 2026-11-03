@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from app.i18n import N_, t
@@ -18,6 +18,7 @@ from app.ui.poster_card import TrackState
 from app.ui.shelf_filter import TV_GENRES, Genre, genres_of
 from app.ui.views.base import StatusReporter
 from app.ui.views.shelves import Shelf, ShelvesView
+from app.ui.widgets import FlexGrid
 
 
 class DiscoverView(ShelvesView[DiscoverShowEntry]):
@@ -91,6 +92,39 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
 
     def _is_owned(self, item: DiscoverShowEntry) -> bool:
         return item.is_tracked
+
+    def _item_key(self, item: DiscoverShowEntry) -> object:
+        return item.show
+
+    def _owned_changed(self, items: Sequence[DiscoverShowEntry]) -> bool:
+        """Followed or no longer followed (a quiet reload): the cards' Track buttons follow;
+        with "Hide what I already have" on, a newly followed show's cards go. False when a
+        shelf would be left empty or a card would have to come back."""
+        for item in items:
+            if self._hide_owned:
+                if not item.is_tracked or not self._remove_cards(item.show.id):
+                    return False
+            elif item.show.id not in self._tracking:
+                self._set_track_state(item.show.id, "tracked" if item.is_tracked else "idle")
+        return True
+
+    def _remove_cards(self, show_id: int) -> bool:
+        """Take a show's cards off their shelves, which close up. False (nothing removed) when
+        that would leave a shelf without cards."""
+        cards = [card for card in self._cards.get(show_id, ()) if card.winfo_exists()]
+        grids = {
+            str(card.master): card.master for card in cards if isinstance(card.master, FlexGrid)
+        }
+        for grid in grids.values():
+            left = [child for child in grid.winfo_children() if child not in cards]
+            if not left:
+                return False
+        for card in cards:
+            card.destroy()
+        self._cards.pop(show_id, None)
+        for grid in grids.values():
+            grid.relayout()
+        return True
 
     def _clear_body(self) -> None:
         super()._clear_body()

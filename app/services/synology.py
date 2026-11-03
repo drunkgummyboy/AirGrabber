@@ -20,7 +20,16 @@ settings it was made with) and signs in again only when DSM ended the session. I
 tasks with SYNO.DownloadStation.Task `list` (`additional=detail,transfer`; documented in the
 Web API guide, still offered next to DownloadStation2 on DSM 7), else with DownloadStation2
 `list`. Download Station has no info hash per task: a magnet task's `uri` holds it, a .torrent
-task is matched by its file name or title (app/services/download_status.py).
+task is matched by its file name or title (app/services/download_status.py). Each task's `id`
+("dbid_…"), `size` and `additional.detail.create_time` (its added time) come along.
+
+The page's ⋯ menu (`pause`, `resume`, `remove`) uses the same kept sign-in and the same API:
+Task `pause` / `resume` / `delete` with `id` (the ids comma-separated; DownloadStation2: a JSON
+list). `delete` is sent with `force_complete=false`: a finished task's files stay where they
+are, but an unfinished task's partial download (kept in Download Station's temporary folder
+until it completes) is deleted with the task; `force_complete=true` would move the incomplete
+files into the destination instead (guide, Task `delete`). The page says so before removing an
+unfinished task.
 
 Secret hygiene: the password and the sid only ever travel in POST bodies, messages and log
 records name the NAS by host and port only, a task's `uri` (which may hold a tracker passkey) is
@@ -34,8 +43,9 @@ import contextlib
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
+from typing import TypeVar
 
 import httpx
 from pydantic import SecretStr
@@ -47,7 +57,9 @@ from app.services.remote import (
     DiskSpace,
     HttpClients,
     RemoteError,
+    byte_count,
     destination,
+    epoch_time,
     fraction,
     host_of,
     magnet_hash,
@@ -58,6 +70,8 @@ from app.services.remote import (
 from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 SESSION = "DownloadStation"
 
@@ -123,6 +137,17 @@ DownloadStationError = RemoteError
 # DSM's answers for a session that ended (no permission with this sid, timed out, ended by
 # another sign-in, unknown sid): `status` signs in again once.
 _SESSION_ENDED = frozenset({105, 106, 107, 119})
+
+# The Task API's codes for pause / resume / delete (per task or for the call), raised through t().
+_INVALID_TASK = 404  # no such task: for a delete, gone already
+_ACTION_FAILED = N_("Download Station couldn't do that with this download.")
+_ACTION_ERRORS: Mapping[int, str] = {
+    _INVALID_TASK: N_("Download Station no longer has this download."),
+    405: N_("Download Station can't do that with this download right now."),
+}
+_REMOVE_ERRORS: Mapping[int, str] = {
+    405: N_("Download Station couldn't remove this download right now."),
+}
 
 # Download Station's task states (SYNO.DownloadStation.Task `list`, "status").
 _DS_STATES: Mapping[str, DownloadState] = {
@@ -266,6 +291,56 @@ class DownloadStationClient:
     async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
         """Download Station's tasks with their progress (read-only). Keeps its sign-in between
         calls; signs in again once when DSM ended the session."""
+        tasks = await self._on_kept_session(lambda session: session.list_tasks())
+        return RemoteStatus(program=self.kind.program, tasks=tuple(tasks))
+
+    async def pause(self, task_ids: Collection[str]) -> None:
+        """Pause these tasks (Task `pause`), on `status`'s kept sign-in."""
+        await self._act("pause", task_ids)
+
+    async def resume(self, task_ids: Collection[str]) -> None:
+        """Resume these tasks (Task `resume`), on `status`'s kept sign-in."""
+        await self._act("resume", task_ids)
+
+    async def remove(self, task_ids: Collection[str]) -> None:
+        """Remove these tasks (Task `delete`, `force_complete=false`), on `status`'s kept
+        sign-in. A finished task's files stay in its destination. An unfinished task's partial
+        download is deleted with it: Download Station keeps it in its temporary folder until
+        the task completes, and `force_complete=true` would instead move the incomplete files
+        into the destination (where MediaForge would find half a video). A task that is gone
+        already counts as removed."""
+        await self._act("delete", task_ids, {"force_complete": False})
+
+    async def _act(
+        self, method: str, task_ids: Collection[str], extra: Mapping[str, object] | None = None
+    ) -> None:
+        ids = list(dict.fromkeys(task_ids))
+        if not ids:
+            return
+        errors = _ACTION_ERRORS if method != "delete" else _REMOVE_ERRORS
+
+        async def operation(session: _Session) -> None:
+            try:
+                results = await session.task_action(method, ids, extra or {}, errors=errors)
+            except _ApiError as exc:
+                if method == "delete" and exc.code == _INVALID_TASK:
+                    return  # gone already
+                raise
+            failed = [
+                code for code in results.values()
+                if code and not (method == "delete" and code == _INVALID_TASK)
+            ]
+            if failed:
+                raise DownloadStationError(t(errors.get(failed[0], _ACTION_FAILED)))
+            log.info(
+                "Download Station on %s: %s for %d task(s)", session.host, method, len(ids)
+            )
+
+        await self._on_kept_session(operation)
+
+    async def _on_kept_session(self, operation: Callable[[_Session], Awaitable[_T]]) -> _T:
+        """Run `operation` on the kept sign-in (the APIs and the sid, for the settings it was
+        made with), signing in first when there is none, and once more when DSM ended it."""
         settings = self._settings.current  # one snapshot for the whole operation
         _check_configured(settings)
         key = _login_key(settings)
@@ -274,15 +349,11 @@ class DownloadStationClient:
             kept = self._kept if self._kept is not None and self._kept.key == key else None
             if kept is not None:
                 session.restore(kept.apis, kept.sid, kept.auth_version)
-                expired = False
                 try:
-                    tasks = await session.list_tasks()
+                    return await operation(session)
                 except _ApiError as exc:
                     if exc.code not in _SESSION_ENDED:
                         raise
-                    expired = True
-                if not expired:
-                    return RemoteStatus(program=self.kind.program, tasks=tuple(tasks))
                 log.info("The Download Station session on %s ended; signing in again", session.host)
                 self._kept = None
                 session = _Session(http, settings.remote_url, "")
@@ -291,8 +362,7 @@ class DownloadStationClient:
                 settings.remote_username, settings.remote_password.get_secret_value()
             )
             self._kept = session.kept(key)
-            tasks = await session.list_tasks()
-        return RemoteStatus(program=self.kind.program, tasks=tuple(tasks))
+            return await operation(session)
 
     async def free_space(self) -> DiskSpace | None:
         """Download Station's API doesn't report free space."""
@@ -342,6 +412,22 @@ class _Session:
         """This session's sign-in, to keep (after `login`)."""
         assert self._sid is not None
         return _KeptLogin(key, dict(self._apis), self._sid, self._auth_version)
+
+    async def task_action(
+        self,
+        method: str,
+        task_ids: list[str],
+        extra: Mapping[str, object],
+        *,
+        errors: Mapping[int, str],
+    ) -> dict[str, int]:
+        """`pause`, `resume` or `delete` these tasks, through the API `list_tasks` uses; DSM's
+        error code per task id (0: done)."""
+        if self.has(_TASK) and self.api(_TASK).supports(1):
+            data = await self.call(_TASK, 1, method, {"id": task_ids, **extra}, errors=errors)
+        else:  # DownloadStation2 takes the ids as a JSON list
+            data = await self.call(_TASK2, 2, method, {"id": task_ids, **extra}, errors=errors)
+        return _task_results(data)
 
     async def list_tasks(self) -> list[RemoteTask]:
         """Every Download Station task with its state and progress."""
@@ -542,13 +628,35 @@ def _remote_task(raw: object) -> RemoteTask | None:
     state = ds_state(status, progress)
     if state is DownloadState.READY:
         progress = 1.0
+    task_id = raw.get("id")
     return RemoteTask(
         name=title if isinstance(title, str) else "",
         info_hash=magnet_hash(uri),
         file_name=_file_name(uri),
         progress=progress,
         state=state,
+        task_id=task_id if isinstance(task_id, str) and task_id else None,
+        size=byte_count(raw.get("size")),
+        added_at=epoch_time(detail.get("create_time")),
     )
+
+
+def _task_results(data: object) -> dict[str, int]:
+    """pause / resume / delete's answer: DS's `[{"id": …, "error": 0}, …]`, or
+    DownloadStation2's `{"failed_task": [{"id": …, "error": …}]}`; task id → error code."""
+    items: object = data
+    if isinstance(data, dict):
+        items = data.get("failed_task", data.get("tasks", []))
+    results: dict[str, int] = {}
+    if not isinstance(items, list):
+        return results
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        code = _error_code(item.get("error"))
+        task_id = item.get("id")
+        results[str(task_id)] = code if code is not None else 0
+    return results
 
 
 def _status_name(value: object) -> str:

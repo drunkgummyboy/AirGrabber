@@ -705,6 +705,35 @@ NL: dict[str, str] = {
         "Ondertitels hebben de map nodig waar voltooide downloads terechtkomen (Instellingen → Ondertitels)",
     "Finished": "Voltooid",
     "Problems": "Problemen",
+    # 3.0.2: app/ui/views/downloads_view.py (in sync with the torrent program)
+    "✓ Clear finished…": "✓ Voltooide wissen…",
+    "Removes finished downloads from {program} and from this list. Their files stay where they are.":
+        "Haalt voltooide downloads weg uit {program} en van deze lijst. Hun bestanden blijven waar ze zijn.",
+    "Live from {program} · {n} download": "Live uit {program} · {n} download",
+    "Live from {program} · {n} downloads": "Live uit {program} · {n} downloads",
+    "sent by AirGrabber": "verstuurd door AirGrabber",
+    "Added in {program}": "Toegevoegd in {program}",
+    "Recognised as {name}": "Herkend als {name}",
+    "⏸ Pause": "⏸ Pauzeren",
+    "▶ Resume": "▶ Hervatten",
+    "🗑 Remove from {program}…": "🗑 Weghalen uit {program}…",
+    "Remove from {program}?": "Weghalen uit {program}?",
+    "{name} is removed from {program} and from this list. What it downloaded so far stays on the NAS.":
+        "{name} wordt weggehaald uit {program} en van deze lijst. Wat al gedownload is, blijft op de NAS.",
+    "{name} is removed from {program} and from this list. What it downloaded so far stays on this PC.":
+        "{name} wordt weggehaald uit {program} en van deze lijst. Wat al gedownload is, blijft op deze pc.",
+    "{name} is removed from {program} and from this list. Its unfinished download is removed too; finished files stay.":
+        "{name} wordt weggehaald uit {program} en van deze lijst. De onvoltooide download gaat ook weg; voltooide bestanden blijven.",
+    "Clear finished downloads?": "Voltooide downloads wissen?",
+    "{n} finished download is removed from {program} and from this list. Its files stay where they are.":
+        "{n} voltooide download wordt weggehaald uit {program} en van deze lijst. De bestanden blijven waar ze zijn.",
+    "{n} finished downloads are removed from {program} and from this list. Their files stay where they are.":
+        "{n} voltooide downloads worden weggehaald uit {program} en van deze lijst. De bestanden blijven waar ze zijn.",
+    "Clear {n}": "{n} wissen",
+    "Paused at {percent} %": "Gepauzeerd op {percent} %",
+    "✓ Finished": "✓ Voltooid",
+    "Waiting for {program} to pick it up…": "Wacht tot {program} hem oppakt…",
+    "{program} never picked this up": "{program} heeft deze nooit opgepakt",
     # 2.0.7: app/ui/main_window.py
     "Couldn't look up {title} on TMDB": "Kon {title} niet opzoeken bij TMDB",
     # app/ui/trailer.py (the trailer player's Fill toggle)
@@ -891,7 +920,6 @@ NL: dict[str, str] = {
     "Ready": "Klaar",
     "Problem in {program}": "Probleem in {program}",
     "Problem": "Probleem",
-    "Not found in {program}": "Niet gevonden in {program}",
     "Not found": "Niet gevonden",
     "Status unknown": "Status onbekend",
     "Sent to your torrent program": "Naar je torrentprogramma gestuurd",
@@ -1037,6 +1065,13 @@ NL: dict[str, str] = {
     "DSM accepted the sign-in but returned no session.":
         "DSM aanvaardde de aanmelding maar gaf geen sessie terug.",
     "Download Station reported error {code}.": "Download Station meldde fout {code}.",
+    "Download Station couldn't do that with this download.":
+        "Download Station kon dat niet doen met deze download.",
+    "Download Station no longer has this download.": "Download Station heeft deze download niet meer.",
+    "Download Station can't do that with this download right now.":
+        "Download Station kan dat nu niet doen met deze download.",
+    "Download Station couldn't remove this download right now.":
+        "Download Station kon deze download nu niet weghalen.",
     "The NAS at {host} didn't answer in time.": "De NAS op {host} antwoordde niet op tijd.",
     "The connection to the NAS at {host} failed ({error}).":
         "De verbinding met de NAS op {host} is mislukt ({error}).",
@@ -1095,6 +1130,8 @@ NL: dict[str, str] = {
     # app/services/remote_downloads.py
     "AirGrabber can't read the downloads of {program}.":
         "AirGrabber kan de downloads van {program} niet lezen.",
+    "AirGrabber can't change the downloads of {program}.":
+        "AirGrabber kan de downloads van {program} niet aanpassen.",
     # app/services/tmdb.py
     "TMDB {path}: request failed ({error})": "TMDB {path}: verzoek mislukt ({error})",
     "TMDB API key is not set": "Er is geen TMDB-API-sleutel ingesteld",
@@ -1345,6 +1382,18 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "The Downloads page now shows everything in your torrent program, also what you added there yourself.":
+        "De Downloads-pagina toont nu alles uit je torrentprogramma, ook wat je daar zelf hebt toegevoegd.",
+    "Pause, resume or remove a download from its ⋯ menu; AirGrabber never deletes your files.":
+        "Pauzeer, hervat of verwijder een download via het ⋯-menu; AirGrabber verwijdert nooit je bestanden.",
+    "A damaged or wrong .torrent file is no longer sent to your torrent program.":
+        "Een beschadigd of verkeerd .torrent-bestand gaat niet meer naar je torrentprogramma.",
+    "Search again right in the search results window, and click the logo to go back to the calendar.":
+        "Zoek opnieuw in het venster met zoekresultaten, en klik op het logo om terug te gaan naar de kalender.",
+    "A calmer calendar: no suggestions in past weeks, and \"+ Track\" no longer reloads the page.":
+        "Een rustigere kalender: geen suggesties in voorbije weken, en \"+ Volgen\" laadt de pagina niet meer opnieuw.",
+    "MediaForge's Ignore menu stays open when you click it.":
+        "Het Negeren-menu van MediaForge blijft nu open als je erop klikt.",
     "Everyone at home can have their own series, watchlist and calendar: click your name at the top right.":
         "Iedereen thuis kan eigen series, een eigen kijklijst en kalender hebben: klik rechtsboven op je naam.",
     "Downloads now wait in a queue: click a whole season and close the window; the Downloads page shows what's waiting.":

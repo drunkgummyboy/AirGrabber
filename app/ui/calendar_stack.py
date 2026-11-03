@@ -21,7 +21,7 @@ queue, app/ui/queue_link.py), so each episode
 keeps its own state everywhere (the show window too); meanwhile the row shows "Downloading 2 of
 3…" (the batch's `BatchState`, which a card rebuilt mid-run picks up as well), afterwards the
 usual outcome. Once every aired episode is downloaded the row is a ✓ like a single card's; a
-click on it unfolds the rows. A stack with any episode still needed gets the amber left edge.
+click on it unfolds the rows.
 
 `CompactStackCard` is one slim line: the name, the range and a small "3" badge, then a small ⬇
 (download all still needed) or ✓. Clicking the name opens the show's window; a right-click (or
@@ -79,7 +79,6 @@ from app.ui.calendar_cards import (
     new_note,
 )
 from app.ui.calendar_face import (
-    MARK_WIDTH,
     PILL_PAD_X,
     EpisodeLayout,
     PillFace,
@@ -484,9 +483,8 @@ class _EpisodeRow:
 
 class StackCard(EpisodeCard):
     """Several episodes of one show on one day as one wide card (see the module docstring).
-    `missing`: the amber left edge (an episode still missing); `had`: the ids of the episodes
-    marked "I already have this"; `unfolded`: the rows open from the start; `on_fold(open)`
-    hears every fold and unfold."""
+    `had`: the ids of the episodes marked "I already have this"; `unfolded`: the rows open from
+    the start; `on_fold(open)` hears every fold and unfold."""
 
     def __init__(
         self,
@@ -497,7 +495,6 @@ class StackCard(EpisodeCard):
         actions: EpisodeActions,
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
-        missing: bool = False,
         had: Collection[int] = frozenset(),
         unfolded: bool = False,
         on_fold: Callable[[bool], None] | None = None,
@@ -519,7 +516,6 @@ class StackCard(EpisodeCard):
             actions=actions,
             scale=scale,
             on_open_show=on_open_show,
-            missing=missing,
         )
         self._on_fold = on_fold
         self._code_text = stack.range
@@ -758,7 +754,7 @@ class CompactStackCard(ctk.CTkFrame):
     """Several episodes of one show on an older day, on one slim line: the name and the range
     with a small "3" badge, then a small ⬇ (download all still needed) or ✓. Clicking the name
     opens the show's window; a right-click, or the ✓, opens a menu of the episodes (each opens
-    its search window). `missing`: the amber bar on the left edge and the note line."""
+    its search window). `missing`: the amber note line under it."""
 
     def __init__(
         self,
@@ -788,17 +784,6 @@ class CompactStackCard(ctk.CTkFrame):
         self._had = frozenset(had)
         self._look: IconLook | None = None
         show = stack.show
-        self.mark: ctk.CTkFrame | None = None
-        if missing:
-            self.mark = ctk.CTkFrame(
-                self,
-                width=MARK_WIDTH,
-                height=height - 2 * SLIM_RADIUS,
-                corner_radius=0,
-                fg_color=MISSING_COLOR,
-            )
-            self.mark.place(x=0, y=SLIM_RADIUS)
-
         line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
         line.pack(side="top", fill="x", padx=(SLIM_PAD_X, SLIM_PAD_RIGHT), pady=(SLIM_PAD_Y, 0))
         line.pack_propagate(False)

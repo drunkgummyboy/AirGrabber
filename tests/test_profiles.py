@@ -228,7 +228,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
             version = await db.fetch_one("PRAGMA user_version")
             assert version is not None
             self.assertEqual(version[0], len(MIGRATIONS))
-            self.assertEqual(len(MIGRATIONS), 8)
+            self.assertGreaterEqual(len(MIGRATIONS), 8)  # v9 (3.0.2): the seen marks
             people = await db.profiles.all()
             self.assertEqual(
                 [(p.id, p.name, p.colour) for p in people], [(1, None, ProfileColour.BLUE)]

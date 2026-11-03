@@ -1,5 +1,6 @@
 """Global search: live suggestions under the header search box and a results window,
-both covering TV shows (TVMaze) and movies (TMDB)."""
+both covering TV shows (TVMaze) and movies (TMDB). The results window has a search field of
+its own: a new search there runs in the same window."""
 
 from __future__ import annotations
 
@@ -21,11 +22,12 @@ from app.ui.borderless import clearance, make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import SearchShowCard
-from app.ui.dialog_kit import heading_row
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
 from app.ui.poster_card import POSTER_CARD_WIDTH, TrackState
 from app.ui.scrollable import ScrollableFrame
+from app.ui.spotlight import BUTTON_RADIUS, BUTTON_SIZE, ROW_HEIGHT
+from app.ui.spotlight_band import SEARCH_PLACEHOLDER
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, elide_to_width
 from app.ui.widgets import FlexGrid, LoadingBar
@@ -46,6 +48,8 @@ _FOCUS_CHECK_MS = 350
 _ROW_HEIGHT = 35
 _ROW_TEXT_INSET = 24  # the row button's own text padding plus the popup border
 _IGNORED_KEYS = frozenset({"Return", "KP_Enter", "Escape", "Tab", "Up", "Down", "Left", "Right"})
+FIELD_WIDTH = 420  # the results window's search field
+FIELD_GAP = 10  # its field -> its button
 
 
 def show_label(show: Show) -> str:
@@ -80,14 +84,14 @@ class SearchSuggestions:
         self,
         entry: ctk.CTkEntry,
         *,
-        root: ctk.CTk,
+        root: ctk.CTk | ctk.CTkToplevel,
         library: LibraryService,
         discovery: DiscoveryService,
         on_open: Callable[[str], None],
         profile: Callable[[], int],
     ) -> None:
-        """`profile`: the selected person, read at every lookup (the shows they follow get
-        a ✓)."""
+        """`root`: the window `entry` is in (the main window, or the search results window).
+        `profile`: the selected person, read at every lookup (the shows they follow get a ✓)."""
         self._entry = entry
         self._root = root
         self._library = library
@@ -305,7 +309,11 @@ class SearchResultsWindow(ctk.CTkToplevel):
 
     Both searches run at once; each section renders as soon as its own search is done. The cards
     are drawn at `card_scale`, the card size when the window opened: a window already open
-    keeps its size until the next search opens a new one.
+    keeps its size until the main window's search opens a new one.
+
+    The heading is a search field (with the header's suggestions): Enter or its 🔍 searches
+    again in this window (`search`). Ctrl+F goes to the field; Esc closes the suggestions, or
+    else the window.
     """
 
     WIDTH = 1150
@@ -351,34 +359,151 @@ class SearchResultsWindow(ctk.CTkToplevel):
         self._on_open_show = None if on_open_show is None else self._in_front(on_open_show)
         self._on_open_movie = None if on_open_movie is None else self._in_front(on_open_movie)
         self._cards: dict[int, SearchShowCard] = {}
+        self._searches: list[asyncio.Task[None]] = []
 
-        title = t("Search Results: {query}", query=query)
-        self.title(title)
+        self.title(t("Search Results: {query}", query=query))
         set_window_icon(self)
         self.transient(master)
         # CTkToplevel only applies its dark Windows title bar reliably from resizable().
         self.resizable(True, True)
         self._place_over(master)
 
-        # No title bar: the query shows in the heading, clear of the close button.
-        heading = heading_row(self, title, right_room=clearance(self.PAD))
+        # No title bar: the heading is the search field, clear of the close button.
+        heading = self._heading(query)
         heading.pack(fill="x", padx=self.PAD, pady=(self.PAD, 0))
         self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.pack(fill="both", expand=True, padx=self.PAD, pady=(12, self.PAD))
-        # One section per media type, each with its own loading bar until its search is done.
-        self._shows_section = self._section(t("📺 TV Shows"))
-        self._shows_loading: LoadingBar | None = self._loading_bar(self._shows_section)
-        self._movies_section = self._section(t("🎬 Movies"))
-        self._movies_loading: LoadingBar | None = self._loading_bar(self._movies_section)
-
-        self._searches: list[asyncio.Task[None]] = [
-            spawn(self._load_shows(), name="SearchResultsWindow.load_shows"),
-            spawn(self._load_movies(), name="SearchResultsWindow.load_movies"),
-        ]
+        self._shows_section: ctk.CTkFrame
+        self._shows_loading: LoadingBar | None
+        self._movies_section: ctk.CTkFrame
+        self._movies_loading: LoadingBar | None
+        self._new_sections()
+        self._start_searches()
+        self._suggestions = SearchSuggestions(
+            self.field,
+            root=self,
+            library=library,
+            discovery=discovery,
+            on_open=self.search,
+            profile=lambda: self._profile_id,
+        )
         self.bind("<Escape>", lambda _event: self.destroy())
+        for sequence in ("<Control-f>", "<Control-F>"):
+            self.bind(sequence, self.focus_field)
+        # Dragged by the heading row's background; the field and the 🔍 are controls.
         self.borderless = make_borderless(self, drag_widgets=(self, heading))
         # CTkToplevel can open behind its parent on Windows; raise it once it is mapped.
         self.after(150, self._activate)
+
+    # -- the search field --------------------------------------------------------------------
+
+    def _heading(self, query: str) -> ctk.CTkFrame:
+        """The search field (the header's look) with its 🔍 button, prefilled with `query`."""
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.grid_columnconfigure(2, weight=1)
+        self.field = ctk.CTkEntry(
+            row,
+            placeholder_text=t(SEARCH_PLACEHOLDER),
+            placeholder_text_color=theme.TEXT_MUTED,
+            text_color=theme.TEXT,
+            fg_color=theme.SURFACE,
+            border_color=theme.EDGE,
+            border_width=1,
+            corner_radius=ROW_HEIGHT // 2,  # a pill, like the header's
+            height=ROW_HEIGHT,
+            width=FIELD_WIDTH,
+            font=theme.font(14),
+        )
+        self.field.grid(row=0, column=0, sticky="w")
+        self.field.insert(0, query)
+        # Before SearchSuggestions' own Esc: with its dropdown open, Esc closes only that.
+        self.field.bind("<Escape>", self._on_field_escape)
+        self.field.bind("<Return>", lambda _event: self.search(self.field.get()))
+        self.field.bind("<FocusIn>", lambda _event: self._edge(theme.ACCENT))
+        self.field.bind("<FocusOut>", lambda _event: self._edge(theme.EDGE))
+        ctk.CTkButton(  # drawn like the header's square buttons
+            row,
+            text="🔍",
+            width=BUTTON_SIZE,
+            height=BUTTON_SIZE,
+            corner_radius=BUTTON_RADIUS,
+            fg_color=theme.SURFACE,
+            hover_color=theme.HOVER,
+            border_width=1,
+            border_color=theme.EDGE,
+            text_color=theme.BUTTON_TEXT,
+            font=theme.font(15),
+            command=lambda: self.search(self.field.get()),
+        ).grid(row=0, column=1, sticky="w", padx=(FIELD_GAP, 0))
+        ctk.CTkFrame(row, width=clearance(self.PAD), height=1, fg_color="transparent").grid(
+            row=0, column=3
+        )
+        return row
+
+    def _edge(self, colour: theme.Color) -> None:
+        if self.field.winfo_exists():
+            self.field.configure(border_color=colour)
+
+    def _on_field_escape(self, _event: tk.Event[Any]) -> str | None:
+        if self._suggestions.visible:
+            self._suggestions.hide()
+            return "break"  # not the window's own Esc
+        return None
+
+    def focus_field(self, _event: tk.Event[Any] | None = None) -> str:
+        """Ctrl+F: the focus in the search field, its text selected (typing replaces it)."""
+        self.field.focus_set()
+        if self.field.get():  # "" while the placeholder shows
+            self.field.select_range(0, "end")
+            self.field.icursor("end")
+        return "break"
+
+    @property
+    def query(self) -> str:
+        return self._query
+
+    def search(self, query: str) -> None:
+        """Search again for `query` in this window (nothing for a blank one): the running
+        searches stop, both sections empty and load again."""
+        query = query.strip()
+        if not query:
+            return
+        self._suggestions.hide()
+        self._cancel_searches()
+        self._query = query
+        self.title(t("Search Results: {query}", query=query))
+        if self.field.get() != query:  # a suggestion picked: the field shows its name
+            self.field.delete(0, "end")
+            self.field.insert(0, query)
+        self.field.select_range(0, "end")
+        self.field.icursor("end")
+        self._shows_section.destroy()
+        self._movies_section.destroy()
+        self._cards = {}
+        self._new_sections()
+        self._body._parent_canvas.yview_moveto(0)  # CTk has no scroll API
+        self._start_searches()
+
+    def _new_sections(self) -> None:
+        """One section per media type, each with its own loading bar until its search is
+        done."""
+        self._shows_section = self._section(t("📺 TV Shows"))
+        self._shows_loading = self._loading_bar(self._shows_section)
+        self._movies_section = self._section(t("🎬 Movies"))
+        self._movies_loading = self._loading_bar(self._movies_section)
+
+    def _start_searches(self) -> None:
+        query = self._query
+        self._searches = [
+            spawn(self._load_shows(query), name="SearchResultsWindow.load_shows"),
+            spawn(self._load_movies(query), name="SearchResultsWindow.load_movies"),
+        ]
+
+    def _cancel_searches(self) -> None:
+        for task in self._searches:
+            if not task.done():
+                task.cancel()
+        self._searches = []
 
     # -- layout ------------------------------------------------------------------------------
 
@@ -417,6 +542,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
         if self.winfo_exists():
             self.lift()
             self.focus_force()
+            self.focus_field()
 
     def _in_front[T](self, open_window: Callable[[T], object]) -> Callable[[T], None]:
         """`open_window`, with the window it opens (or raises) brought in front of this one."""
@@ -428,20 +554,20 @@ class SearchResultsWindow(ctk.CTkToplevel):
 
     # -- shows -------------------------------------------------------------------------------
 
-    async def _load_shows(self) -> None:
+    async def _load_shows(self, query: str) -> None:
         try:
             results = await self._library.search(
-                self._query, profile_id=self._profile_id, limit=RESULTS_LIMIT
+                query, profile_id=self._profile_id, limit=RESULTS_LIMIT
             )
         except TVMazeError as exc:
-            if self.winfo_exists():
+            if self.winfo_exists() and query == self._query:
                 self._clear_shows_loading()
                 self._message(
                     self._shows_section, t("Couldn't reach TVMaze: {error}", error=exc), theme.DANGER
                 )
             return
-        if not self.winfo_exists():
-            return
+        if not self.winfo_exists() or query != self._query:
+            return  # closed, or searched again meanwhile
         self._clear_shows_loading()
         if not results:
             self._message(self._shows_section, t("No TV shows found."), theme.TEXT_QUIET)
@@ -488,16 +614,16 @@ class SearchResultsWindow(ctk.CTkToplevel):
 
     # -- movies ------------------------------------------------------------------------------
 
-    async def _load_movies(self) -> None:
+    async def _load_movies(self, query: str) -> None:
         try:
-            movies = await self._discovery.search_movies(self._query, limit=RESULTS_LIMIT)
+            movies = await self._discovery.search_movies(query, limit=RESULTS_LIMIT)
         except TMDBError as exc:
-            if self.winfo_exists():
+            if self.winfo_exists() and query == self._query:
                 self._clear_movies_loading()
                 self._movie_error(exc)
             return
-        if not self.winfo_exists():
-            return
+        if not self.winfo_exists() or query != self._query:
+            return  # closed, or searched again meanwhile
         self._clear_movies_loading()
         if not movies:
             self._message(self._movies_section, t("No movies found."), theme.TEXT_QUIET)
@@ -564,8 +690,8 @@ class SearchResultsWindow(ctk.CTkToplevel):
             pass
 
     def destroy(self) -> None:
-        for task in self._searches:
-            if not task.done():
-                task.cancel()
-        self._searches = []
+        self._cancel_searches()
+        suggestions: SearchSuggestions | None = getattr(self, "_suggestions", None)
+        if suggestions is not None:
+            suggestions.destroy()
         super().destroy()

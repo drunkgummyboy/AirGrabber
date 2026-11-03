@@ -3,7 +3,8 @@ sends every grab there, FOLDER the releases without a .torrent file.
 
 `client()` picks the client for `Settings.remote_kind` on every call, and each client reads the
 address and account from the settings on every operation, so a change in Settings applies at
-once. `status` / `free_space` are the Downloads page's read-only calls. The qBittorrent on this
+once. `status` / `free_space` are the Downloads page's read-only calls; `pause` / `resume` /
+`remove` its ⋯ menu's (by `RemoteTask.task_id`, files never deleted). The qBittorrent on this
 PC that AirGrabber set up is started when it isn't running (app/services/qbittorrent_local.py).
 """
 
@@ -28,6 +29,7 @@ from app.services.remote import (
     RemoteClient,
     RemoteError,
     RemoteStatusClient,
+    RemoteTaskActions,
 )
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
@@ -100,3 +102,29 @@ class RemoteDownloads:
         if not isinstance(client, RemoteStatusClient):
             return None
         return await client.free_space()
+
+    @property
+    def on_this_pc(self) -> bool:
+        """The program in Settings runs on this PC (its address is 127.0.0.1 / localhost)."""
+        return local_port(self._settings.current.remote_url) is not None
+
+    async def pause(self, task_ids: Collection[str]) -> None:
+        """Pause these tasks (by `RemoteTask.task_id`). Raises RemoteError."""
+        await self._actions().pause(task_ids)
+
+    async def resume(self, task_ids: Collection[str]) -> None:
+        """Resume these tasks. Raises RemoteError."""
+        await self._actions().resume(task_ids)
+
+    async def remove(self, task_ids: Collection[str]) -> None:
+        """Remove these tasks from the program; their files stay (see each client). Raises
+        RemoteError."""
+        await self._actions().remove(task_ids)
+
+    def _actions(self) -> RemoteTaskActions:
+        client = self.client()
+        if not isinstance(client, RemoteTaskActions):
+            raise RemoteError(
+                t("AirGrabber can't change the downloads of {program}.", program=client.kind.program)
+            )
+        return client

@@ -74,12 +74,15 @@ from app.models.downloads import (
     DownloadsOverview,
     DownloadState,
     FreeSpace,
+    ListedDownload,
     QueuedItem,
     QueueEvent,
     QueueKey,
     QueueState,
+    Recognised,
     RemoteStatus,
     RemoteTask,
+    TaskEntry,
 )
 from app.models.profiles import FIRST_PROFILE_ID, Profile, ProfileColour
 from app.models.spotlight import Spotlight, SpotlightItem, SpotlightReason, SpotlightSide
@@ -104,8 +107,11 @@ __all__ = [
     "DownloadState",
     "DownloadsOverview",
     "FreeSpace",
+    "ListedDownload",
+    "Recognised",
     "RemoteStatus",
     "RemoteTask",
+    "TaskEntry",
     "QueuedItem",
     "QueueEvent",
     "QueueKey",

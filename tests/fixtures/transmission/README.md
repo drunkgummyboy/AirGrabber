@@ -14,3 +14,7 @@ https://github.com/transmission/transmission/blob/4.0.x/docs/rpc-spec.md
   error / 3 local error, `percentDone` 0…1, `isFinished`)
 - `free_space.json`: `free-space` (section 4.4: `path`, `size-bytes`, and `total_size` from
   Transmission 4.0)
+- `torrent_get.json` also has `totalSize` and `addedDate` (section 3.3: bytes, and the Unix time
+  the torrent was added), which the Downloads page sorts and shows
+- `torrent_action.json`: the answer to `torrent-stop`, `torrent-start` and `torrent-remove`
+  (sections 3.1 and 3.4: no arguments, "success"; `torrent-remove` takes `delete-local-data`)

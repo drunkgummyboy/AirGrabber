@@ -587,6 +587,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             report=self._report,
             profile=lambda: services.profiles.current_id,  # the Series side's episodes
             on_person=self._open_people_menu,  # the name button
+            on_home=self._go_home,  # the logo and "AirGrabber": Series › Calendar
         )
         self._band.grid(row=0, column=0, sticky="ew")
         self._show_person()
@@ -914,8 +915,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _go_home(self) -> None:
         """The start page, Series › Calendar: at start and when a plain Open brings the window
-        back from the tray (TrayHost.open_window). A window shown for a purpose (Settings, an
-        update, a notification) keeps its page."""
+        back from the tray (TrayHost.open_window), and a click on the band's logo. A window
+        shown for a purpose (Settings, an update, a notification) keeps its page."""
         self._select_mode(Mode.SERIES)
         calendar = t(_CALENDAR)
         if self._series_tabs.get() != calendar:
@@ -1009,11 +1010,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if settings_affect_pages(previous, updated):
             self._reload_pages()
 
-    def _reload_pages(self) -> None:
-        """Settings or library changed: every page is outdated; reload the one on screen now."""
+    def _reload_pages(self, *, quiet: bool = False) -> None:
+        """Settings or library changed: every page is outdated; reload the one on screen now
+        (`quiet`, a library change: without a visible rebuild, BaseView.refresh_quietly)."""
         for view in (*self._series_views.values(), self._movie_view):
             view.invalidate()
-        self._visible_view().refresh()
+        if quiet:
+            self._visible_view().refresh_quietly()
+        else:
+            self._visible_view().refresh()
         self._band.reload()  # tonight's episodes, a new TMDB key's pictures
 
     def _on_search(self) -> None:
@@ -1248,7 +1253,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             pass  # window already destroyed
 
     def _on_library_changed(self) -> None:
-        self._reload_pages()
+        self._reload_pages(quiet=True)
         # Also replaces a lingering "Syncing library…" message (unless a timed one is showing).
         spawn(self._show_library_summary(), name="library-summary")
 

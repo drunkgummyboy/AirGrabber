@@ -397,12 +397,14 @@ class OverviewTests(ServiceTestCase):
         self.assertEqual(overview.in_progress, 1)
         self.assertEqual(self.station.asked, [frozenset()])  # one grab has no hash: ask for all
 
-    async def test_asks_only_for_the_hashes_when_every_grab_has_one(self) -> None:
+    async def test_in_sync_it_asks_for_every_task(self) -> None:
+        # 3.0.2: the page lists every task the program has, so it never asks for just some.
         await self.add(record("A.S01E01", episode=1, info_hash=HASH_A))
         await self.add(record("B.S01E02", episode=2, info_hash=HASH_B))
         await self.add(record("C.S01E03", episode=3, saved_path="uTorrent"))  # not asked about
-        await self.service.check()
-        self.assertEqual(self.station.asked, [frozenset({HASH_A, HASH_B})])
+        overview = await self.service.check()
+        self.assertEqual(self.station.asked, [frozenset()])
+        self.assertTrue(overview.synced)
 
     async def test_the_torrent_program_on_this_pc_gives_no_progress(self) -> None:
         await self.settings.update(download_mode=DownloadMode.APP)
@@ -421,11 +423,13 @@ class OverviewTests(ServiceTestCase):
         self.assertEqual(overview.problem, "Can't reach the NAS at 192.168.1.20:5000.")
         self.assertEqual(overview.entries[0].state, DownloadState.UNKNOWN)
 
-    async def test_nothing_to_ask_about_asks_nothing(self) -> None:
+    async def test_without_grabs_the_program_is_still_asked(self) -> None:
+        # 3.0.2: its own tasks show too.
         overview = await self.service.check()
-        self.assertEqual(overview.entries, ())
-        self.assertEqual(self.station.asked, [])
+        self.assertEqual((overview.entries, overview.tasks), ((), ()))
+        self.assertEqual(self.station.asked, [frozenset()])
         self.assertEqual(overview.program, "Download Station")
+        self.assertTrue(overview.synced)
 
     async def test_folder_mode_matches_the_watch_folders_files(self) -> None:
         await self.settings.update(download_mode=DownloadMode.FOLDER, download_dir="D:/watch")

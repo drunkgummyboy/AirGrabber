@@ -91,10 +91,16 @@ class TextTests(unittest.TestCase):
             state_text(DownloadState.DOWNLOADING, 0.4216, program), "Downloading 42 %"
         )
         self.assertEqual(state_text(DownloadState.WAITING, None, program), "Waiting")
-        self.assertEqual(state_text(DownloadState.STOPPED, 0.1, program), "Stopped")
-        self.assertEqual(state_text(DownloadState.READY, 1.0, program), "Ready")
+        # 3.0.2, as the mockup has them.
+        self.assertEqual(state_text(DownloadState.STOPPED, 0.634, program), "Paused at 63 %")
+        self.assertEqual(state_text(DownloadState.READY, 1.0, program), "✓ Finished")
         self.assertEqual(
-            state_text(DownloadState.NOT_FOUND, None, program), "Not found in Download Station"
+            state_text(DownloadState.PENDING, None, program),
+            "Waiting for Download Station to pick it up…",
+        )
+        self.assertEqual(
+            state_text(DownloadState.NOT_FOUND, None, program),
+            "Download Station never picked this up",
         )
         self.assertEqual(
             state_text(DownloadState.PROBLEM, 0.3, "qBittorrent"), "Problem in qBittorrent"
@@ -250,7 +256,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
             found += WidgetTests.texts(child)
         return found
 
-    async def test_rows_update_in_place_then_rebuild(self) -> None:
+    async def test_rows_update_in_place_and_are_kept_by_grab(self) -> None:
         page = self.view()
         self.status.next = DownloadsOverview(
             entries=(entry(1, subtitles=("nl", "en")), entry(2, DownloadState.READY, 1.0)),
@@ -264,10 +270,11 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         texts = self.texts(page)
         self.assertIn("Fallout S02E01", texts)
         self.assertIn("Downloading 42 %", texts)
-        self.assertIn("Ready", texts)
+        self.assertIn("✓ Finished", texts)
         self.assertIn("  ·  Subtitles EN NL", texts)
+        assert rows[0]._bar is not None
         self.assertEqual(rows[0]._bar.winfo_manager(), "pack")
-        self.assertEqual(rows[1]._bar.winfo_manager(), "")
+        self.assertIsNone(rows[1]._bar)  # made only when needed
 
         # Same grabs: the rows stay, their states change.
         self.status.publish(
@@ -281,13 +288,14 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page._rows, rows)
         self.assertEqual(rows[0]._bar.winfo_manager(), "")
 
-        # A new grab: rebuilt; a row opens its show.
+        # A new grab: one new row on top, the others kept (3.0.2); a row opens its show.
         self.status.publish(
-            DownloadsOverview(entries=(entry(3), entry(1), entry(2)), program="Download Station")
+            DownloadsOverview(entries=(entry(0), entry(1), entry(2)), program="Download Station")
         )
         self.root.update()
         self.assertEqual(len(page._rows), 3)
-        self.assertNotIn(rows[0], page._rows)
+        self.assertEqual(page._rows[1:], rows)
+        self.assertEqual(int(rows[0].grid_info()["row"]), 2)  # moved down one
         page._rows[0]._clicked()
         self.assertEqual(self.opened, [FALLOUT])
 

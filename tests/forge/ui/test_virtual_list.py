@@ -211,6 +211,24 @@ class VirtualListTests(TkCase):
         await pump(self.root, 0.05)
         self.assertEqual(pressed, [(-10, "rename"), (-10, "choose")])
 
+    async def test_a_band_button_keeps_the_focus_its_menu_took(self) -> None:
+        # A button may open a menu, which takes the focus: CTk's own click on "all" (the focus
+        # to the clicked widget) ran after it, took it back and the menu closed at once.
+        vlist = await self.make_list()
+        calls: list[str] = []
+        vlist.on_action = lambda key, action: calls.append(action)
+        vlist.set_rows(band_rows(2))
+        await pump(self.root, 0.05)
+        with mock.patch.object(vlist.canvas, "focus_set", side_effect=lambda: calls.append("focus")):
+            x, y = vlist.action_point(-10, "rename")
+            vlist.canvas.event_generate("<Button-1>", x=x, y=y)
+            self.assertEqual(calls, ["focus", "rename"])  # nothing takes the focus after it
+            calls.clear()
+            first = next(r.key for r in vlist.rows if r.kind == "item")
+            vlist.canvas.event_generate("<Button-1>", x=200, y=vlist.row_middle(first))
+            self.assertIn("focus", calls)  # a line: the keys move from there
+            self.assertEqual(vlist.selected, first)
+
     async def test_band_draws_without_images(self) -> None:
         # No TMDB key, offline or no picture: a tinted band with initials.
         vlist = await self.make_list()

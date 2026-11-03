@@ -17,7 +17,8 @@ colour, the status as a dot and a word, and the band's buttons, which show only 
 is over the band or one of its lines (`hover_actions`; a band that needs the owner always shows
 them). A done band is drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always
 shown) sits under its status, the status moving up to the title's line; a click on it is the
-band's action "preset" (`chip_box` gives where it is). `select_bands`: a click on a band selects
+band's action "preset" (`chip_box` gives where it is, `action_box` any button's). A click on a
+button stops there: CTk's click on "all" would take back the focus from a menu it opened. `select_bands`: a click on a band selects
 its first line. Sizes come from `Sizes` (the queue's are bigger
 than the confirm window's and History's).
 """
@@ -713,10 +714,22 @@ class VirtualList(ctk.CTkFrame):
 
     def chip_box(self, key: int) -> tuple[int, int, int, int] | None:
         """Where band `key`'s preset chip was drawn last (canvas coordinates), or None."""
-        for x0, y0, x1, y1, hit_key, action in self._hits:
-            if hit_key == key and action == "preset":
+        return self.action_box(key, "preset")
+
+    def action_box(self, key: int, action: str) -> tuple[int, int, int, int] | None:
+        """Where band `key`'s button `action` was drawn last (canvas coordinates), or None."""
+        for x0, y0, x1, y1, hit_key, hit_action in self._hits:
+            if hit_key == key and hit_action == action:
                 return x0, y0, x1, y1
         return None
+
+    def screen_box(self, box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """A canvas box as (x, y, width, height) on the screen: where a menu opens under it."""
+        x0, y0, x1, y1 = box
+        canvas = self.canvas
+        left = round(canvas.winfo_rootx() + x0 - canvas.canvasx(0))
+        top = round(canvas.winfo_rooty() + y0 - canvas.canvasy(0))
+        return left, top, x1 - x0, y1 - y0
 
     def _draw_state(self, p: _Colours, row: Row, right: int, middle: float) -> int:
         """A band's status as a coloured dot and word ending at `right`; returns the x left of
@@ -921,22 +934,24 @@ class VirtualList(ctk.CTkFrame):
         """As the pointer over band `key` (None: over nothing): for tests."""
         self._set_hover(None, key)
 
-    def _on_click(self, event: tk.Event[Any]) -> None:
+    def _on_click(self, event: tk.Event[Any]) -> str | None:
         self.canvas.focus_set()
         cy = self.canvas.canvasy(event.y)
         for x0, y0, x1, y1, key, action in self._hits:
             if x0 <= event.x <= x1 and y0 <= cy <= y1:
                 self.on_action(key, action)
-                return
+                # A button's menu (Ignore, the chip) took the focus: CTk's own click on "all"
+                # (focus to the clicked widget) would pull it back and close the menu at once.
+                return "break"
         index = self._row_at(cy)
         if index is not None and self.select_bands and self._rows[index].kind == "band":
             band = self._rows[index].key
             first = next((r.key for r in self._rows if r.band == band), None)
             if first is not None:
                 self.select(first)
-            return
+            return None
         if index is None or self._rows[index].kind != "item":
-            return
+            return None
         row = self._rows[index]
         box_right = self._pad + 4 + self._box + 6
         if row.checked is not None and event.x <= box_right:
@@ -949,3 +964,4 @@ class VirtualList(ctk.CTkFrame):
             self.on_remove(row.key)
         else:
             self.select(row.key)
+        return None

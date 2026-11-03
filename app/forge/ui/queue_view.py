@@ -1594,7 +1594,7 @@ class QueueView(ctk.CTkFrame):
         elif action == "undo":
             self.spawn(self.undo_band(ids))
         elif action == "ignore":
-            self.ignore_menu(ids)
+            self.ignore_menu(ids, key)
         elif action == "preset":
             self._chip_menu(key, ids)
         elif action == "choose":
@@ -1628,9 +1628,16 @@ class QueueView(ctk.CTkFrame):
             )
         return choices
 
-    def ignore_menu(self, ids: Sequence[int]) -> None:
-        """The band's Ignore button: its menu at the pointer."""
-        popup_menu(self, self.ignore_choices(ids), point=self.winfo_pointerxy(), look=self.look)
+    def ignore_menu(self, ids: Sequence[int], key: int | None = None) -> None:
+        """The Ignore button of band `key`: its menu under the button, left edges lined up so
+        the band's chip stays in sight (at the pointer when the button isn't drawn)."""
+        choices = self.ignore_choices(ids)
+        box = self.list.action_box(key, "ignore") if key is not None else None
+        if box is None:
+            popup_menu(self, choices, point=self.winfo_pointerxy(), look=self.look)
+        else:
+            under = self.list.screen_box(box)
+            popup_menu(self, choices, under=under, look=self.look, align="left")
 
     def _spawn_ignore(self, coro: Coroutine[Any, Any, None]) -> None:
         self.spawn(coro)

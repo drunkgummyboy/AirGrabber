@@ -831,6 +831,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             report=lambda text, ms: self.events.append(("report", text, ms)),
             profile=lambda: self.person,
             on_person=lambda: self.events.append("person"),
+            on_home=lambda: self.events.append("home"),
             clock=lambda: NOW,
         )
         band.pack(fill="x")
@@ -900,6 +901,39 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             [band._px(layout.forge.x + layout.forge.w / 2), band._px(layout.forge.y + layout.forge.h / 2)],
         )
         self.assertEqual(option(band, band._forge_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
+
+    async def test_the_logo_and_the_wordmark_go_home(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        layout = band.layout
+        assert layout is not None
+        scale = band._scale
+
+        def at(x: float, y: float) -> SimpleNamespace:
+            return SimpleNamespace(x=round(x * scale), y=round(y * scale))
+
+        logo = at(layout.logo.x + layout.logo.w / 2, layout.logo.y + layout.logo.h / 2)
+        word = at(layout.brand.right - 4, layout.brand.y + layout.brand.h / 2)
+        for point in (logo, word):
+            band._on_motion(point)
+            self.assertEqual(str(band.cget("cursor")), "hand2")
+            band._on_press(point)
+            band._on_release(point)
+        self.assertEqual(self.events, ["home", "home"])
+        # Off it: the normal pointer again, and no home.
+        band._on_leave(None)
+        self.assertEqual(str(band.cget("cursor")), "")
+        band._on_motion(logo)
+        band._on_motion(at(layout.brand.right + 2, 4))  # the background up top
+        self.assertEqual(str(band.cget("cursor")), "")
+        band._on_press(logo)
+        band._on_release(at(layout.brand.right + 2, 4))  # let go elsewhere
+        self.assertEqual(self.events, ["home", "home"])
+        # The field's cursor still follows its own rule next to it.
+        field = at(layout.search.x + layout.search.w / 2, layout.search.y + layout.search.h / 2)
+        band._on_motion(field)
+        self.assertEqual(str(band.cget("cursor")), "xterm")
 
     async def test_the_forge_tip(self) -> None:
         band = self.band()

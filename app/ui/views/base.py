@@ -26,6 +26,11 @@ class BaseView(ctk.CTkFrame, ABC):
 
     A view starts out stale; `invalidate()` marks it stale again when its data changed, and
     `refresh_if_stale()` reloads only then, so showing an unchanged page again costs nothing.
+
+    `refresh_quietly()` is `refresh()` for a page on screen whose data changed under it (a
+    show tracked, say): `load()` finds `quiet_load` set and, where the page knows how, keeps
+    what it shows until the new content is ready, without a blank or loading state and with
+    its scroll position. Pages that don't look at it reload as `refresh()` does.
     """
 
     def __init__(self, master: Any, **kwargs: Any) -> None:
@@ -33,15 +38,26 @@ class BaseView(ctk.CTkFrame, ABC):
         super().__init__(master, **kwargs)
         self._load_task: asyncio.Task[None] | None = None
         self._stale = True
+        # Whether the load just started came from `refresh_quietly`. Set before the load's
+        # task starts: `load()` reads it before its first await.
+        self.quiet_load = False
 
     @abstractmethod
     async def load(self) -> None:
         """Fetch data from the services and render it."""
 
     def refresh(self) -> None:
+        self._start_load(quiet=False)
+
+    def refresh_quietly(self) -> None:
+        """Load again with `quiet_load` set (see the class docstring)."""
+        self._start_load(quiet=True)
+
+    def _start_load(self, *, quiet: bool) -> None:
         self._stale = False
         if self._load_task is not None and not self._load_task.done():
             self._load_task.cancel()
+        self.quiet_load = quiet
         task = spawn(self.load(), name=f"{type(self).__name__}.load")
         task.add_done_callback(self._load_finished)
         self._load_task = task

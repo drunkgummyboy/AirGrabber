@@ -35,3 +35,9 @@ tests/test_qbittorrent_setup.py:
   `Password_PBKDF2` = the built-in hash of "adminadmin" (the default in 4.2.0's and
   4.3.9's src/base/preferences.cpp `getWebUIPassword`), written as QSettings writes a QByteArray
   (`"@ByteArray(…)"`, quoted for its "="), for tests/test_qbittorrent_webui.py
+
+The Downloads page's ⋯ menu (no fixture needed: qBittorrent answers 200 with an empty body):
+`POST /api/v2/torrents/stop` and `torrents/start` (WebAPI 2.11, qBittorrent 5.0; before that
+`torrents/pause` / `torrents/resume`, and an unknown action answers 404), `torrents/delete` with
+`deleteFiles=false` (all with `hashes=a|b`): `TorrentsController::stopAction` / `startAction` /
+`deleteAction`, src/webui/api/torrentscontroller.cpp.

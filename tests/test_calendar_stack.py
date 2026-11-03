@@ -22,7 +22,7 @@ from app.i18n import Language
 from app.models import CalendarEntry, CardSize, Episode, GrabOutcome, Show
 from app.services import ImageCache
 from app.ui import theme
-from app.ui.calendar_cards import SLIM_ICON, SLIM_ICON_GAP, IconLook
+from app.ui.calendar_cards import SLIM_ICON, SLIM_ICON_GAP, IconLook, _rgb
 from app.ui.calendar_face import (
     STACK_BEHIND,
     CapFace,
@@ -529,13 +529,13 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         opened: list[Show] = []
         images = FakeImages()
         stack = self.stack()
-        card = self.card(stack, images, missing=True, on_open_show=opened.append)
+        card = self.card(stack, images, on_open_show=opened.append)
         await self.lay_out(card)
         self.assertEqual(self.text(card, card._code), "S01E07 – E09")
         self.assertEqual(self.text(card, card._pill_text), "3 episodes ▾")
-        self.assertEqual(self.text(card, card._note), "")  # the amber edge only
+        self.assertEqual(self.text(card, card._note), "")  # no note, no amber edge either
         (used,) = images.faces
-        self.assertIsNotNone(used.mark)
+        self.assertEqual(used.edge, _rgb(card, theme.EDGE))
         assert used.stack is not None
         self.assertEqual(len(used.stack.fills), STACK_BEHIND)
         # The cards behind it reach past the front card's bottom.
@@ -645,7 +645,9 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(card.badge.cget("text"), "3")
         self.assertEqual(card.range_label.cget("text"), "S01E07 – E09")
-        assert card.note is not None and card.mark is not None
+        assert card.note is not None
+        own = getattr(card, "_canvas", None)
+        self.assertEqual([w for w in card.place_slaves() if w is not own], [])  # no amber bar
         assert card.open_show is not None
         card.open_show()
         self.assertEqual(opened, [stack.show])

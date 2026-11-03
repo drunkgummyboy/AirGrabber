@@ -5,9 +5,9 @@ baked images are in app/ui/calendar_face.py; the compact and suggestion cards ke
 only their fonts follow the card size (never below the readable minimums).
 
 A missing episode (app.services.missing's rule: aired at least a day ago, not downloaded, not
-marked "I already have this"; the view hands the cards `missing`) gets an amber left edge and
-an amber "Not downloaded yet" under its code, on the full and the compact cards alike; a new
-one (aired less than a day ago, `new`) only a quiet blue "New" there. Clicking a show's
+marked "I already have this"; the view hands the cards `missing`) gets an amber "Not downloaded
+yet" under its code, on the full and the compact cards alike; a new one (aired less than a day
+ago, `new`) a quiet blue "New" there instead. Clicking a show's
 name (full cards: also the poster) opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
@@ -30,7 +30,6 @@ from app.models import CalendarEntry, Show
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.calendar_face import (
-    MARK_WIDTH,
     STACK_BEHIND,
     TITLE_MAX_LINES,
     EpisodeLayout,
@@ -64,6 +63,7 @@ from app.ui.download_control import (
     fit_text,
 )
 from app.ui.missing_control import MISSING_COLOR
+from app.ui.poster_card import FOLLOWING_TEXT
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.text_fit import (
@@ -106,7 +106,7 @@ REBAKE_MS = 150  # after a column stops changing width, the poster piece is bake
 MEDIUM_POSTER_WIDTH = 210
 
 # Compact cards (older days): one slim line, the name and the code with small buttons at the
-# right; a missing episode adds the amber note under it and an amber bar on the left edge.
+# right; a missing episode adds the amber note under it.
 SLIM_LINE = 24  # the line's height
 SLIM_ICON = 22  # the square ⬇ / ✓ button and the ⋯ beside it
 SLIM_ICON_GAP = 4  # between the two buttons
@@ -298,8 +298,7 @@ class EpisodeCard(ctk.CTkFrame):
     left side and fades into the card; the show's name, the episode code and the bottom row
     (a muted "Not aired", else the Download row) sit on the right, over the faded part.
     Clicking the poster or the name opens the show's window (`on_open_show`). A `missing`
-    episode gets an amber left edge and the amber note under its code, a `new` one the blue
-    "New" note.
+    episode gets the amber note under its code, a `new` one the blue "New" note.
 
     Everything but the Download row is drawn on one canvas (see app/ui/calendar_face.py): the
     baked poster piece and right cap, the stretch between them, and the texts. Switching
@@ -321,7 +320,6 @@ class EpisodeCard(ctk.CTkFrame):
         missing: bool = False,
         new: bool = False,
     ) -> None:
-        self._missing = missing
         self._new = new and not missing
         layout = self._card_layout(scale, missing or self._new)
         super().__init__(
@@ -567,14 +565,12 @@ class EpisodeCard(ctk.CTkFrame):
         stack = self._stack_edges(scaling)
         front_height = height - (stack.depth if stack is not None else 0)
         cap = cap_face(layout, scaling, front_height, stack=stack, **colors)
-        mark = _rgb(self, MISSING_COLOR) if self._missing else None
         face = poster_face(
             layout,
             area,
             scaling,
             front_height,
             placeholder=_rgb(self, theme.PLACEHOLDER),
-            mark=mark,
             stack=stack,
             **colors,
         )
@@ -759,9 +755,8 @@ class SlimDownload(ctk.CTkFrame):
 
 class CompactEpisodeCard(ctk.CTkFrame):
     """A tracked episode on one slim line (older days): the show's name and the episode code,
-    then small buttons (SlimDownload). A `missing` episode adds the amber note under the line
-    and an amber bar on the card's left edge, a `new` one only the blue "New" note. Clicking
-    the name opens the show's window
+    then small buttons (SlimDownload). A `missing` episode adds the amber note under the line,
+    a `new` one the blue "New" note. Clicking the name opens the show's window
     (`on_open_show`); a right-click anywhere opens the search window, as the ⋯ does."""
 
     def __init__(
@@ -787,17 +782,6 @@ class CompactEpisodeCard(ctk.CTkFrame):
         )
         self.pack_propagate(False)
         show = entry.show
-        self.mark: ctk.CTkFrame | None = None
-        if missing:
-            self.mark = ctk.CTkFrame(
-                self,
-                width=MARK_WIDTH,
-                height=height - 2 * SLIM_RADIUS,
-                corner_radius=0,
-                fg_color=MISSING_COLOR,
-            )
-            self.mark.place(x=0, y=SLIM_RADIUS)
-
         line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
         line.pack(side="top", fill="x", padx=(SLIM_PAD_X, SLIM_PAD_RIGHT), pady=(SLIM_PAD_Y, 0))
         line.pack_propagate(False)
@@ -973,8 +957,9 @@ class SuggestionCard(ctk.CTkFrame):
         spawn(self._track_show(), name="SuggestionCard.track")
 
     async def _track_show(self) -> None:
-        # On success the library notifies its listeners and the window reloads the calendar,
-        # which replaces this card with the show's tracked episode.
+        # On success the library notifies its listeners and the window reloads the calendar
+        # quietly (CalendarView.load), which replaces this card with the show's tracked
+        # episode; until then the button says the show is followed.
         try:
             await self._library.track(self._show.id, profile_id=self._profile_id)
         except TVMazeError as exc:
@@ -984,3 +969,6 @@ class SuggestionCard(ctk.CTkFrame):
                 t("Couldn't track {name}: {error}", name=self._show.name, error=exc),
                 clear_after_ms=6000,
             )
+            return
+        if self._track_button.winfo_exists():
+            self._track_button.configure(text=t(FOLLOWING_TEXT))

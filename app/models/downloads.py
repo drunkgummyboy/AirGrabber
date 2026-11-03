@@ -1,10 +1,13 @@
 """The Downloads page's models: what the torrent program on a NAS or another computer says about
 its tasks (RemoteTask, RemoteStatus), the recent grabs with their state and where MediaForge
-moved them (DownloadEntry, MovedTo, DownloadsOverview) and the free space of the folder downloads end up in (FreeSpace).
+moved them (DownloadEntry, MovedTo, DownloadsOverview), the tasks added in the torrent program
+itself (TaskEntry, with what AirGrabber recognised them as: Recognised) and the free space of the
+folder downloads end up in (FreeSpace).
 The download queue's states and events (QueueState, QueueEvent, QueuedItem)."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pydantic import Field
@@ -28,13 +31,15 @@ class DownloadState(StrEnum):
     STOPPED = "stopped"  # paused before it was complete
     READY = "ready"  # complete (seeding, or stopped once complete)
     PROBLEM = "problem"  # the program reports an error for it (disk full, files missing)
-    NOT_FOUND = "not_found"  # the program answered but doesn't have it (removed?)
+    # A grab the program never had: picked up within the hour (PENDING), else never (NOT_FOUND).
+    PENDING = "pending"  # sent / saved less than an hour ago, the program hasn't got it yet
+    NOT_FOUND = "not_found"  # the program answered but never had it (never picked it up)
     UNKNOWN = "unknown"  # no program to ask, it can't be reached, or the grab went elsewhere
 
     @property
     def in_progress(self) -> bool:
         """Still on its way: the header button's badge counts these."""
-        return self in (DownloadState.DOWNLOADING, DownloadState.WAITING)
+        return self in (DownloadState.DOWNLOADING, DownloadState.WAITING, DownloadState.PENDING)
 
 
 class RemoteTask(DomainModel):
@@ -46,6 +51,11 @@ class RemoteTask(DomainModel):
     file_name: str | None = None  # the .torrent file it was made from (Download Station)
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     state: DownloadState
+    # The program's own id for pause / resume / remove (Download Station "dbid_…", qBittorrent's
+    # and Transmission's hash). Not a secret, but never logged together with a name.
+    task_id: str | None = None
+    size: int | None = Field(default=None, ge=0)  # bytes, when the program says
+    added_at: UtcDatetime | None = None  # when it was added to the program
 
 
 class RemoteStatus(DomainModel):
@@ -74,7 +84,7 @@ class MovedTo(DomainModel):
 
 
 class DownloadEntry(DomainModel):
-    """One recent grab on the Downloads page."""
+    """One grab on the Downloads page: a recent one, or an older one its program still has."""
 
     record: DownloadRecord
     title: str  # "Fallout S02E03", "Gladiator II (2024)"
@@ -85,18 +95,68 @@ class DownloadEntry(DomainModel):
     progress: float | None = Field(default=None, ge=0.0, le=1.0)  # known for a found task
     subtitles: tuple[str, ...] = ()  # languages saved for it (OpenSubtitles codes)
     moved_to: MovedTo | None = None  # where MediaForge moved its video (None: not known)
+    task: RemoteTask | None = None  # its task in the program (the page mirrors the program)
+
+    @property
+    def listed_at(self) -> datetime:
+        """When it was grabbed: the page lists newest first."""
+        return self.record.downloaded_at
+
+
+class Recognised(DomainModel):
+    """What a task added in the torrent program itself is, when AirGrabber knows the series
+    (a followed show) or the film (a watchlist film, a film in the history)."""
+
+    name: str  # "Severance", "Dune: Part Two"
+    show: Show | None = None  # an episode's show (its window, its poster)
+    movie_id: int | None = None  # a film's TMDB id (its info window)
+    poster_url: str | None = None  # a film's poster, when the watchlist has one
+
+
+class TaskEntry(DomainModel):
+    """A task in the torrent program that no grab of AirGrabber's matches: added there."""
+
+    task: RemoteTask
+    title: str  # "Severance S02E04" when recognised, else the task's own name
+    recognised: Recognised | None = None
+
+    @property
+    def state(self) -> DownloadState:
+        return self.task.state
+
+    @property
+    def progress(self) -> float:
+        return self.task.progress
+
+    @property
+    def listed_at(self) -> datetime:
+        """When it was added to the program (not known: listed last)."""
+        return self.task.added_at or _LONG_AGO
+
+
+_LONG_AGO = datetime.min.replace(tzinfo=UTC)
+
+# A row of the Downloads page: a grab, or a task added in the torrent program.
+ListedDownload = DownloadEntry | TaskEntry
 
 
 class DownloadsOverview(DomainModel):
     """Everything the Downloads page shows."""
 
     entries: tuple[DownloadEntry, ...] = ()
+    # The program's tasks no grab matches (added in the program itself); only while `synced`.
+    tasks: tuple[TaskEntry, ...] = ()
     # The program asked for progress ("Download Station"); "" when there is none to ask (no
     # program on a NAS or another computer set up, or the torrent program on this PC is used).
     program: str = ""
     problem: str | None = None  # why it couldn't be asked: one plain line, no URL or secret
     space: FreeSpace | None = None  # the last free-space check, when it worked
     checked_at: UtcDatetime | None = None
+    # The program's task list was read this check: the page mirrors it (pause, resume, remove).
+    synced: bool = False
+    on_this_pc: bool = False  # the program runs on this PC (what it downloads stays here)
+    # Removing an unfinished task deletes what it downloaded so far (Download Station).
+    removes_partial: bool = False
 
     @property
     def progress_available(self) -> bool:
@@ -104,7 +164,15 @@ class DownloadsOverview(DomainModel):
 
     @property
     def in_progress(self) -> int:
-        return sum(1 for entry in self.entries if entry.state.in_progress)
+        grabs = sum(1 for entry in self.entries if entry.state.in_progress)
+        return grabs + sum(1 for item in self.tasks if item.state.in_progress)
+
+    @property
+    def rows(self) -> tuple[ListedDownload, ...]:
+        """The grabs and the tasks added in the program, newest first (a stable order)."""
+        listed: list[ListedDownload] = [*self.entries, *self.tasks]
+        listed.sort(key=lambda item: item.listed_at, reverse=True)
+        return tuple(listed)
 
 
 # -- the download queue (app/services/download_queue.py) -----------------------------------------

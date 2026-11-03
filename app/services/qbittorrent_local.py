@@ -49,7 +49,13 @@ from app.models import DownloadMode, RemoteKind, RemoteStatus, Settings
 from app.models import QBittorrentSetupResult as SetupResult
 from app.services.qbittorrent_setup import QBittorrentSetup, qbittorrent_running
 from app.services.qbittorrent_webui import ADDRESS, USERNAME, WebUiLogin, WebUiResult
-from app.services.remote import DiskSpace, RemoteClient, RemoteError, RemoteStatusClient
+from app.services.remote import (
+    DiskSpace,
+    RemoteClient,
+    RemoteError,
+    RemoteStatusClient,
+    RemoteTaskActions,
+)
 from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
@@ -365,6 +371,23 @@ class LocalQBittorrent:
 
     async def free_space(self) -> DiskSpace | None:
         return await self._again(lambda: self._status_client().free_space())
+
+    async def pause(self, task_ids: Collection[str]) -> None:
+        await self._again(lambda: self._actions_client().pause(task_ids))
+
+    async def resume(self, task_ids: Collection[str]) -> None:
+        await self._again(lambda: self._actions_client().resume(task_ids))
+
+    async def remove(self, task_ids: Collection[str]) -> None:
+        await self._again(lambda: self._actions_client().remove(task_ids))
+
+    def _actions_client(self) -> RemoteTaskActions:
+        client = self._client
+        if not isinstance(client, RemoteTaskActions):
+            raise RemoteError(
+                t("AirGrabber can't change the downloads of {program}.", program=client.kind.program)
+            )
+        return client
 
     def _status_client(self) -> RemoteStatusClient:
         client = self._client

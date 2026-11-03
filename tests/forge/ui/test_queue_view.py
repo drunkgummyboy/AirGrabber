@@ -1359,6 +1359,35 @@ class IgnoreTest(QueueCase):
             with self.subTest(band=band.title):
                 self.assertEqual(band.actions[0], ("ignore", "Ignore"))
 
+    async def test_a_click_on_ignore_opens_its_menu_under_the_button(self) -> None:
+        _downloads, _course, [clip] = await self.course()
+        self.unsure(cast(QueueItem, self.services.queue.get(clip)))  # Choose… sits right of it
+        self.view.refresh()
+        band = self.band_of(clip)
+        vlist = self.view.list
+        vlist.hover_band(band)
+        await pump(self.root, 0.05)
+        self.view.focus_force()  # the keys elsewhere: the click must not pull them back
+        await pump(self.root, 0.05)
+        x, y = vlist.action_point(band, "ignore")
+        vlist.canvas.event_generate("<Button-1>", x=x, y=y)
+        await pump(self.root, 0.3)  # past the menu's check of where the focus went
+        menu = PopupMenu._open
+        assert menu is not None
+        self.assertTrue(menu.is_open)
+        self.assertEqual(menu.labels, ("Ignore this file",))
+        box = vlist.action_box(band, "ignore")
+        assert box is not None
+        left, top, _width, height = vlist.screen_box(box)
+        window = menu._top
+        self.assertEqual(window.winfo_rooty(), top + height + 2)  # under the button
+        # Left edges lined up (the band's chip stays in sight), moved left only as far as the
+        # window's right edge asks.
+        right = self.root.winfo_rootx() + self.root.winfo_width()
+        self.assertLessEqual(left + window.winfo_width(), right)  # here: room enough
+        self.assertEqual(window.winfo_rootx(), min(left, right - window.winfo_width()))
+        menu.close()
+
     async def test_a_file_directly_in_the_watched_folder_has_no_folder_choice(self) -> None:
         _downloads, _course, [clip] = await self.course()
         labels = [label for label, _ in self.view.ignore_choices([clip])]
@@ -1366,7 +1395,7 @@ class IgnoreTest(QueueCase):
 
     async def test_ignore_this_file(self) -> None:
         downloads, course, [clip] = await self.course()
-        self.view.list.on_action(self.band_of(clip), "ignore")  # the menu at the pointer
+        self.view.list.on_action(self.band_of(clip), "ignore")  # the menu under the button
         await pump(self.root, 0.05)
         self.assertIsNotNone(PopupMenu._open)
         assert PopupMenu._open is not None
@@ -1498,9 +1527,13 @@ class PresetPerBandTest(QueueCase):
         ids = self.view._bands[band.key]
         labels = [label for label, _ in self.view.chip_choices(ids)]
         self.assertEqual(labels, ["Auto", "Movie (Folder)", "Movie (Flat)"])  # the film presets
-        self.view.list.on_action(band.key, "preset")  # opens the menu at the chip
+        self.view.focus_force()  # the keys elsewhere: the click must not pull them back
         await pump(self.root, 0.05)
+        x, y = self.view.list.action_point(band.key, "preset")
+        self.view.list.canvas.event_generate("<Button-1>", x=x, y=y)  # the menu at the chip
+        await pump(self.root, 0.3)  # past the menu's check of where the focus went
         assert PopupMenu._open is not None
+        self.assertTrue(PopupMenu._open.is_open)
         self.assertEqual(PopupMenu._open.labels, tuple(labels))
         PopupMenu._open.close()
         dict(self.view.chip_choices(ids))["Movie (Flat)"]()

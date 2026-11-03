@@ -53,6 +53,7 @@ from app.models import (
 from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
 from app.services.torrent_app import find_torrent_app
+from app.services.torrent_file import torrent_problem
 
 log = logging.getLogger(__name__)
 
@@ -276,7 +277,9 @@ class DownloadService:
         content: bytes | None = None
 
         if _is_http(download_url):
-            content, redirect_magnet = await self._fetch_torrent(download_url, release.source)
+            content, redirect_magnet = await self._fetch_torrent(
+                download_url, release.source, info_hash
+            )
             if redirect_magnet and magnet is None:  # e.g. Prowlarr links to magnet-only sources
                 magnet = redirect_magnet
                 info_hash = info_hash or _magnet_hash(redirect_magnet)
@@ -286,7 +289,7 @@ class DownloadService:
 
         if content is None and info_hash:
             content, _ = await self._fetch_torrent(
-                ITORRENTS_URL.format(info_hash.upper()), "itorrents.org"
+                ITORRENTS_URL.format(info_hash.upper()), "itorrents.org", info_hash
             )
         return content, magnet, info_hash
 
@@ -356,11 +359,15 @@ class DownloadService:
         except OSError:
             log.warning("Could not prune the torrent cache folder", exc_info=True)
 
-    async def _fetch_torrent(self, url: str, label: str) -> tuple[bytes | None, str | None]:
+    async def _fetch_torrent(
+        self, url: str, label: str, info_hash: str | None
+    ) -> tuple[bytes | None, str | None]:
         """GET a .torrent file, following up to five redirects by hand.
 
         Returns (torrent bytes, None), or (None, magnet) when the link redirects to a magnet
-        link, or (None, None). Failures are logged by `label` only: the URL may hold an API key.
+        link, or (None, None). The file must pass `torrent_problem` (for `info_hash` when it is
+        known): a damaged file or one for another torrent counts as no file. Failures are
+        logged by `label` and reason only: the URL may hold an API key.
         """
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
@@ -395,8 +402,12 @@ class DownloadService:
                 log.info("No .torrent file from %s (%s)", label, failure)
                 return None, None
             content = _maybe_gunzip(bytes(body))
-            if content is None or not _is_torrent(content):
+            if content is None:
                 log.info("No .torrent file from %s (the reply is not a torrent file)", label)
+                return None, None
+            problem = torrent_problem(content, info_hash)
+            if problem is not None:
+                log.info("No .torrent file from %s (not a valid torrent: %s)", label, problem)
                 return None, None
             return content, None
         log.info("No .torrent file from %s (too many redirects)", label)
@@ -527,8 +538,3 @@ def _maybe_gunzip(data: bytes) -> bytes | None:
     except zlib.error:
         return None
     return content if len(content) <= MAX_TORRENT_BYTES else None
-
-
-def _is_torrent(data: bytes) -> bool:
-    """A bencoded torrent: a dictionary holding an `info` key (an HTML page is not one)."""
-    return len(data) < MAX_TORRENT_BYTES and data.startswith(b"d") and b"4:info" in data

@@ -17,6 +17,7 @@ import base64
 import re
 import ssl
 from collections.abc import Collection, Mapping
+from datetime import UTC, datetime
 from typing import Literal, NamedTuple, Protocol, runtime_checkable
 from urllib.parse import parse_qsl, urlsplit
 
@@ -89,6 +90,29 @@ class RemoteStatusClient(Protocol):
     async def free_space(self) -> DiskSpace | None:
         """Free space on the program's download disk; None when the program doesn't say.
         Raises RemoteError."""
+        ...
+
+
+@runtime_checkable
+class RemoteTaskActions(Protocol):
+    """A RemoteClient that can pause, resume and remove its tasks (the Downloads page's ⋯
+    menu), by `RemoteTask.task_id`, on the status calls' kept sign-in. Removing never deletes
+    a file the program finished; see each client for what happens to an unfinished one."""
+
+    @property
+    def kind(self) -> RemoteKind: ...
+
+    async def pause(self, task_ids: Collection[str]) -> None:
+        """Pause (stop) these tasks. Raises RemoteError."""
+        ...
+
+    async def resume(self, task_ids: Collection[str]) -> None:
+        """Resume (start) these tasks. Raises RemoteError."""
+        ...
+
+    async def remove(self, task_ids: Collection[str]) -> None:
+        """Remove these tasks from the program, keeping their files. A task that is gone
+        already counts as removed. Raises RemoteError."""
         ...
 
 
@@ -284,3 +308,23 @@ def number(value: object) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def byte_count(value: object) -> int | None:
+    """A task's size in bytes (a number or a number in a string); None when unknown."""
+    found = number(value)
+    if found is None or found < 0 or found != found:  # NaN
+        return None
+    return int(found)
+
+
+def epoch_time(value: object) -> datetime | None:
+    """A Unix time in seconds (Download Station's create_time, qBittorrent's added_on,
+    Transmission's addedDate) as an aware UTC datetime; None for 0, -1 or nonsense."""
+    seconds = number(value)
+    if seconds is None or seconds <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None

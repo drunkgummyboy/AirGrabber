@@ -35,12 +35,15 @@ from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.views.base import BaseView, StatusReporter
-from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, show_info
+from app.ui.widgets import FlexGrid, LoadingBar, MessagePanel, destroy_tree, show_info
 
 log = logging.getLogger(__name__)
 
 _MAX_NAMES = 10
 _EMPTY_HEIGHT = 300
+# A quiet reload lets the event loop run this often between laying the new cards out under the
+# old ones and swapping them in: the covers load (from memory, mostly) meanwhile.
+QUIET_SETTLE_TURNS = 3
 
 # The texts are shown through t().
 TITLE = N_("Tracked TV Shows")
@@ -339,18 +342,23 @@ class TrackedView(BaseView):
         for child in self._body.winfo_children():
             child.destroy()
 
-    def refresh(self) -> None:
+    def _start_load(self, *, quiet: bool) -> None:
         if self._own_changes:  # this page's own switch: it already shows the change
             self._stale = False
             return
-        super().refresh()
+        super()._start_load(quiet=quiet)
 
     async def load(self) -> None:
+        # Quietly (a library change under the page on screen): the cards on screen stay until
+        # the new ones are laid out under them, then swap in one step, scroll position kept.
+        # Only over cards on screen (not the line a filter leaves when it matches nothing).
+        quiet = self.quiet_load and self._showing_cards()  # before the first await
         prefs = self._settings.current
         self._sort, self._filter = prefs.tracked_sort, prefs.tracked_filter
         self._show_choices()
-        self._clear_body()
-        LoadingBar(self._body).pack(fill="x")
+        if not quiet:
+            self._clear_body()
+            LoadingBar(self._body).pack(fill="x")
         profile_id = prefs.current_profile
         entries = await self._library.tracked(profile_id=profile_id)
         activity = await self._library.activity(profile_id=profile_id)
@@ -362,9 +370,14 @@ class TrackedView(BaseView):
         last_downloads = await self._library.last_downloads()
         now = datetime.now().astimezone()
         self._profile_id = profile_id
-        self._clear_body()
-        self._rows = show_rows(entries, activity, missing, last_downloads)
+        shown = self._grid
+        quiet = quiet and bool(entries) and self._showing_cards()
+        old_parts = list(self._body.winfo_children()) if quiet else []
+        if not quiet:
+            self._clear_body()
+        rows = show_rows(entries, activity, missing, last_downloads)
         if not entries:
+            self._rows = rows
             self._title.configure(text=heading_text(0, 0, TrackedFilter.ALL))
             self._bar.grid_remove()
             MessagePanel(
@@ -379,9 +392,14 @@ class TrackedView(BaseView):
         grid = FlexGrid(
             self._body, item_width=grid_item_width(POSTER_CARD_WIDTH, scale), pad_x=8, pad_y=10
         )
-        grid.pack(fill="x", expand=True)
+        if quiet and shown is not None:
+            grid.place(x=0, y=0, relwidth=1)  # under the grid on screen, which covers it
+            grid.tk.call("lower", str(grid), str(shown))
+        else:
+            grid.pack(fill="x", expand=True)
+        cards: dict[int, ShowCard] = {}
         for entry in entries:
-            self._cards[entry.show.id] = ShowCard(
+            cards[entry.show.id] = ShowCard(
                 grid,
                 entry.show,
                 images=self._images,
@@ -394,11 +412,28 @@ class TrackedView(BaseView):
                 missing_actions=self._missing_actions,
                 scale=scale,
             )
+        if quiet:
+            # Lay the hidden cards out, then let their covers load before the swap.
+            order = arrange(rows, self._sort, self._filter)
+            grid.set_order([cards[row.show.id] for row in order])
+            for _ in range(QUIET_SETTLE_TURNS):
+                await asyncio.sleep(0.001)
+            if not self.winfo_exists() or not grid.winfo_exists():
+                return
+            for part in old_parts:
+                if part.winfo_exists():
+                    destroy_tree(part)
+            grid.place_forget()
+        self._rows = rows
+        self._cards = cards
         self._grid = grid
         self._no_match = ctk.CTkLabel(
             self._body, text="", font=theme.font(15), text_color=theme.TEXT_MUTED
         )
         self._arrange()
+
+    def _showing_cards(self) -> bool:
+        return self._grid is not None and bool(self._grid.winfo_manager())
 
     # -- sort and filter -------------------------------------------------------------------------
 

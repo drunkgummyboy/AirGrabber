@@ -7,7 +7,7 @@ import asyncio
 import dataclasses
 import tkinter as tk
 from abc import abstractmethod
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -59,6 +59,20 @@ def has_items(shelves: Sequence[Shelf[T]]) -> bool:
     return any(shelf.items for shelf in shelves)
 
 
+def same_items(
+    old: Sequence[Shelf[T]], new: Sequence[Shelf[T]], key: Callable[[T], object]
+) -> bool:
+    """Whether `new` holds the same shelves as `old` with the same items in the same order
+    (compared by `key`, which leaves out what may change in place)."""
+
+    def outline(shelves: Sequence[Shelf[T]]) -> list[tuple[str, bool, list[object]]]:
+        return [
+            (shelf.title, shelf.failed, [key(item) for item in shelf.items]) for shelf in shelves
+        ]
+
+    return outline(old) == outline(new)
+
+
 class ShelvesView(BaseView, Generic[T]):
     """A scrolling column of shelves from one TMDB dashboard, under the filter bar.
 
@@ -66,6 +80,11 @@ class ShelvesView(BaseView, Generic[T]):
     `self._scale`: the card size `card_scale` gave when the load started) and tell the filter
     an item's genres (`_genres`) and whether the user already has it (`_is_owned`).
     `reload()` refetches from TMDB instead of using the dashboard cache.
+
+    A quiet reload (`refresh_quietly`: the library changed under the page on screen) fetches
+    the shelves again without clearing the page. When they hold the same items and only
+    whether the user has some changed, the page keeps its cards and scroll position and the
+    changed cards show it in place (`_owned_changed`); otherwise it loads as usual.
 
     The filter only re-renders the shelves the last load fetched. The genre chip is kept for
     the session (the page lives as long as the window); the switch is the Settings field
@@ -135,6 +154,15 @@ class ShelvesView(BaseView, Generic[T]):
     def _is_owned(self, item: T) -> bool:
         """Whether "Hide what I already have" hides `item`."""
 
+    def _item_key(self, item: T) -> object:
+        """`item` without what a quiet reload may change in place (`same_items`)."""
+        return item
+
+    def _owned_changed(self, items: Sequence[T]) -> bool:
+        """`items` (as just fetched) changed whether the user has them: show it on their cards
+        in place. False when the page can't, and the shelves are rendered again."""
+        return False
+
     def reload(self) -> None:
         """Reload with fresh TMDB lists."""
         self._force = True
@@ -147,6 +175,15 @@ class ShelvesView(BaseView, Generic[T]):
             destroy_tree(child)  # three full shelves take ~600 ms to destroy() widget by widget
 
     async def load(self) -> None:
+        quiet = self.quiet_load  # before the first await (BaseView)
+        if (
+            quiet
+            and not self._force
+            and self._shelves is not None
+            and self._card_scale() == self._scale
+            and await self._update_quietly()
+        ):
+            return
         force, self._force = self._force, False
         self._scale = self._card_scale()
         self._shelves = None
@@ -181,18 +218,55 @@ class ShelvesView(BaseView, Generic[T]):
         self._render_generation += 1
         await self._render(self._render_generation)
 
+    async def _update_quietly(self) -> bool:
+        """The quiet reload (see the class docstring). False: the page needs the usual load."""
+        loaded = self._shelves
+        if loaded is None:
+            return False
+        owned = [[self._is_owned(item) for item in shelf.items] for shelf in loaded]
+        try:
+            shelves = await self._fetch_shelves(force=False)
+        except TMDBError:
+            return False  # the usual load shows the problem
+        if not self.winfo_exists():
+            return True
+        if self._shelves is not loaded or not same_items(loaded, shelves, self._item_key):
+            return False
+        changed = [
+            item
+            for shelf, had in zip(shelves, owned, strict=True)
+            for item, was in zip(shelf.items, had, strict=True)
+            if self._is_owned(item) != was
+        ]
+        self._shelves = shelves
+        if not changed:
+            return True
+        if self._owned_changed(changed):
+            shown = self._owner_filtered(shelves)
+            self._show_filter_bar(chip_genres(self._titles(shown), self._genre))
+        else:
+            self._render_generation += 1
+            await self._render(self._render_generation)
+        return True
+
+    def _owner_filtered(self, shelves: Sequence[Shelf[T]]) -> Sequence[Shelf[T]]:
+        """`shelves` without what the user has, while "Hide what I already have" is on."""
+        if self._hide_owned:
+            return filter_shelves(shelves, lambda item: not self._is_owned(item))
+        return shelves
+
+    def _titles(self, shelves: Sequence[Shelf[T]]) -> Iterable[frozenset[Genre]]:
+        return (self._genres(item) for shelf in shelves for item in shelf.items)
+
     async def _render(self, generation: int) -> None:
         """Show the loaded shelves through the filter; stops once `generation` is outdated (a
         newer render or load started)."""
         loaded = self._shelves
         if loaded is None or generation != self._render_generation or not self.winfo_exists():
             return
-        shelves: Sequence[Shelf[T]] = loaded
-        if self._hide_owned:
-            shelves = filter_shelves(shelves, lambda item: not self._is_owned(item))
+        shelves = self._owner_filtered(loaded)
         genre = self._genre
-        titles = (self._genres(item) for shelf in shelves for item in shelf.items)
-        self._show_filter_bar(chip_genres(titles, genre))
+        self._show_filter_bar(chip_genres(self._titles(shelves), genre))
         if genre is not None:
             shelves = filter_shelves(shelves, lambda item: genre in self._genres(item))
         self._clear_body()

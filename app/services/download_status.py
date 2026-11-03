@@ -12,6 +12,19 @@ program on this PC isn't the one in use: in REMOTE mode, and in FOLDER mode, whe
 Download Station picks the .torrent files up from the watch folder. Grabs are matched to its
 tasks by info hash, then by the .torrent's file name, then by name (`match_tasks`).
 
+In sync with the program (3.0.2, the rules in app/services/download_sync.py): whenever its task
+list can be read (`DownloadsOverview.synced`), the page lists every task it has. The recent
+grabs take theirs first; the tasks left are matched to the rest of the history (an older grab,
+or one taken off the list before 3.0.2: `_match_older`), and those left after that were added
+in the program itself (`TaskEntry`, recognised by the followed shows and the films AirGrabber
+knows: `known`). A grab the program has had (`seen_downloads`) and no longer has leaves the
+page (a cleared mark, once `GoneGrabs` confirms); one it never had is PENDING for an hour, then
+NOT_FOUND ("never picked it up"). The ⋯ menu's pause / resume / remove and "Clear finished"
+(`pause`, `resume`, `remove`, `clear_finished`) show at once (`_Pending` over the last check)
+and are confirmed by the next check; a failure puts the rows back and returns the plain reason.
+AirGrabber's qBittorrent on this PC isn't asked by a background check that has nothing to ask
+about (asking starts it).
+
 Free space: `shutil.disk_usage` of "Where finished downloads end up" (`subtitles_folder`), else
 of the watch folder in FOLDER mode (with a films folder of its own, the fuller of the two), in a
 worker thread with a time limit (a share that doesn't
@@ -43,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
+import functools
 import logging
 import os
 import re
@@ -50,6 +64,7 @@ import shutil
 import sys
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
@@ -64,19 +79,30 @@ from app.models import (
     DownloadState,
     FreeSpace,
     GrabOutcome,
+    ListedDownload,
     MediaType,
+    Movie,
     RemoteKind,
     RemoteStatus,
     RemoteTask,
     Settings,
     Show,
+    TaskEntry,
 )
 from app.models.downloads import MovedTo
+from app.services.download_sync import GoneGrabs, KnownTitles, Recognition, pickup_state
 from app.services.downloads import safe_filename
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
-from app.services.subtitle_files import FolderScan, VideoFile, grab_files, normalize, scan_folder
+from app.services.subtitle_files import (
+    FolderScan,
+    VideoFile,
+    grab_files,
+    normalize,
+    release_name,
+    scan_folder,
+)
 
 if TYPE_CHECKING:  # Forge's models and runtime: only typed here, nothing of Forge is imported
     from app.forge.models.moves import MoveRecord
@@ -109,9 +135,71 @@ REMOTE_PROGRAMS = frozenset(kind.program for kind in RemoteKind)
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d\d(?!\d)")
 _TAG_RE = re.compile(r"\[[^\]]*\]|\{[^}]*\}")
 
+KNOWN_TTL_S = 5 * 60.0  # the shows and films tasks are recognised by: read again after this
+SHOW_TTL_S = 10 * 60.0  # a grab's show (its name, its poster), kept this long
+
 ShowLookup = Callable[[int], Awaitable[Show | None]]
+# The shows anyone follows and the films on anyone's watchlist (recognising tasks).
+KnownLookup = Callable[[], Awaitable[tuple[Sequence[Show], Sequence[Movie]]]]
 OverviewListener = Callable[[DownloadsOverview], None]
 SpaceListener = Callable[[FreeSpace], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _Pending:
+    """A pause / resume / remove the page shows before the program confirms it: until a check
+    that started after it finished (`done_seq`: the checks started by then; None: in flight)."""
+
+    kind: Literal["pause", "resume", "remove"]
+    done_seq: int | None = None
+
+
+_PAUSED_STATES = frozenset({DownloadState.DOWNLOADING, DownloadState.WAITING})
+
+
+def _pending_task(task: RemoteTask, pending: _Pending) -> RemoteTask:
+    """A task as the page shows it while `pending` (pause / resume) is not confirmed."""
+    if pending.kind == "pause" and task.state in _PAUSED_STATES:
+        return task.model_copy(update={"state": DownloadState.STOPPED})
+    if pending.kind == "resume" and task.state is DownloadState.STOPPED:
+        return task.model_copy(update={"state": DownloadState.DOWNLOADING})
+    return task
+
+
+def _with_pending(
+    overview: DownloadsOverview, pending: Mapping[str, _Pending], cleared: Collection[int]
+) -> DownloadsOverview:
+    """The overview as the page shows it: rows being removed (or taken off the list, when
+    they have no task) left out, tasks being paused or resumed in their new state."""
+    if not pending and not cleared:
+        return overview
+
+    def action(task: RemoteTask | None) -> _Pending | None:
+        return pending.get(task.task_id) if task is not None and task.task_id else None
+
+    entries: list[DownloadEntry] = []
+    for entry in overview.entries:
+        if entry.task is None and entry.record.id in cleared:
+            continue
+        found = action(entry.task)
+        if found is not None and found.kind == "remove":
+            continue
+        if found is not None and entry.task is not None:
+            task = _pending_task(entry.task, found)
+            if task is not entry.task:
+                entry = entry.model_copy(update={"task": task, "state": task.state})
+        entries.append(entry)
+    tasks: list[TaskEntry] = []
+    for item in overview.tasks:
+        found = action(item.task)
+        if found is not None and found.kind == "remove":
+            continue
+        if found is not None:
+            task = _pending_task(item.task, found)
+            if task is not item.task:
+                item = item.model_copy(update={"task": task})
+        tasks.append(item)
+    return overview.model_copy(update={"entries": tuple(entries), "tasks": tuple(tasks)})
 
 
 class MoveRecords(Protocol):
@@ -216,8 +304,23 @@ def expected_in_program(outcome: GrabOutcome | None, program: str, settings: Set
 def torrent_file_names(record: DownloadRecord) -> frozenset[str]:
     """The .torrent file names (lowercase) a grab may show up under in Download Station: the
     file saved to the watch folder, and the name a .torrent is sent with."""
-    names = {f"{safe_filename(record.release_title)}.torrent".lower()}
-    saved = record.saved_path or ""
+    return torrent_file_names_of(record.release_title, record.saved_path)
+
+
+@functools.lru_cache(maxsize=8192)
+def _normal(text: str) -> str:
+    """`normalize`, kept: the same task and grab names come by every 10 s."""
+    return normalize(text)
+
+
+@functools.lru_cache(maxsize=8192)
+def _file_names(release_title: str, saved_path: str | None) -> tuple[str, ...]:
+    return tuple(sorted(torrent_file_names_of(release_title, saved_path)))
+
+
+def torrent_file_names_of(release_title: str, saved_path: str | None) -> frozenset[str]:
+    names = {f"{safe_filename(release_title)}.torrent".lower()}
+    saved = saved_path or ""
     if saved.lower().endswith(".torrent"):
         names.add(saved.replace("\\", "/").rsplit("/", 1)[-1].lower())
     return frozenset(names)
@@ -226,38 +329,42 @@ def torrent_file_names(record: DownloadRecord) -> frozenset[str]:
 def match_tasks(
     records: Sequence[DownloadRecord], tasks: Sequence[RemoteTask]
 ) -> dict[int, RemoteTask]:
-    """The program's task for each grab (by index in `records`), each task used once: by info
-    hash first, then by .torrent file name, then by name. `records` newest first, so a newer
-    grab of the same name wins."""
-    unused = list(tasks)
+    """The program's task for each grab (by index in `records`), each task used once (the
+    first unused one in `tasks`' order): by info hash first, then by .torrent file name, then
+    by name. `records` newest first, so a newer grab of the same name wins. Each key is
+    looked up in a table: hundreds of tasks against the whole history stay cheap."""
+    used: set[int] = set()  # positions in `tasks`
     found: dict[int, RemoteTask] = {}
 
-    def take(index: int, key: Callable[[RemoteTask], object], wanted: object) -> None:
-        for task in unused:
-            if key(task) == wanted:
-                found[index] = task
-                unused.remove(task)
-                return
+    def table(key: Callable[[RemoteTask], object]) -> dict[object, list[int]]:
+        positions: dict[object, list[int]] = {}
+        for position, task in enumerate(tasks):
+            positions.setdefault(key(task), []).append(position)
+        return positions
 
-    def by_hash(task: RemoteTask) -> object:
-        return task.info_hash
+    def take(index: int, positions: dict[object, list[int]], wanted: object) -> bool:
+        for position in positions.get(wanted, ()):
+            if position not in used:
+                used.add(position)
+                found[index] = tasks[position]
+                return True
+        return False
 
-    def by_file(task: RemoteTask) -> object:
-        return (task.file_name or "").lower()
-
-    def by_name(task: RemoteTask) -> object:
-        return normalize(task.name)
-
+    if not tasks or not records:
+        return found
+    by_hash = table(lambda task: task.info_hash)
     for index, record in enumerate(records):
         if record.info_hash:
             take(index, by_hash, record.info_hash)
+    by_file = table(lambda task: (task.file_name or "").lower())
     for index, record in enumerate(records):
         if index not in found:
-            for file_name in sorted(torrent_file_names(record)):
-                if index not in found:
-                    take(index, by_file, file_name)
+            for file_name in _file_names(record.release_title, record.saved_path):
+                if take(index, by_file, file_name):
+                    break
+    by_name = table(lambda task: _normal(task.name))
     for index, record in enumerate(records):
-        if index not in found and (name := normalize(record.release_title)):
+        if index not in found and (name := _normal(record.release_title)):
             take(index, by_name, name)
     return found
 
@@ -274,7 +381,9 @@ def entry_state(
     return DownloadState.UNKNOWN, None
 
 
-_GONE_AFTER_A_MOVE = frozenset({DownloadState.PROBLEM, DownloadState.NOT_FOUND})
+_GONE_AFTER_A_MOVE = frozenset(
+    {DownloadState.PROBLEM, DownloadState.NOT_FOUND, DownloadState.PENDING}
+)
 
 
 def moved_state(
@@ -283,7 +392,8 @@ def moved_state(
     """A grab MediaForge moved into the library is finished, whatever the torrent program
     makes of its files being gone: qBittorrent ("missingFiles"), Transmission (a local error)
     and Download Station ("error") report a problem for a task whose file was moved away while
-    it seeded, and a task removed afterwards is not found. Any other state stays."""
+    it seeded, and a grab it doesn't have (never had, by the page's records) was picked up
+    after all. Any other state stays."""
     if moved is not None and state in _GONE_AFTER_A_MOVE:
         return DownloadState.READY, 1.0
     return state, progress
@@ -483,6 +593,50 @@ def match_moves(
     return found
 
 
+def match_moves_by_name(
+    records: Sequence[DownloadRecord],
+    moves: Sequence[MoveRecord],
+    *,
+    folders: Sequence[Path],
+) -> dict[int, MoveRecord]:
+    """`match_moves` for the older grabs an old task in the program belongs to (there can be
+    hundreds): a film by its TMDB id, any grab by a folder or file named like its release
+    (each move's names read once, then looked up). The same timing and kind rules; each move
+    once, `records` newest first; a season pack takes its moves and shows the newest."""
+    names: dict[str, list[int]] = {}
+    films: dict[int, list[int]] = {}
+    for position, move in enumerate(moves):
+        if move.kind == "movie" and move.tmdb_id is not None:
+            films.setdefault(move.tmdb_id, []).append(position)
+        parts = next(
+            (below for folder in folders if (below := _below(move.source, folder))), None
+        )
+        for part in parts or move.source.parts[-2:]:
+            if key := release_name(part):
+                names.setdefault(key, []).append(position)
+    used: set[int] = set()
+    found: dict[int, MoveRecord] = {}
+    for index, record in enumerate(records):
+        movie = record.media_type is MediaType.MOVIE
+        kind = "movie" if movie else "episode"
+        candidates = set(films.get(record.media_id, ())) if movie else set()
+        candidates.update(names.get(_normal(record.release_title), ()))
+        picked = sorted(
+            position
+            for position in candidates
+            if position not in used
+            and moves[position].kind == kind
+            and _aware(moves[position].moved_at) >= record.downloaded_at - MOVE_SLACK
+        )
+        if not picked:
+            continue
+        pack = record.media_type is MediaType.TV and record.episode is None
+        chosen = picked if pack else picked[:1]
+        used.update(chosen)
+        found[index] = moves[chosen[0]]
+    return found
+
+
 def moved_to(move: MoveRecord, library_folders: Sequence[str]) -> MovedTo:
     folder = move.target.parent
     return MovedTo(folder=str(folder), shown=shown_folder(folder, library_folders))
@@ -512,10 +666,23 @@ class DownloadStatusService:
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         forge: ForgeLookup | None = None,
+        known: KnownLookup | None = None,
     ) -> None:
         """`forge`: Forge's move records once it runs (`forge_moves`), for where grabs ended
-        up."""
+        up. `known`: the shows anyone follows and the films on anyone's watchlist, which the
+        tasks added in the torrent program are recognised by (none without it)."""
         self._forge = forge
+        self._known_lookup = known
+        self._known_at: float | None = None  # when the known titles were read
+        self._known_stamp: tuple[int, int] | None = None  # … with the history as it was then
+        self._recognition = Recognition()
+        self._grabs: tuple[tuple[int, int], list[DownloadRecord]] | None = None  # every grab
+        self._show_cache: dict[int, tuple[float, Show | None]] = {}
+        self._gone = GoneGrabs()
+        self._check_seq = 0  # checks started, for the actions' optimistic states
+        self._pending: dict[str, _Pending] = {}  # task id -> an action not confirmed yet
+        self._raw: DownloadsOverview | None = None  # the last check, without `_pending`
+        self._last_status: tuple[str, RemoteStatus] | None = None  # (program, its answer)
         self._moves: tuple[tuple[str, ...], float, list[MoveRecord]] | None = None
         self._watched: MoveRecords | None = None  # the move records listened to
         self._unwatch: Callable[[], None] | None = None
@@ -605,8 +772,11 @@ class DownloadStatusService:
         return await asyncio.shield(task)
 
     async def _check(self) -> DownloadsOverview:
+        self._check_seq += 1
+        seq = self._check_seq
         settings = self._settings.current  # one snapshot for the whole check
-        since = self._now() - RECENT
+        now = self._now()
+        since = now - RECENT
         records = [
             record
             for record in await self._history.listed(RECENT_LIMIT)
@@ -614,89 +784,328 @@ class DownloadStatusService:
             and record.id is not None
             and record.id not in self._cleared
         ]
-        languages = await self._subtitles.grab_languages(
-            record.id for record in records if record.id is not None
-        )
-        shows = await self._shows(
-            record.media_id for record in records if record.media_type is MediaType.TV
-        )
         outcomes = [grab_outcome(record.saved_path, settings.download_mode) for record in records]
         expected = [
             expected_in_program(outcome, program, settings) for outcome, program in outcomes
         ]
         program = progress_program(settings)
-        status, problem = await self._status(
-            [record for record, wanted in zip(records, expected, strict=True) if wanted]
-        )
+        asked = [index for index, wanted in enumerate(expected) if wanted]
+        status, problem = await self._status(program, expected=bool(asked))
+        synced = status is not None
         matches: dict[int, RemoteTask] = {}
+        older: list[tuple[DownloadRecord, RemoteTask]] = []
+        added: list[RemoteTask] = []
         if status is not None:
-            asked = [index for index, wanted in enumerate(expected) if wanted]
             found = match_tasks([records[index] for index in asked], status.tasks)
             matches = {asked[position]: task for position, task in found.items()}
-        moved = await self._moved(records, settings, shows)
+            older, added = await self._match_older(records, status.tasks, matches.values())
+        pickup, hidden = await self._sync_marks(records, asked, matches, older, now, synced)
+        shown = [(index, record) for index, record in enumerate(records) if record.id not in hidden]
+        everything = [record for _, record in shown] + [record for record, _ in older]
+        languages = await self._subtitles.grab_languages(
+            record.id for record in everything if record.id is not None
+        )
+        shows = await self._shows(
+            record.media_id for record in everything if record.media_type is MediaType.TV
+        )
+        moved = await self._moved([record for _, record in shown], older, settings, shows)
         entries = []
-        for index, record in enumerate(records):
+        for index, record in shown:
             outcome, via = outcomes[index]
-            state, progress = moved_state(
-                *entry_state(
-                    matches.get(index), expected=expected[index], asked=status is not None
-                ),
-                moved.get(index),
-            )
-            assert record.id is not None
-            entries.append(
-                DownloadEntry(
-                    record=record,
-                    title=self._title(record, shows),
-                    show=shows.get(record.media_id) if record.media_type is MediaType.TV else None,
-                    outcome=outcome,
-                    program=via,
-                    state=state,
-                    progress=progress,
-                    subtitles=tuple(sorted(languages.get(record.id, ()))),
-                    moved_to=moved.get(index),
-                )
-            )
+            task = matches.get(index)
+            if task is None and record.id in pickup:
+                base: tuple[DownloadState, float | None] = (pickup[record.id], None)
+            else:
+                base = entry_state(task, expected=expected[index], asked=synced)
+            entries.append(self._entry(record, outcome, via, base, task, shows, languages, moved))
+        for record, task in older:
+            outcome, via = grab_outcome(record.saved_path, settings.download_mode)
+            base = (task.state, task.progress)
+            entries.append(self._entry(record, outcome, via, base, task, shows, languages, moved))
+        tasks = await self._added_tasks(added, shows)
         space, fresh = await self._free_space(settings)
         overview = DownloadsOverview(
             entries=tuple(entries),
+            tasks=tasks,
             program=program,
             problem=problem,
             space=space,
             checked_at=self._now(),
+            synced=synced,
+            on_this_pc=synced and self._remote.on_this_pc,
+            removes_partial=synced and settings.remote_kind is RemoteKind.SYNOLOGY,
         )
-        self.latest = overview
-        _tell(self._listeners, overview)
+        # An action confirmed by a check that started after it finished: the program's word.
+        for task_id, pending in list(self._pending.items()):
+            if pending.done_seq is not None and seq > pending.done_seq:
+                del self._pending[task_id]
+        self._raw = overview
+        self._publish()
         if fresh and space is not None and space.low:
-            now = self._clock()
-            if self._noticed_at is None or now - self._noticed_at >= NOTICE_INTERVAL_S:
-                self._noticed_at = now
+            clock = self._clock()
+            if self._noticed_at is None or clock - self._noticed_at >= NOTICE_INTERVAL_S:
+                self._noticed_at = clock
                 _tell(self._space_listeners, space)
-        return overview
+        assert self.latest is not None
+        return self.latest
+
+    def _entry(
+        self,
+        record: DownloadRecord,
+        outcome: GrabOutcome | None,
+        via: str,
+        base: tuple[DownloadState, float | None],
+        task: RemoteTask | None,
+        shows: Mapping[int, Show],
+        languages: Mapping[int, Collection[str]],
+        moved: Mapping[int, MovedTo],
+    ) -> DownloadEntry:
+        assert record.id is not None
+        place = moved.get(record.id)
+        state, progress = moved_state(*base, place)
+        return DownloadEntry(
+            record=record,
+            title=self._title(record, shows),
+            show=shows.get(record.media_id) if record.media_type is MediaType.TV else None,
+            outcome=outcome,
+            program=via,
+            state=state,
+            progress=progress,
+            subtitles=tuple(sorted(languages.get(record.id, ()))),
+            moved_to=place,
+            task=task,
+        )
+
+    async def _match_older(
+        self,
+        records: Sequence[DownloadRecord],
+        tasks: Sequence[RemoteTask],
+        taken: Iterable[RemoteTask],
+    ) -> tuple[list[tuple[DownloadRecord, RemoteTask]], list[RemoteTask]]:
+        """The program's tasks no recent grab took: those of an older grab (or one taken off
+        the list before 3.0.2), newest grab first, and those added in the program itself."""
+        used = {id(task) for task in taken}
+        rest = [task for task in tasks if id(task) not in used]
+        if not rest:
+            return [], []
+        listed = {record.id for record in records}
+        history = [record for record in await self._every_grab() if record.id not in listed]
+        found = match_tasks(history, rest)
+        older = [(history[position], found[position]) for position in sorted(found)]
+        matched = {id(task) for _, task in older}
+        return older, [task for task in rest if id(task) not in matched]
+
+    async def _every_grab(self) -> list[DownloadRecord]:
+        """The whole history, newest first; read again only when a grab was added or removed."""
+        stamp = await self._history.stamp()
+        cached = self._grabs
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        grabs = await self._history.every_grab()
+        self._grabs = (stamp, grabs)
+        return grabs
+
+    async def _sync_marks(
+        self,
+        records: Sequence[DownloadRecord],
+        asked: Sequence[int],
+        matches: Mapping[int, RemoteTask],
+        older: Sequence[tuple[DownloadRecord, RemoteTask]],
+        now: datetime,
+        synced: bool,
+    ) -> tuple[dict[int, DownloadState], set[int]]:
+        """With the program's task list read: the grabs it has are noted as seen; of the
+        recent grabs it should have and doesn't, (state of those it never had: PENDING or
+        NOT_FOUND by their age, the ids of those it had: gone, they leave the page). The gone
+        ones are marked cleared once `GoneGrabs` confirms it."""
+        if not synced:
+            return {}, set()
+        in_program = [records[index].id for index in matches] + [record.id for record, _ in older]
+        missing = [records[index] for index in asked if index not in matches]
+        ids = {history_id for history_id in in_program if history_id is not None}
+        ids |= {record.id for record in missing if record.id is not None}
+        seen = await self._history.seen(ids) if ids else frozenset()
+        new = {history_id for history_id in in_program if history_id is not None} - seen
+        if new:
+            await self._history.mark_seen(new, now)
+        pickup: dict[int, DownloadState] = {}
+        gone: set[int] = set()
+        for record in missing:
+            assert record.id is not None
+            if record.id in seen:
+                gone.add(record.id)
+            else:
+                pickup[record.id] = pickup_state(record.downloaded_at, now)
+        confirmed = self._gone.confirm(gone, self._clock())
+        if confirmed:
+            await self._history.clear(confirmed, now)
+            self._cleared |= set(confirmed)
+            log.info(
+                "Downloads page: %d grab(s) removed in the torrent program left the list",
+                len(confirmed),
+            )
+        return pickup, gone
+
+    async def _added_tasks(
+        self, tasks: Sequence[RemoteTask], shows: Mapping[int, Show]
+    ) -> tuple[TaskEntry, ...]:
+        """The tasks added in the program itself, recognised when AirGrabber knows the show
+        or film, newest first."""
+        if not tasks:
+            return ()
+        await self._refresh_known(shows)
+        entries = []
+        for task in tasks:
+            found = self._recognition.of(task.name)
+            title, recognised = found if found is not None else (task.name, None)
+            entries.append(TaskEntry(task=task, title=title, recognised=recognised))
+        entries.sort(key=lambda entry: entry.listed_at, reverse=True)
+        return tuple(entries)
+
+    async def _refresh_known(self, shows: Mapping[int, Show]) -> None:
+        """The titles tasks are recognised by: read again after KNOWN_TTL_S, or when the
+        history changed (a new grab's show or film)."""
+        clock, stamp = self._clock(), self._grabs[0] if self._grabs is not None else None
+        fresh = self._known_at is not None and clock - self._known_at < KNOWN_TTL_S
+        if fresh and stamp == self._known_stamp:
+            return
+        followed: Sequence[Show] = ()
+        films: Sequence[Movie] = ()
+        if self._known_lookup is not None:
+            try:
+                followed, films = await self._known_lookup()
+            except Exception as exc:  # noqa: BLE001 - recognising is a nicety
+                log.info("Downloads page: the known titles can't be read (%s)", type(exc).__name__)
+        grabs = self._grabs[1] if self._grabs is not None else []
+        self._recognition.update(
+            KnownTitles.build([*followed, *shows.values()], films, grabs)
+        )
+        self._known_at, self._known_stamp = clock, stamp
 
     # -- the page's own actions ------------------------------------------------------------------
 
+    def _publish(self) -> None:
+        """`latest` = the last check with the actions not confirmed yet applied; tell the
+        listeners."""
+        raw = self._raw
+        if raw is None:
+            return
+        self.latest = _with_pending(raw, self._pending, self._cleared)
+        _tell(self._listeners, self.latest)
+
     async def clear(self, history_ids: Iterable[int]) -> int:
-        """Take grabs off the page ("Clear finished", "Remove from list"); they stay in the
-        history and their files stay where they are. The listeners hear the shorter list at
-        once. Returns how many were taken off."""
+        """Take grabs off the page ("Clear finished" without a program to read, "Remove from
+        list"); they stay in the history and their files stay where they are. The listeners
+        hear the shorter list at once. Returns how many were taken off."""
         ids = {history_id for history_id in history_ids}
         if not ids:
             return 0
         count = await self._history.clear(ids, self._now())
         self._cleared |= ids
         log.info("Downloads page: %d grab(s) taken off the list", len(ids))
-        latest = self.latest
-        if latest is not None:
-            entries = tuple(entry for entry in latest.entries if entry.record.id not in ids)
-            self.latest = latest.model_copy(update={"entries": entries})
-            _tell(self._listeners, self.latest)
+        if self._raw is None and self.latest is not None:
+            self._raw = self.latest
+        self._publish()
         return count
 
-    async def locate(self, entry: DownloadEntry) -> Located:
-        """Where the grab's video is: where MediaForge moved it, else in "Where finished
-        downloads end up" (see the module docstring)."""
-        if entry.moved_to is not None:
+    async def pause(self, item: ListedDownload) -> str | None:
+        """Pause a row's task in the program. The page shows it paused at once; on a failure
+        it is put back and the plain reason returned (None: done)."""
+        return await self._act(item, "pause")
+
+    async def resume(self, item: ListedDownload) -> str | None:
+        """Resume a row's task (as `pause`)."""
+        return await self._act(item, "resume")
+
+    async def remove(self, item: ListedDownload) -> str | None:
+        """Remove a row's task from the program (its files stay; see RemoteDownloads.remove)
+        and the row from the page, at once; on a failure the row comes back and the plain
+        reason is returned (None: done). A grab stays in the history."""
+        return await self._remove([item])
+
+    def finished(self) -> list[ListedDownload]:
+        """What "Clear finished" takes now: with the program read, every finished row
+        (READY, also seeding), grabs and tasks added there alike."""
+        latest = self.latest
+        if latest is None:
+            return []
+        return [item for item in latest.rows if item.state is DownloadState.READY]
+
+    async def clear_finished(self) -> str | None:
+        """"Clear finished" with the program read: every finished task removed from the
+        program (files kept) and every finished row from the page; on a failure they come
+        back and the plain reason is returned (None: done)."""
+        return await self._remove(self.finished())
+
+    async def _act(self, item: ListedDownload, kind: Literal["pause", "resume"]) -> str | None:
+        task_id = item.task.task_id if item.task is not None else None
+        if task_id is None:
+            return None
+        self._pending[task_id] = _Pending(kind)
+        self._publish()
+        call = self._remote.pause if kind == "pause" else self._remote.resume
+        failure = ""
+        try:
+            await call([task_id])
+        except RemoteError as exc:
+            failure = str(exc)
+        if failure:
+            self._pending.pop(task_id, None)
+            log.info("Downloads page: %s failed: %s", kind, failure)
+        elif task_id in self._pending:
+            self._pending[task_id] = _Pending(kind, done_seq=self._check_seq)
+        self._publish()
+        return failure or None
+
+    async def _remove(self, items: Sequence[ListedDownload]) -> str | None:
+        task_ids = list(
+            dict.fromkeys(
+                item.task.task_id
+                for item in items
+                if item.task is not None and item.task.task_id is not None
+            )
+        )
+        grabs = {
+            item.record.id
+            for item in items
+            if isinstance(item, DownloadEntry) and item.record.id is not None
+        }
+        if not task_ids and not grabs:
+            return None
+        for task_id in task_ids:
+            self._pending[task_id] = _Pending("remove")
+        self._publish()
+        failure = ""
+        if task_ids:
+            try:
+                await self._remote.remove(task_ids)
+            except RemoteError as exc:
+                failure = str(exc)
+        if failure:
+            for task_id in task_ids:
+                self._pending.pop(task_id, None)
+            log.info("Downloads page: removing %d task(s) failed: %s", len(task_ids), failure)
+            self._publish()
+            return failure
+        for task_id in task_ids:
+            if task_id in self._pending:
+                self._pending[task_id] = _Pending("remove", done_seq=self._check_seq)
+        if grabs:
+            await self._history.clear(grabs, self._now())
+            self._cleared |= grabs
+        log.info(
+            "Downloads page: %d task(s) removed from the torrent program, %d grab(s) off the list",
+            len(task_ids),
+            len(grabs),
+        )
+        self._publish()
+        return None
+
+    async def locate(self, entry: ListedDownload) -> Located:
+        """Where the row's video is: where MediaForge moved the grab, else in "Where finished
+        downloads end up" (see the module docstring); a task added in the program by a folder
+        or file named like it."""
+        if isinstance(entry, DownloadEntry) and entry.moved_to is not None:
             return Located(entry.moved_to.folder, "")
         folder = self._settings.current.subtitles_folder.strip()
         if not folder:
@@ -704,9 +1113,18 @@ class DownloadStatusService:
         scan = await self._folder_scan(folder)
         if scan is None:
             return Located(None, "unreachable")
-        show_name = entry.show.name if entry.show is not None else None
-        files = grab_files(entry.record, scan, show_name=show_name)
-        found = video_folder([video.video.path for video in files.videos])
+        if isinstance(entry, TaskEntry):
+            name = release_name(entry.task.name)
+            paths = [
+                video.path
+                for video in scan.videos
+                if name and any(release_name(part) == name for part in video.parts)
+            ]
+            found = video_folder(paths)
+        else:
+            show_name = entry.show.name if entry.show is not None else None
+            files = grab_files(entry.record, scan, show_name=show_name)
+            found = video_folder([video.video.path for video in files.videos])
         return Located(found, "") if found is not None else Located(None, "not_found")
 
     async def _folder_scan(self, folder: str) -> FolderScan | None:
@@ -735,28 +1153,47 @@ class DownloadStatusService:
     # -- where MediaForge moved the grabs ---------------------------------------------------------
 
     async def _moved(
-        self, records: Sequence[DownloadRecord], settings: Settings, shows: Mapping[int, Show]
+        self,
+        records: Sequence[DownloadRecord],
+        older: Sequence[tuple[DownloadRecord, RemoteTask]],
+        settings: Settings,
+        shows: Mapping[int, Show],
     ) -> dict[int, MovedTo]:
-        """Where Forge moved each grab (by index in `records`); {} while Forge doesn't run.
-        A failure (forge.db closing at shutdown) leaves the page as it would be without it."""
+        """Where Forge moved each grab (by history id): the recent ones (`match_moves`), and
+        the older ones the program still has a task of (`match_moves_by_name`, the moves left);
+        {} while Forge doesn't run. A failure (forge.db closing at shutdown) leaves the page as
+        it would be without it."""
         forge = self._forge() if self._forge is not None else None
-        if forge is None or not records:
+        if forge is None or not (records or older):
             return {}
         try:
             self._listen(forge.records)
             folders = move_folders(settings.subtitles_folder, forge.watch_folders)
             moves = await self._read_moves(forge.records, folders)
-            oldest = min(record.downloaded_at for record in records) - MOVE_SLACK
-            recent = [move for move in moves if _aware(move.moved_at) >= oldest]
-            if not recent:
-                return {}
-            found = match_moves(
-                records,
-                recent,
-                show_names={show_id: show.name for show_id, show in shows.items()},
-                folders=folders,
-            )
-            return {index: moved_to(move, forge.library_folders) for index, move in found.items()}
+            places: dict[int, MovedTo] = {}
+            used: set[int] = set()  # id() of the moves taken
+            if records:
+                oldest = min(record.downloaded_at for record in records) - MOVE_SLACK
+                recent = [move for move in moves if _aware(move.moved_at) >= oldest]
+                found = match_moves(
+                    records,
+                    recent,
+                    show_names={show_id: show.name for show_id, show in shows.items()},
+                    folders=folders,
+                ) if recent else {}
+                for index, move in found.items():
+                    history_id = records[index].id
+                    if history_id is not None:
+                        places[history_id] = moved_to(move, forge.library_folders)
+                    used.add(id(move))
+            if older:
+                rest = [move for move in moves if id(move) not in used]
+                grabs = [record for record, _ in older]
+                for index, move in match_moves_by_name(grabs, rest, folders=folders).items():
+                    history_id = grabs[index].id
+                    if history_id is not None:
+                        places[history_id] = moved_to(move, forge.library_folders)
+            return places
         except Exception as exc:  # noqa: BLE001 - never the page's problem
             log.info("Downloads page: MediaForge's moves can't be read (%s)", type(exc).__name__)
             return {}
@@ -793,31 +1230,47 @@ class DownloadStatusService:
             self._wake.set()
 
     async def _status(
-        self, wanted: Sequence[DownloadRecord]
+        self, program: str, *, expected: bool
     ) -> tuple[RemoteStatus | None, str | None]:
-        """The program's tasks, unless no grab is expected there; or the plain reason it
-        couldn't be asked."""
-        if not wanted:
+        """Every task of the program (`program`: "" = none to ask), or the plain reason it
+        couldn't be asked. A program on this PC (AirGrabber's qBittorrent starts when asked) is
+        left alone by a background check: while the page is hidden, no recent grab is
+        expected there and its last answer had nothing on its way, that answer serves again
+        (none yet: no answer)."""
+        if not program:
+            self._last_status = None
             return None, None
-        hashes: Collection[str] = ()
-        if all(record.info_hash for record in wanted):
-            hashes = frozenset(record.info_hash for record in wanted if record.info_hash)
+        last = self._last_status if self._last_status and self._last_status[0] == program else None
+        if not self._visible and not expected and self._remote.on_this_pc:
+            if last is None:
+                return None, None
+            if not any(task.state.in_progress for task in last[1].tasks):
+                return last[1], None
         try:
-            return await self._remote.status(hashes), None
+            status = await self._remote.status()
         except RemoteError as exc:
             log.info("No download progress: %s", exc)
             return None, str(exc)
+        self._last_status = (program, status)
+        return status, None
 
     async def _shows(self, show_ids: Iterable[int]) -> dict[int, Show]:
+        """The shows by id (each kept SHOW_TTL_S: an old task's show is asked every check)."""
         shows: dict[int, Show] = {}
+        clock = self._clock()
         for show_id in set(show_ids):
-            show = await self._show(show_id)
+            cached = self._show_cache.get(show_id)
+            if cached is not None and clock - cached[0] < SHOW_TTL_S:
+                show = cached[1]
+            else:
+                show = await self._show(show_id)
+                self._show_cache[show_id] = (clock, show)
             if show is not None:
                 shows[show_id] = show
         return shows
 
     @staticmethod
-    def _title(record: DownloadRecord, shows: dict[int, Show]) -> str:
+    def _title(record: DownloadRecord, shows: Mapping[int, Show]) -> str:
         if record.media_type is MediaType.MOVIE:
             return movie_title(record.release_title)
         show = shows.get(record.media_id)

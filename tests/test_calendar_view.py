@@ -17,6 +17,7 @@ import customtkinter as ctk
 from app.models import CalendarEntry, Episode, Settings, Show
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import calendar_range
+from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.calendar_cards import CompactEpisodeCard, EpisodeCard, SuggestionCard
 from app.ui.calendar_stack import CompactStackCard, StackCard
@@ -28,7 +29,9 @@ from app.ui.views.calendar_view import (
     SUGGESTION_POOL,
     CalendarView,
     range_label,
+    kept_scroll,
     range_slot_width,
+    suggestion_start,
 )
 
 TODAY = date(2026, 10, 19)  # a Monday: the grid starts a week earlier (Settings: Monday first)
@@ -73,6 +76,10 @@ class FakeLibrary:
         self.have_calls: list[tuple[date, date]] = []
         self.suggestion_calls: list[tuple[date, date, int]] = []
         self.people: list[int] = []  # the person each calendar was asked for
+        self.gate: asyncio.Event | None = None
+        self.reached = asyncio.Event()
+        self.tracked_shows: list[int] = []
+        self.track_error: Exception | None = None
 
     async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
         self.calendar_calls.append((start, end))
@@ -96,7 +103,16 @@ class FakeLibrary:
         self, start: date, end: date, *, profile_id: int, per_day: int
     ) -> list[CalendarEntry]:
         self.suggestion_calls.append((start, end, per_day))
+        if self.gate is not None:  # a test looks at the page halfway through a load
+            self.reached.set()
+            await self.gate.wait()
         return _within(self._suggestions, start, end)
+
+    async def track(self, show_id: int, *, profile_id: int) -> Show:
+        self.tracked_shows.append(show_id)
+        if self.track_error is not None:
+            raise self.track_error
+        return Show(id=show_id, name=f"Show {show_id}")
 
 
 class FakeSettings:
@@ -210,12 +226,13 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         library = self.library()
         view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
         await view.load()
-        # Monday: last week too, so the weekend's episodes are still on screen.
+        # Monday: last week too, so the weekend's episodes are still on screen; it has passed,
+        # so its suggestions aren't fetched.
         week_end = TODAY + timedelta(days=6)
         self.assertEqual(library.calendar_calls, [(GRID_START, week_end)])
-        self.assertEqual(library.suggestion_calls, [(GRID_START, week_end, SUGGESTION_POOL)])
+        self.assertEqual(library.suggestion_calls, [(TODAY, week_end, SUGGESTION_POOL)])
         self.assertEqual(self.cards(view, TODAY), ["full", "full", "Show 10"])
-        self.assertEqual(self.cards(view, SUNDAY), ["Show 12"])
+        self.assertEqual(self.cards(view, SUNDAY), [])
         self.assertEqual(self.cards(view, GRID_START), ["compact"])
         self.assertEqual(self.cards(view, TODAY + timedelta(days=1)), [])
         self.assertTrue(view._suggestions_shown)
@@ -255,34 +272,158 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_show_is_suggested_once_a_week_row(self) -> None:
         # Today holds four poster cards. A daily show (50) is the best-ranked suggestion of
-        # every weekday, each day has one more of its own, and last week's Monday has 50 too.
+        # every weekday, each day has one more of its own, and next week's Monday has 50 too.
         tracked = [entry(show_id, TODAY, tracked=True) for show_id in range(1, 5)]
         weekdays = [TODAY + timedelta(days=n) for n in range(5)]
+        next_monday = TODAY + timedelta(weeks=1)
         suggestions = [
             suggestion
             for n, day in enumerate(weekdays)
             for suggestion in (entry(50, day, tracked=False), entry(60 + n, day, tracked=False))
-        ] + [entry(50, GRID_START, tracked=False)]
-        view = self.view(FakeLibrary(tracked, suggestions), FakeSettings(Settings(weeks_to_show=1)))
+        ] + [entry(50, next_monday, tracked=False)]
+        view = self.view(FakeLibrary(tracked, suggestions), FakeSettings(Settings(weeks_to_show=2)))
         await view.load()
         self.assertEqual(self.cards(view, TODAY), ["full"] * 4 + ["Show 50"])
         for n, day in enumerate(weekdays[1:], start=1):
             self.assertEqual(self.cards(view, day), [f"Show {60 + n}"])
-        self.assertEqual(self.cards(view, GRID_START), ["Show 50"])  # another week row
+        self.assertEqual(self.cards(view, next_monday), ["Show 50"])  # another week row
 
-    async def test_missing_episodes_get_the_amber_mark(self) -> None:
+    async def test_past_weeks_get_no_suggestions(self) -> None:
+        # Today is a Wednesday: Monday and Tuesday keep theirs (the row doesn't change midweek).
+        wednesday = TODAY + timedelta(days=2)
+
+        class Wednesday(date):
+            @classmethod
+            def today(cls) -> Wednesday:
+                return cls(wednesday.year, wednesday.month, wednesday.day)
+
+        tracked = [entry(1, GRID_START, tracked=True)]
+        suggestions = [
+            entry(10 + n, GRID_START + timedelta(days=n), tracked=False) for n in range(21)
+        ]
+        library = FakeLibrary(tracked, suggestions)
+        prefs = Settings(weeks_to_show=2)
+        with mock.patch("app.ui.views.calendar_view.date", Wednesday):
+            view = self.view(library, FakeSettings(prefs))
+            await view.load()
+            self.assertEqual(library.suggestion_calls[-1][:2], (TODAY, TODAY + timedelta(days=13)))
+            self.assertEqual(self.cards(view, TODAY), ["Show 17"])  # Monday, before today
+            self.assertEqual(self.cards(view, wednesday), ["Show 19"])
+            # Back a week: last week's row has passed, this week's still gets them.
+            view._offset = -1
+            await view.load()
+            self.assertEqual(library.calendar_calls[-1], (GRID_START, TODAY + timedelta(days=6)))
+            self.assertEqual(library.suggestion_calls[-1][:2], (TODAY, TODAY + timedelta(days=6)))
+            self.assertEqual(self.cards(view, GRID_START), ["compact"])
+            self.assertEqual(self.cards(view, GRID_START + timedelta(days=1)), [])
+            # Back two: every row has passed, nothing is fetched.
+            calls = len(library.suggestion_calls)
+            view._offset = -2
+            await view.load()
+            self.assertEqual(len(library.suggestion_calls), calls)
+            self.assertEqual(view._note.cget("text"), "")
+
+    async def test_a_quiet_reload_swaps_in_a_complete_grid(self) -> None:
+        # Show 10 was suggested today and has just been tracked (a library change).
+        library = self.library()
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        view.pack(fill="both", expand=True)
+        await view.load()
+        self.assertEqual(self.cards(view, TODAY), ["full", "full", "Show 10"])
+        old = view._weeks
+        assert old is not None
+        library._tracked.append(entry(10, TODAY, tracked=True))
+        library._suggestions = [s for s in library._suggestions if s.show.id != 10]
+        library.gate = asyncio.Event()
+        view.refresh_quietly()
+        await library.reached.wait()  # the new grid's episodes are in, its suggestions not yet
+        pending = view._pending
+        assert pending is not None
+        self.assertIs(view._weeks, old)  # still on screen, unchanged
+        self.assertEqual(old.winfo_manager(), "pack")
+        self.assertEqual(pending.winfo_manager(), "place")
+        stacking = [str(w) for w in view._scroll.winfo_children()]  # lowest first
+        self.assertLess(stacking.index(str(pending)), stacking.index(str(old)))
+        self.assertEqual(view._note.cget("text"), "")  # no "Finding suggestions…"
+        library.gate.set()
+        assert view._load_task is not None
+        await view._load_task
+        self.assertIsNot(view._weeks, old)
+        self.assertIs(view._weeks, pending)
+        self.assertFalse(old.winfo_exists())
+        self.assertIsNone(view._pending)
+        self.assertEqual(pending.winfo_manager(), "pack")
+        # Show 10's episode instead of its suggestion; the next best is suggested now.
+        self.assertEqual(self.cards(view, TODAY), ["full", "full", "full", "Show 11"])
+
+    async def test_a_quiet_reload_of_other_weeks_builds_in_view(self) -> None:
+        library = self.library()
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        old = view._weeks
+        view._offset = 1  # another grid than the one on screen: nothing to keep
+        library.gate = asyncio.Event()
+        view.refresh_quietly()
+        await library.reached.wait()
+        self.assertIsNone(view._pending)
+        assert old is not None
+        self.assertFalse(old.winfo_exists())
+        self.assertIsNot(view._weeks, old)
+        library.gate.set()
+        assert view._load_task is not None
+        await view._load_task
+
+    async def test_an_interrupted_quiet_reload_leaves_nothing_behind(self) -> None:
+        library = self.library()
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        library.gate = asyncio.Event()
+        view.refresh_quietly()
+        await library.reached.wait()
+        pending = view._pending
+        assert pending is not None
+        library.gate = None
+        view.refresh()  # e.g. ◀: cancels the quiet load
+        assert view._load_task is not None
+        await view._load_task
+        self.assertFalse(pending.winfo_exists())
+        self.assertIsNone(view._pending)
+        assert view._weeks is not None
+        self.assertEqual(view._weeks.winfo_manager(), "pack")
+
+    async def test_track_on_a_suggestion_says_following_at_once(self) -> None:
+        library = self.library()
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        suggestion = self.card_widgets(view, TODAY)[-1]
+        self.assertIsInstance(suggestion, SuggestionCard)
+        button = suggestion._track_button
+        button.invoke()
+        self.assertEqual((button.cget("text"), button.cget("state")), ("…", "disabled"))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual(library.tracked_shows, [10])
+        self.assertEqual((button.cget("text"), button.cget("state")), ("✓ Following", "disabled"))
+        # A failure gives the button back.
+        library.track_error = TVMazeError("down")
+        button.configure(text="+ Track", state="normal")
+        button.invoke()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual((button.cget("text"), button.cget("state")), ("+ Track", "normal"))
+
+    async def test_missing_episodes_get_the_amber_note(self) -> None:
         # Show 1 today (a poster card) and show 3 a week ago (a compact card) are missing.
         library = self.library(missing=frozenset({100, 300}))
         view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
         await view.load()
         self.assertEqual(library.missing_calls, library.calendar_calls)
         first, second, _suggestion = self.card_widgets(view, TODAY)
-        self.assertTrue(first._missing)
-        self.assertFalse(second._missing)
+        self.assertTrue(first._layout.note)  # room for the amber note
+        self.assertFalse(second._layout.note)
         self.assertGreater(first.cget("height"), second.cget("height"))
         (compact,) = self.card_widgets(view, GRID_START)
         self.assertIsNotNone(compact.note)
-        self.assertIsNotNone(compact.mark)
 
     async def test_a_shows_episodes_of_one_day_share_a_stack_card(self) -> None:
         def episode(show_id: int, number: int, day: date) -> CalendarEntry:
@@ -317,12 +458,11 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [entry.episode.number for entry in stack._stack.entries], [1, 2, 3]
         )
-        self.assertTrue(stack._missing)  # episode 2 is missing
         self.assertEqual(stack._had, {403})
         (compact,) = self.card_widgets(view, GRID_START)
         self.assertIsInstance(compact, CompactStackCard)
         self.assertEqual(compact.badge.cget("text"), "2")
-        self.assertIsNone(compact.mark)
+        self.assertIsNone(compact.note)
         # An unfolded stack stays unfolded when the page reloads.
         self.assertFalse(stack.unfolded)
         stack.toggle()
@@ -492,6 +632,34 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         calls = len(library.calendar_calls)
         buttons["Today"].invoke()  # already on this week: no reload
         self.assertEqual(len(library.calendar_calls), calls)
+
+
+class KeptScrollTests(unittest.TestCase):
+    def test_the_row_in_view_stays_put(self) -> None:
+        old, grown = [0, 450, 900], [0, 636, 1086]  # the first row grew by 186
+        # The second row starts 16 px into the view: it does again after the swap.
+        self.assertEqual(kept_scroll(434, 900, old, grown), 620)
+        # Inside the second row (none starts in view): the same distance into it.
+        self.assertEqual(kept_scroll(500, 300, old, grown), 686)
+        self.assertIsNone(kept_scroll(0, 900, old, grown))  # at the top: stays
+        self.assertIsNone(kept_scroll(434, 900, old, grown[:2]))
+        self.assertEqual(kept_scroll(434, 900, old, [0, 300, 700]), 284)  # a row shrank
+
+
+class SuggestionStartTests(unittest.TestCase):
+    def test_the_first_row_that_has_not_passed(self) -> None:
+        end = GRID_START + timedelta(weeks=3, days=-1)  # three week rows
+        self.assertEqual(suggestion_start(GRID_START, end, today=GRID_START), GRID_START)
+        # A row's last day is still its own: today counts.
+        self.assertEqual(suggestion_start(GRID_START, end, today=SUNDAY), GRID_START)
+        self.assertEqual(suggestion_start(GRID_START, end, today=TODAY), TODAY)
+        self.assertEqual(
+            suggestion_start(GRID_START, end, today=TODAY + timedelta(days=9)),
+            TODAY + timedelta(weeks=1),
+        )
+        self.assertIsNone(suggestion_start(GRID_START, end, today=end + timedelta(days=1)))
+        # A grid in the future starts with suggestions.
+        self.assertEqual(suggestion_start(TODAY, end, today=GRID_START), TODAY)
 
 
 if __name__ == "__main__":
