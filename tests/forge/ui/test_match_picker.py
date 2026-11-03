@@ -49,25 +49,34 @@ class FakeImages:
 
 
 class FakeTmdb:
+    """`by_query` answers a query with its own results; `gates` holds a query's answer back
+    until its event is set."""
+
     def __init__(self, results: list[TMDBTitle] | None = None, *, fail: bool = False) -> None:
         self.results = results or []
         self.fail = fail
+        self.ready = True
+        self.by_query: dict[str, list[TMDBTitle]] = {}
+        self.gates: dict[str, asyncio.Event] = {}
         self.searches: list[tuple[str, str, int | None]] = []
 
     def configured(self) -> bool:
-        return True
+        return self.ready
 
     async def search_movie(self, query: str, year: int | None) -> list[TMDBTitle]:
-        return self._search("movie", query, year)
+        return await self._search("movie", query, year)
 
     async def search_tv(self, query: str, year: int | None) -> list[TMDBTitle]:
-        return self._search("tv", query, year)
+        return await self._search("tv", query, year)
 
-    def _search(self, kind: str, query: str, year: int | None) -> list[TMDBTitle]:
+    async def _search(self, kind: str, query: str, year: int | None) -> list[TMDBTitle]:
         self.searches.append((kind, query, year))
+        gate = self.gates.get(query)
+        if gate is not None:
+            await gate.wait()
         if self.fail:
             raise TmdbError("offline")
-        return self.results
+        return self.by_query.get(query, self.results)
 
 
 def title(n: int, *, poster: str | None = None) -> TMDBTitle:
@@ -242,6 +251,181 @@ class SearchTests(PickerCase):
         self.assertFalse(task.done())
         press(picker, "<Escape>")
         self.assertEqual(await self.answer(task), "cancel")
+
+
+def ark(n: int) -> TMDBTitle:
+    return TMDBTitle(id=100 + n, title=f"The Ark {n}", date="2023-02-01", overview="Space.")
+
+
+def ark_item(folder: Path, kind: MediaKind = MediaKind.EPISODE) -> QueueItem:
+    """The owner's case: a wrong parsed year and four unrelated candidates."""
+    name = "The.Ark.2026.S03E01.WEB-DL.1080p.mkv"
+    parsed = ParsedMedia(
+        source_name=name,
+        kind=kind,
+        title="The Ark",
+        year=2026,
+        season=3 if kind is MediaKind.EPISODE else None,
+        episode=1 if kind is MediaKind.EPISODE else None,
+    )
+    item = QueueItem(9, folder / name, None, parsed)
+    media = ResolvedMedia.offline(parsed, MatchState.UNCERTAIN)
+    item.resolution = Resolution(media=media, candidates=tuple(title(n) for n in range(1, 5)))
+    return item
+
+
+class ManualSearchTests(PickerCase):
+    async def search(self, picker: MatchPicker, query: str | None = None) -> None:
+        entry = picker.search_entry
+        assert entry is not None
+        if query is not None:
+            entry.delete(0, "end")
+            entry.insert(0, query)
+        entry.focus_force()
+        entry._entry.event_generate("<Return>")
+
+    async def settled(self, picker: MatchPicker) -> None:
+        """Every search started so far has finished."""
+        searches = [t for t in picker._tasks if t.get_name() == "MatchPicker.search"]
+        self.assertTrue(searches)
+        await pump_until(self.root, lambda: all(t.done() for t in searches))
+        await pump(self.root, 0.02)
+
+    async def test_prefilled_without_the_year_and_enter_searches(self) -> None:
+        self.tmdb.results = [ark(1), ark(2)]
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        assert picker.search_entry is not None
+        self.assertEqual(picker.search_entry.get(), "The Ark")
+        await self.search(picker)
+        await self.settled(picker)
+        self.assertEqual(self.tmdb.searches, [("tv", "The Ark", None)])
+        self.assertEqual(len(self.rows(picker)), 2)  # replaced, not added
+        self.assertIn("The Ark 1 (2023)", self.texts(picker.list))
+        self.assertNotIn("Dune 1 (2021)", self.texts(picker.list))
+        self.assertEqual(picker.candidates, [ark(1), ark(2)])
+        self.use_buttons(picker)[1].invoke()
+        self.assertEqual(await self.answer(task), ark(2))
+
+    async def test_a_year_at_the_end_is_passed_as_the_year(self) -> None:
+        self.tmdb.results = [ark(1)]
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        await self.search(picker, "The Ark 2023")
+        await self.settled(picker)
+        await self.search(picker, "  The Ark (2023) ")
+        await self.settled(picker)
+        await self.search(picker, "Blade Runner 2049 x")
+        await self.settled(picker)
+        self.assertEqual(
+            self.tmdb.searches,
+            [
+                ("tv", "The Ark", 2023),
+                ("tv", "The Ark", 2023),
+                ("tv", "Blade Runner 2049 x", None),
+            ],
+        )
+        picker.skip_button.invoke()
+        await self.answer(task)
+
+    async def test_a_movie_searches_movies_and_the_button_searches_too(self) -> None:
+        self.tmdb.results = [ark(3)]
+        task = self.ask(ark_item(self.tmp, MediaKind.MOVIE))
+        picker = await self.opened(rows=4)
+        assert picker.search_button is not None
+        picker.search_button.invoke()
+        await self.settled(picker)
+        self.assertEqual(self.tmdb.searches, [("movie", "The Ark", None)])
+        picker.top_button.invoke()  # the new top
+        self.assertEqual(await self.answer(task), ark(3))
+
+    async def test_searching_shows_and_disables(self) -> None:
+        gate = asyncio.Event()
+        self.tmdb.gates["The Ark"] = gate
+        self.tmdb.results = [ark(1)]
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        await self.search(picker)
+        await pump_until(self.root, lambda: "Searching…" in self.texts(picker.list))
+        assert picker.search_button is not None
+        self.assertEqual(picker.search_button.cget("state"), "disabled")
+        self.assertEqual(picker.search_button.cget("text"), "Searching…")
+        self.assertEqual(picker.top_button.cget("state"), "disabled")
+        self.assertEqual(self.rows(picker), [])
+        gate.set()
+        await self.settled(picker)
+        self.assertEqual(picker.search_button.cget("text"), "🔍 Search")
+        self.assertEqual(picker.top_button.cget("state"), "normal")
+        picker.skip_button.invoke()
+        await self.answer(task)
+
+    async def test_nothing_found(self) -> None:
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        await self.search(picker, "Zzz")
+        await self.settled(picker)
+        self.assertEqual(self.rows(picker), [])
+        self.assertEqual(self.texts(picker.list), ['Nothing found for "Zzz".'])
+        self.assertEqual(picker.top_button.cget("state"), "disabled")
+        self.assertEqual(picker.candidates, [])
+        press(picker, "<Escape>")
+        self.assertEqual(await self.answer(task), "cancel")
+
+    async def test_tmdb_error(self) -> None:
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        self.tmdb.fail = True
+        with self.assertLogs("app.forge.ui.match_picker", "WARNING") as logs:
+            await self.search(picker, "Secret Query")
+            await self.settled(picker)
+        self.assertNotIn("offline", "".join(logs.output))
+        self.assertNotIn("Secret", "".join(logs.output))
+        self.assertEqual(self.texts(picker.list), ["TMDB couldn't be reached. Try again."])
+        self.assertEqual(picker.top_button.cget("state"), "disabled")
+        press(picker, "<Escape>")
+        await self.answer(task)
+
+    async def test_an_empty_query_does_nothing(self) -> None:
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        await self.search(picker, "   ")
+        await pump(self.root, 0.05)
+        self.assertEqual(self.tmdb.searches, [])
+        self.assertEqual(len(self.rows(picker)), 4)
+        picker.skip_button.invoke()
+        await self.answer(task)
+
+    async def test_a_newer_search_wins(self) -> None:
+        slow = asyncio.Event()
+        self.tmdb.gates["Old"] = slow
+        self.tmdb.by_query = {"Old": [title(9)], "New": [ark(1)]}
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        await self.search(picker, "Old")
+        await pump_until(self.root, lambda: len(self.tmdb.searches) == 1)
+        await self.search(picker, "New")  # the button is disabled meanwhile; Enter still works
+        await pump_until(self.root, lambda: picker.candidates == [ark(1)])
+        slow.set()
+        await pump(self.root, 0.1)
+        self.assertEqual(picker.candidates, [ark(1)])
+        self.assertIn("The Ark 1 (2023)", self.texts(picker.list))
+        self.assertNotIn("Dune 9 (2021)", self.texts(picker.list))
+        picker.top_button.invoke()
+        self.assertEqual(await self.answer(task), ark(1))
+
+    async def test_no_search_row_without_tmdb(self) -> None:
+        self.tmdb.ready = False
+        task = self.ask(ark_item(self.tmp))
+        picker = await self.opened(rows=4)
+        self.assertIsNone(picker.search_entry)
+        self.assertIsNone(picker.search_button)
+        stack: list[tk.Misc] = [picker]
+        while stack:
+            current = stack.pop()
+            self.assertNotIsInstance(current, ctk.CTkEntry)
+            stack.extend(current.winfo_children())
+        picker.skip_button.invoke()
+        await self.answer(task)
 
 
 class ThumbnailTests(PickerCase):

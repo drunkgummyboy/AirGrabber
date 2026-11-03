@@ -14,6 +14,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.1.1": (
+        N_("New here? \"Let's get started\" lets you pick a few current series to follow in one go."),
+        N_("It opens from the empty calendar or from My shows (+ Pick shows…)."),
+        N_("MediaForge's \"Which show is this?\" has a search box for when none of its suggestions is right."),
+    ),
     "3.1.0": (
         N_("Connect Plex in Settings → Plex: what's in your Plex libraries counts as something you already have."),
         N_("Episodes in Plex are no longer missing, and automatic downloads skip episodes and films you have in Plex."),

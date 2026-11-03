@@ -43,6 +43,11 @@ NL: dict[str, str] = {
     "TMDB found nothing for this file.": "TMDB vond niets voor dit bestand.",
     "No description.": "Geen beschrijving.",
     "Use this": "Deze nemen",
+    "Search TMDB by name…": "Zoek op TMDB op naam…",
+    "🔍 Search": "🔍 Zoeken",
+    "Searching…": "Zoeken…",
+    "Nothing found for \"{query}\".": "Niets gevonden voor \"{query}\".",
+    "TMDB couldn't be reached. Try again.": "TMDB is niet bereikbaar. Probeer het opnieuw.",
     # app/forge/core/library.py
     "Choose a download folder to watch.": "Kies een downloadmap om te bewaken.",
     "Choose the Series library folder.": "Kies de bibliotheekmap voor series.",

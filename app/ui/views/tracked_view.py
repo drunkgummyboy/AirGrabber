@@ -7,8 +7,9 @@ it (All / Has missing / Auto on / Ended); both choices are kept in Settings (`tr
 `tracked_filter`) and only re-order the cards already there. Missing episodes (the cards'
 "3 missing", "Has missing") exist only while Plex is connected (owner's decision for 3.1.0,
 app/services/plex.py): without Plex the filter offers no "Has missing" (a stored choice of it
-counts as All until Plex is back) and the cards show no counts. Next to Import Shows a ⋯ menu
-holds "Remove ended shows…".
+counts as All until Plex is back) and the cards show no counts. Next to Import Shows are
+"+ Pick shows…" (the "Let's get started" window, app/ui/get_started.py, when the page has
+`on_pick_shows`) and a ⋯ menu that holds "Remove ended shows…".
 """
 
 from __future__ import annotations
@@ -73,6 +74,8 @@ FILTER_TEXT = N_("Show:")
 MORE_TEXT = "⋯"
 MORE_TIP = SEASON_MENU_TIP  # "More options"
 REMOVE_ENDED_TEXT = N_("Remove ended shows…")
+PICK_SHOWS_TEXT = N_("+ Pick shows…")
+HEADER_BUTTON_PAD = 14  # "+ Pick shows…"'s room left and right of its text
 
 # The header row and the sort / filter bar, in CTk units.
 HEADER_BUTTON_HEIGHT = 30  # Import Shows and the ⋯ next to it
@@ -262,9 +265,11 @@ class TrackedView(BaseView):
         on_open_show: Callable[[Show], None] | None = None,
         missing_actions: MissingActions | None = None,
         card_scale: Callable[[], CardScale] = lambda: FULL,
+        on_pick_shows: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """`on_open_show`: what a click on a card's poster or title does (the show details).
+        `on_pick_shows`: "+ Pick shows…" opens "Let's get started" (no button without it).
         `missing_actions`: the cards show their missing episodes and "Download missing".
         `card_scale`: the card size (Settings), read at every load. `settings`: the sort and
         filter choices (`tracked_sort`, `tracked_filter`)."""
@@ -310,6 +315,23 @@ class TrackedView(BaseView):
             command=self._open_import,
         )
         self._import_button.pack(side="left", padx=5)
+        self.pick_shows_button: ctk.CTkButton | None = None
+        if on_pick_shows is not None:
+            pick_font = theme.font(13)
+            self.pick_shows_button = ctk.CTkButton(
+                header,
+                text=t(PICK_SHOWS_TEXT),
+                width=round(pick_font.measure(t(PICK_SHOWS_TEXT))) + 2 * HEADER_BUTTON_PAD,
+                height=HEADER_BUTTON_HEIGHT,
+                font=pick_font,
+                fg_color="transparent",
+                hover_color=theme.HOVER,
+                text_color=theme.BUTTON_TEXT,
+                border_width=1,
+                border_color=theme.EDGE,
+                command=on_pick_shows,
+            )
+            self.pick_shows_button.pack(side="left", padx=(0, 5))
         self._more_button = ctk.CTkButton(
             header,
             text=MORE_TEXT,

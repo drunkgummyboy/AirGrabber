@@ -380,6 +380,10 @@ class Settings(BaseModel):
     # The first-run welcome was completed or dismissed (or skipped for a library that already had
     # shows); never shown in Settings.
     setup_done: bool = False
+    # The "Let's get started" window (app/ui/get_started.py) opened by itself once, after the
+    # welcome; it never does again (the empty calendar's box still opens it). Never shown in
+    # Settings.
+    get_started_shown: bool = False
     # Download new versions in the background and install them when AirGrabber closes.
     auto_update: bool = True
     # The version that ran last (stored at every start), for the "Updated to v…" notice; never

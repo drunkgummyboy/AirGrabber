@@ -100,6 +100,7 @@ MACHINE_SECRETS: frozenset[str] = frozenset({"plex_token"})
 MACHINE_FIELDS: frozenset[str] = frozenset(
     {
         "setup_done",  # the welcome ran on this PC
+        "get_started_shown",  # "Let's get started" opened by itself on this PC
         "last_run_version",  # the "Updated to v…" notice
         "tray_notice_shown",
         "start_with_windows",  # mirrors the Startup-folder shortcut on this PC

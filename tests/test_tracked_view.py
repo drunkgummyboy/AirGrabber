@@ -300,7 +300,12 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         gc.collect()
 
     async def view(
-        self, *, missing: dict[int, int], plex: bool = True, **settings: Any
+        self,
+        *,
+        missing: dict[int, int],
+        plex: bool = True,
+        on_pick_shows: Any = None,
+        **settings: Any,
     ) -> TrackedView:
         entries = [
             LibraryEntry(show=_show(1, "Charlie"), tracked_at=NOW, auto_download=True),
@@ -321,6 +326,7 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
             images=images,
             status=lambda text, clear_after_ms=None: None,
             missing_actions=actions,
+            on_pick_shows=on_pick_shows,
         )
         view.pack(fill="both", expand=True)
         await view.load()
@@ -443,6 +449,23 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         self.assertEqual(self.library.removed_ended, 1)
         self.assertEqual(view._more_button.cget("state"), "normal")
+
+    async def test_pick_shows_opens_get_started(self) -> None:
+        opened: list[str] = []
+        view = await self.view(missing={}, on_pick_shows=lambda: opened.append("open"))
+        button = view.pick_shows_button
+        assert button is not None
+        self.assertEqual(button.cget("text"), "+ Pick shows…")
+        # Between Import Shows and the ⋯.
+        header = [str(widget) for widget in button.master.pack_slaves()]
+        self.assertLess(header.index(str(view._import_button)), header.index(str(button)))
+        self.assertLess(header.index(str(button)), header.index(str(view._more_button)))
+        button.invoke()
+        self.assertEqual(opened, ["open"])
+
+    async def test_no_pick_shows_without_the_window(self) -> None:
+        view = await self.view(missing={})
+        self.assertIsNone(view.pick_shows_button)
 
 
 if __name__ == "__main__":

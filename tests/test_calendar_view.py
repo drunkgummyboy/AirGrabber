@@ -14,7 +14,7 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.models import CalendarEntry, Episode, Settings, Show
+from app.models import CalendarEntry, Episode, LibraryStats, Settings, Show
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import calendar_range
 from app.services.tvmaze import TVMazeError
@@ -86,6 +86,8 @@ class FakeLibrary:
         self.reached = asyncio.Event()
         self.tracked_shows: list[int] = []
         self.track_error: Exception | None = None
+        self.follows: dict[int, int] = {}  # how many shows each person follows (default 3)
+        self.stats_people: list[int] = []
 
     async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
         self.calendar_calls.append((start, end))
@@ -113,6 +115,10 @@ class FakeLibrary:
             self.reached.set()
             await self.gate.wait()
         return _within(self._suggestions, start, end)
+
+    async def stats(self, *, profile_id: int) -> LibraryStats:
+        self.stats_people.append(profile_id)
+        return LibraryStats(tracked_shows=self.follows.get(profile_id, 3), episodes=0)
 
     async def track(self, show_id: int, *, profile_id: int) -> Show:
         self.tracked_shows.append(show_id)
@@ -182,7 +188,11 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         return FakeLibrary(tracked, suggestions, missing)
 
     def view(
-        self, library: FakeLibrary, settings: FakeSettings, on_open_show: Any = None
+        self,
+        library: FakeLibrary,
+        settings: FakeSettings,
+        on_open_show: Any = None,
+        on_pick_shows: Any = None,
     ) -> CalendarView:
         return CalendarView(
             self.root,
@@ -194,6 +204,7 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
                 download=lambda _entry: None, choose=lambda _entry: None, states=DownloadStates()
             ),
             on_open_show=on_open_show,
+            on_pick_shows=on_pick_shows,
         )
 
     def card_widgets(self, view: CalendarView, day: date) -> list[Any]:
@@ -664,6 +675,70 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         calls = len(library.calendar_calls)
         buttons["Today"].invoke()  # already on this week: no reload
         self.assertEqual(len(library.calendar_calls), calls)
+
+
+    # -- the box while no show is followed -----------------------------------------------------
+
+    async def test_the_box_shows_while_no_show_is_followed(self) -> None:
+        library = self.library()
+        library.follows = {1: 0}
+        picks: list[str] = []
+        view = self.view(
+            library,
+            FakeSettings(Settings(weeks_to_show=1)),
+            on_pick_shows=lambda: picks.append("open"),
+        )
+        view.pack(fill="both", expand=True)
+        await view.load()
+        self.assertTrue(view.empty_box_shown)
+        self.assertEqual(library.stats_people, [1])
+        self.assertEqual(self.cards(view, TODAY), ["full", "full", "Show 10"])  # grid as before
+        texts = [
+            str(widget.cget("text"))
+            for widget in _descendants(view._empty_box)
+            if isinstance(widget, ctk.CTkLabel)
+        ]
+        self.assertIn("You don't follow any shows yet", texts)
+        self.assertIn("Pick a few series and their new episodes appear here.", texts)
+        self.assertEqual(view.pick_shows_button.cget("text"), "Pick shows to follow…")
+        view.pick_shows_button.invoke()
+        self.assertEqual(picks, ["open"])
+        # A show followed: the quiet reload takes the box away.
+        library.follows = {1: 1}
+        view.refresh_quietly()
+        assert view._load_task is not None
+        await view._load_task
+        self.assertFalse(view.empty_box_shown)
+
+    async def test_no_box_with_a_show_followed(self) -> None:
+        library = self.library()
+        library.follows = {1: 1}
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)), on_pick_shows=list)
+        await view.load()
+        self.assertFalse(view.empty_box_shown)
+
+    async def test_the_box_is_per_person(self) -> None:
+        library = self.library()
+        library.follows = {1: 2, 2: 0}
+        settings = FakeSettings(Settings(weeks_to_show=1))
+        view = self.view(library, settings, on_pick_shows=list)
+        await view.load()
+        self.assertFalse(view.empty_box_shown)
+        await settings.update(current_profile=2)  # another person selected
+        await view.load()
+        self.assertTrue(view.empty_box_shown)
+        self.assertEqual(library.stats_people, [1, 2])
+        await settings.update(current_profile=1)
+        await view.load()
+        self.assertFalse(view.empty_box_shown)
+
+    async def test_no_box_without_the_window_to_open(self) -> None:
+        library = self.library()
+        library.follows = {1: 0}
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        self.assertFalse(view.empty_box_shown)
+        self.assertEqual(library.stats_people, [])
 
 
 class KeptScrollTests(unittest.TestCase):

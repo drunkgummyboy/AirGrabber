@@ -67,6 +67,7 @@ from app.ui.download_control import (
     DownloadKey,
     DownloadStates,
 )
+from app.ui.get_started import GetStartedDialog, get_started_due
 from app.ui.missing_control import (
     OUTCOME_MS,
     MissingActions,
@@ -135,6 +136,7 @@ _OFF_PAGE_SETTINGS = frozenset(
         "download_mode",
         "auto_download_new_shows",
         "setup_done",
+        "get_started_shown",
         "auto_update",
         "last_run_version",
         "keep_in_tray",
@@ -365,6 +367,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._idle_status = ""
         self._status_job: str | None = None
         self._settings_dialog: SettingsDialog | None = None
+        self._get_started: GetStartedDialog | None = None  # "Let's get started"
         self._results_window: SearchResultsWindow | None = None
         self._update_info: UpdateInfo | None = None
         self._update_task: asyncio.Task[None] | None = None
@@ -628,6 +631,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 episode_actions=self._episode_actions,
                 card_scale=self._card_scale,
                 on_open_show=self._show_windows.open_show,
+                on_pick_shows=self.open_get_started,  # the empty calendar's box
             ),
             t(_DISCOVER): DiscoverView(
                 tabs.add(t(_DISCOVER)),
@@ -649,6 +653,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 on_open_show=self._show_windows.open_show,
                 missing_actions=self._missing_actions,
                 card_scale=self._card_scale,
+                on_pick_shows=self.open_get_started,  # "+ Pick shows…"
             ),
         }
         for view in self._series_views.values():
@@ -1305,7 +1310,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             if not self.winfo_exists():
                 return
             # A key saved there reloads the TMDB pages through _on_settings_changed.
-            WelcomeDialog(
+            welcome = WelcomeDialog(
                 self,
                 settings=settings,
                 torrent_app=self._services.torrent_app,
@@ -1317,6 +1322,51 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 backup=self._services.backup,  # "Moving from another PC? Load a backup"
                 profiles=self._services.profiles,  # "Who uses AirGrabber?"
             )
+            self._watch_welcome(welcome)
+
+    def _watch_welcome(self, welcome: tk.Misc) -> None:
+        """When the welcome closes (Finish, its ✕ or a loaded backup; not a restart),
+        "Let's get started" may open (`_get_started_after_welcome`)."""
+
+        def closed(event: tk.Event[Any]) -> None:
+            if event.widget is not welcome:  # a Toplevel also hears its children go
+                return
+            if self.restart_requested or not self.winfo_exists():
+                return
+            spawn(self._get_started_after_welcome(), name="get-started-after-welcome")
+
+        welcome.bind("<Destroy>", closed, add="+")
+
+    async def _get_started_after_welcome(self) -> None:
+        """Open "Let's get started" once, right after the welcome, when the selected person
+        still follows no shows (they skipped the airdates.tv import, or it found nothing);
+        `get_started_shown` keeps it from ever opening by itself again. A library from before
+        never gets here: its welcome doesn't show (`_first_run`)."""
+        settings = self._services.settings
+        if settings.current.get_started_shown:
+            return
+        stats = await self._services.library.stats(profile_id=self._services.profiles.current_id)
+        if not get_started_due(settings.current.get_started_shown, stats.tracked_shows):
+            return
+        await settings.update(get_started_shown=True)
+        if self.winfo_exists():
+            self.open_get_started()
+
+    def open_get_started(self) -> None:
+        """The "Let's get started" window for the selected person (brought forward when it
+        is open already)."""
+        dialog = self._get_started
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            dialog.focus_force()
+            return
+        self._get_started = GetStartedDialog(
+            self,
+            library=self._services.library,
+            discovery=self._services.discovery,
+            images=self._services.images,
+            profile_id=self._services.profiles.current_id,
+        )
 
     # -- updates -----------------------------------------------------------------------------
 

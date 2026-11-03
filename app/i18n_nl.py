@@ -1409,6 +1409,12 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "New here? \"Let's get started\" lets you pick a few current series to follow in one go.":
+        "Nieuw hier? Met \"Aan de slag\" kies je in één keer een paar actuele series om te volgen.",
+    "It opens from the empty calendar or from My shows (+ Pick shows…).":
+        "Je opent het vanaf de lege kalender of vanuit Mijn series (+ Series kiezen…).",
+    "MediaForge's \"Which show is this?\" has a search box for when none of its suggestions is right.":
+        "MediaForge's \"Welke serie is dit?\" heeft een zoekvak voor als geen van de voorstellen klopt.",
     "Connect Plex in Settings → Plex: what's in your Plex libraries counts as something you already have.":
         "Koppel Plex via Instellingen → Plex: wat in je Plex-bibliotheken staat, telt als iets wat je al hebt.",
     "Episodes in Plex are no longer missing, and automatic downloads skip episodes and films you have in Plex.":
@@ -1523,4 +1529,28 @@ NL: dict[str, str] = {
     "Shortcuts: Ctrl+F to search, F5 to refresh the page, Esc to close a window.":
         "Sneltoetsen: Ctrl+F om te zoeken, F5 om de pagina te vernieuwen, Esc om een venster te sluiten.",
     "What's new in {app} {version}": "Nieuw in {app} {version}",
+    # app/ui/get_started.py, the empty calendar's box, My shows' "+ Pick shows…"
+    "Let's get started": "Aan de slag",
+    "Click the series you watch. Their new episodes show up on your calendar.":
+        "Klik de series aan die je kijkt. Hun nieuwe afleveringen verschijnen in je kalender.",
+    "Looking for another show? Type its name…": "Zoek je een andere serie? Typ de naam…",
+    "Loading…": "Laden…",
+    "Couldn't load this list.": "Kon deze lijst niet laden.",
+    "No shows in this list.": "Geen series in deze lijst.",
+    "Nothing chosen yet": "Nog niets gekozen",
+    "Following…": "Bezig met volgen…",
+    "Popular now": "Nu populair",
+    "On the air": "Nu op tv",
+    "Coming soon": "Binnenkort",
+    "{n} show chosen": "{n} serie gekozen",
+    "{n} shows chosen": "{n} series gekozen",
+    "Follow {n} show": "{n} serie volgen",
+    "Follow {n} shows": "{n} series volgen",
+    "Couldn't follow: {names}": "Kon niet volgen: {names}",
+    'Results for "{query}"': 'Resultaten voor "{query}"',
+    "You don't follow any shows yet": "Je volgt nog geen series",
+    "Pick a few series and their new episodes appear here.":
+        "Kies een paar series en hun nieuwe afleveringen verschijnen hier.",
+    "Pick shows to follow…": "Kies series om te volgen…",
+    "+ Pick shows…": "+ Series kiezen…",
 }

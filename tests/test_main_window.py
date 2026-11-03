@@ -5,13 +5,21 @@ side of it) with fakes for the Forge host, the mailbox and the window."""
 from __future__ import annotations
 
 import asyncio
+import tkinter as tk
 import unittest
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from app.models import AutoDownloaded, AutoError, AutoGaveUp, ProwlarrSetupResult, Settings
+from app.models import (
+    AutoDownloaded,
+    AutoError,
+    AutoGaveUp,
+    LibraryStats,
+    ProwlarrSetupResult,
+    Settings,
+)
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
 from app.ui.settings_dialog import SECTION_LOOKS
@@ -44,6 +52,7 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "download_mode": "app",
     "auto_download_new_shows": True,
     "setup_done": True,
+    "get_started_shown": True,
     "auto_update": False,
     "last_run_version": "2.0.0",
     "keep_in_tray": False,
@@ -691,6 +700,116 @@ class GoHomeTests(unittest.TestCase):
         window = self.window(Mode.DOWNLOADS, t("Calendar"))
         MainWindow._go_home(window)
         self.assertEqual(window.calls, [("mode", Mode.SERIES)])
+
+
+class _Settings:
+    def __init__(self, settings: Settings) -> None:
+        self.current = settings
+        self.updates: list[dict[str, Any]] = []
+
+    async def update(self, **changes: Any) -> Settings:
+        self.updates.append(changes)
+        self.current = self.current.model_copy(update=changes)
+        return self.current
+
+
+class GetStartedAfterWelcomeTests(unittest.IsolatedAsyncioTestCase):
+    """"Let's get started" opens by itself once, right after the welcome, only when the
+    selected person follows no shows; never for a library from before (on a stand-in)."""
+
+    async def asyncSetUp(self) -> None:
+        asyncio.get_running_loop().slow_callback_duration = 1.0  # making a Tk root
+
+    def window(self, *, follows: dict[int, int], **settings: Any) -> Any:
+        opened: list[int] = []
+        asked: list[int] = []
+
+        async def stats(*, profile_id: int) -> LibraryStats:
+            asked.append(profile_id)
+            return LibraryStats(tracked_shows=follows.get(profile_id, 0), episodes=0)
+
+        services = SimpleNamespace(
+            settings=_Settings(Settings(**settings)),
+            library=SimpleNamespace(stats=stats),
+            profiles=SimpleNamespace(current_id=2),
+        )
+        window: Any = SimpleNamespace(
+            _services=services,
+            opened=opened,
+            asked=asked,
+            winfo_exists=lambda: True,
+            open_get_started=lambda: opened.append(services.profiles.current_id),
+        )
+        return window
+
+    async def test_opens_once_when_no_show_is_followed(self) -> None:
+        window = self.window(follows={1: 4, 2: 0}, setup_done=True)
+        await MainWindow._get_started_after_welcome(window)
+        self.assertEqual(window.opened, [2])  # for the selected person
+        self.assertEqual(window.asked, [2])
+        self.assertTrue(window._services.settings.current.get_started_shown)
+        await MainWindow._get_started_after_welcome(window)  # never again
+        self.assertEqual(window.opened, [2])
+
+    async def test_not_when_the_import_brought_shows(self) -> None:
+        window = self.window(follows={2: 5}, setup_done=True)
+        await MainWindow._get_started_after_welcome(window)
+        self.assertEqual(window.opened, [])
+        self.assertFalse(window._services.settings.current.get_started_shown)
+
+    async def test_never_automatically_for_an_existing_library(self) -> None:
+        # Set up before: the welcome doesn't show, so neither does the window.
+        window = self.window(follows={2: 0}, setup_done=True)
+        await MainWindow._first_run(window)
+        self.assertEqual(window.opened, [])
+        self.assertEqual(window._services.settings.updates, [])
+        # A library from before the welcome existed (shows, setup not done): only marked done.
+        window = self.window(follows={2: 3}, setup_done=False)
+        await MainWindow._first_run(window)
+        self.assertEqual(window._services.settings.updates, [{"setup_done": True}])
+        self.assertEqual(window.opened, [])
+
+    async def test_the_welcome_closing_starts_the_check(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:  # no display
+            self.skipTest(f"Tk unavailable: {exc}")
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        checks: list[str] = []
+
+        async def check() -> None:
+            checks.append("check")
+
+        window: Any = SimpleNamespace(
+            restart_requested=False,
+            winfo_exists=lambda: True,
+            _get_started_after_welcome=check,
+        )
+        welcome = tk.Toplevel(root)
+        tk.Frame(welcome).pack()  # a child going doesn't count
+        MainWindow._watch_welcome(window, welcome)
+        welcome.destroy()
+        await asyncio.sleep(0)
+        self.assertEqual(checks, ["check"])
+        # Closed by a restart: no check.
+        window.restart_requested = True
+        welcome = tk.Toplevel(root)
+        MainWindow._watch_welcome(window, welcome)
+        welcome.destroy()
+        await asyncio.sleep(0)
+        self.assertEqual(checks, ["check"])
+
+    def test_an_open_window_comes_forward(self) -> None:
+        calls: list[str] = []
+        dialog = SimpleNamespace(
+            winfo_exists=lambda: True,
+            lift=lambda: calls.append("lift"),
+            focus_force=lambda: calls.append("focus"),
+        )
+        window: Any = SimpleNamespace(_get_started=dialog)
+        MainWindow.open_get_started(window)
+        self.assertEqual(calls, ["lift", "focus"])
 
 
 if __name__ == "__main__":

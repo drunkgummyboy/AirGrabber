@@ -23,6 +23,11 @@ A library change (a show tracked from a suggestion, say) reloads the page on scr
 it is complete, so the page doesn't blank, rebuild day by day or lose its scroll position.
 Other loads (another week, the week count, the card size, the first load) build in view.
 
+While the selected person follows no shows (`LibraryService.stats`, read at every load), a
+box sits over the grid: "You don't follow any shows yet" with "Pick shows to follow…", which
+opens the "Let's get started" window (app/ui/get_started.py, through `on_pick_shows`). The
+quiet reload after a show is followed takes it away.
+
 The top bar, in one line: the visible dates, ◀ Today ▶, and on the right the number of weeks
 (1–5) and the 💡 Suggestions toggle; on a window too narrow for one line the right-hand
 controls move to a second line. The cards follow Settings → Card size (`card_scale`).
@@ -52,6 +57,7 @@ from app.ui.calendar_cards import (
 )
 from app.ui.calendar_stack import CompactStackCard, FoldKey, Stack, StackCard, stack_entries
 from app.ui.card_scale import FULL, CardScale
+from app.ui.dialog_kit import primary_button
 from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK
@@ -71,6 +77,16 @@ SUGGESTIONS_TIP = N_(
     "Also show one popular episode a day from a show you don't follow yet. "
     "Click + Track on it to start following that show."
 )
+
+# The box over the grid while the person follows no shows; shown through t().
+EMPTY_ICON = "📺"
+EMPTY_TITLE = N_("You don't follow any shows yet")
+EMPTY_TEXT = N_("Pick a few series and their new episodes appear here.")
+PICK_SHOWS_TEXT = N_("Pick shows to follow…")
+EMPTY_BOX_WIDTH = 340
+EMPTY_BOX_PAD_X = 24
+EMPTY_BOX_PAD_Y = 20
+EMPTY_BOX_RELY = 0.45  # its middle, down the page
 
 HEADER_GAP = 22  # below the header row, above the grid
 RANGE_FONT_SIZE = 20  # the visible dates, bold
@@ -344,8 +360,11 @@ class CalendarView(BaseView):
         episode_actions: EpisodeActions,
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_open_show: OpenShow | None = None,
+        on_pick_shows: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        """`on_pick_shows`: opens "Let's get started"; with it, the page shows its box over the
+        grid while the person follows no shows."""
         super().__init__(master, **kwargs)
         self._library = library
         self._settings = settings
@@ -354,6 +373,8 @@ class CalendarView(BaseView):
         self._episode_actions = episode_actions  # the cards' Download and ⋯ buttons
         self._card_scale = card_scale
         self._on_open_show = on_open_show
+        self._on_pick_shows = on_pick_shows
+        self._empty_box: ctk.CTkFrame | None = None  # made the first time it shows
         self._weeks: ctk.CTkFrame | None = None  # the grid of day cells, rebuilt on every load
         self._pending: ctk.CTkFrame | None = None  # a quiet load's grid, hidden until complete
         self._shown: _Shown | None = None  # what the complete grid on screen shows
@@ -528,8 +549,13 @@ class CalendarView(BaseView):
         missing = await self._library.missing_between(start, end, profile_id=profile_id)
         new = await self._library.new_between(start, end, profile_id=profile_id)
         in_plex = await self._library.plex_between(start, end)
+        follows_none = (
+            self._on_pick_shows is not None
+            and (await self._library.stats(profile_id=profile_id)).tracked_shows == 0
+        )
         if not self.winfo_exists():
             return
+        self.show_empty_box(follows_none)
         self._profile_id = profile_id
         weeks = self._new_grid(hidden=quiet)
         cells = await self._render_tracked(
@@ -570,6 +596,66 @@ class CalendarView(BaseView):
             await self._swap_in(weeks)
         self._shown = shown
         self._note.configure(text=t("Couldn't load suggestions") if failed else "")
+
+    # -- the box while no show is followed ---------------------------------------------------------
+
+    @property
+    def empty_box_shown(self) -> bool:
+        return self._empty_box is not None and bool(self._empty_box.winfo_manager())
+
+    def show_empty_box(self, shown: bool) -> None:
+        """The box over the grid (made the first time), or not."""
+        if not shown:
+            if self._empty_box is not None:
+                self._empty_box.place_forget()
+            return
+        if self._empty_box is None:
+            self._empty_box = self._build_empty_box()
+        self._empty_box.place(relx=0.5, rely=EMPTY_BOX_RELY, anchor="center")
+        self._empty_box.lift()
+
+    def _build_empty_box(self) -> ctk.CTkFrame:
+        box = ctk.CTkFrame(
+            self,
+            fg_color=theme.SURFACE,
+            border_width=1,
+            border_color=theme.EDGE,
+            corner_radius=12,
+        )
+        inner = ctk.CTkFrame(box, fg_color="transparent")
+        inner.pack(padx=EMPTY_BOX_PAD_X, pady=EMPTY_BOX_PAD_Y)
+        wrap = EMPTY_BOX_WIDTH - 2 * EMPTY_BOX_PAD_X
+        ctk.CTkLabel(inner, text=EMPTY_ICON, font=theme.font(30), text_color=theme.TEXT).pack()
+        ctk.CTkLabel(
+            inner,
+            text=t(EMPTY_TITLE),
+            font=theme.font(17, bold=True),
+            text_color=theme.TEXT,
+            wraplength=wrap,
+            justify="center",
+        ).pack(pady=(4, 0))
+        ctk.CTkLabel(
+            inner,
+            text=t(EMPTY_TEXT),
+            font=theme.font(13),
+            text_color=theme.TEXT_MUTED,
+            wraplength=wrap,
+            justify="center",
+        ).pack(pady=(4, 14))
+        text = t(PICK_SHOWS_TEXT)
+        button_font = theme.font(15, bold=True)
+        self.pick_shows_button = primary_button(
+            inner,
+            text,
+            self._pick_shows,
+            width=max(140, round(button_font.measure(text)) + 40),
+        )
+        self.pick_shows_button.pack()
+        return box
+
+    def _pick_shows(self) -> None:
+        if self._on_pick_shows is not None:
+            self._on_pick_shows()
 
     def _new_grid(self, *, hidden: bool) -> ctk.CTkFrame:
         """An empty grid of 7 day columns. In view it replaces the grid on screen at once;
