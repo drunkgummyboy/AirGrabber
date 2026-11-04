@@ -29,12 +29,12 @@ Bringing it over (`bring_over`), refused while the old MediaForge runs (its mute
 5. a marker file `imported-from-mediaforge` beside forge.db (phase 3's farewell release looks
    for it).
 
-While the old install is still registered, an imported Trial / On is stored as it is but the new
+While the old install is still registered, an imported Manual / On is stored as it is but the new
 renamer stays idle (`blocked_by_old_install`, asked by ForgeRuntime before the renamer starts;
 the import sets AutoRenamer's flag itself; the result says so with `waits_for_removal`).
 
 Forge's data is replaced as a whole: the caller asks first when Forge already has data of its
-own (`has_own_data`). Presets, folders, Off / Trial / On, notifications, `kept_back`,
+own (`has_own_data`). Presets, folders, Off / Manual / On, notifications, `kept_back`,
 remembered matches, history and the TMDB cache come over as they are. MediaForge 1.x's
 single-file JSON import is not ported (MediaForge 1.3's database already holds that data).
 
@@ -290,7 +290,7 @@ class ImportResult:
     matches: int  # remembered matches
     tmdb_key: bool  # the old TMDB key went into AirGrabber's settings
     menu: bool  # the old right-click menu now starts AirGrabber
-    # Trial / On came over while the old MediaForge is still installed: the renamer waits.
+    # Manual / On came over while the old MediaForge is still installed: the renamer waits.
     waits_for_removal: bool = False
 
 
@@ -528,7 +528,7 @@ async def bring_over(
 
         if old.registered:
             # The old MediaForge still starts with Windows: the new renamer must not start on
-            # the imported Trial / On (AutoRenamer.blocked_by_old_install; F-27 clears it).
+            # the imported Manual / On (AutoRenamer.blocked_by_old_install; F-27 clears it).
             auto = getattr(forge, "auto", None)
             if auto is not None:
                 auto.blocked_by_old_install = True

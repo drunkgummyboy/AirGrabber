@@ -391,7 +391,7 @@ class RenamerTests(HostCase):
         services = await self.runtime.start()
         assert services is not None
         auto = services.auto
-        auto.on_status(WatchStatus("trial", "Trial: watching 1 folder"))  # before the page
+        auto.on_status(WatchStatus("trial", "Manual: watching 1 folder"))  # before the page
         auto.on_needs(3)
         auto.notify("3 files need you", "Open MediaForge to pick or confirm them.")
         self.assertEqual(needs, [3])  # the renamer's until the queue is there
@@ -400,7 +400,7 @@ class RenamerTests(HostCase):
         assert self.host.status is not None
         self.assertEqual(self.host.status.state, "trial")
         page = await self.open()
-        self.assertEqual(page.status_shown, "Trial: watching 1 folder")
+        self.assertEqual(page.status_shown, "Manual: watching 1 folder")
         auto.on_status(WatchStatus("watching", "Watching 1 folder"))
         self.assertEqual(page.status_shown, "Watching 1 folder")
 
@@ -432,7 +432,7 @@ class RenamerTests(HostCase):
             self.root, lambda: self.host.status is not None and self.host.status.state == "trial"
         )
         page = await self.open()
-        self.assertEqual(page.status_shown, "Trial: watching 1 folder")
+        self.assertEqual(page.status_shown, "Manual: watching 1 folder")
         self.assertEqual(page.light, theme.WARNING)
         self.assertEqual(self.host.needs, 0)
 

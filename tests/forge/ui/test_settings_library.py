@@ -1,9 +1,9 @@
 """Settings › Auto-rename (app/forge/ui/settings_pages.py) in the Settings window
 (app/ui/settings_dialog.py): the sections from FORGE_SECTIONS, opening at
-the section, the first box (the renamer's status, live; Off / Trial / On; what the chosen one means;
-what Trial and On need), the form (watched folders, library folders, the options), changes kept
+the section, the first box (the renamer's status, live; Off / Manual / On; what the chosen one means;
+what Manual and On need), the form (watched folders, library folders, the options), changes kept
 until Save (D9; Cancel / ✕ change nothing), its safety rules (On from Off and a new folder while On
-are Trial first; a folder inside a library never saved), waiting for Forge to start and saying when
+are Manual first; a folder inside a library never saved), waiting for Forge to start and saying when
 it can't, and that nothing the Auto-rename page had (it went, the owner's decision) is lost."""
 
 from __future__ import annotations
@@ -358,17 +358,17 @@ class LibrarySettingsTests(LibrarySettingsCase):
         self.assertEqual(part.draft()["series_folder"], r"F:\Series")
         self.assertEqual(part.folder_labels["series"].cget("text"), r"F:\Series")
 
-    # --- Off / Trial / On ------------------------------------------------------------------------
+    # --- Off / Manual / On ------------------------------------------------------------------------
 
     async def test_on_straight_from_off_becomes_trial_first(self) -> None:
         dialog, part, fake = self.ready()
         part._mode_clicked("On")
-        self.assertEqual(part.mode.get(), "Trial")
-        self.assertIn("Trial first", str(part.note_label.cget("text")))
+        self.assertEqual(part.mode.get(), "Manual")
+        self.assertIn("Manual first", str(part.note_label.cget("text")))
         self.assertTrue(part.note_label.winfo_manager())
         self.assertTrue(await dialog._save_all())
         self.assertEqual(fake.updates, [{"automatic": "trial"}])
-        part.set_mode("on")  # from a stored Trial, On is On
+        part.set_mode("on")  # from a stored Manual, On is On
         self.assertEqual(part.mode.get(), "On")
         self.assertEqual(str(part.note_label.cget("text")), "")
 
@@ -418,7 +418,7 @@ class LibrarySettingsTests(LibrarySettingsCase):
         _dialog, part, fake = self.ready()
         part._clean.set(False)  # changed here
         await fake.update(automatic="trial", clean_downloads=True, kept_back=["x"])
-        self.assertEqual(part.mode.get(), "Trial")  # saved elsewhere: it shows
+        self.assertEqual(part.mode.get(), "Manual")  # saved elsewhere: it shows
         self.assertEqual(part.draft()["clean_downloads"], False)  # the form's change stays
         self.assertEqual(part.changes(), {"clean_downloads": False})
 
@@ -484,7 +484,7 @@ class LibrarySettingsTests(LibrarySettingsCase):
 
 
 class FirstBoxTests(LibrarySettingsCase):
-    """The first box: the live status, Off / Trial / On, what the chosen one means, what's needed."""
+    """The first box: the live status, Off / Manual / On, what the chosen one means, what's needed."""
 
     def with_renamer(
         self, settings: ForgeSettings = READY
@@ -516,7 +516,7 @@ class FirstBoxTests(LibrarySettingsCase):
         renamer.tell(WatchStatus("unreachable", "Can't reach the NAS"))
         self.assertEqual(part.status_label.cget("text"), "Can't reach the NAS")
         self.assertEqual(tuple(part.light.cget("text_color")), theme.DANGER)
-        renamer.tell(WatchStatus("trial", "Trial: watching 1 folder"))
+        renamer.tell(WatchStatus("trial", "Manual: watching 1 folder"))
         self.assertEqual(tuple(part.light.cget("text_color")), theme.WARNING)
         renamer.tell(WatchStatus("watching", "Watching 1 folder"))
         self.assertEqual(tuple(part.light.cget("text_color")), theme.SUCCESS)
@@ -551,7 +551,7 @@ class FirstBoxTests(LibrarySettingsCase):
         self.assertTrue(str(part.mode_line.cget("text")).startswith("Uit:"))
         self.assertEqual(
             str(part.problems_label.cget("text")).splitlines()[0],
-            "Voor Proef en Aan is eerst dit nodig:",
+            "Voor Handmatig en Aan is eerst dit nodig:",
         )
 
 
@@ -563,7 +563,7 @@ class SafetyRuleTests(LibrarySettingsCase):
     async def test_on_from_off_is_trial_first(self) -> None:
         dialog, part, fake = self.ready()
         part.set_mode("on")
-        self.assertEqual(part.mode.get(), "Trial")
+        self.assertEqual(part.mode.get(), "Manual")
         self.assertEqual(part.note_label.cget("text"), t_en(TRIAL_FIRST))
         self.assertEqual(fake.updates, [])  # kept until Save
         self.assertTrue(await dialog._save_all())
@@ -573,7 +573,7 @@ class SafetyRuleTests(LibrarySettingsCase):
         dialog, part, fake = self.ready(self.ON)
         self.chosen = [r"E:\More downloads"]
         part.add_watch_folder()
-        self.assertEqual(part.mode.get(), "Trial")
+        self.assertEqual(part.mode.get(), "Manual")
         self.assertEqual(part.note_label.cget("text"), t_en(TRIAL_FIRST))
         self.assertTrue(await dialog._save_all())
         self.assertEqual(
@@ -584,14 +584,14 @@ class SafetyRuleTests(LibrarySettingsCase):
     async def test_a_suggested_folder_while_on_is_trial_first_too(self) -> None:
         _dialog, part, _fake = self.ready(self.ON)
         part.add_suggested(r"E:\Suggested")
-        self.assertEqual(part.mode.get(), "Trial")
+        self.assertEqual(part.mode.get(), "Manual")
 
     async def test_on_again_with_a_folder_not_watched_yet_stays_trial(self) -> None:
         dialog, part, fake = self.ready(self.ON)
         self.chosen = [r"E:\More downloads"]
         part.add_watch_folder()
         part.set_mode("on")  # the owner clicks On again before saving
-        self.assertEqual(part.mode.get(), "Trial")
+        self.assertEqual(part.mode.get(), "Manual")
         self.assertTrue(await dialog._save_all())
         self.assertEqual(fake.current.automatic, "trial")
 

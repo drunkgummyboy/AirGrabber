@@ -471,7 +471,7 @@ class OwnDataTests(ImportCase):
 
 class BlockedRenamerTests(ImportCase):
     """While the old MediaForge is still installed, the new renamer stays idle (it starts
-    with Windows and would watch the same folders); the stored Trial / On is kept."""
+    with Windows and would watch the same folders); the stored Manual / On is kept."""
 
     def test_blocked_by_old_install(self) -> None:
         cases: dict[str, tuple[Any, bool]] = {

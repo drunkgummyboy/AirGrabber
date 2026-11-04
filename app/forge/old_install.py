@@ -4,7 +4,7 @@
 The guard: while the old MediaForge is still registered under Installed apps it starts with
 Windows and watches the same download folders, so the new renamer stays idle
 (`AutoRenamer.blocked_by_old_install`, set by ForgeRuntime at start from
-app/forge/migration.py's `blocked_by_old_install()`; the stored Off / Trial / On is kept). Once
+app/forge/migration.py's `blocked_by_old_install()`; the stored Off / Manual / On is kept). Once
 the old install is gone, `OldInstallRemover` clears the flag and calls `reconfigure()`, so the
 stored mode applies at once.
 
@@ -342,7 +342,7 @@ class OldInstallRemover:
         return Outcome.REMOVED
 
     def lift_guard(self) -> None:
-        """The old install is gone: the stored Off / Trial / On applies again."""
+        """The old install is gone: the stored Off / Manual / On applies again."""
         services = self._runtime.services
         if services is None:  # Forge hasn't started: its start finds no old install
             return

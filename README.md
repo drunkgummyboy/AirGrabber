@@ -81,7 +81,7 @@ too. Turn it on or off under ⚙ Settings → **MediaForge → Right-click menu*
 
 **Renaming on its own**: under ⚙ Settings → **MediaForge → Auto-rename**, choose your Series
 and Movies folders and the folders to watch (AirGrabber's own download folder can be watched for
-you). **Trial** shows what would happen without touching anything; **On** renames finished
+you). **Manual** puts the downloads it finds in the queue and moves nothing until you forge them; **On** renames finished
 downloads by itself. Subtitles next to a download move along with it, and the
 Downloads page shows the download as finished with where it went ("Renamed → Series › …").
 

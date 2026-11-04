@@ -14,8 +14,8 @@ NOT_READY or FAILED.
 
 The first section, **Auto-rename**, is everything about renaming on its own (the owner's decision:
 no page of its own beside it; the queue's status line opens this section). Its first box:
-the renamer's light and status, live (`AutoRenamer.watch_status`), Off / Trial / On, the line saying
-what the chosen one means, and what Trial and On still need. Then the download folders to watch
+the renamer's light and status, live (`AutoRenamer.watch_status`), Off / Manual / On, the line saying
+what the chosen one means, and what Manual and On still need. Then the download folders to watch
 (add / remove), what is ignored (the queue's Ignore: each entry's name, its path as a tooltip, with
 "Stop ignoring", applied on Save like the rest; app/forge/core/ignored.py's IgnoreService,
 `services.ignored`), "Use AirGrabber's downloads" with AirGrabber's folders and why each is (not)
@@ -25,9 +25,9 @@ Series and Movies library folders (Browse), and the options: cleaning up the dow
 (`remove_after_forge`). Which preset Series and Movies use is the Naming section's (the library box
 says so); Start with Windows stays AirGrabber's (Automatic).
 
-Its safety rules: everything waits for Save; On straight from Off becomes Trial first, and so does
+Its safety rules: everything waits for Save; On straight from Off becomes Manual first, and so does
 On when a folder starts being watched (nothing moves from a new folder unseen), each saying so; a
-watched folder inside a library folder or another watched one is never saved; while Trial or On is
+watched folder inside a library folder or another watched one is never saved; while Manual or On is
 chosen every folder must be chosen too. While the old MediaForge is installed the renamer's guard
 keeps it idle and the status says so. Its foot (`LibrarySection.foot`, hidden while empty) holds
 "Bring over…" while the old MediaForge's data can still be imported (app/forge/ui/import_step.py's
@@ -127,14 +127,16 @@ LIBRARY_TEXT = N_(
     "has Move to library folder on."
 )
 LIBRARY_POINTER = N_("Choose the preset for each folder under Naming › Library presets.")
-TRIAL_FIRST = N_("Trial first: MediaForge shows what it would do; switch to On when you're happy.")
-MODES: tuple[tuple[Mode, str], ...] = (("off", N_("Off")), ("trial", N_("Trial")), ("on", N_("On")))
+TRIAL_FIRST = N_(
+    "Manual first: downloads wait in the queue until you forge them; switch to On when you're happy."
+)
+MODES: tuple[tuple[Mode, str], ...] = (("off", N_("Off")), ("trial", N_("Manual")), ("on", N_("On")))
 MODE_LINES: dict[Mode, str] = {
     "off": N_("Off: nothing happens by itself; you rename files in the queue."),
-    "trial": N_("Trial: the queue shows what it would do; nothing is moved."),
+    "trial": N_("Manual: downloads it finds wait in the queue; nothing moves until you forge them."),
     "on": N_("On: sure matches are renamed and moved; the rest waits in the queue."),
 }
-NEEDS_FIRST = N_("Trial and On need these first:")
+NEEDS_FIRST = N_("Manual and On need these first:")
 OPTIONS_TITLE = N_("Options")
 CLEAN_TEXT = N_("Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)")
 NEEDS_TEXT = N_("Tell me when files need me")
@@ -274,7 +276,7 @@ class LibrarySection:
         self.waiting_label = self.waiting.text(t(GETTING_READY))
         self.waiting.add(self.waiting_label, gap=0, sticky="w")
 
-        # Renaming on its own: the light and status, Off / Trial / On, what it means, what's needed.
+        # Renaming on its own: the light and status, Off / Manual / On, what it means, what's needed.
         rename = page.box()
         status_row = rename.frame_row(gap=0)
         self.light = ctk.CTkLabel(
@@ -319,7 +321,7 @@ class LibrarySection:
         # The download folders to watch.
         watch = page.box(
             t("Download folders to watch"),
-            t("MediaForge looks here every few minutes for downloads that have finished."),
+            t("MediaForge looks here when AirGrabber opens and every few minutes for finished downloads."),
         )
         self.watch_list = ctk.CTkFrame(watch.body, fg_color="transparent")
         self.watch_list.grid_columnconfigure(0, weight=1)
@@ -775,7 +777,7 @@ class LibrarySection:
 
     def _use_toggled(self) -> None:
         """'Use AirGrabber's downloads' clicked. Turned on while On is chosen and it adds a
-        folder to watch: Trial first, saying so (nothing moves from a new folder unseen)."""
+        folder to watch: Manual first, saying so (nothing moves from a new folder unseen)."""
         if self._settings is None:
             return
         before = self._draft_settings()
@@ -784,7 +786,7 @@ class LibrarySection:
         self._refresh()
 
     def _trial_for_new_folder(self, before: ForgeSettings) -> None:
-        """On is chosen and the form now watches a folder `before` didn't: Trial first."""
+        """On is chosen and the form now watches a folder `before` didn't: Manual first."""
         from app.forge.core.airgrabber_folders import newly_watched  # not at import time
 
         if self._settings is None or self._mode != "on":
@@ -828,8 +830,8 @@ class LibrarySection:
         self.set_mode(next(m for m, text in self._labels.items() if text == label))
 
     def set_mode(self, mode: Mode) -> None:
-        """Choose Off / Trial / On; On while Off is stored, or with a folder not watched yet,
-        becomes Trial first, saying so (see what it would do before it moves anything)."""
+        """Choose Off / Manual / On; On while Off is stored, or with a folder not watched yet,
+        becomes Manual first, saying so (see what it would do before it moves anything)."""
         from app.forge.core.airgrabber_folders import newly_watched  # not at import time
 
         note = ""
@@ -846,7 +848,7 @@ class LibrarySection:
 
     def problem(self) -> str | None:
         """A watched folder inside a library folder or another watched one never saves; while
-        Trial or On is chosen, every folder must be chosen too. Unchanged settings never stop
+        Manual or On is chosen, every folder must be chosen too. Unchanged settings never stop
         Save (AirGrabber's own settings can still be saved)."""
         if not self.changes():
             return None

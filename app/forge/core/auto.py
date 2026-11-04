@@ -8,13 +8,13 @@ library folder with the Series preset, movies to the Movies folder with the Movi
 Everything runs on the one asyncio loop; only listing folders happens in a worker thread.
 
 MediaForge's renamer took the whole `Services`; this one takes `RenamerParts` (the queue and a few
-narrow protocols). It is off unless the settings say Trial or On: `start()` does nothing while
+narrow protocols). It is off unless the settings say Manual or On: `start()` does nothing while
 `automatic` is "off", the default, so a fresh Forge never watches a folder by itself (the old
 MediaForge may still be watching the same folders: INTEGRATION.md 3.10's guard).
 
 `blocked_by_old_install` (set by ForgeRuntime before the first start, from
 app/forge/migration.py's `blocked_by_old_install()`, and by the import): while the old MediaForge
-is still installed it starts with Windows and watches the same folders, so the stored Trial / On
+is still installed it starts with Windows and watches the same folders, so the stored Manual / On
 is kept but the renamer stays idle as if Off (its status says why). app/forge/old_install.py's
 `OldInstallRemover.lift_guard` clears it once the old install is gone and calls `reconfigure()`. The owner's own renames are never blocked.
 """
@@ -43,7 +43,7 @@ from app.forge.core.matcher import normalize_title
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueItem
-from app.forge.core.watch import LOOK_INTERVAL_S, Ignored, Watcher, candidates
+from app.forge.core.watch import LOOK_INTERVAL_S, SECOND_LOOK_S, Ignored, Watcher, candidates
 from app.forge.models.history import RunSource, RunSummary
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia
 from app.forge.models.plan import Plan, PlanInput, PlannedLeftovers
@@ -415,6 +415,7 @@ class AutoRenamer:
         *,
         now: Callable[[], float] = time.time,
         interval_s: float = LOOK_INTERVAL_S,
+        second_look_s: float = SECOND_LOOK_S,
         activity: ActivityFeed | None = None,
     ) -> None:
         self._parts = parts
@@ -422,6 +423,7 @@ class AutoRenamer:
         self._closed = False  # `close()` was called: never starts again
         self._now = now
         self._interval = interval_s
+        self._second_look = min(second_look_s, interval_s)
         self._watcher = Watcher(now=now)
         self._retry: set[int] = set()  # held for a passing reason (the NAS was away)
         self._undone: set[int] = set()  # put back by an undo: never moved on its own again
@@ -488,7 +490,7 @@ class AutoRenamer:
 
     async def close(self) -> None:
         """Stop for good (Forge is shutting down): after a stop or restart `reconfigure` left
-        pending (Off then Trial just before quitting), so nothing starts looking afterwards. A
+        pending (Off then Manual just before quitting), so nothing starts looking afterwards. A
         rename in progress stops after its current file."""
         self._closed = True
         pending = [task for task in (self._stop_task, self._restart_task) if task is not None]
@@ -522,6 +524,7 @@ class AutoRenamer:
             self.start()
 
     async def _loop(self) -> None:
+        wait = self._second_look  # a file counts as finished from its second look on
         while not self._stopping:
             try:
                 await self.look()
@@ -532,9 +535,10 @@ class AutoRenamer:
             if self._stopping:
                 break
             try:
-                await asyncio.wait_for(self._wake.wait(), self._interval)
+                await asyncio.wait_for(self._wake.wait(), wait)
             except TimeoutError:
                 pass
+            wait = self._interval
 
     # --- one look ------------------------------------------------------------------------------
 
@@ -550,7 +554,7 @@ class AutoRenamer:
             return WatchStatus("unreachable", t("Can't reach {folder}", folder=unreachable[0]))
         count = len(watched_folders(settings))
         if settings.automatic == "trial":
-            text = tn("Trial: watching {n} folder", "Trial: watching {n} folders", count)
+            text = tn("Manual: watching {n} folder", "Manual: watching {n} folders", count)
             return WatchStatus("trial", text)
         return WatchStatus("watching", tn("Watching {n} folder", "Watching {n} folders", count))
 

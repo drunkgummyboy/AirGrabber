@@ -13,7 +13,7 @@ its rules in small pieces between turns of the loop (F-33: at once it held the w
 
 While the old MediaForge is still installed (app/forge/migration.py's `blocked_by_old_install`,
 asked once per start in a thread; injectable as `old_install_blocks`) the renamer is started
-blocked (`AutoRenamer.blocked_by_old_install`): a stored Trial / On waits until it is removed.
+blocked (`AutoRenamer.blocked_by_old_install`): a stored Manual / On waits until it is removed.
 """
 
 from __future__ import annotations

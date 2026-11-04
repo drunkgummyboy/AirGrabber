@@ -161,7 +161,7 @@ class InStepsTests(PageCase):
 
     async def test_the_queue_first_and_history_a_later_turn(self) -> None:
         page = self.bare_page()
-        page.show_forge(self.services, WatchStatus("trial", "Trial: watching 1 folder"))
+        page.show_forge(self.services, WatchStatus("trial", "Manual: watching 1 folder"))
         self.assertIsInstance(page.queue, QueueView)
         self.assertEqual(page.view, "queue")
         self.assertIsNone(page.history)
@@ -351,8 +351,8 @@ class StatusLineTests(PageCase):
         self.assertEqual(page.light, theme.TEXT_MUTED)
         assert page.status_button is not None
         self.assertEqual(tuple(page.status_button.cget("text_color")), theme.TEXT_MUTED)
-        page.set_watch_status(WatchStatus("trial", "Trial: watching 1 folder"))
-        self.assertEqual(page.status_shown, "Trial: watching 1 folder")
+        page.set_watch_status(WatchStatus("trial", "Manual: watching 1 folder"))
+        self.assertEqual(page.status_shown, "Manual: watching 1 folder")
         self.assertEqual(page.light, theme.WARNING)
         self.assertEqual(tuple(page.status_button.cget("text_color")), theme.TEXT)
         page.set_watch_status(WatchStatus("watching", "Watching 2 folders"))

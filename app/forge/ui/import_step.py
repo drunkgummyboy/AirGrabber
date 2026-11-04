@@ -573,7 +573,7 @@ class RemoveOldBox:
         return self.remover.running or not self._has_data or self._imported()
 
     def _guard_colour(self) -> theme.Color:
-        """Amber while the guard holds a stored Trial / On back, else muted."""
+        """Amber while the guard holds a stored Manual / On back, else muted."""
         services = self._runtime.services
         try:
             waiting = services is not None and services.settings.current.automatic != "off"

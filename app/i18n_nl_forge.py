@@ -166,8 +166,8 @@ NL: dict[str, str] = {
     "Set up watching in Settings": "Stel bewaken in bij Instellingen",
     "Can't reach {folder}": "Kan {folder} niet bereiken",
     "Can't reach {folder}.": "Kan {folder} niet bereiken.",
-    "Trial: watching {n} folder": "Proef: bewaakt {n} map",
-    "Trial: watching {n} folders": "Proef: bewaakt {n} mappen",
+    "Manual: watching {n} folder": "Handmatig: bewaakt {n} map",
+    "Manual: watching {n} folders": "Handmatig: bewaakt {n} mappen",
     "Watching {n} folder": "Bewaakt {n} map",
     "Watching {n} folders": "Bewaakt {n} mappen",
     "Couldn't move it: {reason}": "Kon het niet verplaatsen: {reason}",
@@ -233,25 +233,24 @@ NL: dict[str, str] = {
     "Activity": "Activiteit",
     # app/forge/ui/settings_pages.py: Auto-rename's first box
     "Off": "Uit",
-    "Trial": "Proef",
+    "Manual": "Handmatig",
     "On": "Aan",
-    "Trial first: MediaForge shows what it would do; switch to On when you're happy.":
-        "Eerst een proef: MediaForge laat zien wat het zou doen; zet het op Aan als je tevreden "
-        "bent.",
+    "Manual first: downloads wait in the queue until you forge them; switch to On when you're happy.":
+        "Eerst handmatig: downloads wachten in de wachtrij tot je op Forge klikt; zet het op Aan als je tevreden bent.",
     "MediaForge can rename finished downloads by itself and move them into your Series and "
     "Movies folders.":
         "MediaForge kan klaar gedownloade bestanden zelf hernoemen en naar je mappen voor series "
         "en films verplaatsen.",
     "Off: nothing happens by itself; you rename files in the queue.":
         "Uit: er gebeurt niets vanzelf; je hernoemt bestanden in de wachtrij.",
-    "Trial: the queue shows what it would do; nothing is moved.":
-        "Proef: de wachtrij laat zien wat er zou gebeuren; er wordt niets verplaatst.",
+    "Manual: downloads it finds wait in the queue; nothing moves until you forge them.":
+        "Handmatig: gevonden downloads wachten in de wachtrij; er wordt niets verplaatst tot je op Forge klikt.",
     "On: sure matches are renamed and moved; the rest waits in the queue.":
         "Aan: wat TMDB zeker herkent, wordt hernoemd en verplaatst; de rest wacht in de wachtrij.",
-    "Trial and On need these first:": "Voor Proef en Aan is eerst dit nodig:",
+    "Manual and On need these first:": "Voor Handmatig en Aan is eerst dit nodig:",
     "Download folders to watch": "Downloadmappen om te bewaken",
-    "MediaForge looks here every few minutes for downloads that have finished.":
-        "MediaForge kijkt hier om de paar minuten naar voltooide downloads.",
+    "MediaForge looks here when AirGrabber opens and every few minutes for finished downloads.":
+        "MediaForge kijkt hier als AirGrabber opent en om de paar minuten naar voltooide downloads.",
     "Library folders": "Bibliotheekmappen",
     "Downloads MediaForge finds always move here. Files you add yourself only when their preset "
     "has Move to library folder on.":
@@ -615,10 +614,10 @@ NL: dict[str, str] = {
         "Niet bewaakt: er staat een map in die je zelf hebt toegevoegd.",
     "Not watched: it overlaps a library folder.":
         "Niet bewaakt: hij overlapt met een bibliotheekmap.",
-    "AirGrabber's downloads now also end up in {folder}. Renaming on its own is on Trial again: "
+    "AirGrabber's downloads now also end up in {folder}. Renaming on its own is on Manual again: "
     "switch it to On when you're happy.":
         "De downloads van AirGrabber komen nu ook terecht in {folder}. Vanzelf hernoemen staat "
-        "weer op Proef: zet het op Aan als je tevreden bent.",
+        "weer op Handmatig: zet het op Aan als je tevreden bent.",
     # Ignoring files and folders (app/forge/core/ignored.py, queue_rows.py, queue_view.py,
     # settings_pages.py)
     "Ignore": "Negeren",

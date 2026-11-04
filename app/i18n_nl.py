@@ -1291,6 +1291,11 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "Auto-rename's Trial is now called Manual.": "Proef bij Automatisch hernoemen heet nu Handmatig.",
+    "On Manual, downloads MediaForge finds wait in the queue until you forge them.":
+        "Op Handmatig wachten downloads die MediaForge vindt in de wachtrij tot je op Forge klikt.",
+    "Downloads that finished while AirGrabber was closed now show up about a minute after opening.":
+        "Downloads die klaar kwamen terwijl AirGrabber dicht was, verschijnen nu ongeveer een minuut na het openen.",
     "New preset extra: Move to library folder sends forged files to your Series or Movies folder.":
         "Nieuwe extra voor voorinstellingen: Naar bibliotheekmap verplaatsen zet geforgede bestanden in je map Series of Films.",
     "Series (Folder) and Movie (Folder) have it on; turn it off to rename files where they are.":

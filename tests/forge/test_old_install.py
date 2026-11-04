@@ -296,7 +296,7 @@ class RemoverTests(RemoverCase):
 
 
 class GuardTests(ForgeAsyncTestCase):
-    """The real renamer: Trial waits while the old install is registered, starts once it's gone."""
+    """The real renamer: Manual waits while the old install is registered, starts once it's gone."""
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -443,7 +443,7 @@ class SettingsBoxTests(TkCase):
         assert box.label is not None and box.button is not None
         self.assertEqual(self.foot.winfo_manager(), "grid")
         self.assertEqual(box.label.cget("text"), t(GUARD_TEXT))
-        self.assertEqual(box.label.cget("text_color"), theme.WARNING)  # Trial is held back
+        self.assertEqual(box.label.cget("text_color"), theme.WARNING)  # Manual is held back
         self.assertEqual(box.button.cget("text"), t(REMOVE_OLD))
 
     async def test_muted_while_off(self) -> None:

@@ -1,6 +1,6 @@
 """AirGrabber's downloads in Settings › Auto-rename (B-01): "Use AirGrabber's downloads" (on for a
 new setup, off for an imported one, stored on Save only; turning it on while On is chosen goes to
-Trial first; a suggestion's Add makes it one of the owner's own folders), listing what is watched
+Manual first; a suggestion's Add makes it one of the owner's own folders), listing what is watched
 and why, or what to choose."""
 
 from __future__ import annotations
@@ -157,8 +157,8 @@ class SettingsSectionTests(_TkCase):
         )
         dialog, part, fake = self.ready(stored)
         self.click_use(part, True)
-        self.assertEqual(part.mode.get(), "Trial")
-        self.assertIn("Trial first", str(part.note_label.cget("text")))
+        self.assertEqual(part.mode.get(), "Manual")
+        self.assertIn("Manual first", str(part.note_label.cget("text")))
         self.assertTrue(await dialog._save_all())
         self.assertEqual(fake.updates, [{"use_airgrabber_downloads": True, "automatic": "trial"}])
 

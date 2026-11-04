@@ -3,7 +3,8 @@
 A file counts as finished only when it looked the same (size and time) at two looks in a row,
 nothing has written to it for QUIET_S, and it can be opened with nobody else holding it. Change
 notifications are not used: over SMB (the NAS) Windows misses them, so a look every few minutes is
-the base. Temporary download names, samples and the NAS's own folders are never candidates, nor
+the base; right after a start the second look comes soon (SECOND_LOOK_S), so what finished while
+AirGrabber was closed doesn't wait a whole interval. Temporary download names, samples and the NAS's own folders are never candidates, nor
 what the owner ignored (`candidates(root, ignored)`: app/forge/core/ignored.py's IgnoreList).
 """
 
@@ -21,6 +22,7 @@ from app.forge.core import fsops
 from app.forge.core.parser import is_video
 
 LOOK_INTERVAL_S = 300  # a look every 5 minutes
+SECOND_LOOK_S = 30  # after the first look of a start: nothing is remembered from before it
 QUIET_S = 600  # untouched for 10 minutes
 TEMP_SUFFIXES = (".part", ".!qb", ".crdownload", ".tmp", ".partial", ".download", ".aria2")
 SKIP_FOLDERS = frozenset({"@eadir", "#recycle", "#snapshot", "$recycle.bin"})

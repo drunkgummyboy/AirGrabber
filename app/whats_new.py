@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.3.1": (
+        N_("Auto-rename's Trial is now called Manual."),
+        N_("On Manual, downloads MediaForge finds wait in the queue until you forge them."),
+        N_("Downloads that finished while AirGrabber was closed now show up about a minute after opening."),
+    ),
     "3.3.0": (
         N_("New preset extra: Move to library folder sends forged files to your Series or Movies folder."),
         N_("Series (Folder) and Movie (Folder) have it on; turn it off to rename files where they are."),

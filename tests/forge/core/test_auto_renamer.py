@@ -18,6 +18,7 @@ from pathlib import Path
 from app.forge.clients.tmdb import TmdbError
 from app.forge.core.auto import (
     AutoRenamer,
+    LookResult,
     NamingChoice,
     RenamerParts,
     WatchStatus,
@@ -322,7 +323,7 @@ class RenamerTest(RenamerTestCase):
         await self.settings.update(automatic="on")
         assert auto.status([]) == ("setup", "Set up watching in Settings")
         await self.use(automatic="trial")
-        assert auto.status([]) == ("trial", "Trial: watching 1 folder")
+        assert auto.status([]) == ("trial", "Manual: watching 1 folder")
         await self.use()
         assert auto.status([]) == ("watching", "Watching 1 folder")
         set_language(Language.NL)
@@ -470,6 +471,34 @@ class RenamerTest(RenamerTestCase):
         result = await auto.rename([item.id], source=RunSource.APP)
         assert result.renamed == 1 and item.status is ItemStatus.DONE
 
+    async def test_after_a_start_the_second_look_comes_soon_then_the_interval(self) -> None:
+        await self.use()
+        file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        auto = AutoRenamer(self.parts, now=Clock(), interval_s=3600, second_look_s=0.01)
+        self.addAsyncCleanup(auto.stop)
+        looks = 0
+        real_look = auto.look
+
+        async def counted() -> LookResult:
+            nonlocal looks
+            looks += 1
+            return await real_look()
+
+        auto.look = counted  # type: ignore[method-assign]
+        auto.start()
+        for _ in range(500):
+            if not file.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert not file.exists()  # what was already there is renamed right after opening
+        assert looks == 2
+        await asyncio.sleep(0.1)
+        assert looks == 2  # from then on, the interval
+
+    async def test_the_second_look_never_waits_longer_than_the_interval(self) -> None:
+        auto = AutoRenamer(self.parts, now=Clock(), interval_s=5, second_look_s=30)
+        assert auto._second_look == 5
+
     async def test_off_then_on_during_a_look_keeps_watching(self) -> None:
         await self.use()
         auto = self.renamer(Clock())
@@ -493,7 +522,7 @@ class RenamerTest(RenamerTestCase):
         await self.run_lock.acquire()  # the owner's Forge is busy
         look = asyncio.get_running_loop().create_task(auto.look())
         await asyncio.sleep(0.3)
-        await self.use(automatic="trial")  # meanwhile the owner chose Trial
+        await self.use(automatic="trial")  # meanwhile the owner chose Manual
         self.run_lock.release()
         await look
         assert file.exists()

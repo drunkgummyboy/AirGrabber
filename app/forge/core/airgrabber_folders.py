@@ -23,7 +23,7 @@ those that would clash with the owner's or the library folders (`airgrabber_in_u
 
 Nothing moves from a folder that starts being watched behind the owner's back: renaming on its
 own stays as the owner set it, and when AirGrabber's settings add a folder while it is On, it
-goes back to Trial (said in the Activity strip), as On straight from Off does.
+goes back to Manual (said in the Activity strip), as On straight from Off does.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ COVERED = N_("Watched already: it is in a folder that is watched.")
 HOLDS_OWN = N_("Not watched: a folder you added is inside it.")
 OVERLAP = N_("Not watched: it overlaps a library folder.")
 BACK_TO_TRIAL = N_(
-    "AirGrabber's downloads now also end up in {folder}. Renaming on its own is on Trial again: "
+    "AirGrabber's downloads now also end up in {folder}. Renaming on its own is on Manual again: "
     "switch it to On when you're happy."
 )
 
@@ -420,7 +420,7 @@ class AirGrabberFolderSync:
         if added and current.automatic == "on":
             # Never move files from a folder that started being watched behind the owner's back.
             changes["automatic"] = "trial"
-            log.info("A new folder of AirGrabber's downloads is watched: Trial again")
+            log.info("A new folder of AirGrabber's downloads is watched: Manual again")
             if self._activity is not None:
                 self._activity.say(t(BACK_TO_TRIAL, folder=added[0]), level=logging.WARNING)
         await self._forge.update(**changes)
