@@ -41,7 +41,7 @@ from app.forge.models.preset import Preset, PresetOptions
 from app.forge.services import ForgeServices
 from app.forge.ui import file_drops
 from app.forge.ui.images import BandImages
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.queue_rows import Show
 from app.forge.ui.queue_view import OPTION_LABELS, QueueView, summary_text
@@ -50,6 +50,7 @@ from app.i18n import Language, current_language, set_language
 from app.services.images import Finish, ImageCache
 from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient
+from app.ui import theme
 from app.ui.missing_control import PopupMenu
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.tk import pump, pump_until
@@ -72,13 +73,20 @@ class FakeImages:
     def __init__(self) -> None:
         self.asked: list[str] = []
         self.finishes: list[Finish | None] = []
+        self.keeps: list[bool] = []
 
     async def get(
-        self, url: str | None, size: tuple[int, int], *, finish: Finish | None = None
+        self,
+        url: str | None,
+        size: tuple[int, int],
+        *,
+        finish: Finish | None = None,
+        keep: bool = True,
     ) -> Image.Image | None:
         assert url is not None
         self.asked.append(url)
         self.finishes.append(finish)
+        self.keeps.append(keep)
         picture = Image.new("RGB", size, (90, 90, 90))
         return finish(picture) if finish is not None else picture
 
@@ -261,7 +269,7 @@ class QueueTest(QueueCase):
         after = rows[rows.index(ted) + 1 : rows.index(ted) + 3]
         self.assertEqual([r.code for r in after], ["S04E03", "S04E05"])
         self.assertEqual(after[0].faint, "Ted.Lasso.S04E03.1080p.WEB.mkv")
-        self.assertEqual(ted.actions, (("ignore", "Ignore"), ("rename", "Rename")))
+        self.assertEqual(ted.actions[1:], (("ignore", "Ignore"), ("rename", "Rename")))
         self.select_band("Dune")  # the card only: the list stays as it is
         await pump(self.root, 0.1)
         self.assertEqual(self.bands(), ["Dune", "Severance", "Ted Lasso"])
@@ -279,7 +287,7 @@ class QueueTest(QueueCase):
         self.assertEqual(self.bands(), ["Dune (2021)"])
         self.view.set_filter("ready")
         self.assertEqual(self.bands(), ["Heat"])
-        look = forge_look()
+        look = app_look()
         self.assertEqual(tuple(self.view.filter_buttons["ready"].cget("fg_color")), look.ROW_SELECTED)
         self.assertEqual(tuple(self.view.filter_buttons["all"].cget("fg_color")), look.SURFACE)
         self.view.set_filter("needs")
@@ -338,7 +346,7 @@ class QueueTest(QueueCase):
         self.assertEqual(self.view.choice_for(self.item("Ted")).custom, None)
         self.assertTrue(ted.title)
         codes = self.view.rule_text._textbox.tag_ranges("code")
-        self.assertEqual(len(codes), 4)  # {t} and {ny} in copper
+        self.assertEqual(len(codes), 4)  # {t} and {ny} coloured
         self.assertTrue(self.view.changed_note.winfo_ismapped())
         self.view._custom_clicked()  # off again: back to the preset's rule
         self.assertIsNone(self.view.choice.custom)
@@ -663,7 +671,7 @@ class QueueTest(QueueCase):
         self.view.refresh()
         [band] = self.rows("band")
         self.assertEqual((band.title, band.state), ("Shrinking", "needs"))
-        self.assertEqual(band.actions[:2], (("ignore", "Ignore"), ("choose", "Choose…")))
+        self.assertEqual(band.actions[1:3], (("ignore", "Ignore"), ("choose", "Choose…")))
         self.view.list.on_action(band.key, "choose")
         await pump(self.root, 0.1)
         self.assertEqual(asked, [item.id])
@@ -726,9 +734,31 @@ class QueueTest(QueueCase):
         self.assertEqual(self.sections(), ["Done today"])
         self.assertEqual(self.bands(), ["Ran", "Heat"])
         self.assertTrue(self.band("Heat").faded)
-        self.assertEqual(self.band("Heat").actions, (("undo", "Undo"),))
+        self.assertEqual(self.band("Heat").actions[1:], (("cc", "CC ▾"), ("undo", "Undo")))
         self.view.set_filter("ready")
         self.assertEqual(self.bands(), ["Ran"])
+
+    async def test_forged_files_stay_in_the_queue_by_default(self) -> None:
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        await self.view.forge()
+        await pump(self.root, 0.2)
+        self.assertEqual(len(self.services.queue.items), 1)
+
+    async def test_the_setting_takes_forged_files_out_of_the_queue(self) -> None:
+        await self.services.settings.update(remove_after_forge=True)
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        await self.view.forge()
+        await pump(self.root, 0.2)
+        self.assertTrue((self.tmp / "in" / "Heat (1995).mkv").exists())
+        self.assertEqual(self.services.queue.items, [])
+        self.assertEqual(self.rows("band"), [])
+        # History still has it, with its Undo.
+        [run] = await self.services.history.list_runs()
+        self.assertEqual(run.file_count, 1)
 
     async def test_undo_on_a_done_band_puts_the_file_back(self) -> None:
         make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
@@ -761,7 +791,7 @@ class QueueTest(QueueCase):
         self.assertEqual(
             asked,
             [
-                "This puts back 1 renamed file and removes 0 downloaded posters or trailers "
+                "This puts back 1 renamed file and removes 0 downloaded posters, trailers or subtitles "
                 "from that run."
             ],
         )
@@ -819,6 +849,7 @@ class QueueTest(QueueCase):
             {
                 "Poster": "movie_poster",
                 "Trailer": "trailer",
+                "Subtitles": "subtitles",
                 "Clean junk": "clean_junk",
                 "Empty folders": "prune_empty",
             },
@@ -972,9 +1003,10 @@ class PicturesTest(QueueCase):
         return fake
 
     def band_pictures(self) -> int:
-        return len(self.view.list.canvas.find_withtag("band-image"))
+        canvas = self.view.list.canvas
+        return len(canvas.find_withtag("band-image")) + len(canvas.find_withtag("card-image"))
 
-    async def test_a_band_gets_its_poster_and_backdrop(self) -> None:
+    async def test_a_band_gets_its_poster_and_its_card_a_picture(self) -> None:
         fake = await self.show_with_pictures()
         self.assertEqual(self.band_pictures(), 2)
         self.assertEqual(len(fake.asked), 2)
@@ -1001,26 +1033,27 @@ class PicturesTest(QueueCase):
         await self.show_with_pictures()
         images = self.view.images
         [band] = self.rows("band")
-        width, height = self.view.list.backdrop_size
-        poster, backdrop = self.view._images_for(band, width, height)
-        self.assertIsNotNone(poster)
-        self.assertIsNotNone(backdrop)
-        assert backdrop is not None and poster is not None
-        self.assertLessEqual(abs(backdrop.width() - width), 1)
-        self.assertLessEqual(abs(backdrop.height() - height), 1)
+        poster = self.view._images_for(band)
+        self.assertIsNotNone(poster)  # the backdrop lies behind the whole card
+        shape = self.view.list.card_shape(1)
+        picture = self.view._card_picture(band, shape, theme.pick(self.view.look.SURFACE))
+        assert picture is not None and poster is not None
+        self.assertEqual((picture.width(), picture.height()), (shape.width, shape.height))
         scale = self.view.list.scale
         self.assertLessEqual(abs(poster.width() - round(58 * scale)), 1)  # the design's poster
         self.assertLessEqual(abs(poster.height() - round(86 * scale)), 1)
         self.assertEqual(len(images._photos), 2)
 
-    async def test_a_done_band_gets_a_faded_poster_and_no_backdrop(self) -> None:
+    async def test_a_done_band_gets_a_faded_poster_and_a_quieter_picture(self) -> None:
         fake = await self.show_with_pictures()
         [item] = self.services.queue.items
         self.services.queue.mark_finished(item.id, item.path)
         self.view.refresh()
         await pump(self.root, 0.3)
-        self.assertEqual(self.band_pictures(), 1)
-        self.assertEqual(type(fake.finishes[-1]).__name__, "Fade")
+        self.assertEqual(self.band_pictures(), 2)
+        self.assertEqual(
+            {type(finish).__name__ for finish in fake.finishes[-2:]}, {"Fade", "CardBake"}
+        )
 
 
 class WatchedTest(QueueCase):
@@ -1214,8 +1247,8 @@ class LookAndLanguageTest(QueueCase):
         }
         self.assertEqual(keys, set(PresetOptions.model_fields))  # every option has a button
 
-    async def test_the_queue_wears_the_forge_look(self) -> None:
-        look = forge_look()
+    async def test_the_queue_wears_the_look(self) -> None:
+        look = app_look()
         self.assertEqual(tuple(self.view.cget("fg_color")), look.BG)
         self.assertEqual(tuple(self.view.forge_button.cget("fg_color")), look.ACCENT)
         self.assertEqual(tuple(self.view.forge_button.cget("hover_color")), look.ACCENT_HOVER)
@@ -1357,7 +1390,7 @@ class IgnoreTest(QueueCase):
         await pump(self.root, 0.1)
         for band in self.rows("band"):
             with self.subTest(band=band.title):
-                self.assertEqual(band.actions[0], ("ignore", "Ignore"))
+                self.assertEqual(band.actions[1], ("ignore", "Ignore"))
 
     async def test_a_click_on_ignore_opens_its_menu_under_the_button(self) -> None:
         _downloads, _course, [clip] = await self.course()

@@ -16,14 +16,14 @@ their meaning in every palette; the text colours stay as they are (the design ke
 
 `tokens(accent, slate)` is pure: theme.apply_accent sets the result as theme's tokens, once at
 startup before the first window (a change takes a restart). `palette_tokens(palette, slate)` is
-the same for any Palette: FORGE (copper, `derived_palette`) is the Forge window's own look.
+the same for any Palette.
 """
 
 from __future__ import annotations
 
 import colorsys
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from app.i18n import N_
 from app.models import Accent
@@ -199,56 +199,6 @@ PALETTES: dict[Accent, Palette] = {
     ),
 }
 
-
-# The backgrounds a palette's link is read on (Shades fields): a derived link keeps Slate's
-# contrast against each.
-_LINK_GROUNDS: tuple[str, ...] = ("bg", "surface", "chip", "todaybg")
-_LINK_STEP = 0.005  # HLS lightness per step while a derived link is made as readable as Slate's
-
-
-def derived_palette(name: str, accent: str) -> Palette:
-    """A palette for `accent` with no design of its own: its hover and every Shades colour are
-    Slate's moved the way Slate's accent moves to `accent` (`shifted`). The one correction: a
-    moved link darker (light look) / lighter (dark look) in small lightness steps until it is
-    at least as readable on that look's grounds (_LINK_GROUNDS) as Slate's link is on Slate's
-    (HLS lightness isn't luminance: a saturated orange reads lighter than a blue of the same
-    lightness). Pure."""
-    slate = PALETTES[Accent.SLATE]
-
-    def move(color: str) -> str:
-        return shifted(color, slate.accent, accent)
-
-    def shades(own: Shades, darker: bool) -> Shades:
-        moved = {field.name: move(getattr(own, field.name)) for field in fields(Shades)}
-        needed = [
-            (moved[ground], contrast_ratio(own.link, getattr(own, ground)))
-            for ground in _LINK_GROUNDS
-        ]
-        moved["link"] = _readable(moved["link"], needed, darker)
-        return Shades(**moved)
-
-    return Palette(
-        name,
-        to_hex(accent),
-        move(slate.hover),
-        shades(slate.light, darker=True),
-        shades(slate.dark, darker=False),
-    )
-
-
-def _readable(color: str, needed: list[tuple[str, float]], darker: bool) -> str:
-    """`color` with its lightness moved (down when `darker`) until its contrast against every
-    (ground, ratio) in `needed` is at least that ratio."""
-    hue, lightness, saturation = _hls(color)
-    step = -_LINK_STEP if darker else _LINK_STEP
-    while not all(contrast_ratio(color, ground) >= ratio for ground, ratio in needed):
-        lightness = _clamp(lightness + step)
-        color = _from_hls(hue, lightness, saturation)
-        if lightness in (0.0, 1.0):
-            break
-    return color
-
-
 # The tokens the design gives per palette, by their Shades field (both looks).
 _FROM_SHADES: dict[str, str] = {
     "BG": "bg",
@@ -304,8 +254,7 @@ def tokens(accent: Accent, slate: Mapping[str, Pair]) -> dict[str, Pair]:
 
 
 def palette_tokens(palette: Palette, slate: Mapping[str, Pair]) -> dict[str, Pair]:
-    """Every ACCENT_TOKENS token for `palette` (one of PALETTES, or one kept out of them such
-    as FORGE), given Slate's tokens (theme.py's own values)."""
+    """Every ACCENT_TOKENS token for `palette`, given Slate's tokens (theme.py's own values)."""
     anchors = PALETTES[Accent.SLATE]
     out: dict[str, Pair] = {}
     for name in ACCENT_TOKENS:
@@ -404,11 +353,3 @@ def shifted(color: str, before: str, after: str) -> str:
             hue = hue + hue_after - hue_before
         saturation = _clamp(saturation * sat_after / sat_before)
     return _from_hls(hue, lightness, saturation)
-
-
-# The Forge window's fixed look (MediaForge inside AirGrabber, docs/forge/INTEGRATION.md D1):
-# copper, 4.95:1 with white text. Kept out of PALETTES, so Settings and Quick setup never offer
-# it as AirGrabber's accent; app/forge/ui/look.py turns it into tokens.
-# (Made here, after the colour arithmetic it uses.)
-FORGE_ACCENT = "#A0612B"
-FORGE: Palette = derived_palette(N_("Copper"), FORGE_ACCENT)

@@ -376,7 +376,7 @@ class ConnectWindowTests(TkTestCase):
 class SettingsSectionTests(TkTestCase):
     async def test_the_plex_section(self) -> None:
         from app.services import SettingsService
-        from app.ui.settings_dialog import SECTION_PLEX, SECTION_SUBTITLES, SettingsDialog
+        from app.ui.settings_dialog import SECTION_PLEX, SettingsDialog
 
         dialog = SettingsDialog(
             self.root,
@@ -388,14 +388,13 @@ class SettingsSectionTests(TkTestCase):
             discovery=mock.MagicMock(),
             prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
             startup_shortcut=FakeShortcut(),
-            subtitles=None,
             plex=FakePlex(CONNECTED),  # type: ignore[arg-type]
         )
         self.keep(dialog)
         items = list(dialog._items)
         self.assertIn(SECTION_PLEX, items)
-        self.assertEqual(items.index(SECTION_PLEX), 3)  # last of Downloading (no Subtitles here)
-        self.assertNotIn(SECTION_SUBTITLES, items)
+        self.assertEqual(items.index(SECTION_PLEX), 3)  # last of Downloading
+        self.assertNotIn("Subtitles", items)  # MediaForge's now
         assert dialog.plex_box is not None
         await dialog.plex_box.loaded()
         self.assertIn("Connected to Alex-NAS", texts(dialog.page(SECTION_PLEX)))

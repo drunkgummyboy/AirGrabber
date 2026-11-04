@@ -415,7 +415,7 @@ class TrayHostOpenTests(unittest.TestCase):
                 self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
 
     def test_show_window_keeps_the_page(self) -> None:
-        # Shown for a purpose (MediaForge's "Open AirGrabber's Settings"): no start page.
+        # Shown for a purpose: no start page.
         self.host().show_window()
         self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
 

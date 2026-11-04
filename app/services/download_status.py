@@ -69,7 +69,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
-from app.database import HistoryRepository, SubtitleRepository
+from app.database import HistoryRepository
 from app.i18n import t
 from app.models import (
     DownloadEntry,
@@ -654,7 +654,6 @@ class DownloadStatusService:
     def __init__(
         self,
         history: HistoryRepository,
-        subtitles: SubtitleRepository,
         settings: SettingsService,
         remote: RemoteDownloads,
         *,
@@ -687,7 +686,6 @@ class DownloadStatusService:
         self._watched: MoveRecords | None = None  # the move records listened to
         self._unwatch: Callable[[], None] | None = None
         self._history = history
-        self._subtitles = subtitles
         self._settings = settings
         self._remote = remote
         self._show = show
@@ -802,9 +800,6 @@ class DownloadStatusService:
         pickup, hidden = await self._sync_marks(records, asked, matches, older, now, synced)
         shown = [(index, record) for index, record in enumerate(records) if record.id not in hidden]
         everything = [record for _, record in shown] + [record for record, _ in older]
-        languages = await self._subtitles.grab_languages(
-            record.id for record in everything if record.id is not None
-        )
         shows = await self._shows(
             record.media_id for record in everything if record.media_type is MediaType.TV
         )
@@ -817,11 +812,11 @@ class DownloadStatusService:
                 base: tuple[DownloadState, float | None] = (pickup[record.id], None)
             else:
                 base = entry_state(task, expected=expected[index], asked=synced)
-            entries.append(self._entry(record, outcome, via, base, task, shows, languages, moved))
+            entries.append(self._entry(record, outcome, via, base, task, shows, moved))
         for record, task in older:
             outcome, via = grab_outcome(record.saved_path, settings.download_mode)
             base = (task.state, task.progress)
-            entries.append(self._entry(record, outcome, via, base, task, shows, languages, moved))
+            entries.append(self._entry(record, outcome, via, base, task, shows, moved))
         tasks = await self._added_tasks(added, shows)
         space, fresh = await self._free_space(settings)
         overview = DownloadsOverview(
@@ -857,7 +852,6 @@ class DownloadStatusService:
         base: tuple[DownloadState, float | None],
         task: RemoteTask | None,
         shows: Mapping[int, Show],
-        languages: Mapping[int, Collection[str]],
         moved: Mapping[int, MovedTo],
     ) -> DownloadEntry:
         assert record.id is not None
@@ -871,7 +865,6 @@ class DownloadStatusService:
             program=via,
             state=state,
             progress=progress,
-            subtitles=tuple(sorted(languages.get(record.id, ()))),
             moved_to=place,
             task=task,
         )

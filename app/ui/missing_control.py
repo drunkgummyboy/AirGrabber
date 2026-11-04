@@ -374,7 +374,7 @@ class PopupMenu:
     ) -> None:
         """`point`: open at the pointer (screen pixels) instead of under `anchor`. `under`: open
         under this part of `anchor` instead (x, y, width, height in screen pixels: a button
-        drawn on a canvas). `look`: a window's own accent tokens (the Forge window's copper)
+        drawn on a canvas). `look`: a view's accent tokens (Forge's `app_look()`)
         instead of AirGrabber's. `align`: which edges line up with what it opens under."""
         edge = theme.EDGE if look is None else look.EDGE
         surface = theme.SURFACE if look is None else look.SURFACE
@@ -527,7 +527,7 @@ def popup_menu(
 ) -> PopupMenu | None:
     """A small menu of `items` ((label, action) or a MenuEntry, which may be greyed out with a
     tip) under `anchor` (or `under` a part drawn on it), or at the pointer's `point`;
-    none without items. `look`: a window's own accent tokens (the Forge window's copper)
+    none without items. `look`: a view's accent tokens (Forge's `app_look()`)
     instead of AirGrabber's. `align`: right edges lined up (the default) or left edges."""
     if not items:
         return None

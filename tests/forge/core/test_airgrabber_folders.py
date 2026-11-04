@@ -305,7 +305,7 @@ class TextTests(ForgeTestCase):
         overlap = forge(folder(SERIES + r"\in"))
         self.assertEqual(
             use_text(airgrabber_in_use(overlap)[0]),
-            "“Where finished downloads end up” in AirGrabber's Settings. Not watched: it "
+            "“Where finished downloads end up” in Settings. Not watched: it "
             "overlaps a library folder.",
         )
         self.assertEqual(ask_text(AirGrabberDownloads()), "")

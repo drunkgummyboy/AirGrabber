@@ -32,13 +32,10 @@ from app.services.quick_download import QuickDownloadService
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.search import TorrentSearchService
-from app.services import opensubtitles
-from app.services.opensubtitles import OpenSubtitlesClient
 from app.services.settings import SettingsService
 from app.services.spotlight import SpotlightService
-from app.services.subtitles import SubtitleService
 from app.services.synology import DownloadStationClient
-from app.services.tmdb import TMDBClient, TMDBError
+from app.services.tmdb import TMDBClient
 from app.services.torrent_app import (
     QBittorrentLinker,
     TorrentAppService,
@@ -78,7 +75,6 @@ class Services:
         "search",
         "settings",
         "spotlight",
-        "subtitles",
         "torrent_app",
         "updates",
         "watchlist",
@@ -136,24 +132,6 @@ class Services:
         self.updates = updates
         self.prowlarr_setup = prowlarr_setup
         self.torrent_app = torrent_app  # which torrent program is set up; qBittorrent install
-        # Subtitles from OpenSubtitles.com next to the grabbed videos (`run_periodic` from the
-        # UI), with the user's own API key when Settings has one, else AirGrabber's shipped key
-        # (read on every request, so a changed key applies at once), and the user's optional
-        # OpenSubtitles account.
-        self.subtitles = SubtitleService(
-            db.subtitles,
-            OpenSubtitlesClient(
-                http,
-                api_key=lambda: opensubtitles.effective_api_key(
-                    _own_opensubtitles_key(settings), opensubtitles.APP_API_KEY
-                ),
-                own_key=lambda: bool(_own_opensubtitles_key(settings)),
-            ),
-            settings,
-            show=db.library.get_show,
-            movie_imdb_id=functools.partial(_movie_imdb_id, discovery),
-            forge=forge_moves(forge),  # videos Forge moved into the library keep their subtitles
-        )
         # The Downloads page: recent grabs with the torrent program's progress, free space
         # (`run_periodic` from the UI); looks again soon after every grab.
         # Where Forge moved a finished download, once Forge runs (`forge_moves`).
@@ -161,7 +139,6 @@ class Services:
         # followed shows and watchlist films (`known`).
         self.download_status = DownloadStatusService(
             db.history,
-            db.subtitles,
             settings,
             remote,
             show=db.library.get_show,
@@ -170,7 +147,7 @@ class Services:
         )
         downloads.subscribe(self.download_status.after_grab)
         # MediaForge inside AirGrabber: off until something awaits `forge.start()` (the delayed
-        # start after the main window shows, or the Forge window opened earlier).
+        # start after the main window shows, or MediaForge's page opened earlier).
         self.forge = forge
         # What is in the user's Plex libraries counts as had (Settings → Plex; `run_periodic`
         # from the UI). A check that changes it reloads the pages, as a library change does.
@@ -265,24 +242,12 @@ class Services:
                 await self._db.close()
 
 
-def _own_opensubtitles_key(settings: SettingsService) -> str:
-    return settings.current.opensubtitles_own_key.get_secret_value().strip()
-
-
 async def _known_titles(db: Database) -> tuple[list[Show], list[Movie]]:
     """The shows anyone follows and the films on anyone's watchlist (the Downloads page
     recognises the tasks added in the torrent program by them)."""
     followed = await db.library.followed()
     films = await db.watchlist.films()
     return [entry.show for entry in followed], [entry.movie for entry in films]
-
-
-async def _movie_imdb_id(discovery: DiscoveryService, movie_id: int) -> str | None:
-    """A film's IMDb id from TMDB's details; None without a TMDB key or when TMDB fails."""
-    try:
-        return (await discovery.movie_details(movie_id)).imdb_id
-    except TMDBError:
-        return None
 
 
 def _clear_discovery_on_key_change(
@@ -322,7 +287,6 @@ __all__ = [
     "Services",
     "SettingsService",
     "SpotlightService",
-    "SubtitleService",
     "TorrentAppService",
     "TorrentSearchService",
     "UpdateError",

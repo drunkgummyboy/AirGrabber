@@ -50,7 +50,6 @@ NL: dict[str, str] = {
     "Open Settings to update": "Open Instellingen om bij te werken",
     "Installs the downloaded update and restarts AirGrabber":
         "Installeert de gedownloade update en start AirGrabber opnieuw",
-    "⚠ Subtitles: {message}": "⚠ Ondertitels: {message}",
     "Connected to Prowlarr on this PC · added {sites} to your sites":
         "Verbonden met Prowlarr op deze pc · {sites} toegevoegd aan je sites",
     "Connected to Prowlarr on this PC": "Verbonden met Prowlarr op deze pc",
@@ -95,7 +94,6 @@ NL: dict[str, str] = {
     "Where downloads go": "Waar downloads naartoe gaan",
     "Quality": "Kwaliteit",
     "Automatic": "Automatisch",
-    "Subtitles": "Ondertitels",
     "Movie & show info": "Film- en serie-info",
     "Looks": "Uiterlijk",
     "Updates": "Updates",
@@ -138,11 +136,6 @@ NL: dict[str, str] = {
     "You can still change this for each show.": "Je kunt dit nog per serie aanpassen.",
     "Download new episodes for shows I start following":
         "Nieuwe afleveringen downloaden van series die ik ga volgen",
-    "AirGrabber finds subtitles for what you download on OpenSubtitles.com.":
-        "AirGrabber zoekt ondertitels voor wat je downloadt op OpenSubtitles.com.",
-    "Languages": "Talen",
-    "AirGrabber looks for subtitles in each of these languages.":
-        "AirGrabber zoekt ondertitels in elk van deze talen.",
     "TMDB key": "TMDB-sleutel",
     "A free code from themoviedb.org that lets AirGrabber ask TMDB for this information. Without it, the Movies and Discover pages stay empty. Your shows and the Calendar work without it.":
         "Een gratis code van themoviedb.org waarmee AirGrabber deze informatie aan TMDB kan vragen. Zonder sleutel blijven de pagina's Films en Ontdekken leeg. Je series en de Kalender werken ook zonder.",
@@ -198,7 +191,6 @@ NL: dict[str, str] = {
     "Movies size": "Grootte films",
     "Prowlarr URL": "Prowlarr-URL",
     "Prowlarr API key": "Prowlarr-API-sleutel",
-    "Subtitle languages": "Ondertiteltalen",
     "Cancel": "Annuleren",
     "Save": "Opslaan",
     "Browse": "Bladeren",
@@ -218,48 +210,13 @@ NL: dict[str, str] = {
     "Version {version} is available. AirGrabber restarts to finish.":
         "Versie {version} is beschikbaar. AirGrabber herstart om af te ronden.",
     "Update to {version}": "Bijwerken naar {version}",
-    # app/ui/subtitle_settings.py
-    "Saved next to your videos, so your player shows them.":
-        "Opgeslagen naast je video's, zodat je speler ze toont.",
-    "Subtitles aren't available in this version yet":
-        "Ondertitels zijn nog niet beschikbaar in deze versie",
-    "Subtitles provided by OpenSubtitles.com": "Ondertitels aangeleverd door OpenSubtitles.com",
-    "Get subtitles for my downloads": "Ondertitels zoeken voor mijn downloads",
     "Where finished downloads end up": "Waar voltooide downloads terechtkomen",
-    "Your torrent program's download folder": "De downloadmap van je torrentprogramma",
-    "OpenSubtitles account": "OpenSubtitles-account",
-    "Optional: 20 subtitles a day instead of 5.":
-        "Optioneel: 20 ondertitels per dag in plaats van 5.",
-    "Create a free account": "Maak een gratis account aan",
-    "+ Add": "+ Toevoegen",
-    "Sign in": "Aanmelden",
-    "Own OpenSubtitles key (optional)": "Eigen OpenSubtitles-sleutel (optioneel)",
-    "Leave empty to use AirGrabber's key": "Laat leeg om de sleutel van AirGrabber te gebruiken",
-    "Only needed if you have your own API key from opensubtitles.com":
-        "Alleen nodig als je een eigen API-sleutel van opensubtitles.com hebt",
-    "Checking the key…": "Sleutel controleren…",
-    "✓ OpenSubtitles accepted the key": "✓ OpenSubtitles heeft de sleutel geaccepteerd",
-    "Empty: AirGrabber's own key is used": "Leeg: de eigen sleutel van AirGrabber wordt gebruikt",
-    "Couldn't check the key right now; it is saved anyway":
-        "Kon de sleutel nu niet controleren; hij wordt toch opgeslagen",
-    "No subtitle downloads left today; more after {time}":
-        "Vandaag geen ondertiteldownloads meer; na {time} weer",
-    "No subtitle downloads left today": "Vandaag geen ondertiteldownloads meer",
-    "{n} subtitle download left today": "Vandaag nog {n} ondertiteldownload",
-    "{n} subtitle downloads left today": "Vandaag nog {n} ondertiteldownloads",
-    "{n} downloads a day": "{n} downloads per dag",
-    "{n} left today": "nog {n} vandaag",
-    "✓ Signed in": "✓ Aangemeld",
-    "Fill in both the OpenSubtitles user name and password, or neither":
-        "Vul zowel de OpenSubtitles-gebruikersnaam als het wachtwoord in, of geen van beide",
-    "Choose at least one subtitle language": "Kies minstens één ondertiteltaal",
-    "Choose where finished downloads end up, for subtitles":
-        "Kies waar voltooide downloads terechtkomen, voor de ondertitels",
+    "Your torrent program's download folder. MediaForge watches it, and the Downloads page looks there for free space and your files.":
+        "De downloadmap van je torrentprogramma. MediaForge houdt hem in de gaten, en de pagina Downloads kijkt er voor vrije ruimte en je bestanden.",
+    "Choose where finished downloads end up first (Settings → Where downloads go)":
+        "Kies eerst waar voltooide downloads terechtkomen (Instellingen → Waar downloads naartoe gaan)",
     "User name": "Gebruikersnaam",
     "Password": "Wachtwoord",
-    "Fill in your OpenSubtitles user name and password":
-        "Vul je OpenSubtitles-gebruikersnaam en wachtwoord in",
-    "Signing in…": "Aanmelden…",
     # app/ui/remote_program_form.py
     "video/tv — empty: Download Station's default":
         "video/tv — leeg: standaardmap van Download Station",
@@ -386,6 +343,7 @@ NL: dict[str, str] = {
     "Enter at least one show.": "Vul minstens één serie in.",
     # app/ui/whats_new_dialog.py
     "OK": "OK",
+    "Also new": "Ook nieuw",
     # app/ui/borderless.py: the pop-ups' round ✕
     "Close (Esc)": "Sluiten (Esc)",
     "Close": "Sluiten",
@@ -486,7 +444,6 @@ NL: dict[str, str] = {
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
     "In Plex": "In Plex",
-    "Options": "Opties",
     "More options": "Meer opties",
     "{n} missing": "{n} ontbrekend",
     "Downloading {index} of {total}…": "{index} van {total} downloaden…",
@@ -636,42 +593,6 @@ NL: dict[str, str] = {
     "☰ Choose a release…": "☰ Zelf een release kiezen…",
     "No good release found": "Geen goede release gevonden",
     "None found": "Niets gevonden",
-    # 2.0.7: app/ui/subtitle_control.py
-    "Get subtitles": "Ondertitels ophalen",
-    "Turn on subtitles in Settings → Subtitles": "Zet ondertitels aan in Instellingen → Ondertitels",
-    "Get {language} subtitles": "Ondertitels ophalen: {language}",
-    "Get all my languages": "Al mijn talen ophalen",
-    "Looking for subtitles…": "Ondertitels zoeken…",
-    "Already there": "Al aanwezig",
-    "OpenSubtitles has none for this yet. Try again later.":
-        "OpenSubtitles heeft er nog geen. Probeer het later opnieuw.",
-    "Not found yet: {languages}": "Nog niet gevonden: {languages}",
-    "Video not in the folder": "Video niet in de map",
-    "AirGrabber couldn't find the video in the folder where finished downloads end up (Settings → Subtitles).":
-        "AirGrabber vond de video niet in de map waar voltooide downloads terechtkomen (Instellingen → Ondertitels).",
-    "Still downloading": "Nog bezig met downloaden",
-    "No download found": "Geen download gevonden",
-    "Today's limit reached": "Limiet van vandaag bereikt",
-    "Tried recently": "Net nog geprobeerd",
-    "Couldn't get subtitles": "Kon geen ondertitels ophalen",
-    "Choose the downloads folder first": "Kies eerst de downloadmap",
-    # 2.0.7: app/ui/settings_dialog.py (Subtitles: When, Hearing impaired, For)
-    "When": "Wanneer",
-    "Automatically searches every half hour after a download. Only when I ask: use CC ▾ in a show's or film's window, or on the Downloads page.":
-        "Automatisch zoekt elk halfuur na een download. Alleen als ik het vraag: gebruik CC ▾ in het venster van een serie of film, of op de pagina Downloads.",
-    "Hearing impaired": "Slechthorenden",
-    'Subtitles that also describe sounds ("[door slams]").':
-        'Ondertitels die ook geluiden beschrijven ("[deur slaat dicht]").',
-    "For": "Voor",
-    "Which downloads get subtitles automatically.": "Welke downloads automatisch ondertitels krijgen.",
-    "Automatically": "Automatisch",
-    "Only when I ask": "Alleen als ik het vraag",
-    "Avoid": "Vermijden",
-    "Prefer": "Liefst wel",
-    "Either": "Maakt niet uit",
-    "Series and films": "Series en films",
-    "Only series": "Alleen series",
-    "Only films": "Alleen films",
     # 2.0.7: app/ui/views/downloads_view.py (filter, Clear finished, the ⋯ menu)
     "✓ Clear finished": "✓ Voltooide wissen",
     "Takes finished downloads, and ones your torrent program no longer has, off this list. Your files and AirGrabber's history stay.":
@@ -682,15 +603,11 @@ NL: dict[str, str] = {
     "Remove from list": "Van de lijst halen",
     "Only takes it off this list. Your files stay where they are.":
         "Haalt hem alleen van deze lijst. Je bestanden blijven waar ze zijn.",
-    "Choose where finished downloads end up first (Settings → Subtitles)":
-        "Kies eerst waar voltooide downloads terechtkomen (Instellingen → Ondertitels)",
     "Not found in the folder where finished downloads end up":
         "Niet gevonden in de map waar voltooide downloads terechtkomen",
     "The folder where finished downloads end up can't be reached":
         "De map waar voltooide downloads terechtkomen is niet bereikbaar",
     "AirGrabber doesn't know this show any more": "AirGrabber kent deze serie niet meer",
-    "Subtitles need the folder where finished downloads end up (Settings → Subtitles)":
-        "Ondertitels hebben de map nodig waar voltooide downloads terechtkomen (Instellingen → Ondertitels)",
     "Finished": "Voltooid",
     "Problems": "Problemen",
     # 3.0.2: app/ui/views/downloads_view.py (in sync with the torrent program)
@@ -803,7 +720,6 @@ NL: dict[str, str] = {
     "Rose": "Roze",
     "Mocha": "Mokka",
     "Graphite": "Grafiet",
-    "Copper": "Koper",  # palettes.FORGE: the Forge window's look, never offered in Settings
     "Smaller files": "Kleinere bestanden",
     "720p · saves space": "720p · spaart ruimte",
     "Recommended": "Aanbevolen",
@@ -905,7 +821,6 @@ NL: dict[str, str] = {
         "De voortgang verschijnt als AirGrabber je torrentprogramma kan bereiken — stel het in bij Instellingen → Waar downloads naartoe gaan",
     "Downloading {percent} %": "Downloaden {percent} %",
     "Waiting": "Wacht",
-    "Ready": "Klaar",
     "Problem in {program}": "Probleem in {program}",
     "Problem": "Probleem",
     "Not found": "Niet gevonden",
@@ -915,7 +830,6 @@ NL: dict[str, str] = {
     "Opened in {program}": "Geopend in {program}",
     "Today {time}": "Vandaag {time}",
     "Yesterday {time}": "Gisteren {time}",
-    "Subtitles {languages}": "Ondertitels {languages}",
     "Your NAS is almost full: {size} free": "Je NAS is bijna vol: nog {size} vrij",
     "Your download drive is almost full: {size} free":
         "Je downloadschijf is bijna vol: nog {size} vrij",
@@ -1143,38 +1057,6 @@ NL: dict[str, str] = {
         "TVMaze {path}: onverwacht antwoord ({problem})",
     "TVMaze {path}: expected a JSON list, got {kind}":
         "TVMaze {path}: verwachtte een JSON-lijst, kreeg {kind}",
-    # app/services/opensubtitles.py
-    "OpenSubtitles refused AirGrabber's key. An update of AirGrabber may fix this":
-        "OpenSubtitles weigert de sleutel van AirGrabber. Een update van AirGrabber lost dat misschien op",
-    "Wrong OpenSubtitles user name or password":
-        "Verkeerde OpenSubtitles-gebruikersnaam of -wachtwoord",
-    "Couldn't reach OpenSubtitles. Check your internet connection":
-        "OpenSubtitles is niet bereikbaar. Controleer je internetverbinding",
-    "Today's subtitle downloads are used up": "De ondertiteldownloads van vandaag zijn op",
-    "OpenSubtitles refused your own API key. Check it, or leave it empty to use AirGrabber's key":
-        "OpenSubtitles weigert je eigen API-sleutel. Kijk hem na, of laat het veld leeg om de sleutel van AirGrabber te gebruiken",
-    "OpenSubtitles sent an unexpected download link":
-        "OpenSubtitles stuurde een onverwachte downloadlink",
-    "OpenSubtitles didn't hand over the subtitle file (HTTP {status})":
-        "OpenSubtitles gaf het ondertitelbestand niet (HTTP {status})",
-    "OpenSubtitles sent an empty or oversized subtitle file":
-        "OpenSubtitles stuurde een leeg of te groot ondertitelbestand",
-    "OpenSubtitles {path}: HTTP {status}": "OpenSubtitles {path}: HTTP {status}",
-    "OpenSubtitles {path}: the answer wasn't readable":
-        "OpenSubtitles {path}: het antwoord was niet leesbaar",
-    "OpenSubtitles {path}: unexpected answer ({n} invalid field(s))":
-        "OpenSubtitles {path}: onverwacht antwoord ({n} ongeldige veld(en))",
-    # app/services/subtitles.py
-    "Choose where finished downloads end up (Settings, Subtitles)":
-        "Kies waar voltooide downloads terechtkomen (Instellingen, Ondertitels)",
-    "Couldn't save subtitles next to the videos. Check that the folder is writable":
-        "Kon de ondertitels niet naast de video's opslaan. Controleer of je in de map mag schrijven",
-    "Couldn't open {folder}. Check that the folder (or the NAS) is reachable":
-        "Kon {folder} niet openen. Controleer of de map (of de NAS) bereikbaar is",
-    "Today's subtitle downloads are used up; more tomorrow":
-        "De ondertiteldownloads van vandaag zijn op; morgen weer",
-    "Today's subtitle downloads are used up; more after {time}":
-        "De ondertiteldownloads van vandaag zijn op; na {time} weer",
     # app/services/updates.py
     "Could not reach GitHub.": "GitHub is niet bereikbaar.",
     "GitHub doesn't have an AirGrabber 2 version yet.":
@@ -1409,6 +1291,22 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "MediaForge is now a page in AirGrabber": "MediaForge is nu een pagina in AirGrabber",
+    "No second window any more: Series, Movies, MediaForge. The number on it shows how many files need you.":
+        "Geen tweede venster meer: Series, Films, MediaForge. Het getal erop laat zien hoeveel bestanden op je wachten.",
+    "Every show or film is one card": "Elke serie of film is één kaart",
+    "Its picture runs behind all its files, and 📂 opens them in Explorer.":
+        "De afbeelding loopt door achter alle bestanden, en 📂 opent ze in Verkenner.",
+    "History is behind the 🕘 next to Settings.": "Geschiedenis zit achter de 🕘 naast Instellingen.",
+    "MediaForge now has AirGrabber's colours.": "MediaForge heeft nu de kleuren van AirGrabber.",
+    "Auto-rename moved to Settings, and there is now one Settings window for everything.":
+        "Automatisch hernoemen staat nu in Instellingen, en er is één venster met alle instellingen.",
+    "Subtitles are part of MediaForge now, and prefer the release of your file's original name.":
+        "Ondertitels horen nu bij MediaForge en passen beter: bij de release van de oorspronkelijke bestandsnaam.",
+    "New setting: remove files from the queue after they're forged.":
+        "Nieuwe instelling: bestanden na het forgen uit de wachtrij halen.",
+    "Ignored files and folders that are gone drop off the Ignored list by themselves.":
+        "Genegeerde bestanden en mappen die weg zijn, verdwijnen vanzelf uit de lijst Genegeerd.",
     "The show window always has a season's download buttons, also when it's already in Plex.":
         "Het serievenster heeft altijd de downloadknoppen van een seizoen, ook als het al in Plex staat.",
     "MediaForge's format codes are now buttons: click one to add it to the format.":

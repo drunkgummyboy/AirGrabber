@@ -194,14 +194,14 @@ NL: dict[str, str] = {
         "Dit zet {files} terug en haalt {created} van deze ronde weg.",
     "{n} renamed file": "{n} hernoemd bestand",
     "{n} renamed files": "{n} hernoemde bestanden",
-    "{n} downloaded poster or trailer": "{n} gedownloade poster of trailer",
-    "{n} downloaded posters or trailers": "{n} gedownloade posters of trailers",
+    "{n} downloaded poster, trailer or subtitle": "{n} gedownloade poster, trailer of ondertitel",
+    "{n} downloaded posters, trailers or subtitles": "{n} gedownloade posters, trailers of ondertitels",
     "Undo the selected items?": "De geselecteerde onderdelen ongedaan maken?",
     "This puts back {n} item.": "Dit zet {n} onderdeel terug.",
     "This puts back {n} items.": "Dit zet {n} onderdelen terug.",
     # app/forge/ui/activity_panel.py
     "Activity": "Activiteit",
-    # app/forge/ui/library_page.py
+    # app/forge/ui/settings_pages.py: Auto-rename's first box
     "Off": "Uit",
     "Trial": "Proef",
     "On": "Aan",
@@ -219,26 +219,12 @@ NL: dict[str, str] = {
     "On: sure matches are renamed and moved; the rest waits in the queue.":
         "Aan: wat TMDB zeker herkent, wordt hernoemd en verplaatst; de rest wacht in de wachtrij.",
     "Trial and On need these first:": "Voor Proef en Aan is eerst dit nodig:",
-    "Watch these folders": "Deze mappen bewaken",
-    "Put renamed files here": "Hernoemde bestanden hierheen",
-    "How files are named": "Zo krijgen bestanden hun naam",
-    "The preset each kind is named with when it moves.":
-        "De voorinstelling waarmee elke soort een naam krijgt als hij verplaatst wordt.",
-    "Your folders": "Je eigen mappen",
-    "That couldn't be saved. The log has the details.":
-        "Dat kon niet worden opgeslagen. Het logboek heeft de details.",
     "Download folders to watch": "Downloadmappen om te bewaken",
     "MediaForge looks here every few minutes for downloads that have finished.":
         "MediaForge kijkt hier om de paar minuten naar voltooide downloads.",
     "Library folders": "Bibliotheekmappen",
     "Shows and movies are moved here, each named with its preset.":
         "Series en films worden hierheen verplaatst, elk met de naam uit zijn voorinstelling.",
-    "Rename on its own": "Vanzelf hernoemen",
-    "Sure matches are renamed and moved by themselves; anything else waits in the queue. Trial "
-    "shows what would happen without moving anything.":
-        "Wat TMDB zeker herkent, wordt vanzelf hernoemd en verplaatst; de rest wacht in de "
-        "wachtrij. Proef laat zien wat er zou gebeuren zonder iets te verplaatsen.",
-    "More in Settings…": "Meer bij Instellingen…",
     "None yet": "Nog geen",
     "Not chosen yet": "Nog niet gekozen",
     # app/forge/ui/confirm_window.py
@@ -265,9 +251,8 @@ NL: dict[str, str] = {
     "{n} left as they are, such as: {reason}": "{n} ongemoeid gelaten, bijvoorbeeld: {reason}",
     # app/forge/ui/settings_pages.py
     "MediaForge": "MediaForge",
-    "Library & watching": "Bibliotheek & bewaken",
-    "Where MediaForge finds finished downloads, and where it moves them.":
-        "Waar MediaForge voltooide downloads vindt, en waar het ze naartoe verplaatst.",
+    "Which preset each kind is named with: see Naming.":
+        "Met welke voorinstelling elke soort een naam krijgt: zie Naamgeving.",
     "Getting MediaForge ready…": "MediaForge klaarmaken…",
     "MediaForge's settings couldn't be saved. The log has the details.":
         "De instellingen van MediaForge konden niet worden opgeslagen. Het logboek heeft de details.",
@@ -279,6 +264,9 @@ NL: dict[str, str] = {
     "Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)":
         "Downloads opruimen na het verplaatsen (samples, .nfo, .txt, .url, lege mappen)",
     "Tell me when files need me": "Laat het me weten als bestanden mij nodig hebben",
+    "Remove files from the queue after they're forged (Undo stays in History)": (
+        "Na het forgen uit de wachtrij halen (Ongedaan maken staat in Geschiedenis)"
+    ),
     "A summary in the evening": "Een overzicht 's avonds",
     "AirGrabber's downloads": "Downloads van AirGrabber",
     "Watch the folders where AirGrabber's downloads end up. They follow AirGrabber's settings; a "
@@ -287,9 +275,8 @@ NL: dict[str, str] = {
         "instellingen van AirGrabber; een voorgestelde map wordt pas bewaakt als je hem toevoegt.",
     "Use AirGrabber's downloads": "Downloads van AirGrabber gebruiken",
     "Add": "Toevoegen",
-    # app/forge/ui/window.py, app/forge/ui/host.py
-    "Queue": "Wachtrij",
-    "Auto-rename": "Automatisch",
+    # app/forge/ui/page.py, app/forge/ui/host.py
+    "Auto-rename": "Automatisch hernoemen",  # Downloading's "Automatic" is "Automatisch"
     "Auto-rename off": "Automatisch uit",
     "MediaForge isn't ready yet: one of its parts couldn't be installed.":
         "MediaForge is nog niet klaar: een van de onderdelen kon niet worden geïnstalleerd.",
@@ -374,6 +361,8 @@ NL: dict[str, str] = {
     "Stopping after the current file, then closing…":
         "Stoppen na het huidige bestand, daarna sluiten…",
     "Preview (nothing has been changed):": "Voorbeeld (er is niets veranderd):",
+    "Preview is in History › Activity. Nothing has been changed.":
+        "Het voorbeeld staat bij Geschiedenis › Activiteit. Er is niets veranderd.",
     "Nothing to undo for these files.": "Niets ongedaan te maken voor deze bestanden.",
     "Put back {n} file": "{n} bestand teruggezet",
     "Put back {n} files": "{n} bestanden teruggezet",
@@ -563,32 +552,31 @@ NL: dict[str, str] = {
         "Het verwijderprogramma van de oude MediaForge kon niet starten. Je kunt MediaForge "
         "verwijderen onder Geïnstalleerde apps in de Instellingen van Windows.",
     # app/forge/core/airgrabber_folders.py
-    "“Where finished downloads end up” in AirGrabber's Settings":
-        "“Waar voltooide downloads terechtkomen” in de instellingen van AirGrabber",
+    "“Where finished downloads end up” in Settings":
+        "“Waar voltooide downloads terechtkomen” in Instellingen",
     "qBittorrent on this PC saves AirGrabber's downloads here":
         "qBittorrent op deze pc bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's downloads here": "{program} bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's films here": "{program} bewaart de films van AirGrabber hier",
     "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in “Where "
-    "finished downloads end up” in AirGrabber's Settings › Subtitles, or add the folder to the "
-    "download folders to watch.":
+    "finished downloads end up” in Settings › Where downloads go, or add the folder to the download "
+    "folders to watch.":
         "AirGrabber weet niet waar zijn voltooide downloads op deze pc terechtkomen. Vul “Waar "
-        "voltooide downloads terechtkomen” in bij de instellingen van AirGrabber › Ondertitels, "
-        "of voeg de map toe aan de downloadmappen om te bewaken.",
+        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan, of voeg de map toe "
+        "aan de downloadmappen om te bewaken.",
     "AirGrabber sends downloads to {program} on another computer. Add the folder where they "
     "show up on this PC (a shared network folder) to the download folders to watch, or fill in "
-    "“Where finished downloads end up” in AirGrabber's Settings › Subtitles.":
+    "“Where finished downloads end up” in Settings › Where downloads go.":
         "AirGrabber stuurt downloads naar {program} op een andere computer. Voeg de map waar ze "
         "op deze pc verschijnen (een gedeelde netwerkmap) toe aan de downloadmappen om te "
-        "bewaken, of vul “Waar voltooide downloads terechtkomen” in bij de instellingen van "
-        "AirGrabber › Ondertitels.",
+        "bewaken, of vul “Waar voltooide downloads terechtkomen” in bij Instellingen › "
+        "Waar downloads naartoe gaan.",
     "Download Station keeps AirGrabber's downloads in its own download folder. Add the shared "
     "folder where they show up on this PC to the download folders to watch, or fill in “Where "
-    "finished downloads end up” in AirGrabber's Settings › Subtitles.":
+    "finished downloads end up” in Settings › Where downloads go.":
         "Download Station bewaart de downloads van AirGrabber in zijn eigen downloadmap. Voeg de "
         "gedeelde map waar ze op deze pc verschijnen toe aan de downloadmappen om te bewaken, of "
-        "vul “Waar voltooide downloads terechtkomen” in bij de instellingen van AirGrabber › "
-        "Ondertitels.",
+        "vul “Waar voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan.",
     "Suggested: {reason}": "Voorstel: {reason}",
     "This PC can reach it.": "Deze pc kan erbij.",
     "This PC can't reach it right now.": "Deze pc kan er nu niet bij.",
@@ -603,11 +591,6 @@ NL: dict[str, str] = {
     "switch it to On when you're happy.":
         "De downloads van AirGrabber komen nu ook terecht in {folder}. Vanzelf hernoemen staat "
         "weer op Proef: zet het op Aan als je tevreden bent.",
-    # app/forge/ui/settings_window.py (MediaForge's own Settings window)
-    "MediaForge Settings": "MediaForge-instellingen",
-    "Language, theme, TMDB key and updates are shared with AirGrabber.":
-        "Taal, thema, TMDB-sleutel en updates deel je met AirGrabber.",
-    "Open AirGrabber's Settings": "AirGrabber-instellingen openen",
     # Ignoring files and folders (app/forge/core/ignored.py, queue_rows.py, queue_view.py,
     # settings_pages.py)
     "Ignore": "Negeren",
@@ -635,4 +618,98 @@ NL: dict[str, str] = {
     "Used {preset} for {n} shows": "Gebruikt {preset} voor {n} series",
     "Used {preset} for {n} item": "Gebruikt {preset} voor {n} item",
     "Used {preset} for {n} items": "Gebruikt {preset} voor {n} items",
+    "no subtitle found": "geen ondertitel gevonden",
+    "OpenSubtitles took too long": "OpenSubtitles deed er te lang over",
+    "Subtitles for {name}: {languages}": "Ondertitels voor {name}: {languages}",
+    "No subtitles found for {name}: {languages}": "Geen ondertitels gevonden voor {name}: {languages}",
+    "Subtitles for: {name}": "Ondertitels voor: {name}",
+    "Couldn't save subtitles next to the video. Check that the folder is writable":
+        "Kon de ondertitels niet naast de video opslaan. Controleer of je in de map mag schrijven",
+    "subtitle": "ondertitel",
+    "{n} subtitle": "{n} ondertitel",
+    "{n} subtitles": "{n} ondertitels",
+    "Gets a subtitle per chosen language right after the rename, named to match":
+        "Haalt na het hernoemen per gekozen taal een ondertitel op, met de bijpassende naam",
+    "Found on OpenSubtitles.com and saved next to your videos.":
+        "Gevonden op OpenSubtitles.com en opgeslagen naast je video's.",
+    "The subtitle settings couldn't be saved. The log has the details.":
+        "De ondertitelinstellingen konden niet worden opgeslagen. Het logboek heeft de details.",
+    "Looks for subtitles in each of these.": "Zoekt ondertitels in elk van deze talen.",
+    "Subtitles that also describe sounds.": "Ondertitels die ook geluiden beschrijven.",
+    "Optional: 20 a day instead of 5.": "Optioneel: 20 per dag in plaats van 5.",
+    "Own API key": "Eigen API-sleutel",
+    "Optional. Only needed if you have your own API key from opensubtitles.com":
+        "Optioneel. Alleen nodig als je een eigen API-sleutel van opensubtitles.com hebt",
+    "Found: {languages}": "Gevonden: {languages}",
+    "The video is no longer there": "De video staat er niet meer",
+    # Subtitles (app/forge/core/subtitles.py, app/forge/clients/opensubtitles.py,
+    # app/forge/ui/subtitle_control.py, app/forge/ui/settings_subtitles.py)
+    "Subtitles": "Ondertitels",
+    "Languages": "Talen",
+    "Subtitles aren't available in this version yet":
+        "Ondertitels zijn nog niet beschikbaar in deze versie",
+    "Subtitles provided by OpenSubtitles.com": "Ondertitels aangeleverd door OpenSubtitles.com",
+    "OpenSubtitles account": "OpenSubtitles-account",
+    "Create a free account": "Maak een gratis account aan",
+    "+ Add": "+ Toevoegen",
+    "Sign in": "Aanmelden",
+    "Leave empty to use AirGrabber's key": "Laat leeg om de sleutel van AirGrabber te gebruiken",
+    "Checking the key…": "Sleutel controleren…",
+    "✓ OpenSubtitles accepted the key": "✓ OpenSubtitles heeft de sleutel geaccepteerd",
+    "Empty: AirGrabber's own key is used": "Leeg: de eigen sleutel van AirGrabber wordt gebruikt",
+    "Couldn't check the key right now; it is saved anyway":
+        "Kon de sleutel nu niet controleren; hij wordt toch opgeslagen",
+    "No subtitle downloads left today; more after {time}":
+        "Vandaag geen ondertiteldownloads meer; na {time} weer",
+    "No subtitle downloads left today": "Vandaag geen ondertiteldownloads meer",
+    "{n} subtitle download left today": "Vandaag nog {n} ondertiteldownload",
+    "{n} subtitle downloads left today": "Vandaag nog {n} ondertiteldownloads",
+    "{n} downloads a day": "{n} downloads per dag",
+    "{n} left today": "nog {n} vandaag",
+    "✓ Signed in": "✓ Aangemeld",
+    "Fill in both the OpenSubtitles user name and password, or neither":
+        "Vul zowel de OpenSubtitles-gebruikersnaam als het wachtwoord in, of geen van beide",
+    "Choose at least one subtitle language": "Kies minstens één ondertiteltaal",
+    "Fill in your OpenSubtitles user name and password":
+        "Vul je OpenSubtitles-gebruikersnaam en wachtwoord in",
+    "Signing in…": "Aanmelden…",
+    "Options": "Opties",
+    "Get {language} subtitles": "Ondertitels ophalen: {language}",
+    "Get all my languages": "Al mijn talen ophalen",
+    "Looking for subtitles…": "Ondertitels zoeken…",
+    "Already there": "Al aanwezig",
+    "Not found yet: {languages}": "Nog niet gevonden: {languages}",
+    "Today's limit reached": "Limiet van vandaag bereikt",
+    "Couldn't get subtitles": "Kon geen ondertitels ophalen",
+    "Hearing impaired": "Slechthorenden",
+    "Avoid": "Vermijden",
+    "Prefer": "Liefst wel",
+    "Either": "Maakt niet uit",
+    "Ready": "Klaar",
+    "OpenSubtitles refused AirGrabber's key. An update of AirGrabber may fix this":
+        "OpenSubtitles weigert de sleutel van AirGrabber. Een update van AirGrabber lost dat misschien op",
+    "Wrong OpenSubtitles user name or password":
+        "Verkeerde OpenSubtitles-gebruikersnaam of -wachtwoord",
+    "Couldn't reach OpenSubtitles. Check your internet connection":
+        "OpenSubtitles is niet bereikbaar. Controleer je internetverbinding",
+    "Today's subtitle downloads are used up": "De ondertiteldownloads van vandaag zijn op",
+    "OpenSubtitles refused your own API key. Check it, or leave it empty to use AirGrabber's key":
+        "OpenSubtitles weigert je eigen API-sleutel. Kijk hem na, of laat het veld leeg om de sleutel van AirGrabber te gebruiken",
+    "OpenSubtitles sent an unexpected download link":
+        "OpenSubtitles stuurde een onverwachte downloadlink",
+    "OpenSubtitles didn't hand over the subtitle file (HTTP {status})":
+        "OpenSubtitles gaf het ondertitelbestand niet (HTTP {status})",
+    "OpenSubtitles sent an empty or oversized subtitle file":
+        "OpenSubtitles stuurde een leeg of te groot ondertitelbestand",
+    "OpenSubtitles {path}: HTTP {status}": "OpenSubtitles {path}: HTTP {status}",
+    "OpenSubtitles {path}: the answer wasn't readable":
+        "OpenSubtitles {path}: het antwoord was niet leesbaar",
+    "OpenSubtitles {path}: unexpected answer ({n} invalid field(s))":
+        "OpenSubtitles {path}: onverwacht antwoord ({n} ongeldige veld(en))",
+    "Today's subtitle downloads are used up; more tomorrow":
+        "De ondertiteldownloads van vandaag zijn op; morgen weer",
+    "Today's subtitle downloads are used up; more after {time}":
+        "De ondertiteldownloads van vandaag zijn op; na {time} weer",
+    "Open in Explorer": "Openen in Verkenner",
+    "That file isn't there any more.": "Dat bestand is er niet meer.",
 }

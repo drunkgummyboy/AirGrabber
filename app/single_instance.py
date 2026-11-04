@@ -56,7 +56,7 @@ _EVENT_MODIFY_STATE = 0x0002
 class ForgeRequest:
     """What a start with `--forge` asks of AirGrabber's Forge (the right-click menu, the
     "MediaForge" shortcut): the files and folders, the preset to rename them with, whether to
-    show the confirm window ("Rename N files?") instead of the Forge window."""
+    show the confirm window ("Rename N files?") instead of MediaForge's page."""
 
     paths: tuple[str, ...] = ()
     preset: str | None = None

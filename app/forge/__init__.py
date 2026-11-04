@@ -7,7 +7,7 @@ Ported from the old stand-alone MediaForge. What lives here:
 - `db/`: Forge's own database (`forge.db` in `AppPaths.forge`) and its repositories: the only
   place besides `app/database.py` that holds SQL.
 - `clients/`: TMDB, images and trailers on AirGrabber's httpx clients.
-- `ui/`: the Forge window, its views and `ui/widgets/`; never imports `app.forge.db`,
+- `ui/`: MediaForge's page, its views and `ui/widgets/`; never imports `app.forge.db`,
   `app.database` or httpx.
 
 Non-UI Forge code never imports tkinter / customtkinter. Dutch texts: `app/i18n_nl_forge.py`.

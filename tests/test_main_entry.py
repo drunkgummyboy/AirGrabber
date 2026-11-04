@@ -37,7 +37,7 @@ class ParseOptionsTests(unittest.TestCase):
             ("--forge", "--confirm", "--preset", "Plex", FILE): Options(
                 forge=True, confirm=True, preset="Plex", paths=(FILE,)
             ),
-            # The "MediaForge" shortcut: the Forge window.
+            # The "MediaForge" shortcut: MediaForge's page.
             ("--forge",): Options(forge=True),
             ("--forge", "a", "--tray", "b", "--something-newer"): Options(
                 tray=True, forge=True, paths=("a", "b")

@@ -3,7 +3,7 @@
 AirGrabber's `Services` holds one (`Services.forge`). Nothing here imports Forge's services, its
 window or guessit at import time: `start()` imports them, so AirGrabber's own start doesn't pay
 for Forge (INTEGRATION.md 3.6). `start()` is idempotent and may be awaited by several callers at
-once (the delayed start after the main window shows, the Forge window opened early, a
+once (the delayed start after the main window shows, MediaForge's page opened early, a
 right-click request): they all share one start.
 
 Without guessit (an optional package; the first start after an update may be offline) Forge
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# The reasons `ForgeRuntime.reason` gives (shown by the Forge window: t() them there or here).
+# The reasons `ForgeRuntime.reason` gives (shown by MediaForge's page: t() them there or here).
 NOT_READY_REASON = N_(
     "MediaForge isn't ready yet: a part it needs to read file names (guessit) isn't installed."
 )

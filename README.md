@@ -6,7 +6,7 @@ A Windows desktop app: a calendar of the episodes airing for the shows you follo
 movie discovery (TMDB), and a torrent search across several indexers that saves `.torrent` files to
 your watch folder or sends magnets to Synology Download Station.
 
-It also holds **MediaForge**: a second window that gives downloaded episodes and films tidy names
+It also holds **MediaForge**: a page that gives downloaded episodes and films tidy names
 and moves them into your Series and Movies folders (see [MediaForge](#mediaforge) below).
 
 ## Install
@@ -68,19 +68,21 @@ MediaForge renames downloaded episodes and films with their official names from 
 `Gold Rush (2010) - S17E05 - The Big Pour.mkv`) and moves them into your Series and Movies folders, with
 posters and, if you want, trailers. Every rename can be undone.
 
-**Opening it**: the round 🔨 button left of ⬇ Downloads at the top of AirGrabber, **Open
-MediaForge** in the tray icon's menu, or **MediaForge** in the Start menu. It opens in a window of
-its own, with its own taskbar button. Drag files or folders from Explorer onto it to add them.
+**Opening it**: **MediaForge** in the Series · Movies · MediaForge switch of AirGrabber's window
+(its amber number says how many files need you), **Open MediaForge** in the tray icon's menu, or
+**MediaForge** in the Start menu. Drag files or folders from Explorer anywhere onto AirGrabber's
+window to add them. The 🕘 at the top shows the History of what was renamed, where every run can be
+undone.
 
 **The right-click menu**: select files or folders in Explorer, right-click and choose
 **MediaForge → Forge: <preset>** (on Windows 11 first **Show more options**). A small window shows
 the new names; nothing is renamed until you click **Rename**. It works while AirGrabber is closed
 too. Turn it on or off under ⚙ Settings → **MediaForge → Right-click menu**.
 
-**Renaming on its own**: under ⚙ Settings → **MediaForge → Library & watching**, choose your Series
+**Renaming on its own**: under ⚙ Settings → **MediaForge → Auto-rename**, choose your Series
 and Movies folders and the folders to watch (AirGrabber's own download folder can be watched for
 you). **Trial** shows what would happen without touching anything; **On** renames finished
-downloads by itself. Subtitles AirGrabber saved next to a download move along with it, and the
+downloads by itself. Subtitles next to a download move along with it, and the
 Downloads page shows the download as finished with where it went ("Renamed → Series › …").
 
 ### Coming from the old MediaForge
@@ -88,7 +90,7 @@ Downloads page shows the download as finished with where it went ("Renamed → S
 1. Install AirGrabber as above and close the old MediaForge.
 2. Open MediaForge from AirGrabber. It asks **Bring over your MediaForge settings, presets and
    history?**: choose **Bring over**. (Not now? It asks again next time, and ⚙ Settings →
-   MediaForge → Library & watching has a **Bring over…** button.) Your TMDB key comes along when
+   MediaForge → Auto-rename has a **Bring over…** button.) Your TMDB key comes along when
    AirGrabber doesn't have one yet.
 3. Choose **Remove the old MediaForge** (offered after the import, and in ⚙ Settings → MediaForge
    while the old one is installed). Until it is removed, AirGrabber's MediaForge doesn't rename

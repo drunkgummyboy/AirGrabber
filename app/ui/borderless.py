@@ -149,7 +149,7 @@ def make_borderless(
     window needs it: its "tabs" layout (a tab view in a scrolling frame) only settles while the
     window is hidden; laid out while showing, its height swings between two sizes for good.
 
-    `look`: a window's own accent tokens (the Forge window's copper) for the close button's
+    `look`: a view's accent tokens (Forge's `app_look()`) for the close button's
     quiet disc, instead of AirGrabber's CLOSE_BUTTON."""
     native = _native
     if native is None:
@@ -274,7 +274,7 @@ class CloseButton(tk.Canvas):
     scaling, because a CTkButton grows wider than it is tall around any text. Around the disc
     the window's background, or what `set_backdrop` gives (a picture under the button). Follows
     a switch between light and dark and a change of Windows' scaling. `look`: a window's own
-    accent tokens (the Forge window's copper): the quiet disc is its CHIP."""
+    accent tokens (Forge's `app_look()`): the quiet disc is its CHIP."""
 
     def __init__(
         self, window: tk.Misc, *, command: Callable[[], object], look: theme.Look | None = None

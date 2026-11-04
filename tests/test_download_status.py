@@ -1,6 +1,6 @@
 """DownloadStatusService and its pure rules: where a grab went, matching grabs to the torrent
 program's tasks, states, titles, the free-space rule and the check timing. The torrent program
-is a fake RemoteStatusClient; the history and subtitles live in a real database."""
+is a fake RemoteStatusClient; the history lives in a real database."""
 
 from __future__ import annotations
 
@@ -306,7 +306,6 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.clock = 1000.0
         self.service = DownloadStatusService(
             self.db.history,
-            self.db.subtitles,
             self.settings,
             self.remote,
             show=self.db.library.get_show,
@@ -339,7 +338,7 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
 class OverviewTests(ServiceTestCase):
     async def test_states_titles_subtitles_and_listeners(self) -> None:
-        fallout = await self.add(record("Fallout.S02E03.1080p.WEB", info_hash=HASH_A))
+        await self.add(record("Fallout.S02E03.1080p.WEB", info_hash=HASH_A))
         await self.add(
             record(
                 "Gladiator.II.2024.1080p",
@@ -354,16 +353,6 @@ class OverviewTests(ServiceTestCase):
             record("Opened.S01E05", episode=5, saved_path="uTorrent", when=NOW - timedelta(days=4))
         )
         await self.add(record("Too.Old.S01E01", episode=6, when=NOW - timedelta(days=31)))
-        for language in ("nl", "en"):
-            await self.db.subtitles.record_saved(
-                f"/video/{fallout.release_title}.mkv",
-                language,
-                record=fallout,
-                season=2,
-                episode=3,
-                subtitle_path=f"/video/x.{language}.srt",
-                when=NOW,
-            )
         self.station.tasks = (
             task("whatever", info_hash=HASH_A, progress=0.4216),
             task("Gladiator", DownloadState.READY, 1.0, info_hash=HASH_B),
@@ -376,20 +365,19 @@ class OverviewTests(ServiceTestCase):
         self.assertEqual(overview.program, "Download Station")
         self.assertIsNone(overview.problem)
         rows = [
-            (entry.title, entry.outcome, entry.program, entry.state, entry.progress, entry.subtitles)
+            (entry.title, entry.outcome, entry.program, entry.state, entry.progress)
             for entry in overview.entries
         ]
         self.assertEqual(
             rows,
             [
                 ("Fallout S02E03", GrabOutcome.SENT, "Download Station", DownloadState.DOWNLOADING,
-                 0.4216, ("en", "nl")),
+                 0.4216),
                 ("Gladiator II (2024)", GrabOutcome.SENT, "Download Station", DownloadState.READY,
-                 1.0, ()),
+                 1.0),
                 ("Fallout S02E04", GrabOutcome.SENT, "Download Station", DownloadState.NOT_FOUND,
-                 None, ()),
-                ("Fallout S02E05", GrabOutcome.OPENED, "uTorrent", DownloadState.UNKNOWN, None,
-                 ()),
+                 None),
+                ("Fallout S02E05", GrabOutcome.OPENED, "uTorrent", DownloadState.UNKNOWN, None),
             ],
         )
         self.assertEqual(overview.entries[0].show, FALLOUT)

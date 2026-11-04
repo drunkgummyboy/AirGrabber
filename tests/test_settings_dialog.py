@@ -42,7 +42,6 @@ from app.ui.settings_dialog import (
     SECTION_LOOKS,
     SECTION_PLEX,
     SECTION_QUALITY,
-    SECTION_SUBTITLES,
     SECTION_UPDATES,
     SECTION_WHERE,
     SECTIONS,
@@ -151,10 +150,10 @@ class SectionTests(unittest.TestCase):
             [
                 (
                     "Downloading",
-                    ["Where downloads go", "Quality", "Automatic", "Subtitles", "Plex"],
+                    ["Where downloads go", "Quality", "Automatic", "Plex"],
                 ),
                 ("App", ["Movie & show info", "Looks", "Updates", "Backup", "Advanced"]),
-                # No MediaForge group: MediaForge has its own Settings window (2026-11-02).
+                # MediaForge's group goes between these two when the dialog is given `forge`.
             ],
         )
         self.assertEqual(SECTIONS[0], SECTION_WHERE)
@@ -175,8 +174,7 @@ class SectionTests(unittest.TestCase):
             "keep_in_tray": SECTION_AUTOMATIC,
             "start_with_windows": SECTION_AUTOMATIC,
             "auto_download_new_shows": SECTION_AUTOMATIC,
-            "subtitles_folder": SECTION_SUBTITLES,
-            "opensubtitles_own_key": SECTION_SUBTITLES,
+            "subtitles_folder": SECTION_WHERE,
             "tmdb_api_key": SECTION_INFO,
             "card_size": SECTION_LOOKS,
             "first_day": SECTION_LOOKS,
@@ -271,7 +269,6 @@ class ValidationErrorTests(unittest.TestCase):
             ({"disabled_indexers": 5}, SECTION_ADVANCED),
             ({"keep_in_tray": "maybe"}, SECTION_AUTOMATIC),
             ({"auto_update": "maybe"}, SECTION_UPDATES),
-            ({"subtitles_enabled": "maybe"}, SECTION_SUBTITLES),
         ]
         for fields, section in cases:
             with self.subTest(fields=fields):
@@ -398,11 +395,11 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         dialog, _settings = self.dialog()
         self.assertEqual(dialog.section, SECTION_WHERE)
         self.assertTrue(dialog.page(SECTION_WHERE).winfo_manager())
-        # Without the subtitle service there is no Subtitles section (nor Backup or Plex
-        # without theirs); never a MediaForge group (MediaForge has its own Settings window).
+        # Without their services there are no Backup or Plex sections (
+        # without theirs, nor a MediaForge group without Forge).
         self.assertEqual(
             list(dialog._items),
-            [s for s in SECTIONS if s not in (SECTION_SUBTITLES, SECTION_BACKUP, SECTION_PLEX)],
+            [s for s in SECTIONS if s not in (SECTION_BACKUP, SECTION_PLEX)],
         )
         self.assertNotIn("MEDIAFORGE", labels(dialog._sidebar))
         dialog._items[SECTION_LOOKS].click()

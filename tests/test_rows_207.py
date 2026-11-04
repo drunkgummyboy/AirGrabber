@@ -1,6 +1,6 @@
 """2.0.7's show and film window controls: ⬇ Auto / ☰ Choose… (app/ui/row_actions.py; since
-3.1.0 a title downloaded before shows the same, no ✓ Downloaded / ↻ Again), the subtitles'
-CC ▾ (app/ui/subtitle_control.py), and the info window's size (app/ui/title_info.py)."""
+3.1.0 a title downloaded before shows the same, no ✓ Downloaded / ↻ Again), and the info
+window's size (app/ui/title_info.py)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import gc
 import tkinter as tk
 import unittest
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import customtkinter as ctk
 
@@ -17,11 +16,7 @@ from app.models import (
     CalendarEntry,
     Episode,
     GrabOutcome,
-    MediaType,
     Show,
-    SubtitleFetch,
-    SubtitleOffer,
-    SubtitleFetchOutcome,
 )
 from app.ui import theme
 from app.ui.download_control import (
@@ -42,18 +37,6 @@ from app.ui.row_actions import (
     row_look,
     slot_width,
     status_tip,
-)
-from app.ui.subtitle_control import (
-    WORKING,
-    CCControl,
-    RunPhase,
-    SubtitleActions,
-    SubtitleRun,
-    SubtitleRuns,
-    cc_menu,
-    cc_text,
-    fetch_run,
-    language_name,
 )
 from app.ui.title_info import MIN_HEIGHT, MIN_WIDTH as WINDOW_MIN_WIDTH, window_size
 
@@ -128,57 +111,6 @@ class RowLookTests(unittest.TestCase):
         )
         self.assertEqual(slot_width(measure), expected + 2)
         self.assertEqual(slot_width(lambda text: 1.0), MIN_WIDTH + 2)
-
-
-class SubtitleTextTests(unittest.TestCase):
-    def test_menu(self) -> None:
-        asked: list[tuple[str, ...]] = []
-        items = cc_menu(("en", "nl"), asked.append)
-        self.assertEqual(
-            [label for label, _ in items],
-            ["Get English subtitles", "Get Dutch subtitles", "Get all my languages"],
-        )
-        for _label, action in items:
-            action()
-        self.assertEqual(asked, [("en",), ("nl",), ("en", "nl")])
-        self.assertEqual([label for label, _ in cc_menu(("pt-BR",), asked.append)], ["Get Portuguese (Brazil) subtitles"])
-        self.assertEqual(language_name("xx"), "XX")
-
-    def test_button_text(self) -> None:
-        self.assertEqual(cc_text("CC EN NL"), "CC EN NL ▾")
-        self.assertEqual(cc_text(""), "CC ▾")
-
-    def test_outcomes_in_plain_words(self) -> None:
-        def run(outcome: SubtitleFetchOutcome, **fields: Any) -> SubtitleRun | None:
-            return fetch_run(SubtitleFetch(outcome=outcome, **fields))
-
-        self.assertIsNone(run(SubtitleFetchOutcome.SAVED, saved=("en",)))  # the mark says it
-        self.assertEqual(run(SubtitleFetchOutcome.ALREADY).text, "Already there")  # type: ignore[union-attr]
-        partly = run(SubtitleFetchOutcome.PARTLY, saved=("en",), not_found=("nl", "de"))
-        self.assertEqual(partly.text, "Not found yet: NL DE")  # type: ignore[union-attr]
-        self.assertEqual(run(SubtitleFetchOutcome.NOT_FOUND).text, "Not found yet")  # type: ignore[union-attr]
-        no_video = run(SubtitleFetchOutcome.NO_VIDEO)
-        self.assertEqual((no_video.text, no_video.warn), ("Video not in the folder", True))  # type: ignore[union-attr]
-        self.assertEqual(run(SubtitleFetchOutcome.DOWNLOADING).text, "Still downloading")  # type: ignore[union-attr]
-        quota = run(SubtitleFetchOutcome.QUOTA, message="Today's subtitle downloads are used up")
-        self.assertEqual((quota.text, quota.tip), ("Today's limit reached", "Today's subtitle downloads are used up"))  # type: ignore[union-attr]
-        problem = run(SubtitleFetchOutcome.PROBLEM, message="OpenSubtitles can't be reached")
-        self.assertEqual((problem.text, problem.tip), ("Couldn't get subtitles", "OpenSubtitles can't be reached"))  # type: ignore[union-attr]
-        self.assertEqual(run(SubtitleFetchOutcome.UNAVAILABLE).text, "Choose the downloads folder first")  # type: ignore[union-attr]
-        self.assertEqual(run(SubtitleFetchOutcome.NO_GRAB).text, "No download found")  # type: ignore[union-attr]
-        self.assertEqual(run(SubtitleFetchOutcome.WAIT).text, "Tried recently")  # type: ignore[union-attr]
-
-    def test_runs_expire_only_when_unchanged(self) -> None:
-        runs = SubtitleRuns()
-        first = SubtitleRun(RunPhase.DONE, "Not found yet")
-        runs.set(KEY, first)
-        runs.set(KEY, WORKING)
-        runs.expire(KEY, first)
-        self.assertIs(runs.get(KEY), WORKING)
-        self.assertTrue(runs.is_working(KEY))
-        runs.set(KEY, first)
-        runs.expire(KEY, first)
-        self.assertIsNone(runs.get(KEY))
 
 
 class WindowSizeTests(unittest.TestCase):
@@ -269,86 +201,8 @@ class RowActionsWidgetTests(WidgetTestCase):
         row._actions.states.set(KEY, None)
 
 
-class CCControlWidgetTests(WidgetTestCase):
-    async def test_button_menu_and_the_requests_state(self) -> None:
-        asked: list[tuple[Any, tuple[str, ...]]] = []
-        offer = [SubtitleOffer.ON]
-        runs = SubtitleRuns()
-        actions = SubtitleActions(
-            offer=lambda: offer[0],
-            languages=lambda: ("en", "nl"),
-            fetch=lambda key, languages: asked.append((key, languages)),
-            runs=runs,
-        )
-        changes: list[int] = []
-        cc = CCControl(self.root, key=KEY, actions=actions, on_change=lambda: changes.append(1))
-        cc.pack()
-        cc.show("CC EN", shown=True)
-        await self.settle()
-        self.assertTrue(cc.has_content)
-        self.assertEqual(str(cc.button.cget("text")), "CC EN ▾")
-        cc.open_menu()
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("Get English subtitles", "Get Dutch subtitles", "Get all my languages"))
-        menu.buttons[1].invoke()
-        self.assertEqual(asked, [(KEY, ("nl",))])
-        runs.set(KEY, WORKING)
-        await self.settle()
-        self.assertEqual(str(cc.state_label.cget("text")), "Looking for subtitles…")
-        self.assertEqual(str(cc.button.cget("state")), "disabled")
-        cc.open_menu()  # not while it works
-        self.assertIsNone(PopupMenu._open)
-        runs.set(KEY, SubtitleRun(RunPhase.DONE, "Video not in the folder", warn=True))
-        await self.settle()
-        self.assertEqual(str(cc.state_label.cget("text")), "Video not in the folder")
-        # Without a folder (or a key): only the plain mark.
-        runs.set(KEY, None)
-        offer[0] = SubtitleOffer.NONE
-        cc.show("CC EN")
-        await self.settle()
-        self.assertFalse(cc.button.winfo_ismapped())
-        self.assertEqual(str(cc.mark_label.cget("text")), "CC EN")
-        cc.show("", shown=True)
-        self.assertFalse(cc.has_content)
-        self.assertTrue(changes)
-
-    async def test_greyed_while_subtitles_are_off(self) -> None:
-        offer = [SubtitleOffer.OFF]
-        asked: list[Any] = []
-        runs = SubtitleRuns()
-        actions = SubtitleActions(
-            offer=lambda: offer[0],
-            languages=lambda: ("en",),
-            fetch=lambda key, languages: asked.append(languages),
-            runs=runs,
-        )
-        cc = CCControl(self.root, key=KEY, actions=actions)
-        cc.pack()
-        cc.show("CC EN", shown=True)
-        await self.settle()
-        self.assertTrue(cc.button.winfo_ismapped())
-        self.assertEqual(str(cc.button.cget("state")), "disabled")
-        self.assertEqual(cc._button_tip.text, "Turn on subtitles in Settings → Subtitles")
-        cc.open_menu()
-        self.assertIsNone(PopupMenu._open)
-        self.assertEqual(asked, [])
-        offer[0] = SubtitleOffer.ON  # turned on in Settings: every button follows
-        runs.refresh()
-        self.assertEqual(str(cc.button.cget("state")), "normal")
-        self.assertEqual(cc._button_tip.text, "Get subtitles")
-
-    async def test_a_row_that_isnt_downloaded_shows_nothing(self) -> None:
-        cc = CCControl(self.root, key=KEY, actions=None)
-        cc.show("CC EN", shown=False)
-        self.assertFalse(cc.has_content)
-        cc.show("CC EN", shown=True)
-        self.assertTrue(cc.has_content)  # the plain mark
-        self.assertFalse(cc.offered)
-
-
 class ShowWindowRowTests(WidgetTestCase):
-    """The show window's episode row: the controls by state, a grabbed episode's subtitles."""
+    """The show window's episode row: the controls by state, no subtitles."""
 
     async def test_row_states(self) -> None:
         from app.ui.show_details import _EpisodeRow
@@ -360,21 +214,12 @@ class ShowWindowRowTests(WidgetTestCase):
             states=DownloadStates(),
         )
         now = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
-        subtitles = SubtitleActions(
-            offer=lambda: SubtitleOffer.ON, languages=lambda: ("en",), fetch=lambda k, l: None, runs=SubtitleRuns()
-        )
-        row = _EpisodeRow(self.root, ENTRY, state="downloadable", now=now, actions=actions, subtitles=subtitles)
+        row = _EpisodeRow(self.root, ENTRY, state="downloadable", now=now, actions=actions)
         row.pack(fill="x")
         await self.settle()
         assert row.row_actions is not None
         self.assertEqual(row.row_actions.look.kind, "download")  # type: ignore[union-attr]
-        self.assertFalse(row.cc_control.has_content)
-        # Grabbed before: the same controls (no ✓ Downloaded), and its subtitles.
-        row.set_state(ENTRY, "downloadable", now, grabbed=True, cc="CC EN")
-        await self.settle()
-        self.assertEqual(row.row_actions.look.kind, "download")  # type: ignore[union-attr]
-        self.assertEqual(row.cc, "CC EN")
-        self.assertTrue(row.cc_control.winfo_manager())
+        self.assertFalse(hasattr(row, "cc_control"))  # subtitles are MediaForge's now
         self.assertIsNone(PopupMenu._open)
         later = EPISODE.model_copy(update={"airstamp": now + timedelta(days=3), "air_date": (now + timedelta(days=3)).date()})
         row.set_state(ENTRY.model_copy(update={"episode": later}), "upcoming", now)
@@ -382,7 +227,6 @@ class ShowWindowRowTests(WidgetTestCase):
         self.assertIsNone(row.row_actions)
         self.assertEqual(str(row._upcoming.cget("text")), "airs in 3 days")  # type: ignore[union-attr]
         self.assertEqual(str(row._date.cget("text")), "21 Oct")
-        self.assertFalse(row.cc_control.has_content)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from app.services.opensubtitles import (
+from app.forge.clients.opensubtitles import (
     APP_API_KEY,
     NO_KEY_TEXT,
     KEY_REJECTED_TEXT,
@@ -28,19 +28,21 @@ from app.services.opensubtitles import (
     SESSION_TTL_S,
     UNREACHABLE_TEXT,
     USER_AGENT,
-    KeyRejected,
     effective_api_key,
-    LoginRejected,
     OpenSubtitlesClient,
-    OpenSubtitlesError,
-    QuotaExceeded,
-    Unreachable,
     imdb_number,
     movie_hash,
     sorted_params,
 )
+from app.forge.models.subtitles import (
+    KeyRejected,
+    LoginRejected,
+    OpenSubtitlesError,
+    QuotaExceeded,
+    Unreachable,
+)
 
-FIXTURES = Path(__file__).parent / "fixtures" / "opensubtitles"
+FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "opensubtitles"
 KEY = "TESTAPIKEY0123456789abcdefABCDEF"
 USERNAME = "beau"
 PASSWORD = "S3cret-pass!"
@@ -192,8 +194,8 @@ class OwnKeyTests(ClientTestCase):
         self.assertNotIn(KEY, str(request.url))
 
     async def test_a_refused_own_key_is_named_without_the_key(self) -> None:
-        with self.assertLogs("app.services.opensubtitles", logging.DEBUG) as logs:
-            logging.getLogger("app.services.opensubtitles").debug("start")
+        with self.assertLogs("app.forge.clients.opensubtitles", logging.DEBUG) as logs:
+            logging.getLogger("app.forge.clients.opensubtitles").debug("start")
             error = await self.error_of(self.client.check_key("WRONG-OWN-KEY"))
         self.assertIsInstance(error, KeyRejected)
         self.assertEqual(str(error), OWN_KEY_REJECTED_TEXT)

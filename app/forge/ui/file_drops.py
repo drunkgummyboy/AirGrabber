@@ -1,4 +1,4 @@
-"""Files and folders dropped from Explorer onto a Forge window, without tkinterdnd2.
+"""Files and folders dropped from Explorer onto AirGrabber's main window, without tkinterdnd2.
 
     attach_file_drops(widget, on_drop) -> bool
 

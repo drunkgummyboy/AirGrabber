@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.forge.models.media import ResolvedMedia
 from app.forge.models.preset import PresetOptions
+from app.forge.models.subtitles import SubtitleIdentity
 
 
 class PlanInput(BaseModel, frozen=True):
@@ -41,6 +42,14 @@ class PlannedTrailer(BaseModel, frozen=True):
     item_ids: tuple[int, ...] = ()
 
 
+class PlannedSubtitles(BaseModel, frozen=True):
+    """A video that gets its subtitles once it is in its place (the languages are read then)."""
+
+    item_id: int
+    video: Path
+    identity: SubtitleIdentity
+
+
 class PlannedLeftovers(BaseModel, frozen=True):
     """A download's folder to clear once all of these files have moved out of it."""
 
@@ -52,6 +61,7 @@ class Plan(BaseModel, frozen=True):
     files: tuple[PlannedFile, ...]
     posters: tuple[PlannedPoster, ...] = ()
     trailers: tuple[PlannedTrailer, ...] = ()
+    subtitles: tuple[PlannedSubtitles, ...] = ()
     clean_roots: tuple[Path, ...] = ()
     prune_dirs: tuple[Path, ...] = ()
     leftovers: tuple[PlannedLeftovers, ...] = ()

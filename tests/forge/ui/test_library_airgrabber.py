@@ -1,8 +1,7 @@
-"""AirGrabber's downloads in MediaForge's pages (B-01): MediaForge Settings › Library &
-watching's "Use AirGrabber's downloads" (on for a new setup, off for an imported one, stored on
-Save only; turning it on while On is chosen goes to Trial first; a suggestion's Add makes it one
-of the owner's own folders) and the Forge window's Auto-rename page listing what is watched and why,
-or what to choose."""
+"""AirGrabber's downloads in Settings › Auto-rename (B-01): "Use AirGrabber's downloads" (on for a
+new setup, off for an imported one, stored on Save only; turning it on while On is chosen goes to
+Trial first; a suggestion's Add makes it one of the owner's own folders), listing what is watched
+and why, or what to choose."""
 
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ import asyncio
 import gc
 import tkinter as tk
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest import mock
 
 import customtkinter as ctk
@@ -19,12 +18,11 @@ from app import i18n
 from app.forge.core.airgrabber_folders import watched_folders
 from app.forge.models.preset import DEFAULT_PRESETS
 from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, ForgeSettings
-from app.forge.ui.library_page import LibraryPage
 from app.forge.ui.settings_pages import SECTION_LIBRARY, LibrarySection
 from app.i18n import Language
-from app.forge.ui.settings_window import ForgeSettingsWindow
+from app.ui.settings_dialog import SettingsDialog
+from tests.forge.ui.settings_kit import forge_settings
 from tests.forge.base import ForgeAsyncTestCase
-from tests.forge.ui.test_library_page import FakeRenamer
 from tests.forge.ui.test_settings_library import FakeSettings, labels
 
 SERIES = r"\\nas\video\Series"
@@ -52,15 +50,6 @@ def with_airgrabber(
     return ForgeSettings.model_validate(values)
 
 
-def texts(widget: tk.Misc) -> list[str]:
-    found: list[str] = []
-    for child in widget.winfo_children():
-        if isinstance(child, ctk.CTkLabel):
-            found.append(str(child.cget("text")))
-        found.extend(texts(child))
-    return found
-
-
 class _TkCase(ForgeAsyncTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -86,75 +75,6 @@ class _TkCase(ForgeAsyncTestCase):
         gc.collect()
 
 
-class LibraryPageTests(_TkCase):
-    def page(self, settings: ForgeSettings) -> tuple[LibraryPage, FakeSettings]:
-        fake = FakeSettings(settings)
-        page = LibraryPage(self.root, fake, FakeRenamer(fake), lambda: None)  # type: ignore[arg-type]
-        page.pack(fill="both", expand=True)
-        return page, fake
-
-    async def test_lists_airgrabbers_folders_and_why(self) -> None:
-        page, fake = self.page(with_airgrabber(DONE, SUGGESTED, watch_folders=[r"E:\Mine"]))
-        self.assertEqual(
-            texts(page.watch_list),
-            [
-                "AIRGRABBER'S DOWNLOADS",
-                DONE.path,
-                "qBittorrent on this PC saves AirGrabber's downloads here",
-                SUGGESTED.path,
-                "Suggested: Download Station saves AirGrabber's downloads here. This PC can "
-                "reach it.",
-                "YOUR FOLDERS",
-                r"E:\Mine",
-            ],
-        )
-        self.assertEqual(str(page.problems_label.cget("text")), "")
-        # A suggestion's Add makes it one of the owner's own folders, saved at once.
-        self.assertTrue(await page.add_suggested(SUGGESTED.path))
-        self.assertEqual(fake.current.watch_folders, [r"E:\Mine", SUGGESTED.path])
-
-    async def test_airgrabbers_folder_alone_is_enough(self) -> None:
-        page, _ = self.page(with_airgrabber(DONE))
-        self.assertEqual(texts(page.watch_list)[-2:], ["YOUR FOLDERS", "None yet"])
-        self.assertEqual(page.watch_mark.cget("text"), "✓")  # step 1 is done
-        self.assertEqual(str(page.problems_label.cget("text")), "")
-        self.assertEqual(str(page.mode.cget("state")), "normal")
-
-    async def test_says_what_to_choose(self) -> None:
-        unreachable = SUGGESTED.model_copy(update={"reachable": False})
-        page, _ = self.page(with_airgrabber(unreachable, ask="nas_folder"))
-        shown = texts(page.watch_list)
-        self.assertEqual(shown[0], "AIRGRABBER'S DOWNLOADS")
-        self.assertTrue(shown[2].endswith("This PC can't reach it right now."))
-        self.assertTrue(shown[3].startswith("Download Station keeps AirGrabber's downloads"))
-        self.assertIn("Choose a download folder to watch.", str(page.problems_label.cget("text")))
-
-    async def test_nothing_of_airgrabbers_while_not_used(self) -> None:
-        for settings in (
-            with_airgrabber(DONE, use_airgrabber_downloads=False),
-            with_airgrabber(DONE, ask="finished", imported_from=IMPORTED),
-        ):
-            with self.subTest(settings=settings):
-                page, _ = self.page(settings)
-                self.assertEqual(texts(page.watch_list), ["None yet"])
-                page.destroy()
-
-    async def test_a_new_folder_from_airgrabber_updates_the_status(self) -> None:
-        page, fake = self.page(with_airgrabber(automatic="trial"))
-        self.assertEqual(texts(page.watch_list), ["None yet"])
-        await fake.update(airgrabber=AirGrabberDownloads(folders=[DONE]))
-        self.assertIn(DONE.path, texts(page.watch_list))
-        self.assertEqual(page.state, "trial")  # recomputed: the watched folders changed
-
-    async def test_dutch(self) -> None:
-        i18n.set_language(Language.NL)
-        page, _ = self.page(with_airgrabber(DONE))
-        self.assertIn(
-            "qBittorrent op deze pc bewaart de downloads van AirGrabber hier",
-            texts(page.watch_list),
-        )
-
-
 class _Forge:
     """ForgeRuntime's surface, started."""
 
@@ -173,9 +93,9 @@ class _Forge:
 class SettingsSectionTests(_TkCase):
     def ready(
         self, settings: ForgeSettings
-    ) -> tuple[ForgeSettingsWindow, LibrarySection, FakeSettings]:
+    ) -> tuple[SettingsDialog, LibrarySection, FakeSettings]:
         fake = FakeSettings(settings)
-        dialog = ForgeSettingsWindow(self.root, cast(Any, _Forge(fake)), section=SECTION_LIBRARY)
+        dialog = forge_settings(self.root, _Forge(fake), section=SECTION_LIBRARY)
         part = dialog.parts[SECTION_LIBRARY]
         assert isinstance(part, LibrarySection)
         return dialog, part, fake
@@ -184,6 +104,32 @@ class SettingsSectionTests(_TkCase):
     def click_use(part: LibrarySection, on: bool) -> None:
         part._use.set(on)  # pyright: ignore[reportPrivateUsage]
         part._use_toggled()  # pyright: ignore[reportPrivateUsage]
+
+    async def test_lists_airgrabbers_folders_and_why(self) -> None:
+        _dialog, part, _fake = self.ready(
+            with_airgrabber(DONE, SUGGESTED, watch_folders=[r"E:\Mine"])
+        )
+        self.assertEqual(
+            labels(part.airgrabber_list),
+            [
+                DONE.path,
+                "qBittorrent on this PC saves AirGrabber's downloads here",
+                SUGGESTED.path,
+                "Suggested: Download Station saves AirGrabber's downloads here. This PC can "
+                "reach it.",
+            ],
+        )
+        self.assertEqual(labels(part.watch_list), [r"E:\Mine"])
+
+    async def test_says_what_to_choose(self) -> None:
+        _dialog, part, _fake = self.ready(with_airgrabber(ask="finished"))
+        self.assertTrue(labels(part.airgrabber_list)[0].startswith("AirGrabber doesn't know"))
+
+    async def test_nothing_of_airgrabbers_while_not_used(self) -> None:
+        _dialog, part, _fake = self.ready(
+            with_airgrabber(DONE, ask="finished", use_airgrabber_downloads=False)
+        )
+        self.assertNotIn("AirGrabber doesn't know", "\n".join(labels(part.airgrabber_list)))
 
     async def test_on_for_a_new_setup_and_nothing_saved_untouched(self) -> None:
         dialog, part, fake = self.ready(with_airgrabber(DONE, SUGGESTED))

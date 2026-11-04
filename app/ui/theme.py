@@ -17,8 +17,7 @@ painted (`theme.ACCENT`), never into a module-level copy or a default argument a
 from __future__ import annotations
 
 import tkinter as tk
-from collections.abc import Callable, Mapping
-from types import MappingProxyType
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import customtkinter as ctk
@@ -91,6 +90,7 @@ NOT_AIRED_TEXT: Pair = ("#56616D", "gray60")  # its text
 SECTION_HOT: Pair = ("#9C5100", "#F39C12")  # trending
 SECTION_NEW: Pair = ("#186E3D", "#2ECC71")  # premieres, fresh digital releases
 WARNING = SECTION_HOT  # amber: something is missing rather than broken (no torrent program)
+ON_WARNING: Pair = (ON_COLOR, TEXT[0])  # a badge's text on WARNING, readable in both modes
 PANEL_EDGE = PLACEHOLDER  # a quiet 1 px border around a group of settings (Prowlarr)
 
 # Indexer search dialog
@@ -134,15 +134,13 @@ CLOSE_GLYPH = TEXT_MUTED
 # Slate's accent-dependent tokens as written above: what `apply_accent` derives the other
 # palettes from (and gives back for Slate).
 _SLATE: dict[str, Pair] = {name: globals()[name] for name in palettes.ACCENT_TOKENS}
-# The same, read-only, for whoever derives a look of its own from Slate (the Forge window).
-SLATE_TOKENS: Mapping[str, Pair] = MappingProxyType(_SLATE)
 _accent = Accent.SLATE
 
 
 class Look(Protocol):
-    """A window's own accent tokens (palettes.ACCENT_TOKENS, each a (light, dark) pair), for a
-    window that doesn't wear AirGrabber's accent: app/forge/ui/look.py's copper ForgeLook.
-    Shared widgets that take an optional `look` paint with it; None = the tokens here."""
+    """A view's accent tokens (palettes.ACCENT_TOKENS, each a (light, dark) pair) as a value:
+    app/forge/ui/look.py's ForgeLook. Shared widgets that take an optional `look` paint with it;
+    None = the tokens here."""
 
     @property
     def BG(self) -> Pair: ...

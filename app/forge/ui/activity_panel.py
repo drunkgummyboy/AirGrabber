@@ -1,12 +1,12 @@
-"""The Activity panel: what Forge did, opened from the band's "Activity" button over the top right
-of the Forge window's pages (it was a strip under the pages, ported from MediaForge's
+"""The Activity panel: what Forge did, opened from History's "Activity" button over the top right
+of MediaForge's page (app/forge/ui/page.py; it was a strip under the pages, ported from MediaForge's
 ui/log_strip.py).
 
 MediaForge's strip polled a logging handler; this panel listens to Forge's `ActivityFeed`
 (app/forge/core/activity.py), whose lines are already translated: the feed's earlier lines
 first, then each new line (written on idle, in batches). Lines are coloured by level (errors
 red, warnings amber, successes green) with `theme.pick`, repainted on a light/dark switch. Its
-✕ calls `on_close` (the window hides it).
+✕ calls `on_close` (the page hides it).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 import customtkinter as ctk
 
 from app.forge.core.activity import MAX_LINES, ActivityFeed, ActivityLine
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.i18n import t
 from app.ui import theme
 
@@ -50,7 +50,7 @@ class ActivityPanel(ctk.CTkFrame):
         look: theme.Look | None = None,
         on_close: Callable[[], None] | None = None,
     ) -> None:
-        self._look: theme.Look = forge_look() if look is None else look
+        self._look: theme.Look = app_look() if look is None else look
         super().__init__(
             master,
             width=PANEL_WIDTH,

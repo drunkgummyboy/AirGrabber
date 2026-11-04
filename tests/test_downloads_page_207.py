@@ -1,6 +1,6 @@
 """The Downloads page in 2.0.7: the filter, "Clear finished" / "Remove from list" (a cleared mark
 in the database, migration v7; never the history or the files), and a row's ⋯ menu ("Open the
-folder" once the video is found, Download again…, Get subtitles, Remove from list)."""
+folder" once the video is found, Download again…, Remove from list)."""
 
 from __future__ import annotations
 
@@ -13,27 +13,24 @@ import tempfile
 import time
 import tkinter as tk
 import unittest
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import customtkinter as ctk
 
 from app.database import CLEARED_MIGRATION, MIGRATIONS, Database
-from app.models import DownloadEntry, DownloadsOverview, DownloadState, MediaType, Show, SubtitleOffer
+from app.models import DownloadEntry, DownloadsOverview, DownloadState, Show
 from app.services.download_status import Located, video_folder
 from app.ui.views.downloads_view import (
     EntryFilter,
     PageActions,
     entry_group,
-    entry_key,
     filter_entries,
     filter_from_name,
     finished_ids,
     folder_tip,
     row_menu,
 )
-from app.ui.subtitle_control import SubtitleActions, SubtitleRuns
 from tests.test_download_status import FALLOUT, HASH_A, NOW, ServiceTestCase, record
 from tests.test_downloads_view import FakeImages, FakeSettings, FakeStatus
 
@@ -87,19 +84,14 @@ class FilterTests(unittest.TestCase):
         self.assertIs(filter_from_name("Finished"), EntryFilter.FINISHED)
         self.assertIs(filter_from_name("something else"), EntryFilter.ALL)
 
-    def test_entry_key(self) -> None:
-        self.assertEqual(entry_key(ENTRIES[0]), (MediaType.TV, FALLOUT.id, 2, 1))
-
 
 class MenuTests(unittest.TestCase):
-    def menu(self, located: Located, *, again: bool = True, subtitles: bool = True) -> list[Any]:
+    def menu(self, located: Located, *, again: bool = True) -> list[Any]:
         return row_menu(
             ENTRIES[3],
             located,
             open_folder=lambda folder: None,
             again=(lambda: None) if again else None,
-            subtitles=(lambda: None) if subtitles else None,
-            subtitles_tip="no subtitles",
             remove=lambda: None,
         )
 
@@ -108,13 +100,13 @@ class MenuTests(unittest.TestCase):
         items = [item for item in self.menu(Located("C:/finished/Fallout")) if not item.separator]
         self.assertEqual(
             [item.label for item in items],
-            ["Download again…", "Open the folder", "Get subtitles", "Remove from list"],
+            ["Download again…", "Open the folder", "Remove from list"],
         )
         self.assertTrue(all(item.action is not None for item in items))
 
     def test_greyed_with_the_reason(self) -> None:
         for problem, tip in (
-            ("no_folder", "Choose where finished downloads end up first (Settings → Subtitles)"),
+            ("no_folder", "Choose where finished downloads end up first (Settings → Where downloads go)"),
             ("not_found", "Not found in the folder where finished downloads end up"),
             ("unreachable", "The folder where finished downloads end up can't be reached"),
         ):
@@ -122,11 +114,10 @@ class MenuTests(unittest.TestCase):
             folder = self.menu(located)[1]
             self.assertIsNone(folder.action)
             self.assertEqual((folder.tip, folder_tip(located)), (tip, tip))
-        items = self.menu(Located(None, "not_found"), again=False, subtitles=False)
+        items = self.menu(Located(None, "not_found"), again=False)
         self.assertIsNone(items[0].action)
-        self.assertEqual(items[2].tip, "no subtitles")
-        self.assertTrue(items[3].separator)
-        self.assertIsNotNone(items[4].action)  # Remove from list always works
+        self.assertTrue(items[2].separator)
+        self.assertIsNotNone(items[3].action)  # Remove from list always works
 
     def test_open_folder_calls_with_the_folder(self) -> None:
         opened: list[str] = []
@@ -135,8 +126,6 @@ class MenuTests(unittest.TestCase):
             Located("C:/finished/Fallout"),
             open_folder=opened.append,
             again=None,
-            subtitles=None,
-            subtitles_tip="",
             remove=lambda: None,
         )
         assert items[1].action is not None
@@ -159,7 +148,7 @@ class ClearedTests(ServiceTestCase):
         self.assertEqual([e.record.id for e in self.overviews[-1].entries], [second.id])
         overview = await self.service.check()
         self.assertEqual([e.record.id for e in overview.entries], [second.id])
-        # Still in the history: downloaded marks, "Download missing" and subtitles see it.
+        # Still in the history: downloaded marks and "Download missing" see it.
         self.assertTrue(await self.db.history.has_episode(FALLOUT.id, 2, 3))
         self.assertEqual(len(await self.db.history.recent(10)), 2)
         self.assertEqual(await self.service.clear([first.id, 999]), 0)  # again; unknown id
@@ -288,18 +277,10 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
 
         self.status.clear = clear  # type: ignore[attr-defined]
         self.status.open_folder = lambda folder: True  # type: ignore[attr-defined]
-        self.runs = SubtitleRuns()
-        self.offer = SubtitleOffer.ON
 
     def view(self) -> Any:
         from app.ui.views.downloads_view import DownloadsView
 
-        subtitles = SubtitleActions(
-            offer=lambda: self.offer,
-            languages=lambda: ("en",),
-            fetch=lambda key, languages: None,
-            runs=self.runs,
-        )
         page = DownloadsView(
             self.root,
             downloads=self.status,  # type: ignore[arg-type]
@@ -307,9 +288,7 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
             images=FakeImages(),  # type: ignore[arg-type]
             discovery=None,  # type: ignore[arg-type]
             on_open_show=lambda show: None,
-            actions=PageActions(
-                again=lambda e, auto: self.again.append((e.record.id, auto)), subtitles=subtitles
-            ),
+            actions=PageActions(again=lambda e, auto: self.again.append((e.record.id, auto))),
         )
         page.pack(fill="both", expand=True)
         return page
@@ -319,7 +298,7 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
             self.root.update()
 
-    async def test_filter_clear_and_a_subtitle_request_in_the_row(self) -> None:
+    async def test_filter_and_clear(self) -> None:
         page = self.view()
         self.status.publish(DownloadsOverview(entries=ENTRIES, program="Download Station", checked_at=NOW))
         await self.settle()
@@ -340,14 +319,6 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(page._no_match)
         self.assertEqual(str(page.clear_button.cget("state")), "disabled")
         page.set_filter(EntryFilter.ALL)
-        # A subtitle request shows in its row.
-        row = page._rows[0]
-        from app.ui.subtitle_control import WORKING
-
-        self.runs.set(entry_key(ENTRIES[0]), WORKING)
-        self.assertEqual(str(row._subtitles.cget("text")), "  ·  Looking for subtitles…")
-        self.runs.set(entry_key(ENTRIES[0]), None)
-        self.assertFalse(row._subtitles.winfo_manager())
 
     async def test_the_row_menu_and_its_actions(self) -> None:
         page = self.view()
@@ -356,9 +327,9 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
         row = page._rows[0]
         items = page.menu_items(row, row.entry, Located(None, "not_found"))
         self.assertEqual(
-            [item.action is not None for item in items], [True, False, True, False, True]
+            [item.action is not None for item in items], [True, False, False, True]
         )
-        items[4].action()  # Remove from list (no program to read: no task to remove)
+        items[3].action()  # Remove from list (no program to read: no task to remove)
         await self.settle()
         self.assertEqual(self.cleared, [[4]])
         items[0].action()  # Download again… opens its two choices
@@ -370,26 +341,7 @@ class PageWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(menu.labels, ("⬇ Download again automatically", "☰ Choose a release…"))
         menu.buttons[0].invoke()
         self.assertEqual(self.again, [(4, True)])
-        items[2].action()  # Get subtitles opens the language menu
-        menu = PopupMenu._open
-        assert menu is not None
-        self.assertEqual(menu.labels, ("Get English subtitles",))
-        menu.close()
-
-    async def test_get_subtitles_is_greyed_while_subtitles_are_off(self) -> None:
-        page = self.view()
-        self.status.publish(DownloadsOverview(entries=ENTRIES[3:4], checked_at=NOW))
-        await self.settle()
-        row = page._rows[0]
-        self.offer = SubtitleOffer.OFF
-        items = page.menu_items(row, row.entry, Located(None, "not_found"))
-        self.assertIsNone(items[2].action)
-        self.assertEqual(items[2].tip, "Turn on subtitles in Settings → Subtitles")
-        self.offer = SubtitleOffer.NONE  # no folder: the reason why
-        items = page.menu_items(row, row.entry, Located(None, "not_found"))
-        self.assertIsNone(items[2].action)
-        self.assertIn("Settings → Subtitles", items[2].tip)
-        self.assertNotIn("Turn on", items[2].tip)
+        self.assertNotIn("Get subtitles", [getattr(item, "label", "") for item in items])
 
     async def test_an_episode_of_a_show_no_longer_known_cannot_be_downloaded_again(self) -> None:
         page = self.view()

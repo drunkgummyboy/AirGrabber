@@ -22,12 +22,10 @@ from app.models import (
     ListedDownload,
     Recognised,
     RemoteTask,
-    SubtitleOffer,
     TaskEntry,
 )
 from app.services.download_status import Located
 from app.ui.confirm_dialog import ConfirmDialog
-from app.ui.subtitle_control import SubtitleActions, SubtitleRuns
 from app.ui.views.downloads_view import (
     FILE_GLYPH,
     FIRST_ROWS,
@@ -225,12 +223,6 @@ class SyncPageTests(unittest.IsolatedAsyncioTestCase):
     def view(self) -> Any:
         from app.ui.views.downloads_view import DownloadsView
 
-        subtitles = SubtitleActions(
-            offer=lambda: SubtitleOffer.ON,
-            languages=lambda: ("en",),
-            fetch=lambda key, languages: None,
-            runs=SubtitleRuns(),
-        )
         page = DownloadsView(
             self.root,
             downloads=self.status,  # type: ignore[arg-type]
@@ -238,7 +230,7 @@ class SyncPageTests(unittest.IsolatedAsyncioTestCase):
             images=FakeImages(),  # type: ignore[arg-type]
             discovery=None,  # type: ignore[arg-type]
             on_open_show=self.opened.append,
-            actions=PageActions(again=lambda e, auto: None, subtitles=subtitles),
+            actions=PageActions(again=lambda e, auto: None),
         )
         page.pack(fill="both", expand=True)
         self.addCleanup(lambda: page.destroy() if page.winfo_exists() else None)
@@ -303,16 +295,16 @@ class SyncPageTests(unittest.IsolatedAsyncioTestCase):
         remove = "🗑 Remove from Download Station…"
         self.assertEqual(
             labels(("grab", 1)),
-            ["Download again…", "⏸ Pause", "Open the folder", "Get subtitles", "—", remove],
+            ["Download again…", "⏸ Pause", "Open the folder", "—", remove],
         )
         self.assertEqual(labels(("grab", 5))[1], "▶ Resume")
         self.assertEqual(
-            labels(("grab", 6)), ["Download again…", "Open the folder", "Get subtitles", "—", remove]
+            labels(("grab", 6)), ["Download again…", "Open the folder", "—", remove]
         )
         # Waiting for the program: nothing to remove there, so off the list as before.
         self.assertEqual(
             labels(("grab", 7)),
-            ["Download again…", "Open the folder", "Get subtitles", "—", "Remove from list"],
+            ["Download again…", "Open the folder", "—", "Remove from list"],
         )
         self.assertEqual(labels(("task", "dbid_2")), ["⏸ Pause", "Open the folder", "—", remove])
         row = self.row(page, ("task", "dbid_2"))

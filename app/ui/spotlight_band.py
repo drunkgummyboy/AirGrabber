@@ -5,8 +5,7 @@ the bottom (as the info window's: app/ui/backdrop.py) under a left-to-right scri
 background (darkest behind the logo), or without one a soft glow in the accent colour. Over it,
 on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left
 (a click on either goes home, `on_home`: Series > Calendar),
-the search field, 🔨 MediaForge (with a copper badge while MediaForge's renamer needs the owner:
-`set_forge_count`), ⬇ Downloads (with its badge while downloads are on their way), the
+the search field, ⬇ Downloads (with its badge while downloads are on their way), the
 settings button and, at the right end, the name button (the selected person's avatar, name and
 ▾, `set_person`; a click calls `on_person`, the people menu) on the right. The Series side's
 titles are the selected person's (`profile`). Under them the
@@ -15,8 +14,16 @@ spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the ti
 app/services/spotlight.py: Series and Movies each have their own; the Downloads page keeps the
 last side's.
 
-The Series / Movies switch (`ModeSwitch`, below) is a canvas of its own at the right end of the
-tabs row under the band: a solid pill over a soft shadow on the page's background.
+MediaForge's page (`set_compact`): only the top row, plus 🕘 (`set_history_lit`, `on_history`) left
+of ⚙, on a quiet ground: the glow a band without a title has, fading into the page, baked once in a
+worker thread (per size and look) and kept on its own canvas item, so going in and out only hides
+and shows items. No picture, poster, tag, title or dots, and no turning while it shows; back on
+another page the full band is there at once, its picture baked again only if something changed
+meanwhile (a new width, a look, new titles).
+
+The Series / Movies / MediaForge switch (`ModeSwitch`, below) is a canvas of its own at the right
+end of the tabs row under the band: a solid pill over a soft shadow on the page's background, with
+MediaForge's "needs you" count on its word (`set_count`).
 
 Every ROTATE_S seconds the next title fades in (FADE_STEPS frames over FADE_MS, blended in a
 worker thread), not while the pointer is over the band, not at all with Settings'
@@ -49,7 +56,6 @@ import customtkinter as ctk
 from PIL import Image, ImageTk
 
 from app import APP_NAME
-from app.forge.ui.look import forge_look
 from app.i18n import N_, t
 from app.models import DownloadsOverview, FreeSpace, Spotlight, SpotlightItem, SpotlightSide
 from app.ui import theme, tooltip
@@ -71,6 +77,7 @@ from app.ui.spotlight import (
     BADGE_HEIGHT,
     BAND_HEIGHT,
     BUTTON_RADIUS,
+    COMPACT_HEIGHT,
     FADE_MS,
     FADE_STEPS,
     LOGO_SIZE,
@@ -86,6 +93,8 @@ from app.ui.spotlight import (
     PERSON_NAME_MAX,
     SEGMENT_FONT_SIZE,
     SEGMENT_PAD_X,
+    SWITCH_BADGE_GAP,
+    SWITCH_BADGE_PAD,
     WORD_SIZE,
     BandLayout,
     Hit,
@@ -93,6 +102,7 @@ from app.ui.spotlight import (
     Rect,
     Rotation,
     SwitchLayout,
+    SwitchPart,
     band_layout,
     hit_target,
     person_width,
@@ -114,15 +124,19 @@ log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-SIDE_LABELS = {SpotlightSide.SERIES: N_("Series"), SpotlightSide.MOVIES: N_("Movies")}
+PART_LABELS = {
+    SwitchPart.SERIES: N_("Series"),
+    SwitchPart.MOVIES: N_("Movies"),
+    SwitchPart.FORGE: N_("MediaForge"),
+}
 SEARCH_PLACEHOLDER = N_("Search shows & movies…")
 SEARCH_TIP = N_("Search")
-FORGE_TIP = N_("MediaForge")
+HISTORY_TIP = N_("History")
 DOWNLOADS_TIP = N_("Downloads")
 SETTINGS_TIP = N_("Settings")
 _TIPS = {
     HitKind.SEARCH: SEARCH_TIP,
-    HitKind.FORGE: FORGE_TIP,
+    HitKind.HISTORY: HISTORY_TIP,
     HitKind.DOWNLOADS: DOWNLOADS_TIP,
     HitKind.SETTINGS: SETTINGS_TIP,
 }
@@ -130,7 +144,7 @@ _CONTROLS = frozenset(
     {
         HitKind.SEARCH,
         HitKind.FIELD,
-        HitKind.FORGE,
+        HitKind.HISTORY,
         HitKind.DOWNLOADS,
         HitKind.SETTINGS,
         HitKind.PERSON,
@@ -146,7 +160,7 @@ SCENE_CACHE = 8  # baked pictures kept (a side's titles and the next one's)
 SHADOW_BLUR = 5  # the poster's shadow (units)
 SHADOW_OFFSET = 3
 ICON_SIZE = 22  # the settings button's sliders
-# The Series / Movies switch (ModeSwitch) stands on a solid pill: SURFACE, nearly opaque, a
+# The switch (ModeSwitch) stands on a solid pill: SURFACE, nearly opaque, a
 # CHIP_HOVER edge, over a soft shadow; the part under the pointer (not the lit one) a CHIP_HOVER
 # fill.
 SWITCH_ALPHA = 235  # the pill's SURFACE (of 255)
@@ -158,11 +172,11 @@ DOT_ALPHA = (90, 170, 255)  # a dot: others, under the pointer, the one showing
 
 class SpotlightBand(tk.Canvas):
     """The header (see the module docstring). MainWindow calls `start` once the loop runs,
-    `select` when the page changes (whose titles show; None: the Downloads page), `reload` when
-    the library, a download or a setting changed, and `set_motion` for Settings'
-    `spotlight_motion` and `set_forge_count` with MediaForge's "needs you" count; a click on
-    🔨 calls `on_forge`. `set_person` puts the selected person on the name button (none until
-    then); a click on it calls `on_person`. A click on the logo or "AirGrabber" calls
+    `select` when the page changes (whose titles show; None: the Downloads page), `set_compact`
+    for MediaForge's page (`set_history_lit`: History shows there; a click on 🕘 calls
+    `on_history`), `reload` when the library, a download or a setting changed, and `set_motion`
+    for Settings' `spotlight_motion`. `set_person` puts the selected person on the name button
+    (none until then); a click on it calls `on_person`. A click on the logo or "AirGrabber" calls
     `on_home`. `entry` is the search field's text box."""
 
     def __init__(
@@ -174,7 +188,7 @@ class SpotlightBand(tk.Canvas):
         images: ImageCache,
         motion: bool = True,
         on_downloads: Callable[[], None],
-        on_forge: Callable[[], None],
+        on_history: Callable[[], None],
         on_settings: Callable[[], None],
         on_search: Callable[[], None],
         on_open: Callable[[SpotlightItem], None],
@@ -197,7 +211,7 @@ class SpotlightBand(tk.Canvas):
         self._service = spotlight
         self._images = images
         self._on_downloads = on_downloads
-        self._on_forge = on_forge
+        self._on_history = on_history
         self._on_settings = on_settings
         self._on_search = on_search
         self._on_open = on_open
@@ -215,13 +229,17 @@ class SpotlightBand(tk.Canvas):
         self._fresh_picture = False  # bake the title showing again once its side reloaded
         self._side = SpotlightSide.SERIES  # whose titles show
         self._selected: SpotlightSide | None = SpotlightSide.SERIES  # None: ⬇ lit
+        self._compact = False  # MediaForge's page: only the top row (`set_compact`)
+        self._history_lit = False  # 🕘 lit: History shows there
+        self._scene_stale = False  # a picture was asked for while compact: baked when back
+        self._ground_key: Hashable | None = None  # what the ground on the canvas was baked for
+        self._ground_task: asyncio.Task[None] | None = None
         self._spotlights: dict[SpotlightSide, Spotlight] = {}
         self._stale: set[SpotlightSide] = set(SpotlightSide)
         self._indexes = dict.fromkeys(SpotlightSide, 0)
         self._rotation = Rotation(motion=motion)
         latest = downloads.latest
         self._downloading = latest.in_progress if latest is not None else 0
-        self._forge_needs = 0  # MediaForge's "needs you" count: the 🔨 button's badge
         self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
         self._logo_pad = 0  # the logo's image reaches this far past it (its shadow), px
         self._width = 0  # physical px, from the last <Configure>
@@ -259,21 +277,20 @@ class SpotlightBand(tk.Canvas):
             return self.create_text(0, 0, anchor=anchor, text="")
 
         self._scene_item = self.create_image(0, 0, anchor="nw")
+        self._ground_item = self.create_image(0, 0, anchor="nw", state="hidden")  # compact's
         self._logo_item = self.create_image(0, 0, anchor="nw")
         self._word_items = (text("w"), text("w"))
         self._tag_item, self._title_item, self._sub_item = text(), text(), text()
         self._search_item = self.create_image(0, 0, anchor="nw")
         self._magnifier_item = self.create_text(0, 0, anchor="center", text="🔍")
-        self._forge_item = self.create_image(0, 0, anchor="nw")
-        self._forge_glyph = self.create_text(0, 0, anchor="center", text="🔨")
+        self._history_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._history_glyph = self.create_text(0, 0, anchor="center", text="🕘", state="hidden")
         self._downloads_item = self.create_image(0, 0, anchor="nw")
         self._downloads_glyph = self.create_text(0, 0, anchor="center", text="⬇")
         self._settings_item = self.create_image(0, 0, anchor="nw")
         self._settings_icon = self.create_image(0, 0, anchor="center")
         self._badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
-        self._forge_badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
-        self._forge_badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
         self._person_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._avatar_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._person_name = self.create_text(0, 0, anchor="w", text="", state="hidden")
@@ -354,13 +371,45 @@ class SpotlightBand(tk.Canvas):
         """Settings' `spotlight_motion`: turn to the next title by itself or stay put."""
         self._rotation.set_motion(on, time.monotonic())
 
-    def set_forge_count(self, count: int) -> None:
-        """MediaForge's "needs you" count (ForgeHost.on_needs): the 🔨 button's copper badge
-        (hidden at 0)."""
-        count = max(0, count)
-        if count != self._forge_needs:
-            self._forge_needs = count
-            self._paint_forge_badge()
+    def set_compact(self, compact: bool) -> None:
+        """MediaForge's page: only the top row with 🕘 on its quiet ground, no turning. False:
+        the full band again, at once (see the module docstring)."""
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self._hide_tip()
+        self.configure(height=self._band_height())
+        if compact:
+            if self._show_task is not None and not self._show_task.done():
+                self._show_task.cancel()
+                self._scene_stale = True  # that picture hadn't come yet
+            if self._warm_task is not None:
+                self._warm_task.cancel()
+            self.itemconfigure(self._scene_item, state="hidden")
+            self._relayout()
+            self._show_ground()
+            return
+        self._history_lit = False
+        if self._ground_task is not None:
+            self._ground_task.cancel()
+        self.itemconfigure(self._ground_item, state="hidden")
+        self.itemconfigure(self._scene_item, state="normal")
+        rotation = self._rotation
+        rotation.reset(rotation.count, rotation.index, time.monotonic())  # a full interval
+        self._relayout()
+        if self._scene_stale:
+            self._scene_stale = False
+            self._show(fade=False)
+
+    def set_history_lit(self, lit: bool) -> None:
+        """Whether History shows on MediaForge's page: 🕘 lit."""
+        if lit != self._history_lit:
+            self._history_lit = lit
+            self._paint_controls()
+
+    @property
+    def compact(self) -> bool:
+        return self._compact
 
     def set_person(self, name: str, initial: str, colour: theme.Pair) -> None:
         """The selected person on the name button: their `name`, the `initial` on their
@@ -498,7 +547,7 @@ class SpotlightBand(tk.Canvas):
         if self._closed:
             return
         try:
-            if self.winfo_viewable():
+            if self.winfo_viewable() and not self._compact:
                 now = time.monotonic()
                 self._rotation.hover(self._pointer_inside(), now)
                 if self._rotation.due(now):
@@ -520,8 +569,13 @@ class SpotlightBand(tk.Canvas):
     # -- the picture ---------------------------------------------------------------------------
 
     def _show(self, *, fade: bool) -> None:
-        """Bake the current title's picture and show it (crossfading with `fade`)."""
+        """Bake the current title's picture and show it (crossfading with `fade`); while compact
+        only the ground, the picture when the full band is back."""
         if not self._started:
+            return
+        if self._compact:
+            self._scene_stale = True
+            self._show_ground()
             return
         if self._show_task is not None:
             self._show_task.cancel()
@@ -573,6 +627,39 @@ class SpotlightBand(tk.Canvas):
         if self._width <= 1:
             return None
         return self._width, self._px(BAND_HEIGHT)
+
+    def _band_height(self) -> int:
+        return self._px(COMPACT_HEIGHT if self._compact else BAND_HEIGHT)
+
+    def _show_ground(self) -> None:
+        """The compact band's ground: the glow a band without a title has, at this size and in
+        this look (kept while it stays the same: going in again only shows the item)."""
+        if self._width <= 1:
+            return
+        size = (self._width, self._band_height())
+        palette = self._palette()
+        key = (size, palette, theme.is_dark())
+        if key == self._ground_key:
+            self.itemconfigure(self._ground_item, state="normal")
+            return
+        if self._ground_task is not None:
+            self._ground_task.cancel()
+        self._ground_task = self._spawn(self._bake_ground(key, size, palette), "SpotlightBand.ground")
+
+    async def _bake_ground(
+        self,
+        key: Hashable,
+        size: tuple[int, int],
+        palette: tuple[tuple[int, int, int], ...],
+    ) -> None:
+        bg, accent = palette[0], palette[1]
+        image = await asyncio.to_thread(glow_layer, size, bg, accent, theme.is_dark())
+        if self._closed or not _exists(self):
+            return
+        self._set_image(self._ground_item, "ground", image)
+        self._ground_key = key
+        if self._compact:
+            self.itemconfigure(self._ground_item, state="normal")
 
     def _palette(self) -> tuple[tuple[int, int, int], ...]:
         """The colours a picture is baked in, read now (the theme may have changed)."""
@@ -683,9 +770,10 @@ class SpotlightBand(tk.Canvas):
         layout = band_layout(
             self._width / self._scale,
             word_width=self._fonts["word"].measure(APP_NAME),
-            dots=count,
+            dots=0 if self._compact else count,
             current=self._rotation.index,
             person_width=self._person_width(),
+            history=self._compact,
         )
         self._layout = layout
         px = self._px
@@ -703,10 +791,9 @@ class SpotlightBand(tk.Canvas):
             (self._title_item, "title"),
             (self._sub_item, "sub"),
             (self._magnifier_item, "magnifier"),
-            (self._forge_glyph, "glyph"),
+            (self._history_glyph, "glyph"),
             (self._downloads_glyph, "glyph"),
             (self._badge_text, "badge"),
-            (self._forge_badge_text, "badge"),
             (self._person_name, "person"),
             (self._person_arrow, "arrow"),
         ):
@@ -757,22 +844,32 @@ class SpotlightBand(tk.Canvas):
         )
         glass = theme.TEXT if self._hovered(HitKind.SEARCH) else theme.TEXT_MUTED
         self.itemconfigure(self._magnifier_item, fill=theme.pick(glass))
-        # 🔨 MediaForge, ⬇ Downloads (lit while its page shows) and the settings button.
-        on_page = self._selected is None
-        for kind, rect, item, name in (
-            (HitKind.FORGE, layout.forge, self._forge_item, "forge"),
+        # 🕘 (MediaForge's page, lit while History shows), ⬇ Downloads (lit while its page shows)
+        # and the settings button.
+        on_page = self._selected is None and not self._compact
+        history = layout.history
+        lit = {HitKind.HISTORY: self._history_lit, HitKind.DOWNLOADS: on_page}
+        buttons = [
             (HitKind.DOWNLOADS, layout.downloads, self._downloads_item, "downloads"),
             (HitKind.SETTINGS, layout.settings, self._settings_item, "settings"),
-        ):
-            lit_button = kind is HitKind.DOWNLOADS and on_page
+        ]
+        if history.w > 0:
+            buttons.append((HitKind.HISTORY, history, self._history_item, "history"))
+            self.coords(
+                self._history_glyph, px(history.x + history.w / 2), px(history.y + history.h / 2)
+            )
+            glyph = theme.ON_ACCENT if self._history_lit else theme.BUTTON_TEXT
+            self.itemconfigure(self._history_glyph, fill=theme.pick(glyph))
+        for item in (self._history_item, self._history_glyph):
+            self.itemconfigure(item, state="normal" if history.w > 0 else "hidden")
+        for kind, rect, item, name in buttons:
+            lit_button = lit.get(kind, False)
             fill = theme.ACCENT if lit_button else theme.HOVER if self._hovered(kind) else theme.SURFACE
             border = theme.ACCENT if lit_button else theme.EDGE
             self.coords(item, px(rect.x), px(rect.y))
             image = self._box(rect, px(BUTTON_RADIUS), self._rgba(fill), self._rgba(border))
             self._set_image(item, name, image)
-        forge, downloads, settings = layout.forge, layout.downloads, layout.settings
-        self.coords(self._forge_glyph, px(forge.x + forge.w / 2), px(forge.y + forge.h / 2))
-        self.itemconfigure(self._forge_glyph, fill=theme.pick(theme.BUTTON_TEXT))
+        downloads, settings = layout.downloads, layout.settings
         self.coords(
             self._downloads_glyph,
             px(downloads.x + downloads.w / 2),
@@ -787,7 +884,6 @@ class SpotlightBand(tk.Canvas):
             self._settings_icon, "sliders", _sliders(px(ICON_SIZE), rgb(self, theme.BUTTON_TEXT))
         )
         self._paint_badge()
-        self._paint_forge_badge()
         self._paint_person()
 
     def _person_width(self) -> float:
@@ -837,20 +933,6 @@ class SpotlightBand(tk.Canvas):
             self._badge_item, self._badge_text, "badge", corner, self._downloading, theme.SUCCESS
         )
 
-    def _paint_forge_badge(self) -> None:
-        """🔨's copper badge (the Forge look's ACCENT): how many files MediaForge needs the
-        owner for."""
-        layout = self._layout
-        corner = layout.forge_badge if layout is not None else None
-        self._paint_count(
-            self._forge_badge_item,
-            self._forge_badge_text,
-            "forge_badge",
-            corner,
-            self._forge_needs,
-            forge_look().ACCENT,
-        )
-
     def _paint_count(
         self,
         item: int,
@@ -860,8 +942,8 @@ class SpotlightBand(tk.Canvas):
         count: int,
         colour: theme.Color,
     ) -> None:
-        """A button's badge: `count` (badge_text: "99+" above 99) in white ON_COLOR on a
-        `colour` pill with a BG ring, its top-right at `corner`; hidden for none."""
+        """A button's badge: `count` (badge_text: "99+" above 99) in ON_COLOR on a `colour` pill
+        with a BG ring, its top-right at `corner`; hidden for none."""
         text = badge_text(count)
         if corner is None or not text:
             self.itemconfigure(item, state="hidden")
@@ -911,7 +993,7 @@ class SpotlightBand(tk.Canvas):
         if layout is None:
             return
         item = self.current
-        if item is None:
+        if item is None or self._compact:
             tag = title = line = ""
         else:
             tag = tag_text(item, self._clock())
@@ -945,7 +1027,7 @@ class SpotlightBand(tk.Canvas):
         if layout is None:
             return None
         spotlight = self._spotlights.get(self._side)
-        items = len(spotlight.items) if spotlight is not None else 0
+        items = len(spotlight.items) if spotlight is not None and not self._compact else 0
         return hit_target(layout, x / self._scale, y / self._scale, items=items)
 
     def _on_home_at(self, x: int, y: int) -> bool:
@@ -1019,8 +1101,8 @@ class SpotlightBand(tk.Canvas):
             self._on_search()
         elif kind is HitKind.FIELD:
             self.entry.focus_set()
-        elif kind is HitKind.FORGE:
-            self._on_forge()
+        elif kind is HitKind.HISTORY:
+            self._on_history()
         elif kind is HitKind.DOWNLOADS:
             self._on_downloads()
         elif kind is HitKind.SETTINGS:
@@ -1045,7 +1127,7 @@ class SpotlightBand(tk.Canvas):
             return
         rect = {
             HitKind.SEARCH: layout.magnifier,
-            HitKind.FORGE: layout.forge,
+            HitKind.HISTORY: layout.history,
             HitKind.DOWNLOADS: layout.downloads,
             HitKind.SETTINGS: layout.settings,
         }[hit.kind]
@@ -1088,7 +1170,7 @@ class SpotlightBand(tk.Canvas):
         if not _exists(self):
             return
         self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
-        self.configure(height=self._px(BAND_HEIGHT))
+        self.configure(height=self._band_height())
         self._photo_sources.clear()
         self._relayout()
         if self._started:
@@ -1097,7 +1179,13 @@ class SpotlightBand(tk.Canvas):
 
     def destroy(self) -> None:
         self._closed = True
-        tasks = (*self._load_tasks.values(), self._show_task, self._warm_task, self._logo_task)
+        tasks = (
+            *self._load_tasks.values(),
+            self._show_task,
+            self._warm_task,
+            self._logo_task,
+            self._ground_task,
+        )
         for task in tasks:
             if task is not None:
                 task.cancel()
@@ -1115,14 +1203,16 @@ class SpotlightBand(tk.Canvas):
 
 
 class ModeSwitch(tk.Canvas):
-    """The Series / Movies switch at the right end of the tabs row under the band: a solid pill
-    (SURFACE, nearly opaque, a CHIP_HOVER edge) over a soft shadow on the page's background,
-    the lit part in the accent colour with white text, the other one in TEXT (a CHIP_HOVER fill
-    under the pointer). A click on a part calls `on_side`; MainWindow lights the page's part
-    with `select` (None: the Downloads page, neither lit). Its size follows the font and
-    Windows' scaling (`switch_layout`); a switch between light and dark paints it again."""
+    """The Series / Movies / MediaForge switch at the right end of the tabs row under the band: a
+    solid pill (SURFACE, nearly opaque, a CHIP_HOVER edge) over a soft shadow on the page's
+    background, the lit part in the accent colour with white text, the others in TEXT (a
+    CHIP_HOVER fill under the pointer). A click on a part calls `on_part`; MainWindow lights the
+    page's part with `select` (None: the Downloads page, none lit). `set_count`: MediaForge's
+    "needs you" count, an amber badge in its word's own padding, so nothing moves. Its size follows
+    the font and Windows' scaling (`switch_layout`); a switch between light and dark paints it
+    again."""
 
-    def __init__(self, master: Any, *, on_side: Callable[[SpotlightSide], None]) -> None:
+    def __init__(self, master: Any, *, on_part: Callable[[SwitchPart], None]) -> None:
         super().__init__(
             master,
             highlightthickness=0,
@@ -1131,20 +1221,24 @@ class ModeSwitch(tk.Canvas):
             height=1,
             background=theme.pick(theme.BG),
         )
-        self._on_side = on_side
+        self._on_part = on_part
         self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
-        self._selected: SpotlightSide | None = SpotlightSide.SERIES
-        self._hover: SpotlightSide | None = None
-        self._pressed: SpotlightSide | None = None
+        self._selected: SwitchPart | None = SwitchPart.SERIES
+        self._hover: SwitchPart | None = None
+        self._pressed: SwitchPart | None = None
+        self._count = 0
         self._font = theme.font(SEGMENT_FONT_SIZE, bold=True)
+        self._badge_font = theme.font(10, bold=True)
         self._photos: dict[str, ImageTk.PhotoImage] = {}
         self._photo_sources: dict[str, Image.Image] = {}
         self._track_item = self.create_image(0, 0, anchor="nw")
         self._hover_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._active_item = self.create_image(0, 0, anchor="nw")
         self._text_items = {
-            side: self.create_text(0, 0, anchor="center", text="") for side in SpotlightSide
+            part: self.create_text(0, 0, anchor="center", text="") for part in SwitchPart
         }
+        self._badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
         self._layout = self._measure()
         self.bind("<Motion>", self._on_motion, add="+")
         self.bind("<Leave>", lambda _event: self._set_hover(None), add="+")
@@ -1159,22 +1253,35 @@ class ModeSwitch(tk.Canvas):
         return self._layout
 
     @property
-    def selected(self) -> SpotlightSide | None:
+    def selected(self) -> SwitchPart | None:
         return self._selected
 
-    def select(self, side: SpotlightSide | None) -> None:
-        """Light `side`'s part (None: neither, the Downloads page)."""
-        if side is not self._selected:
-            self._selected = side
+    @property
+    def count(self) -> int:
+        return self._count
+
+    def select(self, part: SwitchPart | None) -> None:
+        """Light `part` (None: none, the Downloads page)."""
+        if part is not self._selected:
+            self._selected = part
             self._paint()
+
+    def set_count(self, count: int) -> None:
+        """MediaForge's "needs you" count: the badge on its word (hidden at 0)."""
+        count = max(0, count)
+        if count != self._count:
+            self._count = count
+            self._paint_badge()
 
     def _px(self, units: float) -> int:
         return round(units * self._scale)
 
     def _measure(self) -> SwitchLayout:
-        name = max(self._font.measure(t(label)) for label in SIDE_LABELS.values())
+        """Series and Movies as wide as each other, MediaForge by its own word."""
+        names = {part: self._font.measure(t(label)) for part, label in PART_LABELS.items()}
+        side = max(names[SwitchPart.SERIES], names[SwitchPart.MOVIES]) + 2 * SEGMENT_PAD_X
         return switch_layout(
-            segment_width=name + 2 * SEGMENT_PAD_X,
+            segment_widths=(side, side, names[SwitchPart.FORGE] + 2 * SEGMENT_PAD_X),
             line_height=float(self._font.metrics("linespace")),
         )
 
@@ -1185,6 +1292,7 @@ class ModeSwitch(tk.Canvas):
         font = self._font.create_scaled_tuple(self._scale)
         for item in self._text_items.values():
             self.itemconfigure(item, font=font)
+        self.itemconfigure(self._badge_text, font=self._badge_font.create_scaled_tuple(self._scale))
         self._paint()
 
     def _set_image(self, item: int, name: str, image: Image.Image) -> None:
@@ -1201,6 +1309,9 @@ class ModeSwitch(tk.Canvas):
         size = (self._px(rect.w), self._px(rect.h))
         return rounded_box(size, size[1] / 2, fill, None, 0)
 
+    def _parts(self) -> dict[SwitchPart, Rect]:
+        return dict(zip(SwitchPart, self._layout.segments, strict=True))
+
     def _paint(self) -> None:
         px, layout = self._px, self._layout
         pill = layout.pill
@@ -1216,7 +1327,7 @@ class ModeSwitch(tk.Canvas):
         self.coords(self._track_item, px(pill.x) - pad, px(pill.y) - pad)
         self._set_image(self._track_item, "track", track)
         lit, hovered = self._selected, self._hover
-        parts = dict(zip(SpotlightSide, layout.segments, strict=True))
+        parts = self._parts()
         if hovered is not None and hovered is not lit:
             part = parts[hovered]
             self.coords(self._hover_item, px(part.x), px(part.y))
@@ -1231,37 +1342,58 @@ class ModeSwitch(tk.Canvas):
             self.itemconfigure(self._active_item, state="normal")
         else:
             self.itemconfigure(self._active_item, state="hidden")
-        for side, item in self._text_items.items():
-            part = parts[side]
-            colour = theme.ON_COLOR if side is lit else theme.TEXT
+        for key, item in self._text_items.items():
+            part = parts[key]
+            colour = theme.ON_COLOR if key is lit else theme.TEXT
             self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
-            self.itemconfigure(item, text=t(SIDE_LABELS[side]), fill=theme.pick(colour))
+            self.itemconfigure(item, text=t(PART_LABELS[key]), fill=theme.pick(colour))
+        self._paint_badge()
 
-    def _side_at(self, x: int, y: int) -> SpotlightSide | None:
+    def _paint_badge(self) -> None:
+        """The amber badge (theme.WARNING, whatever the accent) right after MediaForge's word."""
+        text = badge_text(self._count)
+        if not text:
+            self.itemconfigure(self._badge_item, state="hidden")
+            self.itemconfigure(self._badge_text, state="hidden")
+            return
+        px = self._px
+        part = self._parts()[SwitchPart.FORGE]
+        word = self._font.measure(t(PART_LABELS[SwitchPart.FORGE]))
+        width = max(BADGE_HEIGHT, self._badge_font.measure(text) + SWITCH_BADGE_PAD)
+        x = part.x + part.w / 2 + word / 2 + SWITCH_BADGE_GAP
+        rect = Rect(x, part.y + (part.h - BADGE_HEIGHT) / 2, width, BADGE_HEIGHT)
+        self.coords(self._badge_item, px(rect.x), px(rect.y))
+        self._set_image(self._badge_item, "badge", self._box(rect, self._rgba(theme.WARNING)))
+        self.coords(self._badge_text, px(rect.x + rect.w / 2), px(rect.y + rect.h / 2))
+        self.itemconfigure(self._badge_text, text=text, fill=theme.pick(theme.ON_WARNING))
+        self.itemconfigure(self._badge_item, state="normal")
+        self.itemconfigure(self._badge_text, state="normal")
+
+    def _part_at(self, x: int, y: int) -> SwitchPart | None:
         index = switch_hit(self._layout, x / self._scale, y / self._scale)
-        return None if index is None else tuple(SpotlightSide)[index]
+        return None if index is None else tuple(SwitchPart)[index]
 
     def _on_motion(self, event: Any) -> None:
-        self._set_hover(self._side_at(event.x, event.y))
+        self._set_hover(self._part_at(event.x, event.y))
 
-    def _set_hover(self, side: SpotlightSide | None) -> None:
-        if side is self._hover:
+    def _set_hover(self, part: SwitchPart | None) -> None:
+        if part is self._hover:
             return
-        self._hover = side
+        self._hover = part
         try:
-            self.configure(cursor="" if side is None else "hand2")
+            self.configure(cursor="" if part is None else "hand2")
         except tk.TclError:
             return
         self._paint()
 
     def _on_press(self, event: Any) -> None:
-        self._pressed = self._side_at(event.x, event.y)
+        self._pressed = self._part_at(event.x, event.y)
 
     def _on_release(self, event: Any) -> None:
-        side, pressed = self._side_at(event.x, event.y), self._pressed
+        part, pressed = self._part_at(event.x, event.y), self._pressed
         self._pressed = None
-        if side is not None and side is pressed:
-            self._on_side(side)
+        if part is not None and part is pressed:
+            self._on_part(part)
 
     def _repaint(self) -> None:
         """Light ↔ dark: the background and the pill in the new colours."""

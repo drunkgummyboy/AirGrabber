@@ -1,6 +1,6 @@
 """The Downloads page: the grabs of the last 30 days, newest first, with where each went, what
 the torrent program says about it (Downloading 42 % / ✓ Finished / Waiting / Paused at 63 % /
-Problem in <program>) and its saved subtitles; a hint when no program can be asked, one plain
+Problem in <program>); a hint when no program can be asked, one plain
 line when it can't be reached, and an amber banner when the downloads' disk is almost full.
 
 In sync with the torrent program (3.0.2, `DownloadsOverview.synced`: its task list could be
@@ -31,8 +31,7 @@ A row whose video MediaForge moved says where ("Renamed → Series › Gold Rush
 `moved_text`, from the library folder's name on).
 Each row has a ⋯ menu (`row_menu`): Download again… (⬇ Auto / ☰ Choose…), ⏸ Pause / ▶ Resume
 (a task in the program), Open the folder (where MediaForge moved its video, else once it is
-found in "Where finished downloads end up", else greyed with the reason as tip), Get subtitles
-(the CC menu of app/ui/subtitle_control.py; its progress shows in the row), then "🗑 Remove
+found in "Where finished downloads end up", else greyed with the reason as tip), then "🗑 Remove
 from <program>…" (a task in the program) or "Remove from list" (a row without one).
 
 Above the grabs (3.0.1), while one-click downloads wait in the download queue
@@ -69,7 +68,6 @@ from app.models import (
     QueueEvent,
     QueueKey,
     Show,
-    SubtitleOffer,
     TaskEntry,
 )
 from app.models.downloads import MovedTo
@@ -79,12 +77,9 @@ from app.services.download_status import Located
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.confirm_dialog import ConfirmDialog
-from app.ui.download_control import DownloadKey
-from app.ui.missing_control import MENU_SEPARATOR, MenuEntry, MenuItem, popup_menu
+from app.ui.missing_control import MENU_SEPARATOR, MenuEntry, popup_menu
 from app.ui.row_actions import again_items
 from app.ui.scrollable import ScrollableFrame
-from app.ui.subtitle_control import LOOKING_TEXT, OFF_TIP, RunPhase, SubtitleActions
-from app.ui.subtitle_settings import subtitle_mark
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.views.base import BaseView
@@ -119,7 +114,6 @@ MENU_TIP = N_("More options")
 NO_MATCH_TEXT = N_("Nothing here right now.")
 OPEN_FOLDER_TEXT = N_("Open the folder")
 AGAIN_TEXT = N_("Download again…")
-SUBTITLES_TEXT = N_("Get subtitles")
 REMOVE_TEXT = N_("Remove from list")
 REMOVE_TIP = N_("Only takes it off this list. Your files stay where they are.")
 PAUSE_TEXT = N_("⏸ Pause")
@@ -149,13 +143,10 @@ CLEAR_MORE = N_(
     "where they are."
 )
 CLEAR_BUTTON = N_("Clear {n}")
-NO_FOLDER_TIP = N_("Choose where finished downloads end up first (Settings → Subtitles)")
+NO_FOLDER_TIP = N_("Choose where finished downloads end up first (Settings → Where downloads go)")
 NOT_FOUND_TIP = N_("Not found in the folder where finished downloads end up")
 UNREACHABLE_TIP = N_("The folder where finished downloads end up can't be reached")
 NO_SHOW_TIP = N_("AirGrabber doesn't know this show any more")
-NO_SUBTITLES_TIP = N_(
-    "Subtitles need the folder where finished downloads end up (Settings → Subtitles)"
-)
 WAITING_TEXT = N_("Waiting ({n})")
 DROP_TIP = N_("Remove from the queue")
 IMDB_TITLE_URL = "https://www.imdb.com/title/{}/"
@@ -255,12 +246,6 @@ def filter_from_name(name: str) -> EntryFilter:
     return EntryFilter.ALL
 
 
-def entry_key(entry: DownloadEntry) -> DownloadKey:
-    """The title a grab is for (its subtitles' and one-click runs' key)."""
-    record = entry.record
-    return (record.media_type, record.media_id, record.season, record.episode)
-
-
 RowKey = tuple[str, object]
 
 
@@ -279,10 +264,9 @@ def row_key(item: ListedDownload) -> RowKey:
 class PageActions:
     """What the rows' ⋯ menus do besides the folder and the list (the main window provides
     them): a grab's title downloaded again (`auto`: the one-click download; else the search
-    window) and its subtitles."""
+    window)."""
 
     again: Callable[[DownloadEntry, bool], None]
-    subtitles: SubtitleActions | None = None
 
 
 def folder_tip(located: Located) -> str:
@@ -312,8 +296,6 @@ def row_menu(
     *,
     open_folder: Callable[[str], object],
     again: Callable[[], None] | None,
-    subtitles: Callable[[], None] | None,
-    subtitles_tip: str,
     remove: Callable[[], None],
     program: str = "",
     pause: Callable[[], None] | None = None,
@@ -321,10 +303,10 @@ def row_menu(
     remove_from_program: Callable[[], None] | None = None,
 ) -> list[MenuEntry]:
     """A row's ⋯ menu, as the mockup has it: Download again…, ⏸ Pause / ▶ Resume, Open the
-    folder, Get subtitles, then "🗑 Remove from <program>…" (red; a task in the program, with
+    folder, then "🗑 Remove from <program>…" (red; a task in the program, with
     `remove_from_program`) or Remove from list. A grab's items are always there, greyed with
     their reason as tip when they can't be done now; a task added in the program has no
-    Download again or subtitles."""
+    Download again."""
     folder = located.folder
     grab = isinstance(entry, DownloadEntry)
     items: list[MenuEntry] = []
@@ -341,10 +323,6 @@ def row_menu(
             folder_tip(located),
         )
     )
-    if grab:
-        items.append(
-            MenuEntry(t(SUBTITLES_TEXT), subtitles, "" if subtitles is not None else subtitles_tip)
-        )
     if remove_from_program is not None:
         items.append(MENU_SEPARATOR)
         items.append(
@@ -425,12 +403,6 @@ def when_text(moment: datetime, now: datetime) -> str:
     if local.year == today.year:
         return f"{local.day} {month_short(local)} {clock}"
     return f"{local.day} {month_short(local)} {local:%Y}"
-
-
-def subtitles_text(languages: Iterable[str], order: Sequence[str] = ()) -> str:
-    """"Subtitles EN NL" (Settings' order first); "" without any."""
-    mark = subtitle_mark(languages, order)
-    return t("Subtitles {languages}", languages=mark.removeprefix("CC ")) if mark else ""
 
 
 def moved_text(moved: MovedTo | None) -> str:
@@ -633,8 +605,8 @@ class DownloadsView(BaseView):
         **kwargs: Any,
     ) -> None:
         """`on_open_film(tmdb_id)`: opens a film's info window; False when it couldn't (the
-        row then opens the film on IMDb). `actions`: the ⋯ menus' Download again… and Get
-        subtitles (greyed out without them). `queue`: the download queue, whose waiting
+        row then opens the film on IMDb). `actions`: the ⋯ menus' Download again… (greyed out
+        without it). `queue`: the download queue, whose waiting
         downloads show at the top (none without it)."""
         super().__init__(master, **kwargs)
         self._on_open_film = on_open_film
@@ -906,8 +878,6 @@ class DownloadsView(BaseView):
                 located,
                 open_folder=self._downloads.open_folder,
                 again=None,
-                subtitles=None,
-                subtitles_tip="",
                 remove=lambda: None,
                 program=program,
                 pause=pause,
@@ -926,25 +896,11 @@ class DownloadsView(BaseView):
                 popup_menu(row.more, items)
 
             again = again_menu
-        subtitles: Callable[[], None] | None = None
-        subtitle_actions = actions.subtitles if actions is not None else None
-        offer = subtitle_actions.offer() if subtitle_actions is not None else SubtitleOffer.NONE
-        if subtitle_actions is not None and offer is SubtitleOffer.ON:
-            key = entry_key(entry)
-
-            def subtitles_menu() -> None:
-                assert subtitle_actions is not None
-                items: list[MenuItem] = subtitle_actions.menu(key)
-                popup_menu(row.more, items)
-
-            subtitles = subtitles_menu
         return row_menu(
             entry,
             located,
             open_folder=self._downloads.open_folder,
             again=again,
-            subtitles=subtitles,
-            subtitles_tip=t(OFF_TIP if offer is SubtitleOffer.OFF else NO_SUBTITLES_TIP),
             remove=functools.partial(self._remove, entry),
             program=program,
             pause=pause,
@@ -1019,7 +975,7 @@ class DownloadsView(BaseView):
                     continue
                 row = self._new_row()
                 made += 1
-            row.show_item(item, look, self._settings.current.subtitle_languages)
+            row.show_item(item, look)
             row.place_at(index + 1)
             by_key[key] = row
             rows.append(row)
@@ -1040,7 +996,6 @@ class DownloadsView(BaseView):
             images=self._images,
             on_click=self._open,
             on_menu=self.open_menu,
-            subtitles=self._actions.subtitles if self._actions is not None else None,
         )
 
     async def _build_rest(self) -> None:
@@ -1053,10 +1008,9 @@ class DownloadsView(BaseView):
 
     def _build_batch(self) -> None:
         batch, self._unbuilt = self._unbuilt[:BUILD_BATCH], self._unbuilt[BUILD_BATCH:]
-        order = self._settings.current.subtitle_languages
         for pending in batch:
             row = self._new_row()
-            row.show_item(pending.item, pending.look, order)
+            row.show_item(pending.item, pending.look)
             row.place_at(pending.grid_row)
             self._by_key[pending.key] = row
         if batch:
@@ -1232,7 +1186,7 @@ class WaitingGroup(ctk.CTkFrame):
 
 class _Row(ctk.CTkFrame):
     """One row: poster (or a file glyph), name (with "Added in …" for a task added in the
-    program), when · where (+ subtitles, or a subtitle request's progress) or the task's size,
+    program), when · where or the task's size,
     state and a thin progress bar, and its ⋯ menu (`on_menu`). `show_item` repaints only what
     changed since the last check; the tag, the glyph and the bar are made when first needed."""
 
@@ -1243,19 +1197,14 @@ class _Row(ctk.CTkFrame):
         images: ImageCache,
         on_click: Callable[[ListedDownload], None],
         on_menu: Callable[[_Row], None] | None = None,
-        subtitles: SubtitleActions | None = None,
     ) -> None:
         super().__init__(master, fg_color=theme.SURFACE, corner_radius=8, cursor="hand2")
         self._images = images
         self._on_click = on_click
-        self._subtitles_actions = subtitles
         self._entry: ListedDownload | None = None
         self._look: RowLook | None = None
-        self._order: Sequence[str] = ()
         self._poster_url: str | None = None
         self._grid_row: int | None = None
-        self._subtitle_text: tuple[str, theme.Color] | None = None
-        self.key: DownloadKey | None = None  # a grab's title, for its subtitle requests
         self.grid_columnconfigure(1, weight=1)
 
         self._poster = PosterImage(self, width=_POSTER[0], height=_POSTER[1])
@@ -1282,10 +1231,6 @@ class _Row(ctk.CTkFrame):
             bg_color=surface,
         )
         self._meta.pack(side="left")
-        self._subtitles = ctk.CTkLabel(
-            line, text="", font=theme.font(12), text_color=theme.SUCCESS, anchor="w",
-            bg_color=surface,
-        )
         state_box = tk.Frame(self, bg=theme.pick(surface), highlightthickness=0, bd=0)
         state_box.grid(row=0, column=2, rowspan=2, sticky="e", padx=(12, 16))
         self._state_box = state_box
@@ -1314,11 +1259,9 @@ class _Row(ctk.CTkFrame):
         if on_menu is not None:
             self.more.grid(row=0, column=3, rowspan=2, padx=(0, 14))
             add_tooltip(self.more, t(MENU_TIP))
-        for widget in (self, self._title, title_line, line, self._meta, self._subtitles,
+        for widget in (self, self._title, title_line, line, self._meta,
                        state_box, self._state):
             widget.bind("<Button-1>", lambda _event: self._clicked(), add="+")
-        if subtitles is not None:
-            subtitles.runs.attach(self)
 
     @property
     def entry(self) -> ListedDownload | None:
@@ -1359,41 +1302,9 @@ class _Row(ctk.CTkFrame):
         if self._entry is not None:
             self._on_click(self._entry)
 
-    def repaint(self) -> None:
-        """A subtitle request for this title changed: its line again."""
-        if self._entry is not None:
-            self._show_subtitles(self._entry)
-
-    def _show_subtitles(self, entry: ListedDownload) -> None:
-        run = None
-        if self._subtitles_actions is not None and self.key is not None:
-            run = self._subtitles_actions.runs.get(self.key)
-        if run is not None:
-            text = t(LOOKING_TEXT) if run.phase is RunPhase.WORKING else run.text
-            color = theme.WARNING if run.warn else theme.TEXT_MUTED
-        elif isinstance(entry, DownloadEntry):
-            text, color = subtitles_text(entry.subtitles, self._order), theme.SUCCESS
-        else:
-            text, color = "", theme.SUCCESS
-        if (text, color) == self._subtitle_text:
-            return
-        self._subtitle_text = (text, color)
-        self._subtitles.configure(text=f"  ·  {text}" if text else "", text_color=color)
-        if text:
-            self._subtitles.pack(side="left")
-        else:
-            self._subtitles.pack_forget()
-
-    def destroy(self) -> None:
-        if self._subtitles_actions is not None:
-            self._subtitles_actions.runs.detach(self)
-        super().destroy()
-
-    def show_item(self, item: ListedDownload, look: RowLook, order: Sequence[str]) -> None:
+    def show_item(self, item: ListedDownload, look: RowLook) -> None:
         """Show `item` as `look` says, configuring only the widgets whose look changed."""
         self._entry = item
-        self._order = order
-        self.key = entry_key(item) if isinstance(item, DownloadEntry) else None
         before = self._look
         self._look = look
         if before is None or before.title != look.title:
@@ -1402,7 +1313,6 @@ class _Row(ctk.CTkFrame):
             self._show_tag(look.tag)
         if before is None or before.meta != look.meta:
             self._meta.configure(text=look.meta)
-        self._show_subtitles(item)
         if before is None or (before.state, before.state_color) != (look.state, look.state_color):
             self._state.configure(text=look.state, text_color=look.state_color)
         if before is None or (before.bar, before.bar_paused) != (look.bar, look.bar_paused):

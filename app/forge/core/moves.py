@@ -4,7 +4,7 @@ from (forge.db's `moves`, schema v3; kept for a year, longer than the undo histo
 Every rename into a library folder is recorded in the same journal step as the rename itself
 (`ForgeMoveService.note` with the caller's media → Executor → HistoryRepo); an undo takes the
 record out again. AirGrabber reads them (`moves_from`, `subscribe`): its Downloads page shows
-where a finished download ended up, and its subtitles follow the video there.
+where a finished download ended up.
 """
 
 from __future__ import annotations
@@ -70,6 +70,10 @@ class ForgeMoveService:
         """Where the files Forge moved out of `folder` (or a folder below it) went, newest first
         (kept for a year)."""
         return await self._repo.moves_from(folder)
+
+    async def of_operation(self, op_id: int) -> MoveRecord | None:
+        """What the journal's rename `op_id` recorded of its file, if anything (History's CC)."""
+        return await self._repo.of_operation(op_id)
 
     def subscribe(self, listener: MovesListener) -> Callable[[], None]:
         """Call `listener` whenever the move records change. Returns a function that

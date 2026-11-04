@@ -4,7 +4,7 @@ result. A search row (prefilled with the parsed title, no year; "Name 2023" sear
 replaces the candidates with TMDB's results when none of them is right.
 
 Built on AirGrabber's dialog kit: no title bar (app/ui/borderless.py; the title as a heading),
-placed over the window that asks, Escape and ✕ close it (= "cancel"), the Forge look's copper.
+placed over the window that asks, Escape and ✕ close it (= "cancel"), the look's accent.
 Never `transient` (MediaForge's lesson, see app/forge/ui/widgets/dialogs.py). Thumbnails come
 from AirGrabber's image cache at physical size.
 """
@@ -24,7 +24,7 @@ from app.forge.core.matcher import MAX_CANDIDATES
 from app.forge.core.queue import QueueItem
 from app.forge.models.media import MediaKind
 from app.forge.ui.images import tmdb_image_url
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.i18n import t
 from app.models.tmdb import TMDBTitle
 from app.ui import theme
@@ -94,7 +94,7 @@ class MatchPicker(ctk.CTkToplevel):
         *,
         look: theme.Look | None = None,
     ) -> None:
-        self._look: theme.Look = forge_look() if look is None else look
+        self._look: theme.Look = app_look() if look is None else look
         p = self._look
         super().__init__(master, fg_color=p.BG)
         self.services = services

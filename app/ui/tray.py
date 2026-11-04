@@ -29,7 +29,6 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont
 
 from app import APP_NAME
-from app.forge.ui.look import forge_look
 from app.i18n import N_, t, tn
 from app.services import SettingsService
 from app.ui import theme
@@ -68,9 +67,8 @@ NOTICE_BUTTON = N_("Got it")
 _IMAGE_PX = 128  # pystray hands Windows an .ico; it picks the size the tray needs from it
 _SHOW_POLL_S = 0.5  # how often a second start's "show the window" is checked for
 _STOP_TIMEOUT_S = 3.0
-# The "needs you" badge (MediaForge's `with_badge`): Forge's copper (as the band's 🔨 badge,
-# white text readable on it) and AirGrabber's font (D10); one colour in both modes.
-_BADGE_COLOR = theme.pick(forge_look().ACCENT, dark=True)
+# The "needs you" badge (MediaForge's `with_badge`): amber (as the switch's badge) and
+# AirGrabber's font (D10); one colour in both modes, read when it is painted.
 _BADGE_FONT_FILE = Path(ctk.__file__).parent / "assets" / "fonts" / "Roboto" / "Roboto-Medium.ttf"
 
 
@@ -99,16 +97,17 @@ def tooltip(count: int) -> str:
 
 
 def with_badge(image: Image.Image, count: int) -> Image.Image:
-    """The icon with a small copper count in its bottom-right corner (MediaForge's), "9+" from
+    """The icon with a small amber count in its bottom-right corner (MediaForge's), "9+" from
     ten on. A small Pillow drawing (one 128 px picture): fine on the loop."""
     badged = image.convert("RGBA").copy()
     radius = min(badged.size) // 4
     right, bottom = badged.width - 1, badged.height - 1
     draw = ImageDraw.Draw(badged)
-    draw.ellipse((right - 2 * radius, bottom - 2 * radius, right, bottom), fill=_BADGE_COLOR)
+    draw.ellipse((right - 2 * radius, bottom - 2 * radius, right, bottom), fill=theme.pick(theme.WARNING, dark=True))
     text = str(count) if count < 10 else "9+"
     centre = (right - radius, bottom - radius)
-    draw.text(centre, text, fill=theme.ON_COLOR, font=_badge_font(int(radius * 1.3)), anchor="mm")
+    colour = theme.pick(theme.ON_WARNING, dark=True)
+    draw.text(centre, text, fill=colour, font=_badge_font(int(radius * 1.3)), anchor="mm")
     return badged
 
 
@@ -377,7 +376,7 @@ class TrayHost:
         """A plain Open (the tray menu's Open, a second start of AirGrabber): the window back
         from the tray at its start page (`on_reopen`), then shown and raised. A window already
         on screen (or minimised) keeps its page. `show_window` is for a window shown for a
-        purpose (Settings from MediaForge): it keeps its page."""
+        purpose: it keeps its page."""
         window = self._window
         if not _alive(window):
             return

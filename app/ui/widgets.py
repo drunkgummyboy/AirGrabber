@@ -116,7 +116,7 @@ class UnderlineTabs(ctk.CTkFrame):
     """The "underline" look's tab row: the names left-aligned on the page's background, the
     chosen one in TEXT with an ACCENT line under it, the others muted (TEXT under the pointer),
     a thin line under them all. A click calls `on_select(name)`. `colors`: a window's own accent
-    tokens (the Forge window's copper) instead of AirGrabber's."""
+    tokens (Forge's `app_look()`) instead of AirGrabber's."""
 
     def __init__(
         self, master: Any, *, on_select: Callable[[str], None], colors: theme.Look | None = None
@@ -213,7 +213,7 @@ class PillTabs(ctk.CTkFrame):
     """The "pills" look's tab row: the names left-aligned as rounded buttons on the page's
     background, the chosen one filled with ACCENT and white text (ON_COLOR), the others on a
     faint CHIP fill in BUTTON_TEXT (CHIP_HOVER under the pointer). A click calls
-    `on_select(name)`. `colors`: a window's own accent tokens (the Forge window's copper)
+    `on_select(name)`. `colors`: a window's own accent tokens (Forge's `app_look()`)
     instead of AirGrabber's."""
 
     def __init__(
@@ -299,8 +299,8 @@ class Tabview(ctk.CTkTabview):
     chosen name) instead. The default "segmented" look is CTk's own (the info window, Import
     Shows). `pills_master`: the pills' row goes in that widget instead (its owner places it:
     the main window's tabs row, with the Series / Movies switch at its right end). `colors`: a
-    window's own accent tokens for the pills / underline row and the page (the Forge window's
-    copper, app/forge/ui/look.py) instead of AirGrabber's (`look` names the tab row's style).
+    window's own accent tokens for the pills / underline row and the page (Forge's `app_look()`,
+    app/forge/ui/look.py) instead of AirGrabber's (`look` names the tab row's style).
     """
 
     def __init__(

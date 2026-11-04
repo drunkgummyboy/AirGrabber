@@ -1,32 +1,38 @@
-"""MediaForge's Settings sections: the pages of its own Settings window
-(app/forge/ui/settings_window.py; docs/forge/INTEGRATION.md 3.7, the owner's decision of
-2026-11-02: MediaForge has its own Settings; what it shares with AirGrabber (language, theme,
-the TMDB key, updates, tray, Start with Windows) stays in AirGrabber's Settings only).
+"""MediaForge's Settings sections: the MediaForge group of AirGrabber's one Settings window
+(app/ui/settings_dialog.py; docs/forge/INTEGRATION.md 3.7, docs/forge/PAGE.md).
 
-The window's sidebar lists FORGE_SECTIONS in order (FORGE_GROUP is its label), and it builds
-each one with its `build(page, forge)`. A later Forge section is one more line in
+The window's sidebar lists FORGE_SECTIONS in order under FORGE_GROUP, and it builds each one with
+its `build(page, forge)` when its page is first shown. A later Forge section is one more line in
 FORGE_SECTIONS (its own module, imported lazily by its builder); the window doesn't change.
 
 A builder gets the window's page for its section (app/ui/settings_layout.py's `SettingsPage`:
-heading and muted line done; `box()` / `add()` below them; `page.look` = the window's copper
-look, `section_look(page)`) and AirGrabber's ForgeRuntime, and returns a ForgeSectionPart. The
-sections apply on the window's Save (D9): `problem()` is asked of every section before anything
-is stored, then each `save()`; Cancel and ✕ change nothing. A section waits for `forge.start()`
-(Forge may not have started yet) and says so while Forge is NOT_READY or FAILED.
+heading and muted line done; `box()` / `add()` below them) and AirGrabber's ForgeRuntime, and
+returns a ForgeSectionPart. The sections built so far apply on the window's Save (D9): `problem()`
+is asked of each before anything is stored, then each `save()`; Cancel and ✕ change nothing. A
+section waits for `forge.start()` (Forge may not have started yet) and says so while Forge is
+NOT_READY or FAILED.
 
-The first section, **Library & watching**, is MediaForge's Settings › Library tab
-(`ui/library_tab.py`): the download folders to watch (add / remove), what is ignored (the
-queue's Ignore: each entry's name, its path as a tooltip, with "Stop ignoring", applied on Save like the rest; app/forge/core/
-ignored.py's IgnoreService, `services.ignored`), "Use AirGrabber's downloads"
-with AirGrabber's folders and why each is (not) watched, a suggested one's Add, and what to choose
-(B-01, app/forge/core/airgrabber_folders.py), the Series and Movies library
-folders (Browse), renaming on its own Off / Trial / On (On straight from Off becomes Trial first),
-cleaning up the download folder, the "needs you" notification and the evening summary. Which
-preset Series and Movies use is the Naming section's; Start with Windows stays AirGrabber's
-(Automatic). Its foot (`LibrarySection.foot`, hidden while empty) holds "Bring over…" while the
-old MediaForge's data can still be imported (app/forge/ui/import_step.py's BringOverBox, F-26)
-and, while the old MediaForge is still installed, the guard's notice with "Remove the old
-MediaForge" (RemoveOldBox, F-27).
+The first section, **Auto-rename**, is everything about renaming on its own (the owner's decision:
+no page of its own beside it; the queue's status line opens this section). Its first box:
+the renamer's light and status, live (`AutoRenamer.watch_status`), Off / Trial / On, the line saying
+what the chosen one means, and what Trial and On still need. Then the download folders to watch
+(add / remove), what is ignored (the queue's Ignore: each entry's name, its path as a tooltip, with
+"Stop ignoring", applied on Save like the rest; app/forge/core/ignored.py's IgnoreService,
+`services.ignored`), "Use AirGrabber's downloads" with AirGrabber's folders and why each is (not)
+watched, a suggested one's Add, and what to choose (B-01, app/forge/core/airgrabber_folders.py), the
+Series and Movies library folders (Browse), and the options: cleaning up the download folder, the
+"needs you" notification, the evening summary and whether forged files leave the queue
+(`remove_after_forge`). Which preset Series and Movies use is the Naming section's (the library box
+says so); Start with Windows stays AirGrabber's (Automatic).
+
+Its safety rules: everything waits for Save; On straight from Off becomes Trial first, and so does
+On when a folder starts being watched (nothing moves from a new folder unseen), each saying so; a
+watched folder inside a library folder or another watched one is never saved; while Trial or On is
+chosen every folder must be chosen too. While the old MediaForge is installed the renamer's guard
+keeps it idle and the status says so. Its foot (`LibrarySection.foot`, hidden while empty) holds
+"Bring over…" while the old MediaForge's data can still be imported (app/forge/ui/import_step.py's
+BringOverBox, F-26) and, while the old MediaForge is still installed, the guard's notice with
+"Remove the old MediaForge" (RemoveOldBox, F-27).
 """
 
 from __future__ import annotations
@@ -35,7 +41,7 @@ import functools
 import logging
 import os
 import tkinter as tk
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from tkinter import filedialog
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
@@ -44,9 +50,15 @@ import customtkinter as ctk
 
 from app.forge.core.library import NESTED, OVERLAP, library_problems
 from app.forge.models.settings import ForgeSettings
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look, light_colour
 from app.forge.ui.settings_menu import MENU_ICON, MENU_NOTE, SECTION_MENU, build_menu
 from app.forge.ui.settings_naming import NAMING_ICON, NAMING_NOTE, SECTION_NAMING, build_naming
+from app.forge.ui.settings_subtitles import (
+    SECTION_SUBTITLES,
+    SUBTITLES_ICON,
+    SUBTITLES_NOTE,
+    build_subtitles,
+)
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
 from app.ui.tasks import spawn
@@ -55,27 +67,23 @@ from app.ui.tooltip import add_tooltip
 if TYPE_CHECKING:
     import asyncio
 
+    from app.forge.core.auto import WatchStatus
     from app.forge.models.ignored import IgnoredPath
-
     from app.forge.runtime import ForgeRuntime
-    from app.forge.ui.library_page import Mode, SettingsSource
     from app.ui.settings_layout import SettingsBox, SettingsPage
 
 log = logging.getLogger(__name__)
 
-# Light at import (MediaForge's Settings window imports it; AirGrabber's start doesn't): nothing
-# of Forge's beyond its settings model and folder rules (the Library page's texts are imported
-# where they are used), so Forge's core, forge.db and guessit stay unloaded (INTEGRATION.md 3.6).
+# Light at import (Settings imports it when it opens; AirGrabber's start doesn't): nothing
+# of Forge's beyond its settings model and folder rules, so Forge's core, forge.db and guessit
+# stay unloaded (INTEGRATION.md 3.6).
 
 # -- the registry -------------------------------------------------------------------------------
 
+type Mode = Literal["off", "trial", "on"]
+
 FORGE_GROUP = N_("MediaForge")  # the sidebar group's label
-SECTION_LIBRARY = N_("Library & watching")
-
-
-def section_look(page: SettingsPage) -> theme.Look:
-    """The look a section paints its accent with: its page's (the window's copper look)."""
-    return forge_look() if page.look is None else page.look
+SECTION_LIBRARY = N_("Auto-rename")
 
 
 class ForgeSectionPart(Protocol):
@@ -102,7 +110,10 @@ class ForgeSection(NamedTuple):
 
 # -- texts ----------------------------------------------------------------------------------------
 
-LIBRARY_NOTE = N_("Where MediaForge finds finished downloads, and where it moves them.")
+LIBRARY_NOTE = N_(
+    "MediaForge can rename finished downloads by itself and move them into your Series and "
+    "Movies folders."
+)
 GETTING_READY = N_("Getting MediaForge ready…")
 SAVE_FAILED = N_("MediaForge's settings couldn't be saved. The log has the details.")
 ADD_FOLDER = N_("Add folder…")
@@ -111,10 +122,20 @@ BROWSE = N_("Browse")
 CHOOSE_WATCH = N_("Choose a download folder to watch")
 CHOOSE_SERIES = N_("Choose the Series library folder")
 CHOOSE_MOVIES = N_("Choose the Movies library folder")
+LIBRARY_POINTER = N_("Which preset each kind is named with: see Naming.")
+TRIAL_FIRST = N_("Trial first: MediaForge shows what it would do; switch to On when you're happy.")
+MODES: tuple[tuple[Mode, str], ...] = (("off", N_("Off")), ("trial", N_("Trial")), ("on", N_("On")))
+MODE_LINES: dict[Mode, str] = {
+    "off": N_("Off: nothing happens by itself; you rename files in the queue."),
+    "trial": N_("Trial: the queue shows what it would do; nothing is moved."),
+    "on": N_("On: sure matches are renamed and moved; the rest waits in the queue."),
+}
+NEEDS_FIRST = N_("Trial and On need these first:")
 OPTIONS_TITLE = N_("Options")
 CLEAN_TEXT = N_("Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)")
 NEEDS_TEXT = N_("Tell me when files need me")
 SUMMARY_TEXT = N_("A summary in the evening")
+REMOVE_TEXT = N_("Remove files from the queue after they're forged (Undo stays in History)")
 AIRGRABBER_TITLE = N_("AirGrabber's downloads")
 AIRGRABBER_HINT = N_(
     "Watch the folders where AirGrabber's downloads end up. They follow AirGrabber's settings; "
@@ -138,6 +159,7 @@ FIELDS: tuple[str, ...] = (
     "clean_downloads",
     "notify_needs",
     "daily_summary",
+    "remove_after_forge",
 )
 
 _BUTTON_WIDTH = 110  # the dialog's Browse buttons
@@ -145,6 +167,7 @@ _ROW_GAP = 8
 _LABEL_WIDTH = 90  # "Series" / "Movies"
 _PATH_WRAP = 330  # a folder's path next to its label and button (CTk units)
 _LIST_WRAP = 420  # a watched folder's path next to its Remove button
+_STATUS_WRAP = 500  # the renamer's status next to its light
 _STOP_WIDTH = 150  # "Stop ignoring"
 _IGNORED_WRAP = 380  # an ignored name next to its Stop ignoring button
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
@@ -183,6 +206,28 @@ class IgnoredSource(Protocol):
 AskFolder = Callable[[str, str], str]  # (title, start folder) → the chosen folder, or ""
 
 
+class SettingsSource(Protocol):
+    """What a section needs of ForgeSettingsService."""
+
+    @property
+    def current(self) -> ForgeSettings: ...
+
+    async def update(self, **changes: Any) -> ForgeSettings: ...
+
+    def subscribe(self, listener: Callable[[ForgeSettings], None]) -> Callable[[], None]: ...
+
+
+class StatusSource(Protocol):
+    """What the section needs of the AutoRenamer: its status now and every later one."""
+
+    @property
+    def last_status(self) -> WatchStatus | None: ...
+
+    def status(self, unreachable: Sequence[Path]) -> WatchStatus: ...
+
+    def watch_status(self, listener: Callable[[WatchStatus], None]) -> Callable[[], None]: ...
+
+
 def _same_folder(a: str, b: str) -> bool:
     return os.path.normcase(a.rstrip("\\/")) == os.path.normcase(b.rstrip("\\/"))
 
@@ -193,20 +238,20 @@ def ignored_text(entry: IgnoredPath) -> str:
     return f"{FOLDER_MARK}  {entry.name}" if entry.folder else entry.name
 
 
-# -- Library & watching ---------------------------------------------------------------------------
+# -- Auto-rename ----------------------------------------------------------------------------------
 
 
 class LibrarySection:
-    """The Library & watching page's contents. Changes stay in the form until Save
-    (`problem` / `save`); a change saved elsewhere meanwhile (the Forge window's Off / Trial /
-    On) shows here unless the same setting was changed in the form."""
+    """The Auto-rename section's contents. Changes stay in the form until Save (`problem` / `save`);
+    a change saved elsewhere meanwhile (a folder AirGrabber's settings brought) shows here unless
+    the same setting was changed in the form."""
 
     def __init__(
         self, page: SettingsPage, forge: _Starter, *, ask_folder: AskFolder | None = None
     ) -> None:
         self._page = page
         self._forge = forge
-        self._look = section_look(page)
+        self._look = app_look()
         self.ask_folder: AskFolder = ask_folder if ask_folder is not None else self._ask_folder
         self._settings: SettingsSource | None = None
         self._unsubscribe: Callable[[], None] | None = None
@@ -215,8 +260,8 @@ class LibrarySection:
         self._watch: list[str] = []
         self._folders: dict[str, str] = {"series": "", "movies": ""}
         self._mode: Mode = "off"
-        from app.forge.ui.library_page import MODES  # not at import time: see the top
-
+        self._renamer: StatusSource | None = None
+        self._unwatch: Callable[[], None] | None = None
         self._labels: dict[Mode, str] = {mode: t(label) for mode, label in MODES}
         frame = page.frame
 
@@ -224,6 +269,48 @@ class LibrarySection:
         self.waiting = page.box()
         self.waiting_label = self.waiting.text(t(GETTING_READY))
         self.waiting.add(self.waiting_label, gap=0, sticky="w")
+
+        # Renaming on its own: the light and status, Off / Trial / On, what it means, what's needed.
+        rename = page.box()
+        status_row = rename.frame_row(gap=0)
+        self.light = ctk.CTkLabel(
+            status_row, text="●", font=theme.font(14), text_color=theme.TEXT_MUTED
+        )
+        self.light.pack(side="left", padx=(0, 6))
+        self.status_label = ctk.CTkLabel(
+            status_row,
+            text="",
+            font=theme.font(dialog_kit.DETAIL_SIZE),
+            text_color=theme.TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=_STATUS_WRAP,
+        )
+        self.status_label.pack(side="left", fill="x", expand=True)
+        self.mode = ctk.CTkSegmentedButton(
+            rename.body,
+            values=list(self._labels.values()),
+            width=260,
+            height=dialog_kit.BUTTON_HEIGHT,
+            corner_radius=dialog_kit.BUTTON_RADIUS,
+            font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
+            fg_color=self._look.SURFACE,
+            selected_color=self._look.SELECTED,
+            selected_hover_color=self._look.SELECTED_HOVER,
+            unselected_color=self._look.SURFACE,
+            unselected_hover_color=self._look.CHIP_HOVER,
+            text_color=theme.BUTTON_TEXT,
+            dynamic_resizing=False,
+            command=self._mode_clicked,
+        )
+        rename.add(self.mode, gap=_ROW_GAP, sticky="w")
+        self.mode_line = rename.text("")
+        rename.add(self.mode_line, gap=_ROW_GAP, sticky="w")
+        self.note_label = rename.text("")
+        self._note_row = rename.take_row()
+        self.problems_label = rename.text("")
+        self.problems_label.configure(text_color=theme.WARNING)
+        self._problems_row = rename.take_row()
 
         # The download folders to watch.
         watch = page.box(
@@ -292,51 +379,23 @@ class LibrarySection:
             button.grid(row=row_no, column=2, sticky="e", pady=(0 if row_no == 0 else _ROW_GAP, 0))
             self.folder_labels[kind] = label
             self.browse_buttons[kind] = button
-
-        # Renaming on its own: Off / Trial / On.
-        rename = page.box(
-            t("Rename on its own"),
-            t(
-                "Sure matches are renamed and moved by themselves; anything else waits in the "
-                "queue. Trial shows what would happen without moving anything."
-            ),
-        )
-        self.mode = ctk.CTkSegmentedButton(
-            rename.body,
-            values=list(self._labels.values()),
-            width=260,
-            height=dialog_kit.BUTTON_HEIGHT,
-            corner_radius=dialog_kit.BUTTON_RADIUS,
-            font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
-            fg_color=self._look.SURFACE,
-            selected_color=self._look.SELECTED,
-            selected_hover_color=self._look.SELECTED_HOVER,
-            unselected_color=self._look.SURFACE,
-            unselected_hover_color=self._look.CHIP_HOVER,
-            text_color=theme.BUTTON_TEXT,
-            dynamic_resizing=False,
-            command=self._mode_clicked,
-        )
-        rename.add(self.mode, sticky="w")
-        self.note_label = rename.text("")
-        self._note_row = rename.take_row()
-        self.problems_label = rename.text("")
-        self.problems_label.configure(text_color=theme.WARNING)
-        self._problems_row = rename.take_row()
+        library.add(library.text(t(LIBRARY_POINTER)), gap=_ROW_GAP, sticky="w")
 
         # Options.
         options = page.box(t(OPTIONS_TITLE))
         self._clean = tk.BooleanVar(master=frame, value=True)
         self._needs = tk.BooleanVar(master=frame, value=True)
         self._summary = tk.BooleanVar(master=frame, value=True)
+        self._remove = tk.BooleanVar(master=frame, value=False)
         for text, variable in (
             (CLEAN_TEXT, self._clean),
             (NEEDS_TEXT, self._needs),
             (SUMMARY_TEXT, self._summary),
+            (REMOVE_TEXT, self._remove),
         ):
             options.add(self._checkbox(options.body, t(text), variable), gap=_ROW_GAP, sticky="w")
 
-        self._content: list[SettingsBox] = [watch, ignored, airgrabber, library, rename, options]
+        self._content: list[SettingsBox] = [rename, watch, ignored, airgrabber, library, options]
 
         # The foot: hidden until something is put in it (F-27's "Remove the old MediaForge").
         self.foot = ctk.CTkFrame(frame, fg_color="transparent")
@@ -412,6 +471,11 @@ class LibrarySection:
             self._unsubscribe_ignored = source.subscribe(self._ignored_changed)
         self._load(settings.current)
         self._unsubscribe = settings.subscribe(self._saved_elsewhere)
+        renamer: StatusSource | None = getattr(self._forge.services, "auto", None)
+        if renamer is not None:
+            self._renamer = renamer
+            self.show_status(renamer.last_status or renamer.status([]))
+            self._unwatch = renamer.watch_status(self.show_status)
         first_gap = self.waiting.frame.grid_info().get("pady")
         self.waiting.frame.grid_remove()
         for box in self._content:
@@ -437,6 +501,15 @@ class LibrarySection:
         if self._unsubscribe_ignored is not None:
             self._unsubscribe_ignored()
             self._unsubscribe_ignored = None
+        if self._unwatch is not None:
+            self._unwatch()
+            self._unwatch = None
+
+    def show_status(self, status: WatchStatus) -> None:
+        """The renamer's status, live: the light's colour and its words."""
+        if self.status_label.winfo_exists():
+            self.light.configure(text_color=light_colour(status.state))
+            self.status_label.configure(text=status.text)
 
     # --- the form --------------------------------------------------------------------------------
 
@@ -464,6 +537,8 @@ class LibrarySection:
             self._needs.set(value)
         elif name == "daily_summary":
             self._summary.set(value)
+        elif name == "remove_after_forge":
+            self._remove.set(value)
 
     def draft(self) -> dict[str, Any]:
         """What the form holds, field by field."""
@@ -476,6 +551,7 @@ class LibrarySection:
             "clean_downloads": bool(self._clean.get()),
             "notify_needs": bool(self._needs.get()),
             "daily_summary": bool(self._summary.get()),
+            "remove_after_forge": bool(self._remove.get()),
         }
 
     def changes(self) -> dict[str, Any]:
@@ -541,9 +617,11 @@ class LibrarySection:
         # The switch can't leave Off while something is missing; it can always go back to Off.
         enabled = not problems or self._mode != "off"
         self.mode.configure(state="normal" if enabled else "disabled")
+        self.mode_line.configure(text=t(MODE_LINES[self._mode]))
         self._show_line(self.note_label, self._note_row, str(self.note_label.cget("text")))
-        self.problems_label.configure(text="\n".join(problems))
-        self._show_line(self.problems_label, self._problems_row, "\n".join(problems))
+        needs = "\n".join([t(NEEDS_FIRST), *(f"•  {p}" for p in problems)]) if problems else ""
+        self.problems_label.configure(text=needs)
+        self._show_line(self.problems_label, self._problems_row, needs)
 
     @staticmethod
     def _show_line(label: ctk.CTkLabel, row: int, text: str) -> None:
@@ -696,31 +774,40 @@ class LibrarySection:
     def _use_toggled(self) -> None:
         """'Use AirGrabber's downloads' clicked. Turned on while On is chosen and it adds a
         folder to watch: Trial first, saying so (nothing moves from a new folder unseen)."""
-        from app.forge.core.airgrabber_folders import newly_watched  # not at import time
-        from app.forge.ui.library_page import TRIAL_FIRST
-
         if self._settings is None:
             return
         before = self._draft_settings()
         self._use_chosen = bool(self._use.get())
-        if self._mode == "on" and newly_watched(before, self._draft_settings()):
+        self._trial_for_new_folder(before)
+        self._refresh()
+
+    def _trial_for_new_folder(self, before: ForgeSettings) -> None:
+        """On is chosen and the form now watches a folder `before` didn't: Trial first."""
+        from app.forge.core.airgrabber_folders import newly_watched  # not at import time
+
+        if self._settings is None or self._mode != "on":
+            return
+        if newly_watched(before, self._draft_settings()):
             self._mode = "trial"
             self.note_label.configure(text=t(TRIAL_FIRST))
-        self._refresh()
+
+    def _add_folder(self, folder: str) -> None:
+        if self._settings is None or any(_same_folder(folder, f) for f in self._watch):
+            return
+        before = self._draft_settings()
+        self._watch.append(folder)
+        self._trial_for_new_folder(before)
 
     def add_suggested(self, folder: str) -> None:
         """A suggested folder of AirGrabber's becomes one of the owner's own (until Save)."""
-        if not any(_same_folder(folder, f) for f in self._watch):
-            self._watch.append(folder)
+        self._add_folder(folder)
         self._refresh()
 
     def add_watch_folder(self) -> None:
         chosen = self.ask_folder(t(CHOOSE_WATCH), "")
         if not chosen or not self.waiting_label.winfo_exists():
             return
-        folder = str(Path(chosen))
-        if not any(_same_folder(folder, f) for f in self._watch):
-            self._watch.append(folder)
+        self._add_folder(str(Path(chosen)))
         self._refresh()
 
     def remove_watch_folder(self, folder: str) -> None:
@@ -739,13 +826,16 @@ class LibrarySection:
         self.set_mode(next(m for m, text in self._labels.items() if text == label))
 
     def set_mode(self, mode: Mode) -> None:
-        """Choose Off / Trial / On; On while Off is stored becomes Trial first, saying so."""
-        from app.forge.ui.library_page import TRIAL_FIRST  # not at import time: see the top
+        """Choose Off / Trial / On; On while Off is stored, or with a folder not watched yet,
+        becomes Trial first, saying so (see what it would do before it moves anything)."""
+        from app.forge.core.airgrabber_folders import newly_watched  # not at import time
 
         note = ""
         stored = self._baseline.get("automatic", "off")
-        if mode == "on" and stored == "off":
-            mode, note = "trial", t(TRIAL_FIRST)  # see what it would do before it moves anything
+        if mode == "on" and self._settings is not None:
+            new_folder = newly_watched(self._settings.current, self._draft_settings())
+            if stored == "off" or new_folder:
+                mode, note = "trial", t(TRIAL_FIRST)
         self._mode = mode
         self.note_label.configure(text=note)
         self._refresh()
@@ -765,10 +855,15 @@ class LibrarySection:
         return problems[0] if problems else None
 
     async def save(self) -> str | None:
+        from app.forge.core.airgrabber_folders import newly_watched  # not at import time
+
         changes = self.changes()
         stopped = list(self._unignore)
         if self._settings is None or not (changes or stopped):
             return None
+        draft = self._draft_settings()
+        if draft.automatic == "on" and newly_watched(self._settings.current, draft):
+            changes["automatic"] = "trial"  # a folder came in meanwhile: nothing moves unseen
         try:
             if changes:
                 await self._settings.update(**changes)
@@ -787,9 +882,10 @@ def _build_library(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:
     return LibrarySection(page, forge)
 
 
-# MediaForge's Settings sections, in the sidebar's order.
+# Settings' MediaForge group, in the sidebar's order.
 FORGE_SECTIONS: dict[str, ForgeSection] = {
     SECTION_LIBRARY: ForgeSection("📁", LIBRARY_NOTE, _build_library),
     SECTION_NAMING: ForgeSection(NAMING_ICON, NAMING_NOTE, build_naming),
+    SECTION_SUBTITLES: ForgeSection(SUBTITLES_ICON, SUBTITLES_NOTE, build_subtitles),
     SECTION_MENU: ForgeSection(MENU_ICON, MENU_NOTE, build_menu),
 }

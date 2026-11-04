@@ -17,7 +17,7 @@ The warm-up (INTEGRATION.md 3.6): guessit builds its rules on its first parse (w
 ~0.5-0.8 s of loop time, once per run). `warm_up()` does that with one made-up name: when the
 renamer starts looking (`start_watching`, Forge's own start, a quiet moment 15 s after AirGrabber's
 window), else once the loop has been quiet for a while (`wait_until_quiet`), or at once when the
-Forge window opens first (it shows "Getting ready…" meanwhile, app/forge/ui/host.py).
+page opens first (it shows "Getting ready…" meanwhile, app/forge/ui/host.py).
 """
 
 from __future__ import annotations
@@ -27,9 +27,11 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.config import AppPaths
+from app.forge.clients.opensubtitles import APP_API_KEY, OpenSubtitlesClient, effective_api_key
 from app.forge.clients.posters import CachedPosters
 from app.forge.clients.tmdb import ForgeTmdb
 from app.forge.clients.trailers import TrailerService
@@ -47,6 +49,7 @@ from app.forge.core.presets_service import PresetService
 from app.forge.core.queue import Queue, QueueEvent
 from app.forge.core.recovery import recover
 from app.forge.core.settings import ForgeSettingsService
+from app.forge.core.subtitles import ForgeSubtitles, carry_subtitles
 from app.forge.core.undo import UndoService
 from app.forge.db.cache import CacheRepo
 from app.forge.db.database import Database, db_path
@@ -149,6 +152,10 @@ class QueueEvents:
         self._listeners.clear()
 
 
+def _own_key(settings: SettingsService) -> str:
+    return settings.current.opensubtitles_own_key.get_secret_value().strip()
+
+
 def _renamer_view(settings: ForgeSettings) -> tuple[object, ...]:
     # The folders watched include AirGrabber's (B-01), which follow other fields than these.
     fields = tuple(getattr(settings, name) for name in RENAMER_FIELDS)
@@ -156,7 +163,7 @@ def _renamer_view(settings: ForgeSettings) -> tuple[object, ...]:
 
 
 class ForgeServices:
-    """Everything Forge's window, the tray and the right-click requests talk to."""
+    """Everything MediaForge's page, the tray and the right-click requests talk to."""
 
     def __init__(
         self,
@@ -185,7 +192,7 @@ class ForgeServices:
         self.history = HistoryService(history_repo)
         self.presets = PresetService(PresetRepo(db))
         self.matches = MatchService(match_repo)
-        # What Auto-rename leaves alone (the queue's Ignore, Settings › Library & watching).
+        # What Auto-rename leaves alone (the queue's Ignore, Settings › Auto-rename).
         self.ignored = IgnoreService(IgnoredRepo(db), activity=self.activity)
         self.resolver = Resolver(tmdb, match_repo, activity=self.activity)
         self.queue_events = QueueEvents()
@@ -193,12 +200,26 @@ class ForgeServices:
         self.trailers = TrailerService(
             paths.forge / TOOLS_DIR, http, settings, activity=self.activity
         )
+        # Subtitles from OpenSubtitles.com: the settings stay AirGrabber's (the same fields), the
+        # user's own API key when Settings has one, else the shipped key (read on every request,
+        # so a changed key applies at once).
+        self.subtitles = ForgeSubtitles(
+            OpenSubtitlesClient(
+                http,
+                api_key=lambda: effective_api_key(_own_key(airgrabber_settings), APP_API_KEY),
+                own_key=lambda: bool(_own_key(airgrabber_settings)),
+            ),
+            airgrabber_settings,
+            history_repo,
+            own_key=lambda: bool(_own_key(airgrabber_settings)),
+        )
         self.executor = Executor(
             history_repo,
             CachedPosters(images),
             self.trailers,
             activity=self.activity,
             moves=self.moves,
+            subtitles=self.subtitles,
         )
         self.undo = UndoService(history_repo, activity=self.activity)
         self.run_lock = asyncio.Lock()  # one rename run at a time: the owner's or the renamer's
@@ -260,7 +281,9 @@ class ForgeServices:
                 http=http,
                 airgrabber_settings=airgrabber_settings,
             )
+            await carry_subtitles(settings, services.presets, airgrabber_settings)
             await services.ignored.load()
+            await services.ignored.forget_gone(map(Path, watched_folders(settings.current)))
             if settled:
                 services.activity.say(
                     tn(

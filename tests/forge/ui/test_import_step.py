@@ -1,6 +1,6 @@
 """The old MediaForge's import step (app/forge/ui/import_step.py, F-26): the question, the
 "replace what's here?" question, the result (with "Remove the old MediaForge" once), the
-problems, Settings' "Bring over…" row, and the host showing it at an open of the Forge window
+problems, Settings' "Bring over…" row, and the host showing it at a visit to MediaForge's page
 (D13: again at the next open after "Not now", never after an import).
 
 The import itself is faked here (tests/forge/test_migration.py covers it); no old install is
@@ -34,7 +34,7 @@ from app.forge.ui.import_step import (
 from app.i18n import Language, set_language, t
 from tests.forge.tk import pump, pump_until
 from tests.forge.ui.test_host import HostCase
-from tests.forge.ui.test_window import TkCase
+from tests.forge.ui.test_page import TkCase
 
 OLD = OldInstall(
     db_file=Path(r"C:\Users\Alex\AppData\Roaming\MediaForge\mediaforge.db"),
@@ -376,7 +376,13 @@ class HostOfferTests(HostCase):
         await super().asyncSetUp()
         self.lookups = 0
         self.found: OldInstall | None = OLD
-        self.offering = ForgeHost(self.root, self.runtime, find_old_install=self.find)
+        self.offering = ForgeHost(
+            self.root,
+            self.runtime,
+            page_master=self.holder,
+            tabs_row=self.tabs_row,
+            find_old_install=self.find,
+        )
         self.addAsyncCleanup(self.offering.shutdown)
 
     def find(self) -> OldInstall | None:
@@ -384,17 +390,16 @@ class HostOfferTests(HostCase):
         return self.found
 
     async def opened(self) -> ImportStep:
-        window = await self.offering.open()
-        assert window is not None
-        window.attributes("-alpha", 0.0)
-        await pump_until(window, lambda: self.offering.import_step is not None)
+        page = await self.offering.open()
+        assert page is not None
+        await pump_until(self.root, lambda: self.offering.import_step is not None)
         step = self.offering.import_step
         assert step is not None
         step.attributes("-alpha", 0.0)
-        self.assertEqual(step.master, window)
+        self.assertEqual(step.master, self.root)  # over the main window
         return step
 
-    async def test_asked_at_the_first_open_and_again_after_not_now(self) -> None:
+    async def test_asked_at_the_first_visit_and_not_again_in_this_run(self) -> None:
         step = await self.opened()
         self.assertEqual(step.heading.cget("text"), t(ASK_HEADING))
         await self.offering.open()  # already showing: not asked twice
@@ -406,33 +411,44 @@ class HostOfferTests(HostCase):
         await self.offering.open()  # still showing: no new question
         await pump(self.root, 0.1)
         self.assertIsNone(self.offering.import_step)
-        self.offering.close()  # hidden, then opened again: asked again (D13)
-        again = await self.opened()
-        self.assertIsNot(again, step)
+        self.offering.close()  # another page, then this one again: not again until a new start
+        await self.offering.open()
+        await pump(self.root, 0.1)
+        self.assertIsNone(self.offering.import_step)
+        self.assertEqual(self.lookups, 1)
+
+    async def test_left_before_the_look_ended_it_asks_at_the_next_visit(self) -> None:
+        page = await self.offering.open()
+        assert page is not None
+        self.offering.close()  # gone before the look for the old install came back
+        await pump_until(self.root, lambda: self.lookups == 1 and not self.offering._offering)
+        await pump(self.root, 0.05)
+        self.assertIsNone(self.offering.import_step)
+        await self.opened()
 
     async def test_never_after_an_import(self) -> None:
         services = await self.runtime.start()
         assert services is not None
         await services.settings.update(imported_from="MediaForge 1.3.0, 2026-11-02")
-        window = await self.offering.open()
-        assert window is not None
-        await pump(window, 0.2)
+        page = await self.offering.open()
+        assert page is not None
+        await pump(self.root, 0.2)
         self.assertIsNone(self.offering.import_step)
         self.assertEqual(self.lookups, 0)
 
     async def test_not_without_old_data(self) -> None:
         self.found = OldInstall(db_file=None, uninstall_string="x")
-        window = await self.offering.open()
-        assert window is not None
-        await pump_until(window, lambda: self.lookups == 1)
-        await pump(window, 0.1)
+        page = await self.offering.open()
+        assert page is not None
+        await pump_until(self.root, lambda: self.lookups == 1)
+        await pump(self.root, 0.1)
         self.assertIsNone(self.offering.import_step)
 
     async def test_an_import_reloads_the_presets_and_the_page(self) -> None:
-        """From the window's step: the import's last step stores `imported_from`."""
+        """From the page's step: the import's last step stores `imported_from`."""
         step = await self.opened()
-        window = self.offering.window
-        assert window is not None and window.queue is not None
+        page = self.offering.page
+        assert page is not None and page.queue is not None
         services = self.services()
 
         async def fake_import(forge: Any, old: OldInstall) -> ImportResult:
@@ -441,8 +457,8 @@ class HostOfferTests(HostCase):
 
         step._bring_over = fake_import
         with (
-            mock.patch.object(window.queue, "reload_presets") as reload,
-            mock.patch.object(window, "refresh_page") as refresh,
+            mock.patch.object(page.queue, "reload_presets") as reload,
+            mock.patch.object(page, "refresh_page") as refresh,
         ):
             step.bring_over()
             await pump_until(step, lambda: step.result is not None)
@@ -451,13 +467,13 @@ class HostOfferTests(HostCase):
         reload.assert_called_once_with()
         refresh.assert_called_once_with()
 
-    async def test_an_import_from_settings_refreshes_the_open_window(self) -> None:
+    async def test_an_import_from_settings_refreshes_the_page(self) -> None:
         """Settings' "Bring over…" (BringOverBox) runs the import on the same services: the
-        open Forge window is refreshed the same way."""
+        page is refreshed the same way."""
         step = await self.opened()
-        step.close()  # Not now in the window
-        window = self.offering.window
-        assert window is not None and window.queue is not None
+        step.close()  # Not now on the page
+        page = self.offering.page
+        assert page is not None and page.queue is not None
         services = self.services()
 
         async def fake_import(forge: Any, old: OldInstall) -> ImportResult:
@@ -487,8 +503,8 @@ class HostOfferTests(HostCase):
         assert dialog is not None
         dialog.attributes("-alpha", 0.0)
         with (
-            mock.patch.object(window.queue, "reload_presets") as reload,
-            mock.patch.object(window, "refresh_page") as refresh,
+            mock.patch.object(page.queue, "reload_presets") as reload,
+            mock.patch.object(page, "refresh_page") as refresh,
         ):
             dialog.bring_over()
             await pump_until(dialog, lambda: dialog.result is not None)
@@ -509,7 +525,7 @@ class HostOfferTests(HostCase):
 
     async def test_the_default_host_finds_nothing_in_tests(self) -> None:
         """The plain host (test_host.py's) looks with the real finder, hidden by the base."""
-        window = await self.host.open()
-        assert window is not None
-        await pump(window, 0.3)
+        page = await self.host.open()
+        assert page is not None
+        await pump(self.root, 0.3)
         self.assertIsNone(self.host.import_step)

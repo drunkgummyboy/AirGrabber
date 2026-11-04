@@ -117,7 +117,8 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual({r.faint_label for r in lines}, {"Now:"})
         self.assertEqual({r.new for r in lines}, {False})  # an episode's title is its name
         self.assertEqual({r.band for r in lines}, {ted.key})  # hovered with their band
-        self.assertEqual(ted.actions, (("ignore", "Ignore"), ("rename", "Rename")))
+        self.assertEqual(ted.actions, (("explorer", "📂"), ("ignore", "Ignore"), ("rename", "Rename")))
+        self.assertEqual(ted.tips, (("explorer", "Open in Explorer"),))
         self.assertEqual(rows.bands[ted.key], [items[2].id, items[0].id])
         self.assertEqual(rows.targets[items[2].id].parent.name, "Ted Lasso - Season 04")
         dune = bands(rows)[0]
@@ -149,7 +150,8 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(shrinking.title, "Shrinking")
         self.assertEqual((shrinking.state, shrinking.state_text), ("needs", "Needs you"))
         self.assertEqual(
-            shrinking.actions, (("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename"))
+            shrinking.actions,
+            (("explorer", "📂"), ("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename")),
         )
         self.assertEqual((shrinking.subtitle, shrinking.dest), ("TMDB isn't sure · 1 file", ""))
         self.assertEqual(arrival.title, "Arrival")
@@ -203,7 +205,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(heading.subtitle, "2")
         self.assertLess(rows.rows.index(bands(rows)[0]), rows.rows.index(heading))
         done = bands(rows)[1:]
-        self.assertTrue(all(b.actions == (("undo", "Undo"),) for b in done))
+        self.assertTrue(all(b.actions == (("explorer", "📂"), ("undo", "Undo")) for b in done))
         self.assertTrue(all(b.faded and b.state == "done" for b in done))
         self.assertEqual([b.state_text for b in done], ["Renamed", "Renamed"])
         self.assertEqual([b.note for b in done], ["14:05", ""])
@@ -369,8 +371,11 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(dune.state_text, "Hernoemd")
         self.assertEqual(show.subtitle, "Seizoenen 1–2 · 2 afleveringen")
         self.assertEqual(show.dest, "→ dezelfde map")
-        self.assertEqual(show.actions, (("ignore", "Negeren"), ("rename", "Hernoemen")))
-        self.assertEqual(dune.actions, (("undo", "Ongedaan maken"),))
+        self.assertEqual(
+            show.actions, (("explorer", "📂"), ("ignore", "Negeren"), ("rename", "Hernoemen"))
+        )
+        self.assertEqual(dune.actions, (("explorer", "📂"), ("undo", "Ongedaan maken")))
+        self.assertEqual(dune.tips, (("explorer", "Openen in Verkenner"),))
         self.assertEqual(dune.subtitle, "Film · 2021")
         self.assertEqual({r.faint_label for r in rows.rows if r.kind == "item"}, {"Nu:"})
 

@@ -2,12 +2,12 @@
 (INTEGRATION.md 3.6).
 
 - Importing what AirGrabber's start imports (`main`, `app.services`, `app.ui.main_window`) loads
-  neither guessit (nor rebulk / babelfish), Forge's services and forge.db, nor Forge's window: of
+  neither guessit (nor rebulk / babelfish), Forge's services and forge.db, nor Forge's page: of
   `app.forge.ui` only the few light modules the main window wires in at start (checked in a
   fresh interpreter).
 - `ForgeServices.warm_up()` parses one name once per run; `start_watching` warms up first when
   the renamer will look, else when the loop has been quiet for a while (`wait_until_quiet`).
-- A Forge window opened before that shows "Getting ready…" while it warms up.
+- MediaForge's page opened before that shows "Getting ready…" while it warms up.
 
 Temporary data dirs, HTTP on a MockTransport; the parser is faked except in one smoke test.
 """
@@ -30,7 +30,7 @@ import httpx
 from app.config import AppPaths
 from app.forge import services as forge_services
 from app.forge.services import ForgeServices, wait_until_quiet
-from app.forge.ui.window import GETTING_READY, ForgeWindow
+from app.forge.ui.page import GETTING_READY, ForgePage
 from app.i18n import t
 from app.services.images import ImageCache
 from app.services.settings import SettingsService
@@ -41,10 +41,10 @@ from tests.forge.ui.test_host import HostCase
 
 ROOT = Path(__file__).resolve().parents[2]
 NEVER_AT_START = ("guessit", "rebulk", "babelfish", "app.forge.services", "app.forge.db")
-# The Forge UI modules AirGrabber's main window imports at start (all light: no window, no
-# Inbox, no Pillow work): the host it owns (F-21) and the Forge look of the band and the tray
-# (F-22). MediaForge's Settings sections (F-24 / F-25) are its own Settings window's since
-# 2026-11-02, loaded with that window. Anything else is a regression.
+# The Forge UI modules AirGrabber's main window imports at start (all light: no page, no
+# queue, no Pillow work): the host it owns (F-21) and the Forge look of the band and the tray
+# (F-22). MediaForge's Settings sections (F-24 / F-25) load when Settings opens, its page at the
+# first visit. Anything else is a regression.
 LIGHT_AT_START = frozenset({"app.forge.ui", "app.forge.ui.host", "app.forge.ui.look"})
 _PROBE = (
     "import json, sys\n"
@@ -86,8 +86,8 @@ class StartPathImportsTest(unittest.TestCase):
     def test_of_forges_ui_only_the_light_modules(self) -> None:
         heavy = sorted(set(_loaded(("app.forge.ui",), self.modules)) - LIGHT_AT_START)
         self.assertEqual(heavy, [], "Forge UI modules imported at AirGrabber's start")
-        self.assertNotIn("app.forge.ui.window", self.modules)
-        self.assertNotIn("app.forge.ui.settings_window", self.modules)
+        self.assertNotIn("app.forge.ui.page", self.modules)
+        self.assertNotIn("app.forge.ui.queue_view", self.modules)
         self.assertNotIn("app.forge.ui.settings_pages", self.modules)
 
 
@@ -181,7 +181,7 @@ class WarmUpTests(ForgeAsyncTestCase):
 
     async def test_a_warm_up_done_meanwhile_isnt_repeated(self) -> None:
         self.services.start_watching()
-        self.services.warm_up()  # the Forge window opened first
+        self.services.warm_up()  # MediaForge's page opened first
         self.quiet.set()
         await asyncio.sleep(0.05)
         self.assertEqual(self.warmed, [False])
@@ -233,39 +233,55 @@ class RealWarmUpTest(ForgeAsyncTestCase):
 
 
 class GettingReadyTests(HostCase):
-    async def test_a_window_opened_before_the_warm_up_says_getting_ready_first(self) -> None:
+    async def test_a_page_opened_before_the_warm_up_says_getting_ready_first(self) -> None:
         seen: list[tuple[str | None, bool]] = []
 
         def warm() -> None:
-            window = self.host.window
-            assert window is not None
-            label = window.message_label
-            seen.append((label.cget("text") if label is not None else None, window.queue is None))
+            page = self.host.page
+            assert page is not None
+            label = page.message_label
+            seen.append((label.cget("text") if label is not None else None, page.queue is None))
 
         with (
             mock.patch.object(forge_services, "_parser_warm", False),
             mock.patch.object(forge_services, "_warm_parser", warm),
         ):
-            window = await self.open()
+            page = await self.open()
         self.assertEqual(seen, [(t(GETTING_READY), True)])
-        self.assertIsNotNone(window.queue)  # then the pages, and the plain page is gone
-        self.assertIsNone(window.message)
+        self.assertIsNotNone(page.queue)  # then the queue, and the plain frame is gone
+        self.assertIsNone(page.message)
 
-    async def test_once_warm_the_window_opens_straight_to_its_pages(self) -> None:
+    async def test_it_says_getting_ready_while_forge_starts_too(self) -> None:
+        seen: list[str | None] = []
+        original = self.runtime.start
+
+        async def start() -> ForgeServices | None:
+            page = self.host.page
+            assert page is not None and page.message_label is not None
+            seen.append(page.message_label.cget("text"))
+            return await original()
+
+        with mock.patch.object(self.runtime, "start", start):
+            page = await self.open()
+        self.assertEqual(seen, [t(GETTING_READY)])
+        self.assertIsNotNone(page.queue)
+
+    async def test_once_warm_and_started_it_opens_straight_to_the_queue(self) -> None:
+        await self.runtime.start()
         shown: list[int] = []
-        original = ForgeWindow.show_getting_ready
+        original = ForgePage.show_getting_ready
 
-        def spy(window: ForgeWindow) -> None:
+        def spy(page: ForgePage) -> None:
             shown.append(1)
-            original(window)
+            original(page)
 
         with (
             mock.patch.object(forge_services, "_parser_warm", True),
-            mock.patch.object(ForgeWindow, "show_getting_ready", spy),
+            mock.patch.object(ForgePage, "show_getting_ready", spy),
         ):
-            window = await self.open()
+            page = await self.open()
         self.assertEqual(shown, [])
-        self.assertIsNotNone(window.queue)
+        self.assertIsNotNone(page.queue)
 
     async def test_requested_files_still_reach_the_inbox_after_the_warm_up(self) -> None:
         paths = self.files("dl", "Dune.2021.mkv")

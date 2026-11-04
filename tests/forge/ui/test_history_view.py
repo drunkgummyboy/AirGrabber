@@ -24,15 +24,17 @@ from app.forge.core.planner import build_plan
 from app.forge.core.undo import MOVED_AGAIN, UndoService
 from app.forge.db.database import Database
 from app.forge.db.history import HistoryRepo
+from app.forge.db.moves import MoveRepository
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind
 from app.forge.models.preset import PresetOptions
 from app.forge.services import ForgeServices
 from app.forge.ui.history_view import HistoryView, day_label, when_label
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.i18n import Language, current_language, set_language, t
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.core.journal_base import FakePosters, make_inputs
+from tests.forge.ui.subtitle_kit import FakeSubtitleSource
 from tests.forge.tk import pump
 
 
@@ -44,6 +46,12 @@ class _Services:
     undo: UndoService
     executor: Executor
     repo: HistoryRepo
+    subtitles: FakeSubtitleSource
+    moves: MoveRepository
+    db: Database
+
+    def warm_up(self) -> None:
+        pass
 
 
 class HistoryViewCase(ForgeAsyncTestCase):
@@ -76,6 +84,9 @@ class HistoryViewCase(ForgeAsyncTestCase):
             undo=UndoService(repo),
             executor=Executor(repo, FakePosters(), None),
             repo=repo,
+            subtitles=FakeSubtitleSource(),
+            moves=MoveRepository(db),
+            db=db,
         )
         self.services = cast(ForgeServices, self.parts)
         self.view = HistoryView(self.root, self.services)
@@ -356,10 +367,10 @@ class HistoryViewTest(HistoryViewCase):
         self.assertEqual(card.summary_text(), "1 bestand · Auto")
         self.assertEqual(card.undo_button.cget("text"), "Ronde ongedaan maken")
 
-    async def test_cards_wear_the_forge_look(self) -> None:
+    async def test_cards_wear_the_app_look(self) -> None:
         await self.run_of()
         await self.view.reload()
-        look = forge_look()
+        look = app_look()
         card = self.view.cards[0]
         self.assertEqual(tuple(card.cget("fg_color")), look.SURFACE)
         self.assertEqual(tuple(card.undo_button.cget("fg_color")), look.ACCENT)

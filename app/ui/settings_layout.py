@@ -1,14 +1,11 @@
-"""The layout both Settings windows share: AirGrabber's Settings (app/ui/settings_dialog.py) and
-MediaForge's (app/forge/ui/settings_window.py).
+"""The layout of the Settings window (app/ui/settings_dialog.py).
 
 A sidebar of sections (a small group label above each part of the list; `fill_sidebar`,
-`SidebarItem`), a 1-pixel line, and one scrolling page per section (`SettingsPage`: a heading,
+`SidebarItem`; it scrolls on a screen too short for all of them), a 1-pixel line, and one scrolling page per section (`SettingsPage`: a heading,
 its muted line, then boxes, `SettingsBox`, one below the other); `build_layout` makes that
 skeleton in a window, `fit_window` sizes the window (pages scroll on a short screen).
 
-Everything takes an optional `look` (theme.Look): None paints with AirGrabber's tokens, the
-Forge look (app/forge/ui/look.py) in MediaForge's copper. A page keeps its `look` for whoever
-fills it (MediaForge's sections). Tokens are read when a widget is made, never copied at import
+It paints with AirGrabber's tokens, read when a widget is made, never copied at import
 (theme.apply_accent sets them once at startup).
 """
 
@@ -24,7 +21,7 @@ import customtkinter as ctk
 from app.i18n import t
 from app.ui import theme
 from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM
-from app.ui.dialog_kit import DETAIL_SIZE, SMALL_SIZE, text_label
+from app.ui.dialog_kit import DETAIL_SIZE, SMALL_SIZE, FitScroll, text_label
 from app.ui.scrollable import ScrollableFrame
 
 # -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
@@ -74,15 +71,12 @@ class SettingsBox:
         master: Any,
         title: str | None = None,
         text: str | None = None,
-        *,
-        look: theme.Look | None = None,
     ) -> None:
         self.frame = ctk.CTkFrame(
             master,
-            fg_color=theme.TAB_BG if look is None else look.TAB_BG,
+            fg_color=theme.TAB_BG,
             border_width=1,
-            # PANEL_EDGE is PLACEHOLDER (theme.apply_accent).
-            border_color=theme.PANEL_EDGE if look is None else look.PLACEHOLDER,
+            border_color=theme.PANEL_EDGE,
             corner_radius=BOX_RADIUS,
         )
         self.body = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -142,13 +136,9 @@ class SettingsBox:
 
 class SettingsPage:
     """One section's page: a heading, its muted line, then boxes (`box`) and other blocks
-    (`add`), one below the other. `look`: the window's accent tokens (None: AirGrabber's), kept
-    for whoever fills the page."""
+    (`add`), one below the other."""
 
-    def __init__(
-        self, master: Any, title: str, note: str, *, look: theme.Look | None = None
-    ) -> None:
-        self.look = look
+    def __init__(self, master: Any, title: str, note: str) -> None:
         self.frame = ctk.CTkFrame(master, fg_color="transparent")
         self.frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
@@ -164,7 +154,7 @@ class SettingsPage:
         self._next_row = 2
 
     def box(self, title: str | None = None, text: str | None = None) -> SettingsBox:
-        box = SettingsBox(self.frame, title, text, look=self.look)
+        box = SettingsBox(self.frame, title, text)
         self.add(box.frame)
         return box
 
@@ -187,12 +177,9 @@ class SidebarItem(ctk.CTkFrame):
         section: str,
         icon: str,
         on_click: Callable[[str], None],
-        *,
-        look: theme.Look | None = None,
     ) -> None:
         super().__init__(master, fg_color="transparent", corner_radius=8, cursor="hand2")
         self.section = section
-        self._look = look
         self._on_click = on_click
         self._selected = False
         self._hovered = False
@@ -247,12 +234,11 @@ class SidebarItem(ctk.CTkFrame):
         self._paint()
 
     def _paint(self) -> None:
-        look = self._look
         color: theme.Color
         if self._selected:
-            color = theme.ROW_SELECTED if look is None else look.ROW_SELECTED
+            color = theme.ROW_SELECTED
         elif self._hovered:
-            color = theme.CHIP if look is None else look.CHIP
+            color = theme.CHIP
         else:
             color = "transparent"
         self.configure(fg_color=color)
@@ -274,8 +260,6 @@ def fill_sidebar(
     groups: Sequence[tuple[str, Sequence[str]]],
     icons: Mapping[str, str],
     on_click: Callable[[str], None],
-    *,
-    look: theme.Look | None = None,
 ) -> dict[str, SidebarItem]:
     """A group label (upper case) above each group's sections, in order; groups without a
     section are left out. Names are untranslated (shown through t())."""
@@ -293,7 +277,7 @@ def fill_sidebar(
         ).pack(fill="x", padx=(10, 0), pady=(0 if first else 14, 4))
         first = False
         for section in sections:
-            item = SidebarItem(sidebar, section, icons[section], on_click, look=look)
+            item = SidebarItem(sidebar, section, icons[section], on_click)
             item.pack(fill="x", pady=(0, 2))
             items[section] = item
     return items
@@ -302,17 +286,39 @@ def fill_sidebar(
 # -- the window --------------------------------------------------------------------------------------
 
 
+class SidebarScroll(FitScroll):
+    """What holds the sidebar: a plain frame until the window is too short for all its sections
+    (13 of them at 150 % on a 1080p screen); then it scrolls, its bar taking its room from the
+    list so that the pages beside it keep their width."""
+
+    def __init__(self, master: Any, width: int) -> None:
+        super().__init__(master)
+        self._full_width = width
+        self._width_now = width
+        self.configure(width=width)
+
+    def refit(self) -> None:
+        super().refit()
+        width = self._full_width
+        if self.scrolls:
+            width -= int(self._scrollbar.cget("width"))
+        if width != self._width_now:
+            self._width_now = width
+            self.configure(width=width)
+
+
 class SettingsLayout(NamedTuple):
     """What `build_layout` made: the window's body (grid: the sidebar in column 0, the line in
     column 1, the pages in column 2 of row 0; row 1, column 2 is the caller's, for its footer),
-    the sidebar, the pages' scrolling frame."""
+    the sidebar (what `fill_sidebar` fills) and what scrolls it, the pages' scrolling frame."""
 
     body: ctk.CTkFrame
     sidebar: ctk.CTkFrame
     scroll: ScrollableFrame
+    sidebar_scroll: SidebarScroll
 
 
-def build_layout(window: Any, sidebar: int, *, look: theme.Look | None = None) -> SettingsLayout:
+def build_layout(window: Any, sidebar: int) -> SettingsLayout:
     """The sidebar (`sidebar` logical units wide at least), a 1-pixel line beside it and the
     pages' scrolling frame, packed into `window`."""
     body = ctk.CTkFrame(window, fg_color="transparent")
@@ -323,15 +329,18 @@ def build_layout(window: Any, sidebar: int, *, look: theme.Look | None = None) -
     body.grid_columnconfigure(2, weight=1)
     body.grid_rowconfigure(0, weight=1)
 
-    side = ctk.CTkFrame(body, fg_color="transparent")
-    side.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=SIDEBAR_PAD, pady=(PAGE_TOP, 12))
+    side_scroll = SidebarScroll(body, sidebar - 2 * SIDEBAR_PAD)
+    side_scroll.grid(
+        row=0, column=0, rowspan=2, sticky="nsew", padx=SIDEBAR_PAD, pady=(PAGE_TOP, 12)
+    )
+    side = ctk.CTkFrame(side_scroll, fg_color="transparent")
+    side.grid(row=0, column=0, sticky="nsew")
     # A 1-pixel line between the sidebar and the page (a CTkFrame that thin draws nothing).
     line = tk.Frame(body, width=1, highlightthickness=0)
     line.grid(row=0, column=1, rowspan=2, sticky="ns")
-    edge: theme.Color = theme.PANEL_EDGE if look is None else look.PLACEHOLDER
 
     def paint_line() -> None:
-        line.configure(background=theme.pick(edge))
+        line.configure(background=theme.pick(theme.PANEL_EDGE))
 
     paint_line()
     theme.on_mode_change(line, paint_line)
@@ -340,8 +349,8 @@ def build_layout(window: Any, sidebar: int, *, look: theme.Look | None = None) -
         width=PAGE_WIDTH,
         height=200,
         fg_color="transparent",
-        scrollbar_button_color=theme.SCROLLBAR if look is None else look.SCROLLBAR,
-        scrollbar_button_hover_color=theme.EDGE if look is None else look.EDGE,
+        scrollbar_button_color=theme.SCROLLBAR,
+        scrollbar_button_hover_color=theme.EDGE,
     )
     scroll.grid(
         row=0,
@@ -351,7 +360,7 @@ def build_layout(window: Any, sidebar: int, *, look: theme.Look | None = None) -
         pady=(PAGE_TOP, 0),
     )
     scroll.grid_columnconfigure(0, weight=1)
-    return SettingsLayout(body, side, scroll)
+    return SettingsLayout(body, side, scroll, side_scroll)
 
 
 def page_height(content: int, scaling: float) -> int:

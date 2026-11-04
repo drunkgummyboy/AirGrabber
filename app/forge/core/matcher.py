@@ -1,7 +1,7 @@
 """Decide which TMDB result a file is, and fetch the official names for it.
 
 `Resolver` works with any `TmdbLike` (in the app: `app.forge.clients.tmdb.ForgeTmdb`). It asks
-`configured()` on every lookup, so a key added or removed in AirGrabber's Settings applies at
+`configured()` on every lookup, so a key added or removed in Settings applies at
 once: without one, files are named from what the file name says (OFFLINE).
 
 A remembered match whose details lookup fails because TMDB sent a malformed reply

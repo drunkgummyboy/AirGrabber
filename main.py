@@ -12,9 +12,9 @@ there).
 `--forge [--confirm] [--preset NAME] [PATH …]` is a request for Forge (MediaForge inside AirGrabber):
 the Explorer right-click menu starts one process per selected file with it. When AirGrabber already
 runs, the request is handed over (app/single_instance.py's mailbox) before logging and the package
-check, so many starts stay cheap; a first start keeps it in `Options.forge_request`, starts with
-the main window hidden and shows only Forge's window (app/ui/forge_link.py: when that closes it
-stays in the tray or quits, D5).
+check, so many starts stay cheap; a first start keeps it in `Options.forge_request` and starts with
+the main window hidden: a plain request then shows it on MediaForge's page, a confirm request only
+its confirm window (app/ui/forge_link.py: when that closes it stays in the tray or quits, D5).
 `--forge-menu on|off` only turns this copy's Explorer right-click menu on or off (D8: install.ps1
 turns it on for a new install; app/forge/context_menu.py, which leaves another program's menu
 alone) and exits: no window, no single-instance lock; the exit code says how it went (`EXIT_*`
@@ -53,7 +53,7 @@ _background_tasks: set[asyncio.Task[Any]] = set()  # strong references until the
 class Options:
     tray: bool = False  # start hidden: only the tray icon shows
     setup_qbittorrent: bool = False  # only set qBittorrent up for AirGrabber, then exit
-    forge: bool = False  # a request for Forge: the Forge window, or with `confirm` the confirm window
+    forge: bool = False  # a request for Forge: MediaForge's page, or with `confirm` the confirm window
     confirm: bool = False  # "Rename N files?" for `paths` (the right-click menu)
     preset: str | None = None  # the naming preset to use (the right-click menu's entry)
     paths: tuple[str, ...] = ()  # files and folders, as given
@@ -164,8 +164,8 @@ def _run(
     start_hidden: bool,
     forge_request: ForgeRequest | None = None,
 ) -> int:
-    """The app. `forge_request`: the Forge request this first start carries (it starts hidden
-    and shows only Forge's window); later starts' requests arrive through `instance`."""
+    """The app. `forge_request`: the Forge request this first start carries (it starts hidden;
+    the request decides what shows); later starts' requests arrive through `instance`."""
     from app.services import Services
     from app.ui import tasks, theme
     from app.ui.main_window import MainWindow

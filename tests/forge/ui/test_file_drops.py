@@ -1,4 +1,4 @@
-"""Explorer drops on Forge windows (app/forge/ui/file_drops.py): the hand-over logic with a fake
+"""Explorer drops on a window (app/forge/ui/file_drops.py): the hand-over logic with a fake
 Win32 side, and, on Windows, the real window procedure fed WM_DROPFILES messages built the way the
 shell builds them (an HDROP: DROPFILES + a double-NUL-terminated UTF-16 list) on a hidden window.
 A real Explorer drag needs the mouse: that stays a manual check."""

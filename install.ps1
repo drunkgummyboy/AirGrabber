@@ -289,8 +289,8 @@ function New-Shortcut([string]$Path, [string]$PythonW) {
 }
 
 function New-ForgeShortcut([string]$Path, [string]$PythonW) {
-    # MediaForge's Start-menu shortcut (D8): "<install>\main.py" --forge opens the Forge window,
-    # with MediaForge's icon and its own AppUserModelID, as the Forge window's taskbar button has
+    # MediaForge's Start-menu shortcut (D8): "<install>\main.py" --forge opens MediaForge's page,
+    # with MediaForge's icon and its own AppUserModelID
     # (app/forge/shortcut.py). A MediaForge.lnk that starts another program (the old MediaForge's)
     # is left alone; AirGrabber makes this one itself once that has gone.
     $mainPy = Join-Path $InstallDir 'main.py'

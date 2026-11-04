@@ -1,29 +1,31 @@
-"""The Forge window's look: AirGrabber's light and dark tokens with a fixed copper accent.
+"""Forge's look: AirGrabber's own accent tokens as a value views can hold on to.
 
-AirGrabber's accent tokens are module globals in app/ui/theme.py (the accent the user chose,
-set once at startup); the Forge window wears copper whatever that is (docs/forge/INTEGRATION.md
-D1). `forge_look()` gives every palettes.ACCENT_TOKENS token as a (light, dark) pair, computed
-once from palettes.FORGE and theme's Slate values. Forge code reads `look.ACCENT` and the like
-here; the theme-independent tokens (TEXT, TEXT_MUTED, SUCCESS, DANGER, WARNING, ON_COLOR, ...)
-stay theme.py's. Shared widgets that take a `look` (dialog_kit's buttons, popup_menu) or
-`colors` (widgets.Tabview) paint in copper when given it. Canvas items, plain Tk and Pillow take
-`theme.pick(look.X)` and repaint on `theme.on_mode_change`.
+`app_look()` gives every palettes.ACCENT_TOKENS token as a (light, dark) pair, as theme.py has
+them when it is called: read it when a view is built, never at import (main.py applies the saved
+accent at startup, before the first window). Forge code reads `look.ACCENT` and the like here;
+the theme-independent tokens (TEXT, TEXT_MUTED, SUCCESS, DANGER, WARNING, ON_COLOR, ...) stay
+theme.py's. Shared widgets that take a `look` (dialog_kit's buttons, popup_menu) or `colors`
+(widgets.Tabview) paint with it. Canvas items, plain Tk and Pillow take `theme.pick(look.X)` and
+repaint on `theme.on_mode_change`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import cache
+from typing import TYPE_CHECKING
 
 from app.ui import palettes, theme
+
+if TYPE_CHECKING:
+    from app.forge.core.auto import WatchState
 
 Pair = tuple[str, str]  # (light, dark)
 
 
 @dataclass(frozen=True, slots=True)
 class ForgeLook:
-    """The copper accent tokens (theme.Look), each a (light, dark) pair. BRAND is the "Forge"
-    in the window's title text."""
+    """A window's accent tokens (theme.Look), each a (light, dark) pair (BRAND is the "Forge" in
+    the window's title text)."""
 
     BG: Pair
     SURFACE: Pair
@@ -52,10 +54,10 @@ class ForgeLook:
     NOT_AIRED: Pair
 
 
-@cache
-def forge_look() -> ForgeLook:
-    """The Forge window's look, computed once (pure: AirGrabber's tokens are left alone)."""
-    return ForgeLook(**palettes.palette_tokens(palettes.FORGE, theme.SLATE_TOKENS))
+def app_look() -> ForgeLook:
+    """AirGrabber's accent tokens as a look, as theme.py has them now (the saved accent is
+    applied once at startup, before the first widget: don't call this at import)."""
+    return ForgeLook(**{name: getattr(theme, name) for name in palettes.ACCENT_TOKENS})
 
 
 def mix(first: str, second: str, amount: float) -> str:
@@ -73,3 +75,13 @@ def mix(first: str, second: str, amount: float) -> str:
 def mix_pair(first: Pair, second: Pair, amount: float) -> Pair:
     """`mix` for each look of two (light, dark) pairs."""
     return mix(first[0], second[0], amount), mix(first[1], second[1], amount)
+
+
+def light_colour(state: WatchState) -> Pair:
+    """The renamer's light (the queue's status line, Settings › Auto-rename): green watching, amber
+    trial, red unreachable, else muted."""
+    return {
+        "watching": theme.SUCCESS,
+        "trial": theme.WARNING,
+        "unreachable": theme.DANGER,
+    }.get(state, theme.TEXT_MUTED)

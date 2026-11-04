@@ -1,6 +1,6 @@
 """People ("accounts"): the family sharing one AirGrabber, each with their own followed series,
 film watchlist and calendar. Everything else is shared: the settings, the folders, the torrent
-program, the Downloads page and the download history, "I already have this", subtitles and the
+program, the Downloads page and the download history, "I already have this" and the
 shows' cache. The automatic downloads look after everyone's lists, whoever is selected
 (app/services/auto_download.py).
 

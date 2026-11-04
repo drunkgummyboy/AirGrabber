@@ -30,7 +30,8 @@ from app.forge.db.history import HistoryRepo
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind, ResolvedMedia
 from app.forge.models.moves import MoveNote
-from app.forge.models.plan import Plan, PlannedFile, PlannedTrailer
+from app.forge.models.plan import Plan, PlannedFile, PlannedSubtitles, PlannedTrailer
+from app.forge.models.subtitles import SubtitleFetch, SubtitleFetchOutcome, SubtitleIdentity
 from app.i18n import N_, t, tn
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,11 @@ _SUCCESS = {"success": True}
 # Journal notes are kept in English (the language can change between runs): t() them where
 # they are shown. An OS error's own text is kept as it is (t() leaves it unchanged).
 NOTHING_DOWNLOADED = N_("nothing downloaded")
+NO_SUBTITLE_FOUND = N_("no subtitle found")
+SUBTITLES_TOO_SLOW = N_("OpenSubtitles took too long")
+SUBTITLES_FAILED = N_("Couldn't get subtitles")
+SUBTITLE_LIMIT_S = 30.0  # one video's subtitles at most; then the run's other videos go without
+SUBTITLES_RUN_LIMIT_S = 300.0  # all subtitles of one run at most
 
 
 class ProgressEvent(BaseModel):
@@ -58,6 +64,7 @@ class RunResult(BaseModel):
     cleaned: int = 0
     pruned: int = 0
     subtitles: int = 0  # subtitles moved along with their video
+    subtitles_fetched: int = 0  # subtitles found and saved right after the rename
     cancelled: bool = False
     errors: list[str] = []
 
@@ -68,6 +75,16 @@ class PosterFetcher(Protocol):
 
 class TrailerDownloader(Protocol):
     async def download(self, trailer: PlannedTrailer) -> Path | None: ...
+
+
+class SubtitleFetcher(Protocol):
+    """The Subtitles extra (app/forge/core/subtitles.py's ForgeSubtitles)."""
+
+    async def fetch(
+        self, video: Path, identity: SubtitleIdentity, *, run_id: int | None = None
+    ) -> SubtitleFetch: ...
+
+    async def missing(self, video: Path) -> tuple[str, ...]: ...
 
 
 class MoveNotes(Protocol):
@@ -92,6 +109,17 @@ def _journal_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+_STOPS = (SubtitleFetchOutcome.QUOTA, SubtitleFetchOutcome.PROBLEM)
+
+
+def _too_slow() -> SubtitleFetch:
+    return SubtitleFetch(
+        outcome=SubtitleFetchOutcome.PROBLEM,
+        message=t(SUBTITLES_TOO_SLOW),
+        reason=SUBTITLES_TOO_SLOW,
+    )
+
+
 def _remove_dir_or_fail(folder: Path) -> None:
     if not fsops.remove_empty_dir(folder):
         raise OSError(FOLDER_NOT_EMPTY)
@@ -111,12 +139,14 @@ class Executor:
         *,
         activity: ActivityFeed | None = None,
         moves: MoveNotes | None = None,
+        subtitles: SubtitleFetcher | None = None,
     ) -> None:
         self._history = history
         self._posters = posters
         self._trailers = trailers
         self._say = say_to(activity)  # the Activity strip, next to each English log line
         self._moves = moves
+        self._fetcher = subtitles
 
     def _note(self, planned: PlannedFile, media: ResolvedMedia | None) -> MoveNote | None:
         """This rename's move record (None: it isn't one); a fault there never stops a rename."""
@@ -190,6 +220,7 @@ class Executor:
             await self._clean(run_id, plan, result)
             succeeded = await self._files(run_id, plan, result, on_progress, cancel, media or {})
             if not result.cancelled:
+                await self._fetch_subtitles(run_id, plan, result, succeeded, cancel)
                 await self._artwork(run_id, plan, result, succeeded)
                 await self._prune(run_id, plan, result)
                 await self._leftovers(run_id, plan, result, succeeded)
@@ -361,6 +392,120 @@ class Executor:
                 t("Moved subtitle: {name} → {target}", name=src.name, target=dst.name),
                 success=True,
             )
+
+    async def _fetch_subtitles(
+        self, run_id: int, plan: Plan, result: RunResult, ok: set[int], cancel: asyncio.Event
+    ) -> None:
+        """The Subtitles extra, once the files are in place: one try per video, each in a time
+        limit. What goes wrong here never touches a rename: it is said in the Activity strip and
+        journaled as a failed line, which History shows. Today's allowance used up, a refused
+        key or no answer ends the asking for this run (said once)."""
+        fetcher = self._fetcher
+        if fetcher is None:
+            return
+        stopped: SubtitleFetch | None = None
+        deadline = time.monotonic() + SUBTITLES_RUN_LIMIT_S
+        for planned in plan.subtitles:
+            if planned.item_id not in ok:
+                continue
+            if cancel.is_set():
+                return
+            if stopped is None and time.monotonic() >= deadline:
+                stopped = _too_slow()
+                self._say_stopped(stopped)
+            found = await self._one_video(fetcher, run_id, planned, stopped)
+            if found.outcome is SubtitleFetchOutcome.UNAVAILABLE:
+                return  # no key in this version, or no language chosen: nothing to say
+            if found.outcome is SubtitleFetchOutcome.NO_VIDEO:
+                continue  # moved away by hand meanwhile: nothing to say about it
+            await self._journal_missing(run_id, planned, found)
+            result.subtitles_fetched += len(found.saved)
+            self._say_found(planned, found)
+            if stopped is None and found.outcome in _STOPS:
+                stopped = found
+                self._say_stopped(found)
+
+    async def _one_video(
+        self,
+        fetcher: SubtitleFetcher,
+        run_id: int,
+        planned: PlannedSubtitles,
+        stopped: SubtitleFetch | None,
+    ) -> SubtitleFetch:
+        """What became of one video's subtitles; never raises (but for a cancellation)."""
+        try:
+            async with asyncio.timeout(SUBTITLE_LIMIT_S):
+                if stopped is not None:  # nothing more is asked: only what is still missing
+                    return stopped.model_copy(
+                        update={
+                            "saved": (),
+                            "already": (),
+                            "not_found": await fetcher.missing(planned.video),
+                        }
+                    )
+                return await fetcher.fetch(planned.video, planned.identity, run_id=run_id)
+        except TimeoutError:
+            log.warning("Subtitles: no answer in time (item %d)", planned.item_id)
+            missing = await self._still_missing(fetcher, planned)
+            return _too_slow().model_copy(update={"not_found": missing})
+        except Exception as exc:  # noqa: BLE001 - a rename never fails for its subtitles
+            log.error("Subtitles failed (%s)", type(exc).__name__)
+            missing = await self._still_missing(fetcher, planned)
+            return SubtitleFetch(
+                outcome=SubtitleFetchOutcome.PROBLEM,
+                not_found=missing,
+                message=t(SUBTITLES_FAILED),
+                reason=SUBTITLES_FAILED,
+            )
+
+    @staticmethod
+    async def _still_missing(
+        fetcher: SubtitleFetcher, planned: PlannedSubtitles
+    ) -> tuple[str, ...]:
+        try:
+            return await fetcher.missing(planned.video)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Subtitles: couldn't look beside the video (%s)", type(exc).__name__)
+            return ()
+
+    async def _journal_missing(
+        self, run_id: int, planned: PlannedSubtitles, found: SubtitleFetch
+    ) -> None:
+        """A failed line per language not there, with why: what History's rows say."""
+        note = found.reason or NO_SUBTITLE_FOUND
+        video = planned.video
+        for language in found.not_found:
+            target = video.with_name(f"{video.stem}.{language}.srt")
+            op = await self._history.record_pending(run_id, OpKind.CREATE_FILE, None, target)
+            await self._history.mark_failed(op, note)
+
+    def _say_found(self, planned: PlannedSubtitles, found: SubtitleFetch) -> None:
+        name = planned.video.name
+        codes = " ".join(code.upper() for code in found.saved)
+        if found.saved:
+            log.info(
+                "Saved %d subtitle(s) (item %d)", len(found.saved), planned.item_id, extra=_SUCCESS
+            )
+            self._say(
+                t("Subtitles for {name}: {languages}", name=name, languages=codes), success=True
+            )
+        if found.not_found and found.outcome not in _STOPS:
+            log.info(
+                "No subtitle found in %d language(s) (item %d)",
+                len(found.not_found),
+                planned.item_id,
+            )
+            self._say(
+                t(
+                    "No subtitles found for {name}: {languages}",
+                    name=name,
+                    languages=" ".join(code.upper() for code in found.not_found),
+                )
+            )
+
+    def _say_stopped(self, found: SubtitleFetch) -> None:
+        log.warning("Subtitles stopped for this run (%s)", found.outcome.value)
+        self._say(found.message, level=logging.WARNING)
 
     async def _artwork(self, run_id: int, plan: Plan, result: RunResult, ok: set[int]) -> None:
         if self._posters is not None:

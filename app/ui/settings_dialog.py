@@ -1,23 +1,29 @@
-"""Preferences dialog in plain words: a sidebar of sections (Downloading: where downloads go,
-quality, automatic, subtitles, Plex; App: movie & show info, looks, updates, advanced) and one
-scrolling page per section, its settings grouped in boxes that each say what they are for (the
-layout is app/ui/settings_layout.py's, shared with MediaForge's own Settings window,
-app/forge/ui/settings_window.py). Every change goes through SettingsService, which validates
-first. MediaForge's settings are in its own window; the ones both share (language, theme, the
-TMDB key, updates, tray, Start with Windows) are only here."""
+"""Preferences dialog in plain words, the one Settings window of AirGrabber and MediaForge: a
+sidebar of sections (Downloading: where downloads go, quality, automatic, Plex;
+MediaForge: FORGE_SECTIONS of app/forge/ui/settings_pages.py; App: movie & show info, looks,
+updates, advanced) and one scrolling page per section, its settings grouped in boxes that each
+say what they are for (the layout is app/ui/settings_layout.py's). Every change goes through
+SettingsService, which validates first.
+
+`master`: the main window it opens over and belongs to (transient, placed over it). MainWindow
+keeps the one open dialog and closes it when the window hides.
+
+MediaForge's pages (`forge=`, docs/forge/INTEGRATION.md 3.7) wear AirGrabber's look like the rest
+and are built on their first visit: nothing of Forge starts before one is shown. One Save: the
+built sections' `problem()` (`parts`) with the dialog's own checks before anything is stored, then
+AirGrabber's settings, then each section's `save()` in the sidebar's order."""
 
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from tkinter import filedialog
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import customtkinter as ctk
 from pydantic import ValidationError
@@ -35,13 +41,10 @@ from app.models import (
     Accent,
     CardSize,
     DownloadMode,
-    HearingImpaired,
     InfoLayout,
     ProwlarrStatus,
     QualityProfile,
     Settings,
-    SubtitlesFor,
-    SubtitlesMode,
     ThemeMode,
     UpdateInfo,
     Weekday,
@@ -53,7 +56,6 @@ from app.services import (
     ProwlarrSetupService,
     RemoteDownloads,
     SettingsService,
-    SubtitleService,
     TorrentAppService,
     TorrentSearchService,
     UpdateError,
@@ -100,6 +102,7 @@ from app.ui.remote_program_form import (
 from app.ui.settings_layout import (
     BOX_GAP,
     BOX_INNER,
+    MAX_PAGE_HEIGHT,
     PAGE_BOTTOM,
     PAGE_PAD_LEFT,
     PAGE_WIDTH,
@@ -114,29 +117,13 @@ from app.ui.settings_layout import (
 from app.ui.settings_layout import SCREEN_RESERVE as SCREEN_RESERVE
 from app.ui.settings_layout import dialog_height as dialog_height
 from app.ui.settings_layout import sidebar_width as _sidebar_width
-from app.ui.subtitle_settings import (
-    ACCOUNT_HINT,
-    ACCOUNT_LABEL,
-    CREDIT_TEXT,
-    CREDIT_URL,
-    FOLDER_HINT,
-    FOLDER_LABEL,
-    OWN_KEY_LABEL,
-    SIGN_UP_TEXT,
-    SIGNUP_URL,
-    SUBTITLES_NOTE,
-    SWITCH_TEXT,
-    UNAVAILABLE_TEXT,
-    AccountRow,
-    LanguageTags,
-    OwnKeyRow,
-    link,
-    quota_line,
-    subtitle_problem,
-)
 from app.ui.tasks import async_command, spawn
 from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
+
+if TYPE_CHECKING:
+    from app.forge.runtime import ForgeRuntime
+    from app.forge.ui.settings_pages import ForgeSection, ForgeSectionPart
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +134,6 @@ log = logging.getLogger(__name__)
 SECTION_WHERE = N_("Where downloads go")
 SECTION_QUALITY = N_("Quality")
 SECTION_AUTOMATIC = N_("Automatic")
-SECTION_SUBTITLES = N_("Subtitles")
 SECTION_INFO = N_("Movie & show info")
 SECTION_LOOKS = N_("Looks")
 SECTION_UPDATES = N_("Updates")
@@ -156,23 +142,22 @@ SECTION_BACKUP = N_("Backup")
 SECTION_PLEX = N_("Plex")  # app/ui/plex_settings.py: what is in Plex counts as had
 
 # The sidebar: a small group label above each part of the list, then its sections in order.
+# MediaForge's group goes between these two (the dialog adds it when it is given `forge`).
 SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         N_("Downloading"),
-        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_SUBTITLES, SECTION_PLEX),
+        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_PLEX),
     ),
     (
         N_("App"),
         (SECTION_INFO, SECTION_LOOKS, SECTION_UPDATES, SECTION_BACKUP, SECTION_ADVANCED),
     ),
-    # MediaForge's sections are in its own Settings window (app/forge/ui/settings_window.py).
 )
 SECTIONS: tuple[str, ...] = tuple(name for _group, names in SECTION_GROUPS for name in names)
 SECTION_ICONS: dict[str, str] = {
     SECTION_WHERE: "⬇",
     SECTION_QUALITY: "🎚",
     SECTION_AUTOMATIC: "⏱",
-    SECTION_SUBTITLES: "💬",
     SECTION_PLEX: "▶",
     SECTION_INFO: "🎬",
     SECTION_LOOKS: "🖼",
@@ -180,7 +165,7 @@ SECTION_ICONS: dict[str, str] = {
     SECTION_BACKUP: "💾",
     SECTION_ADVANCED: "🛠",
 }
-# Each page's one muted line under its heading (Subtitles uses its own texts).
+# Each page's one muted line under its heading.
 SECTION_NOTES: dict[str, str] = {
     SECTION_WHERE: N_("What happens when you click Download."),
     SECTION_QUALITY: N_(
@@ -234,19 +219,11 @@ NEW_SHOWS_TITLE = N_("New shows")
 NEW_SHOWS_TEXT = N_("You can still change this for each show.")
 NEW_SHOWS_SWITCH = N_("Download new episodes for shows I start following")
 
-SUBTITLE_SWITCH_TITLE = N_("Get subtitles")
-SUBTITLE_SWITCH_TEXT = N_("AirGrabber finds subtitles for what you download on OpenSubtitles.com.")
-LANGUAGES_TITLE = N_("Languages")
-LANGUAGES_TEXT = N_("AirGrabber looks for subtitles in each of these languages.")
-WHEN_TITLE = N_("When")
-WHEN_TEXT = N_(
-    "Automatically searches every half hour after a download. Only when I ask: use CC ▾ in a "
-    "show's or film's window, or on the Downloads page."
+FOLDER_LABEL = N_("Where finished downloads end up")
+FOLDER_HINT = N_(
+    "Your torrent program's download folder. MediaForge watches it, and the Downloads page looks "
+    "there for free space and your files."
 )
-HEARING_TITLE = N_("Hearing impaired")
-HEARING_TEXT = N_('Subtitles that also describe sounds ("[door slams]").')
-FOR_TITLE = N_("For")
-FOR_TEXT = N_("Which downloads get subtitles automatically.")
 
 TMDB_KEY_LABEL = N_("TMDB key")
 TMDB_KEY_TEXT = N_(
@@ -299,8 +276,8 @@ _BACKUP_BUTTON_WIDTH = 190
 
 # -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
 
-# The sidebar, the pages and their boxes: app/ui/settings_layout.py (shared with MediaForge's
-# Settings window); the names this dialog uses below.
+# The sidebar, the pages and their boxes: app/ui/settings_layout.py; the names this dialog uses
+# below.
 _PAGE_WIDTH = PAGE_WIDTH
 _PAGE_PAD_LEFT = PAGE_PAD_LEFT
 _PAGE_BOTTOM = PAGE_BOTTOM
@@ -308,7 +285,6 @@ _BOX_GAP = BOX_GAP
 _TEXT_SIZE = TEXT_SIZE
 _BOX_INNER = BOX_INNER
 _INDENT = 30  # under a radio button's text
-_ROW_GAP = 14  # between two controls in one box
 _TEST_BUTTON_WIDTH = 160
 _UPDATE_BUTTON_WIDTH = 180
 _CHECK_BUTTON_WIDTH = 110
@@ -383,23 +359,6 @@ def accent_needs_restart(chosen: Accent, running: Accent) -> bool:
     return chosen is not running
 
 
-# Settings → Subtitles' three choices, in the order their boxes show them.
-SUBTITLES_MODE_NAMES: dict[SubtitlesMode, str] = {
-    SubtitlesMode.AUTO: N_("Automatically"),
-    SubtitlesMode.ASK: N_("Only when I ask"),
-}
-HEARING_NAMES: dict[HearingImpaired, str] = {
-    HearingImpaired.AVOID: N_("Avoid"),
-    HearingImpaired.PREFER: N_("Prefer"),
-    HearingImpaired.EITHER: N_("Either"),
-}
-SUBTITLES_FOR_NAMES: dict[SubtitlesFor, str] = {
-    SubtitlesFor.BOTH: N_("Series and films"),
-    SubtitlesFor.SERIES: N_("Only series"),
-    SubtitlesFor.FILMS: N_("Only films"),
-}
-
-
 def choice_name[E: StrEnum](names: Mapping[E, str], value: E) -> str:
     """A choice's shown name (translated)."""
     return t(names[value])
@@ -411,11 +370,6 @@ def choice_from_name[E: StrEnum](names: Mapping[E, str], name: str, default: E) 
         if t(text) == name:
             return value
     return default
-
-
-def segment_width(values: Sequence[str], measure: Callable[[str], float]) -> int:
-    """A row of choices just wide enough for its names (at least 260)."""
-    return max(260, sum(round(measure(value)) + 36 for value in values))
 
 
 def weekday_name(day: Weekday) -> str:
@@ -566,11 +520,7 @@ _FIELD_LABELS = {
     "preferred_groups": PREFERRED_TITLE,
     "prowlarr_url": N_("Prowlarr URL"),
     "prowlarr_api_key": N_("Prowlarr API key"),
-    "subtitle_languages": N_("Subtitle languages"),
     "subtitles_folder": FOLDER_LABEL,
-    "opensubtitles_username": ACCOUNT_LABEL,
-    "opensubtitles_password": ACCOUNT_LABEL,
-    "opensubtitles_own_key": OWN_KEY_LABEL,
     **REMOTE_LABELS,
 }
 
@@ -586,15 +536,6 @@ _FIELD_SECTIONS: dict[str, str] = {
     "keep_in_tray": SECTION_AUTOMATIC,
     "start_with_windows": SECTION_AUTOMATIC,
     "auto_download_new_shows": SECTION_AUTOMATIC,
-    "subtitles_enabled": SECTION_SUBTITLES,
-    "subtitle_languages": SECTION_SUBTITLES,
-    "subtitles_folder": SECTION_SUBTITLES,
-    "subtitles_mode": SECTION_SUBTITLES,
-    "subtitles_hearing_impaired": SECTION_SUBTITLES,
-    "subtitles_for": SECTION_SUBTITLES,
-    "opensubtitles_username": SECTION_SUBTITLES,
-    "opensubtitles_password": SECTION_SUBTITLES,
-    "opensubtitles_own_key": SECTION_SUBTITLES,
     "tmdb_api_key": SECTION_INFO,
     "card_size": SECTION_LOOKS,
     "first_day": SECTION_LOOKS,
@@ -653,10 +594,10 @@ _Box = SettingsBox
 _Page = SettingsPage
 
 
-def sidebar_width() -> int:
+def sidebar_width(others: Sequence[str] = ()) -> int:
     """The sidebar's width (logical): room for the longest section name in bold (the selected
-    one), so the pages don't shift when another section is chosen."""
-    return _sidebar_width(SECTIONS)
+    one, `others`: MediaForge's), so the pages don't shift when another section is chosen."""
+    return _sidebar_width((*SECTIONS, *others))
 
 
 def _paint_background(widget: ctk.CTkFrame, color: theme.Color) -> None:
@@ -665,17 +606,13 @@ def _paint_background(widget: ctk.CTkFrame, color: theme.Color) -> None:
     widget.configure(fg_color=color)
 
 
-def _set_state(widget: ctk.CTkSegmentedButton, enabled: bool) -> None:
-    widget.configure(state="normal" if enabled else "disabled")
-
-
 # -- the dialog --------------------------------------------------------------------------------
 
 
 class SettingsDialog(ctk.CTkToplevel):
     def __init__(
         self,
-        master: ctk.CTk,
+        master: Any,
         settings: SettingsService,
         *,
         search: TorrentSearchService,
@@ -689,21 +626,31 @@ class SettingsDialog(ctk.CTkToplevel):
         update_info: UpdateInfo | None = None,
         on_update: Callable[[], None] | None = None,
         startup_shortcut: StartupShortcut | None = None,
-        subtitles: SubtitleService | None = None,
         on_restart: Callable[[], None] | None = None,
         images: ImageCache | None = None,
         library: LibraryService | None = None,
         backup: BackupService | None = None,
         section: str | None = None,
         plex: PlexService | None = None,
+        forge: ForgeRuntime | None = None,
     ) -> None:
-        """`subtitles`: the Subtitles section shows when it is given. `on_restart`: restarts
+        """`on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
         `images`: the Card size box's preview card (none without it); `library`: a followed
         show's poster for it (the placeholder card without one). `backup`: the Backup section
-        shows when it is given. `section`: the page it opens at (Where downloads go when not
-        given or not shown)."""
+        shows when it is given. `forge`: the MediaForge group shows when it is given. `section`:
+        the page it opens at (Where downloads go when not given or not shown)."""
         super().__init__(master, fg_color=theme.BG)
+        self._forge = forge
+        self.parts: dict[str, ForgeSectionPart] = {}  # the Forge sections built so far
+        # Imported here: AirGrabber's start doesn't load Forge's pages (INTEGRATION.md 3.6).
+        self._forge_sections: Mapping[str, ForgeSection] = {}
+        groups: list[tuple[str, Sequence[str]]] = list(SECTION_GROUPS)
+        if forge is not None:
+            from app.forge.ui.settings_pages import FORGE_GROUP, FORGE_SECTIONS
+
+            self._forge_sections = FORGE_SECTIONS
+            groups.insert(1, (FORGE_GROUP, tuple(FORGE_SECTIONS)))
         self._backup = backup
         self._plex = plex  # the Plex section shows when it is given
         self.plex_box: PlexBox | None = None
@@ -713,13 +660,6 @@ class SettingsDialog(ctk.CTkToplevel):
         self._card_preview: CardSizePreview | None = None
         self._quick_dialog: QuickSetupDialog | None = None
         self._preview_task: asyncio.Task[None] | None = None
-        self._subtitles = subtitles
-        self._subtitle_rows: ctk.CTkFrame | None = None
-        # The When / Hearing impaired / For / Languages boxes, greyed while subtitles are off.
-        self._subtitle_choices: list[tuple[_Box, Callable[[bool], None]]] = []
-        self._language_tags: LanguageTags | None = None
-        self._account: AccountRow | None = None
-        self._own_key: OwnKeyRow | None = None
         self._startup = startup_shortcut if startup_shortcut is not None else WindowsStartup()
         self._settings = settings
         self._search = search
@@ -779,21 +719,12 @@ class SettingsDialog(ctk.CTkToplevel):
         self._startup_shown = self._startup.is_enabled()
         self._start_with_windows = ctk.BooleanVar(value=self._startup_shown)
         self._auto_new_shows = ctk.BooleanVar(value=current.auto_download_new_shows)
-        self._subtitles_on = ctk.BooleanVar(value=current.subtitles_enabled)
-        self._subtitles_folder = ctk.StringVar(value=current.subtitles_folder)
-        self._subtitles_mode = ctk.StringVar(
-            value=choice_name(SUBTITLES_MODE_NAMES, current.subtitles_mode)
-        )
-        self._subtitles_hearing = ctk.StringVar(
-            value=choice_name(HEARING_NAMES, current.subtitles_hearing_impaired)
-        )
-        self._subtitles_for = ctk.StringVar(
-            value=choice_name(SUBTITLES_FOR_NAMES, current.subtitles_for)
-        )
+        self._finished_folder = ctk.StringVar(value=current.subtitles_folder)
 
-        layout = build_layout(self, sidebar_width())
+        layout = build_layout(self, sidebar_width(tuple(self._forge_sections)))
         body = layout.body
         self._sidebar = layout.sidebar
+        self._sidebar_scroll = layout.sidebar_scroll
         self._scroll = layout.scroll
 
         # Save / Cancel under the page, with the error line above them.
@@ -811,7 +742,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._error.pack(anchor="w")
         buttons = ctk.CTkFrame(footer, fg_color="transparent")
         buttons.pack(anchor="e", pady=(6, 0))
-        secondary_button(buttons, t("Cancel"), self.destroy).pack(side="right")
+        self.cancel_button = secondary_button(buttons, t("Cancel"), self.cancel)
+        self.cancel_button.pack(side="right")
         self._save_button = primary_button(buttons, t("Save"), async_command(self._save))
         self._save_button.pack(side="right", padx=(0, 12))
 
@@ -825,9 +757,6 @@ class SettingsDialog(ctk.CTkToplevel):
             SECTION_UPDATES: self._build_updates,
             SECTION_ADVANCED: self._build_advanced,
         }
-        if self._subtitles is not None:
-            subtitles_service = self._subtitles
-            builders[SECTION_SUBTITLES] = lambda: self._build_subtitles(subtitles_service)
         if self._backup is not None:
             builders[SECTION_BACKUP] = self._build_backup
         if self._plex is not None:
@@ -837,17 +766,24 @@ class SettingsDialog(ctk.CTkToplevel):
             if name in builders:
                 self._pages[name] = builders[name]()
         shown = [
-            (group, [name for name in names if name in self._pages])
-            for group, names in SECTION_GROUPS
+            (group, [n for n in names if n in self._pages or n in self._forge_sections])
+            for group, names in groups
         ]
-        self._items = fill_sidebar(self._sidebar, shown, SECTION_ICONS, self._show_section)
-        self._section = section if section in self._pages else SECTION_WHERE
+        icons = {
+            **SECTION_ICONS,
+            **{name: part.icon for name, part in self._forge_sections.items()},
+        }
+        self._items = fill_sidebar(self._sidebar, shown, icons, self._show_section)
+        self._section = section if section in self._items else SECTION_WHERE
         self._show_section(self._section)
         if update_info is not None:
             self._show_update(update_info)
 
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.borderless = make_borderless(self, drag_widgets=(self, body, self._sidebar))
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Escape>", lambda _event: self.cancel())
+        self.borderless = make_borderless(
+            self, drag_widgets=(self, body, self._sidebar), on_close=self.cancel
+        )
         self._fit_size()
         place_over(self, master)
         activate_later(self)
@@ -859,6 +795,11 @@ class SettingsDialog(ctk.CTkToplevel):
         """The section whose page shows."""
         return self._section
 
+    @property
+    def sections(self) -> list[str]:
+        """The sidebar's sections, in order."""
+        return list(self._items)
+
     def page(self, section: str) -> ctk.CTkFrame:
         """A section's page frame (tests look inside it)."""
         return self._pages[section].frame
@@ -869,6 +810,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._show_section(section)
 
     def _show_section(self, section: str) -> None:
+        if section in self._forge_sections and section not in self._pages:
+            self._build_forge_section(section)
         if section not in self._pages:
             return
         self._section = section
@@ -886,6 +829,18 @@ class SettingsDialog(ctk.CTkToplevel):
     def _new_page(self, section: str, note: str | None = None) -> _Page:
         shown = note if note is not None else SECTION_NOTES[section]
         return _Page(self._scroll, t(section), t(shown))
+
+    def _build_forge_section(self, section: str) -> None:
+        """A MediaForge page, at its first visit (it starts Forge if nothing has yet)."""
+        assert self._forge is not None
+        forge_section = self._forge_sections[section]
+        page = self._new_page(section, forge_section.note)
+        self._pages[section] = page
+        self.parts[section] = forge_section.build(page, self._forge)
+
+    def _built_parts(self) -> list[tuple[str, ForgeSectionPart]]:
+        """The Forge sections built so far, in the sidebar's order: what Save asks and stores."""
+        return [(name, self.parts[name]) for name in self._forge_sections if name in self.parts]
 
     # -- Where downloads go ------------------------------------------------------------------
 
@@ -950,6 +905,15 @@ class SettingsDialog(ctk.CTkToplevel):
         self._folder_link.bind("<Button-1>", lambda _event: self._reveal_remote_form())
         self._folder_link_row = folder.take_row()
         self._folder_form_row = folder.take_row()
+
+        # Where the torrent program's finished downloads land, whichever way they go there:
+        # MediaForge's watching, the free space and "Open the folder" read it.
+        finished = page.box(t(FOLDER_LABEL), t(FOLDER_HINT))
+        line = finished.frame_row()
+        self._entry(line, self._finished_folder).pack(side="left", fill="x", expand=True)
+        secondary_button(line, t("Choose…"), self._choose_finished_folder, width=110).pack(
+            side="left", padx=(10, 0)
+        )
 
         # One form, shown in the remote box or (folder mode) under the magnet note: it belongs to
         # the page and is placed into either box, painted in the boxes' colour.
@@ -1052,6 +1016,14 @@ class SettingsDialog(ctk.CTkToplevel):
             self._folder_note.grid_remove()
             self._folder_link.grid_remove()
 
+    def _choose_finished_folder(self) -> None:
+        # Native modal dialog: the event loop (and background tasks) pause until it closes.
+        chosen = filedialog.askdirectory(
+            parent=self, initialdir=self._finished_folder.get() or None
+        )
+        if chosen:
+            self._finished_folder.set(str(Path(chosen)))  # Windows separators, UNC kept
+
     def _place_remote_form(self, box: _Box, row: int) -> None:
         self._remote_form.grid(
             in_=box.body,
@@ -1139,174 +1111,6 @@ class SettingsDialog(ctk.CTkToplevel):
             self._checkbox(shows.body, t(NEW_SHOWS_SWITCH), self._auto_new_shows), sticky="w"
         )
         return page
-
-    # -- Subtitles -----------------------------------------------------------------------------
-
-    def _build_subtitles(self, subtitles: SubtitleService) -> _Page:
-        """The Subtitles page: the switch, subtitles' master switch (with today's downloads
-        left, when known), and the credit line; When, Hearing impaired, For and the languages,
-        greyed while it is off; while it is on the finished-downloads folder, the OpenSubtitles
-        account and the own key. Without an API key in this version: one quiet line
-        instead."""
-        if not subtitles.available:
-            return self._new_page(SECTION_SUBTITLES, UNAVAILABLE_TEXT)
-        current = self._settings.current
-        page = self._new_page(SECTION_SUBTITLES, SUBTITLES_NOTE)
-        switch = page.box(t(SUBTITLE_SWITCH_TITLE), t(SUBTITLE_SWITCH_TEXT))
-        switch.add(
-            ctk.CTkSwitch(
-                switch.body,
-                text=t(SWITCH_TEXT),
-                variable=self._subtitles_on,
-                command=self._show_subtitle_rows,
-                height=BUTTON_HEIGHT,
-                font=theme.font(DETAIL_SIZE),
-                progress_color=theme.ACCENT,  # as the show window's "Download new episodes"
-            ),
-            sticky="w",
-        )
-        self._quota = switch.text("")
-        self._quota_row = switch.take_row()
-        switch.add(
-            link(switch.body, t(CREDIT_TEXT), CREDIT_URL, size=SMALL_SIZE), gap=8, sticky="w"
-        )
-
-        choices_rows = ctk.CTkFrame(page.frame, fg_color="transparent")
-        choices_rows.grid_columnconfigure(0, weight=1)
-        page.add(choices_rows, gap=0)
-        rows = ctk.CTkFrame(page.frame, fg_color="transparent")
-        rows.grid_columnconfigure(0, weight=1)
-        page.add(rows, gap=0)
-        self._subtitle_rows = rows
-        self._show_quota()
-
-        measure = theme.font(DETAIL_SIZE, bold=True).measure
-        choices: tuple[tuple[str, str, Mapping[Any, str], ctk.StringVar], ...] = (
-            (WHEN_TITLE, WHEN_TEXT, SUBTITLES_MODE_NAMES, self._subtitles_mode),
-            (HEARING_TITLE, HEARING_TEXT, HEARING_NAMES, self._subtitles_hearing),
-            (FOR_TITLE, FOR_TEXT, SUBTITLES_FOR_NAMES, self._subtitles_for),
-        )
-        for title, text, names, variable in choices:
-            box = self._rows_box(choices_rows, t(title), t(text))
-            values = [t(name) for name in names.values()]
-            segmented = self._segmented(
-                box.body, values, variable, width=segment_width(values, measure)
-            )
-            box.add(segmented, sticky="w")
-            self._subtitle_choices.append((box, functools.partial(_set_state, segmented)))
-        languages = self._rows_box(choices_rows, t(LANGUAGES_TITLE), t(LANGUAGES_TEXT))
-        self._language_tags = LanguageTags(languages.body, current.subtitle_languages)
-        languages.add(self._language_tags, sticky="w")
-        self._subtitle_choices.append((languages, self._language_tags.set_enabled))
-
-        folder = self._rows_box(rows, t(FOLDER_LABEL), t(FOLDER_HINT))
-        line = folder.frame_row()
-        self._entry(line, self._subtitles_folder).pack(side="left", fill="x", expand=True)
-        secondary_button(line, t("Choose…"), self._choose_subtitles_folder, width=110).pack(
-            side="left", padx=(10, 0)
-        )
-
-        account = self._rows_box(rows, t(ACCOUNT_LABEL))
-        hint = ctk.CTkFrame(account.body, fg_color="transparent")
-        account.add(hint, gap=2, sticky="w")
-        text_label(hint, t(ACCOUNT_HINT), size=_TEXT_SIZE, color=theme.TEXT_MUTED).pack(
-            side="left"
-        )
-        link(hint, t(SIGN_UP_TEXT), SIGNUP_URL, size=_TEXT_SIZE).pack(side="left", padx=(4, 0))
-        self._account = AccountRow(
-            account.body,
-            subtitles=subtitles,
-            username=current.opensubtitles_username,
-            password=current.opensubtitles_password.get_secret_value(),
-            on_signed_in=lambda _account: self._show_quota(),
-            field_width=_BOX_INNER,
-        )
-        account.add(self._account)
-
-        own_key = self._rows_box(rows, t(OWN_KEY_LABEL))
-        self._own_key = OwnKeyRow(
-            own_key.body,
-            subtitles=subtitles,
-            key=current.opensubtitles_own_key.get_secret_value(),
-            field_width=_BOX_INNER,
-        )
-        own_key.add(self._own_key)
-        self._show_subtitle_rows()
-        return page
-
-    @staticmethod
-    def _rows_box(rows: ctk.CTkFrame, title: str, text: str | None = None) -> _Box:
-        """A box of the Subtitles rows below the switch."""
-        box = _Box(rows, title, text)
-        box.frame.grid(row=len(rows.grid_slaves()), column=0, sticky="ew", pady=(_BOX_GAP, 0))
-        return box
-
-    def _show_subtitle_rows(self) -> None:
-        """Follow the switch: the choices greyed or not, the folder / account / own key rows
-        shown or not."""
-        if self._subtitle_rows is None:
-            return
-        on = self._subtitles_on.get()
-        for box, set_enabled in self._subtitle_choices:
-            box.set_enabled(on)
-            set_enabled(on)
-        if on:
-            self._subtitle_rows.grid()
-        else:
-            self._subtitle_rows.grid_remove()
-
-    def _show_quota(self) -> None:
-        if self._subtitles is None or self._subtitle_rows is None or not self.winfo_exists():
-            return
-        text = quota_line(self._subtitles.quota, datetime.now(UTC))
-        if text:
-            self._quota.configure(text=text)
-            self._quota.grid(row=self._quota_row, column=0, sticky="w", pady=(2, 0))
-        else:
-            self._quota.grid_remove()
-
-    def _choose_subtitles_folder(self) -> None:
-        # Native modal dialog: the event loop (and background tasks) pause until it closes.
-        chosen = filedialog.askdirectory(
-            parent=self, initialdir=self._subtitles_folder.get() or None
-        )
-        if chosen:
-            self._subtitles_folder.set(str(Path(chosen)))  # Windows separators, UNC kept
-
-    def _subtitle_changes(self) -> dict[str, Any]:
-        """The Subtitles page's part of Save (nothing without its form)."""
-        if self._language_tags is None or self._account is None or self._own_key is None:
-            return {}
-        username, password = self._account.values
-        return {
-            "subtitles_enabled": self._subtitles_on.get(),
-            "subtitle_languages": self._language_tags.languages,
-            "subtitles_folder": self._subtitles_folder.get(),
-            "subtitles_mode": choice_from_name(
-                SUBTITLES_MODE_NAMES, self._subtitles_mode.get(), SubtitlesMode.AUTO
-            ),
-            "subtitles_hearing_impaired": choice_from_name(
-                HEARING_NAMES, self._subtitles_hearing.get(), HearingImpaired.AVOID
-            ),
-            "subtitles_for": choice_from_name(
-                SUBTITLES_FOR_NAMES, self._subtitles_for.get(), SubtitlesFor.BOTH
-            ),
-            "opensubtitles_username": username,
-            "opensubtitles_password": password,
-            "opensubtitles_own_key": self._own_key.value,
-        }
-
-    def _subtitle_problem(self) -> str | None:
-        changes = self._subtitle_changes()
-        if not changes:
-            return None
-        return subtitle_problem(
-            enabled=changes["subtitles_enabled"],
-            folder=changes["subtitles_folder"],
-            languages=changes["subtitle_languages"],
-            username=changes["opensubtitles_username"],
-            password=changes["opensubtitles_password"],
-        )
 
     # -- Movie & show info ---------------------------------------------------------------------
 
@@ -1812,12 +1616,11 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _fit_size(self) -> None:
         """Fix the dialog at the size of its tallest page in its tallest state (any download
-        choice, with the program's button, the magnet note and its form, the Subtitles rows), at
+        choice, with the program's button, the magnet note and its form), at
         most MAX_PAGE_HEIGHT (app/ui/settings_layout.py), so it doesn't change between pages or choices; on a short screen
-        at the screen's height instead, the pages scrolling."""
+        at the screen's height instead, the pages scrolling. With MediaForge's pages, which aren't
+        built yet, at MAX_PAGE_HEIGHT."""
         self._torrent.show(TorrentStatus.SETUP_NEEDED)  # its tallest: the line and a button
-        if self._subtitle_rows is not None:
-            self._subtitle_rows.grid()  # measured with the Subtitles rows showing
         content = 0
         for section, page in self._pages.items():
             self._grid_page(section)
@@ -1831,10 +1634,10 @@ class SettingsDialog(ctk.CTkToplevel):
                 content = max(content, page.frame.winfo_reqheight())
         self._torrent.show(TorrentStatus.LOOKING)
         self._show_download_rows()
-        self._show_subtitle_rows()
         self._show_section(self._section)
         scaling = ctk.ScalingTracker.get_window_scaling(self)
-        fit_window(self, self._scroll, page_height(content, scaling))
+        height = MAX_PAGE_HEIGHT if self._forge_sections else page_height(content, scaling)
+        fit_window(self, self._scroll, height)
 
     # -- Prowlarr ------------------------------------------------------------------------------
 
@@ -1909,7 +1712,7 @@ class SettingsDialog(ctk.CTkToplevel):
             auto_update=self._auto_update.get(),
             keep_in_tray=self._keep_in_tray.get(),
             auto_download_new_shows=self._auto_new_shows.get(),
-            **self._subtitle_changes(),
+            subtitles_folder=self._finished_folder.get(),
         )
 
     def _show_problem(self, text: str, section: str) -> None:
@@ -1930,21 +1733,12 @@ class SettingsDialog(ctk.CTkToplevel):
     async def _save_all(self) -> bool:
         """Check and store the whole form. False (the dialog shows why) when that failed."""
         self._error.configure(text="")
-        problem = self._subtitle_problem()
-        if problem is not None:
-            self._show_problem(problem, SECTION_SUBTITLES)
-            return False
-        self._save_button.configure(state="disabled")
-        if self._own_key is not None and self._own_key.needs_check:
-            problem = await self._own_key.verify()  # a new own key: does OpenSubtitles take it?
-            if not self.winfo_exists():
-                return False
+        for name, part in self._built_parts():  # asked of each before anything is stored
+            problem = part.problem()
             if problem is not None:
-                self._show_problem(f"{t(OWN_KEY_LABEL)}: {problem}", SECTION_SUBTITLES)
-                self._subtitles_on.set(True)  # the key's row shows while subtitles are on
-                self._show_subtitle_rows()
-                self._save_button.configure(state="normal")
+                self._show_problem(problem, name)
                 return False
+        self._save_button.configure(state="disabled")
         try:
             await self._store()
         except ValidationError as exc:
@@ -1956,7 +1750,22 @@ class SettingsDialog(ctk.CTkToplevel):
                     self._reveal_remote_form()  # the form with the problem shows
                 self._save_button.configure(state="normal")
             return False
-        return await self._save_startup()
+        return await self._save_startup() and await self._save_forge()
+
+    async def _save_forge(self) -> bool:
+        """Each built Forge section stores its changes, in order. False (the dialog stays, the
+        error line says why) when one couldn't."""
+        parts = self._built_parts()
+        for name, part in parts:
+            problem = await part.save()
+            if problem is not None:
+                if self.winfo_exists():
+                    self._show_problem(problem, name)
+                    self._save_button.configure(state="normal")
+                return False
+        if parts and self.winfo_exists():
+            self._save_button.configure(state="normal")
+        return True
 
     async def _save_startup(self) -> bool:
         """Add or remove the Startup shortcut when its box changed, and store its real state.
@@ -2067,6 +1876,11 @@ class SettingsDialog(ctk.CTkToplevel):
     def _start_update(self) -> None:
         if self._on_update is not None:
             self._on_update()
+
+    def cancel(self) -> None:
+        """Cancel, ✕ and Escape: nothing is stored."""
+        if self.winfo_exists():
+            self.destroy()
 
     def _trace(self, variable: tk.Variable, callback: Callable[..., object]) -> None:
         self._traces.append((variable, variable.trace_add("write", callback)))

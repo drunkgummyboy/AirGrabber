@@ -94,3 +94,11 @@ class MoveRepository:
             (low, high),
         )
         return [_move(r) for r in rows]
+
+    async def of_operation(self, op_id: int) -> MoveRecord | None:
+        """The record of the rename `op_id` (None: it went nowhere near a library folder, or
+        the record is older than a year)."""
+        row = await self._db.fetch_one(
+            f"SELECT {_MOVE_COLUMNS} FROM moves WHERE op_id = ?", (op_id,)
+        )
+        return None if row is None else _move(row)

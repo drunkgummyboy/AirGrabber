@@ -175,11 +175,6 @@ class LibraryService:
             return PlexFilms()
         return await self._library.plex_films()
 
-    async def film_downloaded(self, movie_id: int) -> bool:
-        """Whether a film (TMDB id) is in the download history: its window offers its
-        subtitles (CC ▾). Never shown as "have it"."""
-        return await self._history.has_movie(movie_id)
-
     async def activity(
         self, *, profile_id: int, now: datetime | None = None
     ) -> dict[int, ShowActivity]:

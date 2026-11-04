@@ -44,6 +44,7 @@ DARK_BEFORE = {
     "SECTION_HOT": "#F39C12",
     "SECTION_NEW": "#2ECC71",
     "WARNING": "#F39C12",
+    "ON_WARNING": "#1B2530",
     "PANEL_EDGE": "gray20",
     "CLOSE_BUTTON": "gray15",  # CHIP: a pop-up's round close button
     "CLOSE_BUTTON_HOVER": "#C0392B",  # DANGER_BUTTON

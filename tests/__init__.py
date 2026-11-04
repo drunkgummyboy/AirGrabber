@@ -3,8 +3,7 @@
 No test changes a real window's frame: the pop-ups made borderless (app/ui/borderless.py) get
 their close button and drag bindings, but the Win32 / DWM side is a stand-in that does
 nothing (`InertNative`), so every window keeps the title bar Tk gave it. Likewise no test hooks a
-real window for Explorer drops (app/forge/ui/file_drops.py) unless it asks for the real one,
-and no Forge window gets its own taskbar identity (app/forge/ui/taskbar.py) unless it asks.
+real window for Explorer drops (app/forge/ui/file_drops.py) unless it asks for the real one.
 
 No window reads its icon from an .ico file either (`wm iconbitmap`). The app reads each icon
 once per root (app/ui/branding.py), but every test makes a root of its own, customtkinter reads
@@ -27,7 +26,7 @@ from typing import Any
 
 import customtkinter as ctk
 
-from app.forge.ui import file_drops, taskbar
+from app.forge.ui import file_drops
 from app.ui import borderless
 
 
@@ -44,20 +43,8 @@ class InertNative:
         pass
 
 
-class InertTaskbar:
-    """The Forge window's taskbar side (app/forge/ui/taskbar.py): every window seems to have
-    a wrapper and its properties set, but Windows' property store is never touched."""
-
-    def wrapper(self, window_id: int) -> int:
-        return window_id
-
-    def set_properties(self, hwnd: int, values: taskbar.Values) -> bool:
-        return True
-
-
 borderless.set_native(InertNative())
 file_drops.set_native(file_drops.InertNative())
-taskbar.set_native(InertTaskbar())
 
 
 REAL_ICONBITMAP = tk.Wm.wm_iconbitmap

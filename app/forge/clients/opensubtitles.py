@@ -11,7 +11,7 @@ hours. `/download` returns a temporary link plus `remaining` (downloads left tod
 `reset_time_utc`; 406 means today's downloads are used up.
 
 AirGrabber's own API key (APP_API_KEY) is shipped with the app, as OpenSubtitles' terms ask
-("one key per application"). A user may enter their own key in Settings
+("one key per application"). A user may enter their own key in Settings › Subtitles
 (`Settings.opensubtitles_own_key`); it then replaces the shipped one (`effective_api_key`).
 Signing in with a free account is optional; downloads then count against that account. Neither
 key is ever logged or shown in a message.
@@ -42,8 +42,7 @@ from pydantic import BaseModel, ValidationError
 
 from app import APP_NAME, __version__
 from app.i18n import N_, t
-from app.models import SubtitleAccount
-from app.models.opensubtitles import (
+from app.forge.models.opensubtitles import (
     OSDownload,
     OSLogin,
     OSQuotaAnswer,
@@ -52,6 +51,14 @@ from app.models.opensubtitles import (
     SubtitleCandidate,
     SubtitleLink,
     candidates,
+)
+from app.forge.models.subtitles import (
+    KeyRejected,
+    LoginRejected,
+    OpenSubtitlesError,
+    QuotaExceeded,
+    SubtitleAccount,
+    Unreachable,
 )
 
 log = logging.getLogger(__name__)
@@ -78,7 +85,8 @@ HASH_CHUNK = 65536
 HASH_MIN_SIZE = 131072  # "9000000000 > filesize > 131072" (Moviehash source codes page)
 HASH_MAX_SIZE = 9_000_000_000
 
-# Plain-words messages (the status bar and Settings show them as they are), raised through t().
+# Plain-words messages (MediaForge's rows and Settings show them as they are), raised through
+# t(); Forge's journal keeps them in English (app/forge/core/subtitles.py).
 KEY_REJECTED_TEXT = N_(
     "OpenSubtitles refused AirGrabber's key. An update of AirGrabber may fix this"
 )
@@ -94,31 +102,6 @@ OWN_KEY_REJECTED_TEXT = N_(
 def effective_api_key(own_key: str, shipped_key: str) -> str:
     """The key requests use: the user's own key when one is filled in, else the shipped one."""
     return own_key.strip() or shipped_key.strip()
-
-
-class OpenSubtitlesError(Exception):
-    """OpenSubtitles refused or failed a request. The message is plain words for the UI and
-    never holds a URL, the key, the password or the token."""
-
-
-class KeyRejected(OpenSubtitlesError):
-    """The API key was refused (401/403 without a signed-in user)."""
-
-
-class LoginRejected(OpenSubtitlesError):
-    """/login refused the user name or password (401)."""
-
-
-class QuotaExceeded(OpenSubtitlesError):
-    """Today's downloads are used up (406 on /download); `reset_at` = when they start again."""
-
-    def __init__(self, message: str, reset_at: datetime | None = None) -> None:
-        super().__init__(message)
-        self.reset_at = reset_at
-
-
-class Unreachable(OpenSubtitlesError):
-    """No answer (network, timeout) or a server error that retrying didn't cure."""
 
 
 class _SessionExpired(Exception):

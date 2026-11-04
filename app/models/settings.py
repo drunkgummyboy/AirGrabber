@@ -207,10 +207,10 @@ class TrackedFilter(StrEnum):
 
 
 class SubtitlesMode(StrEnum):
-    """When subtitles are fetched (Settings → Subtitles → When)."""
+    """When AirGrabber used to fetch subtitles: read only by MediaForge's one-time carry."""
 
     AUTO = "auto"  # the periodic runs fetch them for every new download (the default)
-    ASK = "ask"  # only when asked (the CC menus); the runs still note subtitles already there
+    ASK = "ask"  # only when asked
 
 
 class HearingImpaired(StrEnum):
@@ -222,7 +222,8 @@ class HearingImpaired(StrEnum):
 
 
 class SubtitlesFor(StrEnum):
-    """Which downloads the periodic runs fetch subtitles for (asking still works for both)."""
+    """Which downloads AirGrabber used to fetch subtitles for: read only by MediaForge's
+    one-time carry."""
 
     BOTH = "both"
     SERIES = "series"
@@ -395,15 +396,15 @@ class Settings(BaseModel):
     tray_notice_shown: bool = False
     # Mirrors the Startup-folder shortcut (app/services/startup.py) that starts it in the tray.
     start_with_windows: bool = False
-    # Subtitles from OpenSubtitles.com for the grabbed episodes and films
-    # (app/services/subtitles.py), saved next to the videos in `subtitles_folder`.
+    # Subtitles from OpenSubtitles.com: MediaForge's (app/forge/core/subtitles.py), which reads
+    # and writes these fields. `subtitles_enabled`, `subtitles_mode` and `subtitles_for` are read
+    # only by its one-time carry (`carry_subtitles`) and stay so that older backups load.
     subtitles_enabled: bool = False
     subtitle_languages: SubtitleLanguages = ("en",)
     # Where the torrent program puts finished downloads ("" = not chosen); a UNC path such as
     # \\NAS\video works too.
     subtitles_folder: str = ""
-    # When (automatically / only when asked), which hearing-impaired subtitles, and for which
-    # downloads (app/services/subtitles.py). Unknown stored values fall back to the defaults.
+    # Unknown stored values fall back to the defaults.
     subtitles_mode: Annotated[SubtitlesMode, _known(SubtitlesMode, SubtitlesMode.AUTO)] = (
         SubtitlesMode.AUTO
     )
@@ -420,7 +421,7 @@ class Settings(BaseModel):
     opensubtitles_username: str = ""
     opensubtitles_password: StoredSecret = SecretStr("")
     # The user's own OpenSubtitles API key, optional: when set it is used instead of the shipped
-    # one (app/services/opensubtitles.py, `effective_api_key`). Header only, never logged.
+    # one (app/forge/clients/opensubtitles.py, `effective_api_key`). Header only, never logged.
     opensubtitles_own_key: StoredSecret = SecretStr("")
     # The person whose followed series, watchlist and calendar show (app/services/profiles.py;
     # the top band's name button). AirGrabber opens as the last one chosen; a person that is

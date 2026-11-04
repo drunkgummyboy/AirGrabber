@@ -1,7 +1,7 @@
 """The Activity panel (app/forge/ui/activity_panel.py), with MediaForge's log-strip cases from
 tests/ui/test_shell.py: lines shown, coloured by level; plus earlier lines shown first, the line
-limit, a light/dark repaint, its ✕ and unsubscribing when destroyed. (The window opens it from
-the band's Activity button: tests/forge/ui/test_window.py.)"""
+limit, a light/dark repaint, its ✕ and unsubscribing when destroyed. (The page opens it from
+History's Activity button: tests/forge/ui/test_page.py.)"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import customtkinter as ctk
 
 from app.forge.core.activity import ActivityFeed
 from app.forge.ui.activity_panel import ActivityPanel
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.i18n import Language, current_language, set_language
 from app.ui import theme
 from tests.forge.base import ForgeAsyncTestCase
@@ -69,7 +69,7 @@ class ActivityPanelTests(PanelCase):
         self.assertEqual(panel.title_label.cget("text"), "Activity")
         panel.close_button.invoke()
         self.assertEqual(closed, [1])
-        self.assertEqual(tuple(panel.cget("fg_color")), forge_look().SURFACE)
+        self.assertEqual(tuple(panel.cget("fg_color")), app_look().SURFACE)
 
     async def test_dutch_title(self) -> None:
         set_language(Language.NL)

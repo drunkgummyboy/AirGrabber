@@ -1,7 +1,7 @@
 """A fast list for thousands of rows: only the rows on screen are drawn, on a canvas (ported from
 MediaForge's ui/widgets/virtual_list.py).
 
-Colours: the Forge look's (light, dark) pairs and theme's text colours, `theme.pick`ed when
+Colours: the look's (light, dark) pairs and theme's text colours, `theme.pick`ed when
 drawn; a switch between light and dark draws the list again (`theme.on_mode_change`), as does a
 change of Windows' scaling (`_set_scaling`: row heights and fonts follow). Fonts (D10):
 AirGrabber's font, monospace (as the release list's table) for old file names (a line's `faint`,
@@ -11,11 +11,20 @@ Smooth with 1,000 files while their lookups land (F-33): rows equal to those sho
 the scroll region and CTk's scroll bar (which redraws itself and runs the window's pending idle
 work on every set) are set only when they change, and text widths are remembered.
 
-The queue's bands (app/forge/ui/queue_view.py, mockups/forge-chosen.html 3C): a rounded band with
-a status-coloured edge, the poster, the title and its subtitle with the destination in the link
-colour, the status as a dot and a word, and the band's buttons, which show only while the pointer
-is over the band or one of its lines (`hover_actions`; a band that needs the owner always shows
-them). A done band is drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always
+The queue's cards (`Sizes.cards`, app/forge/ui/queue_view.py, mockups/forge-as-a-page.html): a band
+and the file lines under it are one card, its fill behind them all with rounded corners only at
+its top and bottom. Behind the rows one picture per card (`card_picture`, baked by
+app/forge/ui/images.py), right-anchored, asked and drawn whenever any row of the card shows, the
+band scrolled off or not. The card's own items (tag "card") stay on the canvas from one draw to
+the next while nothing about them changes, beneath the rows' items, which are drawn anew; a card's
+parts keep its photo alive while they show. A hovered or selected line gets a soft see-through
+highlight (an RGBA strip, `images.line_highlight`). On a picture the title and subtitle stop at
+`images.card_text_end`, and the status sits on a solid pill.
+
+The queue's bands: the poster, the title and its subtitle with the destination in the link colour,
+the status as a dot and a word, and the band's buttons, which show only while the pointer is over
+the band or one of its lines (`hover_actions`; a band that needs the owner always shows them; a
+button's tip is `Row.tips`). A done band is drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always
 shown) sits under its status, the status moving up to the title's line; a click on it is the
 band's action "preset" (`chip_box` gives where it is, `action_box` any button's). A click on a
 button stops there: CTk's click on "all" would take back the focus from a menu it opened. `select_bands`: a click on a band selects
@@ -30,26 +39,37 @@ import math
 import tkinter as tk
 import tkinter.font as tkfont
 import zlib
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import customtkinter as ctk
+from PIL import ImageTk
 from pydantic import BaseModel, ConfigDict
 
-from app.forge.ui.look import forge_look, mix
+from app.forge.ui.images import (
+    CARD_MAX_LINES,
+    CARD_WIDTH,
+    HIGHLIGHT_ALPHA,
+    CardShape,
+    card_text_end,
+    line_highlight,
+)
+from app.forge.ui.look import app_look, mix
 from app.ui import palettes, theme
+from app.ui.tooltip import Tooltip, add_tooltip
 
 MONO_FAMILY = "Consolas"  # old file names, as the release list's table
-BACKDROP_WIDTH = 420  # a band's picture strip, in unscaled pixels
 CHIP_MAX = 190  # a band's preset chip at most (CTk units; a longer name is cut with "…")
 CHIP_HEIGHT = 26
 _MEASURE_CACHE = 4000  # remembered text widths / fitted texts before starting over
 _FADED = 0.45  # a done band's fill: this much of the list's ground over the band colour
 _ARC_STEPS = 6  # points on a rounded corner's quarter circle
+_STRIPS = 8  # a card line's highlights kept (a size, hovered or selected, light or dark)
+_STATE_PILL = (12, 24)  # the status's pill on a card: its padding left and right, its height
 # A line's current file name: this much of the ground over the muted colour (light, dark), about
 # 60 % of the muted colour's contrast and still readable (4:1 and more on the band colours).
-_WASHED = (0.2, 0.3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,9 +91,10 @@ class Sizes:
     band_gap: int = 3  # above a band (and as much below when `band_gap_below`)
     band_gap_below: bool = True
     band_radius: int = 0
-    band_edge: int = 3  # the band's coloured left edge
     band_inset: int = 8  # the poster's distance from the band's left
     poster: tuple[int, int] | None = None
+    cards: bool = False  # a band and its lines are one card
+    card_foot: int = 10  # a card's padding under its last line
 
 
 def thumb_colours() -> tuple[str, ...]:
@@ -100,13 +121,16 @@ class Row(BaseModel):
     check_disabled: bool = False
     art: str | None = None  # a band's poster (TMDB path)
     backdrop: str | None = None  # a band's backdrop (TMDB path)
-    actions: tuple[tuple[str, str], ...] = ()  # a band's buttons: (id, label), the last filled
+    actions: tuple[tuple[str, str], ...] = ()  # a band's or line's buttons: (id, label), a band's
+    # last one filled
+    greyed: tuple[tuple[str, str], ...] = ()  # of those, the ones that can't now: (id, why, the tip)
+    tips: tuple[tuple[str, str], ...] = ()  # of those, what one says under the pointer: (id, tip)
     note: str = ""  # a band's quiet text on the right (a time)
     chip: str = ""  # a band's preset chip under its status ("Series (Folder) ▾"): action "preset"
     code: str = ""  # an episode line's code ("S04E03"), in the link colour (readable accent)
-    faint: str = ""  # a line's current (old) file name, washed out on the right
+    faint: str = ""  # a line's current (old) file name, on the right
     faint_label: str = ""  # a quiet word before it ("Now:"), translated
-    new: bool = False  # the line's title is the file's new name: a copper "→ " before it
+    new: bool = False  # the line's title is the file's new name: a "→ " in the link colour before it
     band: int | None = None  # an item line's band: the pointer over either shows its buttons
     state: Literal["", "needs", "ready", "would", "done"] = ""  # a band's status (dot + word)
     state_text: str = ""  # that status's word, translated
@@ -139,6 +163,17 @@ def _initials(text: str) -> str:
     return "".join(word[0] for word in text.split()[:2]).upper()
 
 
+@dataclass(frozen=True, slots=True)
+class _Card:
+    """A card in the list: its band's index in the rows, how many lines it has, and where its
+    fill runs on the canvas (below the gap above its band, past its last line's padding)."""
+
+    first: int
+    lines: int
+    top: int
+    bottom: int
+
+
 class _Colours:
     """The colours of one redraw, picked for the current look."""
 
@@ -156,20 +191,19 @@ class _Colours:
         self.accent_text = pick(theme.ON_ACCENT)
         self.on_color = pick(theme.ON_COLOR)
         self.line = pick(look.CHIP_HOVER)  # a ghost button's outline
-        # A line's current file name: the muted colour washed towards the ground, still readable.
-        self.washed = mix(self.muted, self.main, _WASHED[1 if theme.is_dark() else 0])
+        self.faint = pick(theme.TEXT_FAINT)  # a greyed button's label
         self.success = pick(theme.SUCCESS)
         self.warning = pick(theme.WARNING)
         self.faded = faded_fill(look)
         self.states: dict[str, str] = {
             "needs": self.warning,
-            "ready": self.success,
+            "ready": self.link,
             "would": self.link,
             "done": mix(self.success, self.faded, 0.35),
         }
         self.status: dict[str, tuple[str, str]] = {
             "looking_up": ("…", self.muted),
-            "ready": ("●", self.success),
+            "ready": ("●", self.link),
             "needs_choice": ("?", self.warning),
             "working": ("⟳", self.link),
             "done": ("✓", pick(theme.SUCCESS)),
@@ -199,7 +233,7 @@ class VirtualList(ctk.CTkFrame):
         """`band_height` is a band's row with its gaps; `hover_actions`: a band's buttons show
         only while the pointer is over the band or one of its lines (or the band needs the
         owner)."""
-        self.look: theme.Look = forge_look() if look is None else look
+        self.look: theme.Look = app_look() if look is None else look
         self.sizes = Sizes() if sizes is None else sizes
         self.hover_actions = hover_actions
         super().__init__(master, fg_color=self.look.BG, corner_radius=0)
@@ -207,10 +241,17 @@ class VirtualList(ctk.CTkFrame):
         self.on_remove: Callable[[int], None] = lambda key: None
         self.on_toggle: Callable[[int, bool], None] = lambda key, value: None
         self.on_action: Callable[[int, str], None] = lambda key, action: None
-        # A band's (poster, backdrop) Tk images, asked with `backdrop_size` (one size whatever the
-        # window's, so a resize never needs new pictures), or None while not (yet) loaded.
-        self.images: Callable[[Row, int, int], tuple[Any, Any]] = lambda row, w, h: (None, None)
+        # A band's poster as a Tk image when it has one (the card's picture: `card_picture`).
+        self.images: Callable[[Row], Any] = lambda row: None
+        # A card's picture for its band, its shape and its fill, or None while not (yet) loaded.
+        self.card_picture: Callable[[Row, CardShape, str], Any] = lambda row, shape, fill: None
         self._hits: list[tuple[int, int, int, int, int, str]] = []  # buttons, canvas coordinates
+        # Greyed buttons as drawn last: (x0, y0, x1, y1, key, action, why).
+        self._greyed: list[tuple[int, int, int, int, int, str, str]] = []
+        self._tip: Tooltip | None = None  # made when a greyed button is first pointed at
+        self._tip_shown = ""
+        # Buttons with a tip of their own as drawn last: (x0, y0, x1, y1, the tip).
+        self._tips: list[tuple[int, int, int, int, str]] = []
         self.select_bands = False  # a click on a band selects its first line (the queue)
         self.removable = removable
         self.thumbnails = thumbnails
@@ -218,6 +259,13 @@ class VirtualList(ctk.CTkFrame):
         self._rows: list[Row] = []
         self._tops: list[int] = []
         self._total = 0
+        self._cards: list[_Card] = []
+        self._card_tops: list[int] = []
+        self._card_bottoms: list[int] = []
+        # The cards' canvas items now: what they show (their place, colours, picture) → the items.
+        self._layers: dict[tuple[Any, ...], list[int]] = {}
+        self._cards_shown: list[Row] = []  # the bands of the cards drawn last
+        self._strips: OrderedDict[tuple[int, int, bool, str], ImageTk.PhotoImage] = OrderedDict()
         self._visible: list[int] = []
         self._hover: int | None = None  # the line under the pointer
         self._hover_band: int | None = None  # the band under the pointer (or of its line)
@@ -253,7 +301,7 @@ class VirtualList(ctk.CTkFrame):
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<Motion>", self._on_motion)
-        self.canvas.bind("<Leave>", lambda _event: self._set_hover(None))
+        self.canvas.bind("<Leave>", self._on_leave)
         theme.on_mode_change(self, self._repaint)
 
     # --- sizes -----------------------------------------------------------------------------
@@ -280,8 +328,8 @@ class VirtualList(ctk.CTkFrame):
         self._section_h = self._px(section_height)
         self._band_top = self._px(sizes.band_gap)
         self._band_bottom = self._band_top if sizes.band_gap_below else 0
+        self._foot = self._px(sizes.card_foot) if sizes.cards else 0
         box_h = self._band_h - self._band_top - self._band_bottom
-        self.backdrop_size = (self._px(BACKDROP_WIDTH), box_h)
         if sizes.poster is not None:
             self.poster_size = (self._px(sizes.poster[0]), self._px(sizes.poster[1]))
         else:
@@ -336,10 +384,29 @@ class VirtualList(ctk.CTkFrame):
 
     def _layout(self) -> None:
         self._tops = []
+        cards: list[_Card] = []
+        on = self.sizes.cards
+        band = -1  # the index of the band whose card is open, and that card's top and lines
+        card_top = lines = 0
         y = 0
-        for row in self._rows:
+        for index, row in enumerate(self._rows):
+            line = band >= 0 and row.kind == "item" and row.band == self._rows[band].key
+            if band >= 0 and not line:
+                y += self._foot
+                cards.append(_Card(band, lines, card_top, y))
+                band = -1
             self._tops.append(y)
+            if on and row.kind == "band":
+                band, card_top, lines = index, y + self._band_top, 0
+            elif line:
+                lines += 1
             y += self._height(row)
+        if band >= 0:
+            y += self._foot
+            cards.append(_Card(band, lines, card_top, y))
+        self._cards = cards
+        self._card_tops = [card.top for card in cards]
+        self._card_bottoms = [card.bottom for card in cards]
         if y != self._total or not self._tops:
             self.canvas.configure(scrollregion=(0, 0, 1, max(y, 1)))
         self._total = y
@@ -427,6 +494,8 @@ class VirtualList(ctk.CTkFrame):
         bottom = top + self._row_h
         view_top = self.canvas.canvasy(0)
         view_h = self.canvas.winfo_height()
+        if view_h <= 1:
+            return  # not laid out yet: it would scroll the row to the very top, and stay there
         if top < view_top:
             self.canvas.yview_moveto(top / self._total)
         elif bottom > view_top + view_h:
@@ -450,15 +519,20 @@ class VirtualList(ctk.CTkFrame):
         if not self.winfo_exists():
             return
         c = self.canvas
-        c.delete("all")
+        c.delete("!card")  # all but the cards' own items, which stay while nothing changed
         self._visible = []
         self._hits = []
+        self._greyed = []
+        self._tips = []
         if not self._rows:
+            self._draw_cards(None, 0, 0, 0)
             return
         colours = _Colours(self.look)
         width = max(c.winfo_width(), 200)
         top = c.canvasy(0)
         height = max(c.winfo_height(), self._row_h)
+        if self.sizes.cards:
+            self._draw_cards(colours, top, height, width)
         first = self._row_at(top) or 0
         for index in range(first, len(self._rows)):
             y = self._tops[index]
@@ -478,6 +552,69 @@ class VirtualList(ctk.CTkFrame):
     def refresh_images(self) -> None:
         """Draw again once pictures have arrived."""
         self._schedule_redraw()
+
+    def card_shape(self, lines: int) -> CardShape:
+        """The picture of a card with `lines` lines, in physical pixels: one width whatever the
+        window's, its height the card's up to the band and CARD_MAX_LINES lines."""
+        band = self._band_h - self._band_top - self._band_bottom
+        height = band + min(lines, CARD_MAX_LINES) * self._row_h + self._foot
+        return CardShape(self._px(CARD_WIDTH), height, band, self.scale, lines > CARD_MAX_LINES)
+
+    def cards_in_view(self) -> list[Row]:
+        """The bands of the cards drawn last, whichever of their rows show."""
+        return list(self._cards_shown)
+
+    def _draw_cards(self, p: _Colours | None, top: float, height: int, width: int) -> None:
+        """Behind the rows, every card any row of which shows: only what changed is touched, and
+        only the bands of the cards in view ask for their pictures."""
+        c = self.canvas
+        old, self._layers = self._layers, {}
+        self._cards_shown = []
+        if p is not None:
+            x0, x1 = self._pad // 2, width - self._pad // 2
+            first = bisect.bisect_left(self._card_bottoms, top)
+            last = bisect.bisect_right(self._card_tops, top + height)
+            for card in self._cards[first:last]:
+                row = self._rows[card.first]
+                self._cards_shown.append(row)
+                fill = p.faded if row.faded else p.surface
+                picture = None
+                if row.backdrop:
+                    picture = self.card_picture(row, self.card_shape(card.lines), fill)
+                # Holds the photo too: a picture stays alive while it shows, whatever the cache.
+                shows = (card.top, card.bottom, x0, x1, fill, p.main, picture)
+                items = old.pop(shows, None)
+                if items is None:
+                    items = self._draw_card(card, x0, x1, fill, p.main, picture)
+                self._layers[shows] = items
+        for gone in old.values():
+            c.delete(*gone)
+
+    def _draw_card(
+        self, card: _Card, x0: int, x1: int, fill: str, ground: str, picture: Any
+    ) -> list[int]:
+        """One card's items: its fill, its picture (a wider one cut off at the card's left), its
+        rounded corners."""
+        c = self.canvas
+        y0, y1 = card.top, card.bottom
+        items = [
+            int(c.create_rectangle(x0, y0, x1, y1, fill=fill, width=0, tags=("card", "card-fill")))
+        ]
+        if picture is not None:
+            items.append(
+                int(c.create_image(x1, y0, image=picture, anchor="ne", tags=("card", "card-image")))
+            )
+            if picture.width() > x1 - x0:
+                bottom = y0 + picture.height()
+                items.append(
+                    int(
+                        c.create_rectangle(
+                            0, y0, x0, bottom, fill=ground, width=0, tags=("card", "card-clip")
+                        )
+                    )
+                )
+        radius = self._px(self.sizes.band_radius)
+        return items + self._corners(x0, y0, x1, y1, radius, ground, tag="card")
 
     def _measure(self, font: tkfont.Font, text: str) -> int:
         key = (str(font), text)
@@ -517,12 +654,15 @@ class VirtualList(ctk.CTkFrame):
         over the band or one of its lines, and always for a band that needs the owner."""
         return not self.hover_actions or row.state == "needs" or self._hover_band == row.key
 
-    def _corners(self, x0: int, y0: int, x1: int, y1: int, radius: int, ground: str) -> None:
-        """Round a band's corners: the list's ground over what lies outside a quarter circle at
-        each corner (drawn after the band's pictures, so they are rounded too)."""
+    def _corners(
+        self, x0: int, y0: int, x1: int, y1: int, radius: int, ground: str, *, tag: str = ""
+    ) -> list[int]:
+        """Round a band's or card's corners: the list's ground over what lies outside a quarter
+        circle at each corner (drawn after the pictures, so they are rounded too)."""
         if radius <= 1:
-            return
+            return []
         c = self.canvas
+        items: list[int] = []
         for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
             points: list[float] = [cx, cy]
             for step in range(_ARC_STEPS + 1):
@@ -531,7 +671,9 @@ class VirtualList(ctk.CTkFrame):
                     cx + sx * radius * (1 - math.sin(angle)),
                     cy + sy * radius * (1 - math.cos(angle)),
                 ]
-            c.create_polygon(points, fill=ground, outline=ground, width=1, tags=("band-corner",))
+            tags = ("band-corner", tag) if tag else ("band-corner",)
+            items.append(int(c.create_polygon(points, fill=ground, outline=ground, width=1, tags=tags)))
+        return items
 
     def round_rect(
         self, x0: float, y0: float, x1: float, y1: float, radius: int, **options: Any
@@ -566,17 +708,9 @@ class VirtualList(ctk.CTkFrame):
         poster_w, poster_h = self.poster_size
         faded = row.faded
         fill = p.faded if faded else p.surface
-        poster, backdrop = self.images(row, *self.backdrop_size)
+        poster = self.images(row)
         tints = thumb_colours()
         tint = tints[zlib.crc32((row.badge or row.title).encode()) % len(tints)]
-        edge = p.states.get(row.state, tint)
-        c.create_rectangle(x0, y0, x1, y1, fill=fill, width=0, tags=("band-fill",))
-        if sizes.band_edge:
-            edge_x = x0 + self._px(sizes.band_edge)
-            c.create_rectangle(x0, y0, edge_x, y1, fill=edge, width=0, tags=("band-edge",))
-        if backdrop is not None and not faded and x1 - x0 - 3 >= self.backdrop_size[0]:
-            c.create_image(x1, y0, image=backdrop, anchor="ne", tags=("band-image",))
-        self._corners(x0, y0, x1, y1, self._px(sizes.band_radius), p.main)
         px = x0 + self._px(sizes.band_inset)
         py = round((y0 + y1 - poster_h) / 2)
         if poster is not None:
@@ -602,13 +736,15 @@ class VirtualList(ctk.CTkFrame):
         if row.chip:
             right = self._draw_state_and_chip(p, row, right, y0, y1, fill)
         elif row.state_text:
-            right = self._draw_state(p, row, right, middle)
+            right = self._draw_state(p, row, right, middle, fill)
         if row.note:
             c.create_text(
                 right, middle, text=row.note, anchor="e", fill=p.muted, font=self._note_font
             )
             right -= self._measure(self._note_font, row.note) + self._px(12)
         tx = px + poster_w + self._px(12)
+        if row.backdrop:  # the text stays where the picture is still faint
+            right = min(right, card_text_end(x0, x1, self.scale))
         avail = right - tx
         box_h = y1 - y0
         title_y, sub_y = (0.36, 0.72) if sizes.poster is None else (0.40, 0.64)
@@ -647,12 +783,18 @@ class VirtualList(ctk.CTkFrame):
         buttons: Sequence[tuple[int, int, int, int, str, str]],
         middle: float,
         fill: str,
+        *,
+        filled: bool = True,
     ) -> None:
-        """A band's buttons (the rightmost filled with the accent) and their click areas."""
+        """A row's buttons (`filled`: the rightmost filled with the accent) and their click areas;
+        a greyed one takes no click, and tells why under the pointer."""
         c = self.canvas
         rounded = self._px(8) if self.sizes.band_radius else 0
+        greyed = dict(row.greyed)
+        tips = dict(row.tips)
         for index, (bx0, by0, bx1, by1, action, label) in enumerate(buttons):
-            primary = index == 0
+            off = action in greyed
+            primary = filled and index == 0 and not off
             if rounded:
                 self.round_rect(
                     bx0,
@@ -680,11 +822,16 @@ class VirtualList(ctk.CTkFrame):
                 (bx0 + bx1) / 2,
                 middle,
                 text=label,
-                fill=p.accent_text if primary else p.text,
+                fill=p.faint if off else p.accent_text if primary else p.text,
                 font=self._button_font,
                 tags=("band-button-text",),
             )
-            self._hits.append((bx0, by0, bx1, by1, row.key, action))
+            if off:
+                self._greyed.append((bx0, by0, bx1, by1, row.key, action, greyed[action]))
+            else:
+                self._hits.append((bx0, by0, bx1, by1, row.key, action))
+                if action in tips:
+                    self._tips.append((bx0, by0, bx1, by1, tips[action]))
 
     def _draw_state_and_chip(
         self, p: _Colours, row: Row, right: int, y0: int, y1: int, fill: str
@@ -695,7 +842,7 @@ class VirtualList(ctk.CTkFrame):
         title_y, sub_y = (0.36, 0.72) if self.sizes.poster is None else (0.40, 0.64)
         state_left = right
         if row.state_text:
-            state_left = self._draw_state(p, row, right, y0 + box_h * title_y) + self._px(14)
+            state_left = self._draw_state(p, row, right, y0 + box_h * title_y, fill) + self._px(14)
         pad = self._px(10)
         text = self._fit(row.chip, self._note_font, self._px(CHIP_MAX) - 2 * pad)
         width = self._measure(self._note_font, text) + 2 * pad
@@ -731,11 +878,24 @@ class VirtualList(ctk.CTkFrame):
         top = round(canvas.winfo_rooty() + y0 - canvas.canvasy(0))
         return left, top, x1 - x0, y1 - y0
 
-    def _draw_state(self, p: _Colours, row: Row, right: int, middle: float) -> int:
-        """A band's status as a coloured dot and word ending at `right`; returns the x left of
-        it."""
+    def _draw_state(self, p: _Colours, row: Row, right: int, middle: float, fill: str) -> int:
+        """A band's status as a coloured dot and word on a solid pill in the card's `fill`, ending
+        at `right`; returns the x left of it."""
         c = self.canvas
         colour = p.states.get(row.state, p.muted)
+        pad, height = (self._px(unit) for unit in _STATE_PILL)
+        left = right - 2 * pad - self._measure(self._state_font, row.state_text)
+        self.round_rect(
+            left - 2 * self._px(5) - self._px(7),
+            round(middle - height / 2),
+            right,
+            round(middle + height / 2),
+            height // 2,
+            fill=fill,
+            width=0,
+            tags=("band-state-pill",),
+        )
+        right -= pad
         c.create_text(
             right,
             middle,
@@ -750,12 +910,34 @@ class VirtualList(ctk.CTkFrame):
         c.create_oval(
             dx - dot, middle - dot, dx + dot, middle + dot, fill=colour, width=0, tags=("band-dot",)
         )
-        return dx - dot - self._px(14)
+        return dx - dot - pad - self._px(14)
+
+    def _highlight(self, width: int, height: int, selected: bool) -> ImageTk.PhotoImage:
+        """A card line's see-through strip, remembered by its size and look."""
+        colour = theme.pick(theme.TEXT)
+        key = (width, height, selected, colour)
+        strip = self._strips.get(key)
+        if strip is None:
+            alpha = HIGHLIGHT_ALPHA[1 if selected else 0][1 if theme.is_dark() else 0]
+            image = line_highlight(width, height, self._px(7), colour, alpha)
+            strip = self._strips[key] = ImageTk.PhotoImage(image, master=self)
+            while len(self._strips) > _STRIPS:
+                self._strips.popitem(last=False)
+        else:
+            self._strips.move_to_end(key)
+        return strip
 
     def _draw_selection(self, p: _Colours, row: Row, y: int, width: int, inset: int) -> None:
-        """The hover / selected background of a line or an item (`inset` from its edges)."""
+        """The hover / selected background of a line or an item (`inset` from its edges): on a
+        card a soft see-through highlight, without a bar."""
         c, pad, h = self.canvas, self._pad, self._row_h
         selected = row.key == self.selected
+        if self.sizes.cards:
+            if selected or row.key == self._hover:
+                side = pad // 2 + self._px(6)
+                strip = self._highlight(width - 2 * side, h - 2 * inset, selected)
+                c.create_image(side, y + inset, image=strip, anchor="nw", tags=("line-highlight",))
+            return
         if selected or row.key == self._hover:
             c.create_rectangle(
                 pad // 2,
@@ -798,7 +980,7 @@ class VirtualList(ctk.CTkFrame):
                 middle,
                 text=self._fit(row.faint, self._sub_font, faint_w),
                 anchor="e",
-                fill=p.washed,
+                fill=p.muted,
                 font=self._sub_font,
                 tags=("line-old",),
             )
@@ -871,6 +1053,12 @@ class VirtualList(ctk.CTkFrame):
             tx += thumb_w + 10
 
         right = width - pad - 30
+        if row.actions:  # as a band's buttons, drawn on the canvas; none of them filled
+            middle = y + h / 2
+            buttons = self._band_buttons(row, width - pad - self._px(4), middle)
+            if self.actions_shown(row):
+                self._draw_buttons(p, row, buttons, middle, "", filled=False)
+            right = buttons[-1][0] - pad
         x = tx
         avail = right - x
         title = self._fit(row.title, self._title_font, avail)
@@ -920,15 +1108,86 @@ class VirtualList(ctk.CTkFrame):
             self._hover_band = band
             self._redraw()
 
+    def _under_line(self, index: int, y: float) -> bool:
+        """Whether canvas `y`, found in row `index`, is below that row: in a card's padding under
+        its last line, or past the end of the list."""
+        return (
+            self.sizes.cards
+            and self._rows[index].kind == "item"
+            and y >= self._tops[index] + self._row_h
+        )
+
     def _on_motion(self, event: tk.Event[Any]) -> None:
         index = self._row_at(self.canvas.canvasy(event.y))
         row = self._rows[index] if index is not None else None
-        if row is not None and row.kind == "band":
+        cy = self.canvas.canvasy(event.y)
+        if row is not None and index is not None and self._under_line(index, cy):
+            over_card = cy < self._tops[index] + self._row_h + self._foot
+            self._set_hover(None, row.band if over_card else None)
+        elif row is not None and row.kind == "band":
             self._set_hover(None, row.key)
         elif row is not None and row.kind == "item":
             self._set_hover(row.key, row.band)
         else:
             self._set_hover(None)
+        self._point_at(event.x, self.canvas.canvasy(event.y))
+
+    def _on_leave(self, _event: tk.Event[Any]) -> None:
+        self._set_hover(None)
+        self._show_tip(None, "")
+
+    def _greyed_at(self, x: float, y: float) -> tuple[int, int, int, int, int, str, str] | None:
+        return next((g for g in self._greyed if g[0] <= x <= g[2] and g[1] <= y <= g[3]), None)
+
+    def _point_at(self, x: float, y: float) -> None:
+        """The pointer at canvas (x, y): over a greyed button its tip says why; over one with a
+        tip of its own, what it does."""
+        greyed = self._greyed_at(x, y)
+        tip = next((t for t in self._tips if t[0] <= x <= t[2] and t[1] <= y <= t[3]), None)
+        if greyed is not None:
+            self._show_tip(greyed[:4], greyed[6])
+        elif tip is not None:
+            self._show_tip(tip[:4], tip[4])
+        else:
+            self._show_tip(None, "")
+
+    def _show_tip(self, box: tuple[int, int, int, int] | None, text: str) -> None:
+        if text == self._tip_shown:
+            return
+        self._tip_shown = text
+        if self._tip is None:
+            if not text:
+                return
+            self._tip = add_tooltip(self.canvas, "")
+        area = None
+        if box is not None:
+            left, top, w, h = self.screen_box(box)
+            area = (left, top, left + w, top + h)
+        self._tip.rest_on(area, text)
+
+    @property
+    def tip_shown(self) -> str:
+        """What the greyed button under the pointer tells (for tests)."""
+        return self._tip_shown
+
+    def greyed_tip(self, key: int, action: str) -> str | None:
+        """Why row `key`'s button `action` is greyed, when it is drawn so; else None."""
+        for *_box, hit_key, hit_action, why in self._greyed:
+            if hit_key == key and hit_action == action:
+                return why
+        return None
+
+    def greyed_box(self, key: int, action: str) -> tuple[int, int, int, int] | None:
+        """Where row `key`'s greyed button `action` was drawn last (canvas coordinates)."""
+        for x0, y0, x1, y1, hit_key, hit_action, _why in self._greyed:
+            if hit_key == key and hit_action == action:
+                return x0, y0, x1, y1
+        return None
+
+    def destroy(self) -> None:
+        self._layers.clear()  # let the photos go here, on the loop
+        self._strips.clear()
+        super().destroy()
 
     def hover_band(self, key: int | None) -> None:
         """As the pointer over band `key` (None: over nothing): for tests."""
@@ -943,6 +1202,8 @@ class VirtualList(ctk.CTkFrame):
                 # A button's menu (Ignore, the chip) took the focus: CTk's own click on "all"
                 # (focus to the clicked widget) would pull it back and close the menu at once.
                 return "break"
+        if self._greyed_at(event.x, cy) is not None:
+            return "break"
         index = self._row_at(cy)
         if index is not None and self.select_bands and self._rows[index].kind == "band":
             band = self._rows[index].key
@@ -951,6 +1212,8 @@ class VirtualList(ctk.CTkFrame):
                 self.select(first)
             return None
         if index is None or self._rows[index].kind != "item":
+            return None
+        if self._under_line(index, cy):  # a card's padding under its last line, or past the list
             return None
         row = self._rows[index]
         box_right = self._pad + 4 + self._box + 6

@@ -1,4 +1,4 @@
-"""The Downloads page: its texts (state, progress, where, when, subtitles, the almost-full
+"""The Downloads page: its texts (state, progress, where, when, the almost-full
 banner, the badge) and its widgets on a hidden Tk root (the band's ⬇ badge: test_spotlight)."""
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ from app.ui.views.downloads_view import (
     space_status_text,
     space_text,
     state_text,
-    subtitles_text,
     when_text,
 )
 
@@ -53,7 +52,6 @@ def entry(
     progress: float | None = 0.42,
     *,
     media_type: MediaType = MediaType.TV,
-    subtitles: tuple[str, ...] = (),
     moved_to: MovedTo | None = None,
 ) -> DownloadEntry:
     tv = media_type is MediaType.TV
@@ -74,7 +72,6 @@ def entry(
         program="Download Station",
         state=state,
         progress=progress,
-        subtitles=subtitles,
         moved_to=moved_to,
     )
 
@@ -144,10 +141,6 @@ class TextTests(unittest.TestCase):
             text,
         )
         self.assertNotIn("D:", text)  # never the path before the library folder
-
-    def test_subtitles_in_the_settings_order(self) -> None:
-        self.assertEqual(subtitles_text(("en", "nl"), ("nl", "en")), "Subtitles NL EN")
-        self.assertEqual(subtitles_text(()), "")
 
     def test_almost_full(self) -> None:
         nas = FreeSpace(free_bytes=12 * GB, total_bytes=4000 * GB, on_nas=True, low=True)
@@ -259,7 +252,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_rows_update_in_place_and_are_kept_by_grab(self) -> None:
         page = self.view()
         self.status.next = DownloadsOverview(
-            entries=(entry(1, subtitles=("nl", "en")), entry(2, DownloadState.READY, 1.0)),
+            entries=(entry(1), entry(2, DownloadState.READY, 1.0)),
             program="Download Station",
             checked_at=NOW,
         )
@@ -271,7 +264,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Fallout S02E01", texts)
         self.assertIn("Downloading 42 %", texts)
         self.assertIn("✓ Finished", texts)
-        self.assertIn("  ·  Subtitles EN NL", texts)
+        self.assertFalse(any("Subtitles" in text for text in texts))
         assert rows[0]._bar is not None
         self.assertEqual(rows[0]._bar.winfo_manager(), "pack")
         self.assertIsNone(rows[1]._bar)  # made only when needed

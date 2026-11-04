@@ -192,16 +192,19 @@ class BandLayoutTests(unittest.TestCase):
         widest = person_width(1000, 10)  # cut to PERSON_NAME_MAX
         self.assertEqual(widest, person_width(PERSON_NAME_MAX, 10))
         for width in range(1220, 2600, 37):
-            parts = controls(band_layout(width, word_width=110, person_width=widest))
-            for index, part in enumerate(parts):
-                for other in parts[index + 1 :]:
-                    self.assertFalse(part.overlaps(other), (width, part, other))
+            for history in (False, True):  # 🕘 on MediaForge's page
+                parts = controls(
+                    band_layout(width, word_width=110, person_width=widest, history=history)
+                )
+                for index, part in enumerate(parts):
+                    for other in parts[index + 1 :]:
+                        self.assertFalse(part.overlaps(other), (width, part, other))
 
     def test_no_person_no_button(self) -> None:
         layout = band_layout(1220, word_width=110)
         self.assertEqual(layout.person.w, 0)
         self.assertEqual(layout.settings.right, 1200)
-        self.assertEqual(len(controls(layout)), 5)
+        self.assertEqual(len(controls(layout)), 4)
 
 
 class WelcomeNamesTests(unittest.TestCase):
@@ -231,7 +234,7 @@ class NameButtonTests(TkCase):
             downloads=self.status,  # type: ignore[arg-type]
             images=FakeImages(),  # type: ignore[arg-type]
             on_downloads=lambda: None,
-            on_forge=lambda: None,
+            on_history=lambda: None,
             on_settings=lambda: None,
             on_search=lambda: None,
             on_open=lambda item: None,

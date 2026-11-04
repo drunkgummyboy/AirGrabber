@@ -1,6 +1,12 @@
 """What's new in each release: the short notes shown once after an update (MainWindow, with
-app/ui/whats_new_dialog.py). Each release adds its entry to NOTES: 3–6 short lines in plain
-words, each in N_() with its Dutch line in app/i18n_nl.py (the dialog shows them through t()).
+app/ui/whats_new_dialog.py). How a release adds its notes, each text in N_() with its Dutch in
+app/i18n_nl.py (the dialog shows them through t()):
+
+- a big feature: a Feature in FEATURES (at most 3): a title, one sentence and a drawn picture
+  without words, a 1464 x 488 PNG from tools/whats_new_art.py in app/assets/whats_new. Only the
+  newest release's pictures stay there: the older Features go with them.
+- something smaller: a short line in plain words in NOTES (3–6 of them where there is no Feature).
+
 Stdlib only."""
 
 from __future__ import annotations
@@ -14,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.2.0": (
+        N_("History is behind the 🕘 next to Settings."),
+        N_("MediaForge now has AirGrabber's colours."),
+        N_("Auto-rename moved to Settings, and there is now one Settings window for everything."),
+        N_("Subtitles are part of MediaForge now, and prefer the release of your file's original name."),
+        N_("New setting: remove files from the queue after they're forged."),
+        N_("Ignored files and folders that are gone drop off the Ignored list by themselves."),
+    ),
     "3.1.2": (
         N_("The show window always has a season's download buttons, also when it's already in Plex."),
         N_("MediaForge's format codes are now buttons: click one to add it to the format."),
@@ -141,28 +155,66 @@ NOTES: dict[str, tuple[str, ...]] = {
 }
 
 
+class Feature(NamedTuple):
+    """A big feature of a release: its card in the dialog."""
+
+    title: str
+    text: str
+    picture: str  # a file name in app/assets/whats_new
+
+
+# Version -> its big features, at most 3.
+FEATURES: dict[str, tuple[Feature, ...]] = {
+    "3.2.0": (
+        Feature(
+            N_("MediaForge is now a page in AirGrabber"),
+            N_(
+                "No second window any more: Series, Movies, MediaForge. The number on it shows "
+                "how many files need you."
+            ),
+            "mediaforge_page.png",
+        ),
+        Feature(
+            N_("Every show or film is one card"),
+            N_("Its picture runs behind all its files, and 📂 opens them in Explorer."),
+            "one_card.png",
+        ),
+    ),
+}
+
+
 class WhatsNew(NamedTuple):
     version: str
     lines: tuple[str, ...]
+    features: tuple[Feature, ...] = ()
 
 
 def whats_new(
-    last_run: str, running: str, notes: Mapping[str, tuple[str, ...]] = NOTES
+    last_run: str,
+    running: str,
+    notes: Mapping[str, tuple[str, ...]] = NOTES,
+    features: Mapping[str, tuple[Feature, ...]] = FEATURES,
 ) -> WhatsNew | None:
     """The notes to show when AirGrabber starts on `running` after `last_run` ran: the newest
-    entry above `last_run` and at most `running`. None on a first start (`last_run` empty: the
-    welcome shows instead), when the version didn't go up, or without such an entry."""
+    entry (with lines or features) above `last_run` and at most `running`. None on a first start
+    (`last_run` empty: the welcome shows instead), when the version didn't go up, or without
+    such an entry."""
     old, new = version_tuple(last_run), version_tuple(running)
     if not last_run.strip() or old is None or new is None or new <= old:
         return None
     best: tuple[tuple[int, ...], str] | None = None
-    for version, lines in notes.items():
+    for version in (*notes, *features):
         key = version_tuple(version)
-        if key is None or not lines or not old < key <= new:
+        if key is None or not (notes.get(version) or features.get(version)):
+            continue
+        if not old < key <= new:
             continue
         if best is None or key > best[0]:
             best = key, version
-    return WhatsNew(best[1], tuple(notes[best[1]])) if best is not None else None
+    if best is None:
+        return None
+    version = best[1]
+    return WhatsNew(version, tuple(notes.get(version, ())), tuple(features.get(version, ())))
 
 
 def dialog_title(version: str) -> str:

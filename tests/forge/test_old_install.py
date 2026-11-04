@@ -50,7 +50,7 @@ from app.ui import theme
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.tk import pump, pump_until
 from tests.forge.ui.test_host import HostCase
-from tests.forge.ui.test_window import TkCase
+from tests.forge.ui.test_page import TkCase
 
 LOCATION = r"C:\Users\Alex\AppData\Local\Programs\MediaForge"
 SCRIPT = LOCATION + r"\src\mediaforge\uninstall.ps1"

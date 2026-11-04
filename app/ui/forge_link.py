@@ -7,10 +7,11 @@
   request file starts AirGrabber anyway, so that first look drops one copy of the start's own
   request. It stops taking once AirGrabber begins to quit: what waits then stays in the folder.
 - `QuitGate`: quitting and restarting wait for Forge (`ForgeHost.may_close(retry)`: a Forge run
-  stops after its current file, an undo finishes), then close the Forge windows and Forge itself,
+  stops after its current file, an undo finishes), then close the page, the confirm windows and Forge itself,
   bounded (a slow TMDB look by the renamer can't hold quitting up), then let the window go.
-- `quits_after_forge`: D5. A start for Forge (the right-click menu) shows only the confirm window
-  (or the Forge window); when the last Forge window closes while the main window is still hidden,
+- `quits_after_forge`: D5. A start for Forge with a confirm request (the right-click menu) shows
+  only the confirm window (a plain request shows the main window on MediaForge's page); when the
+  last confirm window closes while the main window is still hidden,
   AirGrabber stays in the tray if `keep_in_tray` is on and the tray icon works (as `close_action`
   decides for the main window), otherwise it quits.
 """
@@ -192,9 +193,9 @@ def quits_after_forge(
     keep_in_tray: bool,
     tray_running: bool,
 ) -> bool:
-    """D5: whether AirGrabber quits now that a Forge window closed. Only a start for Forge
-    (the right-click menu, the "MediaForge" shortcut) whose main window still hasn't been shown
-    and with no Forge window left; then as closing the main window would (no first-time tray
+    """D5: whether AirGrabber quits now that a confirm window closed. Only a start for Forge
+    (the right-click menu) whose main window still hasn't been shown and with no confirm window
+    left or plain request on its way; then as closing the main window would (no first-time tray
     notice: there is no main window it could explain)."""
     if not started_for_forge or forge_windows_open or not main_hidden:
         return False

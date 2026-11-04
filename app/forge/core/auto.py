@@ -27,7 +27,7 @@ import logging
 import os
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -321,6 +321,8 @@ class IgnoreSource(Protocol):
 
     def snapshot(self) -> Ignored: ...
 
+    async def forget_gone(self, watched: Iterable[Path]) -> int: ...
+
 
 @dataclass(frozen=True)
 class RenamerParts:
@@ -396,6 +398,7 @@ def _add(a: RunResult, b: RunResult) -> RunResult:
         failed=a.failed + b.failed,
         posters=a.posters + b.posters,
         trailers=a.trailers + b.trailers,
+        subtitles_fetched=a.subtitles_fetched + b.subtitles_fetched,
         cleaned=a.cleaned + b.cleaned,
         pruned=a.pruned + b.pruned,
         cancelled=a.cancelled or b.cancelled,
@@ -430,9 +433,23 @@ class AutoRenamer:
         self._stopping = False
         self._cancel = asyncio.Event()
         self.on_status: Callable[[WatchStatus], None] = lambda status: None
+        self.last_status: WatchStatus | None = None  # what `on_status` heard last
+        self._status_listeners: list[Callable[[WatchStatus], None]] = []
         self.on_needs: Callable[[int], None] = lambda count: None
         self.notify: Callable[[str, str], None] = lambda title, text: None
         self.blocked_by_old_install = False  # see the module's notes
+
+    def watch_status(self, listener: Callable[[WatchStatus], None]) -> Callable[[], None]:
+        """Hear every status too, as `on_status` (Settings › Auto-rename while it is open); the
+        result stops it."""
+        self._status_listeners.append(listener)
+        return lambda: self._status_listeners.remove(listener)
+
+    def _tell_status(self, status: WatchStatus) -> None:
+        self.last_status = status
+        self.on_status(status)
+        for listener in list(self._status_listeners):
+            listener(status)
 
     @property
     def _settings(self) -> ForgeSettings:
@@ -454,7 +471,7 @@ class AutoRenamer:
         if self.running or self._closed:
             return
         if self._mode == "off":
-            self.on_status(self.status([]))
+            self._tell_status(self.status([]))
             return
         self._stopping = False
         self._cancel = asyncio.Event()
@@ -490,7 +507,7 @@ class AutoRenamer:
             if self.running and not self._stopping:
                 self._stopping = True  # known at once, before the stop task gets its turn
                 self._stop_task = asyncio.get_running_loop().create_task(self.stop())
-            self.on_status(self.status([]))
+            self._tell_status(self.status([]))
         elif self._stopping and self.running:  # Off was chosen a moment ago: start again after
             self._restart_task = asyncio.get_running_loop().create_task(self._start_after_stop())
         elif self.running:
@@ -540,14 +557,17 @@ class AutoRenamer:
     async def look(self) -> LookResult:
         parts, settings = self._parts, self._settings
         if self._mode == "off" or library_problems(settings):
-            self.on_status(self.status([]))
+            self._tell_status(self.status([]))
             return LookResult(0, 0, 0, [])
         queue = parts.queue
         libraries = [Path(settings.series_folder), Path(settings.movies_folder)]
         lost_roots: list[Path] = []
         listed: list[tuple[Path, Path]] = []
+        roots = [Path(folder) for folder in watched_folders(settings)]
+        if parts.ignored is not None:
+            await parts.ignored.forget_gone(roots)
         ignored = parts.ignored.snapshot() if parts.ignored is not None else None
-        for root in map(Path, watched_folders(settings)):
+        for root in roots:
             try:
                 files = await asyncio.to_thread(candidates, root, ignored)
             except OSError:
@@ -648,7 +668,7 @@ class AutoRenamer:
             self.notify(*needs_message(new_needs))
         self.on_needs(len(needing))
         await self._maybe_summary()
-        self.on_status(self.status([*lost_roots, *lost_libraries]))
+        self._tell_status(self.status([*lost_roots, *lost_libraries]))
         return LookResult(len(new_ids), renamed, len(needing), lost_roots)
 
     def _needing_owner(self) -> set[int]:
@@ -794,6 +814,8 @@ class AutoRenamer:
                     if (item := queue.get(item_id)) is not None:
                         item.run_id = result.run_id
                 total = _add(total, result)
+            if self._settings.remove_after_forge:
+                queue.forget_finished()
         return total
 
     async def _maybe_summary(self) -> None:

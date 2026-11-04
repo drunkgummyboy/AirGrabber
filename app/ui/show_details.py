@@ -1,8 +1,7 @@
 """The series info window: the shared info look (app/ui/title_info.py: the backdrop with the
 trailer, the poster, title, meta line, genres, synopsis, track state, the cast), and the show's
 episodes by season, each with its download controls (⬇ Auto with ☰ Choose…: app/ui/
-row_actions.py; or when it airs) and, once grabbed, its subtitles (CC ▾: app/ui/
-subtitle_control.py). Whether an episode was downloaded is never shown as such (owner's
+row_actions.py; or when it airs). Whether an episode was downloaded is never shown as such (owner's
 decision for 3.1.0): only while Plex is connected does the window show what you have and miss,
 and then only Plex counts as had (a quiet ✓ "In Plex"; app/services/plex.py). "☰ Choose…" shows that episode's releases (app/ui/release_panel.py)
 in this window: in place of the episodes under a "← Episodes" bar ("S03E05 · The Crossing"),
@@ -33,7 +32,7 @@ import asyncio
 import logging
 import tkinter as tk
 import webbrowser
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -97,7 +96,6 @@ from app.ui.row_actions import NOTHING_SHORT, NOTHING_TEXT, RowLook
 from app.ui.row_actions import FONT_SIZE as ACTIONS_FONT_SIZE
 from app.ui.row_actions import RowActions, button_width
 from app.ui.row_actions import slot_width as actions_slot_width
-from app.ui.subtitle_control import CCControl, SubtitleActions
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, Measure, elide_to_width, unscaled_width
 from app.ui.title_info import (
@@ -126,8 +124,6 @@ Mark = Literal["missing", "new", "plex"]
 Listener = Callable[[], None]
 RGB = tuple[int, int, int]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
-# Per (season, episode) of a show (TVMaze id), its subtitle mark ("CC EN NL").
-SubtitleMarks = Callable[[int], Awaitable[Mapping[tuple[int, int], str]]]
 
 __all__ = ["SUMMARY_LINES", "ShowDetailsWindow", "ShowWindows", "collapsed_summary"]
 
@@ -144,8 +140,6 @@ MARK_HEIGHT = 26
 ROW_RADIUS = 8
 STRIPE = 3  # a missing episode's amber line along its row's left edge
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
-CC_FONT_SIZE = 12  # the "CC EN NL" subtitle mark beside a grabbed episode's title
-CC_GAP = 8
 
 # Shown through t().
 NEW_TODAY_TEXT = N_("New · aired today")
@@ -501,8 +495,7 @@ _exists = exists
 
 class _EpisodeRow(ctk.CTkFrame):
     """"S02E01  Title  17 Jan" with its state on the right: ⬇ Auto + ☰ Choose… (app/ui/
-    row_actions.py), or when it airs ("airs in 7 days"); beside the title of a grabbed episode
-    its subtitles (CC ▾, app/ui/subtitle_control.py). With Plex, in a tracked show's latest
+    row_actions.py), or when it airs ("airs in 7 days"). With Plex, in a tracked show's latest
     season, a quiet mark left of that, no box: amber "● Missing" (and a thin amber line along
     the row's left edge), blue "● New · aired today" or a grey ✓ ("In Plex")."""
 
@@ -516,9 +509,6 @@ class _EpisodeRow(ctk.CTkFrame):
         actions: DownloadActions[CalendarEntry],
         mark: Mark | None = None,
         marks_shown: bool = False,
-        grabbed: bool = False,
-        cc: str = "",
-        subtitles: SubtitleActions | None = None,
         slot_width: int = SLOT_WIDTH,
         mark_width: int = MARK_WIDTH,
     ) -> None:
@@ -558,22 +548,12 @@ class _EpisodeRow(ctk.CTkFrame):
             holder, text="", font=title_font, text_color=theme.TEXT, anchor="w", height=24
         )
         title.pack(side="left", fill="x", expand=True)
-        # The subtitles right of the title (grabbed episodes only): CC ▾ or the plain mark.
-        self.cc_control = CCControl(
-            holder,
-            key=episode_key(entry.show.id, episode.season, episode.number),
-            actions=subtitles if episode.number is not None else None,
-            on_change=self._cc_changed,
-        )
         name = episode.name
 
         def fit(width: int) -> None:
             if width > 1:
                 self._holder_width = width
                 room = unscaled_width(holder, width) - SLACK
-                if self.cc_control.winfo_manager():
-                    cc_width = self.cc_control.winfo_reqwidth()
-                    room -= unscaled_width(holder, cc_width) + CC_GAP
                 title.configure(text=elide_to_width(name, room, title_font.measure))
 
         self._fit_title = fit
@@ -589,9 +569,7 @@ class _EpisodeRow(ctk.CTkFrame):
         )
         self._slot.pack_propagate(False)
         self._slot.grid(row=0, column=4, padx=(0, 10))
-        self.set_state(
-            entry, state, now, mark=mark, marks_shown=marks_shown, grabbed=grabbed, cc=cc
-        )
+        self.set_state(entry, state, now, mark=mark, marks_shown=marks_shown)
 
     def set_state(
         self,
@@ -601,16 +579,11 @@ class _EpisodeRow(ctk.CTkFrame):
         *,
         mark: Mark | None = None,
         marks_shown: bool = False,
-        grabbed: bool = False,
-        cc: str = "",
     ) -> None:
         """Show `state` on the right and `mark` (in a slot kept while `marks_shown`, so
-        the season's rows stay aligned), and `cc` ("CC EN NL") beside the title of an aired,
-        `grabbed` episode (its subtitles); nothing changes when they already show."""
+        the season's rows stay aligned); nothing changes when they already show."""
         episode = entry.episode
         self._set_mark(episode, mark, marks_shown, now)
-        subtitles = grabbed and state == "downloadable" and episode.number is not None
-        self.cc_control.show(cc, shown=subtitles)
         self._date.configure(text=date_text(episode, now))
         if state == self._state:
             if state == "upcoming" and self._upcoming is not None:
@@ -657,30 +630,6 @@ class _EpisodeRow(ctk.CTkFrame):
     @property
     def mark(self) -> Mark | None:
         return None if self._mark is None else self._mark[0]
-
-    @property
-    def cc(self) -> str:
-        """The subtitle mark showing ("CC EN NL"), "" for none (or an episode not grabbed)."""
-        return self.cc_control.mark if self.cc_control.has_content else ""
-
-    def _cc_changed(self) -> None:
-        """The subtitles beside the title changed: show or hide them, then fit the title
-        again once laid out."""
-        cc = self.cc_control
-        if cc.has_content:
-            if not cc.winfo_manager():
-                cc.pack(side="right", padx=(CC_GAP, 0), before=self._title)
-        elif cc.winfo_manager():
-            cc.pack_forget()
-        if self._fit_job is not None or not self._holder_width:
-            return
-
-        def refit() -> None:
-            self._fit_job = None
-            if self._holder_width:
-                self._fit_title(self._holder_width)
-
-        self._fit_job = self.after_idle(refit)
 
     def _set_mark(
         self, episode: Episode, mark: Mark | None, marks_shown: bool, now: datetime
@@ -896,19 +845,15 @@ class ShowDetailsWindow(TitleInfoWindow):
         status: StatusReporter,
         episode_actions: DownloadActions[CalendarEntry],
         profile_id: int,
-        subtitle_marks: SubtitleMarks | None = None,
         discovery: DiscoveryService | None = None,
-        subtitle_actions: SubtitleActions | None = None,
         layout: InfoLayout = InfoLayout.SIDE,
         releases: PanelServices | None = None,
         on_fix_match: Callable[[TvTarget], None] | None = None,
     ) -> None:
         """`profile_id`: the person the window shows the show for (followed or not, its Track
         button and switch; ShowWindows closes it when another person is selected).
-        `subtitle_marks`: per (season, episode) of a show, its subtitle mark ("CC EN NL");
-        without it no row gets one. `discovery`: the TMDB extras (backdrop, trailer, cast);
-        without it the window shows only what TVMaze knows. `subtitle_actions`: the grabbed
-        episodes' CC ▾ menus (without it only the marks). `releases`: what the releases panel
+        `discovery`: the TMDB extras (backdrop, trailer, cast); without it the window shows only
+        what TVMaze knows. `releases`: what the releases panel
         works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
         "✎ Fix Match" found the right show (its window should open on that target)."""
         super().__init__(
@@ -926,9 +871,6 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._discovery = discovery
         self._extras: TitleExtras | None = None
         self._extras_task: asyncio.Task[None] | None = None
-        self._subtitle_marks = subtitle_marks
-        self._subtitle_actions = subtitle_actions
-        self._cc: Mapping[tuple[int, int], str] = {}
         # The rows' slots, wide enough for their texts in the current language.
         self._slot_width = max(
             SLOT_WIDTH, actions_slot_width(theme.font(ACTIONS_FONT_SIZE, bold=True).measure)
@@ -1114,15 +1056,8 @@ class ShowDetailsWindow(TitleInfoWindow):
                     t("Couldn't load the episodes: {error}", error=exc), theme.DANGER
                 )
             return
-        if self._subtitle_marks is not None:
-            self._cc = await self._subtitle_marks(details.show.id)
         if self.winfo_exists():
             self._apply(details)
-
-    def _cc_for(self, episode: Episode) -> str:
-        if episode.number is None:
-            return ""
-        return self._cc.get((episode.season, episode.number), "")
 
     def _apply(self, details: ShowDetails) -> None:
         self._details = details
@@ -1207,8 +1142,6 @@ class ShowDetailsWindow(TitleInfoWindow):
                         now,
                         mark=row_mark(details, episode),
                         marks_shown=shown,
-                        grabbed=details.is_downloaded(episode),
-                        cc=self._cc_for(episode),
                     )
             return
         self._cancel_rows()
@@ -1238,9 +1171,6 @@ class ShowDetailsWindow(TitleInfoWindow):
                     actions=self._episode_actions,
                     mark=row_mark(details, episode),
                     marks_shown=shown,
-                    grabbed=details.is_downloaded(episode),
-                    cc=self._cc_for(episode),
-                    subtitles=self._subtitle_actions,
                     slot_width=self._slot_width,
                     mark_width=self._mark_width,
                 )
@@ -1461,18 +1391,12 @@ class ShowWindows:
         episode_actions: DownloadActions[CalendarEntry],
         downloads_changed: Subscribe,
         profile: Callable[[], int],
-        subtitle_marks: SubtitleMarks | None = None,
-        subtitles_changed: Subscribe | None = None,
-        subtitle_actions: SubtitleActions | None = None,
         releases: PanelServices | None = None,
     ) -> None:
-        """`subtitle_marks` / `subtitles_changed`: the rows' "CC EN NL" marks and when they
-        change (subtitles saved); `subtitle_actions`: their CC ▾ menus. `releases`: the
-        releases panels' services; its settings say the layout a new window opens in."""
+        """`releases`: the releases panels' services; its settings say the layout a new window
+        opens in."""
         self._master = master
         self._profile = profile
-        self._subtitle_marks = subtitle_marks
-        self._subtitle_actions = subtitle_actions
         self._library = library
         self._discovery = discovery
         self._images = images
@@ -1483,8 +1407,6 @@ class ShowWindows:
         self._resolving: set[int] = set()  # TMDB ids being matched to TVMaze right now
         self._tasks: set[asyncio.Task[None]] = set()
         self._unsubscribe = [library.subscribe(self.reload_all), downloads_changed(self.reload_all)]
-        if subtitles_changed is not None:
-            self._unsubscribe.append(subtitles_changed(self.reload_all))
 
     def layout(self) -> InfoLayout:
         """The layout a window opens in now (Settings)."""
@@ -1518,9 +1440,7 @@ class ShowWindows:
             status=self._status,
             episode_actions=self._episode_actions,
             profile_id=self._profile(),
-            subtitle_marks=self._subtitle_marks,
             discovery=self._discovery,
-            subtitle_actions=self._subtitle_actions,
             layout=self.layout(),
             releases=self._releases,
             on_fix_match=self._fix_match,

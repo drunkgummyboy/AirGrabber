@@ -1,8 +1,9 @@
 """The header's spotlight band: which titles it picks (app/services/spotlight.py), its texts in
 English and Dutch, when it turns (`Rotation`), where everything goes at 1220 units and wider,
 the glow without a TMDB key, the baked pictures (the scrim, the shadows), "Grabber"'s colour in
-every palette, the band on a hidden Tk root, the Series / Movies switch on the tabs row under
-the band (`ModeSwitch`, right-aligned, level with the tabs, in every mode), and the main pages'
+every palette, the band on a hidden Tk root and its compact state on MediaForge's page (🕘, only
+there), the Series / Movies / MediaForge switch on the tabs row under the band (`ModeSwitch`,
+right-aligned, level with the tabs, in every mode, with MediaForge's badge), and the main pages'
 tabs (widgets.Tabview: the "pills" look, the "underline" one still there)."""
 
 from __future__ import annotations
@@ -12,8 +13,10 @@ import gc
 import tkinter as tk
 import unittest
 from datetime import UTC, date, datetime, time, timedelta, timezone
+from time import monotonic
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import customtkinter as ctk
 from PIL import Image
@@ -58,11 +61,10 @@ from app.ui.backdrop import (
     scrim_alpha,
 )
 from app.ui.main_window import build_tabs_row, show_tabs
-from app.forge.ui.look import forge_look
 from app.ui.spotlight import (
-    BADGE_OVERHANG,
     BAND_HEIGHT,
     BUTTON_GAP,
+    COMPACT_HEIGHT,
     PAD_X,
     PILL_PAD,
     POSTER_HEIGHT,
@@ -74,11 +76,13 @@ from app.ui.spotlight import (
     SEGMENT_FONT_SIZE,
     SEGMENT_PAD_X,
     SEGMENT_PAD_Y,
+    SEARCH_GAP,
     SWITCH_MARGIN,
     Hit,
     HitKind,
     Rect,
     Rotation,
+    SwitchPart,
     band_layout,
     controls,
     film_line,
@@ -538,26 +542,36 @@ class LayoutTests(unittest.TestCase):
         self.check(1220)
         layout = band_layout(1220, word_width=WORD, dots=5)
         self.assertEqual(layout.search.w, SEARCH_WIDTH)  # room for the full search field
-        # The top row: only the logo with its name, the search field and the three buttons.
+        # The top row: only the logo with its name, the search field and the two buttons.
         self.assertEqual(
-            controls(layout),
-            (layout.brand, layout.search, layout.forge, layout.downloads, layout.settings),
+            controls(layout), (layout.brand, layout.search, layout.downloads, layout.settings)
         )
 
-    def test_the_forge_button_left_of_downloads(self) -> None:
-        """D2: 🔨 MediaForge just left of ⬇ Downloads, the same size, the search field before it;
-        its badge's corner where ⬇'s is on ⬇."""
-        for width in (1220, 1650, 1920, 2560, 900):
+    def test_the_clock_only_on_mediaforges_page(self) -> None:
+        """🕘 right beside ⚙, the same size, with ⬇ and the search field before it. ⚙ and the name
+        stay where they are on every page, and the other pages have no gap: there ⬇ is beside ⚙
+        and the search field comes up to ⬇."""
+        for width in (1220, 1650, 1920, 2560):
             with self.subTest(width):
-                layout = band_layout(width, word_width=WORD, dots=3)
-                forge, downloads = layout.forge, layout.downloads
-                self.assertEqual((forge.w, forge.h, forge.y), (downloads.w, downloads.h, downloads.y))
-                self.assertAlmostEqual(forge.right + BUTTON_GAP, downloads.x)
-                self.assertLess(layout.search.right, forge.x)
-                self.assertEqual(
-                    layout.forge_badge, (forge.right + BADGE_OVERHANG, forge.y - BADGE_OVERHANG)
-                )
-                self.assertLess(layout.forge_badge[0], downloads.x)  # in the gap, not on ⬇
+                other = band_layout(width, word_width=WORD, person_width=100)
+                self.assertEqual(other.history.w, 0)
+                self.assertAlmostEqual(other.search.right + SEARCH_GAP, other.downloads.x)
+                layout = band_layout(width, word_width=WORD, person_width=100, history=True)
+                clock, downloads = layout.history, layout.downloads
+                self.assertEqual((clock.w, clock.h, clock.y), (downloads.w, downloads.h, downloads.y))
+                self.assertAlmostEqual(clock.right + BUTTON_GAP, layout.settings.x)
+                self.assertAlmostEqual(downloads.right + BUTTON_GAP, clock.x)
+                self.assertAlmostEqual(other.downloads.right + BUTTON_GAP, other.settings.x)
+                self.assertAlmostEqual(layout.search.right + SEARCH_GAP, downloads.x)
+                self.assertEqual(layout.search.w, SEARCH_WIDTH)  # room at the narrowest too
+                self.assertEqual(layout.settings, other.settings)
+                self.assertEqual(layout.person, other.person)
+                self.assertEqual(layout.brand, other.brand)
+                parts = controls(layout)
+                self.assertIn(clock, parts)
+                for index, part in enumerate(parts):
+                    for rest in parts[index + 1 :]:
+                        self.assertFalse(part.overlaps(rest), (width, part, rest))
 
     def test_wide_windows(self) -> None:
         for width in (1650, 1920, 2560):
@@ -573,10 +587,9 @@ class LayoutTests(unittest.TestCase):
                 self.check(width)
                 layout = band_layout(width, word_width=WORD)
                 self.assertGreaterEqual(layout.search.w, SEARCH_MIN_WIDTH)
-        # Far narrower than the window gets (550: since 🔨 joined the row): the search field
-        # gives way first.
+        # Far narrower than the window gets: the search field gives way first.
         self.check(550)
-        self.assertEqual(band_layout(550, word_width=WORD).search.w, SEARCH_MIN_WIDTH)
+        self.assertEqual(band_layout(550, word_width=WORD, history=True).search.w, SEARCH_MIN_WIDTH)
 
     def test_what_the_pointer_is_over(self) -> None:
         layout = band_layout(1220, word_width=WORD, dots=3, current=1)
@@ -588,9 +601,12 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(hit_target(layout, *middle(layout.magnifier), items=3), Hit(HitKind.SEARCH))
         self.assertEqual(hit_target(layout, layout.search.right - 4, layout.search.y + 20, items=3), Hit(HitKind.FIELD))
         self.assertEqual(hit_target(layout, *middle(layout.downloads), items=3), Hit(HitKind.DOWNLOADS))
-        self.assertEqual(hit_target(layout, *middle(layout.forge), items=3), Hit(HitKind.FORGE))
-        gap = (layout.forge.right + layout.downloads.x) / 2  # between 🔨 and ⬇: neither
-        self.assertIsNone(hit_target(layout, gap, layout.forge.y + 20, items=3))
+        with_clock = band_layout(1220, word_width=WORD, history=True)
+        self.assertEqual(hit_target(with_clock, *middle(with_clock.history), items=0), Hit(HitKind.HISTORY))
+        gap = (with_clock.history.x + with_clock.downloads.right) / 2  # between ⬇ and 🕘: neither
+        self.assertIsNone(hit_target(with_clock, gap, with_clock.history.y + 20, items=0))
+        spot = with_clock.history  # without 🕘 the same place is ⬇'s
+        self.assertNotEqual(hit_target(layout, *middle(spot), items=3), Hit(HitKind.HISTORY))
         self.assertEqual(hit_target(layout, *middle(layout.settings), items=3), Hit(HitKind.SETTINGS))
         self.assertEqual(hit_target(layout, *middle(layout.dots[2]), items=3), Hit(HitKind.DOT, 2))
         self.assertEqual(hit_target(layout, *middle(layout.poster), items=3), Hit(HitKind.SPOT))
@@ -602,14 +618,16 @@ class LayoutTests(unittest.TestCase):
         """Bigger than 2.0.9's (17 bold, 30 x 9 around each name, 4 around both), on a canvas of
         its own with room for its shadow."""
         self.assertEqual((SEGMENT_FONT_SIZE, SEGMENT_PAD_X, SEGMENT_PAD_Y, PILL_PAD), (17, 30, 9, 4))
-        layout = switch_layout(segment_width=SEGMENT, line_height=LINE)
-        series, movies = layout.segments
-        self.assertEqual(layout.pill, Rect(SWITCH_MARGIN, SWITCH_MARGIN, 2 * SEGMENT + 8, LINE + 18 + 8))
+        layout = switch_layout(segment_widths=(SEGMENT, SEGMENT, SEGMENT + 40), line_height=LINE)
+        series, movies, forge = layout.segments
+        self.assertEqual(layout.pill, Rect(SWITCH_MARGIN, SWITCH_MARGIN, 3 * SEGMENT + 40 + 8, LINE + 18 + 8))
         self.assertEqual(series, Rect(SWITCH_MARGIN + 4, SWITCH_MARGIN + 4, SEGMENT, LINE + 18))
         self.assertEqual(movies.x, series.right)
+        self.assertEqual(forge, Rect(movies.right, series.y, SEGMENT + 40, LINE + 18))
         self.assertEqual(layout.size, (layout.pill.right + SWITCH_MARGIN, layout.pill.bottom + SWITCH_MARGIN))
         self.assertEqual(switch_hit(layout, series.x + 5, series.y + 5), 0)
         self.assertEqual(switch_hit(layout, movies.right - 5, movies.bottom - 5), 1)
+        self.assertEqual(switch_hit(layout, forge.right - 5, forge.y + 5), 2)
         self.assertIsNone(switch_hit(layout, 1, 1))  # the shadow's margin
         self.assertIsNone(switch_hit(layout, layout.pill.x + 1, layout.pill.y + 1))  # the pill's edge
 
@@ -824,7 +842,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             images=self.images,  # type: ignore[arg-type]
             motion=motion,
             on_downloads=lambda: self.events.append("downloads"),
-            on_forge=lambda: self.events.append("forge"),
+            on_history=lambda: self.events.append("history"),
             on_settings=lambda: self.events.append("settings"),
             on_search=lambda: self.events.append("search"),
             on_open=lambda item: self.events.append(("open", item.title)),
@@ -881,26 +899,150 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         band = self.band()
         band.start()
         await self.settle()
-        for kind in (HitKind.SEARCH, HitKind.FORGE, HitKind.DOWNLOADS, HitKind.SETTINGS, HitKind.SPOT):
+        for kind in (HitKind.SEARCH, HitKind.HISTORY, HitKind.DOWNLOADS, HitKind.SETTINGS, HitKind.SPOT):
             band._activate(Hit(kind))
-        self.assertEqual(self.events, ["search", "forge", "downloads", "settings", ("open", "The Bear")])
+        self.assertEqual(self.events, ["search", "history", "downloads", "settings", ("open", "The Bear")])
         layout = band.layout
         assert layout is not None
         scale = band._scale
         x, y = layout.downloads.x + 20, layout.downloads.y + 20
         self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.DOWNLOADS))
-        x, y = layout.forge.x + 20, layout.forge.y + 20
-        self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.FORGE))
-        # 🔨 drawn like ⬇: the same box at its own place, the glyph in its middle.
-        self.assertEqual(self.text(band, band._forge_glyph), "🔨")
-        self.assertEqual(band.coords(band._forge_item), [band._px(layout.forge.x), band._px(layout.forge.y)])
-        forge_box = band._photo_sources["forge"]
-        self.assertEqual(forge_box.size, band._photo_sources["settings"].size)
+
+    async def test_compact_only_the_top_row_and_back(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        layout = band.layout
+        assert layout is not None
+        full = layout.settings
+        title = self.text(band, band._title_item)
+        self.assertTrue(title)
+        self.assertEqual(int(band.cget("height")), band._px(BAND_HEIGHT))
+        self.assertTrue(band._dot_items)
+        self.assertEqual(option(band, band._history_item, "state"), "hidden")
+        self.assertEqual(option(band, band._history_glyph, "state"), "hidden")
+        band.set_compact(True)
+        self.assertTrue(band.compact)
+        self.assertEqual(int(band.cget("height")), band._px(COMPACT_HEIGHT))
+        layout = band.layout
+        assert layout is not None
+        self.assertEqual(layout.settings, full)  # it stays where it is
+        # No picture, poster, tag, title or dots.
+        self.assertEqual(option(band, band._scene_item, "state"), "hidden")
+        for item in (band._tag_item, band._title_item, band._sub_item):
+            self.assertEqual(self.text(band, item), "")
+        self.assertEqual(band._dot_items, [])
+        # 🕘: drawn like ⬇, at its own place, the glyph in its middle.
+        self.assertEqual(option(band, band._history_item, "state"), "normal")
+        self.assertEqual(self.text(band, band._history_glyph), "🕘")
+        clock = layout.history
+        self.assertEqual(band.coords(band._history_item), [band._px(clock.x), band._px(clock.y)])
+        self.assertEqual(band._photo_sources["history"].size, band._photo_sources["settings"].size)
         self.assertEqual(
-            band.coords(band._forge_glyph),
-            [band._px(layout.forge.x + layout.forge.w / 2), band._px(layout.forge.y + layout.forge.h / 2)],
+            band.coords(band._history_glyph),
+            [band._px(clock.x + clock.w / 2), band._px(clock.y + clock.h / 2)],
         )
-        self.assertEqual(option(band, band._forge_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
+        self.assertEqual(option(band, band._history_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
+        scale = band._scale
+        x, y = clock.x + 20, clock.y + 20
+        self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.HISTORY))
+        # Nothing to open where the title was.
+        self.assertIsNone(band._hit_at(band._px(100), band._px(COMPACT_HEIGHT - 2)))
+        # The ground: the glow, baked in a thread, its own item.
+        await self.settle()
+        self.assertEqual(option(band, band._ground_item, "state"), "normal")
+        ground = band._photo_sources["ground"]
+        self.assertEqual(ground.size, (band._width, band._px(COMPACT_HEIGHT)))
+        # Back: everything at once.
+        band.set_compact(False)
+        self.assertFalse(band.compact)
+        self.assertEqual(int(band.cget("height")), band._px(BAND_HEIGHT))
+        self.assertEqual(option(band, band._scene_item, "state"), "normal")
+        self.assertEqual(option(band, band._ground_item, "state"), "hidden")
+        self.assertEqual(option(band, band._history_item, "state"), "hidden")
+        self.assertEqual(self.text(band, band._title_item), title)
+        self.assertTrue(band._dot_items)
+        layout = band.layout
+        assert layout is not None
+        self.assertEqual(layout.history.w, 0)
+
+    async def test_compact_going_in_again_bakes_nothing(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        band.set_compact(True)
+        await self.settle()
+        ground = band._photo_sources["ground"]
+        band.set_compact(False)
+        with mock.patch("app.ui.spotlight_band.glow_layer", side_effect=AssertionError):
+            band.set_compact(True)
+            await self.settle()
+        self.assertIs(band._photo_sources["ground"], ground)
+        self.assertEqual(option(band, band._ground_item, "state"), "normal")
+
+    async def test_compact_doesnt_turn_and_what_changed_comes_when_back(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        shown = band._shown
+        band.set_compact(True)
+        rotation = band.rotation
+        index = rotation.index
+        rotation._since -= 100  # long due
+        band._tick()
+        self.assertEqual(rotation.index, index)
+        band.reload()  # the library changed while it was compact
+        band._reload_now()
+        await self.settle()
+        self.assertEqual(option(band, band._scene_item, "state"), "hidden")
+        self.assertEqual(self.text(band, band._title_item), "")
+        self.assertIs(band._shown, shown)  # no picture baked for nobody
+        band.set_compact(False)
+        self.assertFalse(rotation.due(monotonic()))  # a full interval from now
+        await self.settle()
+        self.assertTrue(self.text(band, band._title_item))
+
+    async def test_a_light_dark_switch_while_compact_bakes_the_ground_again(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        band.set_compact(True)
+        await self.settle()
+        ground = band._photo_sources["ground"]
+        self.addCleanup(ctk.set_appearance_mode, ctk.get_appearance_mode())
+        ctk.set_appearance_mode("light")
+        self.root.update()
+        band._repaint()
+        await self.settle()
+        self.assertIsNot(band._photo_sources["ground"], ground)
+        self.assertEqual(option(band, band._scene_item, "state"), "hidden")
+
+    async def test_the_clock_lit_while_history_shows(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        band.set_compact(True)
+        band.set_history_lit(True)
+        self.assertEqual(option(band, band._history_glyph, "fill"), theme.pick(theme.ON_ACCENT))
+        box: Any = band._photo_sources["history"]
+        middle: Any = box.getpixel((box.width // 2, box.height // 2))
+        accent = theme.pick(theme.ACCENT)
+        self.assertEqual(middle[:3], tuple(int(accent[i : i + 2], 16) for i in (1, 3, 5)))
+        band.set_history_lit(False)
+        self.assertEqual(option(band, band._history_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
+        band.set_history_lit(True)
+        band.set_compact(False)  # gone with the page
+        band.set_compact(True)
+        self.assertEqual(option(band, band._history_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
+
+    async def test_downloads_isnt_lit_on_mediaforges_page(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        band.select(None)  # the Downloads page
+        self.assertEqual(option(band, band._downloads_glyph, "fill"), theme.pick(theme.ON_ACCENT))
+        band.set_compact(True)  # then MediaForge's
+        self.assertEqual(option(band, band._downloads_glyph, "fill"), theme.pick(theme.BUTTON_TEXT))
 
     async def test_the_logo_and_the_wordmark_go_home(self) -> None:
         band = self.band()
@@ -935,58 +1077,27 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         band._on_motion(field)
         self.assertEqual(str(band.cget("cursor")), "xterm")
 
-    async def test_the_forge_tip(self) -> None:
+    async def test_the_history_tip(self) -> None:
         band = self.band()
         band.start()
         await self.settle()
-        layout = band.layout
-        assert layout is not None
-        band._hover = Hit(HitKind.FORGE)
+        band.set_compact(True)
+        band._hover = Hit(HitKind.HISTORY)
         shown: list[str] = []
         band._tip.show = lambda rect, text, gap: shown.append(text)  # type: ignore[method-assign]
         band.winfo_ismapped = lambda: True  # type: ignore[method-assign]
-        band._show_tip(Hit(HitKind.FORGE))
-        self.assertEqual(shown, ["MediaForge"])
+        band._show_tip(Hit(HitKind.HISTORY))
+        self.assertEqual(shown, ["History"])
 
-    async def test_the_forge_badge_in_copper(self) -> None:
-        band = self.band()
-        band.start()
-        await self.settle()
-        self.assertEqual(option(band, band._forge_badge_item, "state"), "hidden")  # none yet
-        band.set_forge_count(3)
-        self.assertEqual(self.text(band, band._forge_badge_text), "3")
-        self.assertEqual(option(band, band._forge_badge_item, "state"), "normal")
-        self.assertEqual(option(band, band._forge_badge_text, "fill"), theme.pick(theme.ON_COLOR))
-        badge = band._photo_sources["forge_badge"]
-        middle: Any = badge.getpixel((badge.width // 2, badge.height // 2))
-        copper = theme.pick(forge_look().ACCENT)
-        self.assertEqual(middle[:3], tuple(int(copper[i : i + 2], 16) for i in (1, 3, 5)))
-        layout = band.layout
-        assert layout is not None
-        right, top = layout.forge_badge
-        x, y = band.coords(band._forge_badge_item)
-        self.assertEqual((round(x) + badge.width, round(y)), (band._px(right), band._px(top)))
-        band.set_forge_count(150)
-        self.assertEqual(self.text(band, band._forge_badge_text), "99+")
-        self.assertEqual(self.text(band, band._badge_text), "1")  # ⬇'s own badge untouched
-        band.set_forge_count(0)
-        self.assertEqual(option(band, band._forge_badge_item, "state"), "hidden")
-        self.assertEqual(option(band, band._forge_badge_text, "state"), "hidden")
-        band.set_forge_count(2)
-        band._repaint()  # light ↔ dark and scaling paint it again, still shown
-        band._rescaled(1.0, 1.0)
-        self.assertEqual(option(band, band._forge_badge_item, "state"), "normal")
-        self.assertEqual(self.text(band, band._forge_badge_text), "2")
-
-    def test_the_tray_badge_is_copper_too(self) -> None:
+    def test_the_tray_badge_is_amber_too(self) -> None:
         from app.ui import tray
 
         picture = tray.with_badge(Image.new("RGBA", (128, 128), (0, 0, 0, 0)), 2)
         radius = 128 // 4
-        # Off the digit, inside the dot: Forge's copper (one colour in both modes).
+        # Off the digit, inside the dot: amber (one colour in both modes).
         pixel: Any = picture.getpixel((127 - radius, 127 - 2 * radius + 3))
-        copper = theme.pick(forge_look().ACCENT, dark=True)
-        self.assertEqual(pixel[:3], tuple(int(copper[i : i + 2], 16) for i in (1, 3, 5)))
+        amber = theme.pick(theme.WARNING, dark=True)
+        self.assertEqual(pixel[:3], tuple(int(amber[i : i + 2], 16) for i in (1, 3, 5)))
 
     async def test_switching_sides_and_the_downloads_page(self) -> None:
         band = self.band()
@@ -1082,7 +1193,7 @@ def item_option(canvas: tk.Canvas, item: int, name: str) -> str:
 
 
 class SwitchTests(unittest.TestCase):
-    """The Series / Movies switch (ModeSwitch) and the tabs row it sits on."""
+    """The Series / Movies / MediaForge switch (ModeSwitch) and the tabs row it sits on."""
 
     def setUp(self) -> None:
         try:
@@ -1093,7 +1204,7 @@ class SwitchTests(unittest.TestCase):
         self.addCleanup(self._destroy_root)
         self.addCleanup(i18n.set_language, i18n.current_language())
         i18n.set_language(Language.EN)
-        self.sides: list[SpotlightSide] = []
+        self.parts: list[SwitchPart] = []
 
     def _destroy_root(self) -> None:
         for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
@@ -1108,7 +1219,7 @@ class SwitchTests(unittest.TestCase):
         switch._on_release(event)
 
     def test_its_solid_pill_the_lit_side_and_the_clicks(self) -> None:
-        switch = ModeSwitch(self.root, on_side=self.sides.append)
+        switch = ModeSwitch(self.root, on_part=self.parts.append)
         switch.pack()
         self.root.update()
         layout = switch.layout
@@ -1130,30 +1241,75 @@ class SwitchTests(unittest.TestCase):
         assert isinstance(lit, tuple)
         self.assertEqual(lit[:3], switch._rgba(theme.ACCENT)[:3])
         texts = switch._text_items
-        self.assertEqual(item_option(switch, texts[SpotlightSide.SERIES], "fill"), theme.pick(theme.ON_COLOR))
-        self.assertEqual(item_option(switch, texts[SpotlightSide.MOVIES], "fill"), theme.pick(theme.TEXT))
-        self.assertEqual(item_option(switch, texts[SpotlightSide.MOVIES], "text"), "Movies")
+        self.assertEqual(item_option(switch, texts[SwitchPart.SERIES], "fill"), theme.pick(theme.ON_COLOR))
+        self.assertEqual(item_option(switch, texts[SwitchPart.MOVIES], "fill"), theme.pick(theme.TEXT))
+        self.assertEqual(item_option(switch, texts[SwitchPart.MOVIES], "text"), "Movies")
         # Hover on the other side: a light fill; not on the lit one.
         self.assertEqual(item_option(switch, switch._hover_item, "state"), "hidden")
-        switch._set_hover(SpotlightSide.MOVIES)
+        switch._set_hover(SwitchPart.MOVIES)
         self.assertEqual(item_option(switch, switch._hover_item, "state"), "normal")
-        switch._set_hover(SpotlightSide.SERIES)
+        switch._set_hover(SwitchPart.SERIES)
         self.assertEqual(item_option(switch, switch._hover_item, "state"), "hidden")
         switch._set_hover(None)
         # A click on a part asks for that side; MainWindow lights it.
-        series, movies = layout.segments
+        series, movies, forge = layout.segments
         self.press(switch, movies)
         self.press(switch, series)
-        self.assertEqual(self.sides, [SpotlightSide.MOVIES, SpotlightSide.SERIES])
-        switch.select(SpotlightSide.MOVIES)
-        self.assertEqual(item_option(switch, texts[SpotlightSide.MOVIES], "fill"), theme.pick(theme.ON_COLOR))
+        self.press(switch, forge)
+        self.assertEqual(self.parts, [SwitchPart.MOVIES, SwitchPart.SERIES, SwitchPart.FORGE])
+        self.assertEqual(item_option(switch, texts[SwitchPart.FORGE], "text"), "MediaForge")
+        switch.select(SwitchPart.MOVIES)
+        self.assertEqual(item_option(switch, texts[SwitchPart.MOVIES], "fill"), theme.pick(theme.ON_COLOR))
         x, _y = switch.coords(switch._active_item)
         self.assertEqual(round(x), switch._px(movies.x))
-        switch.select(None)  # the Downloads page: neither lit
+        switch.select(SwitchPart.FORGE)
+        self.assertEqual(item_option(switch, texts[SwitchPart.FORGE], "fill"), theme.pick(theme.ON_COLOR))
+        x, _y = switch.coords(switch._active_item)
+        self.assertEqual(round(x), switch._px(forge.x))
+        switch.select(None)  # the Downloads page: none lit
         self.assertEqual(item_option(switch, switch._active_item, "state"), "hidden")
 
+    def test_the_needs_you_badge_on_mediaforges_word(self) -> None:
+        switch = ModeSwitch(self.root, on_part=self.parts.append)
+        switch.pack()
+        self.root.update()
+        size = switch.layout.size
+        self.assertEqual(item_option(switch, switch._badge_item, "state"), "hidden")  # none yet
+        switch.set_count(3)
+        self.assertEqual(switch.count, 3)
+        self.assertEqual(item_option(switch, switch._badge_item, "state"), "normal")
+        self.assertEqual(item_option(switch, switch._badge_text, "text"), "3")
+        self.assertEqual(item_option(switch, switch._badge_text, "fill"), theme.pick(theme.ON_WARNING))
+        badge: Any = switch._photo_sources["badge"]
+        middle: Any = badge.getpixel((badge.width // 2, badge.height // 2))
+        amber = theme.pick(theme.WARNING)
+        self.assertEqual(middle[:3], tuple(int(amber[i : i + 2], 16) for i in (1, 3, 5)))
+        # In the word's own padding: right of the word, inside the pill, nothing moves.
+        self.assertEqual(switch.layout.size, size)
+        part = switch.layout.segments[2]
+        word = switch.bbox(switch._text_items[SwitchPart.FORGE])
+        x, y = switch.coords(switch._badge_item)
+        self.assertGreater(round(x), word[2])
+        for count, text in ((3, "3"), (42, "42"), (150, "99+")):
+            with self.subTest(count):
+                switch.set_count(count)
+                self.assertEqual(item_option(switch, switch._badge_text, "text"), text)
+                badge = switch._photo_sources["badge"]
+                x, y = switch.coords(switch._badge_item)
+                self.assertLessEqual(round(x) + badge.width, switch._px(switch.layout.pill.right))
+                self.assertGreaterEqual(round(y), switch._px(part.y))
+        switch.set_count(0)
+        self.assertEqual(item_option(switch, switch._badge_item, "state"), "hidden")
+        self.assertEqual(item_option(switch, switch._badge_text, "state"), "hidden")
+        switch.set_count(2)
+        switch.select(SwitchPart.FORGE)  # on the lit part too
+        switch._repaint()  # light ↔ dark and scaling paint it again, still shown
+        switch._rescaled(1.0, 1.0)
+        self.assertEqual(item_option(switch, switch._badge_item, "state"), "normal")
+        self.assertEqual(item_option(switch, switch._badge_text, "text"), "2")
+
     def test_light_and_dark_repaint(self) -> None:
-        switch = ModeSwitch(self.root, on_side=self.sides.append)
+        switch = ModeSwitch(self.root, on_part=self.parts.append)
         switch.pack()
         self.root.update()
         before = (str(switch.cget("background")), switch._photo_sources["track"])
@@ -1171,15 +1327,16 @@ class SwitchTests(unittest.TestCase):
 
     def test_in_dutch(self) -> None:
         i18n.set_language(Language.NL)
-        switch = ModeSwitch(self.root, on_side=self.sides.append)
-        self.assertEqual(item_option(switch, switch._text_items[SpotlightSide.MOVIES], "text"), "Films")
+        switch = ModeSwitch(self.root, on_part=self.parts.append)
+        self.assertEqual(item_option(switch, switch._text_items[SwitchPart.MOVIES], "text"), "Films")
+        self.assertEqual(item_option(switch, switch._text_items[SwitchPart.FORGE], "text"), "MediaForge")
 
     def tabs_row(self, width: int) -> tuple[ctk.CTkFrame, ModeSwitch, Tabview]:
         """The main window's tabs row at `width` units with the Series tabs on it."""
         scale = ctk.ScalingTracker.get_widget_scaling(self.root)
         self.root.geometry(f"{width}x300")  # CTk scales this
         self.root.grid_columnconfigure(0, weight=1)
-        row, switch = build_tabs_row(self.root, on_side=self.sides.append)
+        row, switch = build_tabs_row(self.root, on_part=self.parts.append)
         row.grid(row=0, column=0, sticky="ew")
         tabs = Tabview(self.root, look="pills", pills_master=row)
         for name in ("Calendar", "Discover", "Tracked"):

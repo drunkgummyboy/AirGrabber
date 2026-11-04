@@ -12,6 +12,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - Release: bump `__version__` in `app/__init__.py`, run `python -m tools.sync_repo CLONE` into the git clone
   of github.com/drunkgummyboy/AirGrabber (kept outside Google Drive), review `git status`, commit, push.
   Users install with `install.ps1` (one-liner in README.md) and update from Settings.
+  Its notes (`app/whats_new.py`): a big feature = a `Feature` + a picture drawn in `tools/whats_new_art.py`, no
+  words; smaller = a line. Only the newest release's pictures stay in `app/assets/whats_new`, older Features go with them.
 
 ## Rules
 - `main.py`'s top-level imports, `app/__init__.py`, `app/config.py`, `app/bootstrap.py`,
@@ -36,26 +38,39 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - Layers: `app/ui` → `app/services` → repositories (`app/database.py`) and API clients.
   UI never imports `app.database` or httpx. All SQL lives in `app/database.py` and `app/forge/db/`
   (MediaForge's own `forge.db`).
-- Forge (`app/forge`, MediaForge inside AirGrabber; plan and decisions in `docs/forge/`): `app/forge/ui` →
+- Forge (`app/forge`, MediaForge inside AirGrabber; plan and decisions in `docs/forge/`) is a page of the main
+  window (`Mode.FORGE`, `app/forge/ui/page.py`, `docs/forge/PAGE.md`), built at its first visit by `ForgeHost`;
+  there is no Forge window. It isn't a BaseView (`_visible_view` is None on it). What it binds on the main window
+  (the queue's keys, Escape) acts only while it is on screen and never from a text field. `app/forge/ui` →
   `app/forge/services.py` → `app/forge/db` and `app/forge/clients`; `app/forge/ui` never imports
   `app.forge.db`, `app.database` or httpx; non-UI Forge code never imports tkinter / customtkinter.
   guessit is the one optional package Forge needs (below `# optional` in requirements.txt), imported only
   inside `app/forge/core/parser.py`'s functions; no tkinterdnd2, no aiohttp. Tests in `tests/forge/`
   (`tests/forge/base.py`). Its Dutch is the second catalog, `app/i18n_nl_forge.py`. yt-dlp / ffmpeg go
-  to `AppPaths.forge / "tools"`, never under `app/`. Explorer drops (`app/forge/ui/file_drops.py`) and
-  the taskbar identity (`app/forge/ui/taskbar.py`) are ctypes on the Tk thread behind a seam (tests: fakes).
+  to `AppPaths.forge / "tools"`, never under `app/`. Explorer drops (`app/forge/ui/file_drops.py`, attached to
+  the main window at its start) are ctypes on the Tk thread behind a seam (tests: fakes).
 - The bridges between AirGrabber and Forge (phase 2): no SQL across `airgrabber.db` and `forge.db`.
   Forge's move records (`ForgeMoveService`, `app/forge/core/moves.py`) reach AirGrabber only through
   `app/services/download_status.py` (where a grab was moved, matched by a film's TMDB id or the
-  release name; a moved grab shows as finished whatever its torrent program says) and
-  `app/services/subtitles.py` (a grab's video at its new place). There is no library index and no
-  "have it" from the library (removed by the owner's decision, 2026-11-02). AirGrabber's start
+  release name; a moved grab shows as finished whatever its torrent program says). There is no
+  library index and no "have it" from the library (removed by the owner's decision, 2026-11-02). AirGrabber's start
   imports Forge's types only under `TYPE_CHECKING`; these log ids and counts, never a file's path.
+- Subtitles are MediaForge's (`app/forge/core/subtitles.py`, `services.subtitles`): a preset's Subtitles
+  extra (right after a rename, on every route, through the executor; a failure never touches the
+  rename) and CC ▾ on the queue's done bands and History's rows, drawn on the list's canvas. One try,
+  no background checks; the disk is the only memory (no table in `forge.db`); a fetched subtitle is
+  journaled in its video's run, so Undo takes it along. The settings stay in AirGrabber's `Settings`
+  (same fields, through `airgrabber_settings`); `subtitles_enabled` / `_mode` / `_for` are read only by
+  the one-time `carry_subtitles`. `subtitles_folder` is Where downloads go's "Where finished downloads
+  end up" (Forge's watching, free space, "Open the folder"). `subtitle_files` / `subtitle_grabs` stay in
+  `airgrabber.db`, unread and unwritten.
 - The old MediaForge's project folder (`…\scripts\MediaForge`) is read-only reference, like `airgrabber.py`.
   Its install and data (`%APPDATA%\MediaForge`) are only read by `app/forge/migration.py` (a snapshot)
   and its uninstaller only started by `app/forge/old_install.py` on the user's click; tests hide both.
 - Right-click hand-over: `main.py --forge [--confirm] …` hands its request to a running AirGrabber
-  (`app/single_instance.py`) before logging and the package check, so that path stays stdlib-only.
+  (`app/single_instance.py`) before logging and the package check, so that path stays stdlib-only. A plain
+  request shows the main window on MediaForge's page; a confirm request only its confirm window, and a start for
+  it leaves when the last one closes unless it stays in the tray (D5, `quits_after_forge`).
 - MediaForge's Explorer right-click menu is written only by `app/forge/context_menu.py`, under
   HKCU\Software\Classes (`*\shell\MediaForge`, `Directory\shell\MediaForge`) only, never over a menu
   that starts another copy or program (the old MediaForge's only by the import); tests use a fake
@@ -92,7 +107,7 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   The remote programs' status calls (Downloads page) keep their sign-in (DSM sid, qBittorrent
   SID cookie, Transmission session id) in memory only, never logged or shown; a task's link
   (magnet / `uri`, may hold a tracker passkey) is read for its hash or file name and dropped.
-  OpenSubtitles: AirGrabber's one API key (`APP_API_KEY` in `app/services/opensubtitles.py`) ships
+  OpenSubtitles: AirGrabber's one API key (`APP_API_KEY` in `app/forge/clients/opensubtitles.py`) ships
   with the app and is public, but is still never logged; it travels in the `Api-Key` header. A user's
   own key (`opensubtitles_own_key`, replaces the shipped one when filled in) is a secret: header only,
   never in a URL, message or log. Signing in with an account is optional: the password only in the

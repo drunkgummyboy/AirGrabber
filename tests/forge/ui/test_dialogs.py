@@ -10,7 +10,7 @@ import tkinter as tk
 
 import customtkinter as ctk
 
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.forge.ui.widgets.chips import OptionButton
 from app.forge.ui.widgets.dialogs import ask_choice, ask_text, confirm
 from app.forge.ui.widgets.virtual_list import Row, VirtualList
@@ -79,8 +79,8 @@ class AskChoiceTests(DialogCase):
         await pump(self.root, 0.02)
         self.assertEqual(self.popups(), [])
 
-    async def test_first_choice_is_the_copper_main_button(self) -> None:
-        look = forge_look()
+    async def test_first_choice_is_the_accent_main_button(self) -> None:
+        look = app_look()
         question = asyncio.create_task(ask_choice(self.root, "T", "M", ["Yes", "No"]))
         dialog = await self.opened()
         buttons = self.buttons(dialog)
@@ -149,7 +149,7 @@ class AskTextTests(DialogCase):
         dialog = await self.opened()
         self.assertEqual(dialog.title(), "Save as preset")
         buttons = self.buttons(dialog)
-        self.assertEqual(tuple(buttons["Save"].cget("fg_color")), forge_look().ACCENT)
+        self.assertEqual(tuple(buttons["Save"].cget("fg_color")), app_look().ACCENT)
         buttons["Save"].invoke()  # nothing typed: nothing happens
         await pump(self.root, 0.02)
         self.assertFalse(question.done())

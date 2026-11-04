@@ -1,6 +1,6 @@
 """Forge's move records: where Forge moved a video into the Series or Movies library folder from,
 kept in forge.db (`moves`) for a year, longer than the 50 runs of undo history. AirGrabber's
-Downloads page and subtitles read them (where a finished download ended up)."""
+Downloads page reads them (where a finished download ended up)."""
 
 from __future__ import annotations
 

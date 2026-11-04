@@ -30,7 +30,7 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.forge.ui.window import ICON_FILE as FORGE_ICON
+from app.forge.ui.confirm_window import ICON_FILE as FORGE_ICON
 from app.models import Movie, Settings, TitleExtras
 from app.services.settings import SettingsService
 from app.ui import branding
@@ -137,7 +137,7 @@ class IconTests(RootCase):
         windows = [self.window() for _ in range(3)]
         for window in windows:
             set_own_icon(window, FORGE_ICON)
-        set_own_icon(windows[0], FORGE_ICON)  # again (the taskbar's, after CTk's own)
+        set_own_icon(windows[0], FORGE_ICON)  # again
         self.assertEqual(branding._icon_frames.cache_info().misses, 1)
         self.assertEqual(len(given), 4)
         self.assertEqual(len(set(given)), 1)  # the same Tk images every time

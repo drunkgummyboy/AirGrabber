@@ -4,12 +4,12 @@ in the Forge look.
 `OptionButton`: an on / off button with a small round light before its label (the owner's style
 D, "Buttons with a light", mockups/forge-option-buttons.html `.td`): the same raised surface
 whether on or off, a 1-pixel border, a slight inner shadow at the bottom; off = the light and the
-label muted; on = a copper light with a soft glow, the label in the text colour and a warmer
+label muted; on = an accent light with a soft glow, the label in the text colour and a warmer
 border; under the pointer a slightly different surface. The whole look is decided in one place,
 `option_style`, so another style is one function away.
 
 `ForgeProgress`: the Forge button while a run goes: "Renaming 7 of 12 · Mind The Gap" over a
-copper bar that fills up. It wears the same dark copper in both looks, so its white text stays
+accent bar that fills up. It wears the same dark shade in both looks, so its white text stays
 readable over the filled and the empty part alike.
 
 Canvas colours are `theme.pick`ed and repainted on a light/dark switch; sizes follow Windows'
@@ -27,7 +27,7 @@ from typing import Any
 
 import customtkinter as ctk
 
-from app.forge.ui.look import Pair, forge_look, mix
+from app.forge.ui.look import Pair, app_look, mix
 from app.ui import theme
 
 # CTk units (mockups/forge-option-buttons.html `.td`).
@@ -110,7 +110,7 @@ class _CanvasWidget(ctk.CTkFrame):
     light/dark switch, a resize and a change of scaling."""
 
     def __init__(self, master: Any, *, look: theme.Look | None, ground: Pair | None) -> None:
-        self.look: theme.Look = forge_look() if look is None else look
+        self.look: theme.Look = app_look() if look is None else look
         self._ground: Pair = self.look.BG if ground is None else ground
         super().__init__(master, fg_color=self._ground, corner_radius=0)
         self.canvas = tk.Canvas(
@@ -265,7 +265,7 @@ class ForgeProgress(_CanvasWidget):
         if width <= 1 or height <= 1:
             return
         look = self.look
-        dark = look.STACK_FAR[1]  # the same dark copper in both looks: white text on all of it
+        dark = look.STACK_FAR[1]  # the same dark shade in both looks: white text on all of it
         accent = theme.pick(look.ACCENT)
         radius = self._px(PROGRESS_RADIUS)
         round_rect(c, 0, 0, width - 1, height - 1, radius, fill=dark, outline=accent, width=1)

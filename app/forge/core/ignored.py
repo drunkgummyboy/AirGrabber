@@ -1,10 +1,14 @@
 """Ignored files and folders: what Auto-rename leaves alone (the owner's "Ignore" in the queue,
-listed in MediaForge Settings › Library & watching).
+listed in MediaForge Settings › Auto-rename).
 
 IgnoreService wraps `app.forge.db.ignored.IgnoredRepo` (`app/forge/ui` never sees the database
 package) and keeps what is ignored in memory as an `IgnoreList`: a frozen snapshot the renamer
 hands to `watch.candidates` in a worker thread. Ignoring only applies to watching and
 Auto-rename; a file added by hand is never refused.
+
+`forget_gone`: what is no longer in a watched folder comes off the list by itself, at Forge's start
+and at every look of the renamer: moved or deleted (only when that folder can be reached: a NAS
+that's off says nothing about what is on it), or under a folder that isn't watched any more.
 
 `top_folder(path, watched)`: the folder "Ignore this whole folder" means, the download's own
 folder right under the watched folder (a course, a season pack); None for a file directly in
@@ -15,13 +19,16 @@ Paths are never logged: a file's or folder's last name only.
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import contextlib
 import logging
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from app.forge.core import fsops
 from app.forge.core.activity import ActivityFeed, say_to
+from app.forge.core.library import inside
 from app.forge.db.ignored import IgnoredRepo, ignore_key
 from app.forge.models.ignored import IgnoredPath
 from app.i18n import N_, t
@@ -60,6 +67,21 @@ class IgnoreList:
         if itself and key in self._folders:
             return True
         return any(key.startswith(folder.rstrip("\\/") + "\\") for folder in self._folders)
+
+
+def gone_entries(entries: Iterable[IgnoredPath], watched: Iterable[Path]) -> list[IgnoredPath]:
+    """The `entries` no longer in a `watched` folder: under none of them, or gone from one that can
+    be reached (asked after the entry, so a folder dropping away in between doesn't count). Nothing
+    watched at all says nothing. Touches the disk: a worker thread's."""
+    folders = list(watched)
+
+    def left(entry: IgnoredPath) -> bool:
+        holders = [folder for folder in folders if inside(entry.path, folder)]
+        return not holders or (
+            not fsops.exists(entry.path) and any(fsops.is_dir(folder) for folder in holders)
+        )
+
+    return [entry for entry in entries if left(entry)] if folders else []
 
 
 def top_folder(path: Path, watched: Path) -> Path | None:
@@ -113,6 +135,14 @@ class IgnoreService:
         if removed:
             log.info("No longer ignoring %s", path.name or path.anchor)
         return removed
+
+    async def forget_gone(self, watched: Iterable[Path]) -> int:
+        """Stop ignoring what is no longer in the `watched` folders (`gone_entries`). Returns how
+        many."""
+        gone = await asyncio.to_thread(gone_entries, self._entries, list(watched))
+        for entry in gone:
+            await self.stop_ignoring(entry.path)
+        return len(gone)
 
     def subscribe(self, listener: IgnoreListener) -> Callable[[], None]:
         """Call `listener` with every change. Returns a function that unsubscribes it."""

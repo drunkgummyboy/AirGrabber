@@ -1,10 +1,11 @@
-"""Finding the video files of a grab in the finished-downloads folder, and saving subtitles next
-to them. Pure functions and blocking file I/O: the subtitle service runs the I/O in a thread.
+"""Finding the video files of a grab in the finished-downloads folder, for the Downloads page
+(`download_status`, `download_sync`). Pure functions and blocking file I/O, run in a thread. Its
+name is older than its job: subtitles themselves are MediaForge's now (app/forge/core/subtitles.py).
 
 AirGrabber hands torrents to a torrent program, so it doesn't know where a download lands. A
 scan walks the folder (bounded depth and size; hidden, system and NAS index folders such as
-"@eaDir" and "#recycle" skipped) and lists the video files, the partial downloads (.part,
-.!qB, ...) and the subtitle files already there. A grab owns:
+"@eaDir" and "#recycle" skipped) and lists the video files and the partial downloads (.part,
+.!qB, ...). A grab owns:
 
 - the files inside a folder named like its release title, or a file named like it (names are
   compared normalised: lowercase, words only, "[site]" tags and file extensions dropped), and
@@ -13,19 +14,14 @@ scan walks the folder (bounded depth and size; hidden, system and NAS index fold
 
 Samples are never a grab's video. A file changed in the last few minutes is still growing: it
 belongs to its grab but isn't handled yet.
-
-MediaForge moves finished videos out of that folder into the library. Its move records give
-`MovedVideo`s: the video where it is now, owned by a grab through the name it had in the folder
-(`moved_videos`, `look_beside`, `with_moved`), so subtitles fetched later land beside it there.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 from app.models import DownloadRecord, MediaType
@@ -37,7 +33,6 @@ VIDEO_EXTENSIONS = frozenset(
     }
 )  # fmt: skip
 PARTIAL_EXTENSIONS = frozenset({".part", ".!qb", ".!ut", ".crdownload", ".tmp", ".bc!", ".partial"})
-SUBTITLE_EXTENSIONS = frozenset({".srt", ".ass", ".ssa", ".sub", ".vtt"})
 SAMPLE_WORDS = frozenset({"sample", "samples"})
 MAX_DEPTH = 4  # folders below the finished-downloads folder that are looked into
 MAX_ENTRIES = 50_000  # directory entries one scan reads at most
@@ -52,7 +47,7 @@ _YEAR_RE = re.compile(r"\b(?:19|20)\d\d\b")
 
 @dataclass(frozen=True, slots=True)
 class VideoFile:
-    path: str  # absolute, as the scan found it (the subtitle bookkeeping's key)
+    path: str  # absolute, as the scan found it
     parts: tuple[str, ...]  # the folders below the scanned folder, then the file name
     size: int
     growing: bool = False  # changed within SETTLE_S: maybe still downloading
@@ -66,7 +61,6 @@ class VideoFile:
 class FolderScan:
     videos: list[VideoFile] = field(default_factory=list)
     partial: list[tuple[str, ...]] = field(default_factory=list)  # parts of partial downloads
-    subtitles: set[str] = field(default_factory=set)  # lowercase paths of subtitle files
     truncated: bool = False  # stopped at MAX_ENTRIES
 
 
@@ -158,8 +152,7 @@ def scan_folder(
     max_entries: int = MAX_ENTRIES,
     settle_s: float = SETTLE_S,
 ) -> FolderScan:
-    """The videos, partial downloads and subtitle files below `root` (blocking; run it in a
-    thread). Raises OSError when `root` itself can't be read."""
+    """The videos and partial downloads below `root` (blocking; run it in a thread). Raises OSError when `root` itself can't be read."""
     scan = FolderScan()
     entries = 0
     pending: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
@@ -188,9 +181,7 @@ def scan_folder(
                     if not entry.is_file():
                         continue
                     ext = os.path.splitext(name)[1].lower()
-                    if ext in SUBTITLE_EXTENSIONS:
-                        scan.subtitles.add(entry.path.lower())
-                    elif ext in PARTIAL_EXTENSIONS:
+                    if ext in PARTIAL_EXTENSIONS:
                         scan.partial.append((*parts, name))
                     elif ext in VIDEO_EXTENSIONS and not is_sample((*parts, name)):
                         stat = entry.stat()
@@ -279,159 +270,3 @@ def grab_files(
             continue
         found.append(item)
     return GrabFiles(videos=tuple(found), incomplete=incomplete)
-
-
-# -- videos MediaForge moved away --------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class MovedVideo:
-    """A video MediaForge moved out of the finished-downloads folder (from its move records).
-    `video.path` is where it is now; `video.parts` its old place below that folder, so a grab
-    owns it by the name it had there (grab_files' rules)."""
-
-    video: VideoFile
-    moved_at: datetime  # aware
-
-
-def _key(path: str) -> tuple[str, ...]:
-    """A path as Windows compares it, folder by folder (case, slashes)."""
-    return tuple(os.path.normcase(part).rstrip("\\/") for part in Path(path).parts)
-
-
-def parts_below(path: str, folder: str) -> tuple[str, ...] | None:
-    """`path`'s parts below `folder` (whole folder names); None when it isn't below it."""
-    mine, theirs = _key(path), _key(folder)
-    if len(mine) <= len(theirs) or mine[: len(theirs)] != theirs:
-        return None
-    return Path(path).parts[len(theirs) :]
-
-
-def same_path(a: str, b: str) -> bool:
-    return _key(a) == _key(b)
-
-
-def moved_videos(
-    folder: str, moves: Iterable[tuple[str, str, datetime]], known: Iterable[str] = ()
-) -> list[MovedVideo]:
-    """The videos moved out of `folder` (or a folder below it), from (source, target, moved
-    at) newest first: each target once (its newest move), samples and other files left out,
-    and so is a target among `known` (the scan's own videos: a library inside the folder)."""
-    seen = {_key(path) for path in known}
-    found: list[MovedVideo] = []
-    for source, target, moved_at in moves:
-        parts = parts_below(source, folder)
-        if parts is None or _key(target) in seen:
-            continue
-        seen.add(_key(target))
-        if os.path.splitext(target)[1].lower() not in VIDEO_EXTENSIONS or is_sample(parts):
-            continue
-        found.append(MovedVideo(VideoFile(path=target, parts=parts, size=0), moved_at))
-    return found
-
-
-def look_beside(moved: Sequence[MovedVideo]) -> tuple[list[MovedVideo], set[str]]:
-    """Of the moved videos, those still where they were moved to (with their sizes), and the
-    lowercase paths of the subtitle files beside them (each folder listed once). Blocking: run
-    it in a thread. A folder that can't be read counts as empty."""
-    listings: dict[tuple[str, ...], dict[str, int] | None] = {}
-    subtitles: set[str] = set()
-    there: list[MovedVideo] = []
-    for item in moved:
-        folder = os.path.dirname(item.video.path)
-        key = _key(folder)
-        if key not in listings:
-            listings[key] = _list_files(folder, subtitles)
-        sizes = listings[key]
-        name = os.path.basename(item.video.path).casefold()
-        if sizes is None or name not in sizes:
-            continue
-        video = VideoFile(path=item.video.path, parts=item.video.parts, size=sizes[name])
-        there.append(MovedVideo(video, item.moved_at))
-    return there, subtitles
-
-
-def _list_files(folder: str, subtitles: set[str]) -> dict[str, int] | None:
-    """The files in `folder` by lowercase name with their sizes (subtitle files added to
-    `subtitles` as lowercase paths); None when it can't be read."""
-    files: dict[str, int] = {}
-    try:
-        with os.scandir(folder) as listing:
-            for entry in listing:
-                try:
-                    if not entry.is_file():
-                        continue
-                    if os.path.splitext(entry.name)[1].lower() in SUBTITLE_EXTENSIONS:
-                        subtitles.add(os.path.join(folder, entry.name).lower())
-                    files[entry.name.casefold()] = entry.stat().st_size
-                except OSError:
-                    continue
-    except OSError:
-        return None
-    return files
-
-
-def with_moved(scan: FolderScan, moved: Sequence[MovedVideo], since: datetime) -> FolderScan:
-    """The scan with the moved videos moved at or after `since` (for a grab: a video moved
-    before it was another download)."""
-    videos = [item.video for item in moved if item.moved_at >= since]
-    if not videos:
-        return scan
-    return FolderScan(
-        videos=[*scan.videos, *videos],
-        partial=scan.partial,
-        subtitles=scan.subtitles,
-        truncated=scan.truncated,
-    )
-
-
-# -- subtitle files ----------------------------------------------------------------------------
-
-
-def subtitle_path(video_path: str, language: str) -> str:
-    """"…/Show.S01E02.mkv" + "en" -> "…/Show.S01E02.en.srt" (next to the video)."""
-    base = os.path.splitext(video_path)[0]
-    return f"{base}.{language}.srt"
-
-
-def has_subtitle(video_path: str, language: str, existing: Iterable[str]) -> bool:
-    """A subtitle for this language is next to the video already: "<stem>.<lang>.srt", or a
-    variant such as "<stem>.<lang>.forced.srt" / ".<lang>.ass" (`existing`: lowercase paths)."""
-    prefix = f"{os.path.splitext(video_path)[0]}.{language}.".lower()
-    return any(path.startswith(prefix) and _subtitle_ext(path) for path in existing)
-
-
-def _subtitle_ext(path: str) -> bool:
-    return os.path.splitext(path)[1].lower() in SUBTITLE_EXTENSIONS
-
-
-def write_new_file(path: str, content: bytes) -> bool:
-    """Write `content` to `path` atomically, never over an existing file: written to a
-    temporary file next to it, then linked (or, where links aren't possible, renamed — which
-    Windows refuses over an existing file) into place. False when `path` exists already.
-    Blocking; raises OSError when the folder can't be written."""
-    if os.path.exists(path):
-        return False
-    temporary = f"{path}.airgrabber-{os.getpid()}.tmp"
-    with open(temporary, "xb") as file:
-        file.write(content)
-        file.flush()
-        os.fsync(file.fileno())
-    try:
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            return False
-        except OSError:  # no hard links here (FAT, some network shares)
-            if os.path.exists(path):
-                return False
-            try:
-                os.rename(temporary, path)
-            except FileExistsError:
-                return False
-            return True
-        return True
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
-

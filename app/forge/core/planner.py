@@ -1,4 +1,5 @@
-"""Work out every file's final name, plus the posters, trailers and cleanup a run needs."""
+"""Work out every file's final name, plus the posters, trailers, subtitles and cleanup a run
+needs."""
 
 from __future__ import annotations
 
@@ -11,9 +12,17 @@ from typing import Literal
 from app.forge.core import fsops
 from app.forge.core.formatter import render, sanitize_segment
 from app.forge.core.parser import is_video
-from app.forge.models.media import MediaKind
-from app.forge.models.plan import Plan, PlanInput, PlannedFile, PlannedPoster, PlannedTrailer
+from app.forge.models.media import MediaKind, ResolvedMedia
+from app.forge.models.plan import (
+    Plan,
+    PlanInput,
+    PlannedFile,
+    PlannedPoster,
+    PlannedSubtitles,
+    PlannedTrailer,
+)
 from app.forge.models.preset import PresetOptions
+from app.forge.models.subtitles import SubtitleIdentity
 from app.i18n import N_, t, tn
 
 ALREADY_NAMED = N_("already correctly named")  # a skip reason: t() it where it is shown
@@ -43,6 +52,30 @@ def _free_target(
         if _key(candidate) not in taken and (is_source or not exists(candidate)):
             return candidate
         n += 1
+
+
+def subtitle_of(video: Path, other: Path) -> bool:
+    """Whether `other` is `video`'s subtitle: beside it, "<its stem>.<lang>[.forced|.sdh].srt"."""
+    stem = video.stem
+    name = other.name
+    return (
+        _key(video.parent) == _key(other.parent)
+        and name[: len(stem)].casefold() == stem.casefold()
+        and _SUBTITLE_TAIL.fullmatch(name[len(stem) :]) is not None
+    )
+
+
+def identity_of(media: ResolvedMedia) -> SubtitleIdentity:
+    """What OpenSubtitles finds a video by, from what the queue knows of it."""
+    return SubtitleIdentity(
+        kind=media.kind,
+        title=media.title,
+        year=media.year,
+        tmdb_id=media.tmdb_id,
+        season=media.season,
+        episode=media.episode,
+        release=media.parsed.source_name,
+    )
 
 
 def subtitle_moves(
@@ -156,6 +189,18 @@ def build_plan(
                     item_ids=(item_id,),
                 )
 
+    subtitles: list[PlannedSubtitles] = []
+    if options.subtitles:
+        media_of = {item.item_id: item.media for item in inputs}
+        subtitles = [
+            PlannedSubtitles(
+                item_id=planned.item_id,
+                video=planned.target,
+                identity=identity_of(media_of[planned.item_id]),
+            )
+            for planned in files
+        ]
+
     clean_roots: list[Path] = []
     if options.clean_junk:
         for item in inputs:
@@ -171,6 +216,7 @@ def build_plan(
         files=tuple(files),
         posters=tuple(posters.values()),
         trailers=tuple(trailers.values()),
+        subtitles=tuple(subtitles),
         clean_roots=tuple(clean_roots),
         prune_dirs=tuple(prune),
         options=options,
@@ -213,6 +259,7 @@ def build_mixed_plan(
         files=tuple(f for plan in plans for f in plan.files),
         posters=tuple(posters.values()),
         trailers=tuple(tr for plan in plans for tr in plan.trailers),
+        subtitles=tuple(s for plan in plans for s in plan.subtitles),
         clean_roots=tuple(clean.values()),
         prune_dirs=tuple(sorted(prune.values(), key=lambda p: len(p.parts), reverse=True)),
         options=PresetOptions(**flags),
@@ -229,6 +276,7 @@ def describe(plan: Plan) -> list[str]:
             lines.append(t("Rename: {name} → {target}", name=f.source.name, target=f.target))
     lines += [t("Poster: {target}", target=p.target) for p in plan.posters]
     lines += [t("Trailer: {target}", target=f"{tr.target_stem}.mp4") for tr in plan.trailers]
+    lines += [t("Subtitles for: {name}", name=s.video.name) for s in plan.subtitles]
     if plan.prune_dirs:
         count = len(plan.prune_dirs)
         lines.append(

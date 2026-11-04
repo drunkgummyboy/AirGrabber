@@ -61,6 +61,7 @@ class Tooltip:
     def __init__(self, widget: tk.Misc, text: str) -> None:
         self.widget = widget
         self.text = text
+        self.area: Rect | None = None  # set by `rest_on`: the drawn part the tip goes under
         self._job: str | None = None
         # tk.Misc.bind, not CTk's override: that one binds the inner canvas and label instead,
         # missing a text label CTk creates later (a button whose text is set after creation).
@@ -79,6 +80,16 @@ class Tooltip:
                 self._show()
             else:
                 self.hide()
+
+    def rest_on(self, area: Rect | None, text: str) -> None:
+        """For a widget that draws its own parts (a canvas): the pointer came to `area` (screen
+        pixels), so `text` shows under that part after the usual wait; "" takes the tip away."""
+        self.hide()
+        self.text = text
+        self.area = area
+        if text:
+            _manager.take(self)
+            self._job = _root_of(self.widget).after(DELAY_MS, self._show)
 
     @property
     def visible(self) -> bool:
@@ -121,7 +132,7 @@ class Tooltip:
                 return
         except tk.TclError:
             return
-        _manager.show(self, self.widget, self.text)
+        _manager.show(self, self.widget, self.text, self.area)
 
     def _pointer_inside(self) -> bool:
         try:
@@ -148,14 +159,16 @@ class _Manager:
             previous.hide()
         self.owner = tooltip
 
-    def show(self, tooltip: Tooltip, widget: tk.Misc, text: str) -> None:
+    def show(
+        self, tooltip: Tooltip, widget: tk.Misc, text: str, area: Rect | None = None
+    ) -> None:
         self.take(tooltip)
         root = _root_of(widget)
         if self._window is None or not self._window.belongs_to(root):
             if self._window is not None:
                 self._window.destroy()
             self._window = _TipWindow(root)
-        self._window.show(widget, text)
+        self._window.show(widget, text, area)
         self.showing = True
 
     def hide(self) -> None:
@@ -232,14 +245,14 @@ class _TipWindow:
         except tk.TclError:
             return False
 
-    def show(self, widget: tk.Misc, text: str) -> None:
+    def show(self, widget: tk.Misc, text: str, area: Rect | None = None) -> None:
         top = self._top
         if self._label.cget("text") != text:
             self._label.configure(text=text)
         top.update_idletasks()
         size = (top.winfo_reqwidth(), top.winfo_reqheight())
         left, top_y = widget.winfo_rootx(), widget.winfo_rooty()
-        rect = (left, top_y, left + widget.winfo_width(), top_y + widget.winfo_height())
+        rect = area or (left, top_y, left + widget.winfo_width(), top_y + widget.winfo_height())
         gap = round(GAP * ctk.ScalingTracker.get_widget_scaling(widget))
         x, y = tip_position(rect, size, _screen_rect(widget, rect), gap)
         top.geometry(f"+{x}+{y}")

@@ -18,6 +18,7 @@ class PresetOptions(BaseModel, frozen=True):
     trailer: bool = False
     clean_junk: bool = False
     prune_empty: bool = False
+    subtitles: bool = False  # one subtitle per chosen language, right after the rename
 
 
 class Preset(BaseModel, frozen=True):

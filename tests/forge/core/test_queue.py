@@ -385,6 +385,27 @@ class QueueTest(ForgeAsyncTestCase):
         again = q.get(item_id)  # a fresh name: mypy keeps item.status narrowed to LOOKING_UP
         assert again is not None and again.status is ItemStatus.READY and len(resolver.resolved) == 2
 
+    async def test_forget_finished_leaves_what_is_still_to_do(self) -> None:
+        q, _events = make_queue()
+        await q.add_paths([touch(self.tmp / f"S01E0{n}.mkv") for n in (1, 2, 3)], False)
+        await q.wait_idle()
+        ids = [i.id for i in q.items]
+        q.mark_finished(ids[0], self.tmp / "x1.mkv")
+        q.mark_finished(ids[1], None)  # already right
+        assert q.forget_finished() == 2
+        assert [i.id for i in q.items] == [ids[2]]
+
+    async def test_forget_finished_keeps_a_download_found_already_right(self) -> None:
+        q, _events = make_queue()
+        ids = await q.add_watched(
+            [(touch(self.tmp / f"S01E0{n}.mkv"), self.tmp) for n in (1, 2)]
+        )
+        await q.wait_idle()
+        q.mark_finished(ids[0], self.tmp / "x1.mkv")
+        q.mark_finished(ids[1], None)  # still in its watched folder: the next look would add it
+        assert q.forget_finished() == 1
+        assert [i.id for i in q.items] == [ids[1]]
+
     async def test_purge_finished_drops_yesterdays_done(self) -> None:
         q, events = make_queue()
         ids = await q.add_watched(

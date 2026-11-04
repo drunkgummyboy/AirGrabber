@@ -11,7 +11,7 @@ called). Sources, read on 2026-10-19:
 - "Moviehash source codes" https://stoplight.io/api/v1/projects/opensubtitles/opensubtitles-api/nodes/docs/7-Moviehash.md
   (size + 64-bit little-endian sum of the first and last 64 KiB, 9000000000 > size > 131072;
   test vector breakdance.avi, 12,909,756 bytes = 8e245d9679d31e12 — that file is not bundled:
-  tests/test_opensubtitles.py checks the documented Python implementation against ours on
+  tests/forge/clients/test_opensubtitles.py checks the documented Python implementation against ours on
   generated files instead)
 
 Files:

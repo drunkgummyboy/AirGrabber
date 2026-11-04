@@ -12,8 +12,7 @@ import asyncio
 import dataclasses
 import logging
 import os
-import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.forge.clients.tmdb import TmdbError
@@ -42,6 +41,12 @@ from app.i18n import Language, set_language
 from app.models.tmdb import TMDBSeason, TMDBSeasonEpisode, TMDBTitle
 from tests.forge.core.journal_base import FakePosters
 from tests.forge.db.base import ForgeDbTestCase
+
+# Where the fake clock starts, and what the downloads' file times count from (the watcher compares
+# the two): today at noon, once for the whole run. Never close to midnight, where a look minutes
+# later is tomorrow and clears today's Done items. What the queue and History stamp stays real
+# time, from this day's midnight on, so only a test that moves the clock past it purges anything.
+NOON = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0).timestamp()
 
 
 class Tmdb:
@@ -77,7 +82,7 @@ class NoTrailerTools:
 
 class Clock:
     def __init__(self) -> None:
-        self.now = time.time()
+        self.now = NOON
 
     def __call__(self) -> float:
         return self.now
@@ -96,7 +101,7 @@ class Folders:
         release.mkdir(exist_ok=True)
         file = release / name
         file.write_bytes(b"video")
-        when = time.time() - age_s
+        when = NOON - age_s
         os.utime(file, (when, when))
         return file
 
@@ -196,6 +201,21 @@ class RenamerTest(RenamerTestCase):
         assert not any(self.folders.downloads.iterdir())  # moved, and its release folder cleared
         [item] = self.queue.items
         assert item.status is ItemStatus.DONE and item.run_id is not None
+
+    async def test_the_setting_takes_a_moved_download_out_of_the_queue(self) -> None:
+        await self.use()
+        await self.settings.update(remove_after_forge=True)
+        self.folders.download("VisionQuest.S01E02.Theseus.1080p.WEB.mkv")
+        clock = Clock()
+        auto = self.renamer(clock)
+        await self.two_looks(auto, clock)
+        season = self.folders.series / "VisionQuest (2025)" / "VisionQuest (2025) - Season 01"
+        assert (season / "VisionQuest (2025) - S01E02 - Theseus.mkv").exists()
+        assert self.queue.items == []
+        clock.now += 300
+        await auto.look()  # never taken back in
+        assert self.queue.items == []
+        assert len(await self.history.list_runs()) == 1
 
     async def test_the_owners_rename_names_each_download_as_its_band_chose(self) -> None:
         await self.use(automatic="off")
@@ -335,7 +355,7 @@ class RenamerTest(RenamerTestCase):
         done = self.folders.series / "Show (2020)" / "Show (2020) - S01E01.mkv"
         done.parent.mkdir(parents=True)
         done.write_bytes(b"video")
-        os.utime(done, (time.time() - 3600, time.time() - 3600))
+        os.utime(done, (NOON - 3600, NOON - 3600))
         clock = Clock()
         auto = self.renamer(clock)
         statuses: list[str] = []
@@ -368,17 +388,17 @@ class RenamerTest(RenamerTestCase):
 
     async def test_the_evening_summary_counts_todays_automatic_renames(self) -> None:
         await self.use()
-        file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
         clock = Clock()
-        clock.now = datetime.now().replace(hour=20, minute=30).timestamp()
-        os.utime(file, (clock.now - 3600, clock.now - 3600))  # finished an hour before "now"
         notes: list[tuple[str, str]] = []
         auto = self.renamer(clock, notes)
         await self.two_looks(auto, clock)
-        clock.now += 300
+        assert notes == []  # renamed at noon: too early for the summary
+        [run] = await self.history.list_runs()  # started in real time: the evening of that day
+        clock.now = run.started_at.replace(hour=20, minute=30).timestamp()
         await auto.look()
         assert notes == [("MediaForge", "Today: 1 movie renamed")]
-        today = datetime.now().date().isoformat()
+        today = run.started_at.date().isoformat()
         assert self.settings.current.summary_sent_on == today
         assert (await self.settings_repo.load()).summary_sent_on == today
         clock.now += 300
@@ -408,8 +428,14 @@ class RenamerTest(RenamerTestCase):
         clock = Clock()
         auto = self.renamer(clock)
         await self.two_looks(auto, clock)
-        assert [i.status for i in self.queue.items] == [ItemStatus.DONE]
-        clock.now += 24 * 3600
+        [item] = self.queue.items
+        assert item.status is ItemStatus.DONE and item.finished_at is not None
+        finished = datetime.fromtimestamp(item.finished_at)  # real time: that day's midnight counts
+        clock.now = finished.replace(hour=23, minute=59, second=59, microsecond=0).timestamp()
+        await auto.look()
+        assert self.queue.items == [item]  # a look just before midnight keeps it
+        next_day = finished + timedelta(days=1)
+        clock.now = next_day.replace(hour=0, minute=0, second=1, microsecond=0).timestamp()
         await auto.look()
         assert self.queue.items == []
 

@@ -1,6 +1,7 @@
 """OpenSubtitles.com REST API wire schemas (https://opensubtitles.stoplight.io/docs/opensubtitles-api).
 
-Validated at the client boundary into the small frozen models the subtitle service uses. Only
+Validated at the client boundary (app/forge/clients/opensubtitles.py) into the small frozen
+models Forge's subtitles use. Only
 the fields AirGrabber reads are declared; everything else in a payload is ignored.
 """
 

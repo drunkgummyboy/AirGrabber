@@ -1,6 +1,6 @@
 """The fast list (app/forge/ui/widgets/virtual_list.py), ported from MediaForge's
 tests/ui/test_virtual_list.py: only rows on screen are drawn, scrolling, selection, tick boxes,
-bands with and without pictures, the smoothness budget; plus the Forge look in light and dark,
+bands with and without pictures, the smoothness budget; plus the look in light and dark,
 a switch between them and a change of Windows' scaling. The queue's bands (mockups/forge-chosen.html):
 their status as a dot and a word, the destination in the link colour, buttons only under the
 pointer, done bands faded. And the preset card's option buttons and the Forge progress bar
@@ -19,14 +19,13 @@ from unittest import mock
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.forge.ui.widgets.chips import ForgeProgress, OptionButton, option_style
 from app.forge.ui.widgets.virtual_list import (
     MONO_FAMILY,
     Row,
     Sizes,
     VirtualList,
-    faded_fill,
     thumb_colours,
 )
 from app.ui import theme
@@ -232,33 +231,30 @@ class VirtualListTests(TkCase):
     async def test_band_draws_without_images(self) -> None:
         # No TMDB key, offline or no picture: a tinted band with initials.
         vlist = await self.make_list()
-        vlist.images = lambda row, width, height: (None, None)
+        vlist.images = lambda row: None
         vlist.set_rows(band_rows(1))
         await pump(self.root, 0.05)
         canvas = vlist.canvas
-        self.assertTrue(canvas.find_withtag("band-fill"))
         initials = [cget(canvas, i, "text") for i in canvas.find_withtag("band-initials")]
         self.assertEqual(initials, ["S0"])
 
-    async def test_band_uses_the_pictures_it_gets(self) -> None:
+    async def test_band_uses_the_poster_it_gets(self) -> None:
         vlist = await self.make_list()
         poster = ImageTk.PhotoImage(Image.new("RGB", (30, 45), "red"), master=self.root)
-        backdrop = ImageTk.PhotoImage(Image.new("RGB", (600, 64), "blue"), master=self.root)
-        vlist.images = lambda row, width, height: (poster, backdrop)
+        vlist.images = lambda row: poster
         vlist.set_rows(band_rows(1))
         await pump(self.root, 0.05)
         canvas = vlist.canvas
         shown = {cget(canvas, i, "image") for i in canvas.find_withtag("band-image")}
-        self.assertEqual(shown, {str(poster), str(backdrop)})
+        self.assertEqual(shown, {str(poster)})
 
     async def test_only_visible_bands_ask_for_images(self) -> None:
         # A thousand bands, pictures only for what is on screen.
         vlist = await self.make_list()
         asked: list[str] = []
 
-        def images(row: Row, width: int, height: int) -> tuple[None, None]:
+        def images(row: Row) -> None:
             asked.append(row.title)
-            return (None, None)
 
         vlist.images = images
         start = time.perf_counter()
@@ -295,7 +291,7 @@ class VirtualListTests(TkCase):
                 self.assertEqual(shown, expected)
 
     async def test_coloured_codes_are_readable_in_both_looks(self) -> None:
-        look = forge_look()
+        look = app_look()
         for mode, dark in (("dark", True), ("light", False)):
             ctk.set_appearance_mode(mode)
             vlist = await self.make_list()
@@ -314,7 +310,7 @@ class VirtualListTests(TkCase):
                 self.assertTrue(readable(self.texts(vlist)["S01E00"]))
 
     async def test_redraws_on_a_switch_between_light_and_dark(self) -> None:
-        look = forge_look()
+        look = app_look()
         ctk.set_appearance_mode("light")
         vlist = await self.make_list()
         vlist.set_rows(band_rows(1))
@@ -343,7 +339,6 @@ class VirtualListTests(TkCase):
             band_after = vlist.row_middle(-11) - vlist.row_middle(-10)
             self.assertAlmostEqual(band_after / band_before, 2, delta=0.1)
             self.assertAlmostEqual(vlist._band_font.cget("size") / font_before, 2, delta=0.15)
-            self.assertEqual(vlist.backdrop_size[0], round(420 * scaling * 2))
             self.assertTrue(vlist.visible_keys())
         finally:
             vlist._set_scaling(scaling, scaling)
@@ -353,30 +348,6 @@ class VirtualListTests(TkCase):
         for colour in thumb_colours():
             with self.subTest(colour=colour):
                 self.assertGreaterEqual(contrast(colour, theme.ON_COLOR), 3)
-
-    async def test_backdrop_sits_at_the_bands_right_end(self) -> None:
-        vlist = await self.make_list()
-        width, height = vlist.backdrop_size  # one size whatever the window's: no reload on resize
-        strip = ImageTk.PhotoImage(Image.new("RGB", (width, height), "red"), master=self.root)
-        vlist.images = lambda row, w, h: (None, strip)
-        vlist.set_rows([band_rows(1)[1]])
-        await pump(self.root, 0.05)
-        c = vlist.canvas
-        self.assertTrue(c.find_withtag("band-fill"))  # the band itself is drawn under the picture
-        [image] = c.find_withtag("band-image")
-        left, _, right, _ = c.bbox(image)
-        fill_right = c.bbox(c.find_withtag("band-fill")[0])[2]
-        self.assertLessEqual(abs(right - fill_right), 2)
-        self.assertLessEqual(right - left, width + 2)
-
-    async def test_a_band_too_narrow_for_its_picture_goes_without(self) -> None:
-        vlist = await self.make_list(300, 200)
-        strip = ImageTk.PhotoImage(Image.new("RGB", vlist.backdrop_size, "red"), master=self.root)
-        vlist.images = lambda row, w, h: (None, strip)
-        vlist.set_rows([band_rows(1)[1]])
-        await pump(self.root, 0.05)
-        self.assertFalse(vlist.canvas.find_withtag("band-image"))  # never past the band's left
-        self.assertTrue(vlist.canvas.find_withtag("band-fill"))
 
     async def test_bands_scroll_smoothly(self) -> None:
         # 2,000 rows of bands and lines redraw within the 1,000-file budget.
@@ -396,7 +367,7 @@ class VirtualListTests(TkCase):
 
 QUEUE_SIZES = Sizes(
     band_title=21, band_sub=14, button=14, line=16, code=16, mono=13, state=13,
-    button_height=34, band_gap=10, band_gap_below=False, band_radius=10, band_edge=0,
+    button_height=34, band_gap=10, band_gap_below=False, band_radius=10,
     band_inset=16, poster=(58, 86),
 )  # fmt: skip
 
@@ -482,7 +453,7 @@ class QueueBandTests(TkCase):
         words = {cget(canvas, i, "text"): cget(canvas, i, "fill") for i in canvas.find_withtag("band-state")}
         self.assertEqual(list(words), ["Needs you", "Ready", "Renamed"])
         self.assertEqual(words["Needs you"].upper(), theme.pick(theme.WARNING).upper())
-        self.assertEqual(words["Ready"].upper(), theme.pick(theme.SUCCESS).upper())
+        self.assertEqual(words["Ready"].upper(), theme.pick(app_look().LINK).upper())
         dots = [cget(canvas, i, "fill") for i in canvas.find_withtag("band-dot")]
         self.assertEqual(dots[:2], [words["Needs you"], words["Ready"]])
         ready = [i for i in canvas.find_withtag("band-state") if cget(canvas, i, "text") == "Ready"]
@@ -494,7 +465,7 @@ class QueueBandTests(TkCase):
     async def test_the_destination_follows_the_subtitle_in_the_link_colour(self) -> None:
         vlist = await self.queue_list()
         canvas = vlist.canvas
-        look = forge_look()
+        look = app_look()
         dests = {cget(canvas, i, "text"): cget(canvas, i, "fill") for i in canvas.find_withtag("band-dest")}
         self.assertEqual(dests["→ Series › Show 1"].upper(), theme.pick(look.LINK).upper())
         self.assertEqual(dests["→ Series › Show 2"], theme.pick(theme.TEXT_MUTED))  # faded
@@ -502,10 +473,6 @@ class QueueBandTests(TkCase):
     async def test_a_done_band_is_faded(self) -> None:
         vlist = await self.queue_list()
         canvas = vlist.canvas
-        fills = [cget(canvas, i, "fill").upper() for i in canvas.find_withtag("band-fill")]
-        look = forge_look()
-        self.assertEqual(fills[:2], [theme.pick(look.SURFACE).upper()] * 2)
-        self.assertEqual(fills[2], faded_fill(look).upper())
         titles = {cget(canvas, i, "text"): cget(canvas, i, "fill") for i in canvas.find_withtag("band-title")}
         self.assertEqual(titles["Show 2"], theme.pick(theme.TEXT_MUTED))
 
@@ -513,40 +480,33 @@ class QueueBandTests(TkCase):
         vlist = await self.queue_list()
         self.assertEqual(vlist.canvas.find_withtag("band-edge"), ())
 
-    async def test_a_lines_current_name_is_labelled_and_washed_out(self) -> None:
+    async def test_a_lines_current_name_is_labelled_and_muted(self) -> None:
         vlist = await self.queue_list()
         canvas = vlist.canvas
         labels = [cget(canvas, i, "text") for i in canvas.find_withtag("line-now")]
         self.assertEqual(labels, ["Now:", "Now:", "Now:"])
-        look = forge_look()
         for mode, dark in (("light", False), ("dark", True)):
             ctk.set_appearance_mode(mode)
             await pump(self.root, 0.05)
             olds = {cget(canvas, i, "fill") for i in canvas.find_withtag("line-old")}
-            [washed] = olds
-            muted = theme.pick(theme.TEXT_MUTED, dark=dark)
-            ground = theme.pick(look.BG, dark=dark)
             with self.subTest(mode=mode):
-                self.assertLess(contrast(washed, ground), contrast(muted, ground))  # quieter
-                self.assertGreaterEqual(contrast(washed, ground), 3.9)  # still readable
+                self.assertEqual(olds, {theme.pick(theme.TEXT_MUTED, dark=dark)})
                 [label, *_] = canvas.find_withtag("line-now")
                 now_x = canvas.bbox(label)[2]
                 old_x = min(canvas.bbox(i)[0] for i in canvas.find_withtag("line-old"))
                 self.assertLessEqual(now_x, old_x + 2)  # in front of the name
 
-    async def test_a_films_line_shows_its_new_name_after_a_copper_arrow(self) -> None:
+    async def test_a_films_line_shows_its_new_name_after_a_link_coloured_arrow(self) -> None:
         vlist = await self.queue_list()
         canvas = vlist.canvas
         [arrow] = canvas.find_withtag("line-arrow")
         self.assertEqual(cget(canvas, arrow, "text"), "→ ")
-        self.assertEqual(cget(canvas, arrow, "fill").upper(), theme.pick(forge_look().LINK).upper())
+        self.assertEqual(cget(canvas, arrow, "fill").upper(), theme.pick(app_look().LINK).upper())
 
     async def test_the_poster_has_the_designs_size(self) -> None:
         vlist = await self.queue_list()
         scale = vlist.scale
         self.assertEqual(vlist.poster_size, (round(58 * scale), round(86 * scale)))
-        self.assertEqual(vlist.backdrop_size[1], round(120 * scale) - round(10 * scale))
-        self.assertTrue(vlist.canvas.find_withtag("band-corner"))  # rounded corners
 
 
 class OptionButtonTests(TkCase):
@@ -569,7 +529,7 @@ class OptionButtonTests(TkCase):
         self.assertEqual(heard, [True, True])
 
     async def test_style_d_in_both_looks(self) -> None:
-        look = forge_look()
+        look = app_look()
         button = OptionButton(self.root, "Trailer", lambda value: None, look=look)
         button.pack()
         self.root.deiconify()

@@ -1,4 +1,4 @@
-"""MediaForge's Start-menu shortcut and window identity (app/forge/shortcut.py, D8): the pure spec,
+"""MediaForge's Start-menu shortcut (app/forge/shortcut.py, D8): the pure spec,
 the decisions, the once-only make with a fake PowerShell, and one real PowerShell round trip in
 temporary folders (never the real Start menu)."""
 
@@ -22,7 +22,6 @@ from app.forge.shortcut import (
     parse_read_output,
     shortcut_spec,
     skip_reason,
-    window_identity,
 )
 from app.identity import APP_USER_MODEL_ID as AIRGRABBER_ID
 from app.services.powershell import HELPER_TYPE, LOAD_HELPER, NO_WINDOW, PowerShellResult, helper_env, powershell_exe
@@ -72,13 +71,6 @@ class SpecTests(ForgeTestCase):
 
     def test_the_icon_ships_with_the_app(self) -> None:
         self.assertTrue((PROJECT / shortcut.ICON_PATH.replace("\\", "/")).is_file())
-
-    def test_the_window_relaunches_what_the_shortcut_starts(self) -> None:
-        identity = window_identity(INSTALL, PYTHONW)
-        self.assertEqual(identity.app_id, APP_USER_MODEL_ID)
-        self.assertEqual(identity.relaunch_command, f'"{PYTHONW}" "{INSTALL}\\main.py" --forge')
-        self.assertEqual(identity.display_name, "MediaForge")
-        self.assertEqual(identity.icon, shortcut_spec(INSTALL, PYTHONW, PROGRAMS).icon)
 
     def test_skip_reason(self) -> None:
         ours = f'"{INSTALL}\\main.py"'

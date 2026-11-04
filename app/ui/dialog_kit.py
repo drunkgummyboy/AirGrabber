@@ -55,7 +55,7 @@ def primary_button(
     width: int = 140,
     look: theme.Look | None = None,
 ) -> ctk.CTkButton:
-    """An accent-filled button: AirGrabber's accent, or `look`'s (the Forge window's copper)."""
+    """An accent-filled button: AirGrabber's accent, or `look`'s (Forge's `app_look()`)."""
     return ctk.CTkButton(
         master,
         text=text,
@@ -64,7 +64,7 @@ def primary_button(
         corner_radius=BUTTON_RADIUS,
         fg_color=theme.ACCENT if look is None else look.ACCENT,
         hover_color=theme.ACCENT_HOVER if look is None else look.ACCENT_HOVER,
-        text_color=theme.ON_ACCENT if look is None else theme.ON_COLOR,  # white on copper
+        text_color=theme.ON_ACCENT if look is None else theme.ON_COLOR,  # white on the look's accent
         font=theme.font(15, bold=True),
         command=command,
     )
@@ -260,6 +260,11 @@ class FitScroll(ScrollableFrame):
         )
         self._spacer.grid(row=1, column=1, padx=(0, 1))
         self._spacer.lower(self._scrollbar)
+
+    @property
+    def bar_room(self) -> int:
+        """The room (CTk units) the scrollbar takes beside the content when shown or reserved."""
+        return int(self._scrollbar.cget("width")) + 1
 
     def width_needed(self, scaling: float) -> int:
         """Its width (CTk units) without a scrollbar shown for the moment (while the dialog

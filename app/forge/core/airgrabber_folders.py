@@ -55,10 +55,10 @@ log = logging.getLogger(__name__)
 
 REACH_TIMEOUT_S = 5.0  # a suggested NAS folder that doesn't answer in this long counts as away
 
-# -- texts (shown by MediaForge Settings › Library & watching and the Forge window's Library) --
+# -- texts (shown by Settings › Auto-rename) --
 
 REASONS: dict[AirGrabberWhy, str] = {
-    "finished": N_("“Where finished downloads end up” in AirGrabber's Settings"),
+    "finished": N_("“Where finished downloads end up” in Settings"),
     "qbittorrent": N_("qBittorrent on this PC saves AirGrabber's downloads here"),
     "shows": N_("{program} saves AirGrabber's downloads here"),
     "films": N_("{program} saves AirGrabber's films here"),
@@ -67,18 +67,18 @@ ASKS: dict[AirGrabberAsk, str] = {
     "": "",
     "finished": N_(
         "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
-        "“Where finished downloads end up” in AirGrabber's Settings › Subtitles, or add the "
-        "folder to the download folders to watch."
+        "“Where finished downloads end up” in Settings › Where downloads go, or add the folder to the "
+        "download folders to watch."
     ),
     "other_computer": N_(
         "AirGrabber sends downloads to {program} on another computer. Add the folder where they "
         "show up on this PC (a shared network folder) to the download folders to watch, or fill "
-        "in “Where finished downloads end up” in AirGrabber's Settings › Subtitles."
+        "in “Where finished downloads end up” in Settings › Where downloads go."
     ),
     "nas_folder": N_(
         "Download Station keeps AirGrabber's downloads in its own download folder. Add the "
         "shared folder where they show up on this PC to the download folders to watch, or fill "
-        "in “Where finished downloads end up” in AirGrabber's Settings › Subtitles."
+        "in “Where finished downloads end up” in Settings › Where downloads go."
     ),
 }
 SUGGESTED = N_("Suggested: {reason}")

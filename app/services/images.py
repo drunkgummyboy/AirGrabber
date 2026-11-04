@@ -76,10 +76,16 @@ class ImageCache:
         directory.mkdir(parents=True, exist_ok=True)
 
     async def get(
-        self, url: str | None, size: tuple[int, int], *, finish: Finish | None = None
+        self,
+        url: str | None,
+        size: tuple[int, int],
+        *,
+        finish: Finish | None = None,
+        keep: bool = True,
     ) -> Image.Image | None:
         """The image at `url`, cropped to fill exactly `size` pixels, in RGB or RGBA mode; with
-        `finish`, whatever `finish` makes of that crop (cached per url, size and finish).
+        `finish`, whatever `finish` makes of that crop (cached per url, size and finish; with
+        `keep=False` not in memory: for pictures too big for a memory that counts items).
 
         None without a url, or when the image cannot be downloaded or decoded (logged at DEBUG).
         Never raises for network or image problems; a non-positive size is a ValueError.
@@ -103,7 +109,7 @@ class ImageCache:
         except Exception as exc:
             log.debug("Could not resize image %s to %s: %r", url, key[1], exc)
             return None
-        return self._remember(key, fitted)
+        return self._remember(key, fitted) if keep else fitted
 
     async def raw(self, url: str | None) -> bytes | None:
         """The original bytes of the image at `url`, from the disk cache or downloaded (and then

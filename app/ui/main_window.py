@@ -1,6 +1,12 @@
 """The root window: the spotlight band (search, Downloads, settings, the name button, tonight's
-episodes), the tabs row (the Series tabs on the left, the Series / Movies switch on the right),
-page area and status bar.
+episodes), the tabs row (the Series tabs on the left, the Series / Movies / MediaForge switch on
+the right), page area and status bar.
+
+MediaForge is a page here (`Mode.FORGE`; docs/forge/PAGE.md). It is built by its host
+(app/forge/ui/host.py) at the first visit, into a frame of its own (`_forge_holder`) and the tabs
+row's left part; while it shows the band has only its top row (`SpotlightBand.set_compact`). The
+page isn't a BaseView: `_visible_view` is None on it and a change of AirGrabber's settings or
+library leaves it alone.
 
 People (app/services/profiles.py): the band's name button opens the people menu
 (app/ui/people_dialogs.py). When another person is selected, every info window and the search
@@ -42,9 +48,6 @@ from app.models import (
     SearchRequest,
     Settings,
     Show,
-    SubtitleEvent,
-    SubtitleProblem,
-    SubtitlesSaved,
     SpotlightItem,
     SpotlightSide,
     SyncProgress,
@@ -64,7 +67,6 @@ from app.ui.download_control import (
     BatchKey,
     BatchState,
     DownloadActions,
-    DownloadKey,
     DownloadStates,
 )
 from app.ui.get_started import GetStartedDialog, get_started_due
@@ -87,12 +89,8 @@ from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
-from app.ui.spotlight import PAD_X, SWITCH_MARGIN
+from app.ui.spotlight import PAD_X, SWITCH_MARGIN, SwitchPart
 from app.ui.spotlight_band import ModeSwitch, SpotlightBand
-from app.ui.subtitle_control import OUTCOME_MS as SUBTITLE_OUTCOME_MS
-from app.ui.subtitle_control import WORKING as SUBTITLES_WORKING
-from app.ui.subtitle_control import SubtitleActions, SubtitleRuns, fetch_run
-from app.ui.subtitle_settings import subtitle_mark
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import QBITTORRENT
@@ -105,6 +103,8 @@ from app.ui.widgets import Tabview, install_edit_menus, install_window_release
 from app.whats_new import WhatsNew, whats_new
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from app.forge.old_install import Outcome
     from app.forge.services import ForgeServices
 
@@ -142,6 +142,7 @@ _OFF_PAGE_SETTINGS = frozenset(
         "keep_in_tray",
         "tray_notice_shown",
         "start_with_windows",
+        # MediaForge's subtitles (its Settings page stores them here), and the folder box.
         "subtitles_enabled",
         "subtitle_languages",
         "subtitles_folder",
@@ -203,11 +204,6 @@ def typing_in(widget: Any) -> bool:
         return False  # no widget tkinter knows
 
 
-def subtitle_status_text(problem: SubtitleProblem) -> str:
-    """The status-bar line for a subtitle problem (already plain words, no URLs or secrets)."""
-    return t("⚠ Subtitles: {message}", message=problem.message)
-
-
 def prowlarr_setup_message(result: ProwlarrSetupResult) -> str | None:
     """The status-bar text for what the automatic Prowlarr setup did; None when it did nothing."""
     added = ", ".join(result.added)
@@ -227,10 +223,10 @@ def update_notice(last_run_version: str, running: str) -> str | None:
     return None
 
 
-_SUBTITLE_STATUS_MS = 15_000  # how long a subtitle problem stays in the status bar
 _SWITCHED_STATUS_MS = 6_000  # "Now showing …'s list" after a switch
 _AUTO_STATUS_MS = 10_000  # how long an automatic download's line stays in the status bar
 _OLD_FORGE_STATUS_MS = 15_000  # the old MediaForge's notice and its removal's outcome
+_FORGE_STATUS_MS = 10_000  # what MediaForge's queue says (a run's summary, "Put back 1 file")
 AUTO_ERROR_INTERVAL_S = 3600.0  # at most one "Automatic download didn't work" per hour
 
 
@@ -308,26 +304,33 @@ class AutoNoticeThrottle:
 class Mode(StrEnum):
     SERIES = "Series"
     MOVIES = "Movies"
-    DOWNLOADS = "Downloads"  # the band's ⬇ button; the Series / Movies switch leads back
+    DOWNLOADS = "Downloads"  # the band's ⬇ button; the switch leads back
+    FORGE = "MediaForge"  # the switch's third part: MediaForge's page
 
 
-# The band's switch and the modes it leads to (the Downloads page lights neither part).
-_SIDE_MODES = {SpotlightSide.SERIES: Mode.SERIES, SpotlightSide.MOVIES: Mode.MOVIES}
+# The switch's parts and their modes (the Downloads page lights none), and whose titles the band
+# shows.
+_PART_MODES = {
+    SwitchPart.SERIES: Mode.SERIES,
+    SwitchPart.MOVIES: Mode.MOVIES,
+    SwitchPart.FORGE: Mode.FORGE,
+}
+_MODE_SIDES = {Mode.SERIES: SpotlightSide.SERIES, Mode.MOVIES: SpotlightSide.MOVIES}
 # The Series tabs' texts. CTkTabview names a tab by its text, so they key the views translated.
 _CALENDAR, _DISCOVER, _TRACKED = N_("Calendar"), N_("Discover"), N_("Tracked")
 
 
 def build_tabs_row(
-    master: Any, *, on_side: Callable[[SpotlightSide], None]
+    master: Any, *, on_part: Callable[[SwitchPart], None]
 ) -> tuple[ctk.CTkFrame, ModeSwitch]:
     """The tabs row under the band (its owner grids it): the Series tabs on the left
-    (`show_tabs`), the Series / Movies switch at the right end, its pill level with the band's
-    settings button (PAD_X from the edge). The switch shows in every mode, so it never moves;
-    it is the row's tallest part, so the row keeps its height while the tabs are hidden
-    (Movies, Downloads)."""
+    (`show_tabs`) or MediaForge's buttons and status there, the switch at the right end, its pill
+    level with the band's settings button (PAD_X from the edge). The switch shows in every mode,
+    so it never moves; it is the row's tallest part, so the row keeps its height while the tabs
+    are hidden (Movies, Downloads)."""
     row = ctk.CTkFrame(master, fg_color="transparent", corner_radius=0)
     row.grid_columnconfigure(1, weight=1)
-    switch = ModeSwitch(row, on_side=on_side)
+    switch = ModeSwitch(row, on_part=on_part)
     # A plain canvas: Tk's grid doesn't scale its padding as CTk's widgets' does.
     scale = ctk.ScalingTracker.get_widget_scaling(row)
     switch.grid(row=0, column=2, sticky="e", padx=(0, round((PAD_X - SWITCH_MARGIN) * scale)))
@@ -356,8 +359,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
     ) -> None:
         """`forge_mailbox`: where later starts hand MediaForge requests over (main.py's
         InstanceLock). `forge_request`: the one this start carries (the right-click menu, the
-        "MediaForge" shortcut): the window then starts hidden and only Forge's window shows
-        (D5: AirGrabber quits or stays in the tray when that closes)."""
+        "MediaForge" shortcut): the window starts hidden; a plain request shows it on MediaForge's
+        page, a confirm request only its confirm window (D5: AirGrabber quits or stays in the
+        tray when that closes, unless the window was shown meanwhile)."""
         theme.apply_appearance(services.settings.current.theme_mode)
         super().__init__(fg_color=theme.BG)
         self._services = services
@@ -395,14 +399,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             choose=self._grab_movie,
             states=self._download_states,
         )
-        # Subtitles asked for by hand (CC ▾): their state per title, shared by every view.
-        self._subtitle_runs = SubtitleRuns()
-        self._subtitle_actions = SubtitleActions(
-            offer=lambda: services.subtitles.offer,
-            languages=lambda: services.settings.current.subtitle_languages,
-            fetch=self._fetch_subtitles,
-            runs=self._subtitle_runs,
-        )
         # "Download missing" (with Plex): its run state per show, shared by every button that
         # shows it.
         self._missing_runs = MissingRuns()
@@ -429,9 +425,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             episode_actions=self._episode_actions,
             downloads_changed=services.downloads.subscribe,
             profile=lambda: services.profiles.current_id,  # a window is for the person then
-            subtitle_marks=self._subtitle_marks,
-            subtitles_changed=self._on_subtitles_saved,
-            subtitle_actions=self._subtitle_actions,
             releases=releases,
         )
         # The film info windows (one per film), opened from the film cards and from every
@@ -442,11 +435,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=services.discovery,
             watchlist=services.watchlist,
             actions=self._movie_actions,
-            downloaded=self._film_downloaded,
-            downloads_changed=services.downloads.subscribe,
-            subtitle_actions=self._subtitle_actions,
-            subtitle_mark=self._film_subtitle_mark,
-            subtitles_changed=self._on_subtitles_saved,
             releases=releases,
             in_plex=self._film_in_plex,
             plex_changed=services.library.subscribe,  # a Plex check that changed something
@@ -471,30 +459,33 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._settings_seen = services.settings.current
         self._unsubscribe_settings = services.settings.subscribe(self._on_settings_changed)
         self._unsubscribe_library = services.library.subscribe(self._on_library_changed)
-        # A grab changes what is still missing (with Plex) and offers subtitles.
+        # A grab changes what is still missing (with Plex).
         self._unsubscribe_downloads = services.downloads.subscribe(self._reload_pages)
         # The automatic downloads: a tray notification (or the status bar) per event.
         self._auto_throttle = AutoNoticeThrottle()
         self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
-        # Subtitles: problems in the status bar (saved ones only update the show windows).
-        self._unsubscribe_subtitles = services.subtitles.subscribe(self._on_subtitle_event)
         # A loaded backup changed the library and the watchlist: reload the pages.
         self._unsubscribe_backup = services.backup.subscribe(self._on_library_changed)
         # People added, renamed or removed (the name button), or another person selected.
         self._unsubscribe_profiles = services.profiles.subscribe(self._on_profiles_changed)
 
-        # MediaForge (Forge inside AirGrabber): its window, its confirm windows and the requests
+        # MediaForge (Forge inside AirGrabber): its page, its confirm windows and the requests
         # later starts hand over (app/forge/ui/host.py, app/ui/forge_link.py). Forge itself
         # starts _FORGE_START_DELAY_S after the window, or when something needs it first.
         self._forge = ForgeHost(
             self,
             services.forge,
-            open_airgrabber_settings=self._open_settings_from_forge,
+            page_master=self._forge_holder,
+            tabs_row=self._tabs_row,
+            show_page=self._show_forge_page,
+            show_settings=self._open_settings,
             restart=self.restart,
         )
         self._forge.on_needs = self._on_forge_needs
         self._forge.notify = self._on_forge_notice
         self._forge.on_closed = self._on_forge_closed
+        self._forge.on_view = self._on_forge_view
+        self._forge.on_message = lambda text: self._report(text, _FORGE_STATUS_MS)
         # The old MediaForge (F-27): the import result's "Remove the old MediaForge"; what a
         # removal came to (from there or from Settings) shows in the status bar.
         from app.forge.old_install import remover_for
@@ -525,9 +516,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_quit=self.quit_app,
             on_reopen=self._go_home,  # back from the tray: Series › Calendar
         )
-        self.protocol("WM_DELETE_WINDOW", self.tray.close_window)
+        self.protocol("WM_DELETE_WINDOW", self._close_window)
         if start_hidden or self._started_for_forge:
-            # main.py --tray: only the tray icon shows; a start for Forge: only Forge's window.
+            # main.py --tray: only the tray icon shows; a start for Forge: what its request shows.
             self.withdraw()
 
     def async_mainloop(self, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -551,7 +542,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_library()
         self._unsubscribe_downloads()
         self._unsubscribe_auto()
-        self._unsubscribe_subtitles()
         self._unsubscribe_backup()
         self._unsubscribe_profiles()
         self._unsubscribe_old_remover()
@@ -587,7 +577,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             images=services.images,
             motion=services.settings.current.spotlight_motion,
             on_downloads=lambda: self._select_mode(Mode.DOWNLOADS),
-            on_forge=self.open_forge,  # 🔨 MediaForge: the Forge window (ForgeHost.open)
+            on_history=self._toggle_forge_history,  # 🕘, on MediaForge's page
             on_settings=self._open_settings,
             on_search=self._on_search,
             on_open=self._open_spotlight,
@@ -598,9 +588,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
         self._band.grid(row=0, column=0, sticky="ew")
         self._show_person()
-        self._tabs_row, self._switch = build_tabs_row(
-            self, on_side=lambda side: self._select_mode(_SIDE_MODES[side])
-        )
+        self._tabs_row, self._switch = build_tabs_row(self, on_part=self._part_clicked)
         self._tabs_row.grid(row=1, column=0, sticky="ew")
         self._search = self._band.entry
         self._suggestions = SearchSuggestions(
@@ -679,9 +667,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=discovery,
             on_open_show=self._show_windows.open_show,
             on_open_film=self._movie_windows.open_movie_id,
-            actions=PageActions(again=self._download_entry_again, subtitles=self._subtitle_actions),
+            actions=PageActions(again=self._download_entry_again),
             queue=self._services.download_queue,  # its waiting downloads at the top
         )
+        # MediaForge's page goes in here at its first visit (ForgeHost.open).
+        self._forge_holder = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
 
     def _card_scale(self) -> CardScale:
         """The cards' size as Settings has it now; the pages read it at every load."""
@@ -710,8 +700,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
         # Its events arrive in _on_auto_event.
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
-        # Its problems arrive in _on_subtitle_event.
-        spawn(self._services.subtitles.run_periodic(), name="subtitles")
         # What is in Plex: checked now, then every 30 minutes (a change reloads the pages).
         spawn(self._services.plex.run_periodic(), name="plex")
         # The Downloads page's progress and the header badge (they listen to it themselves).
@@ -725,6 +713,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._first_run(), name="first-run")
         self.tray.start()
         spawn(self._start_forge_later(), name="forge-start")
+        self._attach_drops()
         spawn(self._forge_pump.run(), name="forge-requests")  # this start's own request first
 
     # -- MediaForge -----------------------------------------------------------------------------
@@ -736,8 +725,40 @@ class MainWindow(AsyncCTk, ctk.CTk):
         await self._services.forge.start()
 
     def open_forge(self) -> None:
-        """The Forge window (the tray's Open MediaForge), shown and raised."""
-        spawn(self._forge.open(), name="forge-open")
+        """The tray's Open MediaForge: a plain request, this window shown on MediaForge's page."""
+        self._forge.handle(ForgeRequest())
+
+    def _attach_drops(self) -> None:
+        """Explorer drops anywhere on this window (a light ctypes module; the loop runs)."""
+        from app.forge.ui.file_drops import attach_file_drops
+
+        attach_file_drops(self, self._on_drop)
+
+    def _on_drop(self, paths: Sequence[Path]) -> None:
+        """A drop from Explorer goes to MediaForge's queue and shows its page, as a plain request
+        with those files does (with Forge not started yet they wait for the page)."""
+        self._forge.handle(ForgeRequest(paths=tuple(str(path) for path in paths)))
+
+    def _part_clicked(self, part: SwitchPart) -> None:
+        """A click on the switch; MediaForge's part also goes back to the queue."""
+        mode = _PART_MODES[part]
+        self._select_mode(mode)
+        if mode is Mode.FORGE:
+            self._forge.show_queue()
+
+    def _show_forge_page(self) -> None:
+        """A plain request: this window shown, un-minimised and raised, on MediaForge's queue."""
+        self.tray.show_window()
+        self._part_clicked(SwitchPart.FORGE)
+
+    def _toggle_forge_history(self) -> None:
+        """🕘: History or the queue, on MediaForge's page."""
+        self._forge.toggle_history()
+
+    def _on_forge_view(self, history: bool) -> None:
+        """MediaForge's page shows History or the queue: 🕘 lit or not."""
+        if self._mode is Mode.FORGE:
+            self._band.set_history_lit(history)
 
     def _on_forge_ready(self, forge: ForgeServices) -> None:
         """Forge has started: rewrite the Explorer right-click menu if it is on and starts this
@@ -769,9 +790,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._report(outcome_text(outcome), _OLD_FORGE_STATUS_MS)
 
     def _on_forge_needs(self, count: int) -> None:
-        """How many watched downloads need the owner (MediaForge's renamer): the band's 🔨
-        badge and the tray's."""
-        self._band.set_forge_count(count)
+        """How many files need the owner (ForgeHost's count): the badge on MediaForge's word in
+        the switch and the tray's."""
+        self._switch.set_count(count)
         self.tray.set_forge_count(count)
 
     def _on_forge_notice(self, title: str, text: str) -> None:
@@ -779,7 +800,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self.tray.notify(title, text)
 
     def _on_forge_closed(self) -> None:
-        """A Forge window closed. D5: a start for Forge whose main window never showed leaves
+        """A confirm window closed. D5: a start for Forge whose main window never showed leaves
         when the last one closes, unless it stays in the tray (`quits_after_forge`)."""
         if self._quit_gate.asked:
             return
@@ -795,20 +816,18 @@ class MainWindow(AsyncCTk, ctk.CTk):
             keep_in_tray=current.keep_in_tray,
             tray_running=self.tray.running,
         ):
-            log.info("The MediaForge window this start was for closed: quitting")
+            log.info("The MediaForge confirm window this start was for closed: quitting")
             self.quit_app()
 
-    def _open_settings_from_forge(self) -> None:
-        """MediaForge's Settings window's "Open AirGrabber's Settings": AirGrabber's Settings at
-        their default page. Settings belongs to the main window, so that shows first (it may be
-        in the tray)."""
-        try:
-            hidden = self.state() == "withdrawn"
-        except tk.TclError:
-            return
-        if hidden:
-            self.tray.show_window()
-        self._open_settings()
+    def _close_window(self) -> None:
+        """The window's ✕: Settings open over it goes first (= Cancel), or it would hide with it
+        and keep the grab, leaving MediaForge's confirm windows dead; then into the tray or quit.
+        On every page alike: a run on MediaForge's page goes on in the tray, and quitting waits
+        for it (`quit_app`)."""
+        dialog, self._settings_dialog = self._settings_dialog, None
+        if dialog is not None:
+            dialog.cancel()
+        self.tray.close_window()
 
     def quit_app(self) -> None:
         """Quit for good (the tray's Quit, closing the window without the tray): a Forge run
@@ -846,75 +865,21 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if not tray_running or isinstance(event, (AutoDownloaded, AutoMovieDownloaded)):
             self._report(notice.status, _AUTO_STATUS_MS)
 
-    def _on_subtitle_event(self, event: SubtitleEvent) -> None:
-        """A subtitle problem (bad key, wrong password, folder out of reach, downloads used
-        up) shows in the status bar, in plain words."""
-        if isinstance(event, SubtitleProblem):
-            self._report(subtitle_status_text(event), _SUBTITLE_STATUS_MS)
-
-    def _on_subtitles_saved(self, listener: Callable[[], None]) -> Callable[[], None]:
-        """Subscribe `listener` to "subtitles were saved" (the show windows' CC marks)."""
-
-        def on_event(event: SubtitleEvent) -> None:
-            if isinstance(event, SubtitlesSaved):
-                listener()
-
-        return self._services.subtitles.subscribe(on_event)
-
-    async def _subtitle_marks(self, show_id: int) -> dict[tuple[int, int], str]:
-        """Per (season, episode), the show window's "CC EN NL" mark."""
-        found = await self._services.subtitles.show_languages(show_id)
-        order = self._services.settings.current.subtitle_languages
-        return {key: subtitle_mark(languages, order) for key, languages in found.items()}
-
-    async def _film_subtitle_mark(self, movie_id: int) -> str:
-        """A film window's "CC EN NL" mark ("" without saved subtitles)."""
-        found = await self._services.subtitles.movie_languages(movie_id)
-        return subtitle_mark(found, self._services.settings.current.subtitle_languages)
-
     async def _film_in_plex(self, movie_id: int, imdb_id: str | None) -> bool:
         """Whether a film is in Plex (its window's quiet ✓)."""
         return (await self._services.library.plex_films()).has(movie_id, imdb_id)
 
-    async def _film_downloaded(self, movie_id: int) -> bool:
-        """Whether a film is in the download history (its window offers its subtitles; it
-        never shows it as had)."""
-        return await self._services.library.film_downloaded(movie_id)
-
-    def _fetch_subtitles(self, key: DownloadKey, languages: tuple[str, ...]) -> None:
-        """A CC menu's request: fetch the title's subtitles now (forced: a request by hand
-        may try again at once); every view of the title follows its state."""
-        runs = self._subtitle_runs
-        if runs.is_working(key) or not languages:
-            return
-        runs.set(key, SUBTITLES_WORKING)
-        media_type, media_id, season, episode = key
-
-        async def run() -> None:
-            try:
-                result = await self._services.subtitles.fetch_now(
-                    media_type, media_id, season, episode, languages, force=True
-                )
-            except BaseException:
-                runs.set(key, None)
-                raise  # cancelled, or logged and reported by the task runner
-            state = fetch_run(result)
-            runs.set(key, state)
-            self._services.download_status.after_grab()  # the Downloads page's "Subtitles EN"
-            if state is not None:
-                self.after(SUBTITLE_OUTCOME_MS, lambda: runs.expire(key, state))
-
-        task = spawn(run(), name="subtitles-now")
-        self._download_tasks.add(task)
-        task.add_done_callback(self._download_tasks.discard)
-
     def _select_mode(self, mode: Mode) -> None:
         if mode is self._mode:
             return
+        leaving_forge = self._mode is Mode.FORGE
         self._mode = mode
-        sides = {side_mode: side for side, side_mode in _SIDE_MODES.items()}
-        self._band.select(sides.get(mode))  # None: the Downloads page (⬇ lit)
-        self._switch.select(sides.get(mode))  # None: neither part lit
+        forge = mode is Mode.FORGE
+        self._band.set_compact(forge)  # only the top row on MediaForge's page
+        if not forge:
+            self._band.select(_MODE_SIDES.get(mode))  # None: the Downloads page (⬇ lit)
+        parts = {part_mode: part for part, part_mode in _PART_MODES.items()}
+        self._switch.select(parts.get(mode))  # None: no part lit
         pills = self._series_tabs.pills
         if pills is not None:
             show_tabs(pills, mode is Mode.SERIES)
@@ -922,12 +887,19 @@ class MainWindow(AsyncCTk, ctk.CTk):
             Mode.SERIES: self._series_tabs,
             Mode.MOVIES: self._movie_view,
             Mode.DOWNLOADS: self._downloads_view,
+            Mode.FORGE: self._forge_holder,
         }
         for page_mode, page in pages.items():
             if page_mode is not mode:
                 page.grid_remove()
         pages[mode].grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
-        self._visible_view().refresh_if_stale()
+        if leaving_forge:
+            self._forge.close()
+        if forge:
+            self._forge.show()  # the first visit builds it
+        view = self._visible_view()
+        if view is not None:
+            view.refresh_if_stale()
 
     def _go_home(self) -> None:
         """The start page, Series › Calendar: at start and when a plain Open brings the window
@@ -940,7 +912,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._on_tab_changed()
 
     def _on_tab_changed(self) -> None:
-        self._visible_view().refresh_if_stale()
+        view = self._visible_view()
+        if view is not None:
+            view.refresh_if_stale()
 
     # -- people --------------------------------------------------------------------------------
 
@@ -987,7 +961,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         elif item.movie is not None:
             self._movie_windows.open_movie(item.movie)
 
-    def _visible_view(self) -> BaseView:
+    def _visible_view(self) -> BaseView | None:
+        """AirGrabber's page on screen; None on MediaForge's, which looks after itself."""
+        if self._mode is Mode.FORGE:
+            return None
         if self._mode is Mode.MOVIES:
             return self._movie_view
         if self._mode is Mode.DOWNLOADS:
@@ -1013,7 +990,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _refresh_page(self, event: tk.Event[Any]) -> str | None:
         if typing_in(event.widget):
             return None
-        self._visible_view().reload()
+        view = self._visible_view()
+        if view is None:
+            self._forge.refresh_page()
+        else:
+            view.reload()
         return "break"
 
     def _on_settings_changed(self, updated: Settings) -> None:
@@ -1022,19 +1003,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
             theme.apply_appearance(updated.theme_mode)
         if updated.spotlight_motion != previous.spotlight_motion:
             self._band.set_motion(updated.spotlight_motion)
-        self._subtitle_runs.refresh()  # the CC buttons: offered, greyed or gone
         if settings_affect_pages(previous, updated):
             self._reload_pages()
 
     def _reload_pages(self, *, quiet: bool = False) -> None:
         """Settings or library changed: every page is outdated; reload the one on screen now
         (`quiet`, a library change: without a visible rebuild, BaseView.refresh_quietly)."""
-        for view in (*self._series_views.values(), self._movie_view):
-            view.invalidate()
-        if quiet:
-            self._visible_view().refresh_quietly()
-        else:
-            self._visible_view().refresh()
+        for page in (*self._series_views.values(), self._movie_view):
+            page.invalidate()
+        view = self._visible_view()
+        if view is not None:  # MediaForge's page has nothing of these
+            if quiet:
+                view.refresh_quietly()
+            else:
+                view.refresh()
         self._band.reload()  # tonight's episodes, a new TMDB key's pictures
 
     def _on_search(self) -> None:
@@ -1256,7 +1238,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._show_library_summary(), name="library-summary")
 
     def _open_settings(self, section: str | None = None) -> None:
-        """Settings (at `section`'s page when given, also on a dialog that is open already)."""
+        """The one Settings, over this window (at `section`'s page when given); a dialog that is
+        open already is raised, and shows `section`'s page when given."""
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
             if section is not None:
                 self._settings_dialog.show_section(section)
@@ -1274,12 +1257,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
             prowlarr=self._services.prowlarr_setup,
             update_info=self._update_info,
             on_update=self._start_update,
-            subtitles=self._services.subtitles,
             on_restart=self.restart,
             images=self._services.images,
             library=self._services.library,
             backup=self._services.backup,
             plex=self._services.plex,
+            forge=self._services.forge,
             section=section,
         )
 
@@ -1437,7 +1420,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _show_whats_new(self, notes: WhatsNew) -> None:
         """The "What's new" dialog; when started hidden in the tray, once the window opens."""
         if self.state() in ("normal", "zoomed"):
-            WhatsNewDialog(self, version=notes.version, lines=notes.lines)
+            WhatsNewDialog(
+                self, version=notes.version, lines=notes.lines, features=notes.features
+            )
             return
 
         def on_map(event: tk.Event[Any]) -> None:
@@ -1446,7 +1431,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 return  # the root's tag also sees its children's <Map>
             self._whats_new_binding = None
             tk.Misc.unbind(self, "<Map>", binding)
-            WhatsNewDialog(self, version=notes.version, lines=notes.lines)
+            WhatsNewDialog(
+                self, version=notes.version, lines=notes.lines, features=notes.features
+            )
 
         self._whats_new_binding = tk.Misc.bind(self, "<Map>", on_map, add="+")
 

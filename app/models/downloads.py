@@ -93,7 +93,6 @@ class DownloadEntry(DomainModel):
     program: str = ""  # the program it was sent to or opened in
     state: DownloadState = DownloadState.UNKNOWN
     progress: float | None = Field(default=None, ge=0.0, le=1.0)  # known for a found task
-    subtitles: tuple[str, ...] = ()  # languages saved for it (OpenSubtitles codes)
     moved_to: MovedTo | None = None  # where MediaForge moved its video (None: not known)
     task: RemoteTask | None = None  # its task in the program (the page mirrors the program)
 

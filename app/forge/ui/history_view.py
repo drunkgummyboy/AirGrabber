@@ -1,11 +1,17 @@
-"""History: the last 50 runs, grouped by day (ported from MediaForge's ui/history_view.py).
+"""History: the last 50 runs, grouped by day (ported from MediaForge's ui/history_view.py). Its
+heading and muted line are on the main window's tabs row (app/forge/ui/page.py).
 
 Any kept run can be undone, not only the latest and in any order: each run's band has its own
 "Undo run", and "Show files" lets you tick single files of it ("Undo N selected"). A run reads
 as partly or fully undone afterwards; files that can't be undone say why. Every run shows
 (`kind` "all"); `set_kind("series" / "movies")` shows only the runs that renamed that kind (runs
 from before MediaForge 1.3 have no kinds and show on both sides). `busy` is True while an undo
-runs (the window asks it before closing).
+runs (the page asks it before AirGrabber quits).
+
+A video's row has CC ▾ (app/forge/ui/subtitle_control.py), drawn on the list's canvas: greyed with
+the reason as its tip while the video is no longer where this run put it or today's allowance is
+used up. A subtitle got that way is journaled in the run, so it shows here and Undo removes it.
+A subtitle the Subtitles extra couldn't get shows as a line saying why.
 
 Everything goes through `ForgeServices`' `history` (read) and `undo` services. The journal's
 notes are English on purpose and are shown through `t()` (an OS error's text passes unchanged).
@@ -17,15 +23,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Hashable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.forge.core import fsops
+from app.forge.core.parser import is_video
+from app.forge.core.subtitles import file_identity
 from app.forge.models.history import (
-    HISTORY_LIMIT,
     Operation,
     OpKind,
     OpState,
@@ -34,11 +42,13 @@ from app.forge.models.history import (
     UndoState,
 )
 from app.forge.models.media import MediaKind
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
+from app.forge.ui.subtitle_control import CC_ACTION, CC_LABEL, NO_VIDEO_TEXT, SubtitleDesk, VideoTarget
 from app.forge.ui.widgets.dialogs import ask_choice, confirm
 from app.forge.ui.widgets.virtual_list import Row, VirtualList
 from app.i18n import N_, day_short, month_short, t, tn
 from app.ui import tasks, theme
+from app.ui.missing_control import popup_menu
 from app.ui.scrollable import ScrollableFrame
 
 if TYPE_CHECKING:
@@ -83,6 +93,16 @@ def day_label(dt: datetime, now: datetime) -> str:
     return f"{day_short(dt)} {_short_date(dt, year=dt.year != now.year)}"
 
 
+def _subtitle_not_there(op: Operation) -> bool:
+    """A line of the Subtitles extra that got nothing (its `error` says why)."""
+    return (
+        op.kind is OpKind.CREATE_FILE
+        and op.state is OpState.FAILED
+        and bool(op.error)
+        and Path(op.dst or "").suffix.casefold() == ".srt"
+    )
+
+
 def _describe(op: Operation) -> tuple[str, str]:
     """The name to show and a short note under it."""
     src = Path(op.src).name if op.src else ""
@@ -91,7 +111,7 @@ def _describe(op: Operation) -> tuple[str, str]:
         case OpKind.RENAME:
             return dst, t("was {name}", name=src)
         case OpKind.CREATE_FILE:
-            return dst, t("downloaded")
+            return dst, t("subtitle") if _subtitle_not_there(op) else t("downloaded")
         case OpKind.DELETE_FILE:
             return src, t("junk file, deleted")
         case OpKind.CREATE_DIR:
@@ -103,11 +123,28 @@ def _describe(op: Operation) -> tuple[str, str]:
 def _not_undoable_reason(op: Operation) -> str | None:
     if op.kind is OpKind.DELETE_FILE:
         return t("can't be restored")
+    if _subtitle_not_there(op):
+        return t(op.error or "")  # the journal's English note
     if op.state is not OpState.DONE:
         return t("didn't happen")
     if op.undo_state is UndoState.DONE:
         return t("already undone")
     return None
+
+
+def _has_video(op: Operation) -> bool:
+    """A rename of a video that happened: its row has CC ▾."""
+    return (
+        op.kind is OpKind.RENAME
+        and op.state is OpState.DONE
+        and bool(op.dst)
+        and is_video(Path(op.dst or ""))
+    )
+
+
+def _gone_videos(videos: Sequence[Operation]) -> set[int]:
+    """The renames whose video is no longer where they put it. Blocking: run it in a thread."""
+    return {op.id for op in videos if not fsops.exists(Path(op.dst or ""))}
 
 
 class RunCard(ctk.CTkFrame):
@@ -126,6 +163,7 @@ class RunCard(ctk.CTkFrame):
         self.files: VirtualList | None = None
         self.selected_button: ctk.CTkButton | None = None
         self.expanded = False
+        self._gone: set[int] = set()  # the rows whose video is no longer where this run put it
         dim = run.status == "undone"
         text_colour = theme.TEXT_MUTED if dim else theme.TEXT
 
@@ -144,9 +182,10 @@ class RunCard(ctk.CTkFrame):
             font=theme.font(15, bold=True),
             text_color=text_colour,
         ).grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(
+        self.summary_label = ctk.CTkLabel(
             head, text=self.summary_text(), anchor="w", font=theme.font(12), text_color=text_colour
-        ).grid(row=0, column=1, sticky="ew")
+        )
+        self.summary_label.grid(row=0, column=1, sticky="ew")
         tag = self.tag_text()
         if tag:
             ctk.CTkLabel(
@@ -221,6 +260,7 @@ class RunCard(ctk.CTkFrame):
         files = VirtualList(self.body, row_height=40, look=look, removable=False, thumbnails=False)
         files.pack(fill="x")
         files.on_toggle = self.tick
+        files.on_action = self.file_action
         footer = ctk.CTkFrame(self.body, fg_color="transparent")
         footer.pack(fill="x", pady=(6, 0))
         self.selected_button = ctk.CTkButton(
@@ -244,33 +284,93 @@ class RunCard(ctk.CTkFrame):
         if not self.winfo_exists():
             return
         self.operations = operations
+        videos = [op for op in operations if _has_video(op)]
+        self._gone = set()
+        if videos and self.view.services.subtitles.available:
+            self._gone = await asyncio.to_thread(_gone_videos, videos)
+            if not self.winfo_exists():
+                return
         if self.files is None:
             self.files = self._build_body()
-        rows: list[Row] = []
-        self.checks = {}
-        for op in self.operations:
-            if op.kind in _HIDDEN_KINDS:
-                continue
-            reason = _not_undoable_reason(op)
-            self.checks[op.id] = reason is None
-            title, note = _describe(op)
-            rows.append(
-                Row(
-                    key=op.id,
-                    kind="item",
-                    title=title,
-                    subtitle=f"{note}  ·  {reason}" if reason else note,
-                    checked=reason is None,
-                    check_disabled=reason is not None,
-                )
-            )
+        self.checks = {
+            op.id: _not_undoable_reason(op) is None
+            for op in self.operations
+            if op.kind not in _HIDDEN_KINDS
+        }
         # Only the rows on screen are drawn, so a run with hundreds of files opens at once.
-        self.files.set_rows(rows)
+        self.files.set_rows(self._rows())
         self.files.fit_height(320)
         self._update_count()
         self.body.pack(fill="x", padx=(40, 12), pady=(0, 10))
         self.expanded = True
         self.toggle_button.configure(text=t("Hide files ▴"))
+
+    def _rows(self) -> list[Row]:
+        return [self._row(op) for op in self.operations if op.kind not in _HIDDEN_KINDS]
+
+    def _row(self, op: Operation) -> Row:
+        reason = _not_undoable_reason(op)
+        title, note = _describe(op)
+        subtitle = f"{note}  ·  {reason}" if reason else note
+        actions: tuple[tuple[str, str], ...] = ()
+        greyed: tuple[tuple[str, str], ...] = ()
+        if _has_video(op):
+            gone = t(NO_VIDEO_TEXT) if op.id in self._gone else ""
+            look = self.view.subtitle_desk.look(op.id, gone=gone)
+            if look is not None:
+                actions = ((CC_ACTION, CC_LABEL),)
+                greyed = ((CC_ACTION, look.tip),) if look.greyed else ()
+                subtitle = f"{subtitle}  ·  {look.note}" if look.note else subtitle
+        return Row(
+            key=op.id,
+            kind="item",
+            title=title,
+            subtitle=subtitle,
+            checked=self.checks.get(op.id, False) if reason is None else False,
+            check_disabled=reason is not None,
+            actions=actions,
+            greyed=greyed,
+        )
+
+    def refresh_rows(self) -> None:
+        """The rows again (a subtitle request's state changed); nothing is drawn when they are
+        the same."""
+        if self.files is not None and self.expanded:
+            self.files.set_rows(self._rows())
+
+    def cc_items(self, op_id: int) -> list[tuple[str, Callable[[], None]]]:
+        """The CC menu of a video's row."""
+        op = next((o for o in self.operations if o.id == op_id), None)
+        if op is None or not _has_video(op):
+            return []
+
+        async def targets() -> list[VideoTarget]:
+            return [await self.view.video_target(op)]
+
+        return self.view.subtitle_desk.menu(op_id, targets)
+
+    def file_action(self, op_id: int, action: str) -> None:
+        if action != CC_ACTION or self.files is None:
+            return
+        box = self.files.action_box(op_id, CC_ACTION)
+        under = self.files.screen_box(box) if box is not None else None
+        popup_menu(
+            self.view,
+            self.cc_items(op_id),
+            under=under,
+            point=None if under is not None else self.winfo_pointerxy(),
+            look=self.view.look,
+            align="left",
+        )
+
+    async def subtitles_changed(self) -> None:
+        """A request of this run finished: what the journal holds now, its rows and its line."""
+        if self.expanded:
+            await self.expand()
+        for run in await self.view.services.history.list_runs():
+            if run.id == self.run.id and self.winfo_exists():
+                self.run = run
+                self.summary_label.configure(text=self.summary_text())
 
     def tick(self, op_id: int, ticked: bool) -> None:
         if op_id not in self.checks:
@@ -299,12 +399,12 @@ class RunCard(ctk.CTkFrame):
 
 
 class HistoryView(ctk.CTkFrame):
-    """The History page of the Forge window."""
+    """History on MediaForge's page."""
 
     def __init__(
         self, master: Any, services: ForgeServices, *, look: theme.Look | None = None
     ) -> None:
-        self.look: theme.Look = forge_look() if look is None else look
+        self.look: theme.Look = app_look() if look is None else look
         super().__init__(master, fg_color=self.look.BG, corner_radius=0)
         self.services = services
         self.cards: list[RunCard] = []
@@ -319,18 +419,14 @@ class HistoryView(ctk.CTkFrame):
             self, title, message, t("Undo"), look=self.look
         )
         self.inform: Callable[[str, str], Awaitable[None]] = self._inform
+        self.subtitle_desk = SubtitleDesk(
+            services.subtitles,
+            spawn=self.spawn,
+            after=self.after,
+            on_change=self._cc_changed,
+            on_done=self._cc_done,
+        )
 
-        head = ctk.CTkFrame(self, fg_color="transparent")
-        head.pack(fill="x", padx=16, pady=(14, 8))
-        ctk.CTkLabel(
-            head, text=t("History"), font=theme.font(16, bold=True), text_color=theme.TEXT
-        ).pack(side="left")
-        ctk.CTkLabel(
-            head,
-            text=t("your last {n} runs · newest first", n=HISTORY_LIMIT),
-            font=theme.font(12),
-            text_color=theme.TEXT_MUTED,
-        ).pack(side="left", padx=10)
         self.list = ScrollableFrame(
             self,
             fg_color=self.look.BG,
@@ -338,7 +434,7 @@ class HistoryView(ctk.CTkFrame):
             scrollbar_button_color=self.look.SCROLLBAR,
             scrollbar_button_hover_color=self.look.EDGE,
         )
-        self.list.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.list.pack(fill="both", expand=True, pady=(4, 0))
         self.empty_label = ctk.CTkLabel(
             self.list, text=t(NOTHING_YET), font=theme.font(12), text_color=theme.TEXT_MUTED
         )
@@ -352,6 +448,27 @@ class HistoryView(ctk.CTkFrame):
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
+
+    # --- subtitles by hand (CC ▾) ------------------------------------------------------------
+
+    async def video_target(self, op: Operation) -> VideoTarget:
+        """Who a row's video is: its move record's kind and TMDB id, the rest from its name, and
+        its name before this rename."""
+        record = await self.services.moves.of_operation(op.id)
+        self.services.warm_up()  # the name reader's first parse (nothing when it has been)
+        path = Path(op.dst or "")
+        original = Path(op.src).name if op.src else ""
+        return VideoTarget(path, file_identity(path.name, record, original), op.run_id)
+
+    def _cc_changed(self) -> None:
+        if self.winfo_exists():
+            for card in self.cards:
+                card.refresh_rows()
+
+    def _cc_done(self, key: Hashable) -> None:
+        for card in self.cards:
+            if any(op.id == key for op in card.operations):
+                self.spawn(card.subtitles_changed())
 
     def set_kind(self, kind: str) -> None:
         """Every run ("all"), or only the runs that renamed this kind (old runs on both sides)."""
@@ -468,8 +585,8 @@ class HistoryView(ctk.CTkFrame):
         run = card.run
         files = tn("{n} renamed file", "{n} renamed files", run.file_count)
         created = tn(
-            "{n} downloaded poster or trailer",
-            "{n} downloaded posters or trailers",
+            "{n} downloaded poster, trailer or subtitle",
+            "{n} downloaded posters, trailers or subtitles",
             run.created_count,
         )
         message = t(

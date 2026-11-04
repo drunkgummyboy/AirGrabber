@@ -33,8 +33,6 @@ from app.models import (
     ProfileColour,
     Settings,
     Show,
-    SubtitleFile,
-    SubtitleGrab,
     WatchlistEntry,
 )
 from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan
@@ -49,10 +47,8 @@ from app.models.backup import (
 
 log = logging.getLogger(__name__)
 
-# v6: subtitles (app/services/subtitles.py). One row per video file and language: its tries,
-# given up, or the subtitle saved next to it; with the grab the video belongs to (episode = the
-# video's own, also inside a season pack), so the show details can mark it. And per grab the
-# languages it is complete for, so a finished grab isn't looked for again. Self-contained.
+# v6: the old subtitles' bookkeeping, no longer read or written (subtitles moved to MediaForge,
+# app/forge/core/subtitles.py); the tables stay in the file: no drop, no migration.
 SUBTITLES_MIGRATION = """
     CREATE TABLE subtitle_files (
         video_path    TEXT    NOT NULL,
@@ -80,7 +76,7 @@ SUBTITLES_MIGRATION = """
 """
 
 # v7: the Downloads page's "Clear finished" and "Remove from list": a grab taken off the page. Only
-# the page reads it: the grab stays in the history (downloaded marks, subtitles, "Download
+# the page reads it: the grab stays in the history (downloaded marks, "Download
 # missing") and its files are never touched. A mark goes with its grab. Self-contained.
 CLEARED_MIGRATION = """
     CREATE TABLE cleared_downloads (
@@ -647,7 +643,6 @@ class Database:
         self.history = HistoryRepository(self)
         self.settings = SettingsRepository(self)
         self.watchlist = WatchlistRepository(self)
-        self.subtitles = SubtitleRepository(self)
         self.plex = PlexRepository(self)
 
     @classmethod
@@ -1673,196 +1668,6 @@ class SettingsRepository:
             fields = tuple(Settings.model_fields)
             placeholders = ", ".join("?" * len(fields))
             await conn.execute(f"DELETE FROM settings WHERE key NOT IN ({placeholders})", fields)
-
-
-_SUBTITLE_FILE_SQL = """
-    SELECT video_path, language, tries, first_try, last_try, gave_up, saved_at, subtitle_path
-    FROM subtitle_files
-"""
-
-
-def _subtitle_file(row: sqlite3.Row) -> SubtitleFile:
-    return SubtitleFile.model_validate({**dict(row), "gave_up": bool(row["gave_up"])})
-
-
-def _subtitle_owner(
-    record: DownloadRecord, season: int | None, episode: int | None
-) -> dict[str, Any]:
-    return {
-        "history_id": record.id,
-        "media_type": record.media_type.value,
-        "media_id": record.media_id,
-        "season": season,
-        "episode": episode,
-    }
-
-
-class SubtitleRepository:
-    """The subtitles' bookkeeping: per video file and language (tries, given up, saved) and per
-    grab the languages it is complete for."""
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def grabs_since(self, since: datetime) -> list[SubtitleGrab]:
-        """Every grab recorded at or after `since` (oldest first), with the languages it is
-        complete for (none when it never was)."""
-        rows = await self._db.fetch_all(
-            "SELECT h.*, g.languages AS done_languages FROM download_history AS h "
-            "LEFT JOIN subtitle_grabs AS g ON g.history_id = h.id "
-            "WHERE julianday(h.downloaded_at) >= julianday(?) "
-            "ORDER BY julianday(h.downloaded_at), h.id",
-            (_utc(since),),
-        )
-        grabs = []
-        for row in rows:
-            record = DownloadRecord.model_validate(
-                {key: row[key] for key in row.keys() if key != "done_languages"}
-            )
-            done = json.loads(row["done_languages"]) if row["done_languages"] else []
-            grabs.append(SubtitleGrab(record=record, done_languages=tuple(done)))
-        return grabs
-
-    async def grabs_of(
-        self, media_type: MediaType, media_id: int, season: int | None, episode: int | None
-    ) -> list[DownloadRecord]:
-        """The grabs of one episode (its own, and packs of its season) or film, newest first
-        (a subtitle asked for by hand)."""
-        if media_type is MediaType.MOVIE:
-            rows = await self._db.fetch_all(
-                "SELECT * FROM download_history WHERE media_type = ? AND media_id = ? "
-                "ORDER BY julianday(downloaded_at) DESC, id DESC",
-                (MediaType.MOVIE, media_id),
-            )
-        else:
-            rows = await self._db.fetch_all(
-                "SELECT * FROM download_history WHERE media_type = ? AND media_id = ? "
-                "AND season = ? AND (episode IS NULL OR episode IS ?) "
-                "ORDER BY julianday(downloaded_at) DESC, id DESC",
-                (MediaType.TV, media_id, season, episode),
-            )
-        return [DownloadRecord.model_validate(dict(row)) for row in rows]
-
-    async def files(self, video_paths: Iterable[str]) -> dict[tuple[str, str], SubtitleFile]:
-        """The rows of these videos, by (video path, language)."""
-        paths = json.dumps(sorted(set(video_paths)))
-        rows = await self._db.fetch_all(
-            f"{_SUBTITLE_FILE_SQL} WHERE video_path IN (SELECT value FROM json_each(?))",
-            (paths,),
-        )
-        files = [_subtitle_file(row) for row in rows]
-        return {(file.video_path, file.language): file for file in files}
-
-    async def record_try(
-        self,
-        video_path: str,
-        language: str,
-        *,
-        record: DownloadRecord,
-        season: int | None,
-        episode: int | None,
-        when: datetime,
-        give_up: bool = False,
-    ) -> None:
-        """Count one more try without a subtitle; `give_up` stops further tries."""
-        async with self._db.transaction() as conn:
-            await conn.execute(
-                "INSERT INTO subtitle_files (video_path, language, history_id, media_type, "
-                "media_id, season, episode, tries, first_try, last_try, gave_up) "
-                "VALUES (:path, :language, :history_id, :media_type, :media_id, :season, "
-                ":episode, 1, :when, :when, :give_up) "
-                "ON CONFLICT (video_path, language) DO UPDATE SET "
-                "tries = subtitle_files.tries + 1, "
-                "first_try = COALESCE(subtitle_files.first_try, excluded.first_try), "
-                "last_try = excluded.last_try, gave_up = excluded.gave_up",
-                {
-                    **_subtitle_owner(record, season, episode),
-                    "path": video_path,
-                    "language": language,
-                    "when": _utc(when),
-                    "give_up": give_up,
-                },
-            )
-
-    async def record_saved(
-        self,
-        video_path: str,
-        language: str,
-        *,
-        record: DownloadRecord,
-        season: int | None,
-        episode: int | None,
-        subtitle_path: str,
-        when: datetime,
-    ) -> None:
-        """A subtitle for this video and language is there (saved now, or found already)."""
-        async with self._db.transaction() as conn:
-            await conn.execute(
-                "INSERT INTO subtitle_files (video_path, language, history_id, media_type, "
-                "media_id, season, episode, saved_at, subtitle_path) "
-                "VALUES (:path, :language, :history_id, :media_type, :media_id, :season, "
-                ":episode, :when, :subtitle_path) "
-                "ON CONFLICT (video_path, language) DO UPDATE SET "
-                "saved_at = excluded.saved_at, subtitle_path = excluded.subtitle_path, "
-                "gave_up = 0, history_id = excluded.history_id, season = excluded.season, "
-                "episode = excluded.episode",
-                {
-                    **_subtitle_owner(record, season, episode),
-                    "path": video_path,
-                    "language": language,
-                    "subtitle_path": subtitle_path,
-                    "when": _utc(when),
-                },
-            )
-
-    async def mark_grab_done(
-        self, history_id: int, languages: Iterable[str], when: datetime
-    ) -> None:
-        """The grab is complete for `languages` (its videos have them, or were given up)."""
-        async with self._db.transaction() as conn:
-            await conn.execute(
-                "INSERT INTO subtitle_grabs (history_id, languages, done_at) "
-                "SELECT id, ?, ? FROM download_history WHERE id = ? "
-                "ON CONFLICT (history_id) DO UPDATE SET "
-                "languages = excluded.languages, done_at = excluded.done_at",
-                (json.dumps(sorted(set(languages))), _utc(when), history_id),
-            )
-
-    async def show_languages(self, show_id: int) -> dict[tuple[int, int], frozenset[str]]:
-        """Per (season, episode) of a TV show, the languages of the subtitles saved for it."""
-        rows = await self._db.fetch_all(
-            "SELECT DISTINCT season, episode, language FROM subtitle_files "
-            "WHERE media_type = ? AND media_id = ? AND saved_at IS NOT NULL "
-            "AND season IS NOT NULL AND episode IS NOT NULL",
-            (MediaType.TV, show_id),
-        )
-        found: dict[tuple[int, int], set[str]] = {}
-        for row in rows:
-            found.setdefault((row["season"], row["episode"]), set()).add(row["language"])
-        return {key: frozenset(languages) for key, languages in found.items()}
-
-    async def movie_languages(self, movie_id: int) -> frozenset[str]:
-        """The languages of the subtitles saved for a film (TMDB id)."""
-        rows = await self._db.fetch_all(
-            "SELECT DISTINCT language FROM subtitle_files "
-            "WHERE media_type = ? AND media_id = ? AND saved_at IS NOT NULL",
-            (MediaType.MOVIE, movie_id),
-        )
-        return frozenset(row["language"] for row in rows)
-
-    async def grab_languages(self, history_ids: Iterable[int]) -> dict[int, frozenset[str]]:
-        """Per grab (download history id), the languages of the subtitles saved for its
-        videos (the Downloads page)."""
-        ids = json.dumps(sorted(set(history_ids)))
-        rows = await self._db.fetch_all(
-            "SELECT DISTINCT history_id, language FROM subtitle_files "
-            "WHERE saved_at IS NOT NULL AND history_id IN (SELECT value FROM json_each(?))",
-            (ids,),
-        )
-        found: dict[int, set[str]] = {}
-        for row in rows:
-            found.setdefault(row["history_id"], set()).add(row["language"])
-        return {key: frozenset(languages) for key, languages in found.items()}
 
 
 # -- backups (app/services/backup.py) -------------------------------------------------------------

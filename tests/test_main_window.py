@@ -542,7 +542,7 @@ class QuitGateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QuitsAfterForgeTests(unittest.TestCase):
-    """D5: a start for Forge leaves when its last Forge window closes, unless it stays in the
+    """D5: a start for Forge leaves when its last confirm window closes, unless it stays in the
     tray."""
 
     def quits(self, **changes: bool) -> bool:
@@ -591,7 +591,7 @@ class ForgeWiringTests(unittest.TestCase):
             _services=SimpleNamespace(settings=settings),
             _forge=SimpleNamespace(windows_open=windows_open),
             _quit_gate=SimpleNamespace(asked=asked, request=lambda: calls.append("quit")),
-            _band=SimpleNamespace(set_forge_count=lambda count: calls.append(("badge", count))),
+            _switch=SimpleNamespace(set_count=lambda count: calls.append(("badge", count))),
             tray=SimpleNamespace(
                 running=True,
                 show_window=lambda: calls.append("show"),
@@ -632,15 +632,6 @@ class ForgeWiringTests(unittest.TestCase):
         MainWindow.restart(window)
         self.assertTrue(window.restart_requested)
         self.assertEqual(window.calls, ["quit"])  # through the gate, not destroy()
-
-    def test_open_airgrabbers_settings_from_forge_shows_the_main_window_first(self) -> None:
-        # MediaForge's Settings window's "Open AirGrabber's Settings": the default page.
-        window = self.window(hidden=True)
-        MainWindow._open_settings_from_forge(window)
-        self.assertEqual(window.calls, ["show", ("settings", None)])
-        window = self.window(hidden=False)
-        MainWindow._open_settings_from_forge(window)
-        self.assertEqual(window.calls, [("settings", None)])
 
     def test_the_renamer_reaches_the_tray(self) -> None:
         window = self.window()

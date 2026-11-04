@@ -9,7 +9,7 @@ without them (pywebview: trailers then open in the browser). They are installed 
 the required ones, and a failure (offline, a package that won't build) never stops the launch; it
 is logged and remembered in the data folder (OPTIONAL_STATE_FILE), so the next try comes only
 OPTIONAL_RETRY_S later, or at once when the package's line in requirements.txt changes or
-`retry_optional(name)` forgot the failure (the Forge window's "Try again" for guessit).
+`retry_optional(name)` forgot the failure (MediaForge's page's "Try again" for guessit).
 install.ps1 reads the file the same way.
 """
 

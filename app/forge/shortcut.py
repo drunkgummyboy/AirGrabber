@@ -1,18 +1,15 @@
-"""MediaForge's own place in Windows (D8): its AppUserModelID, its "MediaForge" Start-menu
-shortcut, and what its taskbar button relaunches.
+"""MediaForge's own place in Windows (D8): its "MediaForge" Start-menu shortcut and its
+AppUserModelID.
 
-The Forge window has its own taskbar button with MediaForge's icon (app/forge/ui/taskbar.py
-gives its top-level window `APP_USER_MODEL_ID`); the "MediaForge" Start-menu shortcut carries the
-same ID and starts this install's `main.py --forge` (the Forge window), run by the pythonw.exe
-beside AirGrabber's Python. A pin of the Forge window's button relaunches the same command
-(`window_identity`).
+The shortcut carries `APP_USER_MODEL_ID` and starts this install's `main.py --forge` (AirGrabber's
+main window on MediaForge's page), run by the pythonw.exe beside AirGrabber's Python.
 
 Who makes the shortcut:
 - install.ps1, beside AirGrabber's own (New-ForgeShortcut; keep its constants in step with
   `APP_USER_MODEL_ID`, `ICON_PATH` and `DESCRIPTION`); app/uninstall.ps1 removes it when it
   starts that install.
 - An AirGrabber that updated to 3.0.0 has no such shortcut: `ensure_start_menu_shortcut` (at the
-  first Forge window of a run) makes it once. Only in an installed copy (never a development
+  first visit to the page in a run, app/forge/ui/page.py) makes it once. Only in an installed copy (never a development
   copy), only when this install's Start-menu AirGrabber.lnk is there (an install made with
   -NoShortcuts gets none), never over a MediaForge.lnk that starts another program (the old
   MediaForge's: it is made once that one has gone). Once made, or found made by install.ps1, a
@@ -30,8 +27,6 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-import sys
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PureWindowsPath
 
@@ -48,12 +43,11 @@ from app.services.updates import is_development_copy
 log = logging.getLogger(__name__)
 
 INSTALL_DIR = Path(__file__).resolve().parents[2]
-# The Forge window's own AppUserModelID (AirGrabber's is app/identity.py's). Keep in step with
+# The "MediaForge" shortcut's AppUserModelID (AirGrabber's is app/identity.py's). Keep in step with
 # install.ps1's $ForgeAppId.
 APP_USER_MODEL_ID = "drunkgummyboy.AirGrabber.MediaForge"
-DISPLAY_NAME = "MediaForge"  # a name: the same in every language
 SHORTCUT_NAME = "MediaForge.lnk"  # in the Start menu, beside AirGrabber.lnk
-FORGE_FLAG = "--forge"  # main.py: open the Forge window
+FORGE_FLAG = "--forge"  # main.py: open MediaForge's page
 ICON_PATH = r"app\assets\forge\MediaForge.ico"  # as install.ps1's $ForgeIconPath
 DESCRIPTION = "Rename and organise video files"  # as install.ps1 (and the old MediaForge's)
 MARKER_NAME = "start_menu_shortcut"  # in Forge's data folder: the shortcut was made once
@@ -93,17 +87,7 @@ class Outcome(Enum):
     FAILED = "failed"
 
 
-@dataclass(frozen=True, slots=True)
-class WindowIdentity:
-    """What the Forge window's top-level window carries in Windows (app/forge/ui/taskbar.py)."""
-
-    app_id: str  # System.AppUserModel.ID
-    relaunch_command: str  # System.AppUserModel.RelaunchCommand: what a pin starts
-    display_name: str  # System.AppUserModel.RelaunchDisplayNameResource
-    icon: str  # System.AppUserModel.RelaunchIconResource: "<file>,<index>"
-
-
-# -- what the shortcut and the window hold (pure, tested) ----------------------------------------
+# -- what the shortcut holds (pure, tested) ------------------------------------------------------
 
 
 def shortcut_spec(install_dir: Path, runner: Path, programs_dir: Path) -> ShortcutSpec:
@@ -118,17 +102,6 @@ def shortcut_spec(install_dir: Path, runner: Path, programs_dir: Path) -> Shortc
         icon=f"{root / ICON_PATH},0",
         description=DESCRIPTION,
         app_id=APP_USER_MODEL_ID,
-    )
-
-
-def window_identity(install_dir: Path, runner: Path) -> WindowIdentity:
-    """The Forge window's identity: the shortcut's ID, command, name and icon. Pure."""
-    spec = shortcut_spec(install_dir, runner, Path())
-    return WindowIdentity(
-        app_id=spec.app_id,
-        relaunch_command=f'"{spec.target}" {spec.arguments}',
-        display_name=DISPLAY_NAME,
-        icon=spec.icon,
     )
 
 
@@ -240,8 +213,3 @@ def _detail(result: PowerShellResult) -> str:
 def _log_failure(what: str, result: PowerShellResult) -> None:
     log.warning("PowerShell %s (exit %s): %s", what, result.returncode, _detail(result))
 
-
-def current_runner() -> Path:
-    """The program that starts this copy (pythonw.exe beside this Python, as the right-click
-    menu's)."""
-    return python_runner(Path(sys.executable))

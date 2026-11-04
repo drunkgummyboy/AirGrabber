@@ -1,5 +1,5 @@
-"""MediaForge Settings › Right-click menu: MediaForge in Explorer's right-click menu, on or off,
-which presets it shows, and whose menu Explorer has now (MediaForge's Settings › Right-click
+"""Settings › Right-click menu: MediaForge in Explorer's right-click menu, on or off, which
+presets it shows, and whose menu Explorer has now (the old MediaForge's Settings › Right-click
 menu, `ui/settings_view.py`'s `_build_menu`).
 
 Like the other Forge sections (app/forge/ui/settings_pages.py) its changes wait for Settings'
@@ -13,7 +13,8 @@ removes it (an administrator runs it).
 
 A Save in Naming that renamed or deleted presets (F-24's `on_presets_saved`, told before this
 section saves) carries the chosen presets along (`context_menu.follow_presets`) and rewrites the
-menu when it starts this copy; the menu also catches up at every Forge start
+menu when it starts this copy; `carry_presets` does the same while this page hasn't been built
+(Settings builds a page on its first visit). The menu also catches up at every Forge start
 (`context_menu.refresh_from`).
 
 The registry is injectable (tests pass a fake; tests/forge/base.py guards the real one).
@@ -34,6 +35,7 @@ import customtkinter as ctk
 from app.forge import context_menu
 from app.forge.context_menu import MAIN_PY, MenuRegistry, MenuState
 from app.forge.ui.settings_naming import PresetsChange, on_presets_saved
+from app.forge.ui.look import app_look
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
 from app.ui.tasks import spawn
@@ -45,7 +47,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# -- its place in MediaForge's Settings (FORGE_SECTIONS in app/forge/ui/settings_pages.py) ------
+# -- its place in Settings (FORGE_SECTIONS in app/forge/ui/settings_pages.py) ------------------
 
 SECTION_MENU = N_("Right-click menu")
 MENU_ICON = "🖱"
@@ -137,6 +139,16 @@ class _Starter(Protocol):
 AskSave = Callable[[str, str], str]  # (title, file name) → the chosen path, or ""
 
 
+async def carry_presets(parts: _Parts, change: PresetsChange) -> None:
+    """Naming's Save stored changed presets while this page isn't built: the chosen ones follow
+    and a menu that starts this copy is rewritten, as `MenuSection._presets_saved` does."""
+    stored = list(parts.settings.current.context_menu_presets)
+    chosen = context_menu.follow_presets(stored, change.names, change.renamed, change.removed)
+    if chosen != stored:
+        await parts.settings.update(context_menu_presets=chosen)
+    await context_menu.refresh_from(parts)
+
+
 class MenuSection:
     """The Right-click menu page's contents; changes wait for Save (`problem` / `save`)."""
 
@@ -149,11 +161,9 @@ class MenuSection:
         main_py: Path = MAIN_PY,
         ask_save: AskSave | None = None,
     ) -> None:
-        from app.forge.ui.settings_pages import section_look  # it imports this module
-
         self._page = page
         self._forge = forge
-        self._look = section_look(page)
+        self._look = app_look()
         self._registry = registry
         self._main_py = main_py
         self.ask_save: AskSave = ask_save if ask_save is not None else self._ask_save
@@ -214,7 +224,7 @@ class MenuSection:
         return button
 
     def _checkbox(self, master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
-        # As Library & watching's options (app/forge/ui/settings_pages.py).
+        # As Auto-rename's options (app/forge/ui/settings_pages.py).
         return ctk.CTkCheckBox(
             master,
             text=text,

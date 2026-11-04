@@ -1,4 +1,4 @@
-"""MediaForge Settings › Naming: the old MediaForge's Settings › Naming tab (`ui/settings_view.py`:
+"""Settings › Naming: the old MediaForge's Settings › Naming tab (`ui/settings_view.py`:
 `_build_presets`, the editor, `_update_sample`, `_build_matches`), the names language from its
 TMDB tab and the Series / Movies presets from its Library tab, as a section of MediaForge's
 Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FORGE_SECTIONS`).
@@ -20,7 +20,8 @@ then, so a preset changed elsewhere meanwhile and untouched here keeps that chan
 changed settings (and `last_preset`, the Inbox's remembered preset, when its preset was
 renamed or deleted: `last_preset_after`), then forgets the matches. Cancel and ✕ change
 nothing. After a Save that changed the presets, every listener connected with
-`on_presets_saved` is told (the right-click menu refreshes its entries, F-25).
+`on_presets_saved` is told (the right-click menu refreshes its entries, F-25); while none is
+connected (the Right-click menu's page wasn't visited) settings_menu's `carry_presets` runs.
 
 The Settings window imports this module with `settings_pages`: at import time it loads only
 Forge's models (the formatter and the Inbox's option texts load when a section is built), so
@@ -44,6 +45,7 @@ from app.forge.models.match import RememberedMatch
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia, TypeHint
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.models.settings import ForgeSettings
+from app.forge.ui.look import app_look
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
 from app.ui.settings_layout import BOX_INNER
@@ -54,7 +56,7 @@ if TYPE_CHECKING:
     import asyncio
 
     from app.forge.runtime import ForgeRuntime
-    from app.forge.ui.library_page import SettingsSource
+    from app.forge.ui.settings_pages import SettingsSource
     from app.forge.ui.settings_pages import ForgeSectionPart
     from app.ui.settings_layout import SettingsBox, SettingsPage
 
@@ -219,8 +221,13 @@ def on_presets_saved(listener: PresetsListener) -> Callable[[], None]:
     return disconnect
 
 
-async def _tell(change: PresetsChange) -> None:
-    for listener in list(_listeners):
+async def _tell(change: PresetsChange, parts: _Parts) -> None:
+    listeners = list(_listeners)
+    if not listeners:  # Settings builds a page on its first visit: the menu's isn't there
+        from app.forge.ui.settings_menu import carry_presets  # it imports this module
+
+        listeners = [functools.partial(carry_presets, parts)]
+    for listener in listeners:
         try:
             await listener(change)
         except Exception as exc:  # the presets are stored; the menu catches up at Forge's start
@@ -399,7 +406,15 @@ class _MatchSource(Protocol):
     async def forget(self, match: RememberedMatch) -> None: ...
 
 
+class _SubtitleState(Protocol):
+    @property
+    def available(self) -> bool: ...
+
+
 class _Parts(Protocol):
+    @property
+    def subtitles(self) -> _SubtitleState: ...
+
     @property
     def settings(self) -> SettingsSource: ...
 
@@ -508,11 +523,11 @@ class NamingSection:
     def __init__(self, page: SettingsPage, forge: _Starter) -> None:
         # Not at import time (see the top): the Inbox's option texts, the dialog's shared texts.
         from app.forge.ui.queue_view import OPTION_LABELS
-        from app.forge.ui.settings_pages import GETTING_READY, section_look
+        from app.forge.ui.settings_pages import GETTING_READY
 
         self._page = page
         self._forge = forge
-        self._look = look = section_look(page)
+        self._look = look = app_look()
         self._parts: _Parts | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._task: asyncio.Task[None] | None = None
@@ -803,6 +818,8 @@ class NamingSection:
         self, parts: _Parts, presets: Sequence[Preset], matches: Sequence[RememberedMatch]
     ) -> None:
         self._parts = parts
+        if not parts.subtitles.available:  # no key in this version: no Subtitles extra
+            self.option_boxes["subtitles"].grid_remove()
         self._stored = list(presets)
         self._drafts = [PresetDraft(preset.name, preset) for preset in presets]
         self._editing = self._drafts[0] if self._drafts else None
@@ -1173,7 +1190,7 @@ class NamingSection:
             log.error("MediaForge's naming settings couldn't be saved (%s)", type(exc).__name__)
             return t(SAVE_FAILED)
         if change is not None:
-            await _tell(change)
+            await _tell(change, parts)
         return None
 
     async def _save_presets(self, parts: _Parts) -> tuple[PresetsChange, list[Preset]] | None:

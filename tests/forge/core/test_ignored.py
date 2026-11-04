@@ -11,7 +11,13 @@ import sqlite3
 from pathlib import Path
 
 from app.forge.core.activity import ActivityFeed
-from app.forge.core.ignored import IGNORED_LINE, IgnoreList, IgnoreService, top_folder
+from app.forge.core.ignored import (
+    IGNORED_LINE,
+    IgnoreList,
+    IgnoreService,
+    gone_entries,
+    top_folder,
+)
 from app.forge.core.queue import ItemStatus
 from app.forge.core.watch import candidates
 from app.forge.db.database import MIGRATIONS, SCHEMA_VERSION, Database
@@ -139,6 +145,34 @@ class ServiceTest(ForgeDbTestCase):
         assert feed.lines()[-1].text == "Genegeerd: clip.mp4. MediaForge pakt het niet meer op."
 
 
+class GoneTest(ForgeTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.watched = self.tmp / "watched"
+        self.watched.mkdir()
+
+    def test_only_what_is_gone_from_a_folder_that_can_be_reached(self) -> None:
+        here = self.watched / "here.mkv"
+        here.touch()
+        gone, gone_folder = self.watched / "gone.mkv", self.watched / "Gone Course"
+        entries = [entry(here), entry(gone), entry(gone_folder, folder=True)]
+        assert gone_entries(entries, [self.watched]) == entries[1:]
+
+    def test_a_folder_that_cant_be_reached_says_nothing(self) -> None:
+        offline = self.tmp / "nas-off"  # a NAS that's off: everything on it looks gone
+        assert gone_entries([entry(offline / "clip.mkv")], [offline]) == []
+
+    def test_what_isnt_under_a_watched_folder_any_more_goes(self) -> None:
+        folder = self.tmp / "stopped watching"
+        folder.mkdir()
+        (folder / "clip.mkv").touch()
+        elsewhere = entry(folder / "clip.mkv")  # still on the disk
+        assert gone_entries([elsewhere], [self.watched]) == [elsewhere]
+
+    def test_nothing_watched_at_all_says_nothing(self) -> None:
+        assert gone_entries([entry(self.tmp / "clip.mkv")], []) == []
+
+
 class CandidatesTest(ForgeTestCase):
     def test_ignored_files_and_folders_are_no_candidates(self) -> None:
         root = self.tmp / "dl"
@@ -169,6 +203,21 @@ class WatchingTest(RenamerTestCase):
         [item] = self.queue.items  # Encanto only, renamed
         assert item.status is ItemStatus.DONE
         assert (self.folders.movies / "Encanto (2021)" / "Encanto (2021).mkv").exists()
+
+    async def test_what_has_left_the_watched_folder_comes_off_the_list(self) -> None:
+        await self.use()
+        clip = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        folder = self.folders.download("Encanto.2021.1080p.mkv").parent
+        await self.ignored.ignore(clip, folder=False)
+        await self.ignored.ignore(folder, folder=True)
+        seen: list[int] = []
+        self.ignored.subscribe(lambda entries: seen.append(len(entries)))
+        clip.unlink()
+        clock = Clock()
+        await self.renamer(clock).look()
+        assert [e.path for e in self.ignored.entries] == [folder]  # the folder is still there
+        assert seen == [1]  # the Settings box follows
+        assert not await IgnoredRepo(self.db).remove(clip)  # stored too
 
     async def test_a_file_added_by_hand_is_never_refused(self) -> None:
         clip = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")

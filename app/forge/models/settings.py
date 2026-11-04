@@ -52,7 +52,7 @@ class ForgeSettings(BaseModel):
 
     tmdb_language: str = "en-US"
     scan_subfolders: bool = True
-    window_geometry: str | None = None  # the Forge window's own size and place
+    window_geometry: str | None = None  # unread: the old Forge window's; MediaForge is a page now
     last_preset: str | None = None
     # The queue's preset card: the preset last chosen for shows and for films (None: the
     # library's preset for that kind, `series_preset` / `movies_preset`).
@@ -72,6 +72,7 @@ class ForgeSettings(BaseModel):
     clean_downloads: bool = True
     notify_needs: bool = True
     daily_summary: bool = True
+    remove_after_forge: bool = False  # a run's finished files leave the queue (History keeps them)
     summary_sent_on: str = ""  # ISO date of the last evening summary
     kept_back: list[str] = []  # downloads put back by an undo: never moved on their own again
     imported_from: str = ""  # set once the old MediaForge's data was imported (F-26)
@@ -80,6 +81,9 @@ class ForgeSettings(BaseModel):
     # Where AirGrabber's downloads end up, kept up to date from AirGrabber's settings
     # (app/forge/core/airgrabber_folders.py); watched next to `watch_folders` while `airgrabber_on`.
     airgrabber: AirGrabberDownloads = AirGrabberDownloads()
+    # AirGrabber's automatic subtitles became presets' Subtitles extra, once
+    # (app/forge/core/subtitles.py's `carry_subtitles`): never again after that.
+    subtitles_carried: bool = False
 
     @property
     def airgrabber_on(self) -> bool:

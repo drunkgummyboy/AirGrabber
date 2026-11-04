@@ -1,5 +1,4 @@
-"""MediaForge Settings › Right-click menu (app/forge/ui/settings_menu.py) in MediaForge's own
-Settings window: on / off, which presets, whose menu Explorer has, the .reg files, changes kept
+"""Settings › Right-click menu (app/forge/ui/settings_menu.py): on / off, which presets, whose menu Explorer has, the .reg files, changes kept
 until Save (D9), Naming's saved presets carried along. The registry is a fake
 (tests/forge/test_context_menu.py's); the guard in tests/forge/base.py keeps the real one out."""
 
@@ -33,7 +32,8 @@ from app.forge.ui.settings_menu import (
 from app.forge.ui.settings_naming import PresetsChange
 from app.forge.ui.settings_pages import FORGE_SECTIONS
 from app.i18n import Language, t
-from app.forge.ui.settings_window import ForgeSettingsWindow
+from app.ui.settings_dialog import SettingsDialog
+from tests.forge.ui.settings_kit import forge_settings
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.test_context_menu import FakeRegistry, old_mediaforge_menu
 from tests.forge.tk import pump
@@ -157,8 +157,8 @@ class MenuSettingsTests(ForgeAsyncTestCase):
             matches=FakeMatches(),
         )
 
-    async def dialog(self, forge: FakeForge) -> tuple[ForgeSettingsWindow, MenuSection]:
-        dialog = ForgeSettingsWindow(self.root, cast(Any, forge), section=SECTION_MENU)
+    async def dialog(self, forge: FakeForge) -> tuple[SettingsDialog, MenuSection]:
+        dialog = forge_settings(self.root, forge, section=SECTION_MENU)
         part = dialog.parts[SECTION_MENU]
         assert isinstance(part, MenuSection)
         part.ask_save = self._ask_save
@@ -170,7 +170,7 @@ class MenuSettingsTests(ForgeAsyncTestCase):
 
     async def ready(
         self, settings: ForgeSettings | None = None
-    ) -> tuple[ForgeSettingsWindow, MenuSection, Any]:
+    ) -> tuple[SettingsDialog, MenuSection, Any]:
         parts = self.parts(settings)
         dialog, part = await self.dialog(FakeForge(parts))
         self.assertTrue(part.ready)
@@ -194,7 +194,6 @@ class MenuSettingsTests(ForgeAsyncTestCase):
     async def test_the_section_comes_last_in_the_mediaforge_group(self) -> None:
         dialog, _part, _parts = await self.ready()
         self.assertEqual(list(FORGE_SECTIONS)[-1], SECTION_MENU)
-        self.assertEqual(list(dialog._items)[-1], SECTION_MENU)
         self.assertEqual(dialog.section, SECTION_MENU)
         self.assertEqual(labels(dialog.page(SECTION_MENU))[0], "Right-click menu")
 

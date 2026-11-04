@@ -18,7 +18,7 @@ Bringing it over (`bring_over`), refused while the old MediaForge runs (its mute
    Forge's, later migrations run on the copy; a schema newer than this build is refused and
    said so plainly), its settings rewritten as `ForgeSettings` (the fields AirGrabber owns, the
    TMDB key among them, vanish; the trailer tools are downloaded fresh, D12:
-   `trailer_tools_ok` reset; `imported_from` set; the Forge window keeps its own place);
+   `trailer_tools_ok` reset; `imported_from` set; `window_geometry`, now unread, stays);
 3. forge.db written from it with SQLite's backup API while Forge runs (the Forge database's
    other connection sees the new rows at its next statement), under Forge's `run_lock` so no
    rename run writes meanwhile; then Forge's settings service is told (`settings.update` with
@@ -420,7 +420,7 @@ async def _prepare(copy: Path, current: ForgeSettings, label: str) -> _Prepared:
             update={
                 "trailer_tools_ok": False,  # D12: downloaded fresh on first use
                 "ytdlp_checked_at": 0.0,
-                "window_geometry": current.window_geometry,  # the Forge window keeps its place
+                "window_geometry": current.window_geometry,  # unread, as it was
                 "imported_from": label,
             }
         )

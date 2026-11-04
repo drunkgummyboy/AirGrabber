@@ -291,7 +291,7 @@ class EpisodeMarkTests(WidgetTestCase):
     async def test_a_marked_row_turning_plain_loses_its_line(self) -> None:
         row = self.row(mark="missing", marks_shown=True)
         await self.settle()
-        row.set_state(ENTRY, "downloadable", NOW, mark=None, marks_shown=True, grabbed=True)
+        row.set_state(ENTRY, "downloadable", NOW, mark=None, marks_shown=True)
         await self.settle()
         self.assertIsNone(row._stripe)
 

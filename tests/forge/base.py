@@ -9,7 +9,9 @@ Every test gets
   names); without that module it is a no-op. A name listed here but missing from the module
   fails the test, so a rename can't leave the menu unguarded;
 - the owner's old MediaForge hidden (`guard_old_install`: no "Installed apps" entry, an empty
-  %APPDATA%, not running), so the import (app/forge/migration.py) never finds the real one.
+  %APPDATA%, not running), so the import (app/forge/migration.py) never finds the real one;
+- a guard on the real Explorer (`guard_explorer`): the one function that starts it refuses, so a
+  forgotten test fails instead of opening a window. Tests patch that seam with a fake.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from unittest import mock
 from app.config import DATA_DIR_ENV
 
 CONTEXT_MENU_MODULE = "app.forge.context_menu"
+EXPLORER_MODULE = "app.forge.ui.file_browser"
 # The real registry's lowest level (app/forge/context_menu.py's WindowsRegistry goes through
 # these): every path to the real menu passes here, while a test's fake registry never does.
 REFUSED_WRITES: tuple[str, ...] = ("_write_key", "_delete_tree")  # these raise in tests
@@ -39,6 +42,10 @@ class RealContextMenuWrite(AssertionError):
 
 def _refuse(*_args: object, **_kwargs: object) -> NoReturn:
     raise RealContextMenuWrite("tests must never change the real right-click menu: use a fake")
+
+
+def _refuse_explorer(*_args: object, **_kwargs: object) -> NoReturn:
+    raise AssertionError("tests must never start the real Explorer: fake file_browser._start")
 
 
 def _not_installed(*_args: object, **_kwargs: object) -> None:
@@ -64,6 +71,7 @@ class _ForgeIsolation:
         case.enterContext(mock.patch.dict(os.environ, {DATA_DIR_ENV: str(self.data_dir)}))
         guard_context_menu(case)
         guard_old_install(case, self.tmp / "no-appdata")
+        guard_explorer(case)
 
 
 def _temporary_folder(case: unittest.TestCase, prefix: str) -> Path:
@@ -82,6 +90,12 @@ def guard_context_menu(case: unittest.TestCase) -> None:
         case.enterContext(mock.patch.object(module, name, _refuse))
     for name in NOT_INSTALLED:
         case.enterContext(mock.patch.object(module, name, _not_installed))
+
+
+def guard_explorer(case: unittest.TestCase) -> None:
+    """Refuse to start the real Explorer for the rest of `case` (app/forge/ui/file_browser.py)."""
+    module = importlib.import_module(EXPLORER_MODULE)
+    case.enterContext(mock.patch.object(module, "_start", _refuse_explorer))
 
 
 MIGRATION_MODULE = "app.forge.migration"

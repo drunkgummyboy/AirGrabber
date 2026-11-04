@@ -3,28 +3,30 @@ its pure part, the rows, is app/forge/ui/queue_rows.py). The owner's design:
 mockups/forge-chosen.html, except its card's Shows | Films switch: since 3.0.1 every band has its
 own preset (the owner's decision of 2026-11-02), set on the card or with the band's chip.
 
-At the top a toolbar: "+ Files", "+ Folder ▾" (its menu: choose a folder, "Scan subfolders"),
-then "Clear queue", Preview and the big Forge button, which becomes the run's progress bar with
-Cancel next to it while a run goes. Under it the preset card, for the band selected in the list
+The page (app/forge/ui/page.py) puts "+ Files" and "+ Folder ▾" (its menu: choose a folder, "Scan
+subfolders") on the main window's tabs row (`tools_master`; without one they make a row of the
+view's own at its top). The view's top is the preset card, for the band selected in the list
 (every band has its own preset; with nothing selected the first band is, with an empty queue
 the card shows the films' default "For: new files"): "For: {name}" (a show with its episode
 count, a film with its year) and "Use for all ▾" (its menu copies the band's choice to all films,
 all shows, or everything in the queue, each entry only where the choice fits; hidden with one
 band); the preset menu (the presets that fit the band's kind), "✎ Custom" (a one-off naming rule
-for this item, not saved) and "Save as preset…"; the naming rule with its codes in copper and an
+for this item, not saved) and "Save as preset…"; the naming rule with its codes in the link colour and an
 example name; one line of option buttons (Extras: Poster, Season posters for shows, Trailer;
 Tidy up: Clean junk, Empty folders), and "Changed for this item · Save to preset" at its end while
 the options or the rule differ from the preset.
 
-Then one list of shows and films (`queue_rows`), filtered by All / Needs you / Ready with their
-counts: a band per show with its episodes under it, a band per film; each band's status as a dot
+Then a row with the filter All / Needs you / Ready with their counts at its left and "Clear queue",
+Preview and the big Forge button at its right (which becomes the run's progress bar with Cancel
+next to it while a run goes), and one list of shows and films (`queue_rows`), filtered by that:
+a band per show with its episodes under it, a band per film; each band's status as a dot
 and a word with its preset chip under it (always shown on a band not done; a click opens the
 presets that fit and sets that band's), its buttons (Ignore, Choose…, Rename, a done band's Undo)
 only under the pointer, except on a band that needs the owner. A click on a band selects it.
 "Choose…" opens the match picker. "Ignore" opens a small menu: "Ignore this file" (its files)
 and, when they sit in a subfolder of a watched folder, "Ignore this whole folder" (the download's
 own folder right under the watched one, `core.ignored.top_folder`); Auto-rename leaves them
-alone from then on (`services.ignored`, listed in Settings › Library & watching) and their rows
+alone from then on (`services.ignored`, listed in Settings › Auto-rename) and their rows
 leave the queue. Forge renames everything not
 waiting for the owner in one go: dropped files where they are, each band with its own preset (or
 its Custom rule) in one run, and watched downloads into their library folder with their band's
@@ -38,8 +40,9 @@ by name, else its default. Choosing a preset for a band remembers it as its kind
 right-click request's preset (`add_paths(paths, preset=)`) names the files it added;
 `select_preset(name)` alone names every band not done that it fits. Forge runs one at a time
 with the renamer (`services.run_lock`); closing the window while a run goes (`request_close`)
-stops it after its current file. Keys: Enter = Preview, Ctrl+Enter = Forge, Ctrl+Z = undo the
-last run, Up / Down = the selection; ignored while typing in a text field.
+stops it after its current file. Keys, bound on the main window: Enter = Preview, Ctrl+Enter =
+Forge, Ctrl+Z = undo the last run, Up / Down = the selection; only while the queue shows (nothing
+on AirGrabber's other pages or on History), never while typing in a text field (`shortcut`).
 
 With 1,000 files whose lookups land for a minute it stays smooth (F-33): a burst of queue events
 brings one refresh at a pace set by the last one's cost, a refresh is built in one turn of the
@@ -47,8 +50,9 @@ window and shown in the next, and widgets are configured only when what they sho
 
 It talks only to `ForgeServices`' services, starts coroutines through `app.ui.tasks.spawn` (and
 cancels them on destroy), reports what it did to the Activity panel (`services.activity`, in the
-interface language; the log stays English and names no paths) and paints in the Forge look.
-Build it while the event loop runs (the Forge window is opened from it): it loads the presets at
+interface language; the log stays English and names no paths) and, as Activity is a click further
+away, to `on_message` (the main window's status bar), and paints in the Forge look.
+Build it while the event loop runs (the page is opened from it): it loads the presets at
 once and takes Explorer drops on itself (app/forge/ui/file_drops.py).
 """
 
@@ -72,6 +76,7 @@ from typing import TYPE_CHECKING, Any, Concatenate
 import customtkinter as ctk
 
 from app.forge.clients.trailers import ToolInstallError
+from app.forge.core import fsops
 from app.forge.core.airgrabber_folders import watched_folders
 from app.forge.core.auto import NamingChoice, library_naming
 from app.forge.core.executor import ProgressEvent, RunResult
@@ -79,16 +84,18 @@ from app.forge.core.formatter import render
 from app.forge.core.ignored import top_folder
 from app.forge.core.library import inside
 from app.forge.core.parser import VIDEO_EXTENSIONS
-from app.forge.core.planner import PlanPart, build_mixed_plan, describe
+from app.forge.core.planner import PlanPart, build_mixed_plan, describe, identity_of
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import TypeHint
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.ui.file_drops import attach_file_drops
-from app.forge.ui.images import BandImages, Key
-from app.forge.ui.look import Pair, forge_look
+from app.forge.ui.file_browser import explorer_target, open_explorer
+from app.forge.ui.images import BandImages, CardShape, Key
+from app.forge.ui.look import Pair, app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.queue_rows import (
+    EXPLORER_ACTION,
     FINISHED,
     NEEDS_OWNER,
     Kind,
@@ -98,6 +105,7 @@ from app.forge.ui.queue_rows import (
     empty_texts,
     item_kind,
 )
+from app.forge.ui.subtitle_control import CC_ACTION, CcLook, SubtitleDesk, VideoTarget
 from app.forge.ui.widgets.chips import ForgeProgress, OptionButton, fit_text
 from app.forge.ui.widgets.dialogs import ask_choice, ask_text
 from app.forge.ui.widgets.virtual_list import MONO_FAMILY, Row, Sizes, VirtualList, faded_fill
@@ -119,7 +127,9 @@ OPTION_LABELS: dict[str, str] = {
     "trailer": N_("Trailer"),
     "clean_junk": N_("Clean junk"),
     "prune_empty": N_("Remove empty folders"),
+    "subtitles": N_("Subtitles"),
 }
+SUBTITLES_OPTION = "subtitles"  # shown only while this version has a key
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +160,12 @@ OPTION_GROUPS: tuple[tuple[str, tuple[OptionButtonSpec, ...]], ...] = (
             ),
             OptionButtonSpec(
                 N_("Trailer"), N_("Downloads the trailer next to the files"), "trailer", "trailer"
+            ),
+            OptionButtonSpec(
+                N_("Subtitles"),
+                N_("Gets a subtitle per chosen language right after the rename, named to match"),
+                SUBTITLES_OPTION,
+                SUBTITLES_OPTION,
             ),
         ),
     ),
@@ -208,11 +224,13 @@ QUEUE_SIZES = Sizes(
     band_gap=10,
     band_gap_below=False,
     band_radius=10,
-    band_edge=0,  # no coloured edge: the status dot and word say it
     band_inset=16,
     poster=(58, 86),
+    cards=True,
 )
 BAND_HEIGHT = 10 + 86 + 2 * 12  # the gap above, the poster and the band's padding
+PAD_X = 0  # the card and the filters' row in the page, which has AirGrabber's margin
+LIST_PAD = (0, 0)  # the list: its cards line up with the preset card
 LINE_HEIGHT = 40
 # The card's colours: (light, dark) pairs from the Forge look's tokens.
 _CODE = re.compile(r"\{[^{}]*\}")
@@ -224,6 +242,10 @@ _PROGRESS_STATUS = {
     "skipped": ItemStatus.SKIPPED,
 }
 _REFRESH_EVENT_MS = 80  # a burst of queue events becomes one refresh
+_CARD_BAKERS = 3  # card pictures fetched and baked at the same time, the latest asked first
+FILE_GONE = N_("That file isn't there any more.")
+# Preview's lines are in Activity: the status bar says where.
+PREVIEW_READY = N_("Preview is in History › Activity. Nothing has been changed.")
 # ... and while events keep coming (1,000 lookups landing for a minute), refreshes take at most
 # this share of the window's time: the next one waits for the last one's cost / share (F-33).
 _REFRESH_SHARE = 0.25
@@ -320,6 +342,7 @@ def _merge(a: RunResult, b: RunResult) -> RunResult:
         failed=a.failed + b.failed,
         posters=a.posters + b.posters,
         trailers=a.trailers + b.trailers,
+        subtitles_fetched=a.subtitles_fetched + b.subtitles_fetched,
         cleaned=a.cleaned + b.cleaned,
         pruned=a.pruned + b.pruned,
         cancelled=a.cancelled or b.cancelled,
@@ -362,6 +385,8 @@ def summary_text(result: RunResult) -> str:
         extras.append(tn("{n} poster", "{n} posters", result.posters))
     if result.trailers:
         extras.append(tn("{n} trailer", "{n} trailers", result.trailers))
+    if result.subtitles_fetched:
+        extras.append(tn("{n} subtitle", "{n} subtitles", result.subtitles_fetched))
     if extras:
         text += " · " + ", ".join(extras)
     if result.cancelled:
@@ -388,14 +413,27 @@ def display_name(item: QueueItem) -> str:
 
 
 class QueueView(ctk.CTkFrame):
-    """The Queue page of the Forge window."""
+    """The queue on MediaForge's page. `tools_master`: where "+ Files" and "+ Folder" go (its
+    owner places `toolbar` there and destroys it); without it a row at the view's top."""
 
     def __init__(
-        self, master: Any, services: ForgeServices, *, look: theme.Look | None = None
+        self,
+        master: Any,
+        services: ForgeServices,
+        *,
+        look: theme.Look | None = None,
+        tools_master: Any = None,
     ) -> None:
-        self.look: theme.Look = forge_look() if look is None else look
+        self.look: theme.Look = app_look() if look is None else look
         super().__init__(master, fg_color=self.look.BG, corner_radius=0)
         self.services = services
+        # CC ▾ on the done bands: its requests' states stay through the list's rebuilds.
+        self.subtitle_desk = SubtitleDesk(
+            services.subtitles,
+            spawn=self.spawn,
+            after=self.after,
+            on_change=self._cc_changed,
+        )
         self.presets: list[Preset] = []
         self._choices: dict[int, Choice] = {}  # item id → its band's Choice (shared in a band)
         self._new_choice = Choice()  # the card with an empty queue: the films' default
@@ -404,11 +442,15 @@ class QueueView(ctk.CTkFrame):
         self.loaded = False  # the presets have been read
         self.running = False  # a Forge run is going (its progress and Cancel show)
         self.busy = False  # set by @_one_at_a_time while Preview, Forge or Undo is going
-        self.on_counts: Callable[[int], None] = lambda needs: None  # the window's badge
+        self.on_counts: Callable[[int], None] = lambda needs: None  # the switch's badge
+        self.on_message: Callable[[str], None] = lambda text: None  # the status bar
         self._bands: dict[int, list[int]] = {}  # band key → its items
         self._targets: dict[int, Path] = {}
         self._targets_in_run: dict[int, Path] = {}
         self._loading: set[Key] = set()  # band pictures being fetched right now
+        # Card pictures waiting to be baked: their path and how to bake them, the latest last.
+        self._bakes: dict[Key, tuple[str, Callable[[], Awaitable[Any]]]] = {}
+        self._bakers = 0  # tasks baking them now
         self._close_after_run: Callable[[], None] | None = None
         # Right-click presets asked before the presets were read: (name, the files it added).
         self._requests: list[tuple[str, list[int] | None]] = []
@@ -431,11 +473,11 @@ class QueueView(ctk.CTkFrame):
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
-        self._build_toolbar()
+        self._build_toolbar(tools_master)
         self._build_card()
         self._build_filters()
         self._build_list()
-        self.images = BandImages(services.images, self.list, ground=self.look.SURFACE)
+        self.images = BandImages(services.images, self.list)
         theme.on_mode_change(self, self._repaint)
 
         self._unsubscribe = services.queue_events.subscribe(self._on_queue_event)
@@ -455,7 +497,7 @@ class QueueView(ctk.CTkFrame):
         edge: Pair | None = None,
         fill: Pair | None = None,
     ) -> ctk.CTkButton:
-        """A toolbar or card button: a quiet surface, a thin edge (copper for the add buttons)."""
+        """A toolbar or card button: a quiet surface, a thin edge (the accent for the add buttons)."""
         look = self.look
         return ctk.CTkButton(
             master,
@@ -473,10 +515,12 @@ class QueueView(ctk.CTkFrame):
             command=command,
         )
 
-    def _build_toolbar(self) -> None:
+    def _build_toolbar(self, master: Any) -> None:
+        """+ Files and + Folder, in `master` (the page's tabs row) or in a row of their own."""
         look = self.look
-        bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=0, column=0, sticky="ew", padx=22, pady=(14, 0))
+        bar = ctk.CTkFrame(self if master is None else master, fg_color="transparent")
+        if master is None:
+            bar.grid(row=0, column=0, sticky="ew", padx=PAD_X, pady=(14, 0))
         self.toolbar = bar
         self.files_button = self._tool_button(
             bar, t("+ Files"), self._browse_files, edge=look.ACCENT
@@ -486,7 +530,11 @@ class QueueView(ctk.CTkFrame):
             bar, t("+ Folder") + " ▾", self._folder_menu, edge=look.ACCENT
         )
         self.folder_button.pack(side="left", padx=(10, 0))
-        self.actions = ctk.CTkFrame(bar, fg_color="transparent")
+
+    def _build_actions(self, row: Any) -> None:
+        """Clear queue, Preview and Forge at the right end of the filters' row."""
+        look = self.look
+        self.actions = ctk.CTkFrame(row, fg_color="transparent")
         self.actions.pack(side="right")
         self.forge_button = ctk.CTkButton(
             self.actions,
@@ -510,8 +558,8 @@ class QueueView(ctk.CTkFrame):
         self._show_actions(running=False)
 
     def _show_actions(self, *, running: bool, installing: bool = False) -> None:
-        """The toolbar's right end: Clear queue, Preview and Forge; or the progress bar and Cancel
-        (a run), or only the bar (the trailer tools coming in)."""
+        """The filters' row's right end: Clear queue, Preview and Forge; or the progress bar and
+        Cancel (a run), or only the bar (the trailer tools coming in)."""
         for widget in (
             self.clear_button,
             self.preview_button,
@@ -536,7 +584,7 @@ class QueueView(ctk.CTkFrame):
         card = ctk.CTkFrame(
             self, fg_color=ground, corner_radius=12, border_width=1, border_color=edge
         )
-        card.grid(row=1, column=0, sticky="ew", padx=22, pady=(14, 4))
+        card.grid(row=1, column=0, sticky="ew", padx=PAD_X, pady=(4, 0))
         card.grid_columnconfigure(0, weight=1)
         self.card = card
 
@@ -654,6 +702,8 @@ class QueueView(ctk.CTkFrame):
                 fg_color=ground,
             ).pack(side="left", padx=(0, 10))
             for spec in specs:
+                if spec.series == SUBTITLES_OPTION and not self.services.subtitles.available:
+                    continue
                 button = OptionButton(
                     group,
                     t(spec.name),
@@ -690,7 +740,8 @@ class QueueView(ctk.CTkFrame):
     def _build_filters(self) -> None:
         look = self.look
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.grid(row=2, column=0, sticky="ew", padx=22, pady=(10, 0))
+        row.grid(row=2, column=0, sticky="ew", padx=PAD_X, pady=(10, 0))
+        self._build_actions(row)
         self.filter_buttons: dict[Show, ctk.CTkButton] = {}
         for show, _label in FILTERS:
             button = ctk.CTkButton(
@@ -711,7 +762,7 @@ class QueueView(ctk.CTkFrame):
     def _build_list(self) -> None:
         look = self.look
         holder = ctk.CTkFrame(self, fg_color="transparent")
-        holder.grid(row=3, column=0, sticky="nsew", padx=(16, 4), pady=(4, 8))
+        holder.grid(row=3, column=0, sticky="nsew", padx=LIST_PAD, pady=(4, 0))
         self.list = VirtualList(
             holder,
             row_height=LINE_HEIGHT,
@@ -726,6 +777,7 @@ class QueueView(ctk.CTkFrame):
         self.list.on_remove = self._remove
         self.list.on_action = self._on_band_action
         self.list.images = self._images_for
+        self.list.card_picture = self._card_picture
         self.empty_state = ctk.CTkFrame(holder, fg_color="transparent")
         ctk.CTkLabel(
             self.empty_state, text="⤓", font=theme.font(40), text_color=theme.TEXT_MUTED
@@ -771,8 +823,13 @@ class QueueView(ctk.CTkFrame):
         task.add_done_callback(self._tasks.discard)
         return task
 
-    def _say(self, text: str, *, level: int = logging.INFO, success: bool = False) -> None:
+    def _say(
+        self, text: str, *, level: int = logging.INFO, success: bool = False, status: bool = True
+    ) -> None:
+        """Say it in Activity and, unless `status` is False, in the status bar."""
         self.services.activity.say(text, level=level, success=success)
+        if status:
+            self.on_message(text)
 
     async def _ask(self, title: str, message: str, choices: Sequence[str]) -> str | None:
         return await ask_choice(self, title, message, choices, look=self.look)
@@ -1147,7 +1204,7 @@ class QueueView(ctk.CTkFrame):
             fg_color=look.SELECTED if custom else self._card_ground,
             border_color=look.ACCENT if custom else look.CHIP_HOVER,
         )
-        if (int(self.rule_box.cget("border_width")) > 0) != custom:  # typed in: a copper edge
+        if (int(self.rule_box.cget("border_width")) > 0) != custom:  # typed in: an accent edge
             self.rule_box.configure(border_width=1 if custom else 0, border_color=look.ACCENT)
         for name, button in self.option_buttons.items():
             key = getattr(self._option_specs[name], kind)
@@ -1241,7 +1298,7 @@ class QueueView(ctk.CTkFrame):
         self.rule_text._textbox.tag_config("code", foreground=theme.pick(self.look.BRAND))
 
     def _set_rule(self, rule: str, *, editable: bool) -> None:
-        """Show `rule` in its box, its codes in copper; typed in only in Custom mode."""
+        """Show `rule` in its box, its codes coloured; typed in only in Custom mode."""
         box = self.rule_text
         inner = box._textbox
         if box.get("1.0", "end-1c") != rule:
@@ -1455,6 +1512,7 @@ class QueueView(ctk.CTkFrame):
             trial=settings.automatic == "trial",
             today=date.today(),
             chip=self.chip_text,
+            cc=self._cc_look,
         )
 
     def _show(self, built: QueueRows, started: float) -> None:
@@ -1485,7 +1543,7 @@ class QueueView(ctk.CTkFrame):
             _set_text(self.forge_button, forge_label(len(self._pending(None))))
         self._update_example()
         told = (self.on_counts, built.needs)
-        if told != self._told:  # a new listener (the window, wired after building) hears it
+        if told != self._told:  # a new listener (the page, wired after building) hears it
             self._told = told
             self.on_counts(built.needs)
         self._refreshed_at = time.monotonic()
@@ -1546,33 +1604,62 @@ class QueueView(ctk.CTkFrame):
 
     # --- bands -----------------------------------------------------------------------------
 
-    def _images_for(self, row: Row, width: int, height: int) -> tuple[Any, Any]:
-        """A band's poster and backdrop when loaded; otherwise start loading them (again, if the
-        cache let them go; never again once TMDB had none). `width` × `height` is the backdrop
-        strip in pixels (the list's `backdrop_size`); the pictures are asked in CTk units. A done
-        band gets its poster faded and no backdrop."""
+    def _images_for(self, row: Row) -> Any:
+        """A band's poster when loaded; otherwise start loading it (again, if the cache let it go;
+        never again once TMDB had none). It is asked in CTk units. A done band gets its poster
+        faded. The backdrop is behind the whole card (`_card_picture`)."""
         scale = self.list.scale or 1.0
         pw, ph = (max(1, round(px / scale)) for px in self.list.poster_size)
-        bw, bh = (max(1, round(px / scale)) for px in (width, height))
         images = self.images
         faded = faded_fill(self.look) if row.faded else None
         poster = images.cached_poster(row.art, pw, ph, faded=faded) if row.art else None
-        wants_backdrop = bool(row.backdrop) and not row.faded
-        backdrop = images.cached_backdrop(row.backdrop, bw, bh) if wants_backdrop else None
         wanted: list[tuple[Key, Callable[[], Awaitable[Any]]]] = []
         if row.art and poster is None:
             key = images.poster_key(row.art, pw, ph, faded=faded)
             if self._should_load(key):
                 load = functools.partial(images.poster, row.art, pw, ph, faded=faded)
                 wanted.append((key, load))
-        if wants_backdrop and backdrop is None:
-            key = images.backdrop_key(row.backdrop, bw, bh)
-            if self._should_load(key):
-                wanted.append((key, functools.partial(images.backdrop, row.backdrop, bw, bh)))
         if wanted:
             self._loading.update(key for key, _ in wanted)
             self.spawn(self._load_images(wanted))
-        return poster, backdrop
+        return poster
+
+    def _card_picture(self, row: Row, shape: CardShape, fill: str) -> Any:
+        """A card's picture when baked; otherwise it goes on the list of those to bake (again, if
+        the cache let it go; never again once TMDB had none)."""
+        path, images = row.backdrop, self.images
+        if not path:
+            return None
+        picture = images.cached_card(path, shape, fill, done=row.faded)
+        if picture is None:
+            key = images.card_key(path, shape, fill, done=row.faded)
+            if self._should_load(key):
+                self._loading.add(key)
+                bake = functools.partial(images.card, path, shape, fill, done=row.faded)
+                self._bakes[key] = (path, bake)
+                while self._bakers < _CARD_BAKERS and self._bakers < len(self._bakes):
+                    self._bakers += 1
+                    self.spawn(self._bake_cards())
+        return picture
+
+    async def _bake_cards(self) -> None:
+        """Bake what's waiting, the latest asked first; a card scrolled out of sight meanwhile is
+        left out (it is asked again when it shows), so a fast scroll past hundreds of cards doesn't
+        bake them all."""
+        try:
+            while self._bakes:
+                key = next(reversed(self._bakes))
+                path, bake = self._bakes.pop(key)
+                try:
+                    if not any(r.backdrop == path for r in self.list.cards_in_view()):
+                        continue
+                    picture = await bake()
+                finally:
+                    self._loading.discard(key)
+                if picture is not None and self.winfo_exists():
+                    self.list.refresh_images()
+        finally:
+            self._bakers -= 1
 
     def _should_load(self, key: Key) -> bool:
         return key not in self._loading and not self.images.known_missing(key)
@@ -1593,16 +1680,72 @@ class QueueView(ctk.CTkFrame):
             self.spawn(self.forge(only=ids))
         elif action == "undo":
             self.spawn(self.undo_band(ids))
+        elif action == CC_ACTION:
+            self.cc_menu(ids, key)
         elif action == "ignore":
             self.ignore_menu(ids, key)
         elif action == "preset":
             self._chip_menu(key, ids)
+        elif action == EXPLORER_ACTION:
+            self.spawn(self.open_in_explorer(ids))
         elif action == "choose":
             for item_id in ids:
                 item = self.services.queue.get(item_id)
                 if item is not None and item.status is ItemStatus.NEEDS_CHOICE:
                     self._change_match(item)
                     return
+
+    async def open_in_explorer(self, ids: Sequence[int]) -> None:
+        """A band's 📂: where its files are now (`item.path` follows a rename). The check goes
+        through a thread: a NAS can hang."""
+        queue = self.services.queue
+        paths = [item.path for item in (queue.get(item_id) for item_id in ids) if item is not None]
+        if not paths:
+            return
+        target, select = explorer_target(paths)
+        there = await asyncio.to_thread(fsops.exists, target)
+        if not self.winfo_exists():
+            return
+        if there:
+            open_explorer(target, select=select)
+            log.info("Opened Explorer for a band of %d file(s)", len(paths))
+        else:
+            self._say(t(FILE_GONE), level=logging.WARNING)
+
+    # --- subtitles by hand (CC ▾) --------------------------------------------------------------
+
+    def _cc_look(self, group: Sequence[QueueItem]) -> CcLook | None:
+        """How a done band's CC ▾ shows (`build_queue_rows`)."""
+        return self.subtitle_desk.look(band_identity(group[0]))
+
+    def cc_items(self, ids: Sequence[int]) -> list[tuple[str, Callable[[], None]]]:
+        """The CC menu of a done band's files."""
+        queue = self.services.queue
+        items = [item for item in (queue.get(item_id) for item_id in ids) if item is not None]
+        if not items:
+            return []
+
+        async def targets() -> list[VideoTarget]:
+            return [
+                VideoTarget(item.path, identity_of(item.media), item.run_id)
+                for item in items
+                if queue.get(item.id) is item
+            ]
+
+        return self.subtitle_desk.menu(band_identity(items[0]), targets)
+
+    def cc_menu(self, ids: Sequence[int], key: int) -> None:
+        """A done band's CC ▾: its menu under the button."""
+        items = self.cc_items(ids)
+        box = self.list.action_box(key, CC_ACTION)
+        if box is None:
+            popup_menu(self, items, point=self.winfo_pointerxy(), look=self.look)
+        else:
+            popup_menu(self, items, under=self.list.screen_box(box), look=self.look, align="left")
+
+    def _cc_changed(self) -> None:
+        if self.winfo_exists():
+            self._schedule_refresh(0)
 
     # --- ignoring ----------------------------------------------------------------------------
 
@@ -1688,9 +1831,10 @@ class QueueView(ctk.CTkFrame):
     # --- actions ---------------------------------------------------------------------------
 
     def shortcut(self, action: str) -> bool:
-        """Run a keyboard shortcut unless the queue isn't shown or the user is typing in a text
-        field. True when it was taken."""
-        if not self.winfo_ismapped():
+        """Run a keyboard shortcut unless the queue isn't on screen (another page of the main
+        window, History, a hidden window) or the user is typing in a text field. True when it was
+        taken."""
+        if not self.winfo_viewable():
             return False
         focused = self.focus_get()
         if focused is not None and focused.winfo_class() in _TYPING_CLASSES:
@@ -1958,9 +2102,10 @@ class QueueView(ctk.CTkFrame):
         parts = self._plan_parts(items)
         plan = await asyncio.to_thread(build_mixed_plan, parts)
         log.info("Preview of %d file(s); nothing changed", len(plan.files))
-        self._say(t("Preview (nothing has been changed):"))
+        self._say(t("Preview (nothing has been changed):"), status=False)
         for line in describe(plan):
-            self._say(line)
+            self._say(line, status=False)
+        self.on_message(t(PREVIEW_READY))
 
     def _pending(self, only: Sequence[int] | None) -> list[QueueItem]:
         """What Forge renames: a band's files, or (Forge for all) everything except downloads
@@ -2004,6 +2149,8 @@ class QueueView(ctk.CTkFrame):
                 async with self.services.run_lock:  # never alongside an automatic run
                     result = _merge(result, await self._forge_dropped(dropped, trailers))
         finally:
+            if self.services.settings.current.remove_after_forge:
+                self.services.queue.forget_finished()
             self._set_running(False)
             close, self._close_after_run = self._close_after_run, None
             if close is not None:
@@ -2097,8 +2244,8 @@ class QueueView(ctk.CTkFrame):
                 "This puts back {files} and removes {created} from that run.",
                 files=tn("{n} renamed file", "{n} renamed files", run.file_count),
                 created=tn(
-                    "{n} downloaded poster or trailer",
-                    "{n} downloaded posters or trailers",
+                    "{n} downloaded poster, trailer or subtitle",
+                    "{n} downloaded posters, trailers or subtitles",
                     run.created_count,
                 ),
             ),

@@ -27,6 +27,7 @@ from typing import Literal
 from app.forge.core.formatter import render
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MediaKind
+from app.forge.ui.subtitle_control import CC_ACTION, CC_LABEL, CcLook
 from app.forge.ui.widgets.virtual_list import Row
 from app.i18n import N_, number, t, tn
 
@@ -47,6 +48,9 @@ WOULD_RENAME = N_("Would rename")
 DONE = N_("Renamed")
 DONE_TODAY = N_("Done today")
 IGNORE = N_("Ignore")  # a band's menu: Auto-rename leaves the file (or its folder) alone
+EXPLORER_ACTION = "explorer"  # every band's first button, a glyph with this tip
+EXPLORER_LABEL = "📂"
+OPEN_IN_EXPLORER = N_("Open in Explorer")
 STATE_WORDS: dict[State, str] = {
     "needs": NEEDS_YOU,
     "ready": READY,
@@ -232,6 +236,7 @@ def build_queue_rows(
     trial: bool = False,
     today: date | None = None,
     chip: Callable[[QueueItem], str] | None = None,
+    cc: Callable[[Sequence[QueueItem]], CcLook | None] | None = None,
 ) -> QueueRows:
     """The queue's rows for the filter `show`, with every filter's count.
 
@@ -239,7 +244,7 @@ def build_queue_rows(
     it is renamed where it is. `naming` gives a watched download its library folder and naming
     rule. `trial`: renaming on its own is a trial, so watched downloads only "would" be renamed.
     Only today's finished files are shown when `today` is set. `chip`: a band's preset chip
-    (from its first file; none on a done band).
+    (from its first file; none on a done band). `cc`: how a done band's CC ▾ shows (None: not).
     """
     out = QueueRows()
     rendered = {}
@@ -304,18 +309,26 @@ def build_queue_rows(
         unsure = any(i.status is ItemStatus.NEEDS_CHOICE for i in group)
         band_key = -next(keys)
         out.bands[band_key] = [i.id for i in group]
+        greyed: tuple[tuple[str, str], ...] = ()
         if state == "done":
             times = [i.finished_at for i in group if i.finished_at]
             note = time.strftime("%H:%M", time.localtime(max(times))) if times else ""
             actions: tuple[tuple[str, str], ...] = (("undo", t("Undo")),)
+            look = cc(group) if cc is not None else None
+            if look is not None:
+                actions = ((CC_ACTION, CC_LABEL), *actions)
+                note = look.note or note
+                greyed = ((CC_ACTION, look.tip),) if look.greyed else ()
         else:
             note = ""
-            # Ignore (a menu: this file / this whole folder) first, the main button last.
+            # Ignore (a menu: this file / this whole folder) first, the main button last; 📂 goes
+            # before them all, below.
             actions = (
                 (("ignore", t(IGNORE)), ("choose", t("Choose…")), ("rename", t("Rename")))
                 if unsure
                 else (("ignore", t(IGNORE)), ("rename", t("Rename")))
             )
+        actions = ((EXPLORER_ACTION, EXPLORER_LABEL), *actions)
         dest = "" if state == "needs" else "→ " + _shared_folder([folders(i) for i in group])
         out.rows.append(
             Row(
@@ -328,6 +341,8 @@ def build_queue_rows(
                 art=first.poster_path,
                 backdrop=first.backdrop_path,
                 actions=actions,
+                greyed=greyed,
+                tips=((EXPLORER_ACTION, t(OPEN_IN_EXPLORER)),),
                 note=note,
                 chip=chip(group[0]) if chip is not None and state != "done" else "",
                 state=state,

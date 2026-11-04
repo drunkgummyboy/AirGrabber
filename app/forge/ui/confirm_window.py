@@ -3,11 +3,11 @@ files?", every file's new name over its old one, nothing changes until Rename.
 
 A row per file with a tick box (grouped by destination folder, `queue_rows.build_rows`); files
 TMDB isn't sure about say so and "Change match…" opens the match picker for the chosen row; the
-preset can be switched; "Open in MediaForge" hands the files to the Forge window instead; Cancel;
+preset can be switched; "Open in MediaForge" hands the files to MediaForge's page instead; Cancel;
 "Rename N files"; then the result with Undo and Close.
 
 Built on AirGrabber's dialog kit in the Forge look: no title bar (app/ui/borderless.py, the
-title as a heading), resizable by its edges, copper buttons. The list is a VirtualList, so
+title as a heading), resizable by its edges, accent buttons. The list is a VirtualList, so
 hundreds of files stay quick. Never `transient` and never grabbing: it must show on its own
 while AirGrabber's window is in the tray (then it opens on the screen under the mouse pointer),
 and several can be open at once (one per preset). The window has its own Queue, apart from the
@@ -30,13 +30,13 @@ from app.forge.core.queue import ItemStatus, Queue, QueueEvent, QueueItem
 from app.forge.models.history import RunSource
 from app.forge.models.preset import Preset
 from app.forge.ui.queue_rows import build_rows
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.widgets.virtual_list import VirtualList
 from app.i18n import t, tn
 from app.ui import theme
 from app.ui.borderless import clearance, make_borderless
-from app.ui.branding import set_window_icon
+from app.ui.branding import set_own_icon
 from app.ui.dialog_kit import (
     BUTTON_HEIGHT,
     BUTTON_RADIUS,
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+ICON_FILE = Path(__file__).resolve().parents[2] / "assets" / "forge" / "MediaForge.ico"
 WIDTH, HEIGHT = 860, 600  # CTk units
 MIN_WIDTH, MIN_HEIGHT = 700, 380
 _PAD_X = 25  # as Forge's other dialogs
@@ -80,7 +81,7 @@ class ConfirmWindow(ctk.CTkToplevel):
         *,
         look: theme.Look | None = None,
     ) -> None:
-        self._look: theme.Look = forge_look() if look is None else look
+        self._look: theme.Look = app_look() if look is None else look
         p = self._look
         super().__init__(master, fg_color=p.BG)
         self.services = services
@@ -99,7 +100,7 @@ class ConfirmWindow(ctk.CTkToplevel):
         self.queue = Queue(services.resolver, self._on_event)
 
         self.title(t("MediaForge · Confirm rename"))
-        set_window_icon(self)
+        set_own_icon(self, ICON_FILE)  # MediaForge's, in the taskbar and Alt+Tab
         self.minsize(MIN_WIDTH, MIN_HEIGHT)
         self.protocol("WM_DELETE_WINDOW", self.cancel)
         self.bind("<Escape>", lambda _event: self.cancel())

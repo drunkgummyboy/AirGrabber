@@ -1,4 +1,12 @@
-"""Put things back: any run, or any chosen operations, in any order, with safety checks."""
+"""Put things back: any run, or any chosen operations, in any order, with safety checks.
+
+Subtitles never stay behind their video. Undoing a video's rename also undoes the subtitle lines
+of its run, also when only the video was chosen (History's ticks, a queue band's Undo): a subtitle
+Forge fetched (a created file, also one CC ▾ fetched later: journaled in the video's run) is
+removed, one moved along goes back. What is still beside the video after that (a subtitle the
+owner changed since, or put there) goes back with it under the old name; when that name is taken
+it stays where it is, as it is the owner's.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +19,8 @@ from pydantic import BaseModel
 
 from app.forge.core import fsops
 from app.forge.core.activity import ActivityFeed, say_to
+from app.forge.core.parser import is_video
+from app.forge.core.planner import subtitle_moves, subtitle_of
 from app.forge.db.history import HistoryRepo
 from app.forge.models.history import Operation, OpKind, OpState, UndoState
 from app.i18n import N_, t
@@ -47,6 +57,16 @@ def _order(ops: Sequence[Operation]) -> list[Operation]:
     return others + dirs
 
 
+def _subtitles_back(video: Path, old: Path) -> None:
+    """The subtitles still beside a video just put back from `video` to `old` go with it. One
+    that can't stays; the undo stands."""
+    for src, dst in subtitle_moves(video, old, fsops.list_names(video.parent)):
+        try:
+            fsops.move_file(src, dst)
+        except OSError as exc:
+            log.warning("Subtitle not put back: %s (%s)", src.name, exc.strerror or type(exc).__name__)
+
+
 def _reverse(op: Operation) -> tuple[UndoState, str | None]:
     """Undo one operation on disk. Returns the outcome and, when not plainly done, why."""
     src = Path(op.src) if op.src else None
@@ -61,6 +81,8 @@ def _reverse(op: Operation) -> tuple[UndoState, str | None]:
                 return UndoState.SKIPPED, OLD_NAME_TAKEN
             fsops.make_dirs(src.parent)
             fsops.move_file(dst, src)
+            if is_video(dst):
+                _subtitles_back(dst, src)
             return UndoState.DONE, None
         case OpKind.CREATE_FILE:
             assert dst is not None
@@ -97,7 +119,26 @@ class UndoService:
 
     async def undo_operations(self, op_ids: Sequence[int]) -> UndoResult:
         async with self._lock:
-            return await self._undo(await self._history.get_operations(op_ids))
+            chosen = await self._history.get_operations(op_ids)
+            return await self._undo(await self._with_subtitles(chosen))
+
+    async def _with_subtitles(self, chosen: Sequence[Operation]) -> list[Operation]:
+        """The chosen operations and the subtitle lines of the videos' renames among them."""
+        videos: dict[int, list[Path]] = {}
+        for op in chosen:
+            if op.kind is OpKind.RENAME and op.dst and is_video(Path(op.dst)):
+                videos.setdefault(op.run_id, []).append(Path(op.dst))
+        ops = {op.id: op for op in chosen}
+        for run_id, paths in videos.items():
+            for op in await self._history.operations(run_id):
+                if (
+                    op.id not in ops
+                    and op.dst
+                    and op.kind in (OpKind.RENAME, OpKind.CREATE_FILE)
+                    and any(subtitle_of(path, Path(op.dst)) for path in paths)
+                ):
+                    ops[op.id] = op
+        return list(ops.values())
 
     async def _undo(self, ops: Sequence[Operation]) -> UndoResult:
         result = UndoResult()

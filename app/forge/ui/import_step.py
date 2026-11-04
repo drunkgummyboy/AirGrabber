@@ -7,15 +7,15 @@ folders, past renames, remembered matches; the TMDB key only when it was taken o
 nothing did. "Remove the old MediaForge" is offered once in the result, while the old install
 is still registered and a remover is wired (`on_remove_old`, F-27's action).
 
-The Forge window's host (app/forge/ui/host.py) shows it at an open of the Forge window while
-the old data exists and nothing was imported; "Not now" means it asks again at the next open
-(D13). BringOverBox is MediaForge Settings' "Bring over…" row (in the Library section's foot)
+MediaForge's host (app/forge/ui/host.py) shows it over the main window at the first visit to the
+page in a run while the old data exists and nothing was imported; "Not now" means it asks again at
+AirGrabber's next start (D13). BringOverBox is Settings' "Bring over…" row (in the Auto-rename section's foot)
 for the same case. RemoveOldBox, below it in that foot, is the guard's notice with "Remove the
 old MediaForge" while the old install is registered (F-27, app/forge/old_install.py).
 
 Never `transient()` (MediaForge's lesson, see app/forge/ui/widgets/dialogs.py); it takes the
-grab while it shows and gives it back to whoever held it before (Settings), never to the Forge
-window. Esc and the round ✕ mean Not now / Close, except while it is busy.
+grab while it shows and gives it back to whoever held it before (Settings). Esc and the round ✕
+mean Not now / Close, except while it is busy.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import customtkinter as ctk
 
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.i18n import N_, t, tn
 from app.ui import theme
 from app.ui.borderless import make_borderless
@@ -141,7 +141,7 @@ def _default_find() -> OldInstall | None:
 
 
 class ImportStep(ctk.CTkToplevel):
-    """The import's question, its work and its result, over `master` (the Forge window or
+    """The import's question, its work and its result, over `master` (the main window or
     Settings). `on_done(result)` after it closed: what came over, or None (Not now, a
     problem). `bring_over` / `has_own_data`: the migration's (tests pass fakes)."""
 
@@ -157,7 +157,7 @@ class ImportStep(ctk.CTkToplevel):
         bring_over: BringOver | None = None,
         has_own_data: HasOwnData | None = None,
     ) -> None:
-        self.look: theme.Look = forge_look() if look is None else look
+        self.look: theme.Look = app_look() if look is None else look
         super().__init__(master, fg_color=self.look.BG)
         self._forge = forge
         self._old = old
@@ -402,7 +402,7 @@ class ImportStep(ctk.CTkToplevel):
 
 
 class BringOverBox:
-    """MediaForge Settings › Library & watching: "Bring over…" in the section's foot while
+    """Settings › Auto-rename: "Bring over…" in the section's foot while
     the old MediaForge's data exists and nothing was imported (D13). Shows nothing for a
     services object that can't import (a test's fake) or when there is no old data."""
 
@@ -503,7 +503,7 @@ class BringOverBox:
 
 
 class RemoveOldBox:
-    """MediaForge Settings › Library & watching: the guard's notice and "Remove the old
+    """Settings › Auto-rename: the guard's notice and "Remove the old
     MediaForge" in the section's foot while the old install is still registered (D4, F-27).
     The removal is app/forge/old_install.py's shared remover: it carries on (and lifts the
     guard) when Settings closes. Finding the old install already gone lifts the guard too.

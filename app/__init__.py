@@ -1,4 +1,4 @@
 """AirGrabber — track your shows, grab your movies."""
 
 APP_NAME = "AirGrabber"
-__version__ = "3.1.2"
+__version__ = "3.2.0"

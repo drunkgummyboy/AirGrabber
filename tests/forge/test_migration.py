@@ -317,7 +317,7 @@ class BringOverTests(ImportCase):
         self.assertEqual(settings.context_menu_presets, ["Mine"])
         self.assertFalse(settings.trailer_tools_ok)  # D12: fresh tools
         self.assertEqual(settings.ytdlp_checked_at, 0.0)
-        self.assertEqual(settings.window_geometry, "1200x800+40+40")  # the Forge window's own
+        self.assertEqual(settings.window_geometry, "1200x800+40+40")  # unread, as it was
         self.assertIn(settings, self.saved)  # listeners (the renamer) were told
 
         self.assertEqual([p.name for p in await self.forge.presets.list()], ["Mine", "Auto"])

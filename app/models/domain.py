@@ -454,7 +454,7 @@ class ShowDetails(DomainModel):
     auto_download: bool = False
     # Ids of the episodes in the download history: the episode itself or its season's pack.
     # Never shown as such (owner's decision, 3.1.0): it only keeps "missing" and the downloads
-    # from fetching an episode twice, and offers a grabbed episode's subtitles.
+    # from fetching an episode twice.
     downloaded: frozenset[int] = frozenset()
     next_episode: Episode | None = None  # the first numbered episode still to air
     # Plex is connected (app/services/plex.py): only then does the window show what you have
@@ -588,108 +588,6 @@ class AutoDownloadReport(DomainModel):
     movies_downloaded: tuple[AutoMovieDownloaded, ...] = ()
     movies_not_found: tuple[str, ...] = ()
     movies_gave_up: tuple[str, ...] = ()
-
-
-class SubtitleFile(DomainModel):
-    """The subtitles' bookkeeping for one video file and one language (app/services/subtitles.py):
-    tries without a subtitle, given up, or saved (where)."""
-
-    video_path: str
-    language: str  # OpenSubtitles code: "en", "pt-BR"
-    tries: int = 0  # searches (or downloads) that didn't give a subtitle
-    first_try: UtcDatetime | None = None
-    last_try: UtcDatetime | None = None
-    gave_up: bool = False
-    saved_at: UtcDatetime | None = None  # set once the subtitle file exists next to the video
-    subtitle_path: str | None = None
-
-
-class SubtitleGrab(DomainModel):
-    """A grab from the download history the subtitles look after, with the languages it is
-    complete for (all of its videos have them, or were given up)."""
-
-    record: DownloadRecord
-    done_languages: tuple[str, ...] = ()
-
-
-class SubtitleQuota(DomainModel):
-    """OpenSubtitles' download allowance as last heard: downloads left today and when the count
-    starts again (midnight UTC)."""
-
-    remaining: int | None = None
-    allowed: int | None = None  # per day, when signed in
-    reset_at: UtcDatetime | None = None
-
-
-class SubtitleAccount(DomainModel):
-    """The OpenSubtitles account that signed in (Settings' "Sign in")."""
-
-    level: str = ""  # "Sub leecher", "VIP Member"
-    allowed_downloads: int = 0  # per day
-    remaining_downloads: int | None = None  # left today, when known
-    vip: bool = False
-
-
-class SubtitlesSaved(DomainModel):
-    """Event: subtitles were saved next to a video."""
-
-    label: str  # "Severance S02E04", or the film's release title
-    languages: tuple[str, ...]
-
-
-class SubtitleProblem(DomainModel):
-    """Event: a subtitle run stopped or couldn't start (bad key, wrong password, the folder out
-    of reach, today's downloads used up); `message` is plain words, without URLs or secrets."""
-
-    message: str
-
-
-SubtitleEvent: TypeAlias = SubtitlesSaved | SubtitleProblem
-
-
-class SubtitleRunReport(DomainModel):
-    """What one subtitle run did."""
-
-    videos: int = 0  # video files matched to the pending grabs
-    saved: tuple[str, ...] = ()  # "Severance S02E04 (EN)"
-    not_found: tuple[str, ...] = ()  # searched without a usable subtitle (tried again later)
-    gave_up: tuple[str, ...] = ()
-    problem: str | None = None  # the SubtitleProblem that stopped (or skipped) the run
-
-
-class SubtitleFetchOutcome(StrEnum):
-    """How a subtitle request for one episode or film went (SubtitleService.fetch_now)."""
-
-    SAVED = "saved"  # every language asked for is there now (some may have been there already)
-    PARTLY = "partly"  # some saved or there, the others not found yet
-    ALREADY = "already"  # every language asked for was there already
-    NOT_FOUND = "not_found"  # OpenSubtitles has none yet
-    NO_VIDEO = "no_video"  # the video isn't in the finished-downloads folder
-    DOWNLOADING = "downloading"  # the video is still being downloaded
-    NO_GRAB = "no_grab"  # AirGrabber has no download of it
-    QUOTA = "quota"  # today's downloads are used up (`message` says until when)
-    WAIT = "wait"  # tried within the retry time (only when not forced)
-    PROBLEM = "problem"  # key, account, connection or folder (`message`, plain words)
-    UNAVAILABLE = "unavailable"  # no API key in this version, or no finished-downloads folder
-
-
-class SubtitleOffer(StrEnum):
-    """Whether subtitles can be asked for by hand (the CC ▾ buttons; SubtitleService.offer)."""
-
-    NONE = "none"  # no API key in this version, no finished-downloads folder or no language
-    OFF = "off"  # Settings → Subtitles' switch is off: the buttons show, greyed
-    ON = "on"
-
-
-class SubtitleFetch(DomainModel):
-    """What a subtitle request for one episode or film did: the languages saved now (or found
-    next to the video), those not found yet, and for QUOTA / PROBLEM a plain message without
-    URLs or secrets."""
-
-    outcome: SubtitleFetchOutcome
-    saved: tuple[str, ...] = ()
-    not_found: tuple[str, ...] = ()
-    message: str = ""
 
 
 class WatchlistEntry(DomainModel):

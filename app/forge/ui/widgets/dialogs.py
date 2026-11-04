@@ -1,6 +1,6 @@
 """Small question windows that can be awaited (ported from MediaForge's ui/widgets/dialogs.py),
 built on AirGrabber's dialog kit: no title bar (app/ui/borderless.py; the title as a heading),
-placed over the window that asks, and copper buttons through the Forge look.
+placed over the window that asks, and accent buttons through the look.
 
 MediaForge's lesson stays: a pop-up is never `transient()`. Tk on Windows could crash later when
 a transient window (with a size set) was destroyed before it was ever shown
@@ -18,7 +18,7 @@ from typing import Any
 
 import customtkinter as ctk
 
-from app.forge.ui.look import forge_look
+from app.forge.ui.look import app_look
 from app.i18n import t
 from app.ui import theme
 from app.ui.borderless import clearance, make_borderless
@@ -53,7 +53,7 @@ async def ask_choice(
     window is closed (✕, Escape, destroyed) or the waiting task is cancelled. The first choice
     is the main (accent) button, first in the row at the right (as in MediaForge); Enter picks
     it. Texts are shown as given."""
-    colours: theme.Look = forge_look() if look is None else look
+    colours: theme.Look = app_look() if look is None else look
     future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
     dialog = ctk.CTkToplevel(master, fg_color=colours.BG)
     dialog.title(title)
@@ -118,7 +118,7 @@ async def ask_text(
     """Ask for a short text (a preset's name): the text typed, without spaces around it, or None
     when the window is closed or Cancel chosen. `ok` (the main button, also Enter) only takes a
     text that isn't empty. Texts are shown as given."""
-    colours: theme.Look = forge_look() if look is None else look
+    colours: theme.Look = app_look() if look is None else look
     future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
     dialog = ctk.CTkToplevel(master, fg_color=colours.BG)
     dialog.title(title)

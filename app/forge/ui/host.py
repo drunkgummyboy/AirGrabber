@@ -1,51 +1,52 @@
-"""ForgeHost: the Forge window's host inside AirGrabber (docs/forge/INTEGRATION.md 2 and 3.11).
+"""ForgeHost: MediaForge's page and confirm windows inside AirGrabber (docs/forge/PAGE.md).
 
 AirGrabber's main window owns one (F-21) and calls it:
-- `await open()` — starts Forge if it hasn't (`ForgeRuntime.start()`), then shows and raises the
-  Forge window (app/forge/ui/window.py; made once, with the size and place it had). While Forge
-  isn't ready (guessit couldn't be installed, NOT_READY) the window shows one plain page with Try
-  again: forget guessit's remembered install failure (`app.bootstrap.retry_optional`), then
-  AirGrabber's restart. When forge.db couldn't be opened (FAILED), Try again starts Forge again.
-  Opened before Forge's file-name reader has warmed up (F-28, app/forge/services.py), the window
-  shows "Getting ready…" first, then `ForgeServices.warm_up()` runs and the pages are built.
-- `close()` — hides the Forge window (its ✕ does the same) and remembers its size and place
-  (ForgeSettings.window_geometry); an open Settings window goes (= Cancel). Closing it never
-  quits AirGrabber.
-- `open_settings(section)` — MediaForge's own Settings window (app/forge/ui/settings_window.py;
-  the Forge window's ⚙ and the Auto-rename page's "More in Settings…"): made over the Forge
-  window, or, while one is open, raised and switched to `section`. Its "Open AirGrabber's
-  Settings" calls `open_airgrabber_settings` (AirGrabber's main window's).
-- `may_close(retry)` — before AirGrabber quits or restarts: False while the Inbox's Forge run
+- `show()` — the main window shows MediaForge's page (`Mode.FORGE`): the first visit builds the page
+  (app/forge/ui/page.py) into `page_master` and the tabs row's left part (`tabs_row`), starting
+  Forge if it hasn't. `await open()` is the same, awaited: the page, or None when AirGrabber is
+  shutting down. While Forge is starting or its file-name reader warms up (F-28,
+  app/forge/services.py) the page says "Getting ready…"; while it isn't ready (guessit couldn't be
+  installed, NOT_READY) one plain frame with Try again: forget guessit's remembered install failure
+  (`app.bootstrap.retry_optional`), then AirGrabber's restart. When forge.db couldn't be opened
+  (FAILED), Try again starts Forge again.
+- `close()` — another page shows: the tabs row's part goes, Activity closes. Nothing else stops: a
+  run goes on, on any page and in the tray.
+- `show_queue()`, `toggle_history()` (🕘), `refresh_page()` (F5) — handed to the page.
+- `open_settings(section)` — Settings at `section` (the status line's click), through AirGrabber's
+  main window (`show_settings`).
+- `may_close(retry)` — before AirGrabber quits or restarts: False while the queue's Forge run
   stops after its current file (`QueueView.request_close`), History's undo finishes or a
   confirm window renames or undoes (`ConfirmWindow.busy`); `retry` is called then.
-- `handle(request)` — a right-click / "MediaForge" shortcut request (app/single_instance.py's
-  ForgeRequest): plain → the Forge window, the paths added to the Inbox with the preset (for
-  those files; without files the preset goes to the queue's bands);
+- `handle(request)` — a right-click / "MediaForge" shortcut / tray request or a drop
+  (app/single_instance.py's ForgeRequest): plain → `show_page()` (the main window shown,
+  un-minimised and raised, on this page), the paths added to the queue with the preset (for those
+  files; without files the preset goes to the queue's bands);
   confirm → ConfirmBatcher (app/forge/core/batcher.py) → one ConfirmWindow per preset, whose
-  "Open in MediaForge" comes back here as a plain request.
-- `await shutdown()` — at quit: no more requests, the size and place saved, every Forge window
-  gone. Before `Services.aclose()`.
+  "Open in MediaForge" comes back here as a plain request. A confirm request shows only its
+  window: the main window stays as it is, hidden too (with Forge off it says why on the page).
+- `await shutdown()` — at quit: no more requests, the page and every confirm window gone. Before
+  `Services.aclose()`.
 
 What it hands the auto-renamer once Forge has started (`ForgeRuntime.when_ready`, before the
-renamer starts): `on_status` → the window's watching light and Library page (the last status is
-kept for a window opened later); `on_needs` → `needs` and the host's own `on_needs(count)` (the
-"needs you" count for the tray and AirGrabber's MediaForge button, F-21 / F-22 set it); `notify`
-→ the host's `notify(title, text)` (the tray's notification). `on_closed()` is called whenever a
-Forge window closes (the Forge window hidden, a confirm window gone) and `windows_open` says
-whether any still shows (D5: a right-click start leaves AirGrabber when the last one closes).
+renamer starts): `on_status` → the page's status line (the last status is kept for a page built
+later); `on_needs` → `needs` and the host's own `on_needs(count)` (the "needs you" count for the
+tray and the switch: the renamer's until the queue is there, then the queue's, which also has the
+files added by hand); `notify` → the host's `notify(title, text)` (the tray's notification).
+`on_closed()` is called whenever a confirm window closes and `windows_open` says whether any still
+shows or a plain request is on its way (D5: a right-click start leaves AirGrabber when the last one
+closes, if its main window never showed). `on_view(history)`: History or the queue shows (🕘).
+`on_message(text)`: what the queue says, for the main window's status bar.
 
-The old MediaForge (F-26, D4 / D13): at an open that shows the Forge window (made, or shown
-from hidden) with Forge ready, while the old MediaForge's data exists and nothing was imported
-yet (`ForgeSettings.imported_from`), the window gets the import step
-(app/forge/ui/import_step.py; "Not now" = asked again at the next open). After an import —
-from that step or Settings' "Bring over…" — the Inbox's presets and the page showing are read
-again (`imported`: the host hears every change of `imported_from` through Forge's settings). `on_remove_old` (F-27) is the result's
-"Remove the old MediaForge"; `find_old_install` is injectable (app/forge/migration.py's by
-default).
+The old MediaForge (F-26, D4 / D13): at the first visit to the page in a run with Forge ready, while
+the old MediaForge's data exists and nothing was imported yet (`ForgeSettings.imported_from`), the
+import step shows over the main window (app/forge/ui/import_step.py; "Not now" = asked again at
+AirGrabber's next start; a page is visited too often to ask at each). After an import — from that step or Settings' "Bring over…" — the queue's presets and what
+shows are read again (`imported`: the host hears every change of `imported_from` through Forge's
+settings). `on_remove_old` (F-27) is the result's "Remove the old MediaForge"; `find_old_install` is
+injectable (app/forge/migration.py's by default).
 
-Light at import (AirGrabber's main window may import it at start): the window, the confirm window,
-the Settings window, the import step and Forge's services are imported only when first needed
-(INTEGRATION.md 3.6).
+Light at import (AirGrabber's main window imports it at start): the page, the confirm window, the
+import step and Forge's services are imported only when first needed (INTEGRATION.md 3.6).
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app import bootstrap
 from app.forge.core.batcher import ConfirmBatcher
@@ -69,10 +70,8 @@ if TYPE_CHECKING:
     from app.forge.models.settings import ForgeSettings
     from app.forge.services import ForgeServices
     from app.forge.ui.confirm_window import ConfirmWindow
-    from app.forge.runtime import ForgeRuntime
     from app.forge.ui.import_step import ImportStep
-    from app.forge.ui.settings_window import ForgeSettingsWindow
-    from app.forge.ui.window import ForgeWindow
+    from app.forge.ui.page import ForgePage
     from app.ui import theme
 
 log = logging.getLogger(__name__)
@@ -80,7 +79,7 @@ log = logging.getLogger(__name__)
 GUESSIT = "guessit"  # the optional package Forge needs, as pip names it
 CONFIRM_RETRY_MS = 250  # how often quitting asks again while a confirm window renames
 GETTING_READY_DRAW_S = 0.06  # Tk's turns (every 10 ms) to draw "Getting ready…" before the warm-up
-# The Forge window's plain page while guessit isn't installed (with Try again).
+# The page's plain frame while guessit isn't installed (with Try again).
 NOT_READY_TEXT = N_("MediaForge isn't ready yet: one of its parts couldn't be installed.")
 
 
@@ -117,26 +116,34 @@ class ForgeHost:
         root: Any,
         runtime: Runtime,
         *,
-        open_airgrabber_settings: Callable[[], None] | None = None,
+        page_master: Any,
+        tabs_row: Any,
+        show_page: Callable[[], None] | None = None,
+        show_settings: Callable[[str | None], object] | None = None,
         restart: Callable[[], None] | None = None,
         retry_install: Callable[[str], object] | None = None,
         look: theme.Look | None = None,
         find_old_install: Callable[[], OldInstall | None] | None = None,
     ) -> None:
-        """`root`: AirGrabber's main window (the Forge windows' master).
-        `open_airgrabber_settings`: AirGrabber's own Settings (MediaForge's Settings window's
-        "Open AirGrabber's Settings"). `restart`: AirGrabber's restart (Try again).
-        `retry_install`: forget a package's remembered install failure. `find_old_install`: the
-        old MediaForge (blocking; run in a thread)."""
+        """`root`: AirGrabber's main window (the confirm windows' and the import step's master).
+        `page_master`, `tabs_row`: where the page and the tabs row's left part go. `show_page()`:
+        the main window shown and raised on the page (a plain request; without it just `show`).
+        `show_settings(section)`: Settings at `section`. `restart`: AirGrabber's restart (Try
+        again). `retry_install`: forget a package's remembered install failure.
+        `find_old_install`: the old MediaForge (blocking; run in a thread)."""
         self._root = root
         self._runtime = runtime
-        self._open_airgrabber_settings = open_airgrabber_settings or (lambda: None)
+        self._page_master = page_master
+        self._tabs_row = tabs_row
+        self._show_page = show_page or self.show
+        self._show_settings = show_settings or (lambda section: None)
         self._restart = restart or (lambda: None)
         self._retry_install = retry_install or _retry_guessit
         self._look = look
         self._find_old_install = find_old_install or _find_old_install
-        self._window: ForgeWindow | None = None
-        self._settings_window: ForgeSettingsWindow | None = None
+        self._page: ForgePage | None = None
+        self._showing = False  # the main window shows the page
+        self._offer_due = True  # the import step may still ask in this run
         self.import_step: ImportStep | None = None  # the old MediaForge's import, while it shows
         self._offering = False  # looking for the old MediaForge
         self._imported_from = ""  # the last `ForgeSettings.imported_from` heard
@@ -144,119 +151,152 @@ class ForgeHost:
         self.confirm_windows: list[ConfirmWindow] = []
         self._batcher = ConfirmBatcher(self._confirm_batch)
         self._status: WatchStatus | None = None
-        self._needs = 0
-        self._opening = 0  # plain requests on their way to the Forge window
+        self._renamer_count = 0  # the renamer's "needs you"
+        self._queue_count: int | None = None  # the queue's, once it is there
+        self._told = 0  # the count last told
+        self._opening = 0  # plain requests on their way to the page
         self._shut = False
         self._tasks: set[asyncio.Task[Any]] = set()
         self.on_needs: Callable[[int], None] = lambda count: None
         self.notify: Callable[[str, str], None] = lambda title, text: None
         self.on_closed: Callable[[], None] = lambda: None
+        self.on_view: Callable[[bool], None] = lambda history: None
+        self.on_message: Callable[[str], None] = lambda text: None
         runtime.when_ready(self._wire_renamer)
 
     # --- what it shows --------------------------------------------------------------------------
 
     @property
-    def window(self) -> ForgeWindow | None:
-        """The Forge window, shown or hidden; None until it is first opened."""
-        window = self._window
+    def page(self) -> ForgePage | None:
+        """The page, on screen or not; None until the first visit."""
+        page = self._page
         try:
-            if window is not None and window.winfo_exists():
-                return window
+            if page is not None and page.winfo_exists():
+                return page
         except Exception:  # its interpreter is gone
             pass
         return None
 
     @property
+    def showing(self) -> bool:
+        """Whether the main window shows the page."""
+        return self._showing
+
+    @property
     def windows_open(self) -> bool:
-        """Whether a Forge window shows (or is about to): the Forge window, a confirm window."""
-        if self._opening or self.confirm_windows:
-            return True
-        window = self.window
-        return window is not None and window.state() != "withdrawn"
+        """Whether a confirm window shows, or a plain request is on its way to the page."""
+        return bool(self._opening or self.confirm_windows)
 
     @property
     def needs(self) -> int:
-        """How many watched downloads need the owner (the renamer's last count)."""
-        return self._needs
+        """How many files need the owner, as the switch and the tray say it."""
+        return self._told
 
     @property
     def status(self) -> WatchStatus | None:
         """The renamer's last status (None before Forge has started)."""
         return self._status
 
-    async def open(self) -> ForgeWindow | None:
-        """Start Forge if it hasn't, then show and raise the Forge window. None when AirGrabber
-        is shutting down."""
+    def show(self) -> None:
+        """The main window shows the page: its tabs-row part at once, the rest (a first visit's
+        building, Forge's start) in a coroutine."""
+        if self._shut:
+            return
+        self._mark_showing()
+        page = self.page
+        if page is not None:
+            page.set_shown(True)
+        self._spawn(self._build())
+
+    async def open(self) -> ForgePage | None:
+        """`show`, awaited: start Forge if it hasn't and build the page. None when AirGrabber is
+        shutting down."""
+        if self._shut:
+            return None
+        self._mark_showing()
+        return await self._build()
+
+    def _mark_showing(self) -> None:
+        self._showing = True
+
+    async def _build(self) -> ForgePage | None:
         if self._shut:
             return None
         runtime = self._runtime
+        page = self.page or self._make_page()
+        page.set_shown(self._showing)
         services = runtime.services
         if services is None and runtime.state is not ForgeState.NOT_READY:
+            page.show_getting_ready()
+            await asyncio.sleep(GETTING_READY_DRAW_S)
             services = await runtime.start()
-        if self._shut or runtime.state is ForgeState.CLOSED:
+        if self._shut or runtime.state is ForgeState.CLOSED or not page.winfo_exists():
             return None
-        window = self.window
-        shows_now = window is None or window.state() == "withdrawn"
-        if window is None:
-            window = self._make_window(services)
-        if services is not None and window.services is None and not services.parser_warm:
-            await self._warm_up(window, services)
-            if self._shut or not window.winfo_exists():
+        if services is not None and page.services is None and not services.parser_warm:
+            await self._warm_up(page, services)
+            if self._shut or not page.winfo_exists():
                 return None
         if services is not None:
-            window.show_forge(services, self._status)
+            if page.services is None:  # the import and the building, a turn of Tk's between them
+                page.load_views()
+                await asyncio.sleep(GETTING_READY_DRAW_S / 4)
+                if self._shut or not page.winfo_exists():
+                    return None
+            page.show_forge(services, self._status)
+            if self._offer_due and self._showing:
+                self._offer_due = False
+                self._offer_import(services)
         elif runtime.state is ForgeState.NOT_READY:
-            window.show_problem(t(NOT_READY_TEXT), self.try_again)
+            page.show_problem(t(NOT_READY_TEXT), self.try_again)
         else:
-            window.show_problem(runtime.reason, self.try_again)
-        self._raise(window)
-        if services is not None and shows_now:
-            self._offer_import(window, services)
-        return window
+            page.show_problem(runtime.reason, self.try_again)
+        return page
 
-    async def _warm_up(self, window: ForgeWindow, services: ForgeServices) -> None:
-        """Forge's file-name reader isn't warm yet (the window opened before its idle warm-up,
+    async def _warm_up(self, page: ForgePage, services: ForgeServices) -> None:
+        """Forge's file-name reader isn't warm yet (the page opened before its idle warm-up,
         F-28): "Getting ready…" shows and is drawn, then the warm-up holds the loop once."""
-        window.show_getting_ready()
-        self._raise(window)
+        page.show_getting_ready()
         await asyncio.sleep(GETTING_READY_DRAW_S)
-        if not self._shut and window.winfo_exists():
+        if not self._shut and page.winfo_exists():
             services.warm_up()
 
-    def _make_window(self, services: ForgeServices | None) -> ForgeWindow:
-        from app.forge.ui.window import ForgeWindow
+    def _make_page(self) -> ForgePage:
+        from app.forge.ui.page import ForgePage, make_shortcut_once
 
-        geometry = services.settings.current.window_geometry if services is not None else None
-        window = ForgeWindow(self._root, look=self._look, geometry=geometry)
-        window.on_close = self.close
-        window.on_settings = self.open_settings
-        self._window = window
-        return window
-
-    def _raise(self, window: ForgeWindow) -> None:
-        hidden = window.state() == "withdrawn"
-        window.deiconify()
-        window.lift()
-        window.focus_force()
-        if hidden:
-            window.refresh_page()
+        page = ForgePage(self._page_master, tabs_row=self._tabs_row, look=self._look)
+        page.pack(fill="both", expand=True)
+        page.on_settings = self.open_settings
+        page.on_needs = self._queue_needs
+        page.on_view = lambda history: self.on_view(history)
+        page.on_message = lambda text: self.on_message(text)
+        self._page = page
+        make_shortcut_once()
+        return page
 
     def close(self) -> None:
-        """Hide the Forge window, remembering its size and place. AirGrabber keeps running."""
-        window = self.window
-        if window is None or window.state() == "withdrawn":
-            return
-        geometry = window.saved_geometry()
-        self._close_settings()  # its Cancel: a closed Forge window leaves no Settings behind
-        window.withdraw()
-        services = self._runtime.services
-        if geometry and services is not None:
-            self._spawn(self._save_geometry(services, geometry))
-        self._closed_one()
+        """Another page shows. AirGrabber and a Forge run keep going."""
+        self._showing = False
+        page = self.page
+        if page is not None:
+            page.set_shown(False)
 
-    async def _save_geometry(self, services: ForgeServices, geometry: str) -> None:
-        if services.settings.current.window_geometry != geometry:
-            await services.settings.update(window_geometry=geometry)
+    def show_queue(self) -> None:
+        """MediaForge in the switch, a request: the queue (it is what a first visit shows)."""
+        page = self.page
+        if page is not None:
+            page.show_view("queue")
+
+    def toggle_history(self) -> None:
+        """🕘: History, or back to the queue. Nothing before the queue is there."""
+        page = self.page
+        if page is not None:
+            page.toggle_history()
+
+    def refresh_page(self) -> None:
+        """F5 on the page: what shows is read again."""
+        page = self.page
+        if page is not None:
+            page.refresh_page()
 
     def may_close(self, retry: Callable[[], None]) -> bool:
         """True if AirGrabber may quit or restart now; otherwise `retry` is called later (a Forge
@@ -266,83 +306,39 @@ class ForgeHost:
             log.info("Waiting for a confirm window's rename to finish")
             self._root.after(CONFIRM_RETRY_MS, retry)
             return False
-        window = self.window
-        return window is None or window.may_close(retry)
+        page = self.page
+        return page is None or page.may_close(retry)
 
     def try_again(self) -> None:
-        """The plain page's Try again: install guessit again (a restart), or start Forge again."""
+        """The plain frame's Try again: install guessit again (a restart), or start Forge again."""
         if self._runtime.state is ForgeState.NOT_READY:
             log.info("Trying to install MediaForge's missing part again: restarting")
             self._retry_install(GUESSIT)
             self._restart()
         else:
-            self._spawn(self.open())
+            self._spawn(self._build())
 
-    # --- MediaForge's Settings -----------------------------------------------------------------
+    # --- Settings --------------------------------------------------------------------------------
 
-    @property
-    def settings_window(self) -> ForgeSettingsWindow | None:
-        """MediaForge's Settings window while it is open."""
-        window = self._settings_window
-        try:
-            if window is not None and window.winfo_exists():
-                return window
-        except Exception:  # its interpreter is gone
-            pass
-        return None
-
-    def open_settings(self, section: str | None = None) -> ForgeSettingsWindow | None:
-        """MediaForge's Settings over the Forge window, at `section` (its first one when not
-        given); an open one is raised and switched to `section`. None without a Forge window."""
-        window = self.window
-        if window is None or self._shut:
-            return None
-        settings = self.settings_window
-        if settings is not None:
-            if section is not None:
-                settings.show_section(section)
-            settings.deiconify()
-            settings.lift()
-            settings.focus_force()
-            return settings
-        from app.forge.ui.settings_window import ForgeSettingsWindow
-
-        # The sections need ForgeRuntime's start / services / reason (the host's Runtime) and
-        # what the old-install box asks of it.
-        runtime = cast("ForgeRuntime", self._runtime)
-        settings = ForgeSettingsWindow(
-            window,
-            runtime,
-            section=section,
-            on_open_airgrabber=self._open_airgrabber_settings,
-            look=self._look,
-        )
-        self._settings_window = settings
-        return settings
-
-    def _close_settings(self) -> None:
-        settings = self.settings_window
-        self._settings_window = None
-        if settings is not None:
-            try:
-                settings.destroy()
-            except Exception:
-                log.debug("MediaForge's Settings window was gone already", exc_info=True)
+    def open_settings(self, section: str | None = None) -> None:
+        """Settings at `section` (see `show_settings`)."""
+        if not self._shut:
+            self._show_settings(section)
 
     # --- the old MediaForge ---------------------------------------------------------------------
 
-    def _offer_import(self, window: ForgeWindow, services: ForgeServices) -> None:
-        """The import step over the window, once per open, while there is something to bring
-        over (D13)."""
+    def _offer_import(self, services: ForgeServices) -> None:
+        """The import step over the main window, once per run, while there is something to
+        bring over (D13)."""
         step = self.import_step
         if self._offering or (step is not None and step.winfo_exists()):
             return
         if services.settings.current.imported_from:
             return
         self._offering = True
-        self._spawn(self._ask_import(window, services))
+        self._spawn(self._ask_import(services))
 
-    async def _ask_import(self, window: ForgeWindow, services: ForgeServices) -> None:
+    async def _ask_import(self, services: ForgeServices) -> None:
         try:
             old = await asyncio.to_thread(self._find_old_install)
         except Exception as exc:
@@ -352,23 +348,24 @@ class ForgeHost:
             self._offering = False
         if old is None or not old.has_data or self._shut:
             return
-        if services.settings.current.imported_from or not window.winfo_exists():
+        if services.settings.current.imported_from:
             return
-        if window.state() == "withdrawn":  # closed meanwhile: asked at the next open
+        if not self._showing:
+            self._offer_due = True  # another page meanwhile: asked at the next visit
             return
         from app.forge.ui.import_step import ImportStep
 
         self.import_step = ImportStep(
-            window,
+            self._root,
             services,
             old,
             look=self._look,
             on_remove_old=self.on_remove_old,
-            on_done=lambda result: self._import_done(window, result),
+            on_done=self._import_done,
         )
 
-    def _import_done(self, window: ForgeWindow, result: ImportResult | None) -> None:
-        self.import_step = None  # the window is refreshed by `imported` (any import)
+    def _import_done(self, result: ImportResult | None) -> None:
+        self.import_step = None  # the page is refreshed by `imported` (any import)
 
     def _settings_saved(self, settings: ForgeSettings) -> None:
         """Forge's settings changed: a new `imported_from` is an import, wherever it started."""
@@ -379,22 +376,23 @@ class ForgeHost:
             self._imported_from = settings.imported_from
 
     def imported(self) -> None:
-        """The old MediaForge's data came over (from the window or from Settings): the Forge
-        window reads its presets and the page showing again."""
-        window = self.window
-        if window is None:
+        """The old MediaForge's data came over (from the step or from Settings): the queue reads
+        its presets and what shows is read again."""
+        page = self.page
+        if page is None:
             return
         try:
-            if window.queue is not None:
-                window.queue.reload_presets()
-            window.refresh_page()
+            if page.queue is not None:
+                page.queue.reload_presets()
+            page.refresh_page()
         except Exception:
-            log.exception("The Forge window wasn't refreshed after the import")
+            log.exception("The page wasn't refreshed after the import")
 
     # --- requests -------------------------------------------------------------------------------
 
     def handle(self, request: ForgeRequest) -> None:
-        """A request from a right-click or the "MediaForge" shortcut (see the module's notes)."""
+        """A request from a right-click, the "MediaForge" shortcut, the tray or a drop (see the
+        module's notes)."""
         if self._shut:
             return
         paths = [Path(path) for path in request.paths]
@@ -402,19 +400,23 @@ class ForgeHost:
             self._batcher.add(paths, request.preset)
             return
         self._opening += 1
+        try:
+            self._show_page()
+        except Exception:
+            log.exception("Showing MediaForge's page failed")
         self._spawn(self._open_with(paths, request.preset))
 
     async def _open_with(self, paths: Sequence[Path], preset: str | None) -> None:
         try:
-            window = await self.open()
+            page = await self.open()
         finally:
             self._opening -= 1
-        if window is None:
+        if page is None:
             return
         if paths:
-            window.add_paths(paths, preset=preset)  # the preset names the files it adds
+            page.add_paths(paths, preset=preset)  # the preset names the files it adds
         elif preset:
-            window.select_preset(preset)
+            page.select_preset(preset)
 
     def _confirm_batch(self, preset: str | None, paths: list[Path]) -> None:
         """The batcher's: one confirm window for these files (on the loop, no Tk event)."""
@@ -428,7 +430,8 @@ class ForgeHost:
             services = await runtime.start()
         if self._shut:
             return
-        if services is None:  # Forge is off: the Forge window says why
+        if services is None:  # Forge is off: the page says why
+            self._show_page()
             await self.open()
             return
         from app.forge.ui.confirm_window import ConfirmWindow
@@ -450,7 +453,7 @@ class ForgeHost:
         try:
             self.on_closed()
         except Exception:
-            log.exception("The Forge window's close callback failed")
+            log.exception("The confirm window's close callback failed")
 
     # --- the renamer ----------------------------------------------------------------------------
 
@@ -464,12 +467,23 @@ class ForgeHost:
 
     def _renamer_status(self, status: WatchStatus) -> None:
         self._status = status
-        window = self.window
-        if window is not None:
-            window.set_watch_status(status)
+        page = self.page
+        if page is not None:
+            page.set_watch_status(status)
 
     def _renamer_needs(self, count: int) -> None:
-        self._needs = count
+        self._renamer_count = count
+        self._tell_needs()
+
+    def _queue_needs(self, count: int) -> None:
+        self._queue_count = count
+        self._tell_needs()
+
+    def _tell_needs(self) -> None:
+        """The queue's count once it is there (it has the renamer's files too, and it follows a
+        choice at once); before the first visit the renamer's."""
+        count = self._renamer_count if self._queue_count is None else self._queue_count
+        self._told = count
         try:
             self.on_needs(count)
         except Exception:
@@ -490,19 +504,12 @@ class ForgeHost:
         return task
 
     async def shutdown(self) -> None:
-        """AirGrabber quits (after `may_close`): take no more requests, save the window's size
-        and place, and close every Forge window. Never raises."""
+        """AirGrabber quits (after `may_close`): take no more requests, and close the page and
+        every confirm window. Never raises."""
         self._shut = True
+        self._showing = False
         self._batcher.close()
-        window = self.window
-        services = self._runtime.services
-        if window is not None and services is not None:
-            geometry = window.saved_geometry()
-            if geometry:
-                try:
-                    await self._save_geometry(services, geometry)
-                except Exception as exc:
-                    log.warning("The Forge window's size wasn't saved (%s)", type(exc).__name__)
+        page = self.page
         current = asyncio.current_task()
         for task in list(self._tasks):
             if task is not current:
@@ -513,10 +520,9 @@ class ForgeHost:
             except Exception:
                 log.debug("A confirm window was gone already", exc_info=True)
         self.confirm_windows.clear()
-        self._close_settings()
-        if window is not None:
+        if page is not None:
             try:
-                window.destroy()
+                page.destroy()
             except Exception:
-                log.debug("The Forge window was gone already", exc_info=True)
-        self._window = None
+                log.debug("The page was gone already", exc_info=True)
+        self._page = None

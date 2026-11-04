@@ -271,6 +271,18 @@ class Queue:
         ]
         return self._drop(old)
 
+    def forget_finished(self) -> int:
+        """Drop what runs have finished (Settings' `remove_after_forge`). A download found already
+        right stays: it is still in its watched folder, and the next look would take it back in."""
+        return self._drop(
+            [
+                i
+                for i in self.items
+                if i.status is ItemStatus.DONE
+                or (i.status is ItemStatus.SKIPPED and i.watched is None)
+            ]
+        )
+
     def forget_watched(self, present: set[str]) -> int:
         """Drop pending watched items whose file (by path key) is no longer there."""
         gone = [
