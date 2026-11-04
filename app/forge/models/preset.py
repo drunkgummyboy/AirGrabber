@@ -12,6 +12,7 @@ class LastPresetError(Exception):
 
 
 class PresetOptions(BaseModel, frozen=True):
+    move_to_library: bool = False  # a file added by hand goes to its Series / Movies folder
     movie_poster: bool = False
     series_poster: bool = False
     season_poster: bool = False
@@ -34,14 +35,14 @@ DEFAULT_PRESETS: tuple[Preset, ...] = (
         name="Movie (Folder)",
         type=TypeHint.MOVIE,
         format="{ny}/{ny}",
-        options=PresetOptions(movie_poster=True, trailer=True),
+        options=PresetOptions(move_to_library=True, movie_poster=True, trailer=True),
     ),
     Preset(name="Movie (Flat)", type=TypeHint.MOVIE, format="{ny}"),
     Preset(
         name="Series (Folder)",
         type=TypeHint.TV,
         format="{ny}/{ny} - Season {s}/{ny} - {s00e00} - {en}",
-        options=PresetOptions(series_poster=True, season_poster=True),
+        options=PresetOptions(move_to_library=True, series_poster=True, season_poster=True),
     ),
     Preset(name="Series (Flat)", type=TypeHint.TV, format="{ny} - {s00e00} - {en}"),
 )

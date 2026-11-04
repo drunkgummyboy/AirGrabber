@@ -84,6 +84,9 @@ class ForgeSettings(BaseModel):
     # AirGrabber's automatic subtitles became presets' Subtitles extra, once
     # (app/forge/core/subtitles.py's `carry_subtitles`): never again after that.
     subtitles_carried: bool = False
+    # Series (Folder) and Movie (Folder) got the Move to library folder extra once
+    # (app/forge/core/library.py's `carry_move_option`): never again after that.
+    move_carried: bool = False
 
     @property
     def airgrabber_on(self) -> bool:

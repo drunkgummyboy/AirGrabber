@@ -1291,6 +1291,16 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "New preset extra: Move to library folder sends forged files to your Series or Movies folder.":
+        "Nieuwe extra voor voorinstellingen: Naar bibliotheekmap verplaatsen zet geforgede bestanden in je map Series of Films.",
+    "Series (Folder) and Movie (Folder) have it on; turn it off to rename files where they are.":
+        "Series (Folder) en Movie (Folder) hebben het aan; zet het uit om bestanden te hernoemen waar ze staan.",
+    "The queue now says for each show or film whether its files will move or stay.":
+        "De wachtrij zegt nu per serie of film of de bestanden verplaatst worden of blijven staan.",
+    "The format box shows every code with what it gives, and examples you can click to use.":
+        "Het opmaakvak toont elke code met wat die geeft, en voorbeelden die je met een klik gebruikt.",
+    "New format codes: y for the year, and sxe for the 1x02 style.":
+        "Nieuwe opmaakcodes: y voor het jaar, en sxe voor de stijl 1x02.",
     "MediaForge is now a page in AirGrabber": "MediaForge is nu een pagina in AirGrabber",
     "No second window any more: Series, Movies, MediaForge. The number on it shows how many files need you.":
         "Geen tweede venster meer: Series, Films, MediaForge. Het getal erop laat zien hoeveel bestanden op je wachten.",

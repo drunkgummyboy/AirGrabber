@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.forge.core.library import library_folder, route_inputs
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueEvent, QueueItem
 from app.forge.models.history import RunSource
@@ -33,7 +34,7 @@ from app.forge.ui.queue_rows import build_rows
 from app.forge.ui.look import app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.widgets.virtual_list import VirtualList
-from app.i18n import t, tn
+from app.i18n import N_, t, tn
 from app.ui import theme
 from app.ui.borderless import clearance, make_borderless
 from app.ui.branding import set_own_icon
@@ -56,6 +57,10 @@ if TYPE_CHECKING:
     from app.forge.services import ForgeServices
 
 log = logging.getLogger(__name__)
+
+STAYS_HINT = N_("Nothing changes until you click Rename.")
+MOVES_HINT = N_("These files move to your library folder. Nothing changes until you click Rename.")
+NO_FOLDER = N_("Choose a library folder in Settings › Auto-rename first.")
 
 ICON_FILE = Path(__file__).resolve().parents[2] / "assets" / "forge" / "MediaForge.ico"
 WIDTH, HEIGHT = 860, 600  # CTk units
@@ -115,7 +120,7 @@ class ConfirmWindow(ctk.CTkToplevel):
         line.pack(fill="x", pady=(LINE_GAP, 12))
         self.hint = ctk.CTkLabel(
             line,
-            text=t("Nothing changes until you click Rename."),
+            text=t(STAYS_HINT),
             font=theme.font(_DETAIL_SIZE),
             text_color=theme.TEXT_MUTED,
             anchor="w",
@@ -299,7 +304,11 @@ class ConfirmWindow(ctk.CTkToplevel):
         if self._closed or not self.winfo_exists() or self.preset is None:
             return
         items = self.queue.items
-        rows, self._targets = build_rows(items, self.preset.format)
+        rows, self._targets = build_rows(items, self.preset.format, self._root_of)
+        if self.run_id is None:  # after a run the hint says it's done
+            self.hint.configure(
+                text=t(MOVES_HINT if self.preset.options.move_to_library else STAYS_HINT)
+            )
         by_id = {item.id: item for item in items}
         self._ticks = {item.id: self._ticks.get(item.id, True) for item in items}
         shown = []
@@ -319,6 +328,13 @@ class ConfirmWindow(ctk.CTkToplevel):
             text=tn("Rename {n} file?", "Rename {n} files?", len(items))
         )
         self._update_counts()
+
+    def _root_of(self, item: QueueItem) -> Path:
+        """Where a file's naming rule starts: its library folder when the preset moves it."""
+        if self.preset is None or not self.preset.options.move_to_library:
+            return item.root
+        settings = self.services.settings.current
+        return library_folder(item.media.kind, settings) or item.root
 
     def _on_toggle(self, item_id: int, ticked: bool) -> None:
         self._ticks[item_id] = ticked
@@ -393,7 +409,14 @@ class ConfirmWindow(ctk.CTkToplevel):
         if options.trailer and not self.services.trailers.tools_present():
             options = options.model_copy(update={"trailer": False})
             log.info("Trailers skipped: the trailer tools aren't downloaded yet")
-        inputs = self.queue.plan_inputs(ids)
+        inputs, left = route_inputs(
+            self.queue.plan_inputs(ids), options, self.services.settings.current
+        )
+        if not inputs:  # left alone until the owner has chosen where they go
+            self.result_label.configure(text=t(NO_FOLDER), text_color=theme.WARNING)
+            self.result_label.pack(side="left", fill="x", expand=True)
+            self._set_buttons("normal")
+            return
         plan = await asyncio.to_thread(build_plan, inputs, preset.format, options)
         async with self.services.run_lock:  # never alongside the renamer's or the Inbox's run
             result = await self.services.executor.run(
@@ -407,6 +430,8 @@ class ConfirmWindow(ctk.CTkToplevel):
             )
         self.run_id = result.run_id
         parts = [t("{n} renamed", n=result.renamed)]
+        if left:
+            parts.append(t("{n} left alone: choose a library folder first", n=len(left)))
         if result.skipped:
             parts.append(t("{n} already right", n=result.skipped))
         if result.failed:

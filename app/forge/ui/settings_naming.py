@@ -4,9 +4,11 @@ TMDB tab and the Series / Movies presets from its Library tab, as a section of M
 Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FORGE_SECTIONS`).
 
 - **Presets**: the list in order; the chosen one is edited in place: its name, type Auto /
-  Movie / TV, the format with a live sample on a sample episode and film (a `{code}` the
-  formatter doesn't know is flagged), buttons that add a code at the format's cursor, and its
-  extras. New adds one at the end; Delete removes the chosen one, never the last.
+  Movie / TV and extras beside the list; under both, at the box's full width, the format with a
+  live sample on a sample episode and film (a `{code}` the formatter doesn't know is flagged), a
+  table of the codes and what each gives (a click adds it at the format's cursor) and a table of
+  example formats and their results (a click uses it). New adds a preset at the end; Delete
+  removes the chosen one, never the last.
 - **Library presets**: which preset names what is moved into the Series and Movies folders. The
   choice follows a preset renamed here; a preset deleted here hands it to the first one of the
   same type.
@@ -84,23 +86,47 @@ TYPE_LABELS: dict[TypeHint, str] = {
     TypeHint.TV: N_("TV"),
 }
 UNKNOWN_CODES = N_("⚠ Not a known code: {codes}")
-CODES_CAPTION = N_("Click to add to the format:")
+CODES_CAPTION = N_("Codes: click one to add it")
+EXAMPLES_CAPTION = N_("Examples: click one to use it")
+CODE_HEADER = N_("Code")
+GIVES_HEADER = N_("Gives")
+RESULT_HEADER = N_("Result")
 FOLDER_INSERT = "/"
 DASH_INSERT = " - "
-# The buttons under the format, row by row: what each is called and what it adds.
-FORMAT_CODES: tuple[tuple[str, str], ...] = (
-    (N_("Name (year)"), "{ny}"),
-    (N_("Title"), "{t}"),
-    (N_("Episode name"), "{en}"),
-    (N_("Season + episode"), "{s00e00}"),
-    (N_("Season"), "{s}"),
-    (N_("Episode"), "{e}"),
-    (N_("New folder"), FOLDER_INSERT),
-    (N_("Dash"), DASH_INSERT),
+_FIXED_GIVES: dict[str, str] = {
+    FOLDER_INSERT: N_("starts a new folder"),
+    DASH_INSERT: N_("a dash"),
+}
+
+
+class FormatCode(NamedTuple):
+    """A row of the codes table."""
+
+    shown: str
+    inserts: str  # what a click adds to the format
+    episode_only: bool = False  # not listed for a Movie preset
+
+
+FORMAT_CODES: tuple[FormatCode, ...] = (
+    FormatCode("ny", "{ny}"),
+    FormatCode("t", "{t}"),
+    FormatCode("y", "{y}"),
+    FormatCode("s00e00", "{s00e00}", True),
+    FormatCode("sxe", "{sxe}", True),
+    FormatCode("s", "{s}", True),
+    FormatCode("e", "{e}", True),
+    FormatCode("en", "{en}", True),
+    FormatCode("/", FOLDER_INSERT),
+    FormatCode("-", DASH_INSERT),
 )
-_FIXED_EXAMPLES: dict[str, str] = {FOLDER_INSERT: "\\", DASH_INSERT: "-"}
-CODE_TIP = N_("Adds {code} to the format")
-FOLDER_TIP = N_("Whatever comes before it becomes a folder")
+MOVIE_EXAMPLES: tuple[str, ...] = ("{ny}", "{t}", "{ny}/{ny}")
+SHOW_EXAMPLES: tuple[str, ...] = (
+    "{ny} - {s00e00} - {en}",
+    "{t} - {s00e00}",
+    "{t} {sxe} - {en}",
+    "{ny}/Season {s}/{ny} - {s00e00} - {en}",
+    "{ny}/{ny} - Season {s}/{ny} - {s00e00} - {en}",
+)
 NAME_NEEDED = N_("Give every preset a name.")
 NAME_MISSING = N_("Give this preset a name.")
 NAME_TWICE = N_("Two presets are called “{name}”. Give each its own name.")
@@ -185,11 +211,19 @@ _LABEL_WIDTH = 90  # "Series" / "Movies"
 _MENU_WIDTH = 260
 _BUTTON_WIDTH = 110
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
-_CODE_COLUMNS = 3
-_CODE_GAP = 4  # between the code buttons
-_CODE_LABEL_SIZE = 12
-_CODE_EXAMPLE_SIZE = 10
-_CODE_PAD_X = 7  # inside a code button; "Season + episode" just fits
+_FORMAT_GAP = 14  # above and below the line between the editor and the format
+_TABLE_INSET = 3  # between a table's border and its rows
+_TABLE_WIDTH = _BOX_INNER - 2 * (_TABLE_INSET + 1)  # a row's width
+_ROW_HEIGHT = 26
+_ROW_RADIUS = 5
+_CELL_PAD = 8  # at both sides of a cell's text
+_CELL_SIZE = 13
+_FIT_MARGIN = 4  # the fonts are measured unscaled: room for rounding at the window's scaling
+_CODE_COLUMN = 170  # the codes table's left column
+_EXAMPLE_COLUMN = 262  # the examples table's left column
+_MONO_FAMILY = "Consolas"  # the format and the codes, as in release_panel
+_MONO_SIZE = 12
+_FORMAT_FONT_SIZE = 14  # the format field
 _MATCH_WRAP = _BOX_INNER - _BUTTON_WIDTH - 10
 
 
@@ -261,15 +295,31 @@ def sample_lines(fmt: str, type_hint: TypeHint) -> tuple[list[str], list[str]]:
     return lines, unknown
 
 
-def code_example(code: str) -> str:
-    """What a code button's `code` gives: the formatter's own answer on the sample episode, so
-    it can't drift; the folder separator and the dash as they show in a path."""
-    fixed = _FIXED_EXAMPLES.get(code)
+def code_example(code: str, sample: ResolvedMedia = SAMPLE_EPISODE) -> str:
+    """What a row of the codes table's `code` gives: the formatter's own answer on `sample`, so
+    it can't drift; the folder separator and the dash in words."""
+    fixed = _FIXED_GIVES.get(code)
     if fixed is not None:
-        return fixed
+        return t(fixed)
     from app.forge.core.formatter import render  # not at import time: see the top
 
-    return "\\".join(render(code, SAMPLE_EPISODE, "").parts)
+    return "\\".join(render(code, sample, "").parts)
+
+
+def example_result(fmt: str, sample: ResolvedMedia) -> str:
+    """The path an example format gives for `sample` (folders joined with "\\")."""
+    from app.forge.core.formatter import render  # not at import time: see the top
+
+    return "\\".join(render(fmt, sample, SAMPLE_EXTENSION).parts)
+
+
+def fit_text(text: str, font: ctk.CTkFont, room: int) -> str:
+    """`text` cut with "…" to fit `room` (unscaled units) in `font`."""
+    if font.measure(text) <= room:
+        return text
+    while text and font.measure(text + "…") > room:
+        text = text[:-1]
+    return text.rstrip() + "…"
 
 
 def new_preset_name(taken: Iterable[str]) -> str:
@@ -440,43 +490,37 @@ class _Starter(Protocol):
 # -- the section -----------------------------------------------------------------------------------
 
 
-class CodeChip(ctk.CTkFrame):
-    """A button under the format: the plain word, under it what it gives. All of it is clickable;
-    the hover colour stays while the pointer moves between its parts."""
+def quiet_line(master: Any, look: theme.Look) -> ctk.CTkFrame:
+    """A thin line. Its ground has the colour too: CTk draws nothing in a frame this low."""
+    color = look.PLACEHOLDER  # theme.PANEL_EDGE in the look
+    return ctk.CTkFrame(master, height=1, corner_radius=0, fg_color=color, bg_color=color)
+
+
+class TableRow(ctk.CTkFrame):
+    """A row of a format table: `value`, what a click hands on, and its two cells, each cut with
+    "…" to fit (hovering then shows them whole). All of it is clickable; the hover colour stays
+    while the pointer moves between its parts."""
 
     def __init__(
-        self, master: Any, look: theme.Look, text: str, code: str, on_click: Callable[[str], None]
+        self,
+        master: Any,
+        table: FormatTable,
+        left: str,
+        right: str,
+        value: str,
+        on_click: Callable[[str], None],
     ) -> None:
-        super().__init__(
-            master,
-            fg_color=look.SURFACE,
-            corner_radius=dialog_kit.BUTTON_RADIUS,
-            border_width=1,
-            border_color=look.EDGE,
-        )
-        self.code = code
+        look = table.look
+        super().__init__(master, fg_color=look.SURFACE, corner_radius=_ROW_RADIUS)
+        self.value = value
+        self._table = table
         self._on_click = on_click
         self._surface = look.SURFACE
         self._hover = look.CHIP_HOVER
-        self.grid_columnconfigure(0, weight=1)
-        self.title_label = ctk.CTkLabel(
-            self,
-            text=text,
-            height=0,
-            font=theme.font(_CODE_LABEL_SIZE, bold=True),
-            text_color=theme.TEXT,
-            anchor="w",
-        )
-        self.title_label.grid(row=0, column=0, sticky="ew", padx=_CODE_PAD_X, pady=(4, 0))
-        self.example_label = ctk.CTkLabel(
-            self,
-            text=code_example(code),
-            height=0,
-            font=theme.font(_CODE_EXAMPLE_SIZE),
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-        )
-        self.example_label.grid(row=1, column=0, sticky="ew", padx=_CODE_PAD_X, pady=(0, 4))
+        self.left_text = left
+        self.right_text = right
+        self.left_label, self.right_label = table.cells(self, table.code_font, theme.TEXT)
+        self.right_label.configure(text_color=theme.TEXT_MUTED, font=table.cell_font)
         parts: list[tk.Misc] = [self, *self._descendants(self)]
         for widget in parts:
             # Tk's own option: a CTk widget's configure() keeps it to its inner label.
@@ -484,14 +528,24 @@ class CodeChip(ctk.CTkFrame):
             tk.Misc.bind(widget, "<Button-1>", self._clicked, add="+")
             tk.Misc.bind(widget, "<Enter>", self._entered, add="+")
             tk.Misc.bind(widget, "<Leave>", self._left, add="+")
-        shown = code.strip()  # the dash without its spaces
-        tip = t(FOLDER_TIP) if code == FOLDER_INSERT else t(CODE_TIP, code=shown)
-        self._tip = add_tooltip(self, tip)
+        self._tip = add_tooltip(self, "")
+        self.set_right(right)
+
+    def set_right(self, text: str) -> None:
+        """Show `text` in the right cell (a film's value instead of an episode's)."""
+        table = self._table
+        self.right_text = text
+        left = fit_text(self.left_text, table.code_font, table.left_room)
+        right = fit_text(text, table.cell_font, table.right_room)
+        self.left_label.configure(text=left)
+        self.right_label.configure(text=right)
+        cut = left != self.left_text or right != text
+        self._tip.set_text(f"{self.left_text}\n{text}" if cut else "")
 
     @classmethod
     def _descendants(cls, widget: tk.Misc) -> list[tk.Misc]:
         found: list[tk.Misc] = []
-        # tk.Misc's: a CTkFrame's own leaves out the canvas that is most of the chip.
+        # tk.Misc's: a CTkFrame's own leaves out the canvas that is most of the row.
         for child in tk.Misc.winfo_children(widget):
             found += [child, *cls._descendants(child)]
         return found
@@ -500,7 +554,7 @@ class CodeChip(ctk.CTkFrame):
         """"break": CTk's click on "all" would give the keyboard to the clicked label, after
         `on_click` put it in the format field. The tooltip's click on "all" is skipped with it."""
         self._tip.hide()
-        self._on_click(self.code)
+        self._on_click(self.value)
         return "break"
 
     def _entered(self, _event: tk.Event[Any]) -> None:
@@ -512,8 +566,87 @@ class CodeChip(ctk.CTkFrame):
             left <= event.x_root < left + self.winfo_width()
             and top <= event.y_root < top + self.winfo_height()
         )
-        if not inside:  # moving between the chip's own parts is no leave
+        if not inside:  # moving between the row's own parts is no leave
             self.configure(fg_color=self._surface)
+
+
+class FormatTable(ctk.CTkFrame):
+    """The codes table or the examples table: two headed columns, rows with a line between them.
+    `show` hides a row that doesn't apply, with its line."""
+
+    def __init__(
+        self,
+        master: Any,
+        look: theme.Look,
+        headers: tuple[str, str],
+        column: int,
+        code_font: ctk.CTkFont,
+        cell_font: ctk.CTkFont,
+    ) -> None:
+        super().__init__(
+            master,
+            fg_color=look.SURFACE,
+            corner_radius=dialog_kit.BUTTON_RADIUS,
+            border_width=1,
+            border_color=look.PLACEHOLDER,  # theme.PANEL_EDGE in the look
+        )
+        self.look = look
+        self.code_font = code_font
+        self.cell_font = cell_font
+        self._column = column
+        self.left_room = column - 2 * _CELL_PAD - _FIT_MARGIN
+        self.right_room = _TABLE_WIDTH - column - 2 * _CELL_PAD - _FIT_MARGIN
+        self.rows: list[TableRow] = []
+        self._lines: dict[TableRow, ctk.CTkFrame] = {}
+        self._body = ctk.CTkFrame(self, fg_color="transparent")
+        self._body.pack(fill="x", padx=_TABLE_INSET + 1, pady=_TABLE_INSET + 1)
+        self._body.grid_columnconfigure(0, weight=1)
+        self.header = ctk.CTkFrame(
+            self._body, fg_color=look.PLACEHOLDER, corner_radius=_ROW_RADIUS
+        )
+        self.header.grid(row=0, column=0, sticky="ew")
+        for label, text in zip(self.cells(self.header, cell_font, theme.TEXT_MUTED), headers):
+            label.configure(text=text)
+
+    def cells(
+        self, row: ctk.CTkFrame, font: ctk.CTkFont, color: theme.Color
+    ) -> tuple[ctk.CTkLabel, ctk.CTkLabel]:
+        """A row's two empty cells, in the table's columns."""
+        row.grid_columnconfigure(1, weight=1)
+        left = ctk.CTkLabel(
+            row,
+            text="",
+            width=self._column - 2 * _CELL_PAD,
+            height=_ROW_HEIGHT,
+            font=font,
+            text_color=color,
+            anchor="w",
+        )
+        left.grid(row=0, column=0, sticky="w", padx=_CELL_PAD)
+        right = ctk.CTkLabel(
+            row, text="", height=_ROW_HEIGHT, font=font, text_color=color, anchor="w"
+        )
+        right.grid(row=0, column=1, sticky="ew", padx=(0, _CELL_PAD))
+        return left, right
+
+    def add(
+        self, left: str, right: str, value: str, on_click: Callable[[str], None]
+    ) -> TableRow:
+        at = 2 * len(self.rows) + 1
+        line = quiet_line(self._body, self.look)
+        line.grid(row=at, column=0, sticky="ew")
+        row = TableRow(self._body, self, left, right, value, on_click)
+        row.grid(row=at + 1, column=0, sticky="ew")
+        self.rows.append(row)
+        self._lines[row] = line
+        return row
+
+    def show(self, row: TableRow, shown: bool) -> None:
+        for widget in (row, self._lines[row]):
+            if shown:
+                widget.grid()
+            else:
+                widget.grid_remove()
 
 
 class NamingSection:
@@ -596,33 +729,6 @@ class NamingSection:
             command=self._type_clicked,
         )
         self._place(self.type_switch, gap=4, sticky="w")
-        self._caption(t(FORMAT_CAPTION))
-        self._format = tk.StringVar(master=frame)
-        self.format_entry = self._entry(self._format)
-        self._place(self.format_entry, gap=4)
-        self.format_sample = self._note(theme.TEXT_MUTED)
-        self._place(self.format_sample, gap=6, sticky="w")
-        self.unknown_label = self._note(theme.WARNING)
-        self._unknown_row = self._place(self.unknown_label, gap=4, sticky="w")
-        self.codes_caption = self._note(theme.TEXT_MUTED, size=dialog_kit.SMALL_SIZE)
-        self.codes_caption.configure(text=t(CODES_CAPTION))
-        self._place(self.codes_caption, gap=6, sticky="w")
-        self.code_chips = ctk.CTkFrame(self.editor, fg_color="transparent")
-        self._place(self.code_chips, gap=4)
-        self.chips: list[CodeChip] = []
-        for column in range(_CODE_COLUMNS):
-            self.code_chips.grid_columnconfigure(column, weight=1, uniform="codes")
-        for index, (label, code) in enumerate(FORMAT_CODES):
-            chip = CodeChip(self.code_chips, look, t(label), code, self.insert_code)
-            row_no, column = divmod(index, _CODE_COLUMNS)
-            chip.grid(
-                row=row_no,
-                column=column,
-                sticky="ew",
-                padx=(_CODE_GAP if column else 0, 0),
-                pady=(_CODE_GAP if row_no else 0, 0),
-            )
-            self.chips.append(chip)
         self._caption(t(EXTRAS_CAPTION))
         checks = ctk.CTkFrame(self.editor, fg_color="transparent")
         self._place(checks, gap=2, sticky="w")
@@ -631,12 +737,57 @@ class NamingSection:
         for index, (key, label) in enumerate(OPTION_LABELS.items()):
             variable = tk.BooleanVar(master=frame, value=False)
             box = self._checkbox(checks, t(label), variable, self._options_clicked)
-            box.grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 12), pady=(2, 0))
+            if index == 0:  # moving is first and on its own line: the others fit in two columns
+                box.grid(row=0, column=0, columnspan=2, sticky="w", pady=(2, 0))
+            else:
+                row_no, column = divmod(index - 1, 2)
+                box.grid(row=row_no + 1, column=column, sticky="w", padx=(0, 12), pady=(2, 0))
             self._options[key] = variable
             self.option_boxes[key] = box
         self.delete_button = self._button(self.editor, t(DELETE_PRESET), self.delete_preset)
         self.delete_button.configure(width=140)
         self._place(self.delete_button, gap=_CAPTION_GAP + 2, sticky="w")
+
+        # The format, under the list and the editor: its tables need the box's full width.
+        self._code_font = ctk.CTkFont(family=_MONO_FAMILY, size=_MONO_SIZE)
+        self._cell_font = theme.font(_CELL_SIZE)
+        self.format_area = ctk.CTkFrame(area, fg_color="transparent")
+        self.format_area.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(_FORMAT_GAP, 0))
+        self.format_area.grid_columnconfigure(0, weight=1)
+        self._place(quiet_line(self.format_area, look), gap=0)
+        self._caption(t(FORMAT_CAPTION), master=self.format_area, gap=_FORMAT_GAP)
+        self._format = tk.StringVar(master=frame)
+        self.format_entry = self._entry(
+            self._format,
+            self.format_area,
+            ctk.CTkFont(family=_MONO_FAMILY, size=_FORMAT_FONT_SIZE),
+        )
+        self._place(self.format_entry, gap=4)
+        self.format_sample = self._note(theme.TEXT, self.format_area)
+        self._place(self.format_sample, gap=6, sticky="w")
+        self.unknown_label = self._note(theme.WARNING, self.format_area)
+        self._unknown_row = self._place(self.unknown_label, gap=4, sticky="w")
+        self.codes_caption = self._note(theme.TEXT_MUTED, self.format_area)
+        self.codes_caption.configure(text=t(CODES_CAPTION))
+        self._place(self.codes_caption, gap=_CAPTION_GAP, sticky="w")
+        self.code_table = self._table((t(CODE_HEADER), t(GIVES_HEADER)), _CODE_COLUMN)
+        self._place(self.code_table, gap=4)
+        for code in FORMAT_CODES:
+            example = code_example(code.inserts)
+            self.code_table.add(code.shown, example, code.inserts, self.insert_code)
+        self.examples_caption = self._note(theme.TEXT_MUTED, self.format_area)
+        self.examples_caption.configure(text=t(EXAMPLES_CAPTION))
+        self._place(self.examples_caption, gap=_CAPTION_GAP, sticky="w")
+        self.example_table = self._table((t(FORMAT_CAPTION), t(RESULT_HEADER)), _EXAMPLE_COLUMN)
+        self._place(self.example_table, gap=4)
+        for example, sample in (
+            *((fmt, SAMPLE_MOVIE) for fmt in MOVIE_EXAMPLES),
+            *((fmt, SAMPLE_EPISODE) for fmt in SHOW_EXAMPLES),
+        ):
+            self.example_table.add(
+                example, example_result(example, sample), example, self.use_example
+            )
+        self._tables_for: TypeHint | None = None  # the type the tables show
         # Removed when the page goes (_destroyed): Tk holds a trace's callback, out of the
         # garbage collector's sight, and would keep the closed dialog in memory.
         self._traces = [
@@ -711,13 +862,15 @@ class NamingSection:
             border_color=self._look.EDGE,
         )
 
-    def _entry(self, variable: tk.StringVar) -> ctk.CTkEntry:
+    def _entry(
+        self, variable: tk.StringVar, master: Any = None, font: ctk.CTkFont | None = None
+    ) -> ctk.CTkEntry:
         return ctk.CTkEntry(
-            self.editor,
+            master or self.editor,
             textvariable=variable,
             height=dialog_kit.BUTTON_HEIGHT,
             corner_radius=dialog_kit.BUTTON_RADIUS,
-            font=theme.font(dialog_kit.DETAIL_SIZE),
+            font=font or theme.font(dialog_kit.DETAIL_SIZE),
             fg_color=self._look.SURFACE,
             border_color=self._look.EDGE,
         )
@@ -739,26 +892,33 @@ class NamingSection:
             dynamic_resizing=False,
         )
 
-    def _note(self, color: theme.Color, *, size: int = _TEXT_SIZE) -> ctk.CTkLabel:
+    def _note(self, color: theme.Color, master: Any = None) -> ctk.CTkLabel:
         return ctk.CTkLabel(
-            self.editor,
+            master or self.editor,
             text="",
-            font=theme.font(size),
+            font=theme.font(_TEXT_SIZE),
             text_color=color,
             anchor="w",
             justify="left",
-            wraplength=_EDITOR_WIDTH,
+            wraplength=_BOX_INNER if master else _EDITOR_WIDTH,
         )
 
-    def _caption(self, text: str, *, first: bool = False) -> None:
+    def _table(self, headers: tuple[str, str], column: int) -> FormatTable:
+        return FormatTable(
+            self.format_area, self._look, headers, column, self._code_font, self._cell_font
+        )
+
+    def _caption(
+        self, text: str, *, first: bool = False, master: Any = None, gap: int = _CAPTION_GAP
+    ) -> None:
         caption = ctk.CTkLabel(
-            self.editor,
+            master or self.editor,
             text=text,
             font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
             text_color=theme.TEXT,
             anchor="w",
         )
-        self._place(caption, gap=0 if first else _CAPTION_GAP, sticky="w")
+        self._place(caption, gap=0 if first else gap, sticky="w")
 
     def _place(self, widget: Any, *, gap: int, sticky: str = "ew") -> int:
         row = self._editor_row
@@ -776,13 +936,8 @@ class NamingSection:
 
     def _fitted(self, text: str) -> str:
         """`text` cut with "…" to fit a list button."""
-        font = self._list_font
-        room = _LIST_WIDTH - 2 * _LIST_PAD - 24  # the button's own padding
-        if font.measure(text) <= room:
-            return text
-        while text and font.measure(text + "…") > room:
-            text = text[:-1]
-        return text.rstrip() + "…"
+        # 24: the button's own padding
+        return fit_text(text, self._list_font, _LIST_WIDTH - 2 * _LIST_PAD - 24)
 
     # --- starting ---------------------------------------------------------------------------------
 
@@ -987,8 +1142,10 @@ class NamingSection:
         draft = self._editing
         if draft is None:
             self.editor.grid_remove()
+            self.format_area.grid_remove()
             return
         self.editor.grid()
+        self.format_area.grid()
         self._filling = True
         try:
             self._name.set(draft.preset.name)
@@ -1006,7 +1163,8 @@ class NamingSection:
         if draft is None:
             return
         lines, unknown = sample_lines(draft.preset.format, draft.preset.type)
-        self.format_sample.configure(text="\n".join(f"↳ {line}" for line in lines))
+        self.format_sample.configure(text="\n".join(lines))
+        self._show_tables(draft.preset.type)
         codes = ", ".join("{" + code + "}" for code in unknown)
         self._show_line(self.unknown_label, t(UNKNOWN_CODES, codes=codes) if unknown else "")
         self._show_line(self.name_problem, self._name_problem(draft))
@@ -1020,6 +1178,22 @@ class NamingSection:
         if name in others:
             return t(NAME_TAKEN)
         return ""
+
+    def _show_tables(self, type_hint: TypeHint) -> None:
+        """The codes and examples that apply to `type_hint`: a film has no season or episode.
+        Auto names both kinds, its codes on the sample episode."""
+        if type_hint is self._tables_for:
+            return
+        self._tables_for = type_hint
+        movie = type_hint is TypeHint.MOVIE
+        sample = SAMPLE_MOVIE if movie else SAMPLE_EPISODE
+        for row, code in zip(self.code_table.rows, FORMAT_CODES):
+            row.set_right(code_example(code.inserts, sample))
+            self.code_table.show(row, not (movie and code.episode_only))
+        count = len(MOVIE_EXAMPLES)
+        for index, row in enumerate(self.example_table.rows):
+            for_movies = index < count
+            self.example_table.show(row, type_hint is TypeHint.AUTO or for_movies == movie)
 
     def _edit(self, **update: Any) -> None:
         if self._editing is not None:
@@ -1060,6 +1234,17 @@ class NamingSection:
         position = entry.index("insert")
         entry.insert(position, code)
         entry.icursor(position + len(code))
+        entry.focus_set()
+
+    def use_example(self, fmt: str) -> None:
+        """Make `fmt` the format, with the cursor at its end and the keyboard in the field. As
+        with typing, nothing is stored before Save."""
+        if self._editing is None:
+            return
+        self._format.set(fmt)
+        entry = self.format_entry
+        entry.select_clear()
+        entry.icursor("end")
         entry.focus_set()
 
     def _type_clicked(self, label: str) -> None:

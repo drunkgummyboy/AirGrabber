@@ -49,6 +49,7 @@ from app.forge.core.presets_service import PresetService
 from app.forge.core.queue import Queue, QueueEvent
 from app.forge.core.recovery import recover
 from app.forge.core.settings import ForgeSettingsService
+from app.forge.core.library import carry_move_option
 from app.forge.core.subtitles import ForgeSubtitles, carry_subtitles
 from app.forge.core.undo import UndoService
 from app.forge.db.cache import CacheRepo
@@ -282,6 +283,7 @@ class ForgeServices:
                 airgrabber_settings=airgrabber_settings,
             )
             await carry_subtitles(settings, services.presets, airgrabber_settings)
+            await carry_move_option(settings, services.presets)
             await services.ignored.load()
             await services.ignored.forget_gone(map(Path, watched_folders(settings.current)))
             if settled:

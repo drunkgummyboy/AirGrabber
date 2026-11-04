@@ -166,6 +166,7 @@ class OptionButton(_CanvasWidget):
     ) -> None:
         self.text = text
         self.value = value
+        self.locked = False  # set_locked: shows its value, takes no click
         self._on_toggle = on_toggle
         self._hover = False
         super().__init__(master, look=look, ground=ground)
@@ -230,8 +231,15 @@ class OptionButton(_CanvasWidget):
             self.value = value
             self._paint()
 
+    def set_locked(self, locked: bool) -> None:
+        """Whether clicks are ignored: for a value that can't be changed here."""
+        self.locked = locked
+        self.canvas.configure(cursor="arrow" if locked else "hand2")
+
     def invoke(self) -> None:
         """As a click: switch, and tell `on_toggle`."""
+        if self.locked:
+            return
         self.set(not self.value)
         self._on_toggle(self.value)
 

@@ -62,6 +62,17 @@ class RenderTest(ForgeTestCase):
         r = render("{s00e00}", ep(episode=1, episode_end=2), ".mkv")
         assert r.parts == ("S01E01-E02.mkv",)
 
+    def test_year_and_season_x_episode(self) -> None:
+        self.assertEqual(render("{t} ({y})", ep(), ".mkv").parts, ("VisionQuest (2026).mkv",))
+        self.assertEqual(render("{sxe}", ep(), ".mkv").parts, ("1x02.mkv",))
+        self.assertEqual(render("{sxe}", ep(season=12, episode=3), ".mkv").parts, ("12x03.mkv",))
+        self.assertEqual(render("{SXE}", ep(episode=1, episode_end=2), ".mkv").parts, ("1x01-02.mkv",))
+
+    def test_year_and_season_x_episode_when_missing(self) -> None:
+        self.assertEqual(render("{t} {y}", ep(year=None), ".mkv").parts, ("VisionQuest.mkv",))
+        self.assertEqual(render("{sxe}", ep(season=None, episode=None), ".mkv").parts, ("0x00.mkv",))
+        self.assertEqual(render("{y}", movie(), ".mkv").parts, ("2024.mkv",))
+
     def test_missing_values(self) -> None:
         r = render("{t} {s00e00} {en}", ep(season=None, episode=None, episode_title=None), ".mkv")
         assert r.parts == ("VisionQuest S00E00 Episode 00.mkv",)

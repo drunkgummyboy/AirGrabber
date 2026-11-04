@@ -122,7 +122,11 @@ BROWSE = N_("Browse")
 CHOOSE_WATCH = N_("Choose a download folder to watch")
 CHOOSE_SERIES = N_("Choose the Series library folder")
 CHOOSE_MOVIES = N_("Choose the Movies library folder")
-LIBRARY_POINTER = N_("Which preset each kind is named with: see Naming.")
+LIBRARY_TEXT = N_(
+    "Downloads MediaForge finds always move here. Files you add yourself only when their preset "
+    "has Move to library folder on."
+)
+LIBRARY_POINTER = N_("Choose the preset for each folder under Naming › Library presets.")
 TRIAL_FIRST = N_("Trial first: MediaForge shows what it would do; switch to On when you're happy.")
 MODES: tuple[tuple[Mode, str], ...] = (("off", N_("Off")), ("trial", N_("Trial")), ("on", N_("On")))
 MODE_LINES: dict[Mode, str] = {
@@ -346,9 +350,7 @@ class LibrarySection:
         airgrabber.add(self.airgrabber_list, gap=_ROW_GAP)
 
         # The library folders.
-        library = page.box(
-            t("Library folders"), t("Shows and movies are moved here, each named with its preset.")
-        )
+        library = page.box(t("Library folders"), t(LIBRARY_TEXT))
         rows = library.frame_row()
         rows.grid_columnconfigure(1, weight=1)
         self.folder_labels: dict[str, ctk.CTkLabel] = {}

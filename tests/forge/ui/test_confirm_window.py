@@ -197,6 +197,37 @@ class ActionTests(ConfirmCase):
         [move] = await self.services.moves.moves_from(self.tmp / "m")
         self.assertEqual((move.target.name, move.kind), ("Dune (2021).mkv", MediaKind.MOVIE))
 
+    async def test_a_preset_that_moves_shows_it_and_moves_and_undo_brings_back(self) -> None:
+        movies = self.tmp / "lib" / "Movies"
+        movies.mkdir(parents=True)
+        await self.services.settings.update(movies_folder=str(movies))
+        files = make_files(self.tmp / "m", ["Dune.2021.mkv"])
+        win = await self.open_window(files, "Movie (Folder)")
+        self.assertIn("library folder", win.hint.cget("text"))
+        [item] = win.queue.items
+        target = movies / "Dune (2021)" / "Dune (2021).mkv"
+        self.assertEqual(win._targets[item.id], target)
+        await win.rename()
+        self.assertTrue(target.is_file())
+        self.assertEqual(self.names(self.tmp / "m"), [])
+        await win.undo()
+        self.assertEqual(self.names(self.tmp / "m"), ["Dune.2021.mkv"])
+        self.assertFalse(target.exists())
+
+    async def test_a_preset_that_moves_without_its_folder_leaves_the_file_alone(self) -> None:
+        files = make_files(self.tmp / "m", ["Dune.2021.mkv"])
+        win = await self.open_window(files, "Movie (Folder)")
+        await win.rename()
+        self.assertEqual(self.names(self.tmp / "m"), ["Dune.2021.mkv"])
+        self.assertIn("library folder", win.result_label.cget("text"))
+        self.assertEqual(await self.services.history.list_runs(), [])
+        self.assertEqual(win.rename_button.cget("state"), "normal")
+
+    async def test_a_preset_that_does_not_move_keeps_the_old_hint(self) -> None:
+        files = make_files(self.tmp / "m", ["Dune.2021.mkv"])
+        win = await self.open_window(files)
+        self.assertEqual(win.hint.cget("text"), "Nothing changes until you click Rename.")
+
     async def test_undo_button_reverts(self) -> None:
         files = make_files(self.tmp / "m", ["Dune.2021.mkv"])
         win = await self.open_window(files)

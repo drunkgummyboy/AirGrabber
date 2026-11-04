@@ -212,7 +212,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
 
     @staticmethod
     def click(part: NamingSection, code: str) -> None:
-        next(c for c in part.chips if c.code == code)._clicked(cast(Any, None))
+        next(r for r in part.code_table.rows if r.value == code)._clicked(cast(Any, None))
 
     def select(self, part: NamingSection, name: str) -> None:
         draft = next(d for d in part._drafts if d.preset.name == name)
@@ -284,21 +284,21 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.assertEqual(part.unknown_label.winfo_manager(), "")
         part._format.set("{ny}/Season {s}/{s00e00}")
         self.assertEqual(
-            part.format_sample.cget("text"), r"↳ VisionQuest (2026)\Season 01\S01E02.mkv"
+            part.format_sample.cget("text"), r"VisionQuest (2026)\Season 01\S01E02.mkv"
         )
 
     async def test_a_film_preset_samples_the_film_and_auto_both(self) -> None:
         _dialog, part, _forge = await self.ready()
         self.select(part, "Movie (Folder)")
         self.assertEqual(
-            part.format_sample.cget("text"), r"↳ Dune Part Two (2024)\Dune Part Two (2024).mkv"
+            part.format_sample.cget("text"), r"Dune Part Two (2024)\Dune Part Two (2024).mkv"
         )
         part.set_type(TypeHint.AUTO)
         self.assertEqual(
             part.format_sample.cget("text").splitlines(),
             [
-                r"↳ VisionQuest (2026)\VisionQuest (2026).mkv",
-                r"↳ Dune Part Two (2024)\Dune Part Two (2024).mkv",
+                r"VisionQuest (2026)\VisionQuest (2026).mkv",
+                r"Dune Part Two (2024)\Dune Part Two (2024).mkv",
             ],
         )
 
@@ -314,30 +314,108 @@ class NamingSettingsTests(ForgeAsyncTestCase):
 
     # --- the code buttons under the format --------------------------------------------------------
 
-    async def test_the_code_chips_in_order(self) -> None:
+    async def test_the_codes_table_in_order(self) -> None:
         _dialog, part, _forge = await self.ready()
-        self.assertEqual(part.codes_caption.cget("text"), "Click to add to the format:")
+        self.select(part, "Series (Flat)")
+        self.assertEqual(part.codes_caption.cget("text"), "Codes: click one to add it")
         self.assertEqual(
-            [(chip.title_label.cget("text"), chip.code) for chip in part.chips],
             [
-                ("Name (year)", "{ny}"),
-                ("Title", "{t}"),
-                ("Episode name", "{en}"),
-                ("Season + episode", "{s00e00}"),
-                ("Season", "{s}"),
-                ("Episode", "{e}"),
-                ("New folder", "/"),
-                ("Dash", " - "),
+                (row.left_label.cget("text"), row.right_label.cget("text"), row.value)
+                for row in part.code_table.rows
+            ],
+            [
+                ("ny", "VisionQuest (2026)", "{ny}"),
+                ("t", "VisionQuest", "{t}"),
+                ("y", "2026", "{y}"),
+                ("s00e00", "S01E02", "{s00e00}"),
+                ("sxe", "1x02", "{sxe}"),
+                ("s", "01", "{s}"),
+                ("e", "02", "{e}"),
+                ("en", "Theseus", "{en}"),
+                ("/", "starts a new folder", "/"),
+                ("-", "a dash", " - "),
             ],
         )
+
+    async def test_the_tables_follow_the_type(self) -> None:
+        dialog, part, _forge = await self.ready()
+        self.select(part, "Movie (Flat)")
+        dialog.update()
+        shown = [row for row in part.code_table.rows if row.winfo_manager()]
         self.assertEqual(
-            [chip.example_label.cget("text") for chip in part.chips],
-            [code_example(chip.code) for chip in part.chips],
+            [(row.left_text, row.right_text) for row in shown],
+            [
+                ("ny", "Dune Part Two (2024)"),
+                ("t", "Dune Part Two"),
+                ("y", "2024"),
+                ("/", "starts a new folder"),
+                ("-", "a dash"),
+            ],
         )
+        examples = [row.value for row in part.example_table.rows if row.winfo_manager()]
+        self.assertEqual(examples, list(settings_naming.MOVIE_EXAMPLES))
+        part.set_type(TypeHint.TV)
+        examples = [row.value for row in part.example_table.rows if row.winfo_manager()]
+        self.assertEqual(examples, list(settings_naming.SHOW_EXAMPLES))
+        self.assertEqual(sum(1 for r in part.code_table.rows if r.winfo_manager()), 10)
+        self.assertEqual(part.code_table.rows[0].right_text, "VisionQuest (2026)")
+        part.set_type(TypeHint.AUTO)
+        examples = [row.value for row in part.example_table.rows if row.winfo_manager()]
         self.assertEqual(
-            [(c.grid_info()["row"], c.grid_info()["column"]) for c in part.chips],
-            [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1)],
+            examples, [*settings_naming.MOVIE_EXAMPLES, *settings_naming.SHOW_EXAMPLES]
         )
+
+    async def test_the_examples_results_and_a_click_uses_one(self) -> None:
+        _dialog, part, forge = await self.ready()
+        self.select(part, "Series (Flat)")
+        rows = {row.value: row for row in part.example_table.rows}
+        self.assertEqual(rows["{ny}"].right_text, "Dune Part Two (2024).mkv")
+        self.assertEqual(rows["{t} {sxe} - {en}"].right_text, "VisionQuest 1x02 - Theseus.mkv")
+        self.assertEqual(rows["{t} - {s00e00}"].right_label.cget("text"), "VisionQuest - S01E02.mkv")
+        part._format.set("{ny}/typed by hand")
+        part.format_entry.icursor(0)
+        with mock.patch.object(part.format_entry, "focus_set") as focus_set:
+            result = rows["{t} - {s00e00}"]._clicked(cast(Any, None))
+        focus_set.assert_called_once_with()
+        self.assertEqual(result, "break")
+        self.assertEqual(part.format_entry.get(), "{t} - {s00e00}")
+        self.assertEqual(part.format_entry.index("insert"), len("{t} - {s00e00}"))
+        assert part.editing is not None
+        self.assertEqual(part.editing.preset.format, "{t} - {s00e00}")
+        self.assertEqual(part.format_sample.cget("text"), "VisionQuest - S01E02.mkv")
+        self.assertEqual(self.stored(forge).replaced, [])  # on Save only
+
+    async def test_every_code_and_example_is_known_to_the_formatter(self) -> None:
+        from app.forge.core.formatter import KNOWN_VARIABLES
+
+        self.assertEqual(
+            {code.shown for code in settings_naming.FORMAT_CODES} - {"/", "-"},
+            set(KNOWN_VARIABLES),
+        )
+        for fmt in (*settings_naming.MOVIE_EXAMPLES, *settings_naming.SHOW_EXAMPLES):
+            self.assertEqual(sample_lines(fmt, TypeHint.AUTO)[1], [], fmt)
+
+    async def test_a_cell_too_long_is_cut_and_its_tip_shows_it_whole(self) -> None:
+        dialog, part, _forge = await self.ready()
+        self.select(part, "Series (Flat)")
+        dialog.update()
+        row = part.example_table.rows[-1]  # the longest
+        self.assertTrue(row.right_label.cget("text").endswith("…"))
+        self.assertEqual(row._tip.text, f"{row.left_text}\n{row.right_text}")
+        self.assertEqual(part.code_table.rows[0]._tip.text, "")  # fits: no tip
+        room = part.format_area.winfo_width()
+        for table in (part.code_table, part.example_table):
+            self.assertEqual(table.winfo_width(), room)  # nothing pushed the box wider
+
+    async def test_the_format_spans_the_box_below_the_list(self) -> None:
+        dialog, part, _forge = await self.ready()
+        dialog.update()
+        self.assertGreaterEqual(
+            part.format_area.winfo_rooty(),
+            part.preset_list.winfo_rooty() + part.preset_list.winfo_height(),
+        )
+        self.assertEqual(part.format_area.winfo_rootx(), part.preset_list.winfo_rootx())
+        self.assertEqual(part.format_area.winfo_width(), part.format_entry.winfo_width())
 
     async def test_a_click_adds_at_the_cursor(self) -> None:
         _dialog, part, forge = await self.ready()
@@ -354,7 +432,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         assert part.editing is not None
         self.assertEqual(part.editing.preset.format, "{ny} - {s00e00}{en}")
         self.assertEqual(
-            part.format_sample.cget("text"), "↳ VisionQuest (2026) - S01E02Theseus.mkv"
+            part.format_sample.cget("text"), "VisionQuest (2026) - S01E02Theseus.mkv"
         )
         self.assertEqual(self.stored(forge).replaced, [])
 
@@ -385,20 +463,20 @@ class NamingSettingsTests(ForgeAsyncTestCase):
     async def test_a_click_puts_the_keyboard_in_the_field(self) -> None:
         _dialog, part, _forge = await self.ready()
         with mock.patch.object(part.format_entry, "focus_set") as focus_set:
-            result = part.chips[0]._clicked(cast(Any, None))
+            result = part.code_table.rows[0]._clicked(cast(Any, None))
         focus_set.assert_called_once_with()
         self.assertEqual(result, "break")  # CTk's click on "all" would take the focus back
 
-    async def test_all_of_a_chip_is_clickable(self) -> None:
+    async def test_all_of_a_row_is_clickable(self) -> None:
         _dialog, part, _forge = await self.ready()
-        chip = part.chips[0]
+        row = part.code_table.rows[0]
         parts = (
-            chip,
-            chip._canvas,
-            chip.title_label._label,
-            chip.title_label._canvas,
-            chip.example_label._label,
-            chip.example_label._canvas,
+            row,
+            row._canvas,
+            row.left_label._label,
+            row.left_label._canvas,
+            row.right_label._label,
+            row.right_label._canvas,
         )
         for widget in parts:
             bound = tk.Misc.bind(widget)
@@ -413,10 +491,10 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         part.insert_code("{t}")
         self.assertEqual(part.format_entry.get(), before)
 
-    async def test_the_chip_keeps_its_hover_colour_between_its_parts(self) -> None:
+    async def test_the_row_keeps_its_hover_colour_between_its_parts(self) -> None:
         dialog, part, _forge = await self.ready()
         dialog.update()
-        chip = part.chips[0]
+        chip = part.code_table.rows[0]
         look = app_look()
         self.assertEqual(chip.cget("fg_color"), look.SURFACE)
         chip._entered(cast(Any, None))
@@ -424,29 +502,19 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         x, y = chip.winfo_rootx(), chip.winfo_rooty()
         chip._left(cast(Any, SimpleNamespace(x_root=x, y_root=y)))  # on to the label
         self.assertEqual(chip.cget("fg_color"), look.CHIP_HOVER)
-        chip._left(cast(Any, SimpleNamespace(x_root=x - 1, y_root=y)))  # off the chip
+        chip._left(cast(Any, SimpleNamespace(x_root=x - 1, y_root=y)))  # off the row
         self.assertEqual(chip.cget("fg_color"), look.SURFACE)
 
-    async def test_dutch_chips(self) -> None:
+    async def test_dutch_tables(self) -> None:
         i18n.set_language(Language.NL)
         _dialog, part, _forge = await self.ready()
-        self.assertEqual(part.codes_caption.cget("text"), "Klik om toe te voegen aan de opmaak:")
+        self.assertEqual(part.codes_caption.cget("text"), "Codes: klik erop om toe te voegen")
         self.assertEqual(
-            [chip.title_label.cget("text") for chip in part.chips],
-            [
-                "Naam (jaar)",
-                "Titel",
-                "Afleveringsnaam",
-                "Seizoen + afl.",
-                "Seizoen",
-                "Aflevering",
-                "Nieuwe map",
-                "Streepje",
-            ],
+            part.examples_caption.cget("text"), "Voorbeelden: klik erop om te gebruiken"
         )
-
-    # --- new / edit / rename / delete, stored on Save ---------------------------------------------
-
+        rows = {row.value: row for row in part.code_table.rows}
+        self.assertEqual(rows["/"].right_text, "begint een nieuwe map")
+        self.assertEqual(rows[" - "].right_text, "een streepje")
     async def test_a_new_preset_is_stored_on_save_only(self) -> None:
         dialog, part, forge = await self.ready()
         part.new_button.invoke()
@@ -861,16 +929,19 @@ class NamingRulesTests(ForgeTestCase):
         for code, example in (
             ("{ny}", "VisionQuest (2026)"),
             ("{t}", "VisionQuest"),
+            ("{y}", "2026"),
             ("{en}", "Theseus"),
             ("{s00e00}", "S01E02"),
+            ("{sxe}", "1x02"),
             ("{s}", "01"),
             ("{e}", "02"),
         ):
             self.assertEqual(code_example(code), example)
             lines, _unknown = sample_lines(code, TypeHint.TV)
             self.assertEqual(lines, [example + settings_naming.SAMPLE_EXTENSION])
-        self.assertEqual(code_example("/"), "\\")
-        self.assertEqual(code_example(" - "), "-")
+        self.assertEqual(code_example("{y}", settings_naming.SAMPLE_MOVIE), "2024")
+        self.assertEqual(code_example("/"), "starts a new folder")
+        self.assertEqual(code_example(" - "), "a dash")
 
     def test_match_texts(self) -> None:
         self.assertEqual(match_text(OFFICE), "the office → The Office (2005) · show")

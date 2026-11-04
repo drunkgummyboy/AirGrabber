@@ -108,7 +108,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual([b.title for b in bands(rows)], ["Dune", "Severance", "Ted Lasso"])
         ted = next(b for b in bands(rows) if b.title == "Ted Lasso")
         self.assertEqual(ted.subtitle, "Season 4 · 2 episodes")
-        self.assertEqual(ted.dest, "→ Ted Lasso › Ted Lasso - Season 04")
+        self.assertEqual(ted.dest, "📁 Stays here, in Ted Lasso › Ted Lasso - Season 04")
         self.assertEqual((ted.state, ted.state_text), ("ready", "Ready"))
         lines = rows.rows[rows.rows.index(ted) + 1 :]
         self.assertEqual([r.code for r in lines], ["S04E03", "S04E05"])  # by episode
@@ -122,7 +122,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(rows.bands[ted.key], [items[2].id, items[0].id])
         self.assertEqual(rows.targets[items[2].id].parent.name, "Ted Lasso - Season 04")
         dune = bands(rows)[0]
-        self.assertEqual((dune.subtitle, dune.dest), ("Film · 2021", "→ Dune (2021)"))
+        self.assertEqual((dune.subtitle, dune.dest), ("Film · 2021", "📁 Stays here, in Dune (2021)"))
         film_line = rows.rows[rows.rows.index(dune) + 1]
         self.assertEqual((film_line.title, film_line.new), ("Dune (2021).mkv", True))
         self.assertEqual((film_line.faint, film_line.faint_label), ("Dune.2021.mkv", "Now:"))
@@ -235,13 +235,13 @@ class QueueRowsTests(ForgeTestCase):
         ]
         [band] = bands(build(items, rule=rule(SERIES_FOLDER)))
         self.assertEqual(band.subtitle, "Seasons 1, 3 · 2 episodes")
-        self.assertEqual(band.dest, "→ VisionQuest › …")
+        self.assertEqual(band.dest, "📁 Stays here, in VisionQuest › …")
 
     def test_seasons_in_a_row_are_a_range(self) -> None:
         items = [episode(self.folder, f"Show.S0{s}E01.mkv", "Show", s, 1) for s in (1, 2, 3)]
         [band] = bands(build(items))
         self.assertEqual(band.subtitle, "Seasons 1–3 · 3 episodes")
-        self.assertEqual(band.dest, "→ the same folder")
+        self.assertEqual(band.dest, "📁 Stays in its folder")
 
     def test_a_film_band(self) -> None:
         two = [
@@ -274,7 +274,7 @@ class QueueRowsTests(ForgeTestCase):
         )
         rows = build([item], naming=lambda _item: (SERIES_FOLDER, series))
         [band] = bands(rows)
-        self.assertEqual(band.dest, "→ Series › VisionQuest › VisionQuest - Season 01")
+        self.assertEqual(band.dest, "📦 Moves to Series › VisionQuest › VisionQuest - Season 01")
         self.assertEqual(rows.targets[item.id].parents[1], series / "VisionQuest")
         self.assertEqual((band.state, band.state_text), ("ready", "Ready"))
         self.assertEqual(rows.needs, 0)
@@ -349,7 +349,7 @@ class QueueRowsTests(ForgeTestCase):
     def test_shared_folder(self) -> None:
         shared = queue_rows._shared_folder  # pyright: ignore[reportPrivateUsage]
         self.assertEqual(shared([("A", "B"), ("A", "B")]), "A › B")
-        self.assertEqual(shared([(), ()]), "the same folder")
+        self.assertEqual(shared([(), ()]), "")
         self.assertEqual(shared([("A", "B"), ("A", "C")]), "A › …")
         self.assertEqual(shared([("A",), ("C",)]), "several folders")
 
@@ -370,7 +370,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(show.state_text, "Klaar")
         self.assertEqual(dune.state_text, "Hernoemd")
         self.assertEqual(show.subtitle, "Seizoenen 1–2 · 2 afleveringen")
-        self.assertEqual(show.dest, "→ dezelfde map")
+        self.assertEqual(show.dest, "📁 Blijft in zijn map")
         self.assertEqual(
             show.actions, (("explorer", "📂"), ("ignore", "Negeren"), ("rename", "Hernoemen"))
         )

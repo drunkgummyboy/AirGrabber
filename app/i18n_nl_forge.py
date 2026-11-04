@@ -26,7 +26,37 @@ NL: dict[str, str] = {
     "Film · {year}": "Film · {year}",
     "Seasons {first}–{last}": "Seizoenen {first}–{last}",
     "Seasons {numbers}": "Seizoenen {numbers}",
-    "the same folder": "dezelfde map",
+    "📦 Moves to {folder}": "📦 Gaat naar {folder}",
+    "📦 Would move to {folder}": "📦 Zou naar {folder} gaan",
+    "📦 Moved to {folder}": "📦 Verplaatst naar {folder}",
+    "📁 Stays in its folder": "📁 Blijft in zijn map",
+    "📁 Stays here, in {folder}": "📁 Blijft hier, in {folder}",
+    "📁 Stayed in its folder": "📁 Bleef in zijn map",
+    "📁 Stayed here, in {folder}": "📁 Bleef hier, in {folder}",
+    "⚠ Choose your Series folder in Settings › Auto-rename":
+        "⚠ Kies je map Series in Instellingen › Automatisch hernoemen",
+    "⚠ Choose your Movies folder in Settings › Auto-rename":
+        "⚠ Kies je map Films in Instellingen › Automatisch hernoemen",
+    "Move to library folder": "Naar bibliotheekmap verplaatsen",
+    "Move": "Verplaatsen",
+    "To library folder": "Naar bibliotheekmap",
+    "After forging, the files go to your Series or Movies folder. Off: they are only renamed, "
+    "where they are.":
+        "Na het forgen gaan de bestanden naar je map Series of Films. Uit: ze krijgen alleen een "
+        "nieuwe naam, op de plek waar ze staan.",
+    "Downloads MediaForge finds always move to your library folder.":
+        "Downloads die MediaForge vindt, gaan altijd naar je bibliotheekmap.",
+    "{n} file wasn't forged: choose its library folder in Settings › Auto-rename.":
+        "{n} bestand is niet geforged: kies de bibliotheekmap in Instellingen › Automatisch "
+        "hernoemen.",
+    "{n} files weren't forged: choose their library folder in Settings › Auto-rename.":
+        "{n} bestanden zijn niet geforged: kies de bibliotheekmap in Instellingen › Automatisch "
+        "hernoemen.",
+    "These files move to your library folder. Nothing changes until you click Rename.":
+        "Deze bestanden gaan naar je bibliotheekmap. Er verandert niets tot je op Hernoemen klikt.",
+    "Choose a library folder in Settings › Auto-rename first.":
+        "Kies eerst een bibliotheekmap in Instellingen › Automatisch hernoemen.",
+    "{n} left alone: choose a library folder first": "{n} met rust gelaten: kies eerst een bibliotheekmap",
     "several folders": "meerdere mappen",
     "TMDB isn't sure · {n} file": "TMDB weet het niet zeker · {n} bestand",
     "TMDB isn't sure · {n} files": "TMDB weet het niet zeker · {n} bestanden",
@@ -223,8 +253,10 @@ NL: dict[str, str] = {
     "MediaForge looks here every few minutes for downloads that have finished.":
         "MediaForge kijkt hier om de paar minuten naar voltooide downloads.",
     "Library folders": "Bibliotheekmappen",
-    "Shows and movies are moved here, each named with its preset.":
-        "Series en films worden hierheen verplaatst, elk met de naam uit zijn voorinstelling.",
+    "Downloads MediaForge finds always move here. Files you add yourself only when their preset "
+    "has Move to library folder on.":
+        "Downloads die MediaForge vindt, gaan altijd hierheen. Bestanden die je zelf toevoegt "
+        "alleen als hun voorinstelling Naar bibliotheekmap verplaatsen aan heeft.",
     "None yet": "Nog geen",
     "Not chosen yet": "Nog niet gekozen",
     # app/forge/ui/confirm_window.py
@@ -251,7 +283,7 @@ NL: dict[str, str] = {
     "{n} left as they are, such as: {reason}": "{n} ongemoeid gelaten, bijvoorbeeld: {reason}",
     # app/forge/ui/settings_pages.py
     "MediaForge": "MediaForge",
-    "Which preset each kind is named with: see Naming.":
+    "Choose the preset for each folder under Naming › Library presets.":
         "Met welke voorinstelling elke soort een naam krijgt: zie Naamgeving.",
     "Getting MediaForge ready…": "MediaForge klaarmaken…",
     "MediaForge's settings couldn't be saved. The log has the details.":
@@ -436,17 +468,13 @@ NL: dict[str, str] = {
     "Movie": "Film",
     "TV": "Tv",
     "⚠ Not a known code: {codes}": "⚠ Geen bekende code: {codes}",
-    "Click to add to the format:": "Klik om toe te voegen aan de opmaak:",
-    "Name (year)": "Naam (jaar)",
-    "Title": "Titel",
-    "Episode name": "Afleveringsnaam",
-    "Season + episode": "Seizoen + afl.",
-    "Season": "Seizoen",
-    "Episode": "Aflevering",
-    "New folder": "Nieuwe map",
-    "Dash": "Streepje",
-    "Adds {code} to the format": "Voegt {code} toe aan de opmaak",
-    "Whatever comes before it becomes a folder": "Wat ervoor staat, wordt een map",
+    "Codes: click one to add it": "Codes: klik erop om toe te voegen",
+    "Examples: click one to use it": "Voorbeelden: klik erop om te gebruiken",
+    "Code": "Code",
+    "Gives": "Geeft",
+    "Result": "Resultaat",
+    "starts a new folder": "begint een nieuwe map",
+    "a dash": "een streepje",
     "Give every preset a name.": "Geef elke voorinstelling een naam.",
     "Give this preset a name.": "Geef deze voorinstelling een naam.",
     "Two presets are called “{name}”. Give each its own name.":

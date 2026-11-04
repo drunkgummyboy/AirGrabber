@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.forge.models.media import ResolvedMedia
 
-KNOWN_VARIABLES = ("ny", "t", "s", "e", "s00e00", "en")
+KNOWN_VARIABLES = ("ny", "t", "y", "s", "e", "s00e00", "sxe", "en")
 
 _FORBIDDEN = set('<>:"/\\|?*') | {chr(c) for c in range(32)}
 _SPACES = re.compile(r"\s+")
@@ -47,12 +47,17 @@ def _values(media: ResolvedMedia) -> dict[str, str]:
     e = f"{media.episode:02d}" if media.episode is not None else "00"
     if media.episode_end is not None:
         e += f"-E{media.episode_end:02d}"
+    sxe = f"{media.season or 0}x{media.episode or 0:02d}"  # 1x02, 1x02-03
+    if media.episode_end is not None:
+        sxe += f"-{media.episode_end:02d}"
     raw = {
         "ny": media.ny,
         "t": media.title,
+        "y": str(media.year) if media.year else "",
         "s": s,
         "e": e,
         "s00e00": f"S{s}E{e}",
+        "sxe": sxe,
         "en": media.episode_title or f"Episode {e}",
     }
     # Values never contain path separators, so a "/" in an episode name can't make a folder.

@@ -58,6 +58,17 @@ STATE_WORDS: dict[State, str] = {
     "done": DONE,
 }
 
+# Where a band's files go, after its subtitle. A glyph and a colour apart, to see it at a glance.
+MOVES_TO = N_("📦 Moves to {folder}")
+WOULD_MOVE = N_("📦 Would move to {folder}")
+MOVED_TO = N_("📦 Moved to {folder}")
+STAYS = N_("📁 Stays in its folder")
+STAYS_IN = N_("📁 Stays here, in {folder}")
+STAYED = N_("📁 Stayed in its folder")
+STAYED_IN = N_("📁 Stayed here, in {folder}")
+NO_SERIES_FOLDER = N_("⚠ Choose your Series folder in Settings › Auto-rename")
+NO_MOVIES_FOLDER = N_("⚠ Choose your Movies folder in Settings › Auto-rename")
+
 EMPTY_TITLE = N_("Drop video files or folders here")
 EMPTY_HINT = N_("or add them with the buttons above. Nothing is renamed until you click Forge.")
 # The queue isn't empty but nothing matches the filter: (title, hint) per filter.
@@ -71,9 +82,11 @@ def _files(n: int) -> str:
     return tn("{n} file", "{n} files", n)
 
 
-def build_rows(items: Sequence[QueueItem], fmt: str) -> tuple[list[Row], dict[int, Path]]:
+def build_rows(
+    items: Sequence[QueueItem], fmt: str, root_of: Callable[[QueueItem], Path] | None = None
+) -> tuple[list[Row], dict[int, Path]]:
     """Rows grouped by destination folder, plus each item's full target path (the right-click
-    confirm window's list)."""
+    confirm window's list). `root_of`: where its naming rule starts (default: beside the file)."""
     groups: dict[str, list[Row]] = {}
     labels: dict[str, str] = {}
     counts: dict[str, tuple[int, bool]] = {}
@@ -81,7 +94,8 @@ def build_rows(items: Sequence[QueueItem], fmt: str) -> tuple[list[Row], dict[in
     for item in items:
         media = item.media
         rendered = render(fmt, media, item.path.suffix)
-        targets[item.id] = item.root.joinpath(*rendered.parts)
+        root = item.root if root_of is None else root_of(item)
+        targets[item.id] = root.joinpath(*rendered.parts)
         if len(rendered.parts) > 1:
             group, label = "\\".join(rendered.parts[:-1]), rendered.parts[-2]
         elif media.kind is MediaKind.EPISODE:
@@ -178,15 +192,33 @@ def _seasons(group: Sequence[QueueItem]) -> str:
 
 
 def _shared_folder(folders: Sequence[tuple[str, ...]]) -> str:
-    """Where a band's files go: their folder, or the part their folders share ("Show › …")."""
+    """Where a band's files go: their folder ("" for none), or the part their folders share
+    ("Show › …")."""
     if all(f == folders[0] for f in folders):
-        return " › ".join(folders[0]) or t("the same folder")
+        return " › ".join(folders[0])
     shared: list[str] = []
     for parts in zip(*folders, strict=False):
         if any(part != parts[0] for part in parts):
             break
         shared.append(parts[0])
     return " › ".join([*shared, "…"]) if shared else t("several folders")
+
+
+def _destination(
+    state: State, kind: MediaKind, moves: bool, library_known: bool, folder: str
+) -> tuple[str, Literal["moves", "stays", "warn"]]:
+    """A band's destination text and how it shows. `folder`: where in its library, or beside
+    its files, its files go."""
+    if state == "needs":
+        return "", "moves"
+    if not moves:
+        if not folder:
+            return t(STAYED if state == "done" else STAYS), "stays"
+        return t(STAYED_IN if state == "done" else STAYS_IN, folder=folder), "stays"
+    if not library_known:
+        return t(NO_SERIES_FOLDER if kind is MediaKind.EPISODE else NO_MOVIES_FOLDER), "warn"
+    words = {"done": MOVED_TO, "would": WOULD_MOVE}.get(state, MOVES_TO)
+    return t(words, folder=folder), "moves"
 
 
 def episode_code(item: QueueItem) -> str:
@@ -232,6 +264,7 @@ def build_queue_rows(
     rule: Callable[[QueueItem], str],
     *,
     naming: Callable[[QueueItem], tuple[str, Path]] | None = None,
+    moving: Callable[[QueueItem], tuple[bool, Path | None]] | None = None,
     show: Show = "all",
     trial: bool = False,
     today: date | None = None,
@@ -240,15 +273,18 @@ def build_queue_rows(
 ) -> QueueRows:
     """The queue's rows for the filter `show`, with every filter's count.
 
-    `rule` gives a dropped file its naming rule (its band's preset, or the band's Custom rule):
-    it is renamed where it is. `naming` gives a watched download its library folder and naming
-    rule. `trial`: renaming on its own is a trial, so watched downloads only "would" be renamed.
+    `rule` gives a dropped file its naming rule (its band's preset, or the band's Custom rule).
+    `moving` says whether its band moves it to a library folder, and that folder (None: not chosen
+    yet); otherwise it is renamed where it is. `naming` gives a watched download its library folder
+    and naming rule: those always move. `trial`: renaming on its own is a trial, so watched
+    downloads only "would" be renamed.
     Only today's finished files are shown when `today` is set. `chip`: a band's preset chip
     (from its first file; none on a done band). `cc`: how a done band's CC ▾ shows (None: not).
     """
     out = QueueRows()
     rendered = {}
     roots: dict[int, Path] = {}
+    moves: dict[int, bool] = {}  # going to a library folder: whether that folder is known
     states: dict[int, State] = {}
     counts: dict[Show, int] = {"all": 0, "needs": 0, "ready": 0}
     kinds: dict[Kind, int] = {"series": 0, "movies": 0}
@@ -268,6 +304,12 @@ def build_queue_rows(
         item_fmt, root = rule(item), item.root
         if naming is not None and item.watched is not None:
             item_fmt, root = naming(item)
+            moves[item.id] = True
+        elif moving is not None:
+            wanted, library = moving(item)
+            if wanted:
+                moves[item.id] = library is not None
+                root = library or root
         rendered[item.id] = render(item_fmt, item.media, item.path.suffix)
         roots[item.id] = root
         out.targets[item.id] = root.joinpath(*rendered[item.id].parts)
@@ -275,7 +317,8 @@ def build_queue_rows(
     out.counts, out.kinds = counts, kinds
 
     def folders(item: QueueItem) -> tuple[str, ...]:
-        library = (roots[item.id].name,) if item.watched is not None and naming else ()
+        root = roots[item.id]
+        library = (root.name or str(root),) if moves.get(item.id) else ()
         return (*library, *rendered[item.id].parts[:-1])
 
     # Needs you first, then ready and would-rename by name, then today's done ones.
@@ -329,7 +372,13 @@ def build_queue_rows(
                 else (("ignore", t(IGNORE)), ("rename", t("Rename")))
             )
         actions = ((EXPLORER_ACTION, EXPLORER_LABEL), *actions)
-        dest = "" if state == "needs" else "→ " + _shared_folder([folders(i) for i in group])
+        dest, dest_look = _destination(
+            state,
+            first.kind,
+            group[0].id in moves,
+            moves.get(group[0].id, False),
+            _shared_folder([folders(i) for i in group]),
+        )
         out.rows.append(
             Row(
                 key=band_key,
@@ -337,6 +386,7 @@ def build_queue_rows(
                 title=first.title if episodes or state != "needs" else first.ny,
                 subtitle=_subtitle(state, group, episodes),
                 dest=dest,
+                dest_look=dest_look,
                 badge=first.title,
                 art=first.poster_path,
                 backdrop=first.backdrop_path,

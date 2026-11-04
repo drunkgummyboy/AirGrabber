@@ -264,7 +264,7 @@ class QueueTest(QueueCase):
         self.assertEqual(self.bands(), ["Dune", "Severance", "Ted Lasso"])
         ted = self.band("Ted Lasso")
         self.assertEqual(ted.subtitle, "Season 4 · 2 episodes")
-        self.assertTrue(ted.dest.startswith("→ Ted Lasso"))
+        self.assertIn("Choose your Series folder", ted.dest)  # the preset moves; none is chosen
         rows = self.view.list.rows
         after = rows[rows.index(ted) + 1 : rows.index(ted) + 3]
         self.assertEqual([r.code for r in after], ["S04E03", "S04E05"])
@@ -819,6 +819,7 @@ class QueueTest(QueueCase):
 
     async def test_trailers_ask_for_their_tools_first(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.services.settings.update(movies_folder=str(self.tmp / "lib"))
         await self.add_and_settle(self.tmp / "in")
         await self.choose("Movie (Folder)")  # posters and a trailer
         self.assertTrue(self.view.option_buttons["Trailer"].value)
@@ -831,8 +832,7 @@ class QueueTest(QueueCase):
         self.view.ask = skip
         await self.view.forge()
         self.assertEqual(asked, ["Download trailer tools?"])
-        self.assertTrue((self.tmp / "in" / "Dune (2021)" / "Dune (2021).mkv").exists())
-        self.assertEqual(self.names(self.tmp / "in" / "Dune (2021)"), ["Dune (2021).mkv"])
+        self.assertEqual(self.names(self.tmp / "lib" / "Dune (2021)"), ["Dune (2021).mkv"])
 
     async def test_option_buttons_follow_the_selected_band_and_their_clicks(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Show.S01E02.mkv"])
@@ -842,11 +842,12 @@ class QueueTest(QueueCase):
         self.select_band("Dune")
         await pump(self.root, 0.1)
         on = {name for name, b in view.option_buttons.items() if b.value}
-        self.assertEqual(on, {"Poster", "Trailer"})
+        self.assertEqual(on, {"To library folder", "Poster", "Trailer"})
         self.assertFalse(view.option_buttons["Season posters"].winfo_ismapped())  # shows only
         self.assertEqual(
             view.option_keys(),
             {
+                "To library folder": "move_to_library",
                 "Poster": "movie_poster",
                 "Trailer": "trailer",
                 "Subtitles": "subtitles",
@@ -862,7 +863,7 @@ class QueueTest(QueueCase):
         self.select_band("Show")
         await pump(self.root, 0.1)
         on = {name for name, b in view.option_buttons.items() if b.value}
-        self.assertEqual(on, {"Poster", "Season posters"})
+        self.assertEqual(on, {"To library folder", "Poster", "Season posters"})
         self.assertTrue(view.option_buttons["Season posters"].winfo_ismapped())
         self.assertFalse(view.changed_note.winfo_ismapped())  # the shows' preset is unchanged
         self.assertEqual(view.fmt, "{ny}/{ny} - Season {s}/{ny} - {s00e00} - {en}")
@@ -875,7 +876,7 @@ class QueueTest(QueueCase):
         await view.save_to_preset()
         stored = next(p for p in await self.services.presets.list() if p.name == "Movie (Folder)")
         self.assertEqual(stored.format, "{t}")
-        self.assertEqual(stored.options, PresetOptions(movie_poster=True))
+        self.assertEqual(stored.options, PresetOptions(move_to_library=True, movie_poster=True))
         self.assertFalse(view.choice.changed)
         self.assertIsNone(view.choice.custom)
         await pump(self.root, 0.1)
@@ -1061,7 +1062,7 @@ class WatchedTest(QueueCase):
         downloads, _, _ = await self.library()
         await self.watched(downloads, "VisionQuest.S01E02.Theseus.mkv")
         [band] = self.rows("band")
-        self.assertIn("→ Series › VisionQuest › VisionQuest - Season 01", band.dest)
+        self.assertIn("📦 Moves to Series › VisionQuest › VisionQuest - Season 01", band.dest)
         self.assertEqual(band.state_text, "Ready")
 
     async def test_held_files_need_you_with_their_reason(self) -> None:
@@ -1505,6 +1506,7 @@ class PresetPerBandTest(QueueCase):
         return preset.name if preset is not None else ""
 
     async def test_two_films_with_their_own_presets(self) -> None:
+        await self.services.settings.update(movies_folder=str(self.tmp / "lib"))
         await self.films_and_show()
         self.view.set_band_preset([self.item("Dune").id], self.preset("Movie (Flat)"))
         self.view.set_band_preset([self.item("Heat").id], self.preset("Movie (Folder)"))
@@ -1519,7 +1521,7 @@ class PresetPerBandTest(QueueCase):
         await pump(self.root, 0.2)
         names = self.names(self.tmp / "in")
         self.assertIn("Dune (2021).mkv", names)  # flat
-        self.assertTrue((self.tmp / "in" / "Heat (1995)" / "Heat (1995).mkv").exists())
+        self.assertTrue((self.tmp / "lib" / "Heat (1995)" / "Heat (1995).mkv").exists())  # moved
 
     async def _skip_trailers(self, title: str, message: str, choices: Sequence[str]) -> str | None:
         return "Skip trailers"
@@ -1673,7 +1675,7 @@ class PresetPerBandTest(QueueCase):
         self.assertEqual(self.band("Dune").chip, "Movie (Folder) ▾")  # the library's at first
         self.view.set_band_preset([item_id], self.preset("Movie (Flat)"))
         self.view.refresh()
-        self.assertIn("→ Movies", self.band("Dune").dest)
+        self.assertIn("📦 Moves to Movies", self.band("Dune").dest)
         self.view.list.on_action(self.band("Dune").key, "rename")
         target = movies / "Dune (2021).mkv"  # flat, in the Movies library
         item = self.services.queue.get(item_id)

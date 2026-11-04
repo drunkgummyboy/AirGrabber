@@ -134,7 +134,8 @@ class Row(BaseModel):
     band: int | None = None  # an item line's band: the pointer over either shows its buttons
     state: Literal["", "needs", "ready", "would", "done"] = ""  # a band's status (dot + word)
     state_text: str = ""  # that status's word, translated
-    dest: str = ""  # a band's destination ("→ Series › …"), after its subtitle in the link colour
+    dest: str = ""  # a band's destination ("📦 Moves to Series › …"), after its subtitle
+    dest_look: Literal["moves", "stays", "warn"] = "moves"  # link, muted or warning colour
     faded: bool = False  # done today: drawn quieter
 
 
@@ -195,6 +196,11 @@ class _Colours:
         self.success = pick(theme.SUCCESS)
         self.warning = pick(theme.WARNING)
         self.faded = faded_fill(look)
+        self.dests: dict[str, str] = {
+            "moves": self.link,
+            "stays": self.muted,
+            "warn": self.warning,
+        }
         self.states: dict[str, str] = {
             "needs": self.warning,
             "ready": self.link,
@@ -771,7 +777,7 @@ class VirtualList(ctk.CTkFrame):
                     sub_y_px,
                     text=dest,
                     anchor="w",
-                    fill=p.muted if faded else p.link,
+                    fill=p.muted if faded else p.dests[row.dest_look],
                     font=self._band_sub_font,
                     tags=("band-dest",),
                 )

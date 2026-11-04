@@ -28,9 +28,11 @@ and, when they sit in a subfolder of a watched folder, "Ignore this whole folder
 own folder right under the watched one, `core.ignored.top_folder`); Auto-rename leaves them
 alone from then on (`services.ignored`, listed in Settings › Auto-rename) and their rows
 leave the queue. Forge renames everything not
-waiting for the owner in one go: dropped files where they are, each band with its own preset (or
-its Custom rule) in one run, and watched downloads into their library folder with their band's
-preset, through the automatic renamer (`services.auto.rename(naming=…)`).
+waiting for the owner in one go: dropped files where they are, or in their library folder with
+the band's Move to library folder on (without that folder chosen they are left alone, and say so),
+each band with its own preset (or its Custom rule) in one run, and watched downloads always into
+their library folder with their band's preset, through the automatic renamer
+(`services.auto.rename(naming=…)`). A band's subtitle says which: "📦 Moves to …" or "📁 Stays …".
 
 Each band's `Choice` (preset, options, Custom rule) lives as long as its files are queued (in
 memory): the files of one show or film share one (`band_identity`); a new band starts with its
@@ -82,7 +84,7 @@ from app.forge.core.auto import NamingChoice, library_naming
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.formatter import render
 from app.forge.core.ignored import top_folder
-from app.forge.core.library import inside
+from app.forge.core.library import inside, library_folder, route_inputs
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import PlanPart, build_mixed_plan, describe, identity_of
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
@@ -112,7 +114,7 @@ from app.forge.ui.widgets.virtual_list import MONO_FAMILY, Row, Sizes, VirtualLi
 from app.i18n import N_, number, t, tn
 from app.ui import tasks, theme
 from app.ui.missing_control import MenuEntry, popup_menu
-from app.ui.tooltip import add_tooltip
+from app.ui.tooltip import Tooltip, add_tooltip
 
 if TYPE_CHECKING:
     from app.forge.services import ForgeServices
@@ -121,6 +123,7 @@ log = logging.getLogger(__name__)
 
 # A preset's extras by their own names (Settings › Naming shows them).
 OPTION_LABELS: dict[str, str] = {
+    "move_to_library": N_("Move to library folder"),
     "movie_poster": N_("Movie poster"),
     "series_poster": N_("Series poster"),
     "season_poster": N_("Season posters"),
@@ -143,9 +146,24 @@ class OptionButtonSpec:
     movies: str | None
 
 
+MOVE = N_("Move")
 EXTRAS = N_("Extras")
 TIDY_UP = N_("Tidy up")
+MOVE_BUTTON = N_("To library folder")
+MOVE_TIP = N_(
+    "After forging, the files go to your Series or Movies folder. Off: they are only renamed, "
+    "where they are."
+)
+MOVE_ALWAYS_TIP = N_("Downloads MediaForge finds always move to your library folder.")
+NO_LIBRARY_FOLDER = N_("{n} file wasn't forged: choose its library folder in Settings › Auto-rename.")
+NO_LIBRARY_FOLDERS = N_(
+    "{n} files weren't forged: choose their library folder in Settings › Auto-rename."
+)
 OPTION_GROUPS: tuple[tuple[str, tuple[OptionButtonSpec, ...]], ...] = (
+    (
+        MOVE,
+        (OptionButtonSpec(MOVE_BUTTON, MOVE_TIP, "move_to_library", "move_to_library"),),
+    ),
     (
         EXTRAS,
         (
@@ -683,6 +701,7 @@ class QueueView(ctk.CTkFrame):
         ]
         self.option_buttons: dict[str, OptionButton] = {}
         self._option_specs: dict[str, OptionButtonSpec] = {}
+        self._option_tips: dict[str, Tooltip] = {}
         self._groups: list[tk.Frame] = []  # the option groups with a divider between them
         self._dividers: list[tk.Frame] = []
         self._layout: list[list[tk.Frame]] = []
@@ -712,7 +731,7 @@ class QueueView(ctk.CTkFrame):
                     ground=ground,
                 )
                 button.pack(side="left", padx=(0, 8))
-                add_tooltip(button.canvas, t(spec.tip))
+                self._option_tips[spec.name] = add_tooltip(button.canvas, t(spec.tip))
                 self.option_buttons[spec.name] = button
                 self._option_specs[spec.name] = spec
             self._groups.append(group)
@@ -1209,8 +1228,20 @@ class QueueView(ctk.CTkFrame):
         for name, button in self.option_buttons.items():
             key = getattr(self._option_specs[name], kind)
             button.set(bool(key and getattr(choice.options, key)))
+        self._show_move_button()
         self._update_example()
         self._schedule_flow()
+
+    def _show_move_button(self) -> None:
+        """A download MediaForge found always moves: on, and no click changes that."""
+        queue = self.services.queue
+        items = (queue.get(item_id) for item_id in self.selected_ids)
+        always = any(item is not None and item.watched is not None for item in items)
+        button = self.option_buttons[MOVE_BUTTON]
+        button.set_locked(always)
+        if always:
+            button.set(True)
+        self._option_tips[MOVE_BUTTON].set_text(t(MOVE_ALWAYS_TIP if always else MOVE_TIP))
 
     def _option_clicked(self, name: str, value: bool) -> None:
         key = getattr(self._option_specs[name], self.kind)
@@ -1508,6 +1539,7 @@ class QueueView(ctk.CTkFrame):
             self.services.queue.items,
             self.rule_for,
             naming=naming,
+            moving=self._move_route,
             show=self.show,
             trial=settings.automatic == "trial",
             today=date.today(),
@@ -2072,12 +2104,22 @@ class QueueView(ctk.CTkFrame):
             return choice.options
         return choice.options.model_copy(update={"trailer": False})
 
+    def _move_route(self, item: QueueItem) -> tuple[bool, Path | None]:
+        """Whether a dropped file's band moves it to a library folder, and that folder."""
+        if not self.choice_for(item).options.move_to_library:
+            return False, None
+        return True, library_folder(item.media.kind, self.services.settings.current)
+
     def _plan_parts(self, items: Sequence[QueueItem], trailers: bool = True) -> list[PlanPart]:
-        """The dropped files, by band, each with its band's rule and options."""
+        """The dropped files, by band, each with its band's rule and options, and starting in
+        its library folder when the band moves it."""
         inputs = {i.item_id: i for i in self.services.queue.plan_inputs([i.id for i in items])}
+        settings = self.services.settings.current
         parts: list[PlanPart] = []
         for choice, group in self._naming_groups(items):
-            mine = [inputs[i.id] for i in group if i.id in inputs]
+            mine, _left = route_inputs(
+                [inputs[i.id] for i in group if i.id in inputs], choice.options, settings
+            )
             if mine:
                 parts.append((mine, choice.rule, self._run_options(choice, trailers)))
         return parts
@@ -2131,6 +2173,18 @@ class QueueView(ctk.CTkFrame):
             [i for i in self._pending(only) if i.watched is None]
         )
         items = self._pending(only)
+        left = [
+            i for i in items if i.watched is None and self._move_route(i) == (True, None)
+        ]
+        if left:  # left alone until the owner has chosen where they go
+            count = len(left)
+            self._say(
+                tn(NO_LIBRARY_FOLDER, NO_LIBRARY_FOLDERS, count), level=logging.WARNING
+            )
+            log.info("%d file(s) not forged: no library folder chosen", count)
+            items = [i for i in items if i not in left]
+            if not items:
+                return
         self._cancel = asyncio.Event()
         self._set_running(True, len(items))
         try:
