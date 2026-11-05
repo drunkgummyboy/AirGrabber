@@ -124,7 +124,8 @@ _COMPACT_NAME_HEIGHT = 20  # the suggestions' name line
 _COMPACT_CODE_HEIGHT = 16  # ... and their code line
 _NAME_SIZE = 11  # bold
 _CODE_SIZE = 9
-# Suggestions: a "Suggested" line, the name, then the code with the + Track button.
+# Suggestions: a "Suggested" line (with the source, `with_source`), the name, then the code with
+# the + Track button.
 _SUGGESTED_HEIGHT = 16
 _SUGGESTED_SIZE = 11
 _SUGGESTION_PAD_Y = 6
@@ -134,6 +135,12 @@ _SUGGESTION_HEIGHT = (
 
 
 # -- shared parts ----------------------------------------------------------------------------
+
+
+def with_source(text: str, show: Show) -> str:
+    """`text` with where the show airs behind it: "S09E05 · Netflix", the source going first when
+    the line is cut. Just `text` for a show without one."""
+    return f"{text} · {show.network}" if show.network else text
 
 
 def _keep_elided(label: ctk.CTkLabel, text: str, font: ctk.CTkFont, *, reserve: float = 0) -> None:
@@ -336,7 +343,7 @@ class EpisodeCard(ctk.CTkFrame):
         self._scale = scale
         self._actions = actions
         self._show = entry.show
-        self._code_text = entry.episode.code
+        self._code_text = with_source(entry.episode.code, entry.show)
         self._images = images
         self._title_font = theme.font(layout.title_size, bold=True)
         self._code_font = theme.font(layout.code_size)
@@ -891,14 +898,18 @@ class SuggestionCard(ctk.CTkFrame):
 
         inner = ctk.CTkFrame(self, fg_color="transparent")
         inner.pack(side="left", fill="both", expand=True, padx=8, pady=_SUGGESTION_PAD_Y)
-        ctk.CTkLabel(
+        suggested_text = with_source(t("Suggested"), entry.show)
+        suggested_font = theme.font(scale.font(_SUGGESTED_SIZE, SMALL_TEXT_MIN))
+        self.suggested_label = ctk.CTkLabel(
             inner,
-            text=t("Suggested"),
-            font=theme.font(scale.font(_SUGGESTED_SIZE, SMALL_TEXT_MIN)),
+            text=suggested_text,
+            font=suggested_font,
             text_color=theme.TEXT_MUTED,
             anchor="w",
             height=_SUGGESTED_HEIGHT,
-        ).pack(anchor="w")
+        )
+        self.suggested_label.pack(anchor="w")
+        _keep_elided(self.suggested_label, suggested_text, suggested_font)
         name_font = theme.font(scale.font(_NAME_SIZE, TITLE_MIN), bold=True)
         name = ctk.CTkLabel(
             inner,

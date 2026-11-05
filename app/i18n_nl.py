@@ -1291,6 +1291,12 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "The calendar now also suggests shows from streaming services like Netflix and Disney+.":
+        "De kalender stelt nu ook series voor van streamingdiensten zoals Netflix en Disney+.",
+    "Calendar cards say where a show airs, like \"S03E05 · Netflix\".":
+        "Kaarten op de kalender zeggen waar een serie te zien is, zoals \"S03E05 · Netflix\".",
+    "Streaming suggestions come from worldwide and US services, not YouTube or Twitch.":
+        "Streamingsuggesties komen van wereldwijde en Amerikaanse diensten, niet van YouTube of Twitch.",
     "Auto-rename's Trial is now called Manual.": "Proef bij Automatisch hernoemen heet nu Handmatig.",
     "On Manual, downloads MediaForge finds wait in the queue until you forge them.":
         "Op Handmatig wachten downloads die MediaForge vindt in de wachtrij tot je op Forge klikt.",

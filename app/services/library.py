@@ -552,7 +552,7 @@ class LibraryService:
         self, start: date, end: date, *, profile_id: int, per_day: int
     ) -> list[CalendarEntry]:
         """The most popular shows the person doesn't follow airing each day, from TVMaze's
-        cached US schedule,
+        cached US and streaming schedules,
         best first: scripted and animated series, then (filling quiet days such as Saturdays,
         when the networks air hardly any new ones) popular reality, variety and documentary
         shows (`LibraryRepository.suggestions`)."""
@@ -600,14 +600,18 @@ class LibraryService:
         except TVMazeError as exc:
             log.warning("Skipping the TVMaze schedule of %s: %s", day, exc)
             return
+        try:  # Netflix and the like: without them the day still has its regular schedule
+            items += await self._tvmaze.streaming_schedule(day, country=SCHEDULE_COUNTRY)
+        except TVMazeError as exc:
+            log.warning("No TVMaze streaming schedule for %s: %s", day, exc)
         async with self._tracking:
             # Followed shows' rows (anyone's) are left to sync: storing their change stamp from
             # here would make sync believe their (unrefreshed) episode lists are current.
             tracked = await self._library.followed_ids()
             shows = {show.id: show for show, _ in items if show.id not in tracked}
-            await self._library.save_schedule_day(
-                day, shows.values(), [episode for _, episode in items]
-            )
+            # A streaming episode can be on both lists.
+            episodes = {episode.id: episode for _, episode in items}
+            await self._library.save_schedule_day(day, shows.values(), episodes.values())
 
     # -- sync ----------------------------------------------------------------------------------
 

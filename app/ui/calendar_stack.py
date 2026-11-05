@@ -60,6 +60,7 @@ from app.ui.calendar_cards import (
     SLIM_PAD_X,
     SLIM_PAD_Y,
     SLIM_RADIUS,
+    with_source,
     WORKING_ICON,
     _CODE_SIZE,
     _ICON_RADIUS,
@@ -571,7 +572,7 @@ class StackCard(EpisodeCard):
             on_open_show=on_open_show,
         )
         self._on_fold = on_fold
-        self._code_text = stack.range
+        self._code_text = with_source(stack.range, stack.entries[0].show)
         self._pill_font = theme.font(self._layout.pill_size, bold=True)
         self._row_font = theme.font(self._layout.code_size)
         self._row_code_font = theme.font(self._layout.code_size, bold=True)

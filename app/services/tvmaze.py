@@ -18,7 +18,13 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.i18n import t
 from app.models.domain import Episode, Show
-from app.models.tvmaze import TVMazeScheduleItem, TVMazeSearchResult, TVMazeShow
+from app.models.tvmaze import (
+    TVMazeChannel,
+    TVMazeScheduleItem,
+    TVMazeSearchResult,
+    TVMazeShow,
+    TVMazeWebScheduleItem,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +36,9 @@ _RATE_LIMITED_ATTEMPTS = 4
 _FAILED_ATTEMPTS = 3
 
 _UPDATES = TypeAdapter(dict[int, int])
+
+# TVMaze lists these as streaming channels too, but they are no Netflix or Disney+.
+_NOT_STREAMING_SERVICES = frozenset({"youtube", "twitch"})
 
 
 class TVMazeError(Exception):
@@ -99,6 +108,22 @@ class TVMazeClient:
         path = "/schedule"
         payload = await self._get_json(path, {"country": country, "date": day.isoformat()})
         return _parse_items(path, payload, _schedule_entry)
+
+    async def streaming_schedule(
+        self, day: date, *, country: str = "US"
+    ) -> list[tuple[Show, Episode]]:
+        """Episodes coming out on `day` on a worldwide streaming service (Netflix, Disney+: TVMaze
+        gives those no country) or on one of `country`'s, each paired with its show. TVMaze's
+        list holds every country's services (its own `country` leaves the worldwide ones out), so
+        the choice is made here."""
+        path = "/schedule/web"
+        payload = await self._get_json(path, {"date": day.isoformat()})
+        items = _parse_items(path, payload, TVMazeWebScheduleItem.model_validate)
+        return [
+            (item.embedded.show.to_show(), item.to_domain(item.embedded.show.id))
+            for item in items
+            if _is_offered(item.embedded.show.web_channel, country)
+        ]
 
     async def updated_shows(self, since: Literal["day", "week", "month"]) -> dict[int, int]:
         """Show id → unix time of its last change, for every show changed within `since`."""
@@ -251,6 +276,13 @@ def _show_with_episodes(raw: object) -> tuple[Show, list[Episode]]:
 def _search_hit(raw: object) -> tuple[Show, str | None]:
     wire = TVMazeSearchResult.model_validate(raw).show
     return wire.to_show(), wire.country
+
+
+def _is_offered(channel: TVMazeChannel | None, country: str) -> bool:
+    """Whether a streaming channel counts for `country`: worldwide, or that country's own."""
+    if channel is None or channel.name.casefold() in _NOT_STREAMING_SERVICES:
+        return False
+    return channel.country is None or channel.country.code in (None, country)
 
 
 def _schedule_entry(raw: object) -> tuple[Show, Episode]:

@@ -804,7 +804,7 @@ class LibraryRepository:
     async def save_schedule_day(
         self, day: date, shows: Iterable[Show], episodes: Iterable[Episode]
     ) -> None:
-        """Cache one day of TVMaze's global schedule (feeds the calendar's suggestions)."""
+        """Cache one day of TVMaze's schedules (feeds the calendar's suggestions)."""
         async with self._db.transaction() as conn:
             await conn.executemany(_SHOW_UPSERT, [_show_to_row(s) for s in shows])
             await conn.executemany(_EPISODE_UPSERT, [_episode_to_row(e) for e in episodes])

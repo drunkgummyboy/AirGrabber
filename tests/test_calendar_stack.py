@@ -550,6 +550,12 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         canvas: Any = card._art
         return str(canvas.itemcget(item, "text"))
 
+    async def test_the_source_follows_the_range(self) -> None:
+        entries = self.stack().entries
+        show = entries[0].show.model_copy(update={"network": "Netflix"})
+        stack = Stack(tuple(e.model_copy(update={"show": show}) for e in entries))
+        self.assertEqual(self.card(stack)._code_text, "S01E07 – E09 · Netflix")
+
     async def test_wide_stack_card(self) -> None:
         opened: list[Show] = []
         images = FakeImages()

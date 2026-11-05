@@ -27,6 +27,7 @@ from app.ui.calendar_cards import (
     SLIM_ICON,
     SLIM_ICON_GAP,
     CompactEpisodeCard,
+    SuggestionCard,
     EpisodeCard,
     IconLook,
     _rgb,
@@ -38,6 +39,7 @@ from app.ui.calendar_cards import (
     missing_note,
     poster_url,
     slim_name_room,
+    with_source,
 )
 from app.ui.calendar_face import (
     CARD_HEIGHT,
@@ -416,6 +418,12 @@ def calendar_entry(*, aired: bool, imdb: str | None = "tt0944947") -> CalendarEn
     )
 
 
+class SourceTests(unittest.TestCase):
+    def test_with_source(self) -> None:
+        self.assertEqual(with_source("S09E05", Show(id=1, name="X", network="Netflix")), "S09E05 · Netflix")
+        self.assertEqual(with_source("S09E05", Show(id=1, name="X")), "S09E05")
+
+
 class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         try:
@@ -450,6 +458,29 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
             on_open_show=on_open_show,
             missing=missing,
         )
+
+    async def test_the_source_follows_the_code(self) -> None:
+        plain = calendar_entry(aired=True)
+        show = plain.show.model_copy(update={"network": "Netflix"})
+        card = self.card(plain.model_copy(update={"show": show}), FakeImages())
+        self.assertEqual(card._code_text, "S02E01 · Netflix")
+        self.assertEqual(self.card(plain, FakeImages())._code_text, "S02E01")
+
+    async def test_a_suggestion_says_where_it_airs(self) -> None:
+        plain = calendar_entry(aired=False)
+        show = plain.show.model_copy(update={"network": "Netflix"})
+        card = SuggestionCard(
+            self.root,
+            plain.model_copy(update={"show": show}),
+            library=cast(Any, None),
+            status=cast(Any, None),
+            profile_id=1,
+        )
+        self.assertEqual(card.suggested_label.cget("text"), "Suggested · Netflix")
+        bare = SuggestionCard(
+            self.root, plain, library=cast(Any, None), status=cast(Any, None), profile_id=1
+        )
+        self.assertEqual(bare.suggested_label.cget("text"), "Suggested")
 
     def actions(self) -> tuple[DownloadActions[CalendarEntry], list[str]]:
         """Actions that record what was asked: "download" / "choose"."""

@@ -62,6 +62,33 @@ def show_payload(
     }
 
 
+def streaming_item(
+    episode_id: int,
+    show_id: int,
+    day: date,
+    *,
+    channel: str = "Netflix",
+    country: str | None = None,
+    weight: int = 90,
+    kind: str = "Scripted",
+) -> dict[str, Any]:
+    """An entry of /schedule/web: its show under `_embedded`, on a streaming channel."""
+    show = {
+        "id": show_id,
+        "name": f"Stream {show_id}",
+        "type": kind,
+        "language": "English",
+        "weight": weight,
+        "updated": 1_700_000_000,
+        "webChannel": {
+            "id": 1,
+            "name": channel,
+            "country": {"code": country} if country else None,
+        },
+    }
+    return {**episode_payload(episode_id, day), "_embedded": {"show": show}}
+
+
 def schedule_item(
     episode_id: int,
     show_id: int,
@@ -97,6 +124,8 @@ class FakeTVMaze:
         self.failures: dict[str, int] = {}
         self.gates: dict[str, asyncio.Event] = {}
         self.delay = 0.0
+        self.streaming: dict[date, Any] = {}  # /schedule/web, counted in `streaming_requests`
+        self.streaming_requests: Counter[str] = Counter()
         self.requests: Counter[str] = Counter()
         self.in_flight = 0
         self.max_in_flight = 0
@@ -104,6 +133,13 @@ class FakeTVMaze:
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if path == "/schedule/web":
+            key = f"/schedule/web?{request.url.params['date']}"
+            self.streaming_requests[key] += 1
+            if (status := self.failures.get(path)) is not None:
+                return httpx.Response(status)
+            day = date.fromisoformat(request.url.params["date"])
+            return httpx.Response(200, json=self.streaming.get(day, []))
         key = path
         if path == "/schedule":
             key = f"/schedule?{request.url.params['date']}"
@@ -346,6 +382,45 @@ class SuggestionTests(LibraryTestCase):
         expected = {today - timedelta(days=1), today, today + timedelta(days=2)}
         self.assertEqual(fetched, {day.isoformat() for day in expected})
         self.assertEqual(sum(self.server.requests.values()), 3)
+
+    async def test_streaming_shows_are_suggested_with_their_service(self) -> None:
+        today = date.today()
+        self.serve_schedule(today)
+        self.server.streaming[today] = [streaming_item(9001, 901, today, weight=100)]
+        entries = await self.service.suggestions(today, today, per_day=9, profile_id=1)
+        by_id = {e.show.id: e for e in entries}
+        self.assertEqual(by_id[901].show.network, "Netflix")
+        self.assertEqual(entries[0].show.id, 901)  # ranked with the others, by popularity
+
+    async def test_only_worldwide_and_this_countrys_services(self) -> None:
+        today = date.today()
+        self.server.schedules[today] = []
+        self.server.streaming[today] = [
+            streaming_item(9001, 901, today, channel="Netflix"),
+            streaming_item(9002, 902, today, channel="Hulu", country="US"),
+            streaming_item(9003, 903, today, channel="ITVX", country="GB"),
+            streaming_item(9004, 904, today, channel="Okko", country="RU"),
+            streaming_item(9005, 905, today, channel="YouTube"),
+            streaming_item(9006, 906, today, channel="Twitch"),
+        ]
+        entries = await self.service.suggestions(today, today, per_day=9, profile_id=1)
+        self.assertEqual(sorted(e.show.id for e in entries), [901, 902])
+
+    async def test_a_failing_streaming_schedule_keeps_the_regular_one(self) -> None:
+        today = date.today()
+        self.serve_schedule(today)
+        self.server.failures["/schedule/web"] = 500
+        with self.assertLogs(LOGGER, "WARNING"):
+            entries = await self.service.suggestions(today, today, per_day=3, profile_id=1)
+        self.assertTrue(entries)
+        self.assertEqual(entries[0].show.network, None)
+
+    async def test_one_episode_on_both_schedules_is_one_suggestion(self) -> None:
+        today = date.today()
+        self.server.schedules[today] = [schedule_item(9001, 901, today)]
+        self.server.streaming[today] = [streaming_item(9001, 901, today)]
+        entries = await self.service.suggestions(today, today, per_day=9, profile_id=1)
+        self.assertEqual([e.episode.id for e in entries], [9001])
 
     async def test_failing_day_is_skipped_and_retried_later(self) -> None:
         today = date.today()

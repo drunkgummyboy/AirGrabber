@@ -145,6 +145,16 @@ class TVMazeScheduleItem(TVMazeEpisode):
     show: TVMazeShow
 
 
+class TVMazeEmbeddedShow(_Wire):
+    show: TVMazeShow
+
+
+class TVMazeWebScheduleItem(TVMazeEpisode):
+    """An entry from /schedule/web: as /schedule's, its show under `_embedded`."""
+
+    embedded: TVMazeEmbeddedShow = Field(alias="_embedded")
+
+
 class TVMazeSearchResult(_Wire):
     score: float
     show: TVMazeShow

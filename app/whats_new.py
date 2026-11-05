@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.4.0": (
+        N_("The calendar now also suggests shows from streaming services like Netflix and Disney+."),
+        N_("Calendar cards say where a show airs, like \"S03E05 · Netflix\"."),
+        N_("Streaming suggestions come from worldwide and US services, not YouTube or Twitch."),
+    ),
     "3.3.1": (
         N_("Auto-rename's Trial is now called Manual."),
         N_("On Manual, downloads MediaForge finds wait in the queue until you forge them."),
