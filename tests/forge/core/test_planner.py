@@ -179,6 +179,18 @@ class PlannerTest(ForgeTestCase):
         )
         assert plan.posters == ()
 
+    def test_a_shows_trailer_knows_its_season(self) -> None:
+        media = episode(2).model_copy(update={"tmdb_id": 7})
+        plan = build_plan(
+            [inp(1, R / "1.mkv", media)], "{ny}/{s}/{ny}", PresetOptions(trailer=True), fake_exists([])
+        )
+        [planned] = plan.trailers
+        self.assertEqual((planned.tmdb_id, planned.season), (7, media.season))
+        plan = build_plan(
+            [inp(1, R / "x.mkv", film(tmdb_id=9))], "{ny}", PresetOptions(trailer=True), fake_exists([])
+        )
+        self.assertIsNone(plan.trailers[0].season)
+
     def test_trailer_query_and_dedupe(self) -> None:
         opts = PresetOptions(trailer=True)
         plan = build_plan([inp(1, R / "x.mkv", film())], MOVIE_FOLDER, opts, fake_exists([]))

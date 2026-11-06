@@ -43,6 +43,34 @@ class FailingPosters:
 
 
 class ExecutorTest(HistoryTestCase):
+    async def test_nfo_and_background_are_written_and_journaled(self) -> None:
+        tmp = self.tmp
+        inputs = make_inputs(tmp, {"x.mkv": "Dune"})
+        media = inputs[0].media.model_copy(update={"tmdb_id": 9, "backdrop_path": "/b.jpg"})
+        inputs = [inputs[0].model_copy(update={"media": media})]
+        plan = build_plan(inputs, "{ny}/{ny}", PresetOptions(nfo=True, backdrop=True))
+        posters = FakePosters()
+        result = await self.execute(plan, posters=posters)
+        folder = tmp / "Dune (2024)"
+        assert "<title>Dune</title>" in (folder / "Dune (2024).nfo").read_text(encoding="utf-8")
+        assert (folder / "Dune (2024)-fanart.jpg").read_bytes() == b"jpeg-bytes"
+        assert posters.calls == [("/b.jpg", "w1280")]
+        assert (result.nfos, result.backdrops, result.posters) == (1, 1, 0)
+        assert result.run_id is not None
+        undone = await UndoService(self.history).undo_run(result.run_id)
+        assert undone.skipped == []
+        assert (tmp / "x.mkv").exists() and not folder.exists()  # Undo takes them along
+
+    async def test_an_nfo_that_cannot_be_written_never_stops_the_run(self) -> None:
+        tmp = self.tmp
+        inputs = make_inputs(tmp, {"x.mkv": "Dune"})
+        media = inputs[0].media.model_copy(update={"tmdb_id": 9})
+        inputs = [inputs[0].model_copy(update={"media": media})]
+        plan = build_plan(inputs, "{ny}", PresetOptions(nfo=True))
+        with mock.patch("app.forge.core.executor.fsops.write_new_file", side_effect=OSError("full")):
+            result = await self.execute(plan, posters=FakePosters())
+        assert (result.renamed, result.nfos, result.failed) == (1, 0, 0)
+
     async def test_rename_run_journals_everything(self) -> None:
         tmp = self.tmp
         inputs = make_inputs(tmp, {"x.mkv": "Dune"})

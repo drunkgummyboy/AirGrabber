@@ -241,6 +241,7 @@ class TVDetails(DomainModel):
     number_of_seasons: int | None = None
     imdb_id: ImdbId = None
     tvdb_id: int | None = None
+    networks: tuple[str, ...] = ()  # where it airs: a channel or a streaming service, main first
 
 
 class TitleInfo(DomainModel):
@@ -689,6 +690,7 @@ class UpdateInfo(DomainModel):
     current: str  # version running now
     latest: str  # version on GitHub
     available: bool  # latest is newer than current
+    skipped: bool = False  # latest is the version this copy went back from: not offered again
     installable: bool  # False in a development copy, which is never overwritten
 
 

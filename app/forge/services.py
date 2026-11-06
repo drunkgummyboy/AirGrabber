@@ -199,7 +199,11 @@ class ForgeServices:
         self.queue_events = QueueEvents()
         self.queue = Queue(self.resolver, self.queue_events.emit)
         self.trailers = TrailerService(
-            paths.forge / TOOLS_DIR, http, settings, activity=self.activity
+            paths.forge / TOOLS_DIR,
+            http,
+            settings,
+            activity=self.activity,
+            season_trailer=tmdb.season_trailer_url,
         )
         # Subtitles from OpenSubtitles.com: the settings stay AirGrabber's (the same fields), the
         # user's own API key when Settings has one, else the shipped key (read on every request,

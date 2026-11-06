@@ -46,7 +46,6 @@ BRAND: Pair = ("#2D6390", "#8FB0D0")
 DANGER_BUTTON: Pair = ("#C0392B", "#C0392B")  # destructive buttons (remove)
 DANGER_BUTTON_HOVER: Pair = ("#922B21", "#922B21")
 IMDB = "#F5C518"  # IMDb brand yellow, both modes
-IMDB_HOVER = "#D4A710"
 # Plex's yellow (Settings → Plex: "Connect to Plex…", its logo square), with dark text on it.
 PLEX: Pair = ("#E5A00D", "#E5A00D")
 PLEX_HOVER: Pair = ("#C98C0B", "#C98C0B")

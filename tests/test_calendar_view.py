@@ -601,16 +601,6 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view._week_count.get(), "5")
         self.assertFalse(view._suggestions_shown)
 
-    async def test_right_hand_controls_wrap_when_narrow(self) -> None:
-        view = self.view(self.library(), FakeSettings(Settings()))
-        self.root.update_idletasks()
-        self.assertEqual(int(view._right.grid_info()["row"]), 0)
-        view._fit_header(SimpleNamespace(width=200))
-        self.assertEqual(int(view._right.grid_info()["row"]), 1)
-        view._fit_header(SimpleNamespace(width=20000))
-        info = view._right.grid_info()
-        self.assertEqual((int(info["row"]), int(info["column"])), (0, 2))
-
     def test_range_slot_is_the_widest_label_within_a_year(self) -> None:
         font = theme.font(RANGE_FONT_SIZE, bold=True)
         first = date(2027, 1, 1)
@@ -667,13 +657,17 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view._range.cget("text"), range_label(*weeks_from_now(0)))
         # Away from today, whole weeks without the extra one.
         next_weeks = (TODAY + timedelta(weeks=1), TODAY + timedelta(days=20))
-        self.assertEqual(await press("▶"), next_weeks)
+        self.assertEqual(await press("❯"), next_weeks)
         self.assertEqual(view._range.cget("text"), range_label(*weeks_from_now(1)))
-        self.assertEqual(await press("◀"), weeks_from_now(0))
-        self.assertEqual(await press("◀"), weeks_from_now(-1))
-        self.assertEqual(await press("Today"), weeks_from_now(0))
+        self.assertEqual(await press("❮"), weeks_from_now(0))
+        self.assertEqual(await press("❮"), weeks_from_now(-1))
+        self.assertNotIn("Today", buttons)  # a click on the dates does that
+        view._range.invoke()
+        if view._load_task is not None:
+            await view._load_task
+        self.assertEqual(library.calendar_calls[-1], weeks_from_now(0))
         calls = len(library.calendar_calls)
-        buttons["Today"].invoke()  # already on this week: no reload
+        view._range.invoke()  # already on this week: no reload
         self.assertEqual(len(library.calendar_calls), calls)
 
 

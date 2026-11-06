@@ -30,7 +30,13 @@ from app.forge.db.history import HistoryRepo
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind, ResolvedMedia
 from app.forge.models.moves import MoveNote
-from app.forge.models.plan import Plan, PlannedFile, PlannedSubtitles, PlannedTrailer
+from app.forge.models.plan import (
+    Plan,
+    PlannedFile,
+    PlannedNfo,
+    PlannedSubtitles,
+    PlannedTrailer,
+)
 from app.forge.models.subtitles import SubtitleFetch, SubtitleFetchOutcome, SubtitleIdentity
 from app.i18n import N_, t, tn
 
@@ -60,6 +66,8 @@ class RunResult(BaseModel):
     skipped: int = 0
     failed: int = 0
     posters: int = 0
+    backdrops: int = 0
+    nfos: int = 0
     trailers: int = 0
     cleaned: int = 0
     pruned: int = 0
@@ -514,13 +522,18 @@ class Executor:
                     continue
                 if await asyncio.to_thread(fsops.exists, poster.target):
                     continue
+                backdrop = poster.kind == "backdrop"
                 try:
-                    data = await self._posters.image(poster.tmdb_path, "w780")
+                    data = await self._posters.image(
+                        poster.tmdb_path, "w1280" if backdrop else "w780"
+                    )
                     await self._ensure_dir(run_id, poster.target.parent)
                 except Exception as exc:  # network or disk: the run carries on without it
                     log.warning("Couldn't get poster %s: %s", poster.target.name, log_reason(exc))
                     self._say(
-                        t("Couldn't get poster {name}", name=poster.target.name),
+                        t("Couldn't get background {name}", name=poster.target.name)
+                        if backdrop
+                        else t("Couldn't get poster {name}", name=poster.target.name),
                         level=logging.WARNING,
                     )
                     continue
@@ -534,13 +547,27 @@ class Executor:
                 except OSError as exc:
                     log.warning("Couldn't save poster %s: %s", poster.target.name, log_reason(exc))
                     self._say(
-                        t("Couldn't save poster {name}", name=poster.target.name),
+                        t("Couldn't save background {name}", name=poster.target.name)
+                        if backdrop
+                        else t("Couldn't save poster {name}", name=poster.target.name),
                         level=logging.WARNING,
                     )
                     continue
-                result.posters += 1
+                if backdrop:
+                    result.backdrops += 1
+                else:
+                    result.posters += 1
                 log.info("Saved poster: %s", poster.target.name, extra=_SUCCESS)
-                self._say(t("Saved poster: {name}", name=poster.target.name), success=True)
+                self._say(
+                    t("Saved background: {name}", name=poster.target.name)
+                    if backdrop
+                    else t("Saved poster: {name}", name=poster.target.name),
+                    success=True,
+                )
+
+        for nfo in plan.nfos:
+            if ok.intersection(nfo.item_ids):
+                await self._write_nfo(run_id, nfo, result)
 
         if self._trailers is not None:
             for trailer in plan.trailers:
@@ -566,6 +593,23 @@ class Executor:
                 result.trailers += 1
                 log.info("Saved trailer: %s", created.name, extra=_SUCCESS)
                 self._say(t("Saved trailer: {name}", name=created.name), success=True)
+
+    async def _write_nfo(self, run_id: int, nfo: PlannedNfo, result: RunResult) -> None:
+        name = nfo.target.name
+        try:
+            if await asyncio.to_thread(fsops.exists, nfo.target):
+                return
+            await self._ensure_dir(run_id, nfo.target.parent)
+            op = await self._history.record_pending(run_id, OpKind.CREATE_FILE, None, nfo.target)
+            data = nfo.content.encode("utf-8")
+            await self._journaled(op, partial(fsops.write_new_file, nfo.target, data), stamped=True)
+        except OSError as exc:  # the run carries on without it
+            log.warning("Couldn't save NFO %s: %s", name, log_reason(exc))
+            self._say(t("Couldn't save NFO {name}", name=name), level=logging.WARNING)
+            return
+        result.nfos += 1
+        log.info("Saved NFO: %s", name, extra=_SUCCESS)
+        self._say(t("Saved NFO: {name}", name=name), success=True)
 
     async def _prune(self, run_id: int, plan: Plan, result: RunResult) -> None:
         for folder in plan.prune_dirs:

@@ -37,7 +37,7 @@ def forge_settings(
         airgrabber_settings() if settings is None else settings,
         search=mock.MagicMock(),
         station=mock.MagicMock(),
-        updates=SimpleNamespace(current="3.0.0"),  # type: ignore[arg-type]
+        updates=SimpleNamespace(current="3.0.0", previous_version=None),  # type: ignore[arg-type]
         torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
         discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
         prowlarr=FakeProwlarr(),  # type: ignore[arg-type]

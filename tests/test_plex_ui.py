@@ -383,7 +383,7 @@ class SettingsSectionTests(TkTestCase):
             SettingsService(FakeRepository(), Settings()),  # type: ignore[arg-type]
             search=mock.MagicMock(),
             station=mock.MagicMock(),
-            updates=SimpleNamespace(current="3.1.0"),  # type: ignore[arg-type]
+            updates=SimpleNamespace(current="3.1.0", previous_version=None),  # type: ignore[arg-type]
             torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
             discovery=mock.MagicMock(),
             prowlarr=FakeProwlarr(),  # type: ignore[arg-type]

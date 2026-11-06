@@ -116,6 +116,7 @@ FORMAT_CODES: tuple[FormatCode, ...] = (
     FormatCode("s", "{s}", True),
     FormatCode("e", "{e}", True),
     FormatCode("en", "{en}", True),
+    FormatCode("quality", "{quality}"),
     FormatCode("/", FOLDER_INSERT),
     FormatCode("-", DASH_INSERT),
 )
@@ -174,7 +175,12 @@ DEFAULT_FORMAT = "{ny}"  # an empty format names a file by its name (year)
 SAMPLE_EXTENSION = ".mkv"
 SAMPLE_EPISODE = ResolvedMedia(
     parsed=ParsedMedia(
-        source_name="sample.mkv", kind=MediaKind.EPISODE, title="VisionQuest", season=1, episode=2
+        source_name="sample.mkv",
+        kind=MediaKind.EPISODE,
+        title="VisionQuest",
+        season=1,
+        episode=2,
+        quality="1080p H.265",
     ),
     title="VisionQuest",
     year=2026,
@@ -182,7 +188,9 @@ SAMPLE_EPISODE = ResolvedMedia(
     match_state=MatchState.CONFIDENT,
 )
 SAMPLE_MOVIE = ResolvedMedia(
-    parsed=ParsedMedia(source_name="sample.mkv", kind=MediaKind.MOVIE, title="Dune Part Two"),
+    parsed=ParsedMedia(
+        source_name="sample.mkv", kind=MediaKind.MOVIE, title="Dune Part Two", quality="1080p H.265"
+    ),
     title="Dune Part Two",
     year=2024,
     episode_title=None,
@@ -496,9 +504,22 @@ def quiet_line(master: Any, look: theme.Look) -> ctk.CTkFrame:
     return ctk.CTkFrame(master, height=1, corner_radius=0, fg_color=color, bg_color=color)
 
 
+def fit_middle(text: str, font: ctk.CTkFont, room: int) -> str:
+    """`text` with its middle cut with "…" to fit `room` (unscaled units): most of what stays is
+    its end, a path's file name."""
+    if font.measure(text) <= room:
+        return text
+    for keep in range(len(text) - 1, 0, -1):
+        head = keep // 4
+        fitted = f"{text[:head].rstrip()}…{text[head - keep:].lstrip()}"
+        if font.measure(fitted) <= room:
+            return fitted
+    return "…"
+
+
 class TableRow(ctk.CTkFrame):
     """A row of a format table: `value`, what a click hands on, and its two cells, each cut with
-    "…" to fit (hovering then shows them whole). All of it is clickable; the hover colour stays
+    "…" to fit, the right one in its middle (hovering then shows them whole). All of it is clickable; the hover colour stays
     while the pointer moves between its parts."""
 
     def __init__(
@@ -536,7 +557,7 @@ class TableRow(ctk.CTkFrame):
         table = self._table
         self.right_text = text
         left = fit_text(self.left_text, table.code_font, table.left_room)
-        right = fit_text(text, table.cell_font, table.right_room)
+        right = fit_middle(text, table.cell_font, table.right_room)
         self.left_label.configure(text=left)
         self.right_label.configure(text=right)
         cut = left != self.left_text or right != text
@@ -655,7 +676,7 @@ class NamingSection:
 
     def __init__(self, page: SettingsPage, forge: _Starter) -> None:
         # Not at import time (see the top): the Inbox's option texts, the dialog's shared texts.
-        from app.forge.ui.queue_view import OPTION_LABELS
+        from app.forge.ui.queue_parts import OPTION_LABELS
         from app.forge.ui.settings_pages import GETTING_READY
 
         self._page = page
@@ -1162,7 +1183,7 @@ class NamingSection:
         draft = self._editing
         if draft is None:
             return
-        lines, unknown = sample_lines(draft.preset.format, draft.preset.type)
+        lines, unknown = sample_lines(draft.preset.rule, draft.preset.type)
         self.format_sample.configure(text="\n".join(lines))
         self._show_tables(draft.preset.type)
         codes = ", ".join("{" + code + "}" for code in unknown)

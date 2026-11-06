@@ -505,11 +505,6 @@ def imdb_find_url(title: str) -> str:
     return IMDB_FIND_URL + quote(title, safe="")
 
 
-def same_rows(entries: Sequence[DownloadEntry], ids: Sequence[int | None]) -> bool:
-    """Whether the page's rows (by history id) are still these grabs, in this order."""
-    return [entry.record.id for entry in entries] == list(ids)
-
-
 def poster_url(item: ListedDownload) -> str | None:
     """An episode's show poster (TVMaze's medium one, cached); a recognised task's show or
     watchlist film poster; films grabbed have none to hand."""
@@ -749,10 +744,6 @@ class DownloadsView(BaseView):
             group.grid_remove()
 
     # -- the filter and the list ---------------------------------------------------------------
-
-    @property
-    def entry_filter(self) -> EntryFilter:
-        return self._filter
 
     def set_filter(self, chosen: EntryFilter) -> None:
         self._filter_var.set(t(FILTER_NAMES[chosen]))

@@ -600,10 +600,12 @@ class LibraryService:
         except TVMazeError as exc:
             log.warning("Skipping the TVMaze schedule of %s: %s", day, exc)
             return
+        whole = True
         try:  # Netflix and the like: without them the day still has its regular schedule
             items += await self._tvmaze.streaming_schedule(day, country=SCHEDULE_COUNTRY)
         except TVMazeError as exc:
             log.warning("No TVMaze streaming schedule for %s: %s", day, exc)
+            whole = False
         async with self._tracking:
             # Followed shows' rows (anyone's) are left to sync: storing their change stamp from
             # here would make sync believe their (unrefreshed) episode lists are current.
@@ -611,7 +613,9 @@ class LibraryService:
             shows = {show.id: show for show, _ in items if show.id not in tracked}
             # A streaming episode can be on both lists.
             episodes = {episode.id: episode for _, episode in items}
-            await self._library.save_schedule_day(day, shows.values(), episodes.values())
+            await self._library.save_schedule_day(
+                day, shows.values(), episodes.values(), whole=whole
+            )
 
     # -- sync ----------------------------------------------------------------------------------
 

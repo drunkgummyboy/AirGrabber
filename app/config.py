@@ -38,6 +38,11 @@ class AppPaths:
         return self.root / "airgrabber.db"
 
     @property
+    def databases(self) -> tuple[Path, ...]:
+        """AirGrabber's and Forge's: what an update keeps a copy of (app/update_guard.py)."""
+        return (self.database, self.forge / "forge.db")
+
+    @property
     def posters(self) -> Path:
         return self.root / "posters"
 

@@ -108,16 +108,6 @@ _DAYS_SHORT = {
     Language.EN: ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
     Language.NL: ("ma", "di", "wo", "do", "vr", "za", "zo"),
 }
-_MONTHS = {
-    Language.EN: (
-        "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December",
-    ),
-    Language.NL: (
-        "januari", "februari", "maart", "april", "mei", "juni",
-        "juli", "augustus", "september", "oktober", "november", "december",
-    ),
-}  # fmt: skip
 _MONTHS_SHORT = {
     Language.EN: (
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -140,12 +130,6 @@ def day_name(day: dt.date | int) -> str:
 def day_short(day: dt.date | int) -> str:
     """ "Mon" / "ma"."""
     return _DAYS_SHORT[_current][_weekday(day)]
-
-
-def month_name(month: dt.date | int) -> str:
-    """ "October" / "oktober" (`month`: a date, or 1 = January)."""
-    index = month.month if isinstance(month, dt.date) else month
-    return _MONTHS[_current][index - 1]
 
 
 def month_short(month: dt.date | int) -> str:

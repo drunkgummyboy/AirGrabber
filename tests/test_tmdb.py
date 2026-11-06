@@ -192,6 +192,14 @@ class RequestShapeTests(TMDBTestCase):
             request, "/movie/969681", {"append_to_response": "release_dates,external_ids"}
         )
 
+    async def test_season_videos(self) -> None:
+        raw = {"results": [{"key": "abc", "site": "YouTube", "type": "Trailer", "official": True}]}
+        server = FakeTMDB(ok(raw))
+        [video] = await self.client(server).season_videos(7, 3, languages=("en",))
+        self.assertEqual(video.key, "abc")
+        [request] = server.requests
+        self.assert_request(request, "/tv/7/season/3/videos", {"include_video_language": "en,null"})
+
     async def test_tv_details(self) -> None:
         server = FakeTMDB(ok({"id": 123542}))
         await self.client(server).tv_details(123542)

@@ -17,7 +17,7 @@ from typing import Any
 from unittest import mock
 
 import main
-from app.config import DATA_DIR_ENV
+from app.config import DATA_DIR_ENV, AppPaths
 from app.single_instance import ForgeRequest, InstanceLock, hand_over, take_requests
 from main import Options, parse_options
 
@@ -109,6 +109,38 @@ class MainTests(unittest.TestCase):
     def main(self, *argv: str) -> int:
         with mock.patch.object(sys, "argv", ["main.py", *argv]):
             return main.main()
+
+    def test_a_start_that_went_back_starts_afresh_with_the_same_arguments(self) -> None:
+        lock = mock.MagicMock()
+        lock.acquire.return_value = True
+        with (
+            mock.patch.object(main, "InstanceLock", return_value=lock),
+            mock.patch.object(main, "before_start", return_value=True) as guard,
+            mock.patch.object(main, "_relaunch") as relaunch,
+        ):
+            self.assertEqual(self.main("--tray"), 0)
+        guard.assert_called_once_with(
+            Path(main.__file__).resolve().parent, AppPaths(self.data_dir).databases
+        )
+        relaunch.assert_called_once_with(["--tray"])
+        lock.release.assert_called()
+        self.requirements.assert_not_called()
+
+    def test_the_guard_runs_before_the_package_check(self) -> None:
+        lock = mock.MagicMock()
+        lock.acquire.return_value = True
+        order = mock.MagicMock()
+        order.ensure_requirements.return_value = False
+        order.before_start.return_value = False
+        with (
+            mock.patch.object(main, "InstanceLock", return_value=lock),
+            mock.patch.object(main, "before_start", order.before_start),
+            mock.patch.object(main, "ensure_requirements", order.ensure_requirements),
+        ):
+            self.main()
+        self.assertEqual(
+            [call[0] for call in order.mock_calls], ["before_start", "ensure_requirements"]
+        )
 
     def test_a_handed_over_request_never_logs_or_checks_packages(self) -> None:
         with (

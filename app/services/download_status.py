@@ -301,12 +301,6 @@ def expected_in_program(outcome: GrabOutcome | None, program: str, settings: Set
     return outcome is GrabOutcome.SAVED and settings.download_mode is DownloadMode.FOLDER
 
 
-def torrent_file_names(record: DownloadRecord) -> frozenset[str]:
-    """The .torrent file names (lowercase) a grab may show up under in Download Station: the
-    file saved to the watch folder, and the name a .torrent is sent with."""
-    return torrent_file_names_of(record.release_title, record.saved_path)
-
-
 @functools.lru_cache(maxsize=8192)
 def _normal(text: str) -> str:
     """`normalize`, kept: the same task and grab names come by every 10 s."""

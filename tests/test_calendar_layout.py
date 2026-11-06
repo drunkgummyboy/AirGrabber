@@ -20,7 +20,6 @@ from app.ui.views.calendar_view import (
     day_label,
     day_suggestions,
     extra_suggestions,
-    header_wraps,
     range_label,
     range_slot_width,
     suggestions_look,
@@ -160,11 +159,6 @@ class LabelTests(unittest.TestCase):
 
 
 class HeaderTests(unittest.TestCase):
-    def test_wraps_only_when_both_groups_do_not_fit(self) -> None:
-        self.assertFalse(header_wraps(1000, 500, 300, 24))
-        self.assertFalse(header_wraps(824, 500, 300, 24))
-        self.assertTrue(header_wraps(823, 500, 300, 24))
-
     def test_suggestions_toggle_filled_when_on_outlined_when_off(self) -> None:
         on, off = suggestions_look(True), suggestions_look(False)
         self.assertEqual(on["fg_color"], theme.ACCENT)

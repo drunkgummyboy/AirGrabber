@@ -44,7 +44,8 @@ from app.forge.ui.images import BandImages
 from app.forge.ui.look import app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.queue_rows import Show
-from app.forge.ui.queue_view import OPTION_LABELS, QueueView, summary_text
+from app.forge.ui.queue_parts import OPTION_LABELS, summary_text
+from app.forge.ui.queue_view import QueueView
 from app.forge.ui.widgets.virtual_list import Row
 from app.i18n import Language, current_language, set_language
 from app.services.images import Finish, ImageCache
@@ -52,6 +53,7 @@ from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient
 from app.ui import theme
 from app.ui.missing_control import PopupMenu
+from app.models.tmdb import TMDBTitle
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.tk import pump, pump_until
 from tests.forge.ui.test_file_drops import post_drop
@@ -269,7 +271,9 @@ class QueueTest(QueueCase):
         after = rows[rows.index(ted) + 1 : rows.index(ted) + 3]
         self.assertEqual([r.code for r in after], ["S04E03", "S04E05"])
         self.assertEqual(after[0].faint, "Ted.Lasso.S04E03.1080p.WEB.mkv")
-        self.assertEqual(ted.actions[1:], (("ignore", "Ignore"), ("rename", "Rename")))
+        self.assertEqual(
+            ted.actions[1:], (("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename"))
+        )
         self.select_band("Dune")  # the card only: the list stays as it is
         await pump(self.root, 0.1)
         self.assertEqual(self.bands(), ["Dune", "Severance", "Ted Lasso"])
@@ -676,6 +680,33 @@ class QueueTest(QueueCase):
         await pump(self.root, 0.1)
         self.assertEqual(asked, [item.id])
 
+    async def test_choose_is_on_a_band_that_looks_settled_and_goes_for_all_its_files(self) -> None:
+        asked: list[int] = []
+        right = TMDBTitle(id=246, title="Avatar: The Last Airbender", date="2005-02-21")
+
+        async def fake_ask(master: object, item: QueueItem, services: object, **_: object) -> object:
+            asked.append(item.id)
+            return right
+
+        self.enterContext(mock.patch.object(MatchPicker, "ask", fake_ask))
+        make_files(self.tmp / "in", ["Shrinking.S03E01.1080p.mkv", "Shrinking.S03E02.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        queue = self.services.queue
+        queue.hold(queue.items[0].id, "TMDB doesn't know this episode.")
+        queue.hold(queue.items[1].id, "TMDB doesn't know this episode.")
+        self.view.refresh()
+        [band] = self.rows("band")
+        self.assertEqual(band.state, "needs")
+        self.assertIn(("choose", "Choose…"), band.actions)
+        self.view.list.on_action(band.key, "choose")
+        await pump_until(self.root, lambda: all(i.media.tmdb_id == 246 for i in queue.items))
+        self.assertEqual(len(asked), 1)
+        self.assertTrue(all(i.status is ItemStatus.READY for i in queue.items))
+        self.view.refresh()
+        [band] = self.rows("band")
+        self.assertEqual((band.state, band.title), ("ready", "Avatar: The Last Airbender"))
+        self.assertIn(("choose", "Choose…"), band.actions)
+
     async def test_the_queue_fits_the_minimum_window(self) -> None:
         # MediaForge's review focus 5: the toolbar's and the card's buttons stay on screen.
         self.root.geometry("1000x640")
@@ -834,6 +865,28 @@ class QueueTest(QueueCase):
         self.assertEqual(asked, ["Download trailer tools?"])
         self.assertEqual(self.names(self.tmp / "lib" / "Dune (2021)"), ["Dune (2021).mkv"])
 
+    async def test_the_quality_button_changes_the_rule_and_the_new_name(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.1080p.x265.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)", "Series (Flat)")
+        view = self.view
+        self.select_band("Dune")
+        await pump(self.root, 0.1)
+        button = view.option_buttons["Quality"]
+        self.assertFalse(button.value)  # off until asked for
+        self.assertFalse(view.choice.changed)
+        button.invoke()
+        await pump(self.root, 0.1)
+        self.assertEqual(view.fmt, "{ny} - {quality}")
+        self.assertTrue(button.value and view.choice.changed)
+        [item] = self.services.queue.items
+        [line] = [r for r in self.rows("item") if r.key == item.id]
+        self.assertIn("1080p H.265", line.title)
+        button.invoke()
+        await pump(self.root, 0.1)
+        self.assertEqual(view.fmt, "{ny}")
+        self.assertFalse(button.value)
+
     async def test_option_buttons_follow_the_selected_band_and_their_clicks(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Show.S01E02.mkv"])
         await self.add_and_settle(self.tmp / "in")
@@ -848,9 +901,12 @@ class QueueTest(QueueCase):
             view.option_keys(),
             {
                 "To library folder": "move_to_library",
+                "Quality": "quality_in_name",
                 "Poster": "movie_poster",
                 "Trailer": "trailer",
                 "Subtitles": "subtitles",
+                "Background": "backdrop",
+                "NFO": "nfo",
                 "Clean junk": "clean_junk",
                 "Empty folders": "prune_empty",
             },
@@ -1076,13 +1132,14 @@ class WatchedTest(QueueCase):
         self.assertTrue(band.subtitle.startswith("No year in the name: is it a movie?"))
         self.assertEqual(band.actions[-1], ("rename", "Rename"))
 
-    async def test_trial_files_would_rename(self) -> None:
+    async def test_on_manual_downloads_are_ready(self) -> None:
         downloads, _, _ = await self.library(automatic="trial")
         await self.watched(downloads, "Dune.2021.mkv")
         [band] = self.rows("band")
-        self.assertEqual((band.state, band.state_text), ("would", "Would rename"))
+        self.assertEqual((band.state, band.state_text), ("ready", "Ready"))
+        self.assertTrue(band.dest.startswith("📦 Moves to"))
         self.assertEqual(self.view.filter_buttons["all"].cget("text"), "All 1")
-        self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 0")
+        self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 1")
 
     async def test_needs_counts_only_what_needs_you(self) -> None:
         counts: list[int] = []

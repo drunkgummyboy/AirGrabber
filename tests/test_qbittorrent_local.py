@@ -659,7 +659,7 @@ class SettingsDialogTests(unittest.IsolatedAsyncioTestCase):
             settings_service,
             search=mock.MagicMock(),
             station=mock.MagicMock(),
-            updates=SimpleNamespace(current="2.0.5"),  # type: ignore[arg-type]
+            updates=SimpleNamespace(current="2.0.5", previous_version=None),  # type: ignore[arg-type]
             torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
             discovery=mock.MagicMock(),
             prowlarr=FakeProwlarr(),  # type: ignore[arg-type]

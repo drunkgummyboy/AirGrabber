@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.5.0": (
+        N_("The main menu moved to the top, with each page's own buttons on one row under it."),
+        N_("The calendar's date sits between two new arrows; click the date to go back to today."),
+        N_("A series' trailer button follows the season you view; Discover shows and filters by streaming service."),
+        N_("MediaForge's History keeps 500 runs and has a search; a warning about a folder now opens the setting."),
+        N_("MediaForge: Choose… on every show and film; new options for quality in the name, NFO files and backgrounds."),
+        N_("From now on, if an update won't start AirGrabber goes back by itself; Settings offers the way back too."),
+    ),
     "3.4.0": (
         N_("The calendar now also suggests shows from streaming services like Netflix and Disney+."),
         N_("Calendar cards say where a show airs, like \"S03E05 · Netflix\"."),

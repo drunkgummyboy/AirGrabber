@@ -414,6 +414,7 @@ class SuggestionTests(LibraryTestCase):
             entries = await self.service.suggestions(today, today, per_day=3, profile_id=1)
         self.assertTrue(entries)
         self.assertEqual(entries[0].show.network, None)
+        self.assertEqual(await self.db.library.schedule_fetches(today, today), {})  # tried again
 
     async def test_one_episode_on_both_schedules_is_one_suggestion(self) -> None:
         today = date.today()

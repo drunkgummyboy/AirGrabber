@@ -133,7 +133,7 @@ class ForgePage(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self._tabs_row = tabs_row
         self.services: ForgeServices | None = None
-        self.on_settings: Callable[[str | None], object] = lambda section: None
+        self.on_settings: Callable[..., object] = lambda section, spot=None: None
         self.on_needs: Callable[[int], None] = lambda count: None
         self.on_view: Callable[[bool], None] = lambda history: None
         self.on_message: Callable[[str], None] = lambda text: None
@@ -196,6 +196,7 @@ class ForgePage(ctk.CTkFrame):
         self.status_button.pack(side="left", padx=(STATUS_GAP, 0))
         queue.on_counts = lambda needs: self.on_needs(needs)
         queue.on_message = lambda text: self.on_message(text)
+        queue.on_choose_folders = self._folders_clicked
         queue.refresh()
         self.set_watch_status(status or services.auto.status([]))
         self.show_view("queue")
@@ -460,6 +461,11 @@ class ForgePage(ctk.CTkFrame):
             text = "  " + fit_text(self.status_text, self._status_font, max(room, 0))
         if button.cget("text") != text:
             button.configure(text=text)
+
+    def _folders_clicked(self) -> None:
+        from app.forge.ui.settings_pages import LIBRARY_FOLDERS_SPOT, SECTION_LIBRARY
+
+        self.on_settings(SECTION_LIBRARY, LIBRARY_FOLDERS_SPOT)
 
     def _status_clicked(self) -> None:
         from app.forge.ui.settings_pages import SECTION_LIBRARY

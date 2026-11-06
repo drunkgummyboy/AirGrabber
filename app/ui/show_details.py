@@ -142,6 +142,7 @@ STRIPE = 3  # a missing episode's amber line along its row's left edge
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
 
 # Shown through t().
+SEASON_TRAILER = N_("Season {n} trailer")
 NEW_TODAY_TEXT = N_("New · aired today")
 NEW_YESTERDAY_TEXT = N_("New · aired yesterday")
 NEW_TEXT = N_("New")
@@ -890,6 +891,7 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._row_episodes: tuple[Episode, ...] = ()  # what the rows show, in order
         self._load_task: asyncio.Task[None] | None = None
         self._rows_task: asyncio.Task[None] | None = None
+        self._season_trailer_task: asyncio.Task[None] | None = None
         self._tracking = False
         self._buttons_look: tuple[bool, bool, bool, str | None] | None = None
         self._auto_var = ctk.BooleanVar(value=False)
@@ -980,10 +982,31 @@ class ShowDetailsWindow(TitleInfoWindow):
             self.masthead.set_hero(tvmaze_poster_url(self._show, round(210 * scaling)), blur=True)
         else:
             self.masthead.set_hero(None)
-        trailer = extras.trailer if extras is not None else None
-        self.masthead.set_trailer(trailer.watch_url if trailer is not None else None)
+        self._show_trailer()
         self.show_cast(extras.cast if extras is not None else ())
         self._paint_header(self._show, self._details)
+
+    def _show_trailer(self) -> None:
+        """The button on the picture: the show's trailer, then the selected season's own as soon
+        as it is known."""
+        trailer = self._extras.trailer if self._extras is not None else None
+        self.masthead.set_trailer(trailer.watch_url if trailer is not None else None)
+        if self._season_trailer_task is not None:
+            self._season_trailer_task.cancel()
+            self._season_trailer_task = None
+        if self._discovery is not None and self._season is not None and self._extras is not None:
+            self._season_trailer_task = spawn(
+                self._load_season_trailer(self._discovery, self._season),
+                name="ShowDetailsWindow.season_trailer",
+            )
+
+    async def _load_season_trailer(self, discovery: DiscoveryService, season: int) -> None:
+        trailer = await discovery.season_trailer(self._show, season)
+        if trailer is None or season != self._season or not self.winfo_exists():
+            return
+        url = trailer.watch_url
+        if url is not None:
+            self.masthead.set_trailer(url, t(SEASON_TRAILER, n=season))
 
     def _paint_buttons(self, details: ShowDetails) -> None:
         """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
@@ -1070,6 +1093,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._render_chips()
         if self._season not in seasons:
             self._season = default_season(details, _now())
+            self._show_trailer()
             self._paint_chips()
         self._show_season()
 
@@ -1115,6 +1139,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._season = season
             self._paint_chips()
             self._show_season()
+            self._show_trailer()
 
     # -- episodes ----------------------------------------------------------------------------
 
@@ -1362,6 +1387,8 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._load_task.cancel()
         if self._extras_task is not None:
             self._extras_task.cancel()
+        if self._season_trailer_task is not None:
+            self._season_trailer_task.cancel()
         self._cancel_rows()
         super().destroy()
 

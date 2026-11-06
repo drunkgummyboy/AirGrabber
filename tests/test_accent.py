@@ -399,7 +399,7 @@ class SettingsLooksAccentTests(TkTestCase):
             settings,
             search=mock.MagicMock(),
             station=mock.MagicMock(),
-            updates=SimpleNamespace(current="2.0.8"),  # type: ignore[arg-type]
+            updates=SimpleNamespace(current="2.0.8", previous_version=None),  # type: ignore[arg-type]
             torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
             discovery=mock.MagicMock(),
             prowlarr=FakeProwlarr(),  # type: ignore[arg-type]

@@ -144,38 +144,37 @@ class SwitchTests(MainWindowCase):
     async def test_three_parts_lead_to_their_pages(self) -> None:
         window = self.window
         self.assertIs(window._mode, Mode.SERIES)
-        self.assertIs(window._switch.selected, SwitchPart.SERIES)
+        self.assertIs(window._band.part, SwitchPart.SERIES)
         window._part_clicked(SwitchPart.MOVIES)
         self.assertIs(window._mode, Mode.MOVIES)
-        self.assertIs(window._switch.selected, SwitchPart.MOVIES)
+        self.assertIs(window._band.part, SwitchPart.MOVIES)
         window._part_clicked(SwitchPart.FORGE)
         self.assertIs(window._mode, Mode.FORGE)
-        self.assertIs(window._switch.selected, SwitchPart.FORGE)
+        self.assertIs(window._band.part, SwitchPart.FORGE)
         self.assertEqual(window._forge_holder.winfo_manager(), "grid")
         self.assertEqual(window._movie_view.winfo_manager(), "")
         await pump_until(window, self.page_ready)
         window._select_mode(Mode.DOWNLOADS)
-        self.assertIsNone(window._switch.selected)
+        self.assertIsNone(window._band.part)
         self.assertEqual(window._forge_holder.winfo_manager(), "")
         window._part_clicked(SwitchPart.SERIES)
-        self.assertIs(window._switch.selected, SwitchPart.SERIES)
+        self.assertIs(window._band.part, SwitchPart.SERIES)
 
     async def test_the_badge_shows_from_every_page(self) -> None:
         window = self.window
         tray: list[int] = []
         self.enterContext(mock.patch.object(window.tray, "set_forge_count", tray.append))
         window._on_forge_needs(3)
-        self.assertEqual(window._switch.count, 3)
+        self.assertEqual(window._band.forge_count, 3)
         self.assertEqual(tray, [3])
         for mode in (Mode.SERIES, Mode.MOVIES, Mode.DOWNLOADS):
             window._select_mode(mode)
-            self.assertEqual(window._switch.count, 3, mode)
-        self.assertEqual(window._switch.winfo_manager(), "grid")
+            self.assertEqual(window._band.forge_count, 3, mode)
 
     async def test_the_queues_needs_reach_the_badge(self) -> None:
         window = self.window
         page = await self.on_page()
-        self.assertEqual(window._switch.count, 0)
+        self.assertEqual(window._band.forge_count, 0)
         queue = page.queue
         assert queue is not None
         await queue.add([self.video()])
@@ -183,25 +182,43 @@ class SwitchTests(MainWindowCase):
         for item in self.forge().queue.items:
             item.status = ItemStatus.NEEDS_CHOICE
         queue.refresh()
-        await pump_until(window, lambda: window._switch.count == 1)
+        await pump_until(window, lambda: window._band.forge_count == 1)
         window._select_mode(Mode.SERIES)  # shown from every page
-        self.assertEqual(window._switch.count, 1)
+        self.assertEqual(window._band.forge_count, 1)
 
     async def test_the_tabs_rows_left_part_follows_the_page(self) -> None:
         window = self.window
-        pills = window._series_tabs.pills
+        pills = window._series_tabs.tab_row
         assert pills is not None
         self.assertEqual(pills.winfo_manager(), "grid")
         page = await self.on_page()
         self.assertEqual(pills.winfo_manager(), "")
         self.assertEqual(window._tabs_row.grid_slaves(column=0), [page.queue_tools])
-        where = window._switch.winfo_rootx()
         window._part_clicked(SwitchPart.SERIES)
         await pump(window, 0.1)
         self.assertEqual(window._tabs_row.grid_slaves(column=0), [pills])
-        self.assertEqual(window._switch.winfo_rootx(), where)
+        self.assertEqual(window._tabs_row.winfo_manager(), "grid")
         window._part_clicked(SwitchPart.MOVIES)
         self.assertEqual(window._tabs_row.grid_slaves(column=0), [])
+        self.assertEqual(window._tabs_row.winfo_manager(), "")  # nothing to put on it
+
+    async def test_the_calendars_controls_show_with_the_calendar_only(self) -> None:
+        window = self.window
+        calendar = window._series_views["Calendar"]
+        dates, right = calendar._dates, calendar._right
+        self.assertEqual(dates.winfo_manager(), "place")
+        self.assertEqual(right.master, window._tabs_row)
+        window._series_tabs.set("Discover")
+        window._on_tab_changed()
+        self.assertEqual(dates.winfo_manager(), "")
+        self.assertEqual(right.winfo_manager(), "")
+        window._series_tabs.set("Calendar")
+        window._on_tab_changed()
+        self.assertEqual(dates.winfo_manager(), "place")
+        window._part_clicked(SwitchPart.MOVIES)
+        self.assertEqual(dates.winfo_manager(), "")
+        window._part_clicked(SwitchPart.SERIES)
+        self.assertEqual(right.winfo_manager(), "grid")
 
 
 class BandTests(MainWindowCase):

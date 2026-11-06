@@ -59,7 +59,6 @@ class RouteTest(ForgeTestCase):
     def test_the_words(self) -> None:
         for state, moves, known, folder, expected, look in (
             ("ready", True, True, "Series › Heat", "📦 Moves to Series › Heat", "moves"),
-            ("would", True, True, "Series", "📦 Would move to Series", "moves"),
             ("done", True, True, "Series", "📦 Moved to Series", "moves"),
             ("ready", False, False, "", "📁 Stays in its folder", "stays"),
             ("ready", False, False, "Heat", "📁 Stays here, in Heat", "stays"),
@@ -108,6 +107,7 @@ class MoveInTheQueueTest(QueueCase):
         await self.view.forge()
         moved = movies / "Heat (1995)" / "Heat (1995).mkv"
         self.assertTrue(moved.is_file())
+        self.assertIn("Forged: 1 moved, 0 renamed", self.services.activity.lines()[-1].text)
         self.assertEqual(self.names(here), [])
         self.view.refresh()
         await pump(self.root, 0.1)
@@ -126,6 +126,7 @@ class MoveInTheQueueTest(QueueCase):
         await self.view.forge()
         self.assertEqual(self.names(here), ["Heat (1995).mkv"])
         self.assertEqual(self.names(movies), [])
+        self.assertIn("Forged: 1 renamed", self.services.activity.lines()[-1].text)
 
     async def test_the_button_on_a_band_decides_for_that_band(self) -> None:
         here, _series, movies = await self.folders()
@@ -151,6 +152,10 @@ class MoveInTheQueueTest(QueueCase):
             (band.dest, band.dest_look),
             ("⚠ Choose your Movies folder in Settings › Auto-rename", "warn"),
         )
+        opened: list[str] = []
+        self.view.on_choose_folders = lambda: opened.append("folders")
+        self.view.list.on_action(self.band("Heat").key, "folders")
+        self.assertEqual(opened, ["folders"])
         await self.view.forge()
         self.assertIn("Heat.1995.mkv", self.names(here))  # untouched
         self.assertEqual(self.item("Heat").status, ItemStatus.READY)

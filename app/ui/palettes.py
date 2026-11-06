@@ -315,12 +315,6 @@ def luminance(color: str) -> float:
     return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2)
 
 
-def contrast_ratio(first: str, second: str) -> float:
-    """WCAG contrast ratio of two colours (1 … 21)."""
-    high, low = sorted((luminance(first), luminance(second)), reverse=True)
-    return (high + 0.05) / (low + 0.05)
-
-
 def _hls(color: str) -> tuple[float, float, float]:
     hexed = to_hex(color)
     red, green, blue = (int(hexed[i : i + 2], 16) / 255 for i in (1, 3, 5))

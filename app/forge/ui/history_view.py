@@ -1,5 +1,7 @@
-"""History: the last 50 runs, grouped by day (ported from MediaForge's ui/history_view.py). Its
-heading and muted line are on the main window's tabs row (app/forge/ui/page.py).
+"""History: the last 500 runs, grouped by day, 50 at a time ("Show 50 more") (ported from MediaForge's ui/history_view.py). Its
+heading and muted line are on the main window's tabs row (app/forge/ui/page.py). The search box
+on top keeps it to the runs with a matching file (a file's old or new name, or its folder's); the
+first of them open by themselves, showing just those files, and Undo N selected takes just those.
 
 Any kept run can be undone, not only the latest and in any order: each run's band has its own
 "Undo run", and "Show files" lets you tick single files of it ("Undo N selected"). A run reads
@@ -74,16 +76,6 @@ def _short_date(dt: datetime, *, year: bool) -> str:
     return f"{text} {dt.year}" if year else text
 
 
-def when_label(dt: datetime, now: datetime) -> str:
-    """ "Today 14:02", "Yesterday 21:40", "19 Oct 22:23", "4 Mar 2025 08:05"."""
-    time = f"{dt:%H:%M}"
-    if dt.date() == now.date():
-        return t("Today {time}", time=time)
-    if dt.date() == (now - timedelta(days=1)).date():
-        return t("Yesterday {time}", time=time)
-    return f"{_short_date(dt, year=dt.year != now.year)} {time}"
-
-
 def day_label(dt: datetime, now: datetime) -> str:
     """A day heading: "Today", "Yesterday", "Thu 29 Oct", "Tue 4 Mar 2025"."""
     if dt.date() == now.date():
@@ -148,11 +140,18 @@ def _gone_videos(videos: Sequence[Operation]) -> set[int]:
 
 
 class RunCard(ctk.CTkFrame):
-    """One run's band: its time, what it did, a tag, Show files and Undo run."""
+    """One run's band: its time, what it did, a tag, Show files and Undo run. `only`: the
+    operations a search found; the list shows just those."""
 
     def __init__(
-        self, master: Any, view: HistoryView, run: RunSummary, undone_at: datetime | None
+        self,
+        master: Any,
+        view: HistoryView,
+        run: RunSummary,
+        undone_at: datetime | None,
+        only: set[int] | None = None,
     ) -> None:
+        self.only = only
         look = view.look
         super().__init__(master, fg_color=look.SURFACE, corner_radius=8, border_width=0)
         self.view = view
@@ -234,7 +233,7 @@ class RunCard(ctk.CTkFrame):
             run.preset_name or t("no preset"),
         ]
         if run.created_count:
-            parts.append(t("{n} downloaded", n=run.created_count))
+            parts.append(tn("{n} extra", "{n} extras", run.created_count))
         return " · ".join(parts)
 
     def tag_text(self) -> str:
@@ -293,9 +292,7 @@ class RunCard(ctk.CTkFrame):
         if self.files is None:
             self.files = self._build_body()
         self.checks = {
-            op.id: _not_undoable_reason(op) is None
-            for op in self.operations
-            if op.kind not in _HIDDEN_KINDS
+            op.id: _not_undoable_reason(op) is None for op in self.operations if self._lists(op)
         }
         # Only the rows on screen are drawn, so a run with hundreds of files opens at once.
         self.files.set_rows(self._rows())
@@ -305,8 +302,12 @@ class RunCard(ctk.CTkFrame):
         self.expanded = True
         self.toggle_button.configure(text=t("Hide files ▴"))
 
+    def _lists(self, op: Operation) -> bool:
+        """Whether `op` has a row: not a folder's, and among what a search found."""
+        return op.kind not in _HIDDEN_KINDS and (self.only is None or op.id in self.only)
+
     def _rows(self) -> list[Row]:
-        return [self._row(op) for op in self.operations if op.kind not in _HIDDEN_KINDS]
+        return [self._row(op) for op in self.operations if self._lists(op)]
 
     def _row(self, op: Operation) -> Row:
         reason = _not_undoable_reason(op)
@@ -398,6 +399,14 @@ class RunCard(ctk.CTkFrame):
         )
 
 
+SEARCH_PLACEHOLDER = N_("Search history…")
+_RUNS_AT_A_TIME = 50  # a card per run: the rest come when asked for
+_SEARCH_WIDTH = 320
+_SEARCH_HEIGHT = 30
+_SEARCH_WAIT_MS = 200  # after the last key
+_SEARCH_OPENS = 5  # of the runs found, this many open by themselves
+
+
 class HistoryView(ctk.CTkFrame):
     """History on MediaForge's page."""
 
@@ -427,6 +436,23 @@ class HistoryView(ctk.CTkFrame):
             on_done=self._cc_done,
         )
 
+        self.query = ""  # what the search box holds, as last searched
+        self._search_job: str | None = None
+        self.search_entry = ctk.CTkEntry(
+            self,
+            placeholder_text=t(SEARCH_PLACEHOLDER),
+            placeholder_text_color=theme.TEXT_MUTED,
+            width=_SEARCH_WIDTH,
+            height=_SEARCH_HEIGHT,
+            corner_radius=_SEARCH_HEIGHT // 2,
+            font=theme.font(13),
+            fg_color=self.look.SURFACE,
+            border_color=self.look.EDGE,
+        )
+        self.search_entry.pack(anchor="w", padx=6, pady=(4, 0))
+        self.search_entry.bind("<KeyRelease>", self._search_typed)
+        self.search_entry.bind("<Escape>", self._search_cleared)
+
         self.list = ScrollableFrame(
             self,
             fg_color=self.look.BG,
@@ -437,6 +463,20 @@ class HistoryView(ctk.CTkFrame):
         self.list.pack(fill="both", expand=True, pady=(4, 0))
         self.empty_label = ctk.CTkLabel(
             self.list, text=t(NOTHING_YET), font=theme.font(12), text_color=theme.TEXT_MUTED
+        )
+        self._waiting: list[RunSummary] = []  # the runs found that have no card yet
+        self._found: dict[int, set[int]] | None = None  # what the search found, by run
+        self.more_button = ctk.CTkButton(
+            self.list,
+            text="",
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            border_color=self.look.PLACEHOLDER,
+            text_color=theme.BUTTON_TEXT,
+            hover_color=self.look.CHIP,
+            font=theme.font(12),
+            command=lambda: self.spawn(self._add_cards(self._generation)),
         )
 
     async def _inform(self, title: str, message: str) -> None:
@@ -479,14 +519,43 @@ class HistoryView(ctk.CTkFrame):
     def on_show(self) -> None:
         self.spawn(self.reload())
 
+    def _search_typed(self, _event: Any = None) -> None:
+        """A moment after the last key: the search, if what it holds changed."""
+        if self._search_job is not None:
+            self.after_cancel(self._search_job)
+        self._search_job = self.after(_SEARCH_WAIT_MS, self._search_now)
+
+    def _search_cleared(self, _event: Any = None) -> str:
+        """Escape in the box empties it."""
+        self.search_entry.delete(0, "end")
+        self._search_typed()
+        return "break"
+
+    def _search_now(self) -> None:
+        self._search_job = None
+        self.search(self.search_entry.get())
+
+    def search(self, query: str) -> None:
+        """Keep the list to the runs with a file matching `query` ("" = every run)."""
+        query = query.strip()
+        if query != self.query:
+            self.query = query
+            self.spawn(self.reload())
+
     async def reload(self) -> None:
         self._generation += 1
         generation = self._generation
         every = await self.services.history.list_runs()
+        query = self.query
+        found = await self.services.history.search(query) if query else None
         if generation != self._generation or not self.winfo_exists():
             return
         wanted = MediaKind.MOVIE if self.kind == "movies" else MediaKind.EPISODE
         runs = [r for r in every if self.kind == "all" or not r.kinds or wanted in r.kinds]
+        if found is not None:
+            runs = [r for r in runs if r.id in found]
+        self._waiting = []
+        self.more_button.pack_forget()
         for card in self.cards:
             card.destroy()
         for _, heading in self._headings:
@@ -495,7 +564,9 @@ class HistoryView(ctk.CTkFrame):
         self._headings = []
         self._card_days = []
         if not runs:
-            if not every:
+            if query:
+                text = t("Nothing in your history matches “{query}”.", query=query)
+            elif not every:
                 text = t(NOTHING_YET)
             elif self.kind == "movies":
                 text = t("No renamed movies yet")
@@ -505,6 +576,14 @@ class HistoryView(ctk.CTkFrame):
             self.empty_label.pack(pady=40)
             return
         self.empty_label.pack_forget()
+        self._waiting, self._found = runs, found
+        await self._add_cards(generation)
+
+    async def _add_cards(self, generation: int) -> None:
+        """The next batch of the runs found, and "Show N more" while there are others."""
+        runs, self._waiting = self._waiting[:_RUNS_AT_A_TIME], self._waiting[_RUNS_AT_A_TIME:]
+        found = self._found
+        self.more_button.pack_forget()
         now = datetime.now()
         for run in runs:
             undone_at = None
@@ -525,11 +604,20 @@ class HistoryView(ctk.CTkFrame):
                 )
                 heading.pack(fill="x", padx=10, pady=(12, 2))
                 self._headings.append((day, heading))
-            card = RunCard(self.list, self, run, undone_at)
+            only = found[run.id] if found is not None else None
+            card = RunCard(self.list, self, run, undone_at, only)
             card.pack(fill="x", padx=6, pady=4)
             self.cards.append(card)
             self._card_days.append(day)
+            if only is not None and len(self.cards) <= _SEARCH_OPENS:
+                await card.expand()  # what was searched for shows without a click
+                if generation != self._generation or not self.winfo_exists():
+                    return
             await asyncio.sleep(0)  # one card at a time, so the window keeps responding
+        if self._waiting:
+            count = min(len(self._waiting), _RUNS_AT_A_TIME)
+            self.more_button.configure(text=t("Show {n} more", n=count))
+            self.more_button.pack(pady=(8, 12))
 
     def day_labels(self) -> list[str]:
         return [day for day, _ in self._headings]
@@ -615,6 +703,9 @@ class HistoryView(ctk.CTkFrame):
         await self._report(await self.services.undo.undo_operations([*chosen, *folders]))
 
     def destroy(self) -> None:
+        if self._search_job is not None:
+            self.after_cancel(self._search_job)
+            self._search_job = None
         for task in list(self._tasks):
             task.cancel()
         super().destroy()

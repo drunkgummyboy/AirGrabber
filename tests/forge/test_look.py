@@ -1,6 +1,6 @@
 """Forge's look (app/forge/ui/look.py): AirGrabber's own accent tokens as a value, read when asked,
 so whatever accent Settings has; readable in both looks with every accent; copper is gone; the shared
-widgets (dialog_kit's buttons, Tabview's pills and underline, popup_menu) painting with the look when
+widgets (dialog_kit's buttons, Tabview's underline, popup_menu) painting with the look when
 given it. Hidden Tk root for those."""
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from dataclasses import fields
 
 import customtkinter as ctk
 
-from app.forge.ui.look import ForgeLook, app_look, mix, mix_pair
+from app.forge.ui.look import ForgeLook, app_look, mix
 from app.forge.ui.widgets.chips import option_style
 from app.models import Accent
 from app.ui import palettes, theme
@@ -92,7 +92,6 @@ class AppLookTests(ForgeTestCase):
 
     def test_mix_comes_from_tokens(self) -> None:
         self.assertEqual(mix("#000000", "#FFFFFF", 0.5), "#808080")
-        self.assertEqual(mix_pair(("#000000", "#FFFFFF"), ("#FFFFFF", "#000000"), 0.0), ("#000000", "#FFFFFF"))
         self.assertRegex(mix(theme.SURFACE[1], theme.BG[1], 0.45), HEX)
 
 
@@ -112,31 +111,14 @@ class SharedWidgetsTests(TkTestCase):
         plain = primary_button(self.root, "Go", lambda: None)
         self.assertEqual(tuple(plain.cget("fg_color")), theme.ACCENT)
 
-    def test_pills_and_underline(self) -> None:
-        pills = Tabview(self.root, look="pills", colors=self.look)
-        for name in ("Inbox", "History"):
-            pills.add(name)
-        row = pills.pills
-        assert row is not None
-        chosen = row.buttons["Inbox"]
-        other = row.buttons["History"]
-        self.assertEqual(tuple(chosen.cget("fg_color")), self.look.ACCENT)
-        self.assertEqual(tuple(other.cget("fg_color")), self.look.CHIP)
-        self.assertEqual(tuple(other.cget("hover_color")), self.look.CHIP_HOVER)
-        self.assertEqual(tuple(pills.cget("fg_color")), self.look.BG)
-        pills.set("History")
-        self.assertEqual(tuple(row.buttons["History"].cget("fg_color")), self.look.ACCENT)
+    def test_underline_tabs(self) -> None:
         underline = Tabview(self.root, look="underline", colors=self.look)
         underline.add("Inbox")
         bar = underline.underline
         assert bar is not None
         self.assertEqual(tuple(bar._marks["Inbox"].cget("fg_color")), self.look.ACCENT)
-        plain = Tabview(self.root, look="pills")
-        plain.add("Calendar")
-        assert plain.pills is not None
-        self.assertEqual(tuple(plain.pills.buttons["Calendar"].cget("fg_color")), theme.ACCENT)
-        for tabs in (pills, underline, plain):  # before the root, as tests/test_accent.py does
-            tabs.destroy()
+        self.assertEqual(tuple(underline.cget("fg_color")), self.look.BG)
+        underline.destroy()  # before the root, as tests/test_accent.py
 
     def test_popup_menu(self) -> None:
         menu = popup_menu(self.root, [("Open", lambda: None)], look=self.look)

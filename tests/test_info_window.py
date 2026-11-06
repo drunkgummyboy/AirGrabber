@@ -289,6 +289,9 @@ class FakeWatchlist:
 
 
 class FakeDiscovery:
+    async def season_trailer(self, show: Any, season: int) -> Any:
+        return None
+
     def __init__(self, extras: TitleExtras | Exception, *, key: bool = True) -> None:
         self.extras = extras
         self.has_tmdb_key = key

@@ -24,6 +24,7 @@ from app.single_instance import ForgeRequest
 from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
 from app.ui.settings_dialog import SECTION_LOOKS
 from app.i18n import t
+from app.update_guard import WentBack
 from app.ui.main_window import (
     AutoNotice,
     MainWindow,
@@ -34,6 +35,7 @@ from app.ui.main_window import (
     settings_affect_pages,
     typing_in,
     update_notice,
+    went_back_notice,
 )
 
 # Settings no page shows: connections, how downloads are handed over, the first-run marker,
@@ -176,6 +178,12 @@ class ProwlarrSetupMessageTests(unittest.TestCase):
 
 
 class UpdateNoticeTests(unittest.TestCase):
+    def test_going_back_says_what_happened(self) -> None:
+        asked = went_back_notice(WentBack("2.1.0", "2.0.0", asked=True))
+        self.assertEqual(asked, "Back on v2.0.0. AirGrabber waits for a version newer than v2.1.0.")
+        failed = went_back_notice(WentBack("2.1.0", "2.0.0", asked=False))
+        self.assertIn("v2.1.0 didn't start", failed)
+
     def test_shown_once_the_version_changed(self) -> None:
         self.assertEqual(update_notice("2.0.0", "2.1.0"), "Updated to v2.1.0")
 
@@ -591,7 +599,7 @@ class ForgeWiringTests(unittest.TestCase):
             _services=SimpleNamespace(settings=settings),
             _forge=SimpleNamespace(windows_open=windows_open),
             _quit_gate=SimpleNamespace(asked=asked, request=lambda: calls.append("quit")),
-            _switch=SimpleNamespace(set_count=lambda count: calls.append(("badge", count))),
+            _band=SimpleNamespace(set_forge_count=lambda count: calls.append(("badge", count))),
             tray=SimpleNamespace(
                 running=True,
                 show_window=lambda: calls.append("show"),

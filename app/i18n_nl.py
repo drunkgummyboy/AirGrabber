@@ -55,6 +55,28 @@ NL: dict[str, str] = {
     "Connected to Prowlarr on this PC": "Verbonden met Prowlarr op deze pc",
     "Prowlarr: added {sites} to your sites": "Prowlarr: {sites} toegevoegd aan je sites",
     "Updated to v{version}": "Bijgewerkt naar v{version}",
+    "Back on v{back}. AirGrabber waits for a version newer than v{left}.": (
+        "Weer op v{back}. AirGrabber wacht op een versie nieuwer dan v{left}."
+    ),
+    "v{left} didn't start, so AirGrabber went back to v{back}. It waits for a newer version.": (
+        "v{left} startte niet, dus AirGrabber ging terug naar v{back}. Het wacht op een nieuwere versie."
+    ),
+    "⚠ Could not go back to the older version.": "⚠ Teruggaan naar de oudere versie is niet gelukt.",
+    "Going back to the older version. Restarting…": "Terug naar de oudere versie. Opnieuw starten…",
+    "Not happy with this version?": "Niet tevreden met deze versie?",
+    "AirGrabber keeps the version from before its last update. If you go back, it waits for a version newer than this one.": (
+        "AirGrabber bewaart de versie van vóór de laatste update. Ga je terug, dan wacht het op een versie nieuwer dan deze."
+    ),
+    "AirGrabber restarts on the older version. Your library and settings stay, unless this version changed how they are stored: then they return to how they were just before the update.": (
+        "AirGrabber start opnieuw op de oudere versie. Je bibliotheek en instellingen blijven, tenzij deze "
+        "versie de manier van opslaan veranderde: dan gaan ze terug naar hoe ze vlak voor de update waren."
+    ),
+    "Go back to version {version}": "Terug naar versie {version}",
+    "Go back to version {version}?": "Terug naar versie {version}?",
+    "Go back": "Teruggaan",
+    "Version {version} was undone on this PC. AirGrabber waits for a newer one.": (
+        "Versie {version} is op deze pc ongedaan gemaakt. AirGrabber wacht op een nieuwere."
+    ),
     "{quality} · picked automatically": "{quality} · automatisch gekozen",
     "Picked automatically": "Automatisch gekozen",
     "{label} is downloading": "{label} wordt gedownload",
@@ -139,6 +161,9 @@ NL: dict[str, str] = {
     "TMDB key": "TMDB-sleutel",
     "A free code from themoviedb.org that lets AirGrabber ask TMDB for this information. Without it, the Movies and Discover pages stay empty. Your shows and the Calendar work without it.":
         "Een gratis code van themoviedb.org waarmee AirGrabber deze informatie aan TMDB kan vragen. Zonder sleutel blijven de pagina's Films en Ontdekken leeg. Je series en de Kalender werken ook zonder.",
+    "Where this information comes from": "Waar deze informatie vandaan komt",
+    "Show and film information and pictures come from TVmaze and TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.":
+        "Informatie en afbeeldingen van series en films komen van TVmaze en TMDB. Dit product gebruikt de TMDB API, maar wordt niet door TMDB ondersteund of gecertificeerd.",
     "How do I get a free key?": "Hoe krijg ik een gratis sleutel?",
     "Week starts on": "Week begint op",
     "The first day of each week on the Calendar.": "De eerste dag van elke week in de Kalender.",
@@ -490,6 +515,10 @@ NL: dict[str, str] = {
         "Er is niets goed genoeg gevonden. Kies zelf een download.",
     "Not Aired": "Niet uitgezonden",
     "Suggested": "Suggestie",
+    "Back to today": "Terug naar vandaag",
+    "All services": "Alle diensten",
+    "Nothing from {service} here right now. Pick another service or {all}.":
+        "Nu niets van {service} hier. Kies een andere dienst of {all}.",
     # app/ui/calendar_stack.py
     "⬇ Download all ({n})": "⬇ Alle downloaden ({n})",
     "⬇ Download ({n})": "⬇ Download ({n})",
@@ -646,6 +675,7 @@ NL: dict[str, str] = {
     "Show the whole picture": "Hele beeld tonen",
     # app/ui/title_info.py
     "Watch trailer": "Trailer bekijken",
+    "Season {n} trailer": "Trailer seizoen {n}",
     "Opening trailer…": "Trailer openen…",
     "Add a TMDB key in Settings for posters, trailers and cast":
         "Vul een TMDB-sleutel in bij Instellingen voor posters, trailers en de cast",
@@ -1291,6 +1321,18 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "The main menu moved to the top, with each page's own buttons on one row under it.":
+        "Het hoofdmenu staat nu bovenaan, met de knoppen van elke pagina op één rij eronder.",
+    "The calendar's date sits between two new arrows; click the date to go back to today.":
+        "De datum van de kalender staat tussen twee nieuwe pijlen; klik op de datum om terug te gaan naar vandaag.",
+    "A series' trailer button follows the season you view; Discover shows and filters by streaming service.":
+        "De trailerknop van een serie volgt het seizoen dat je bekijkt; Ontdekken toont en filtert op streamingdienst.",
+    "MediaForge's History keeps 500 runs and has a search; a warning about a folder now opens the setting.":
+        "De geschiedenis van MediaForge bewaart 500 keer en kun je doorzoeken; een mapwaarschuwing opent nu de instelling.",
+    "MediaForge: Choose… on every show and film; new options for quality in the name, NFO files and backgrounds.":
+        "MediaForge: Kiezen… bij elke serie en film; nieuwe opties voor kwaliteit in de naam, NFO-bestanden en achtergronden.",
+    "From now on, if an update won't start AirGrabber goes back by itself; Settings offers the way back too.":
+        "Start een update voortaan niet, dan gaat AirGrabber vanzelf terug; ook in Instellingen kun je teruggaan.",
     "The calendar now also suggests shows from streaming services like Netflix and Disney+.":
         "De kalender stelt nu ook series voor van streamingdiensten zoals Netflix en Disney+.",
     "Calendar cards say where a show airs, like \"S03E05 · Netflix\".":

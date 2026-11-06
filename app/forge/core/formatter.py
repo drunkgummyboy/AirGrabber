@@ -10,12 +10,14 @@ from pydantic import BaseModel
 
 from app.forge.models.media import ResolvedMedia
 
-KNOWN_VARIABLES = ("ny", "t", "y", "s", "e", "s00e00", "sxe", "en")
+KNOWN_VARIABLES = ("ny", "t", "y", "s", "e", "s00e00", "sxe", "en", "quality")
 
 _FORBIDDEN = set('<>:"/\\|?*') | {chr(c) for c in range(32)}
 _SPACES = re.compile(r"\s+")
 _VARIABLE = re.compile(r"\{([A-Za-z0-9]+)\}")
 _SEPARATOR = re.compile(r"[\\/]")
+# A file whose name says nothing of its quality: the code goes, with the dash or brackets around it.
+_EMPTY_QUALITY = re.compile(r"\s*(?:-\s*)?[\[(]?\{quality\}[\])]?", re.IGNORECASE)
 _RESERVED = {"CON", "PRN", "AUX", "NUL"} | {f"{p}{n}" for p in ("COM", "LPT") for n in range(1, 10)}
 
 
@@ -59,6 +61,7 @@ def _values(media: ResolvedMedia) -> dict[str, str]:
         "s00e00": f"S{s}E{e}",
         "sxe": sxe,
         "en": media.episode_title or f"Episode {e}",
+        "quality": media.parsed.quality or "",
     }
     # Values never contain path separators, so a "/" in an episode name can't make a folder.
     return {k: _clean_text(v) for k, v in raw.items()}
@@ -75,6 +78,8 @@ def render(fmt: str, media: ResolvedMedia, extension: str) -> Rendered:
         unknown.append(m.group(1))
         return m.group(0)
 
+    if not media.parsed.quality:
+        fmt = _EMPTY_QUALITY.sub("", fmt)
     # Split on the format's own separators first, then substitute inside each segment.
     segments = [seg for seg in _SEPARATOR.split(fmt) if seg.strip()]
     parts = [sanitize_segment(_VARIABLE.sub(substitute, seg)) for seg in segments] or ["_"]

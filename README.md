@@ -1,13 +1,59 @@
-# AirGrabber
+<p align="center"><img src="app/assets/logo.png" width="96" alt=""></p>
 
-Track your shows. Grab your movies.
+<h1 align="center">AirGrabber</h1>
 
-A Windows desktop app: a calendar of the episodes airing for the shows you follow (TVMaze), TV and
-movie discovery (TMDB), and a torrent search across several indexers that saves `.torrent` files to
-your watch folder or sends magnets to Synology Download Station.
+<p align="center">
+  <b>Never miss an episode. Keep your library tidy.</b><br>
+  A free Windows app that shows when your series air, finds them, and names and files them for you.
+</p>
 
-It also holds **MediaForge**: a page that gives downloaded episodes and films tidy names
-and moves them into your Series and Movies folders (see [MediaForge](#mediaforge) below).
+<p align="center">
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#mediaforge">MediaForge</a> ·
+  <a href="#safe-updates">Safe updates</a>
+  <br><br>
+  <a href="https://github.com/drunkgummyboy/AirGrabber/actions/workflows/tests.yml"><img src="https://github.com/drunkgummyboy/AirGrabber/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
+</p>
+
+<p align="center"><img src="screenshots/tour.gif" alt="A short tour of AirGrabber: the calendar, Discover, MediaForge and its history"></p>
+
+## What it does
+
+**Follow your series.** A calendar shows which episodes air this week, with Netflix, Disney+ and other
+streaming shows on it too. Discover what's new and filter it by service.
+
+<p align="center"><img src="screenshots/calendar.png" width="800" alt="The calendar with this week's episodes"></p>
+
+<p align="center"><img src="screenshots/discover.png" width="800" alt="Discover: what's trending, with a filter for each streaming service"></p>
+
+**Rename everything properly: MediaForge.** A free, built-in renamer in the style of FileBot. Your own
+naming format with visible codes, posters, trailers and subtitles. Turn on quality in the name, NFO files
+or background pictures if your setup needs them. See every new name before anything changes, undo any run
+later, and search your whole history.
+
+<p align="center"><img src="screenshots/mediaforge.png" width="800" alt="MediaForge's queue with the new names of the files"></p>
+
+**Search and send.** Search several torrent indexers at once, or your own Prowlarr, and
+send a result to qBittorrent, Transmission or Synology Download Station with one click.
+
+**Fits what you already use.** Connect Plex to see what you have and what's missing. Everyone at home can
+have their own list. Light and dark look, English and Dutch.
+
+| | |
+|---|---|
+| **Price** | Free, no account, no ads |
+| **Licence** | Open source, [MIT](LICENSE) |
+| **Runs on** | Windows 10 and 11 |
+| **Your data** | Stays on your PC |
+| **Optional** | A free [TMDB key](https://www.themoviedb.org/settings/api) unlocks Discover, pictures and MediaForge's names; the app walks you through it |
+
+> AirGrabber doesn't host, store or share any video. What you download is up to you: only download what
+> you're allowed to where you live.
+
+Series and film information and pictures come from [TVmaze](https://www.tvmaze.com) and
+[TMDB](https://www.themoviedb.org). This product uses the TMDB API but is not endorsed or certified by
+TMDB. The pictures above show real shows and films; their posters belong to their owners.
 
 ## Install
 
@@ -44,10 +90,15 @@ link to it; the same command with the full address is:
 irm https://raw.githubusercontent.com/drunkgummyboy/AirGrabber/main/install.ps1 | iex
 ```
 
-## Update
+## Safe updates
 
 AirGrabber updates itself: new versions download in the background and install when you close it.
 You can also check under ⚙ Settings → **Check for updates**. Your library and settings are kept.
+
+- **Tested first.** Every version has to pass thousands of automatic tests before anyone gets it.
+- **A way back.** If a new version won't start, AirGrabber returns to the one before by itself. If it
+  starts but you don't like it, choose **Go back to version …** under ⚙ Settings → Updates. It then waits
+  for a newer version.
 
 ## Uninstall
 
@@ -97,7 +148,7 @@ Downloads page shows the download as finished with where it went ("Renamed → S
    anything on its own, so the two never move the same files. The old MediaForge's data is never
    deleted.
 
-**Licences**: MediaForge reads file names with [guessit](https://github.com/guessit-io/guessit) and
+**Licences**: AirGrabber itself is under the [MIT licence](LICENSE). MediaForge reads file names with [guessit](https://github.com/guessit-io/guessit) and
 rebulk (LGPL), installed by Python's package installer, not copied into AirGrabber. For trailers it
 downloads [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense) and
 [ffmpeg](https://github.com/yt-dlp/FFmpeg-Builds) (GPL) from their GitHub releases the first time

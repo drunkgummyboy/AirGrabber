@@ -14,6 +14,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from app.models import (
+    TitleExtras,
+    TitleInfo,
+    Video,
     CalendarEntry,
     Episode,
     GrabOutcome,
@@ -280,6 +283,37 @@ class SeasonControlTests(SeasonWindowTestCase):
         await self.settle()
         self.assertIsNone(self.control(window))
         self.assertFalse(window._season_bar.winfo_manager())  # nothing aired: no bar
+
+    async def test_the_trailer_button_follows_the_season(self) -> None:
+        show_video = Video(key="show", site="YouTube", type="Trailer")
+        season_video = Video(key="three", site="YouTube", type="Trailer")
+
+        class Discovery:
+            has_tmdb_key = True
+
+            async def season_trailer(self, show: Any, season: int) -> Video | None:
+                return season_video if season == 3 else None
+
+        window = self.open(self.actions, details())
+        await self.ready(window)
+        window._discovery = cast(Any, Discovery())
+        window._extras = TitleExtras(info=TitleInfo(id=1), trailer=show_video)
+        calls: list[tuple[Any, ...]] = []
+        real = window.masthead.set_trailer
+
+        def spy(url: str | None, label: str | None = None) -> None:
+            calls.append((url, label))
+            real(url, label)
+
+        window.masthead.set_trailer = spy  # type: ignore[method-assign]
+        window._select_season(3)
+        await self.settle()
+        self.assertEqual(calls[-1], (season_video.watch_url, "Season 3 trailer"))
+        self.assertEqual(window.masthead._pill_words(), "Season 3 trailer")
+        window._select_season(2)  # none of its own: the show's
+        await self.settle()
+        self.assertEqual(calls[-1], (show_video.watch_url, None))
+        self.assertEqual(window.masthead._pill_words(), "Watch trailer")
 
     async def test_all_missing_counts_exactly_the_missing_ones_not_the_new(self) -> None:
         # S02E01 isn't in Plex here and counts as new: "1 missing" and "All missing (1)" agree.

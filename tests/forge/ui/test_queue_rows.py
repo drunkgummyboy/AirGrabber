@@ -24,7 +24,6 @@ from app.forge.ui.queue_rows import (
     episode_code,
     item_kind,
     item_state,
-    needs_you,
 )
 from app.forge.ui.widgets.virtual_list import Row
 from tests.forge.base import ForgeTestCase
@@ -114,10 +113,13 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual([r.code for r in lines], ["S04E03", "S04E05"])  # by episode
         self.assertEqual(lines[0].faint, "Ted.Lasso.S04E03.1080p.WEB.mkv")
         # The current name says so, so it isn't taken for the new one.
-        self.assertEqual({r.faint_label for r in lines}, {"Now:"})
+        self.assertEqual({r.faint_label for r in lines}, {"Current name:"})
         self.assertEqual({r.new for r in lines}, {False})  # an episode's title is its name
         self.assertEqual({r.band for r in lines}, {ted.key})  # hovered with their band
-        self.assertEqual(ted.actions, (("explorer", "📂"), ("ignore", "Ignore"), ("rename", "Rename")))
+        self.assertEqual(
+            ted.actions,
+            (("explorer", "📂"), ("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename")),
+        )
         self.assertEqual(ted.tips, (("explorer", "Open in Explorer"),))
         self.assertEqual(rows.bands[ted.key], [items[2].id, items[0].id])
         self.assertEqual(rows.targets[items[2].id].parent.name, "Ted Lasso - Season 04")
@@ -125,7 +127,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual((dune.subtitle, dune.dest), ("Film · 2021", "📁 Stays here, in Dune (2021)"))
         film_line = rows.rows[rows.rows.index(dune) + 1]
         self.assertEqual((film_line.title, film_line.new), ("Dune (2021).mkv", True))
-        self.assertEqual((film_line.faint, film_line.faint_label), ("Dune.2021.mkv", "Now:"))
+        self.assertEqual((film_line.faint, film_line.faint_label), ("Dune.2021.mkv", "Current name:"))
         self.assertEqual(rows.targets[items[1].id], self.folder / "Dune (2021)" / "Dune (2021).mkv")
         self.assertEqual(rows.kinds, {"series": 3, "movies": 1})
         self.assertEqual(rows.counts, {"all": 4, "needs": 0, "ready": 4})
@@ -156,8 +158,6 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual((shrinking.subtitle, shrinking.dest), ("TMDB isn't sure · 1 file", ""))
         self.assertEqual(arrival.title, "Arrival")
         self.assertEqual(rows.needs, 1)
-        self.assertTrue(needs_you(items[1]))
-        self.assertFalse(needs_you(items[0]))
 
     def test_an_unsure_film_names_its_year(self) -> None:
         [band] = bands(build([unsure(movie(self.folder, "Dune.2021.mkv", "Dune", 2021))]))
@@ -279,17 +279,17 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual((band.state, band.state_text), ("ready", "Ready"))
         self.assertEqual(rows.needs, 0)
 
-    def test_on_trial_watched_files_would_rename(self) -> None:
+    def test_watched_files_are_ready_like_any_other(self) -> None:
         downloads = self.tmp / "dl"
         watched = movie(downloads, "Dune.2021.mkv", "Dune", 2021, watched=downloads)
         dropped = movie(self.folder, "Heat.1995.mkv", "Heat", 1995)
-        rows = build([watched, dropped], trial=True)
+        rows = build([watched, dropped])
         dune, heat = bands(rows)
-        self.assertEqual((dune.state, dune.state_text), ("would", "Would rename"))
-        self.assertEqual(heat.state, "ready")  # a dropped file is renamed with Forge
-        self.assertEqual(rows.counts, {"all": 2, "needs": 0, "ready": 1})
-        self.assertEqual([b.title for b in bands(build([watched], show="ready", trial=True))], [])
-        self.assertEqual(item_state(watched, trial=False), "ready")
+        self.assertEqual((dune.state, dune.state_text), ("ready", "Ready"))
+        self.assertEqual(heat.state, "ready")
+        self.assertEqual(rows.counts, {"all": 2, "needs": 0, "ready": 2})
+        self.assertEqual([b.title for b in bands(build([watched], show="ready"))], ["Dune"])
+        self.assertEqual(item_state(watched), "ready")
 
     def test_held_files_need_you_with_their_reason(self) -> None:
         downloads = self.tmp / "dl"
@@ -372,12 +372,13 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(show.subtitle, "Seizoenen 1–2 · 2 afleveringen")
         self.assertEqual(show.dest, "📁 Blijft in zijn map")
         self.assertEqual(
-            show.actions, (("explorer", "📂"), ("ignore", "Negeren"), ("rename", "Hernoemen"))
+            show.actions,
+            (("explorer", "📂"), ("ignore", "Negeren"), ("choose", "Kiezen…"), ("rename", "Hernoemen")),
         )
         self.assertEqual(dune.actions, (("explorer", "📂"), ("undo", "Ongedaan maken")))
         self.assertEqual(dune.tips, (("explorer", "Openen in Verkenner"),))
         self.assertEqual(dune.subtitle, "Film · 2021")
-        self.assertEqual({r.faint_label for r in rows.rows if r.kind == "item"}, {"Nu:"})
+        self.assertEqual({r.faint_label for r in rows.rows if r.kind == "item"}, {"Huidige naam:"})
 
 
 class BuildRowsTests(ForgeTestCase):

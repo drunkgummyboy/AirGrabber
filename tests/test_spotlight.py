@@ -4,7 +4,7 @@ the glow without a TMDB key, the baked pictures (the scrim, the shadows), "Grabb
 every palette, the band on a hidden Tk root and its compact state on MediaForge's page (🕘, only
 there), the Series / Movies / MediaForge switch on the tabs row under the band (`ModeSwitch`,
 right-aligned, level with the tabs, in every mode, with MediaForge's badge), and the main pages'
-tabs (widgets.Tabview: the "pills" look, the "underline" one still there)."""
+tabs (widgets.Tabview: the "underline" look)."""
 
 from __future__ import annotations
 
@@ -60,7 +60,6 @@ from app.ui.backdrop import (
     rounded_box,
     scrim_alpha,
 )
-from app.ui.main_window import build_tabs_row, show_tabs
 from app.ui.spotlight import (
     BAND_HEIGHT,
     BUTTON_GAP,
@@ -73,11 +72,7 @@ from app.ui.spotlight import (
     ROW_TOP,
     SEARCH_MIN_WIDTH,
     SEARCH_WIDTH,
-    SEGMENT_FONT_SIZE,
-    SEGMENT_PAD_X,
-    SEGMENT_PAD_Y,
     SEARCH_GAP,
-    SWITCH_MARGIN,
     Hit,
     HitKind,
     Rect,
@@ -88,13 +83,12 @@ from app.ui.spotlight import (
     film_line,
     hit_target,
     sub_line,
-    switch_hit,
     switch_layout,
     tag_text,
     title_text,
 )
-from app.ui.spotlight_band import SWITCH_ALPHA, ModeSwitch, SpotlightBand
-from app.ui.widgets import PILLS_GAP, PILLS_LEFT, UNDERLINE_LEFT, UNDERLINE_TAB_GAP, Tabview
+from app.ui.spotlight_band import SpotlightBand
+from app.ui.widgets import UNDERLINE_LEFT, UNDERLINE_TAB_GAP, Tabview
 
 CEST = timezone(timedelta(hours=2))
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=CEST)  # a Friday, noon
@@ -511,6 +505,10 @@ class RotationTests(unittest.TestCase):
 WORD, SEGMENT, LINE = 100.0, 120.0, 23.0
 
 
+def middle(rect: Rect) -> tuple[float, float]:
+    return rect.x + rect.w / 2, rect.y + rect.h / 2
+
+
 class LayoutTests(unittest.TestCase):
     def check(self, width: float, *, dots: int = 5, current: int = 0) -> None:
         layout = band_layout(width, word_width=WORD, dots=dots, current=current)
@@ -589,7 +587,7 @@ class LayoutTests(unittest.TestCase):
                 self.assertGreaterEqual(layout.search.w, SEARCH_MIN_WIDTH)
         # Far narrower than the window gets: the search field gives way first.
         self.check(550)
-        self.assertEqual(band_layout(550, word_width=WORD, history=True).search.w, SEARCH_MIN_WIDTH)
+        self.assertEqual(band_layout(500, word_width=WORD, history=True).search.w, SEARCH_MIN_WIDTH)
 
     def test_what_the_pointer_is_over(self) -> None:
         layout = band_layout(1220, word_width=WORD, dots=3, current=1)
@@ -615,21 +613,34 @@ class LayoutTests(unittest.TestCase):
         self.assertIsNone(hit_target(layout, *middle(layout.logo), items=3))
 
     def test_the_switch(self) -> None:
-        """Bigger than 2.0.9's (17 bold, 30 x 9 around each name, 4 around both), on a canvas of
-        its own with room for its shadow."""
-        self.assertEqual((SEGMENT_FONT_SIZE, SEGMENT_PAD_X, SEGMENT_PAD_Y, PILL_PAD), (17, 30, 9, 4))
-        layout = switch_layout(segment_widths=(SEGMENT, SEGMENT, SEGMENT + 40), line_height=LINE)
+        """Beside "AirGrabber", as tall as the top row, a part per width."""
+        layout = switch_layout(segment_widths=(SEGMENT, SEGMENT, SEGMENT + 40), x=200)
         series, movies, forge = layout.segments
-        self.assertEqual(layout.pill, Rect(SWITCH_MARGIN, SWITCH_MARGIN, 3 * SEGMENT + 40 + 8, LINE + 18 + 8))
-        self.assertEqual(series, Rect(SWITCH_MARGIN + 4, SWITCH_MARGIN + 4, SEGMENT, LINE + 18))
+        self.assertEqual(layout.pill, Rect(200, ROW_TOP, 3 * SEGMENT + 40 + 2 * PILL_PAD, ROW_HEIGHT))
+        self.assertEqual(series, Rect(204, ROW_TOP + 4, SEGMENT, ROW_HEIGHT - 8))
         self.assertEqual(movies.x, series.right)
-        self.assertEqual(forge, Rect(movies.right, series.y, SEGMENT + 40, LINE + 18))
-        self.assertEqual(layout.size, (layout.pill.right + SWITCH_MARGIN, layout.pill.bottom + SWITCH_MARGIN))
-        self.assertEqual(switch_hit(layout, series.x + 5, series.y + 5), 0)
-        self.assertEqual(switch_hit(layout, movies.right - 5, movies.bottom - 5), 1)
-        self.assertEqual(switch_hit(layout, forge.right - 5, forge.y + 5), 2)
-        self.assertIsNone(switch_hit(layout, 1, 1))  # the shadow's margin
-        self.assertIsNone(switch_hit(layout, layout.pill.x + 1, layout.pill.y + 1))  # the pill's edge
+        self.assertEqual(forge, Rect(movies.right, series.y, SEGMENT + 40, ROW_HEIGHT - 8))
+
+    def test_the_switch_in_the_top_row(self) -> None:
+        for width in (1220, 1650, 2560):
+            for history in (False, True):
+                with self.subTest(width=width, history=history):
+                    layout = band_layout(
+                        width,
+                        word_width=WORD,
+                        person_width=120,
+                        history=history,
+                        part_widths=(120, 120, 150),
+                    )
+                    self.assertGreater(layout.pill.x, layout.brand.right)
+                    self.assertLess(layout.pill.right, layout.search.x)
+                    parts = sorted(controls(layout), key=lambda part: part.x)
+                    for one, other in zip(parts, parts[1:], strict=False):
+                        self.assertLess(one.right, other.x + 0.01)
+                    for index, part in enumerate(layout.parts):
+                        hit = hit_target(layout, *middle(part), items=3)
+                        self.assertEqual(hit, Hit(HitKind.PART, index))
+
 
 
 class PictureTests(unittest.TestCase):
@@ -851,6 +862,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             on_person=lambda: self.events.append("person"),
             on_home=lambda: self.events.append("home"),
             clock=lambda: NOW,
+            on_part=lambda part: self.events.append(part),
         )
         band.pack(fill="x")
         scale = float(ctk.ScalingTracker.get_widget_scaling(band))
@@ -907,6 +919,36 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         scale = band._scale
         x, y = layout.downloads.x + 20, layout.downloads.y + 20
         self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.DOWNLOADS))
+
+    async def test_the_main_menu_lights_clicks_and_counts(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        layout = band.layout
+        assert layout is not None
+        self.assertIs(band.part, SwitchPart.SERIES)
+        self.assertEqual(self.text(band, band._switch_texts[SwitchPart.FORGE]), "MediaForge")
+        self.assertEqual(option(band, band._switch_active, "state"), "normal")
+        scale = band._scale
+        x, y = middle(layout.parts[1])
+        event = SimpleNamespace(x=round(x * scale), y=round(y * scale))
+        band._on_motion(event)
+        self.assertEqual(option(band, band._switch_hover, "state"), "normal")
+        band._on_press(event)
+        band._on_release(event)
+        self.assertEqual(self.events, [SwitchPart.MOVIES])
+        band.select_part(SwitchPart.MOVIES)
+        self.assertIs(band.part, SwitchPart.MOVIES)
+        self.assertEqual(option(band, band._switch_hover, "state"), "hidden")  # lit: no hover
+        band.select_part(None)  # the Downloads page
+        self.assertEqual(option(band, band._switch_active, "state"), "hidden")
+        self.assertEqual(option(band, band._switch_badge, "state"), "hidden")
+        band.set_forge_count(3)
+        self.assertEqual(band.forge_count, 3)
+        self.assertEqual(option(band, band._switch_badge, "state"), "normal")
+        self.assertEqual(self.text(band, band._switch_badge_text), "3")
+        band.set_forge_count(0)
+        self.assertEqual(option(band, band._switch_badge, "state"), "hidden")
 
     async def test_compact_only_the_top_row_and_back(self) -> None:
         band = self.band()
@@ -1192,196 +1234,6 @@ def item_option(canvas: tk.Canvas, item: int, name: str) -> str:
     return str(widget.itemcget(item, name))
 
 
-class SwitchTests(unittest.TestCase):
-    """The Series / Movies / MediaForge switch (ModeSwitch) and the tabs row it sits on."""
-
-    def setUp(self) -> None:
-        try:
-            self.root = ctk.CTk(fg_color=theme.BG)
-        except tk.TclError as exc:  # no display
-            self.skipTest(f"Tk unavailable: {exc}")
-        self.root.withdraw()
-        self.addCleanup(self._destroy_root)
-        self.addCleanup(i18n.set_language, i18n.current_language())
-        i18n.set_language(Language.EN)
-        self.parts: list[SwitchPart] = []
-
-    def _destroy_root(self) -> None:
-        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
-            self.root.after_cancel(job)
-        self.root.destroy()
-        gc.collect()
-
-    def press(self, switch: ModeSwitch, rect: Rect) -> None:
-        scale = switch._scale
-        event = SimpleNamespace(x=round((rect.x + rect.w / 2) * scale), y=round((rect.y + rect.h / 2) * scale))
-        switch._on_press(event)
-        switch._on_release(event)
-
-    def test_its_solid_pill_the_lit_side_and_the_clicks(self) -> None:
-        switch = ModeSwitch(self.root, on_part=self.parts.append)
-        switch.pack()
-        self.root.update()
-        layout = switch.layout
-        width, height = layout.size
-        self.assertEqual(int(switch.cget("width")), switch._px(width))
-        self.assertEqual(int(switch.cget("height")), switch._px(height))
-        self.assertEqual(str(switch.cget("background")), theme.pick(theme.BG))  # the page's
-        # The pill: nearly opaque SURFACE with its shadow around it.
-        track = switch._photo_sources["track"]
-        self.assertGreater((track.width - switch._px(layout.pill.w)) // 2, 0)
-        middle = track.getpixel((track.width // 2, track.height // 2))
-        assert isinstance(middle, tuple)
-        surface = switch._rgba(theme.SURFACE)
-        for channel, value in zip(middle, (*surface[:3], SWITCH_ALPHA), strict=True):
-            self.assertLessEqual(abs(channel - value), 2)
-        # Series lit (white on the accent), Movies in TEXT.
-        active = switch._photo_sources["active"]
-        lit = active.getpixel((active.width // 2, active.height // 2))
-        assert isinstance(lit, tuple)
-        self.assertEqual(lit[:3], switch._rgba(theme.ACCENT)[:3])
-        texts = switch._text_items
-        self.assertEqual(item_option(switch, texts[SwitchPart.SERIES], "fill"), theme.pick(theme.ON_COLOR))
-        self.assertEqual(item_option(switch, texts[SwitchPart.MOVIES], "fill"), theme.pick(theme.TEXT))
-        self.assertEqual(item_option(switch, texts[SwitchPart.MOVIES], "text"), "Movies")
-        # Hover on the other side: a light fill; not on the lit one.
-        self.assertEqual(item_option(switch, switch._hover_item, "state"), "hidden")
-        switch._set_hover(SwitchPart.MOVIES)
-        self.assertEqual(item_option(switch, switch._hover_item, "state"), "normal")
-        switch._set_hover(SwitchPart.SERIES)
-        self.assertEqual(item_option(switch, switch._hover_item, "state"), "hidden")
-        switch._set_hover(None)
-        # A click on a part asks for that side; MainWindow lights it.
-        series, movies, forge = layout.segments
-        self.press(switch, movies)
-        self.press(switch, series)
-        self.press(switch, forge)
-        self.assertEqual(self.parts, [SwitchPart.MOVIES, SwitchPart.SERIES, SwitchPart.FORGE])
-        self.assertEqual(item_option(switch, texts[SwitchPart.FORGE], "text"), "MediaForge")
-        switch.select(SwitchPart.MOVIES)
-        self.assertEqual(item_option(switch, texts[SwitchPart.MOVIES], "fill"), theme.pick(theme.ON_COLOR))
-        x, _y = switch.coords(switch._active_item)
-        self.assertEqual(round(x), switch._px(movies.x))
-        switch.select(SwitchPart.FORGE)
-        self.assertEqual(item_option(switch, texts[SwitchPart.FORGE], "fill"), theme.pick(theme.ON_COLOR))
-        x, _y = switch.coords(switch._active_item)
-        self.assertEqual(round(x), switch._px(forge.x))
-        switch.select(None)  # the Downloads page: none lit
-        self.assertEqual(item_option(switch, switch._active_item, "state"), "hidden")
-
-    def test_the_needs_you_badge_on_mediaforges_word(self) -> None:
-        switch = ModeSwitch(self.root, on_part=self.parts.append)
-        switch.pack()
-        self.root.update()
-        size = switch.layout.size
-        self.assertEqual(item_option(switch, switch._badge_item, "state"), "hidden")  # none yet
-        switch.set_count(3)
-        self.assertEqual(switch.count, 3)
-        self.assertEqual(item_option(switch, switch._badge_item, "state"), "normal")
-        self.assertEqual(item_option(switch, switch._badge_text, "text"), "3")
-        self.assertEqual(item_option(switch, switch._badge_text, "fill"), theme.pick(theme.ON_WARNING))
-        badge: Any = switch._photo_sources["badge"]
-        middle: Any = badge.getpixel((badge.width // 2, badge.height // 2))
-        amber = theme.pick(theme.WARNING)
-        self.assertEqual(middle[:3], tuple(int(amber[i : i + 2], 16) for i in (1, 3, 5)))
-        # In the word's own padding: right of the word, inside the pill, nothing moves.
-        self.assertEqual(switch.layout.size, size)
-        part = switch.layout.segments[2]
-        word = switch.bbox(switch._text_items[SwitchPart.FORGE])
-        x, y = switch.coords(switch._badge_item)
-        self.assertGreater(round(x), word[2])
-        for count, text in ((3, "3"), (42, "42"), (150, "99+")):
-            with self.subTest(count):
-                switch.set_count(count)
-                self.assertEqual(item_option(switch, switch._badge_text, "text"), text)
-                badge = switch._photo_sources["badge"]
-                x, y = switch.coords(switch._badge_item)
-                self.assertLessEqual(round(x) + badge.width, switch._px(switch.layout.pill.right))
-                self.assertGreaterEqual(round(y), switch._px(part.y))
-        switch.set_count(0)
-        self.assertEqual(item_option(switch, switch._badge_item, "state"), "hidden")
-        self.assertEqual(item_option(switch, switch._badge_text, "state"), "hidden")
-        switch.set_count(2)
-        switch.select(SwitchPart.FORGE)  # on the lit part too
-        switch._repaint()  # light ↔ dark and scaling paint it again, still shown
-        switch._rescaled(1.0, 1.0)
-        self.assertEqual(item_option(switch, switch._badge_item, "state"), "normal")
-        self.assertEqual(item_option(switch, switch._badge_text, "text"), "2")
-
-    def test_light_and_dark_repaint(self) -> None:
-        switch = ModeSwitch(self.root, on_part=self.parts.append)
-        switch.pack()
-        self.root.update()
-        before = (str(switch.cget("background")), switch._photo_sources["track"])
-        ctk.set_appearance_mode("light")
-        self.addCleanup(ctk.set_appearance_mode, "dark")
-        self.root.update()
-        switch._repaint()  # as theme.on_mode_change does
-        self.assertEqual(str(switch.cget("background")), theme.pick(theme.BG))
-        self.assertNotEqual(str(switch.cget("background")), before[0])
-        self.assertIsNot(switch._photo_sources["track"], before[1])
-        track = switch._photo_sources["track"]
-        middle = track.getpixel((track.width // 2, track.height // 2))
-        assert isinstance(middle, tuple)
-        self.assertEqual(middle[:3], switch._rgba(theme.SURFACE)[:3])
-
-    def test_in_dutch(self) -> None:
-        i18n.set_language(Language.NL)
-        switch = ModeSwitch(self.root, on_part=self.parts.append)
-        self.assertEqual(item_option(switch, switch._text_items[SwitchPart.MOVIES], "text"), "Films")
-        self.assertEqual(item_option(switch, switch._text_items[SwitchPart.FORGE], "text"), "MediaForge")
-
-    def tabs_row(self, width: int) -> tuple[ctk.CTkFrame, ModeSwitch, Tabview]:
-        """The main window's tabs row at `width` units with the Series tabs on it."""
-        scale = ctk.ScalingTracker.get_widget_scaling(self.root)
-        self.root.geometry(f"{width}x300")  # CTk scales this
-        self.root.grid_columnconfigure(0, weight=1)
-        row, switch = build_tabs_row(self.root, on_part=self.parts.append)
-        row.grid(row=0, column=0, sticky="ew")
-        tabs = Tabview(self.root, look="pills", pills_master=row)
-        for name in ("Calendar", "Discover", "Tracked"):
-            tabs.add(name)
-        tabs.grid(row=1, column=0, sticky="nsew")
-        assert tabs.pills is not None
-        show_tabs(tabs.pills, True)
-        self.root.deiconify()
-        self.root.update()
-        self.assertAlmostEqual(row.winfo_width(), width * scale, delta=2)
-        return row, switch, tabs
-
-    def test_on_the_tabs_row_right_aligned(self) -> None:
-        for width in (1650, 1220):
-            with self.subTest(width):
-                row, switch, tabs = self.tabs_row(width)
-                pills = tabs.pills
-                assert pills is not None
-                scale = switch._scale
-                # The pill's right edge PAD_X from the window's edge, level with the band's
-                # settings button.
-                pill = switch.layout.pill
-                pill_right = switch.winfo_x() + switch._px(pill.right)
-                self.assertAlmostEqual(pill_right, row.winfo_width() - PAD_X * scale, delta=2)
-                # On the same row as the tabs, their middles level; the pill a little taller.
-                self.assertEqual(int(switch.grid_info()["row"]), int(pills.grid_info()["row"]))
-                self.assertIs(pills.master, row)
-                switch_middle = switch.winfo_y() + switch._px(pill.y + pill.h / 2)
-                pills_middle = pills.winfo_y() + pills.winfo_height() / 2
-                self.assertAlmostEqual(switch_middle, pills_middle, delta=2)
-                self.assertGreater(switch._px(pill.h), pills.winfo_height())
-                self.assertLess(switch._px(pill.h), 1.7 * pills.winfo_height())
-                # Never over the tabs.
-                last = max(button.winfo_rootx() + button.winfo_width() for button in pills.buttons.values())
-                self.assertLess(last, switch.winfo_rootx() + switch._px(pill.x) - 100)
-                # Movies / Downloads: the tabs hidden, the switch stays where it was.
-                where = (switch.winfo_rootx(), switch.winfo_rooty(), row.winfo_height())
-                show_tabs(pills, False)
-                self.root.update()
-                self.assertEqual(pills.winfo_manager(), "")
-                self.assertEqual((switch.winfo_rootx(), switch.winfo_rooty(), row.winfo_height()), where)
-                row.destroy()
-                tabs.destroy()
-
-
 class BrandColourTests(unittest.TestCase):
     def setUp(self) -> None:
         self.addCleanup(theme.apply_accent, Accent.SLATE)
@@ -1460,71 +1312,13 @@ class UnderlineTabTests(unittest.TestCase):
         self.root.update()
         self.assertEqual(tabs.tab("Tracked").winfo_manager(), "")
 
-    def test_pill_tabs(self) -> None:
-        """The main window's look: rounded buttons left-aligned, the chosen one on the accent
-        with white text, the others on a faint CHIP fill (CHIP_HOVER under the pointer) in
-        BUTTON_TEXT; no line under them."""
-        changes: list[str] = []
-        tabs: Tabview | None = None
-
-        def changed() -> None:
-            assert tabs is not None
-            changes.append(tabs.get())
-
-        tabs = Tabview(self.root, look="pills", command=changed)
-        for name in ("Calendar", "Discover", "Tracked"):
-            tabs.add(name)
-        tabs.pack(fill="both", expand=True)
-        self.root.update()
-        bar = tabs.pills
-        assert bar is not None
-        self.assertIsNone(tabs.underline)
-        self.assertEqual(bar.names, ("Calendar", "Discover", "Tracked"))
-        self.assertEqual(bar.current, "Calendar")
-        self.assertEqual(tabs._segmented_button.winfo_manager(), "")  # CTk's buttons hidden
-        buttons = bar.buttons
-        chosen, other = buttons["Calendar"], buttons["Discover"]
-        self.assertEqual(chosen.cget("fg_color"), theme.ACCENT)
-        self.assertEqual(chosen.cget("text_color"), theme.ON_COLOR)
-        self.assertEqual(other.cget("fg_color"), theme.CHIP)
-        self.assertEqual(other.cget("hover_color"), theme.CHIP_HOVER)
-        self.assertEqual(other.cget("text_color"), theme.BUTTON_TEXT)
-        self.assertEqual(chosen.cget("corner_radius"), 9)
-        # Left-aligned, one after the other with a small gap.
-        scale = ctk.ScalingTracker.get_widget_scaling(bar)
-        x = round(PILLS_LEFT * scale)
-        for name in bar.names:
-            button = buttons[name]
-            self.assertLessEqual(abs(button.winfo_x() - x), 2, name)
-            x += button.winfo_width() + round(PILLS_GAP * scale)
-        weights = [int(bar.grid_columnconfigure(column)["weight"]) for column in range(4)]
-        self.assertEqual(weights, [0, 0, 0, 1])
-        # Snug around the name: 16 units either side.
-        label_width = chosen._text_label.winfo_reqwidth() if chosen._text_label else 0
-        self.assertLessEqual(chosen.winfo_reqwidth(), label_width + round(2 * 16 * scale) + 2)
-        # … and 6 units above and under it.
-        font = theme.font(16, bold=True)
-        snug = round((int(font.metrics("linespace")) + 2 * 6) * scale)
-        self.assertLessEqual(chosen.winfo_reqheight(), snug + 3)  # (the scaled font rounds up)
-        bar._on_select("Tracked")  # a click
-        self.assertEqual(tabs.get(), "Tracked")
-        self.assertEqual(changes, ["Tracked"])
-        self.assertEqual(buttons["Tracked"].cget("fg_color"), theme.ACCENT)
-        self.assertEqual(chosen.cget("fg_color"), theme.CHIP)
-        tabs.set("Discover")
-        self.assertEqual(bar.current, "Discover")
-        self.assertEqual(tabs.tab("Discover").winfo_manager(), "grid")
-        self.root.after(150)  # CTk's set() hides the other pages 100 ms later (its own timer)
-        self.root.update()
-        self.assertEqual(tabs.tab("Tracked").winfo_manager(), "")
-
     def test_segmented_stays_the_default(self) -> None:
         tabs = Tabview(self.root)
         tabs.add("One")
         tabs.pack()
         self.root.update()
         self.assertIsNone(tabs.underline)
-        self.assertIsNone(tabs.pills)
+        self.assertIsNone(tabs.tab_row)
         self.assertEqual(tabs._segmented_button.winfo_manager(), "grid")
 
 

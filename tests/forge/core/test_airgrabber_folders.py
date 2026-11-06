@@ -31,7 +31,7 @@ from app.forge.core.airgrabber_folders import (
     use_text,
     watched_folders,
 )
-from app.forge.core.library import library_problems, watched_root
+from app.forge.core.library import library_problems
 from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, ForgeSettings
 from app.i18n import Language
 from app.models import DownloadMode, QBittorrentState, RemoteKind, Settings
@@ -275,7 +275,6 @@ class InUseTests(ForgeTestCase):
         self.assertEqual(library_problems(settings), [])
         self.assertIn("Choose a download folder to watch.",
                       library_problems(settings.model_copy(update={"use_airgrabber_downloads": False})))
-        self.assertEqual(str(watched_root(Path(r"D:\Done\Show\a.mkv"), settings)), r"D:\Done")
 
     def test_newly_watched(self) -> None:
         before = forge(folder(r"D:\Done"))

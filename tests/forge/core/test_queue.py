@@ -149,6 +149,20 @@ class QueueTest(ForgeAsyncTestCase):
         assert all(i.status is ItemStatus.READY for i in q.items)
         assert all(i.media.tmdb_id == 2316 for i in q.items)
 
+    async def test_one_answer_for_differently_named_files(self) -> None:
+        touch(self.tmp / "The.Office.S02E01.mkv")
+        touch(self.tmp / "The.Office.S02E02.mkv")
+        touch(self.tmp / "Office.S02E03.mkv")
+        resolver = FakeResolver()
+        q, _ = make_queue(resolver)
+        await q.add_paths([self.tmp], recursive=True)
+        await q.wait_idle()
+        q.hold(q.items[0].id, "TMDB doesn't know this episode.")
+        chosen = TMDBTitle(id=2316, title="The Office", date="2005-03-24")
+        await q.choose_match_for([i.id for i in q.items], chosen)
+        assert all(i.media.tmdb_id == 2316 for i in q.items)
+        assert all(i.status is ItemStatus.READY and i.message == "" for i in q.items)
+
     async def test_set_hint_reparses_all(self) -> None:
         touch(self.tmp / "Show.S01E02.mkv")
         q, _ = make_queue()

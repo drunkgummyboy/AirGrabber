@@ -249,6 +249,7 @@ class DiscoveryService:
         # Bumped by clear_cache(), so dashboards fetched across a clear aren't stored.
         self._generation = 0
         self._movie_details = _DetailsCache("tmdb-movie", tmdb.movie_details, DETAILS_TTL, clock)
+        self._season_trailers: dict[tuple[int, int], _Entry[Video | None]] = {}
         self._tv_details = _DetailsCache("tmdb-tv", tmdb.tv_details, DETAILS_TTL, clock)
         # The info window's extras by TMDB id (in the app's language, which is fixed per run).
         self._movies = _DetailsCache("tmdb-movie-item", tmdb.movie, DETAILS_TTL, clock)
@@ -269,6 +270,7 @@ class DiscoveryService:
         self._generation += 1
         self._movie_details.clear()
         self._tv_details.clear()
+        self._season_trailers.clear()
         self._movies.clear()
         self._movie_extras.clear()
         self._tv_extras.clear()
@@ -490,6 +492,30 @@ class DiscoveryService:
             raise TMDBNotConfigured(t("TMDB API key is not set"))
         tmdb_id = await self._tmdb_id_of(show)
         return None if tmdb_id is None else await self._tv_extras.get(tmdb_id)
+
+    async def season_trailer(self, show: Show, season: int) -> Video | None:
+        """A TVMaze show's season's own trailer (`pick_trailer`), kept for DETAILS_TTL. None when
+        it has none, or TMDB can't be asked: the show's own trailer then still stands."""
+        if not self._tmdb.configured:
+            return None
+        try:
+            tmdb_id = await self._tmdb_id_of(show)
+            if tmdb_id is None:
+                return None
+            key = (tmdb_id, season)
+            cached = self._season_trailers.get(key)
+            if cached is not None and _is_fresh(cached.stored_at, self._clock(), DETAILS_TTL):
+                return cached.value
+            generation = self._generation
+            preferred = trailer_languages()
+            videos = await self._tmdb.season_videos(tmdb_id, season, languages=preferred)
+        except TMDBError as exc:
+            log.info("No season trailer for TVMaze show %d: %s", show.id, type(exc).__name__)
+            return None
+        trailer = pick_trailer(videos, preferred)
+        if generation == self._generation:  # not cleared meanwhile
+            self._season_trailers[key] = _Entry(trailer, self._clock())
+        return trailer
 
     async def tv_extras(self, tv_id: int) -> TitleExtras:
         """A TMDB show's extras by its TMDB id (the spotlight band's trending shows); see

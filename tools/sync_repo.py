@@ -23,6 +23,7 @@ PUBLISHED_FILES = (
     ".gitattributes",
     ".gitignore",
     "CLAUDE.md",
+    "LICENSE",
     "README.md",
     "filemap.md",
     "install.ps1",
@@ -30,7 +31,7 @@ PUBLISHED_FILES = (
     "mypy.ini",
     "requirements.txt",
 )
-PUBLISHED_DIRS = ("app", "tests", "tools")
+PUBLISHED_DIRS = (".github", "app", "screenshots", "tests", "tools")
 _IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc", ".mypy_cache")
 
 

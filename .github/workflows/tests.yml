@@ -1,0 +1,31 @@
+# Every release goes to the `candidate` branch first: users' copies only ever read `main`, so a red run
+# here stops a bad version before anyone gets it (the release steps are in CLAUDE.md).
+name: Tests
+
+on:
+  push:
+    branches: [main, candidate]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install packages
+        run: python -m pip install -r requirements.txt mypy
+      - name: Check the types
+        run: python -m mypy
+      - name: Run the tests
+        run: python -m unittest discover -s tests -t .

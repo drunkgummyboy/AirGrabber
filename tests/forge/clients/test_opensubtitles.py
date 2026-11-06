@@ -30,7 +30,6 @@ from app.forge.clients.opensubtitles import (
     USER_AGENT,
     effective_api_key,
     OpenSubtitlesClient,
-    imdb_number,
     movie_hash,
     sorted_params,
 )
@@ -439,12 +438,6 @@ class SecretHygieneTests(ClientTestCase):
 
 
 class HelperTests(unittest.TestCase):
-    def test_imdb_number(self) -> None:
-        self.assertEqual(imdb_number("tt0903747"), 903747)
-        self.assertEqual(imdb_number("TT0410975"), 410975)
-        for value in (None, "", "tt", "tt0000000", "nm123"):
-            self.assertIsNone(imdb_number(value))
-
     def test_sorted_params(self) -> None:
         self.assertEqual(
             sorted_params({"b": "X", "a": 2, "c": " "}), [("a", "2"), ("b", "x")]

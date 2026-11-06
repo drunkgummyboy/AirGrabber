@@ -178,11 +178,14 @@ class Database:
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
         """Atomic unit of work. Use the yielded connection — not `fetch_*` — inside the block."""
         async with self._lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # Inside the try: a task cancelled here leaves BEGIN on its way to the worker
+                # thread, and the ROLLBACK behind it closes what it opens.
+                await self._conn.execute("BEGIN IMMEDIATE")
                 yield self._conn
             except BaseException:
-                await self._conn.execute("ROLLBACK")
+                with contextlib.suppress(sqlite3.OperationalError):  # BEGIN itself failed
+                    await self._conn.execute("ROLLBACK")
                 raise
             else:
                 await self._conn.execute("COMMIT")

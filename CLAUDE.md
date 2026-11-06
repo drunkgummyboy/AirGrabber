@@ -10,13 +10,14 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - Types: `python -m mypy` (config in `mypy.ini`, strict) — must report no issues
 - Import 1.x JSON data: `python -m tools.import_legacy [LEGACY_DIR] [--db PATH]`
 - Release: bump `__version__` in `app/__init__.py`, run `python -m tools.sync_repo CLONE` into the git clone
-  of github.com/drunkgummyboy/AirGrabber (kept outside Google Drive), review `git status`, commit, push.
-  Users install with `install.ps1` (one-liner in README.md) and update from Settings.
+  of github.com/drunkgummyboy/AirGrabber (kept outside Google Drive), review `git status`, commit, push to
+  the `candidate` branch first. Installed copies only read `main`: push `main` only once `.github/workflows/tests.yml`
+  is green on `candidate`. Users install with `install.ps1` (one-liner in README.md) and update from Settings.
   Its notes (`app/whats_new.py`): a big feature = a `Feature` + a picture drawn in `tools/whats_new_art.py`, no
   words; smaller = a line. Only the newest release's pictures stay in `app/assets/whats_new`, older Features go with them.
 
 ## Rules
-- `main.py`'s top-level imports, `app/__init__.py`, `app/config.py`, `app/bootstrap.py`,
+- `main.py`'s top-level imports, `app/__init__.py`, `app/config.py`, `app/bootstrap.py`, `app/update_guard.py`,
   `app/single_instance.py`, `app/identity.py`, `app/i18n.py`, `app/i18n_nl.py` and `app/i18n_nl_forge.py`
   run before the package check, so they must stay stdlib-only. Import third-party packages from `main._run` onwards.
 - All user-visible text goes through `t()` (`app/i18n.py`; `tn()` for one / more, `N_()` for a text kept in
@@ -27,6 +28,10 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - An installed copy is only `main.py`, `requirements.txt` and `app/` (`APP_ENTRIES` in `app/services/updates.py`
   and `install.ps1`): runtime files belong under `app/` (images in `app/assets`). Installed copies only see a
   release whose `__version__` is higher. A folder with `tests/` (this one) never updates itself.
+- An update keeps what it replaced in `<install>/.previous` with a copy of the databases (`app/update_guard.py`):
+  two starts that never got going, or Settings' "Go back to version …", put it back; that version is then
+  skipped. So a migration must leave nothing an older version's start can't survive, beyond `user_version`
+  (a newer `user_version` is what makes the database go back too, the newer file kept beside it).
 - `install.ps1` must run in Windows PowerShell 5.1 under `irm | iex`: no `&&`/ternaries/`??`, and no `exit`.
 - One asyncio loop drives Tk (async-tkinter-loop). No threads, executors or UI queues for I/O:
   await httpx/aiosqlite directly, then update widgets. CPU-heavy Pillow work goes through `asyncio.to_thread`.

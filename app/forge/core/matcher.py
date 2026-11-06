@@ -122,10 +122,9 @@ class Resolver:
                 if details is not None:
                     media = await self._build(parsed, details, MatchState.REMEMBERED)
                     return Resolution(media=media)
-            if parsed.kind is MediaKind.EPISODE:
-                results = await tmdb.search_tv(parsed.title, parsed.year)
-            else:
-                results = await tmdb.search_movie(parsed.title, parsed.year)
+            results = await self._search(tmdb, parsed, parsed.title)
+            if not results and parsed.short_title:
+                results = await self._search(tmdb, parsed, parsed.short_title)
             state, chosen = choose(results, parsed.title, parsed.year)
             if chosen is None:
                 return Resolution(media=ResolvedMedia.offline(parsed, MatchState.NOT_FOUND))
@@ -139,6 +138,12 @@ class Resolver:
                 level=logging.WARNING,
             )
             return Resolution(media=ResolvedMedia.offline(parsed))
+
+    @staticmethod
+    async def _search(tmdb: TmdbLike, parsed: ParsedMedia, query: str) -> list[TMDBTitle]:
+        if parsed.kind is MediaKind.EPISODE:
+            return await tmdb.search_tv(query, parsed.year)
+        return await tmdb.search_movie(query, parsed.year)
 
     async def apply_choice(
         self, parsed: ParsedMedia, chosen: TMDBTitle | None, *, remember: bool = True
@@ -167,11 +172,13 @@ class Resolver:
         parsed: ParsedMedia, chosen: TMDBTitle, state: MatchState, season: TMDBSeason | None
     ) -> ResolvedMedia:
         episode_title = parsed.episode_title
+        episode_overview = ""
         known = False
         if season is not None and parsed.episode is not None:
             for ep in season.episodes:
                 if ep.episode_number == parsed.episode and ep.name:
                     episode_title = ep.name
+                    episode_overview = ep.overview or ""
                     known = True
                     break
         return ResolvedMedia(
@@ -186,6 +193,8 @@ class Resolver:
             season_poster_path=season.poster_path if season else None,
             original_title=chosen.original_title,
             episode_known=known,
+            overview=chosen.overview,
+            episode_overview=episode_overview,
         )
 
     async def _build(

@@ -161,11 +161,11 @@ class TranslateTests(unittest.TestCase):
         day = dt.date(2026, 10, 19)  # a Monday
         i18n.set_language(Language.EN)
         self.assertEqual((i18n.day_short(day), i18n.day_name(day)), ("Mon", "Monday"))
-        self.assertEqual((i18n.month_short(day), i18n.month_name(10)), ("Oct", "October"))
+        self.assertEqual(i18n.month_short(day), "Oct")
         self.assertEqual(i18n.day_short(6), "Sun")
         i18n.set_language(Language.NL)
         self.assertEqual((i18n.day_short(day), i18n.day_name(day)), ("ma", "maandag"))
-        self.assertEqual((i18n.month_short(day), i18n.month_name(3)), ("okt", "maart"))
+        self.assertEqual(i18n.month_short(day), "okt")
         self.assertEqual(i18n.capitalized(i18n.day_name(6)), "Zondag")
 
     def test_english_names_match_the_c_locale(self) -> None:
@@ -178,7 +178,6 @@ class TranslateTests(unittest.TestCase):
         for month in range(1, 13):
             first = dt.date(2026, month, 1)
             self.assertEqual(i18n.month_short(first), first.strftime("%b"))
-            self.assertEqual(i18n.month_name(first), first.strftime("%B"))
 
     def test_native_names(self) -> None:
         self.assertEqual(

@@ -102,9 +102,3 @@ def library_problems(settings: ForgeSettings) -> list[str]:
         problems.append(t(NESTED))
     return problems
 
-
-def watched_root(path: Path, settings: ForgeSettings) -> Path | None:
-    """The watched folder `path` lies in, if any."""
-    from app.forge.core.airgrabber_folders import watched_folders  # it imports this module
-
-    return next((Path(f) for f in watched_folders(settings) if inside(path, Path(f))), None)

@@ -555,6 +555,22 @@ class DetailsTests(DiscoveryTestCase):
         await self.service.movie_details(SPIDER_MAN)
         self.assertEqual(self.server.count(self.MOVIE_PATH), 2)
 
+    async def test_a_seasons_trailer_is_kept_and_its_absence_is_no_failure(self) -> None:
+        path = f"/3/tv/{LINK_CLICK_TMDB}/season/2/videos"
+        self.server.tmdb[path] = {
+            "results": [{"key": "two", "site": "YouTube", "type": "Trailer", "official": True}]
+        }
+        self.service._tracked_via_tmdb[LINK_CLICK_TMDB] = 77
+        show = Show(id=77, name="Link Click")
+        trailer = await self.service.season_trailer(show, 2)
+        assert trailer is not None
+        self.assertEqual(trailer.key, "two")
+        await self.service.season_trailer(show, 2)
+        self.assertEqual(len(self.server.of(path)), 1)  # kept
+        self.assertIsNone(await self.service.season_trailer(show, 9))  # TMDB has no such season
+        unknown = Show(id=78, name="Unknown")  # no TMDB counterpart: nothing asked
+        self.assertIsNone(await self.service.season_trailer(unknown, 1))
+
     async def test_tv_details_cached(self) -> None:
         details = await self.service.tv_details(LINK_CLICK_TMDB)
         self.assertIsInstance(details, TVDetails)

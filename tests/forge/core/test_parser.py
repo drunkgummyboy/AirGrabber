@@ -487,6 +487,23 @@ class ParserRulesTest(ForgeTestCase):
         assert human_title("VisionQuest NCIS mIxEd") == "VisionQuest NCIS mIxEd"
         assert human_title("homer's  crossing") == "Homer's Crossing"
 
+    def test_what_follows_a_dash_is_part_of_the_title(self) -> None:
+        p = parse_filename("Avatar - The Last Airbender - S02E01 - Somewhere Safe.mkv")
+        assert p.title == "Avatar The Last Airbender"
+        assert p.short_title == "Avatar"
+        assert (p.season, p.episode, p.episode_title) == (2, 1, "Somewhere Safe")
+        film = parse_filename("Dune - Part Two (2024).mkv")
+        assert (film.title, film.short_title, film.year) == ("Dune Part Two", "Dune", 2024)
+
+    def test_a_plain_name_has_no_short_title(self) -> None:
+        assert parse_filename("Severance (2022) - S02E01 - Hello.mkv").short_title is None
+        assert parse_filename("Dune.2021.1080p.mkv").short_title is None
+
+    def test_quality_comes_from_the_name(self) -> None:
+        assert parse_filename("Dune.2021.1080p.BluRay.x265-GRP.mkv").quality == "1080p H.265"
+        assert parse_filename("Dune.2021.2160p.mkv").quality == "2160p"
+        assert parse_filename("Dune.2021.mkv").quality is None
+
     def test_is_video_case_insensitive(self) -> None:
         assert is_video(Path("a.MKV"))
         assert is_video(Path("b.m4v"))

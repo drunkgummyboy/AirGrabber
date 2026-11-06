@@ -119,7 +119,7 @@ class ForgeHost:
         page_master: Any,
         tabs_row: Any,
         show_page: Callable[[], None] | None = None,
-        show_settings: Callable[[str | None], object] | None = None,
+        show_settings: Callable[..., object] | None = None,
         restart: Callable[[], None] | None = None,
         retry_install: Callable[[str], object] | None = None,
         look: theme.Look | None = None,
@@ -136,7 +136,7 @@ class ForgeHost:
         self._page_master = page_master
         self._tabs_row = tabs_row
         self._show_page = show_page or self.show
-        self._show_settings = show_settings or (lambda section: None)
+        self._show_settings = show_settings or (lambda section, spot=None: None)
         self._restart = restart or (lambda: None)
         self._retry_install = retry_install or _retry_guessit
         self._look = look
@@ -320,10 +320,13 @@ class ForgeHost:
 
     # --- Settings --------------------------------------------------------------------------------
 
-    def open_settings(self, section: str | None = None) -> None:
-        """Settings at `section` (see `show_settings`)."""
+    def open_settings(self, section: str | None = None, spot: str | None = None) -> None:
+        """Settings at `section` (see `show_settings`), scrolled to `spot` when given."""
         if not self._shut:
-            self._show_settings(section)
+            if spot is None:
+                self._show_settings(section)
+            else:
+                self._show_settings(section, spot)
 
     # --- the old MediaForge ---------------------------------------------------------------------
 

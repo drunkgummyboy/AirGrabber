@@ -34,6 +34,7 @@ from app.forge.clients.trailers import (
 from app.forge.core.settings import ForgeSettingsService
 from app.forge.db.settings import SettingsRepo
 from app.forge.models.plan import PlannedTrailer
+from app.services.tmdb import TMDBError
 from tests.forge.base import ForgeTestCase
 from tests.forge.db.base import ForgeDbTestCase
 
@@ -144,6 +145,31 @@ class DownloadTest(TrailerTestCase):
         result = await self.service().download(trailer(self.tmp))
         assert result == self.tmp / "Dune Part Two (2024) - Trailer.mp4"
         assert result.read_bytes() == b"fake trailer"
+
+    async def test_a_seasons_own_trailer_comes_before_a_search(self) -> None:
+        asked: list[tuple[int, int]] = []
+
+        async def season_trailer(tv_id: int, season: int) -> str | None:
+            asked.append((tv_id, season))
+            return "https://www.youtube.com/watch?v=abc" if season == 3 else None
+
+        service = self.service(season_trailer=season_trailer)
+        own = trailer(self.tmp).model_copy(update={"tmdb_id": 7, "season": 3})
+        self.assertEqual(await service._source(own), "https://www.youtube.com/watch?v=abc")
+        none = own.model_copy(update={"season": 2})
+        self.assertEqual(await service._source(none), own.query)  # no trailer of its own: searched
+        self.assertEqual(asked, [(7, 3), (7, 2)])
+        film = trailer(self.tmp)
+        self.assertEqual(await service._source(film), film.query)  # a film: never asked
+        self.assertEqual(len(asked), 2)
+
+    async def test_tmdb_failing_falls_back_on_the_search(self) -> None:
+        async def season_trailer(tv_id: int, season: int) -> str | None:
+            raise TMDBError("no")
+
+        own = trailer(self.tmp).model_copy(update={"tmdb_id": 7, "season": 3})
+        service = self.service(season_trailer=season_trailer)
+        self.assertEqual(await service._source(own), own.query)
 
     async def test_download_failure_writes_url_shortcut(self) -> None:
         os.environ["FAKE_FAIL"] = "1"

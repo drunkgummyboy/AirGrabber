@@ -131,9 +131,9 @@ def library_naming(
     """The naming rule and library folder a watched download goes to (by its kind)."""
     if item.media.kind is MediaKind.EPISODE:
         preset = _preset(settings.series_preset, "Series (Folder)", presets)
-        return preset.format, Path(settings.series_folder)
+        return preset.rule, Path(settings.series_folder)
     preset = _preset(settings.movies_preset, "Movie (Folder)", presets)
-    return preset.format, Path(settings.movies_folder)
+    return preset.rule, Path(settings.movies_folder)
 
 
 def _other_copy(target: Path, exists: Callable[[Path], bool]) -> bool:
@@ -197,7 +197,7 @@ def _runs(
             continue
         library = Path(folder)
         preset = _preset(preset_name, fallback, presets)
-        default = NamingChoice(preset, preset.format, preset.options)
+        default = NamingChoice(preset, preset.rule, preset.options)
 
         def naming_of(item: QueueItem, default: NamingChoice = default) -> NamingChoice:
             return chosen.get(item.id, default)
@@ -397,6 +397,8 @@ def _add(a: RunResult, b: RunResult) -> RunResult:
         skipped=a.skipped + b.skipped,
         failed=a.failed + b.failed,
         posters=a.posters + b.posters,
+        backdrops=a.backdrops + b.backdrops,
+        nfos=a.nfos + b.nfos,
         trailers=a.trailers + b.trailers,
         subtitles_fetched=a.subtitles_fetched + b.subtitles_fetched,
         cleaned=a.cleaned + b.cleaned,

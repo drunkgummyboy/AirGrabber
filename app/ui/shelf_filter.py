@@ -5,6 +5,8 @@ the same kind of story. `MOVIE_GENRES` and `TV_GENRES` map both onto one short l
 names (`Genre`); ids outside it (Thriller, Mystery, Reality, News...) get no chip. The bar only
 offers the genres that at least one title on the page has (`chip_genres`).
 
+Discover also offers a menu of the services its shows air on (`show_services`), once it knows them.
+
 Picking a chip or flipping the switch only filters what the page already loaded: nothing is
 fetched again. The page remembers its chip for the session and its switch in Settings. The
 page names its switch (Discover: "Hide shows I follow") and may offer none (Movies without
@@ -22,6 +24,9 @@ import customtkinter as ctk
 from app.i18n import N_, t
 from app.ui import theme
 from app.ui.tooltip import add_tooltip
+
+
+ALL_SERVICES = N_("All services")
 
 
 class Genre(StrEnum):
@@ -111,6 +116,15 @@ def chip_genres(titles: Iterable[frozenset[Genre]], selected: Genre | None) -> t
     return tuple(genre for genre in Genre if genre in present)
 
 
+def service_empty_text(service: str) -> str:
+    """The page's one line when nothing from the chosen service is left to show."""
+    return t(
+        "Nothing from {service} here right now. Pick another service or {all}.",
+        service=service,
+        all=t(ALL_SERVICES),
+    )
+
+
 def empty_text(genre: Genre | None, hide_owned: bool, all_owned: str) -> str:
     """The page's one line when the filter left every shelf empty. `all_owned`: what the page
     says when only its hide switch did it ("You already follow every show here.")."""
@@ -156,9 +170,13 @@ class FilterBar(ctk.CTkFrame):
         on_hide_owned: Callable[[bool], None],
         hide_text: str = HIDE_OWNED_TEXT,
         offered: bool = True,
+        on_service: Callable[[str | None], None] = lambda service: None,
     ) -> None:
-        """`hide_text`: the switch's text in English (shown through t())."""
+        """`hide_text`: the switch's text in English (shown through t()). `on_service`: a pick in
+        the services menu (`show_services`; None = all of them)."""
         super().__init__(master, fg_color="transparent")
+        self._on_service = on_service
+        self.service_menu: ctk.CTkOptionMenu | None = None
         self._on_genre = on_genre
         self._on_hide_owned = on_hide_owned
         self._hide_text = hide_text
@@ -169,7 +187,7 @@ class FilterBar(ctk.CTkFrame):
         self._chip_font = theme.font(CHIP_FONT_SIZE)
         self._wrapped: bool | None = None  # the switch is on a line of its own
 
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
         self._chip_row = ctk.CTkFrame(self, fg_color="transparent")
         self._chip_row.grid(row=0, column=0, sticky="w")
         self._hide_var = ctk.BooleanVar(value=hide_owned)
@@ -228,6 +246,42 @@ class FilterBar(ctk.CTkFrame):
         self._paint()
         self._fit()
 
+    def show_services(self, services: Sequence[str], selected: str | None) -> None:
+        """A menu beside the chips with "All services" + `services`, on `selected` (None = all).
+        Not there with fewer than two to choose from, unless one is selected."""
+        if len(services) < 2 and selected is None:
+            if self.service_menu is not None:
+                self.service_menu.destroy()
+                self.service_menu = None
+            self._fit()
+            return
+        if self.service_menu is None:
+            self.service_menu = ctk.CTkOptionMenu(
+                self,
+                height=CHIP_HEIGHT,
+                corner_radius=CHIP_HEIGHT // 2,
+                font=self._chip_font,
+                dropdown_font=self._chip_font,
+                command=self._service_picked,
+            )
+            self.service_menu.grid(row=0, column=1, sticky="w", padx=(CHIP_GAP, 0))
+        shown = [*services]
+        if selected is not None and selected not in shown:
+            shown.append(selected)
+        self.service_menu.configure(values=[t(ALL_SERVICES), *shown])
+        self.service_menu.set(selected or t(ALL_SERVICES))
+        fill, hover = chip_color(selected is not None)
+        self.service_menu.configure(
+            fg_color=fill,
+            button_color=fill,
+            button_hover_color=hover,
+            text_color=theme.ON_ACCENT if selected else theme.BUTTON_TEXT,
+        )
+        self._fit()
+
+    def _service_picked(self, value: str) -> None:
+        self._on_service(None if value == t(ALL_SERVICES) else value)
+
     def _chip(self, text: str, genre: Genre | None) -> ctk.CTkButton:
         button = ctk.CTkButton(
             self._chip_row,
@@ -271,8 +325,10 @@ class FilterBar(ctk.CTkFrame):
         if width <= 1 or self.switch is None:
             return
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
+        menu = self.service_menu.winfo_reqwidth() if self.service_menu is not None else 0
         needed = (
             self._chip_row.winfo_reqwidth()
+            + menu
             + self.switch.winfo_reqwidth()
             + round(SWITCH_GAP * scaling)
         )
@@ -283,6 +339,6 @@ class FilterBar(ctk.CTkFrame):
             return
         self._wrapped = wrapped
         if wrapped:
-            self.switch.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            self.switch.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
         else:
-            self.switch.grid(row=0, column=1, sticky="e", padx=(SWITCH_GAP, 0))
+            self.switch.grid(row=0, column=2, sticky="e", padx=(SWITCH_GAP, 0))

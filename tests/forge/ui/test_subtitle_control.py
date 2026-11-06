@@ -20,7 +20,7 @@ from app.forge.models.preset import Preset
 from app.forge.models.subtitles import SubtitleFetch, SubtitleFetchOutcome as Outcome, SubtitleIdentity
 from app.forge.ui.confirm_window import ConfirmWindow
 from app.forge.ui.queue_rows import build_queue_rows
-from app.forge.ui.queue_view import OPTION_GROUPS, OPTION_LABELS, summary_text
+from app.forge.ui.queue_parts import OPTION_GROUPS, OPTION_LABELS, summary_text
 from app.forge.ui.subtitle_control import (
     CC_ACTION,
     CC_LABEL,

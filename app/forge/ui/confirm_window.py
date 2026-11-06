@@ -29,7 +29,7 @@ from app.forge.core.library import library_folder, route_inputs
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueEvent, QueueItem
 from app.forge.models.history import RunSource
-from app.forge.models.preset import Preset
+from app.forge.models.preset import Preset, with_options
 from app.forge.ui.queue_rows import build_rows
 from app.forge.ui.look import app_look
 from app.forge.ui.match_picker import MatchPicker
@@ -39,10 +39,8 @@ from app.ui import theme
 from app.ui.borderless import clearance, make_borderless
 from app.ui.branding import set_own_icon
 from app.ui.dialog_kit import (
-    BUTTON_HEIGHT,
     BUTTON_RADIUS,
     LINE_GAP,
-    SMALL_SIZE,
     WINDOW_FRAME,
     heading_row,
     on_screen,
@@ -304,7 +302,7 @@ class ConfirmWindow(ctk.CTkToplevel):
         if self._closed or not self.winfo_exists() or self.preset is None:
             return
         items = self.queue.items
-        rows, self._targets = build_rows(items, self.preset.format, self._root_of)
+        rows, self._targets = build_rows(items, self.preset.rule, self._root_of)
         if self.run_id is None:  # after a run the hint says it's done
             self.hint.configure(
                 text=t(MOVES_HINT if self.preset.options.move_to_library else STAYS_HINT)
@@ -417,7 +415,7 @@ class ConfirmWindow(ctk.CTkToplevel):
             self.result_label.pack(side="left", fill="x", expand=True)
             self._set_buttons("normal")
             return
-        plan = await asyncio.to_thread(build_plan, inputs, preset.format, options)
+        plan = await asyncio.to_thread(build_plan, inputs, with_options(preset.format, options), options)
         async with self.services.run_lock:  # never alongside the renamer's or the Inbox's run
             result = await self.services.executor.run(
                 plan,
@@ -429,7 +427,11 @@ class ConfirmWindow(ctk.CTkToplevel):
                 media={i.item_id: i.media for i in inputs},  # for the move records
             )
         self.run_id = result.run_id
-        parts = [t("{n} renamed", n=result.renamed)]
+        parts = [
+            t("{n} moved", n=result.renamed)
+            if options.move_to_library
+            else t("{n} renamed", n=result.renamed)
+        ]
         if left:
             parts.append(t("{n} left alone: choose a library folder first", n=len(left)))
         if result.skipped:

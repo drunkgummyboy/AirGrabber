@@ -28,9 +28,15 @@ class PlannedFile(BaseModel, frozen=True):
 
 
 class PlannedPoster(BaseModel, frozen=True):
-    kind: Literal["movie", "series", "season"]
+    kind: Literal["movie", "series", "season", "backdrop"]
     tmdb_path: str
     target: Path
+    item_ids: tuple[int, ...] = ()  # created only if one of these files made it
+
+
+class PlannedNfo(BaseModel, frozen=True):
+    target: Path
+    content: str
     item_ids: tuple[int, ...] = ()  # created only if one of these files made it
 
 
@@ -40,6 +46,8 @@ class PlannedTrailer(BaseModel, frozen=True):
     year: int | None
     target_stem: Path
     item_ids: tuple[int, ...] = ()
+    tmdb_id: int | None = None  # a show's, with `season`: that season's own trailer comes first
+    season: int | None = None
 
 
 class PlannedSubtitles(BaseModel, frozen=True):
@@ -60,6 +68,7 @@ class PlannedLeftovers(BaseModel, frozen=True):
 class Plan(BaseModel, frozen=True):
     files: tuple[PlannedFile, ...]
     posters: tuple[PlannedPoster, ...] = ()
+    nfos: tuple[PlannedNfo, ...] = ()
     trailers: tuple[PlannedTrailer, ...] = ()
     subtitles: tuple[PlannedSubtitles, ...] = ()
     clean_roots: tuple[Path, ...] = ()

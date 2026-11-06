@@ -143,6 +143,9 @@ class WindowDiscovery(FakeDiscovery):
     async def show_extras(self, show: Show) -> TitleExtras:
         return self._extras(show.summary)
 
+    async def season_trailer(self, show: Show, season: int) -> None:
+        return None
+
     async def movie_extras(self, movie_id: int) -> TitleExtras:
         return self._extras(self.movies[movie_id].overview)
 

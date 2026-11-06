@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -15,6 +16,8 @@ from unittest import mock
 import httpx
 
 import main
+from app import update_guard
+from app.config import AppPaths
 from app.services import updates
 from app.services.install_info import UNINSTALL_KEY
 from app.services.updates import (
@@ -150,14 +153,14 @@ class InstallArchiveTests(InstallDirTestCase):
         self.assert_untouched()
 
     def test_a_failed_swap_is_rolled_back(self) -> None:
-        real_rename = updates._rename
+        real_rename = updates.rename
 
         def flaky(source: Path, destination: Path) -> None:
             if source.name == "app" and source.parent.name == "new":  # the last entry to go in
                 raise PermissionError("locked")
             real_rename(source, destination)
 
-        with mock.patch.object(updates, "_rename", side_effect=flaky), self.assertLogs(updates.log, "WARNING"):
+        with mock.patch.object(updates, "rename", side_effect=flaky), self.assertLogs(updates.log, "WARNING"):
             with self.assertRaisesRegex(UpdateError, "Nothing was changed"):
                 install_archive(archive(release()), self.dir)
         self.assert_untouched()
@@ -243,14 +246,14 @@ class StageAndApplyTests(InstallDirTestCase):
 
     def test_a_failed_apply_rolls_back_without_raising(self) -> None:
         stage_archive(archive(release()), self.dir)
-        real_rename = updates._rename
+        real_rename = updates.rename
 
         def flaky(source: Path, destination: Path) -> None:
             if source.name == "app" and source.parent.name == "new":  # the last entry to go in
                 raise PermissionError("locked")
             real_rename(source, destination)
 
-        with mock.patch.object(updates, "_rename", side_effect=flaky), mock.patch("time.sleep"):
+        with mock.patch.object(updates, "rename", side_effect=flaky), mock.patch("time.sleep"):
             with self.assertLogs(updates.log, "WARNING"):
                 self.assertIsNone(apply_staged(self.dir))
         self.assert_untouched()
@@ -294,6 +297,47 @@ class StageAndApplyTests(InstallDirTestCase):
         self.assertIn('__version__ = "2.2.0"', self.read("app/__init__.py"))
 
 
+class WayBackTests(InstallDirTestCase):
+    """An update keeps what it replaced (app/update_guard.py), by either way in."""
+
+    def test_installing_keeps_the_old_version(self) -> None:
+        install_archive(archive(release()), self.dir)
+        self.assertEqual(update_guard.previous_version(self.dir), "2.0.0")
+        kept = self.dir / update_guard.PREVIOUS_DIR / "files" / "main.py"
+        self.assertEqual(kept.read_text(encoding="utf-8"), "print('old main')\n")
+        self.assertFalse((self.dir / STAGING_DIR).exists())
+
+    def test_applying_keeps_the_old_version(self) -> None:
+        stage_archive(archive(release()), self.dir)
+        self.assertEqual(apply_staged(self.dir), "2.1.0")
+        self.assertEqual(update_guard.previous_version(self.dir), "2.0.0")
+
+    def test_the_databases_are_copied_with_it(self) -> None:
+        database = self.dir.parent / "airgrabber.db"
+        sqlite3.connect(database).close()
+        stage_archive(archive(release()), self.dir)
+        apply_staged(self.dir, databases=(database,))
+        kept = self.dir / update_guard.PREVIOUS_DIR / "data" / "airgrabber.db"
+        self.assertTrue(kept.exists())
+
+    def test_a_failed_way_back_copy_doesnt_fail_the_update(self) -> None:
+        with (
+            mock.patch.object(update_guard, "_copy_databases", side_effect=OSError("full")),
+            self.assertLogs(update_guard.log, "WARNING"),
+        ):
+            self.assertEqual(install_archive(archive(release()), self.dir), "2.1.0")
+        self.assertIn("new main", self.read("main.py"))
+        self.assertIsNone(update_guard.previous_version(self.dir))
+
+    def test_a_download_is_not_applied_once_going_back_is_asked_for(self) -> None:
+        install_archive(archive(release()), self.dir)
+        self.assertTrue(update_guard.ask_to_go_back(self.dir))
+        stage_archive(archive(release("2.2.0")), self.dir)
+        self.assertIsNone(apply_staged(self.dir))
+        self.assertIn("2.1.0", self.read("app/__init__.py"))
+        self.assertFalse((self.dir / STAGING_DIR).exists())
+
+
 class ExitTests(InstallDirTestCase):
     """main.py applies a staged update after shutdown and never fails the exit over it."""
 
@@ -302,9 +346,9 @@ class ExitTests(InstallDirTestCase):
             mock.patch.object(updates, "apply_staged", return_value="2.1.0") as apply,
             mock.patch("app.services.install_info.ensure_uninstall_entry") as ensure,
         ):
-            main._apply_staged_update()
+            main._apply_staged_update(AppPaths(Path("data")))
         install_dir = Path(main.__file__).resolve().parent
-        apply.assert_called_once_with(install_dir)
+        apply.assert_called_once_with(install_dir, databases=AppPaths(Path("data")).databases)
         ensure.assert_called_once_with(install_dir, "2.1.0")
 
     def test_nothing_applied_leaves_the_entry_alone(self) -> None:
@@ -312,7 +356,7 @@ class ExitTests(InstallDirTestCase):
             mock.patch.object(updates, "apply_staged", return_value=None),
             mock.patch("app.services.install_info.ensure_uninstall_entry") as ensure,
         ):
-            main._apply_staged_update()
+            main._apply_staged_update(AppPaths(Path("data")))
         ensure.assert_not_called()
 
     def test_failures_never_escape(self) -> None:
@@ -323,11 +367,11 @@ class ExitTests(InstallDirTestCase):
             ),
             self.assertLogs(main.log, "ERROR"),
         ):
-            main._apply_staged_update()
+            main._apply_staged_update(AppPaths(Path("data")))
 
     def test_this_development_copy_is_never_updated_on_exit(self) -> None:
         with mock.patch.object(updates, "_swap") as swap:
-            main._apply_staged_update()
+            main._apply_staged_update(AppPaths(Path("data")))
         swap.assert_not_called()
 
 
@@ -350,6 +394,27 @@ class UpdateServiceTests(InstallDirTestCase, unittest.IsolatedAsyncioTestCase):
         self.routes[VERSION_URL] = httpx.Response(200, text='__version__ = "2.1.0"\n')
         info = await self.service().check()
         self.assertEqual((info.current, info.latest, info.available, info.installable), ("2.0.0", "2.1.0", True, True))
+
+    async def test_check_passes_over_the_version_gone_back_from(self) -> None:
+        (self.dir / update_guard.SKIPPED_FILE).write_text("2.1.0", encoding="utf-8")
+        self.routes[VERSION_URL] = httpx.Response(200, text='__version__ = "2.1.0"\n')
+        info = await self.service().check()
+        self.assertFalse(info.available)
+        self.assertTrue(info.skipped)
+        self.routes[VERSION_URL] = httpx.Response(200, text='__version__ = "2.1.1"\n')
+        info = await self.service().check()
+        self.assertTrue(info.available)
+        self.assertFalse(info.skipped)
+
+    async def test_going_back_is_noted_for_the_next_start(self) -> None:
+        self.routes[ARCHIVE_URL] = httpx.Response(200, content=archive(release()))
+        service = self.service()
+        self.assertIsNone(service.previous_version)
+        self.assertFalse(await service.go_back())
+        await service.install()
+        self.assertEqual(service.previous_version, "2.0.0")
+        self.assertTrue(await service.go_back())
+        self.assertTrue(update_guard.going_back(self.dir))
 
     async def test_check_when_up_to_date(self) -> None:
         self.routes[VERSION_URL] = httpx.Response(200, text='__version__ = "2.0.0"\n')

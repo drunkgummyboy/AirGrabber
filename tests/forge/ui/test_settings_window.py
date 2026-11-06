@@ -465,7 +465,7 @@ class WaysInTests(SettingsWindowCase):
             settings=airgrabber_settings(),
             search=mock.MagicMock(),
             station=mock.MagicMock(),
-            updates=SimpleNamespace(current="3.0.0"),
+            updates=SimpleNamespace(current="3.0.0", previous_version=None),
             torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
             discovery=mock.MagicMock(check_tmdb_key=mock.AsyncMock(return_value=True)),
             prowlarr_setup=FakeProwlarr(),
@@ -481,6 +481,7 @@ class WaysInTests(SettingsWindowCase):
             _services=services,
             _update_info=None,
             _start_update=lambda: None,
+            _start_going_back=lambda: None,
             restart=lambda: None,
         )
         self.made: list[SettingsDialog] = []

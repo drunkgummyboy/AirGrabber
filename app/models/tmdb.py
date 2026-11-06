@@ -173,6 +173,10 @@ class TMDBMovieDetails(_Wire):
         )
 
 
+class TMDBNetwork(_Wire):
+    name: str = ""
+
+
 class TMDBTVDetails(_Wire):
     """/tv/{id}?append_to_response=external_ids"""
 
@@ -180,6 +184,7 @@ class TMDBTVDetails(_Wire):
     status: str | None = None
     number_of_seasons: int | None = None
     external_ids: TMDBExternalIds = Field(default_factory=TMDBExternalIds)
+    networks: list[TMDBNetwork] = Field(default_factory=list)
 
     def to_details(self) -> TVDetails:
         return TVDetails(
@@ -188,6 +193,7 @@ class TMDBTVDetails(_Wire):
             number_of_seasons=self.number_of_seasons,
             imdb_id=self.external_ids.imdb_id,
             tvdb_id=self.external_ids.tvdb_id,
+            networks=tuple(name for network in self.networks if (name := network.name.strip())),
         )
 
 
@@ -404,6 +410,7 @@ class TMDBSeasonEpisode(_Wire):
 
     episode_number: int
     name: str = ""
+    overview: str | None = None
 
 
 class TMDBSeason(_Wire):

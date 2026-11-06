@@ -72,11 +72,6 @@ def mix(first: str, second: str, amount: float) -> str:
     return "#" + "".join(f"{max(0, min(255, part)):02X}" for part in parts)
 
 
-def mix_pair(first: Pair, second: Pair, amount: float) -> Pair:
-    """`mix` for each look of two (light, dark) pairs."""
-    return mix(first[0], second[0], amount), mix(first[1], second[1], amount)
-
-
 def light_colour(state: WatchState) -> Pair:
     """The renamer's light (the queue's status line, Settings › Auto-rename): green watching, amber
     trial, red unreachable, else muted."""

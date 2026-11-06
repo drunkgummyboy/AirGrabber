@@ -57,8 +57,6 @@ GAP = 8  # between the Download and "⋯" buttons
 PAD_X = 12  # inside the card, left and right of the row
 PAD_TOP = 12  # above the row
 PAD_BOTTOM = 10  # below the row
-ROW_SPACE = PAD_TOP + ROW_HEIGHT + PAD_BOTTOM  # the height the row takes in a card
-
 # The texts are shown through t().
 DOWNLOAD_TEXT = N_("⬇ Download")
 DOWNLOAD_SHORT = "⬇"  # when the full text doesn't fit (narrow windows)

@@ -32,6 +32,9 @@ class ParsedMedia(BaseModel, frozen=True):
     episode_end: int | None = None
     episode_title: str | None = None
     tags: tuple[str, ...] = ()
+    # "Avatar" of "Avatar - The Last Airbender": searched when the whole title finds nothing.
+    short_title: str | None = None
+    quality: str | None = None  # what the file name says: "1080p H.265"
 
 
 class MatchState(StrEnum):
@@ -57,6 +60,8 @@ class ResolvedMedia(BaseModel, frozen=True):
     backdrop_path: str | None = None
     original_title: str | None = None  # TMDB's title in the original language
     episode_known: bool = False  # TMDB's season lists this episode (its name came from TMDB)
+    overview: str = ""  # the film's or show's summary (for its NFO file)
+    episode_overview: str = ""
 
     @classmethod
     def offline(cls, parsed: ParsedMedia, state: MatchState = MatchState.OFFLINE) -> ResolvedMedia:

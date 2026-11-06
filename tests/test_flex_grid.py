@@ -9,7 +9,7 @@ from typing import Any
 
 import customtkinter as ctk
 
-from app.ui.widgets import FlexGrid, flex_cell, flex_columns, flex_margin
+from app.ui.widgets import FlexGrid, flex_cell, flex_columns
 
 
 class FlexMathTests(unittest.TestCase):
@@ -34,11 +34,7 @@ class FlexMathTests(unittest.TestCase):
         slot = 208.0
         width = 1100.0
         columns = flex_columns(width, slot)
-        margin = flex_margin(width, columns, slot)
         self.assertEqual(columns, 5)
-        self.assertEqual(margin * 2 + columns * slot, width)
-        self.assertEqual(margin, 30.0)
-        self.assertEqual(flex_margin(100, 1, 208), 0.0)  # one card wider than the page: none
 
 
 class FlexGridTests(unittest.TestCase):

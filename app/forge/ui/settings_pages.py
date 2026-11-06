@@ -126,6 +126,7 @@ LIBRARY_TEXT = N_(
     "Downloads MediaForge finds always move here. Files you add yourself only when their preset "
     "has Move to library folder on."
 )
+LIBRARY_FOLDERS_SPOT = "library-folders"
 LIBRARY_POINTER = N_("Choose the preset for each folder under Naming › Library presets.")
 TRIAL_FIRST = N_(
     "Manual first: downloads wait in the queue until you forge them; switch to On when you're happy."
@@ -353,6 +354,7 @@ class LibrarySection:
 
         # The library folders.
         library = page.box(t("Library folders"), t(LIBRARY_TEXT))
+        self.spots = {LIBRARY_FOLDERS_SPOT: library.frame}  # SettingsDialog.go_to_spot
         rows = library.frame_row()
         rows.grid_columnconfigure(1, weight=1)
         self.folder_labels: dict[str, ctk.CTkLabel] = {}

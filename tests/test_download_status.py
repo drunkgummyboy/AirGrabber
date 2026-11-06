@@ -52,7 +52,6 @@ from app.services.download_status import (
     shown_folder,
     space_folders,
     space_is_low,
-    torrent_file_names,
 )
 from app.services.remote import DiskSpace, RemoteError
 from app.services.remote_downloads import RemoteDownloads
@@ -180,10 +179,6 @@ class MatchTests(unittest.TestCase):
         records = [record("Fallout.S02E03.1080p"), record("Fallout.S02E03.1080p")]
         found = match_tasks(records, [task("Fallout.S02E03.1080p")])
         self.assertEqual(list(found), [0])
-
-    def test_torrent_file_names(self) -> None:
-        saved = record("A: B/C", saved_path=r"\\nas\watch\A B C (3).torrent")
-        self.assertEqual(torrent_file_names(saved), {"a bc.torrent", "a b c (3).torrent"})
 
     def test_entry_state(self) -> None:
         found = task("x", DownloadState.READY, 1.0)

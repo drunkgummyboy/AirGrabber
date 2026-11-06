@@ -192,6 +192,11 @@ class HistoryRepo:
             for r in rows
         ]
 
+    async def operation_paths(self) -> list[tuple[int, int, str | None, str | None]]:
+        """Every kept operation as (run id, operation id, source, target): what a search reads."""
+        rows = await self._db.fetch_all("SELECT run_id, id, src, dst FROM operations")
+        return [(row[0], row[1], row[2], row[3]) for row in rows]
+
     async def was_undone(self, src: Path) -> bool:
         """Whether a rename away from `src` was undone (the file was put back there)."""
         row = await self._db.fetch_one(

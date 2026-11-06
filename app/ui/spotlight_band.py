@@ -101,14 +101,11 @@ from app.ui.spotlight import (
     HitKind,
     Rect,
     Rotation,
-    SwitchLayout,
     SwitchPart,
     band_layout,
     hit_target,
     person_width,
     sub_line,
-    switch_hit,
-    switch_layout,
     tag_text,
     title_text,
 )
@@ -142,7 +139,7 @@ _TIPS = {
 }
 _CONTROLS = frozenset(
     {
-        HitKind.SEARCH,
+        HitKind.PART, HitKind.SEARCH,
         HitKind.FIELD,
         HitKind.HISTORY,
         HitKind.DOWNLOADS,
@@ -197,6 +194,7 @@ class SpotlightBand(tk.Canvas):
         on_person: Callable[[], None] | None = None,
         on_home: Callable[[], None] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now().astimezone(),
+        on_part: Callable[[SwitchPart], None] | None = None,
     ) -> None:
         """`profile`: the selected person, read at every load (the Series side's episodes are
         theirs). `clock`: the local time now, aware (the tag's day and time; tests set it)."""
@@ -219,6 +217,11 @@ class SpotlightBand(tk.Canvas):
         self._profile = profile
         self._on_person = on_person
         self._on_home = on_home
+        self._on_part = on_part  # a click on the main menu's switch (none: no switch)
+        self._part: SwitchPart | None = SwitchPart.SERIES  # lit; None: the Downloads page
+        self._forge_count = 0  # MediaForge's "needs you" count, on its part
+        self._switch_images: dict[Hashable, Image.Image] = {}
+        self._switch_pads: dict[Hashable, int] = {}
         self._home_hover = False  # the pointer over the logo or "AirGrabber"
         self._home_pressed = False
         # The name button's person: (name, initial, colour); None: no button.
@@ -271,6 +274,7 @@ class SpotlightBand(tk.Canvas):
             "badge": theme.font(10, bold=True),
             "person": theme.font(PERSON_FONT_SIZE),
             "arrow": theme.font(12),
+            "switch": theme.font(SEGMENT_FONT_SIZE, bold=True),
         }
 
         def text(anchor: Literal["nw", "w", "center"] = "nw") -> int:
@@ -295,6 +299,12 @@ class SpotlightBand(tk.Canvas):
         self._avatar_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._person_name = self.create_text(0, 0, anchor="w", text="", state="hidden")
         self._person_arrow = self.create_text(0, 0, anchor="w", text="", state="hidden")
+        self._switch_track = self.create_image(0, 0, anchor="nw")
+        self._switch_hover = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._switch_active = self.create_image(0, 0, anchor="nw")
+        self._switch_texts = {part: text("center") for part in SwitchPart}
+        self._switch_badge = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._switch_badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
         self._dot_items: list[int] = []
 
         # The search field's text box: flat, in the field's own colour.
@@ -774,6 +784,7 @@ class SpotlightBand(tk.Canvas):
             current=self._rotation.index,
             person_width=self._person_width(),
             history=self._compact,
+            part_widths=self._part_widths() if self._on_part is not None else (),
         )
         self._layout = layout
         px = self._px
@@ -796,6 +807,8 @@ class SpotlightBand(tk.Canvas):
             (self._badge_text, "badge"),
             (self._person_name, "person"),
             (self._person_arrow, "arrow"),
+            (self._switch_badge_text, "badge"),
+            *((item, "switch") for item in self._switch_texts.values()),
         ):
             self.itemconfigure(item, font=self._scaled(name))
         entry = layout.entry
@@ -825,10 +838,128 @@ class SpotlightBand(tk.Canvas):
     def _hovered(self, kind: HitKind) -> bool:
         return self._hover is not None and self._hover.kind is kind
 
+    # -- the main menu's switch -----------------------------------------------------------------
+
+    @property
+    def part(self) -> SwitchPart | None:
+        """The switch's lit part (None: the Downloads page)."""
+        return self._part
+
+    @property
+    def forge_count(self) -> int:
+        """MediaForge's "needs you" count on the switch."""
+        return self._forge_count
+
+    def select_part(self, part: SwitchPart | None) -> None:
+        """Light `part` of the main menu (None: none, the Downloads page)."""
+        if part is not self._part:
+            self._part = part
+            self._paint_switch()
+
+    def set_forge_count(self, count: int) -> None:
+        """MediaForge's "needs you" count: the amber badge on its word (hidden at 0)."""
+        count = max(0, count)
+        if count != self._forge_count:
+            self._forge_count = count
+            self._paint_switch()
+
+    def _part_widths(self) -> tuple[float, float, float]:
+        """Series and Movies as wide as each other, MediaForge by its own word."""
+        font = self._fonts["switch"]
+        names = {part: font.measure(t(label)) for part, label in PART_LABELS.items()}
+        side = max(names[SwitchPart.SERIES], names[SwitchPart.MOVIES]) + 2 * SEGMENT_PAD_X
+        return side, side, names[SwitchPart.FORGE] + 2 * SEGMENT_PAD_X
+
+    def _switch_box(self, rect: Rect, fill: RGBA) -> Image.Image:
+        """A part's or the badge's round box, the same picture for the same look."""
+        size = (self._px(rect.w), self._px(rect.h))
+        key = (size, fill)
+        image = self._switch_images.get(key)
+        if image is None:
+            image = self._switch_images[key] = rounded_box(size, size[1] / 2, fill, None, 0)
+        return image
+
+    def _switch_pill(self, pill: Rect) -> tuple[Image.Image, int]:
+        """The solid pill over its soft shadow, and how far that reaches past it."""
+        px = self._px
+        blur, offset, alphas = SWITCH_SHADOW
+        fill, edge = self._rgba(theme.SURFACE, SWITCH_ALPHA), self._rgba(theme.CHIP_HOVER)
+        key = ("track", px(pill.w), px(pill.h), fill, edge, theme.is_dark(), self._scale)
+        cached = self._switch_images.get(key)
+        pad_key = ("pad", key)
+        if cached is None:
+            cached, pad = shadowed_box(
+                (px(pill.w), px(pill.h)),
+                px(pill.h) / 2,
+                fill,
+                edge,
+                max(1, round(self._scale)),
+                (blur * self._scale, px(offset), alphas[theme.is_dark()]),
+            )
+            self._switch_images[key] = cached
+            self._switch_pads[pad_key] = pad
+        return cached, self._switch_pads[pad_key]
+
+    def _paint_switch(self) -> None:
+        layout = self._layout
+        if layout is None or not layout.parts:
+            return
+        px = self._px
+        parts = dict(zip(SwitchPart, layout.parts, strict=True))
+        track, pad = self._switch_pill(layout.pill)
+        self.coords(self._switch_track, px(layout.pill.x) - pad, px(layout.pill.y) - pad)
+        self._set_image(self._switch_track, "switch-track", track)
+        lit = self._part
+        hit = self._hover
+        hovered = tuple(SwitchPart)[hit.dot] if hit is not None and hit.kind is HitKind.PART else None
+        if hovered is not None and hovered is not lit:
+            part = parts[hovered]
+            self.coords(self._switch_hover, px(part.x), px(part.y))
+            box = self._switch_box(part, self._rgba(theme.CHIP_HOVER))
+            self._set_image(self._switch_hover, "switch-hover", box)
+            self.itemconfigure(self._switch_hover, state="normal")
+        else:
+            self.itemconfigure(self._switch_hover, state="hidden")
+        if lit is not None:
+            part = parts[lit]
+            self.coords(self._switch_active, px(part.x), px(part.y))
+            box = self._switch_box(part, self._rgba(theme.ACCENT))
+            self._set_image(self._switch_active, "switch-active", box)
+            self.itemconfigure(self._switch_active, state="normal")
+        else:
+            self.itemconfigure(self._switch_active, state="hidden")
+        for key, item in self._switch_texts.items():
+            part = parts[key]
+            colour = theme.ON_COLOR if key is lit else theme.TEXT
+            self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
+            self.itemconfigure(item, text=t(PART_LABELS[key]), fill=theme.pick(colour))
+        self._paint_switch_badge(parts[SwitchPart.FORGE])
+
+    def _paint_switch_badge(self, part: Rect) -> None:
+        """The amber badge (theme.WARNING, whatever the accent) right after MediaForge's word."""
+        text = badge_text(self._forge_count)
+        if not text:
+            self.itemconfigure(self._switch_badge, state="hidden")
+            self.itemconfigure(self._switch_badge_text, state="hidden")
+            return
+        px = self._px
+        word = self._fonts["switch"].measure(t(PART_LABELS[SwitchPart.FORGE]))
+        width = max(BADGE_HEIGHT, self._fonts["badge"].measure(text) + SWITCH_BADGE_PAD)
+        x = part.x + part.w / 2 + word / 2 + SWITCH_BADGE_GAP
+        rect = Rect(x, part.y + (part.h - BADGE_HEIGHT) / 2, width, BADGE_HEIGHT)
+        self.coords(self._switch_badge, px(rect.x), px(rect.y))
+        box = self._switch_box(rect, self._rgba(theme.WARNING))
+        self._set_image(self._switch_badge, "switch-badge", box)
+        self.coords(self._switch_badge_text, px(rect.x + rect.w / 2), px(rect.y + rect.h / 2))
+        self.itemconfigure(self._switch_badge_text, text=text, fill=theme.pick(theme.ON_WARNING))
+        self.itemconfigure(self._switch_badge, state="normal")
+        self.itemconfigure(self._switch_badge_text, state="normal")
+
     def _paint_controls(self) -> None:
         layout = self._layout
         if layout is None:
             return
+        self._paint_switch()
         px = self._px
         # The search field: a solid pill (the text box inside is the same colour).
         search = layout.search
@@ -1097,6 +1228,10 @@ class SpotlightBand(tk.Canvas):
 
     def _activate(self, hit: Hit) -> None:
         kind = hit.kind
+        if kind is HitKind.PART:
+            if self._on_part is not None:
+                self._on_part(tuple(SwitchPart)[hit.dot])
+            return
         if kind is HitKind.SEARCH:
             self._on_search()
         elif kind is HitKind.FIELD:
@@ -1199,216 +1334,6 @@ class SpotlightBand(tk.Canvas):
         self._unsubscribe_space()
         ctk.ScalingTracker.remove_widget(self._rescaled, self)
         self._tip.destroy()
-        super().destroy()
-
-
-class ModeSwitch(tk.Canvas):
-    """The Series / Movies / MediaForge switch at the right end of the tabs row under the band: a
-    solid pill (SURFACE, nearly opaque, a CHIP_HOVER edge) over a soft shadow on the page's
-    background, the lit part in the accent colour with white text, the others in TEXT (a
-    CHIP_HOVER fill under the pointer). A click on a part calls `on_part`; MainWindow lights the
-    page's part with `select` (None: the Downloads page, none lit). `set_count`: MediaForge's
-    "needs you" count, an amber badge in its word's own padding, so nothing moves. Its size follows
-    the font and Windows' scaling (`switch_layout`); a switch between light and dark paints it
-    again."""
-
-    def __init__(self, master: Any, *, on_part: Callable[[SwitchPart], None]) -> None:
-        super().__init__(
-            master,
-            highlightthickness=0,
-            borderwidth=0,
-            width=1,
-            height=1,
-            background=theme.pick(theme.BG),
-        )
-        self._on_part = on_part
-        self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
-        self._selected: SwitchPart | None = SwitchPart.SERIES
-        self._hover: SwitchPart | None = None
-        self._pressed: SwitchPart | None = None
-        self._count = 0
-        self._font = theme.font(SEGMENT_FONT_SIZE, bold=True)
-        self._badge_font = theme.font(10, bold=True)
-        self._photos: dict[str, ImageTk.PhotoImage] = {}
-        self._photo_sources: dict[str, Image.Image] = {}
-        self._track_item = self.create_image(0, 0, anchor="nw")
-        self._hover_item = self.create_image(0, 0, anchor="nw", state="hidden")
-        self._active_item = self.create_image(0, 0, anchor="nw")
-        self._text_items = {
-            part: self.create_text(0, 0, anchor="center", text="") for part in SwitchPart
-        }
-        self._badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
-        self._badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
-        self._layout = self._measure()
-        self.bind("<Motion>", self._on_motion, add="+")
-        self.bind("<Leave>", lambda _event: self._set_hover(None), add="+")
-        self.bind("<ButtonPress-1>", self._on_press, add="+")
-        self.bind("<ButtonRelease-1>", self._on_release, add="+")
-        theme.on_mode_change(self, self._repaint)
-        ctk.ScalingTracker.add_widget(self._rescaled, self)
-        self._relayout()
-
-    @property
-    def layout(self) -> SwitchLayout:
-        return self._layout
-
-    @property
-    def selected(self) -> SwitchPart | None:
-        return self._selected
-
-    @property
-    def count(self) -> int:
-        return self._count
-
-    def select(self, part: SwitchPart | None) -> None:
-        """Light `part` (None: none, the Downloads page)."""
-        if part is not self._selected:
-            self._selected = part
-            self._paint()
-
-    def set_count(self, count: int) -> None:
-        """MediaForge's "needs you" count: the badge on its word (hidden at 0)."""
-        count = max(0, count)
-        if count != self._count:
-            self._count = count
-            self._paint_badge()
-
-    def _px(self, units: float) -> int:
-        return round(units * self._scale)
-
-    def _measure(self) -> SwitchLayout:
-        """Series and Movies as wide as each other, MediaForge by its own word."""
-        names = {part: self._font.measure(t(label)) for part, label in PART_LABELS.items()}
-        side = max(names[SwitchPart.SERIES], names[SwitchPart.MOVIES]) + 2 * SEGMENT_PAD_X
-        return switch_layout(
-            segment_widths=(side, side, names[SwitchPart.FORGE] + 2 * SEGMENT_PAD_X),
-            line_height=float(self._font.metrics("linespace")),
-        )
-
-    def _relayout(self) -> None:
-        self._layout = self._measure()
-        width, height = self._layout.size
-        self.configure(width=self._px(width), height=self._px(height))
-        font = self._font.create_scaled_tuple(self._scale)
-        for item in self._text_items.values():
-            self.itemconfigure(item, font=font)
-        self.itemconfigure(self._badge_text, font=self._badge_font.create_scaled_tuple(self._scale))
-        self._paint()
-
-    def _set_image(self, item: int, name: str, image: Image.Image) -> None:
-        if self._photo_sources.get(name) is image:
-            return
-        self._photos[name] = ImageTk.PhotoImage(image, master=self)
-        self._photo_sources[name] = image
-        self.itemconfigure(item, image=self._photos[name])
-
-    def _rgba(self, color: theme.Color, alpha: int = 255) -> RGBA:
-        return (*rgb(self, color), alpha)
-
-    def _box(self, rect: Rect, fill: RGBA) -> Image.Image:
-        size = (self._px(rect.w), self._px(rect.h))
-        return rounded_box(size, size[1] / 2, fill, None, 0)
-
-    def _parts(self) -> dict[SwitchPart, Rect]:
-        return dict(zip(SwitchPart, self._layout.segments, strict=True))
-
-    def _paint(self) -> None:
-        px, layout = self._px, self._layout
-        pill = layout.pill
-        blur, offset, alphas = SWITCH_SHADOW
-        track, pad = shadowed_box(
-            (px(pill.w), px(pill.h)),
-            px(pill.h) / 2,
-            self._rgba(theme.SURFACE, SWITCH_ALPHA),
-            self._rgba(theme.CHIP_HOVER),
-            max(1, round(self._scale)),
-            (blur * self._scale, px(offset), alphas[theme.is_dark()]),
-        )
-        self.coords(self._track_item, px(pill.x) - pad, px(pill.y) - pad)
-        self._set_image(self._track_item, "track", track)
-        lit, hovered = self._selected, self._hover
-        parts = self._parts()
-        if hovered is not None and hovered is not lit:
-            part = parts[hovered]
-            self.coords(self._hover_item, px(part.x), px(part.y))
-            self._set_image(self._hover_item, "hover", self._box(part, self._rgba(theme.CHIP_HOVER)))
-            self.itemconfigure(self._hover_item, state="normal")
-        else:
-            self.itemconfigure(self._hover_item, state="hidden")
-        if lit is not None:
-            part = parts[lit]
-            self.coords(self._active_item, px(part.x), px(part.y))
-            self._set_image(self._active_item, "active", self._box(part, self._rgba(theme.ACCENT)))
-            self.itemconfigure(self._active_item, state="normal")
-        else:
-            self.itemconfigure(self._active_item, state="hidden")
-        for key, item in self._text_items.items():
-            part = parts[key]
-            colour = theme.ON_COLOR if key is lit else theme.TEXT
-            self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
-            self.itemconfigure(item, text=t(PART_LABELS[key]), fill=theme.pick(colour))
-        self._paint_badge()
-
-    def _paint_badge(self) -> None:
-        """The amber badge (theme.WARNING, whatever the accent) right after MediaForge's word."""
-        text = badge_text(self._count)
-        if not text:
-            self.itemconfigure(self._badge_item, state="hidden")
-            self.itemconfigure(self._badge_text, state="hidden")
-            return
-        px = self._px
-        part = self._parts()[SwitchPart.FORGE]
-        word = self._font.measure(t(PART_LABELS[SwitchPart.FORGE]))
-        width = max(BADGE_HEIGHT, self._badge_font.measure(text) + SWITCH_BADGE_PAD)
-        x = part.x + part.w / 2 + word / 2 + SWITCH_BADGE_GAP
-        rect = Rect(x, part.y + (part.h - BADGE_HEIGHT) / 2, width, BADGE_HEIGHT)
-        self.coords(self._badge_item, px(rect.x), px(rect.y))
-        self._set_image(self._badge_item, "badge", self._box(rect, self._rgba(theme.WARNING)))
-        self.coords(self._badge_text, px(rect.x + rect.w / 2), px(rect.y + rect.h / 2))
-        self.itemconfigure(self._badge_text, text=text, fill=theme.pick(theme.ON_WARNING))
-        self.itemconfigure(self._badge_item, state="normal")
-        self.itemconfigure(self._badge_text, state="normal")
-
-    def _part_at(self, x: int, y: int) -> SwitchPart | None:
-        index = switch_hit(self._layout, x / self._scale, y / self._scale)
-        return None if index is None else tuple(SwitchPart)[index]
-
-    def _on_motion(self, event: Any) -> None:
-        self._set_hover(self._part_at(event.x, event.y))
-
-    def _set_hover(self, part: SwitchPart | None) -> None:
-        if part is self._hover:
-            return
-        self._hover = part
-        try:
-            self.configure(cursor="" if part is None else "hand2")
-        except tk.TclError:
-            return
-        self._paint()
-
-    def _on_press(self, event: Any) -> None:
-        self._pressed = self._part_at(event.x, event.y)
-
-    def _on_release(self, event: Any) -> None:
-        part, pressed = self._part_at(event.x, event.y), self._pressed
-        self._pressed = None
-        if part is not None and part is pressed:
-            self._on_part(part)
-
-    def _repaint(self) -> None:
-        """Light ↔ dark: the background and the pill in the new colours."""
-        self.configure(background=theme.pick(theme.BG))
-        self._paint()
-
-    def _rescaled(self, _widget_scaling: float, _window_scaling: float) -> None:
-        if not _exists(self):
-            return
-        self._scale = float(ctk.ScalingTracker.get_widget_scaling(self))
-        self._photo_sources.clear()
-        self._relayout()
-
-    def destroy(self) -> None:
-        ctk.ScalingTracker.remove_widget(self._rescaled, self)
         super().destroy()
 
 

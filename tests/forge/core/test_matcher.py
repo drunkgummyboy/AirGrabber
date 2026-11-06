@@ -315,6 +315,45 @@ class ResolverTest(ForgeDbTestCase):
         assert not ResolvedMedia.offline(parsed).episode_known
 
 
+class ResolverShortTitleTest(ForgeDbTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.matches = MatchRepo(self.db)
+
+    @staticmethod
+    def parsed() -> ParsedMedia:
+        return episode("Star Wars Andor").model_copy(update={"short_title": "Star Wars"})
+
+    async def test_the_whole_title_is_searched_first(self) -> None:
+        tmdb = FakeTmdb([res(1, "Star Wars Andor")])
+        resolution = await Resolver(tmdb, self.matches).resolve(self.parsed())
+        assert tmdb.searches == [("tv", "Star Wars Andor", None)]
+        assert resolution.media.tmdb_id == 1
+
+    async def test_the_short_title_is_tried_when_it_finds_nothing_and_is_never_taken_on_trust(
+        self,
+    ) -> None:
+        class OnlyShort(FakeTmdb):
+            async def search_tv(self, query: str, year: int | None) -> list[TMDBTitle]:
+                found = await super().search_tv(query, year)
+                return found if query == "Star Wars" else []
+
+        tmdb = OnlyShort([res(2, "Star Wars")])
+        resolution = await Resolver(tmdb, self.matches).resolve(self.parsed())
+        assert [query for _, query, _ in tmdb.searches] == ["Star Wars Andor", "Star Wars"]
+        assert resolution.media.match_state is MatchState.UNCERTAIN  # the owner chooses
+
+    async def test_a_remembered_short_name_does_not_catch_the_whole_name(self) -> None:
+        await self.matches.remember(
+            RememberedMatch(
+                kind=MediaKind.EPISODE, norm_title="star wars", year=None, tmdb_id=9, label="Other"
+            )
+        )
+        tmdb = FakeTmdb([res(1, "Star Wars Andor")])
+        resolution = await Resolver(tmdb, self.matches).resolve(self.parsed())
+        assert resolution.media.tmdb_id == 1
+
+
 class ResolverOnForgeTmdbTest(ForgeDbTestCase):
     """The bad-reply fallback through the real ForgeTmdb and TMDBClient (MockTransport)."""
 

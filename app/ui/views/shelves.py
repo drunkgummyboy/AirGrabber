@@ -137,6 +137,7 @@ class ShelvesView(BaseView, Generic[T]):
             on_hide_owned=self._set_hide_owned,
             hide_text=self._hide_owned_text,
             offered=self._hide_owned_offered(),
+            on_service=self._pick_service,
         )
         # Gridded in row 1 once shelves are loaded (`_show_filter_bar`).
         self._body = ScrollableFrame(self, fg_color="transparent")
@@ -161,6 +162,17 @@ class ShelvesView(BaseView, Generic[T]):
     def _hide_owned_offered(self) -> bool:
         """Whether the page offers its hide switch now (as the last load found it)."""
         return True
+
+    def _keep(self, item: T) -> bool:
+        """Whether a filter of the page's own (Discover's service) leaves `item` on it."""
+        return True
+
+    def _empty_line(self, genre: Genre | None) -> str:
+        """The page's one line when the filter left every shelf empty."""
+        return empty_text(genre, self.hiding, t(self._all_owned_text))
+
+    def _pick_service(self, service: str | None) -> None:
+        """A pick in the filter bar's services menu (Discover's)."""
 
     @property
     def hiding(self) -> bool:
@@ -283,14 +295,14 @@ class ShelvesView(BaseView, Generic[T]):
         loaded = self._shelves
         if loaded is None or generation != self._render_generation or not self.winfo_exists():
             return
-        shelves = self._owner_filtered(loaded)
+        shelves = filter_shelves(self._owner_filtered(loaded), self._keep)
         genre = self._genre
         self._show_filter_bar(chip_genres(self._titles(shelves), genre))
         if genre is not None:
             shelves = filter_shelves(shelves, lambda item: genre in self._genres(item))
         self._clear_body()
         if not has_items(shelves) and has_items(loaded):
-            self._show_empty_line(empty_text(genre, self.hiding, t(self._all_owned_text)))
+            self._show_empty_line(self._empty_line(genre))
         for shelf in shelves:
             if shelf.failed or shelf.items:
                 self._render_shelf(shelf)

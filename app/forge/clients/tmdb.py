@@ -130,6 +130,15 @@ class ForgeTmdb:
             await self._store(key, title.model_dump(mode="json"))
         return title
 
+    async def season_trailer_url(self, tv_id: int, number: int) -> str | None:
+        """Season `number`'s own trailer on YouTube; None when it has none."""
+        from app.services.discovery import pick_trailer, trailer_languages
+
+        languages = trailer_languages()
+        videos = await self._client.season_videos(tv_id, number, languages=languages)
+        trailer = pick_trailer(videos, languages)
+        return trailer.watch_url if trailer is not None else None
+
     async def season(self, tv_id: int, number: int) -> TMDBSeason | None:
         """Season `number` of show `tv_id`; None when TMDB has no such season."""
         language = self.language

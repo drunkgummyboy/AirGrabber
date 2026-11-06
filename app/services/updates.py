@@ -10,8 +10,9 @@ Two ways in:
 - `UpdateService.stage` (automatic updates) only unpacks and validates the new files into
   `<install>/.update/new`; main.py swaps them in with `apply_staged` once AirGrabber has closed.
 
-Either way the launch-time package check installs whatever new requirements the update brought.
-`apply_staged` and the file-system helpers below use the standard library only.
+Either way the launch-time package check installs whatever new requirements the update brought, and
+what was replaced is kept as the way back (app/update_guard.py). `apply_staged` and the file-system
+helpers below use the standard library only.
 """
 
 from __future__ import annotations
@@ -20,14 +21,10 @@ import asyncio
 import contextlib
 import io
 import logging
-import os
-import re
 import shutil
-import stat
 import threading
-import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 
 import httpx
@@ -37,6 +34,23 @@ from app.bootstrap import version_tuple
 from app.i18n import t
 from app.models import UpdateInfo
 from app.services.install_info import Registry, ensure_uninstall_entry
+from app.update_guard import (
+    APP_ENTRIES as APP_ENTRIES,
+    STAGING_DIR as STAGING_DIR,
+    WentBack,
+    ask_to_go_back,
+    clear_read_only,
+    going_back,
+    is_development_copy as is_development_copy,
+    keep_previous,
+    parse_version as parse_version,
+    previous_version,
+    read_version,
+    remove_tree,
+    rename as rename,
+    skipped_version,
+    take_went_back,
+)
 
 log = logging.getLogger(__name__)
 
@@ -46,13 +60,9 @@ VERSION_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/app/__i
 ARCHIVE_URL = f"https://codeload.github.com/{GITHUB_REPO}/zip/refs/heads/{BRANCH}"
 
 INSTALL_DIR = Path(__file__).resolve().parents[2]
-APP_ENTRIES = ("main.py", "requirements.txt", "app")  # keep in step with install.ps1
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
-STAGING_DIR = ".update"
 READY_FILE = "ready"  # in STAGING_DIR: written last by stage_archive (holds the staged version)
 
-_VERSION_LINE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
-_RENAME_ATTEMPTS = 5  # antivirus scanners briefly lock freshly written files on Windows
 # Staging, installing and applying run in worker threads, and apply_staged at exit: one at a time.
 # A staging thread can outlive the event loop (closing the app cancels the task, not the thread).
 _STAGING_LOCK = threading.Lock()
@@ -63,20 +73,9 @@ class UpdateError(Exception):
     """An update check or install that failed; the message is shown in the UI."""
 
 
-def parse_version(source: str) -> str | None:
-    """`__version__` from the text of app/__init__.py."""
-    match = _VERSION_LINE.search(source)
-    return match[1] if match else None
-
-
 def is_newer(latest: str, current: str) -> bool:
     new, old = version_tuple(latest), version_tuple(current)
     return new is not None and old is not None and new > old
-
-
-def is_development_copy(install_dir: Path) -> bool:
-    """The source folder (it has the tests, or is a git checkout) is never overwritten."""
-    return (install_dir / "tests").is_dir() or (install_dir / ".git").exists()
 
 
 class UpdateService:
@@ -87,11 +86,13 @@ class UpdateService:
         *,
         current: str = __version__,
         registry: Registry | None = None,
+        databases: Sequence[Path] = (),
     ) -> None:
         self._http = http
         self._dir = install_dir
         self._current = current
         self._registry = registry  # None: the real Windows registry
+        self._databases = databases  # copied with each update, for the way back
 
     @property
     def current(self) -> str:
@@ -100,6 +101,19 @@ class UpdateService:
     @property
     def installable(self) -> bool:
         return not is_development_copy(self._dir)
+
+    @property
+    def previous_version(self) -> str | None:
+        """The version this copy can go back to (app/update_guard.py)."""
+        return previous_version(self._dir)
+
+    def take_went_back(self) -> WentBack | None:
+        """What this start's check did, once."""
+        return take_went_back(self._dir)
+
+    async def go_back(self) -> bool:
+        """Go back at the next start: the caller restarts. False when that can't be noted."""
+        return await asyncio.to_thread(_ask_to_go_back, self._dir)
 
     async def check(self) -> UpdateInfo:
         """The newest version on GitHub. Raises UpdateError when GitHub can't tell."""
@@ -114,11 +128,14 @@ class UpdateService:
         latest = parse_version(response.text)
         if latest is None:
             raise UpdateError(t("GitHub doesn't have an AirGrabber 2 version yet."))
+        newer = is_newer(latest, self._current)
+        skipped = newer and skipped_version(self._dir) == latest
         return UpdateInfo(
             current=self._current,
             latest=latest,
-            available=is_newer(latest, self._current),
+            available=newer and not skipped,
             installable=self.installable,
+            skipped=skipped,
         )
 
     async def install(self, progress: Callable[[str], None] | None = None) -> str:
@@ -132,7 +149,9 @@ class UpdateService:
         report(t("Downloading update…"))
         data = await self._download()
         report(t("Installing update…"))
-        version = await asyncio.to_thread(install_archive, data, self._dir)
+        version = await asyncio.to_thread(
+            install_archive, data, self._dir, databases=self._databases
+        )
         log.info("Updated from %s to %s", self._current, version)
         return version
 
@@ -183,16 +202,24 @@ class UpdateService:
 # thread, or (apply_staged) in main.py after shutdown.
 
 
-def install_archive(data: bytes, install_dir: Path) -> str:
+def _ask_to_go_back(install_dir: Path) -> bool:
+    with _STAGING_LOCK:  # a download being unpacked finishes first; the way back removes it
+        return ask_to_go_back(install_dir)
+
+
+def install_archive(data: bytes, install_dir: Path, *, databases: Sequence[Path] = ()) -> str:
     """Unpack a GitHub branch archive and swap its APP_ENTRIES in. Returns the new version.
 
-    The old files are moved aside first and put back if anything fails half-way.
+    The old files are moved aside first and put back if anything fails half-way; when all went
+    well they stay as the way back, with a copy of `databases`.
     """
     with _STAGING_LOCK:
         version = _unpack(data, install_dir)
         staging = install_dir / STAGING_DIR
+        was = read_version(install_dir / "app" / "__init__.py")
         _swap(staging / "new", staging / "old", install_dir)
-        _remove_tree(staging)  # best effort: a leftover is cleared by the next update
+        keep_previous(install_dir, staging / "old", was=was, now=version, databases=databases)
+        remove_tree(staging)  # best effort: a leftover is cleared by the next update
         return version
 
 
@@ -217,18 +244,19 @@ def stage_archive(data: bytes, install_dir: Path, *, newer_than: str | None = No
                 )
             (staging / READY_FILE).write_text(version, encoding="utf-8")
         except BaseException:
-            _remove_tree(staging)
+            remove_tree(staging)
             raise
         return version
 
 
-def apply_staged(install_dir: Path) -> str | None:
+def apply_staged(install_dir: Path, *, databases: Sequence[Path] = ()) -> str | None:
     """Swap in the update `stage_archive` left in `<install>/.update`. Returns the version
     installed, or None when nothing was installed.
 
     main.py calls this once AirGrabber has shut down. It never raises: a failed swap is rolled
     back and logged. A staged update that is incomplete, or not newer than the version on disk
-    (the installer ran in between), is deleted instead. A development copy is never touched.
+    (the installer ran in between), is deleted instead. A development copy is never touched. The
+    replaced files stay as the way back, with a copy of `databases`.
     """
     try:
         if is_development_copy(install_dir):
@@ -237,7 +265,7 @@ def apply_staged(install_dir: Path) -> str | None:
             log.warning("The update was still being unpacked; it is installed next time")
             return None
         try:
-            return _apply_staged(install_dir)
+            return _apply_staged(install_dir, databases)
         finally:
             _STAGING_LOCK.release()
     except Exception:
@@ -245,19 +273,22 @@ def apply_staged(install_dir: Path) -> str | None:
         return None
 
 
-def _apply_staged(install_dir: Path) -> str | None:
+def _apply_staged(install_dir: Path, databases: Sequence[Path]) -> str | None:
     staging = install_dir / STAGING_DIR
     if not staging.exists():
+        return None
+    if going_back(install_dir):  # asked for just now: what is on disk leaves at the next start
+        remove_tree(staging)
         return None
     staged = _staged_version(staging)
     if staged is None:
         log.info("Removing an incomplete downloaded update")
-        _remove_tree(staging)
+        remove_tree(staging)
         return None
-    installed = _read_version(install_dir / "app" / "__init__.py")
+    installed = read_version(install_dir / "app" / "__init__.py")
     if installed is None or not is_newer(staged, installed):
         log.info("Removing the downloaded update %s: %s is installed", staged, installed or "?")
-        _remove_tree(staging)
+        remove_tree(staging)
         return None
     old = staging / "old"
     try:
@@ -266,9 +297,10 @@ def _apply_staged(install_dir: Path) -> str | None:
         log.warning("Could not install the downloaded update %s: %s", staged, exc)
         (staging / READY_FILE).unlink(missing_ok=True)  # never tried again
         if not old.exists() or not any(old.iterdir()):  # rolled back: no old file is left there
-            _remove_tree(staging)
+            remove_tree(staging)
         return None
-    _remove_tree(staging)  # best effort: a leftover is cleared by the next update
+    keep_previous(install_dir, old, was=installed, now=staged, databases=databases)
+    remove_tree(staging)  # best effort: a leftover is cleared by the next update
     log.info("Installed the downloaded update: %s -> %s", installed, staged)
     return staged
 
@@ -277,7 +309,7 @@ def _unpack(data: bytes, install_dir: Path) -> str:
     """Extract and validate an archive into `<install>/.update/new` (cleared first). Returns its
     version. On failure the staging folder is removed again and nothing else was changed."""
     staging = install_dir / STAGING_DIR
-    _remove_tree(staging)
+    remove_tree(staging)
     if staging.exists():
         raise UpdateError(
             t("Could not clear the folder {folder}; delete it and try again.", folder=staging)
@@ -292,11 +324,11 @@ def _unpack(data: bytes, install_dir: Path) -> str:
         for entry in APP_ENTRIES:
             if not (new / entry).exists():
                 raise UpdateError(t("The download has no {entry}; nothing was changed.", entry=entry))
-        version = _read_version(new / "app" / "__init__.py")
+        version = read_version(new / "app" / "__init__.py")
         if version is None:
             raise UpdateError(t("The download has no version number; nothing was changed."))
     except BaseException:
-        _remove_tree(staging)
+        remove_tree(staging)
         raise
     return version
 
@@ -311,15 +343,8 @@ def _staged_version(staging: Path) -> str | None:
     new = staging / "new"
     if not all((new / entry).exists() for entry in APP_ENTRIES):
         return None
-    version = _read_version(new / "app" / "__init__.py")
+    version = read_version(new / "app" / "__init__.py")
     return version if version is not None and version == marker else None
-
-
-def _read_version(init_file: Path) -> str | None:
-    try:
-        return parse_version(init_file.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return None
 
 
 def _extract(archive: zipfile.ZipFile, target: Path) -> None:
@@ -352,8 +377,8 @@ def _swap(new: Path, old: Path, install_dir: Path) -> None:
             target = install_dir / entry
             started.append(entry)
             if target.exists():
-                _rename(target, old / entry)
-            _rename(new / entry, target)
+                rename(target, old / entry)
+            rename(new / entry, target)
     except OSError as exc:
         log.warning("Update could not replace the app files; rolling back: %r", exc)
         try:
@@ -362,7 +387,7 @@ def _swap(new: Path, old: Path, install_dir: Path) -> None:
                 if not (new / entry).exists() and target.exists():  # the new copy made it in
                     _remove(target)
                 if (old / entry).exists():
-                    _rename(old / entry, target)
+                    rename(old / entry, target)
         except OSError as rollback:
             log.error("Rolling back the update failed: %r", rollback)
             raise UpdateError(
@@ -379,31 +404,9 @@ def _swap(new: Path, old: Path, install_dir: Path) -> None:
         ) from exc
 
 
-def _rename(source: Path, destination: Path) -> None:
-    for attempt in range(_RENAME_ATTEMPTS):
-        try:
-            os.rename(source, destination)
-            return
-        except PermissionError:
-            if attempt == _RENAME_ATTEMPTS - 1:
-                raise
-            time.sleep(0.2 * (attempt + 1))
-
-
 def _remove(path: Path) -> None:
     if path.is_dir():
-        shutil.rmtree(path, onexc=_clear_read_only)
+        shutil.rmtree(path, onexc=clear_read_only)
     else:
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
-
-
-def _remove_tree(path: Path) -> None:
-    with contextlib.suppress(OSError):
-        shutil.rmtree(path, onexc=_clear_read_only)
-
-
-def _clear_read_only(function: Callable[[str], object], path: str, _exc: BaseException) -> None:
-    """rmtree helper: Windows refuses to delete read-only files and folders."""
-    os.chmod(path, stat.S_IWRITE)
-    function(path)

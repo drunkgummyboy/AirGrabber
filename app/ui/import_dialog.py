@@ -131,10 +131,6 @@ class ImportShowsDialog(ctk.CTkToplevel):
             command=self._import,
         ).pack(side="right", padx=(0, 8))
 
-    def show_airdates(self) -> None:
-        self._tabs.set(t(TAB_AIRDATES))
-        self._focus_tab()
-
     def _focus_tab(self) -> None:
         if not self.winfo_exists():
             return

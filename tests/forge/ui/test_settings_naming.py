@@ -46,6 +46,7 @@ from app.forge.ui.settings_naming import (
 )
 from app.forge.ui.look import app_look
 from app.forge.ui.settings_pages import FORGE_SECTIONS, SAVE_FAILED, SECTION_LIBRARY
+from app.ui import theme
 from app.ui.settings_dialog import SettingsDialog
 from tests.forge.ui.settings_kit import forge_settings
 from app.i18n import Language
@@ -304,10 +305,10 @@ class NamingSettingsTests(ForgeAsyncTestCase):
 
     async def test_an_unknown_code_is_flagged(self) -> None:
         _dialog, part, _forge = await self.ready()
-        part._format.set("{ny} {quality} {Year}")
+        part._format.set("{ny} {codec} {Year}")
         self.assertTrue(part.unknown_label.winfo_manager())
         self.assertEqual(
-            part.unknown_label.cget("text"), "⚠ Not a known code: {quality}, {Year}"
+            part.unknown_label.cget("text"), "⚠ Not a known code: {codec}, {Year}"
         )
         part._format.set("{ny}")
         self.assertEqual(part.unknown_label.winfo_manager(), "")
@@ -332,6 +333,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
                 ("s", "01", "{s}"),
                 ("e", "02", "{e}"),
                 ("en", "Theseus", "{en}"),
+                ("quality", "1080p H.265", "{quality}"),
                 ("/", "starts a new folder", "/"),
                 ("-", "a dash", " - "),
             ],
@@ -348,6 +350,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
                 ("ny", "Dune Part Two (2024)"),
                 ("t", "Dune Part Two"),
                 ("y", "2024"),
+                ("quality", "1080p H.265"),
                 ("/", "starts a new folder"),
                 ("-", "a dash"),
             ],
@@ -357,7 +360,7 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         part.set_type(TypeHint.TV)
         examples = [row.value for row in part.example_table.rows if row.winfo_manager()]
         self.assertEqual(examples, list(settings_naming.SHOW_EXAMPLES))
-        self.assertEqual(sum(1 for r in part.code_table.rows if r.winfo_manager()), 10)
+        self.assertEqual(sum(1 for r in part.code_table.rows if r.winfo_manager()), 11)
         self.assertEqual(part.code_table.rows[0].right_text, "VisionQuest (2026)")
         part.set_type(TypeHint.AUTO)
         examples = [row.value for row in part.example_table.rows if row.winfo_manager()]
@@ -385,6 +388,15 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.assertEqual(part.format_sample.cget("text"), "VisionQuest - S01E02.mkv")
         self.assertEqual(self.stored(forge).replaced, [])  # on Save only
 
+    async def test_fit_middle_keeps_the_end(self) -> None:
+        part_font = theme.font(13)
+        text = r"VisionQuest (2026)\Season 01\VisionQuest (2026) - S01E02 - Theseus.mkv"
+        self.assertEqual(settings_naming.fit_middle(text, part_font, 10_000), text)
+        fitted = settings_naming.fit_middle(text, part_font, 200)
+        self.assertIn("…", fitted)
+        self.assertTrue(fitted.endswith("Theseus.mkv"))
+        self.assertLessEqual(part_font.measure(fitted), 200)
+
     async def test_every_code_and_example_is_known_to_the_formatter(self) -> None:
         from app.forge.core.formatter import KNOWN_VARIABLES
 
@@ -400,7 +412,9 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.select(part, "Series (Flat)")
         dialog.update()
         row = part.example_table.rows[-1]  # the longest
-        self.assertTrue(row.right_label.cget("text").endswith("…"))
+        shown = row.right_label.cget("text")
+        self.assertIn("…", shown)
+        self.assertTrue(shown.endswith("S01E02 - Theseus.mkv"))  # the file name stays in sight
         self.assertEqual(row._tip.text, f"{row.left_text}\n{row.right_text}")
         self.assertEqual(part.code_table.rows[0]._tip.text, "")  # fits: no tip
         room = part.format_area.winfo_width()

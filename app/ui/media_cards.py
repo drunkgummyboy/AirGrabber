@@ -232,9 +232,21 @@ class MovieCard(_TmdbCard):
         webbrowser.open(self._imdb_url)
 
 
+def source_lines(year: int | None, rating: float | None, source: str) -> tuple[str, ...]:
+    """A Discover card's line with its source, longest first: without the rating when that
+    doesn't fit, and as it was when the source doesn't fit at all."""
+    line = year_rating_line(year, rating)
+    return (
+        f"{line} | {source}" if line else source,
+        f"{year} | {source}" if year else source,
+        line,
+    )
+
+
 class DiscoverShowCard(_TmdbCard):
-    """A TMDB show: first-air year and rating, and a Track button. Clicking the cover calls
-    `on_open_show(show)`; without it, it opens the show on IMDb once the details name it."""
+    """A TMDB show: first-air year, rating and (once the details are in) where it airs, and a Track
+    button. Clicking the cover calls `on_open_show(show)`; without it, it opens the show on IMDb
+    once the details name it."""
 
     def __init__(
         self,
@@ -255,6 +267,7 @@ class DiscoverShowCard(_TmdbCard):
             poster=lambda width: show.poster_url(tmdb_poster_size(width)),
             images=images,
             scale=scale,
+            meta_row=True,
         )
         self._show = show
         self._on_track = on_track
@@ -276,6 +289,10 @@ class DiscoverShowCard(_TmdbCard):
     def _show_details(self, details: TVDetails) -> None:
         if self._on_open_show is None and (url := show_imdb_url(details)) is not None:
             self._set_open(lambda: webbrowser.open(url))
+        if details.networks:
+            show = self._show
+            rating = tmdb_rating(show.vote_average, show.vote_count)
+            self._set_meta(source_lines(show.year, rating, details.networks[0]))
 
     def _track(self) -> None:
         self._on_track(self._show)

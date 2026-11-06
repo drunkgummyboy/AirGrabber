@@ -11,12 +11,14 @@ from typing import Literal
 
 from app.forge.core import fsops
 from app.forge.core.formatter import render, sanitize_segment
+from app.forge.core.nfo import episode_nfo, movie_nfo, show_nfo
 from app.forge.core.parser import is_video
 from app.forge.models.media import MediaKind, ResolvedMedia
 from app.forge.models.plan import (
     Plan,
     PlanInput,
     PlannedFile,
+    PlannedNfo,
     PlannedPoster,
     PlannedSubtitles,
     PlannedTrailer,
@@ -27,7 +29,7 @@ from app.i18n import N_, t, tn
 
 ALREADY_NAMED = N_("already correctly named")  # a skip reason: t() it where it is shown
 
-type PosterKind = Literal["movie", "series", "season"]
+type PosterKind = Literal["movie", "series", "season", "backdrop"]
 
 # What follows a video's stem in the name of a subtitle that goes with it: ".<lang>.srt",
 # ".<lang>.forced.srt", ".<lang>.sdh.srt" (AirGrabber saves "<stem>.<lang>.srt", the language
@@ -122,6 +124,16 @@ def _series_root(item: PlanInput, folders: tuple[str, ...], target: Path) -> Pat
     return item.root / folders[0]
 
 
+def _show_folder(item: PlanInput, folders: tuple[str, ...]) -> Path | None:
+    """The show's own folder, when the layout gives it one: only there can a file with a fixed
+    name (tvshow.nfo, fanart.jpg) belong to this show alone."""
+    title = sanitize_segment(item.media.title).casefold()
+    for i, folder in enumerate(folders):
+        if title in folder.casefold():
+            return item.root.joinpath(*folders[: i + 1])
+    return None
+
+
 def build_plan(
     inputs: Sequence[PlanInput],
     fmt: str,
@@ -130,6 +142,7 @@ def build_plan(
 ) -> Plan:
     files: list[PlannedFile] = []
     posters: dict[str, PlannedPoster] = {}
+    nfos: dict[str, PlannedNfo] = {}
     trailers: dict[str, PlannedTrailer] = {}
     taken: set[str] = set()
 
@@ -142,6 +155,14 @@ def build_plan(
             posters[key] = PlannedPoster(
                 kind=kind, tmdb_path=tmdb_path, target=target, item_ids=(item_id,)
             )
+
+    def add_nfo(target: Path, content: str, item_id: int) -> None:
+        key = _key(target)
+        if key in nfos:
+            known = nfos[key]
+            nfos[key] = known.model_copy(update={"item_ids": (*known.item_ids, item_id)})
+        elif not exists(target):
+            nfos[key] = PlannedNfo(target=target, content=content, item_ids=(item_id,))
 
     for item in inputs:
         media = item.media
@@ -173,6 +194,24 @@ def build_plan(
         if media.kind is MediaKind.EPISODE and options.season_poster and media.season is not None:
             name = f"Season {media.season:02d} Poster.jpg"
             add_poster("season", media.season_poster_path, target.parent / name, item_id)
+        show_folder = _show_folder(item, rendered.parts[:-1])
+        if options.backdrop:
+            if media.kind is MediaKind.MOVIE:
+                picture = target.parent / f"{target.stem}-fanart.jpg"
+            elif show_folder is not None:
+                picture = show_folder / "fanart.jpg"
+            else:
+                root = _series_root(item, rendered.parts[:-1], target)
+                picture = root / f"{ny} - Fanart.jpg"
+            add_poster("backdrop", media.backdrop_path, picture, item_id)
+        if options.nfo and media.tmdb_id is not None:  # without TMDB there is nothing to tell
+            beside = target.parent / f"{target.stem}.nfo"
+            if media.kind is MediaKind.MOVIE:
+                add_nfo(beside, movie_nfo(media), item_id)
+            else:
+                add_nfo(beside, episode_nfo(media), item_id)
+                if show_folder is not None:
+                    add_nfo(show_folder / "tvshow.nfo", show_nfo(media), item_id)
         if options.trailer:
             stem = target.parent / f"{ny} - Trailer"
             key = _key(stem)
@@ -187,6 +226,8 @@ def build_plan(
                     year=media.year,
                     target_stem=stem,
                     item_ids=(item_id,),
+                    tmdb_id=media.tmdb_id if media.kind is MediaKind.EPISODE else None,
+                    season=media.season if media.kind is MediaKind.EPISODE else None,
                 )
 
     subtitles: list[PlannedSubtitles] = []
@@ -215,6 +256,7 @@ def build_plan(
     return Plan(
         files=tuple(files),
         posters=tuple(posters.values()),
+        nfos=tuple(nfos.values()),
         trailers=tuple(trailers.values()),
         subtitles=tuple(subtitles),
         clean_roots=tuple(clean_roots),
@@ -249,6 +291,7 @@ def build_mixed_plan(
     if len(plans) == 1:
         return plans[0]
     posters = {_key(p.target): p for plan in plans for p in plan.posters}
+    nfos = {_key(n.target): n for plan in plans for n in plan.nfos}
     clean = {_key(root): root for plan in plans for root in plan.clean_roots}
     prune = {_key(path): path for plan in plans for path in plan.prune_dirs}
     flags = {
@@ -258,6 +301,7 @@ def build_mixed_plan(
     return Plan(
         files=tuple(f for plan in plans for f in plan.files),
         posters=tuple(posters.values()),
+        nfos=tuple(nfos.values()),
         trailers=tuple(tr for plan in plans for tr in plan.trailers),
         subtitles=tuple(s for plan in plans for s in plan.subtitles),
         clean_roots=tuple(clean.values()),
@@ -274,7 +318,13 @@ def describe(plan: Plan) -> list[str]:
             lines.append(t("Skip: {name} ({reason})", name=f.source.name, reason=t(f.skip_reason)))
         else:
             lines.append(t("Rename: {name} → {target}", name=f.source.name, target=f.target))
-    lines += [t("Poster: {target}", target=p.target) for p in plan.posters]
+    lines += [
+        t("Background: {target}", target=p.target)
+        if p.kind == "backdrop"
+        else t("Poster: {target}", target=p.target)
+        for p in plan.posters
+    ]
+    lines += [t("NFO: {target}", target=n.target) for n in plan.nfos]
     lines += [t("Trailer: {target}", target=f"{tr.target_stem}.mp4") for tr in plan.trailers]
     lines += [t("Subtitles for: {name}", name=s.video.name) for s in plan.subtitles]
     if plan.prune_dirs:

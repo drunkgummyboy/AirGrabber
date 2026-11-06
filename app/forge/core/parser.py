@@ -186,6 +186,28 @@ def _tags(found: dict[str, Any]) -> tuple[str, ...]:
     return tuple(tags)
 
 
+def _quality(found: dict[str, Any]) -> str | None:
+    """What the name says of the picture's quality: "1080p H.265". Only the name is read, never
+    the video itself."""
+    parts = (_as_text(found.get("screen_size")), _as_text(found.get("video_codec")))
+    return " ".join(part for part in parts if part) or None
+
+
+def _after_dashes(name: str, title: str, others: Any) -> list[str]:
+    """What guessit calls other titles that are really more of the name, because a " - " puts them
+    right after it ("Avatar - The Last Airbender - S02E01"). Searched as "Avatar" that file would
+    find, or be remembered as, another show. Not the ".FRENCH." of "Amelie.2001.FRENCH.720p"."""
+    plain = _SPACES.sub(" ", name.replace(".", " ").replace("_", " ")).casefold()
+    so_far = title.casefold()
+    more: list[str] = []
+    for other in others if isinstance(others, list) else [others]:
+        if not isinstance(other, str) or f"{so_far} - {other.casefold()}" not in plain:
+            break
+        so_far = f"{so_far} - {other.casefold()}"
+        more.append(other)
+    return more
+
+
 def parse_filename(name: str, hint: TypeHint = TypeHint.AUTO) -> ParsedMedia:
     options = dict(_GUESSIT_OPTIONS)
     if hint is TypeHint.MOVIE:
@@ -218,7 +240,10 @@ def parse_filename(name: str, hint: TypeHint = TypeHint.AUTO) -> ParsedMedia:
     if year is None and isinstance(date, dt.date):
         year = date.year
 
-    title = human_title(_as_text(found.get("title")) or "")
+    first_part = _as_text(found.get("title")) or ""
+    more = _after_dashes(name, first_part, found.get("alternative_title"))
+    title = human_title(" ".join((first_part, *more)))
+    short_title = human_title(first_part) if first_part and more else None
     if not title:
         stem = PurePath(name).stem
         title = human_title(stem.replace(".", " ").replace("_", " ")) or "_"
@@ -237,4 +262,6 @@ def parse_filename(name: str, hint: TypeHint = TypeHint.AUTO) -> ParsedMedia:
         episode_end=episode_end,
         episode_title=episode_title,
         tags=_tags(found),
+        short_title=short_title,
+        quality=_quality(found),
     )

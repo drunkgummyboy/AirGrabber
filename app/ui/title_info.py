@@ -633,6 +633,7 @@ class Masthead(tk.Canvas):
         self._hero: _Hero | None = None
         self._hero_room = False  # the backdrop's room is kept (it shows or may still come)
         self._trailer: str | None = None
+        self._trailer_label: str | None = None  # what the pill says instead (a season's own)
         self._pill_label = TRAILER_TEXT  # the pill's text, kept as its N_() key
         self._width = 0  # physical px, from the last <Configure>
         self._layout: MastheadLayout | None = None
@@ -743,10 +744,19 @@ class Masthead(tk.Canvas):
         self._load_hero()
         self._backdrop_changed()
 
-    def set_trailer(self, url: str | None) -> None:
-        """Show "▶ Watch trailer" over the backdrop, opening `url`; None hides it."""
+    def set_trailer(self, url: str | None, label: str | None = None) -> None:
+        """Show "▶ Watch trailer" (or `label`, translated: a season's own) over the backdrop,
+        opening `url`; None hides it."""
         self._trailer = url
+        self._trailer_label = label
+        self.itemconfigure(self._pill_text, text=self._pill_words())
         self._place_pill()
+
+    def _pill_words(self) -> str:
+        """What the pill says now."""
+        if self._pill_label is TRAILER_TEXT and self._trailer_label is not None:
+            return self._trailer_label
+        return t(self._pill_label)
 
     # -- layout --------------------------------------------------------------------------------
 
@@ -839,7 +849,7 @@ class Masthead(tk.Canvas):
             return
         scaling = self.scaling
         font = self._pill_font
-        text_width = font.measure(t(self._pill_label)) * scaling
+        text_width = font.measure(self._pill_words()) * scaling
         left_part = (PILL_PAD_LEFT + PILL_CIRCLE + PILL_TEXT_GAP) * scaling
         width = math.ceil(left_part + text_width + PILL_PAD_RIGHT * scaling)
         height = round(PILL_HEIGHT * scaling)
@@ -866,7 +876,7 @@ class Masthead(tk.Canvas):
         if not self.winfo_exists():
             return
         self._pill_label = OPENING_TRAILER_TEXT if state == "opening" else TRAILER_TEXT
-        self.itemconfigure(self._pill_text, text=t(self._pill_label))
+        self.itemconfigure(self._pill_text, text=self._pill_words())
         self._place_pill()
 
     # -- images --------------------------------------------------------------------------------
@@ -952,12 +962,6 @@ class Masthead(tk.Canvas):
         self.itemconfigure(self._poster_item, image=self._poster_photo)
         if self.foot is not None and self._foot_poster is not None:
             self.foot.itemconfigure(self._foot_poster, image=self._poster_photo)
-
-    def set_poster(self, poster: Callable[[int], str | None]) -> None:
-        """Another poster (its url per width)."""
-        self._poster_url = poster
-        if self._layout is not None:
-            self._load_poster()
 
     def _repaint(self) -> None:
         """Light ↔ dark: the background, the backdrop's fade and the poster's edge."""

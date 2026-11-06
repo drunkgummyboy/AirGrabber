@@ -4,8 +4,8 @@ ui/queue_view.py; the view itself is app/forge/ui/queue_view.py).
 Files become `Row`s for the fast list (app/forge/ui/widgets/virtual_list.py): shows and films in
 one list, one band per show with its episodes as short lines under it, one band per film with
 its file. Every band has a status (`Row.state` and its word): "Needs you" (TMDB isn't sure, or a
-watched download is held back or failed), "Ready", "Would rename" (a watched download while
-renaming on its own is a trial) or "Done" (renamed today, faded, with its Undo). The filter
+watched download is held back or failed), "Ready" or "Done" (renamed today, faded, with its
+Undo). The filter
 (`show`) is All (needs you first, then the rest by name, then today's done ones under their
 heading), Needs you or Ready, and every count is worked out whichever is shown.
 
@@ -35,16 +35,15 @@ _SE = re.compile(r"S\d{2,}E\d{2,}(?:-E\d{2,})?")
 
 type Kind = Literal["series", "movies"]
 type Show = Literal["all", "needs", "ready"]
-type State = Literal["needs", "ready", "would", "done"]
+type State = Literal["needs", "ready", "done"]
 
 FINISHED = (ItemStatus.DONE, ItemStatus.SKIPPED)
 NEEDS_OWNER = (ItemStatus.NEEDS_CHOICE, ItemStatus.HELD, ItemStatus.ERROR)
 _WAITING = (ItemStatus.HELD, ItemStatus.ERROR)  # held back or failed, with a reason
 
-NOW = N_("Now:")  # before a line's current file name, so it isn't taken for the new one
+CURRENT_NAME = N_("Current name:")  # before a line's current file name, so it isn't taken for the new one
 NEEDS_YOU = N_("Needs you")
 READY = N_("Ready")
-WOULD_RENAME = N_("Would rename")
 DONE = N_("Renamed")
 DONE_TODAY = N_("Done today")
 IGNORE = N_("Ignore")  # a band's menu: Auto-rename leaves the file (or its folder) alone
@@ -54,13 +53,11 @@ OPEN_IN_EXPLORER = N_("Open in Explorer")
 STATE_WORDS: dict[State, str] = {
     "needs": NEEDS_YOU,
     "ready": READY,
-    "would": WOULD_RENAME,
     "done": DONE,
 }
 
 # Where a band's files go, after its subtitle. A glyph and a colour apart, to see it at a glance.
 MOVES_TO = N_("📦 Moves to {folder}")
-WOULD_MOVE = N_("📦 Would move to {folder}")
 MOVED_TO = N_("📦 Moved to {folder}")
 STAYS = N_("📁 Stays in its folder")
 STAYS_IN = N_("📁 Stays here, in {folder}")
@@ -139,22 +136,13 @@ def item_kind(item: QueueItem) -> Kind:
     return "series" if item.media.kind is MediaKind.EPISODE else "movies"
 
 
-def item_state(item: QueueItem, *, trial: bool) -> State:
-    """A file's status: renamed, waiting for the owner, a watched download that only would be
-    moved (a trial), or ready to rename."""
+def item_state(item: QueueItem) -> State:
+    """A file's status: renamed, waiting for the owner, or ready to rename."""
     if item.status in FINISHED:
         return "done"
     if item.status in NEEDS_OWNER:
         return "needs"
-    if trial and item.watched is not None:
-        return "would"
     return "ready"
-
-
-def needs_you(item: QueueItem) -> bool:
-    """The "needs you" rule (the Queue tab's badge, the Needs you filter): TMDB isn't sure, or a
-    watched download was held back or failed."""
-    return item.status in NEEDS_OWNER
 
 
 @dataclass
@@ -217,8 +205,7 @@ def _destination(
         return t(STAYED_IN if state == "done" else STAYS_IN, folder=folder), "stays"
     if not library_known:
         return t(NO_SERIES_FOLDER if kind is MediaKind.EPISODE else NO_MOVIES_FOLDER), "warn"
-    words = {"done": MOVED_TO, "would": WOULD_MOVE}.get(state, MOVES_TO)
-    return t(words, folder=folder), "moves"
+    return t(MOVED_TO if state == "done" else MOVES_TO, folder=folder), "moves"
 
 
 def episode_code(item: QueueItem) -> str:
@@ -266,7 +253,6 @@ def build_queue_rows(
     naming: Callable[[QueueItem], tuple[str, Path]] | None = None,
     moving: Callable[[QueueItem], tuple[bool, Path | None]] | None = None,
     show: Show = "all",
-    trial: bool = False,
     today: date | None = None,
     chip: Callable[[QueueItem], str] | None = None,
     cc: Callable[[Sequence[QueueItem]], CcLook | None] | None = None,
@@ -276,8 +262,7 @@ def build_queue_rows(
     `rule` gives a dropped file its naming rule (its band's preset, or the band's Custom rule).
     `moving` says whether its band moves it to a library folder, and that folder (None: not chosen
     yet); otherwise it is renamed where it is. `naming` gives a watched download its library folder
-    and naming rule: those always move. `trial`: renaming on its own is a trial, so watched
-    downloads only "would" be renamed.
+    and naming rule: those always move.
     Only today's finished files are shown when `today` is set. `chip`: a band's preset chip
     (from its first file; none on a done band). `cc`: how a done band's CC ▾ shows (None: not).
     """
@@ -290,7 +275,7 @@ def build_queue_rows(
     kinds: dict[Kind, int] = {"series": 0, "movies": 0}
     shown: list[QueueItem] = []
     for item in items:
-        state = item_state(item, trial=trial)
+        state = item_state(item)
         if state == "done" and not _done_on(item, today):
             continue
         states[item.id] = state
@@ -321,8 +306,8 @@ def build_queue_rows(
         library = (root.name or str(root),) if moves.get(item.id) else ()
         return (*library, *rendered[item.id].parts[:-1])
 
-    # Needs you first, then ready and would-rename by name, then today's done ones.
-    order = {"needs": 0, "ready": 1, "would": 1, "done": 2}
+    # Needs you first, then the ready ones by name, then today's done ones.
+    order = {"needs": 0, "ready": 1, "done": 2}
     groups: dict[tuple[int, str, int | None, bool, State], list[QueueItem]] = {}
     for item in shown:
         media, state = item.media, states[item.id]
@@ -349,7 +334,6 @@ def build_queue_rows(
             key=lambda i: (i.media.parsed.season or 0, i.media.parsed.episode or 0, i.path.name)
         )
         first = group[0].media
-        unsure = any(i.status is ItemStatus.NEEDS_CHOICE for i in group)
         band_key = -next(keys)
         out.bands[band_key] = [i.id for i in group]
         greyed: tuple[tuple[str, str], ...] = ()
@@ -365,12 +349,9 @@ def build_queue_rows(
         else:
             note = ""
             # Ignore (a menu: this file / this whole folder) first, the main button last; 📂 goes
-            # before them all, below.
-            actions = (
-                (("ignore", t(IGNORE)), ("choose", t("Choose…")), ("rename", t("Rename")))
-                if unsure
-                else (("ignore", t(IGNORE)), ("rename", t("Rename")))
-            )
+            # before them all, below. Choose… on every band: any match can turn out wrong, also a
+            # remembered one that looks settled.
+            actions = (("ignore", t(IGNORE)), ("choose", t("Choose…")), ("rename", t("Rename")))
         actions = ((EXPLORER_ACTION, EXPLORER_LABEL), *actions)
         dest, dest_look = _destination(
             state,
@@ -410,7 +391,7 @@ def build_queue_rows(
                     title=title,
                     code=episode_code(item) if episodes else "",
                     faint=item.parsed.source_name,
-                    faint_label=t(NOW),
+                    faint_label=t(CURRENT_NAME),
                     new=not episodes,
                     status=item.status.value,
                     badge=first.title,

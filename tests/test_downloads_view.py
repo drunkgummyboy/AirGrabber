@@ -33,7 +33,6 @@ from app.ui.views.downloads_view import (
     meta_text,
     moved_text,
     percent,
-    same_rows,
     size_text,
     space_status_text,
     space_text,
@@ -156,8 +155,6 @@ class TextTests(unittest.TestCase):
         self.assertEqual(badge_text(120), "99+")
 
     def test_same_rows_and_imdb_search(self) -> None:
-        self.assertTrue(same_rows([entry(1), entry(2)], [1, 2]))
-        self.assertFalse(same_rows([entry(1), entry(2)], [2, 1]))
         self.assertEqual(
             imdb_find_url("Gladiator II (2024)"),
             "https://www.imdb.com/find/?q=Gladiator%20II%20%282024%29",

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from app.forge.core import fsops
 from app.forge.core.matcher import Resolution, match_key
 from app.forge.core.parser import is_video, parse_filename
-from app.forge.models.media import MatchState, ParsedMedia, ResolvedMedia, TypeHint
+from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia, TypeHint
 from app.forge.models.plan import PlanInput
 from app.models.tmdb import TMDBTitle
 
@@ -371,8 +371,19 @@ class Queue:
                 )
                 changed.append(other)
         for c in changed:
-            c.status = ItemStatus.READY
+            c.status, c.message = ItemStatus.READY, ""
         self._on_change(QueueEvent(kind="updated", ids=tuple(c.id for c in changed)))
+
+    async def choose_match_for(self, item_ids: Sequence[int], chosen: TMDBTitle | None) -> None:
+        """One answer for a band's files, which can come from differently named files: each name
+        is settled (and remembered) once."""
+        settled: set[tuple[MediaKind, str, int | None]] = set()
+        for item_id in item_ids:
+            item = self.get(item_id)
+            if item is None or match_key(item.parsed) in settled:
+                continue
+            settled.add(match_key(item.parsed))
+            await self.choose_match(item_id, chosen)
 
     def pending(self) -> list[QueueItem]:
         """Items not renamed yet."""

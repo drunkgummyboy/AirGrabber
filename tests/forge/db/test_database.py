@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -166,6 +167,19 @@ class DatabaseTest(ForgeDbTestCase):
         async with self.db.transaction() as conn:  # the lock and the connection still work
             await conn.execute("INSERT INTO settings (key, value) VALUES ('x', '1')")
         assert await self.scalar("SELECT value FROM settings WHERE key = 'x'") == "1"
+
+    async def test_a_task_cancelled_while_a_transaction_starts_leaves_none_open(self) -> None:
+        async def writer() -> None:
+            async with self.db.transaction():
+                pass
+
+        task = asyncio.create_task(writer())
+        await asyncio.sleep(0)  # as far as BEGIN, on its way to the worker thread
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        async with self.db.transaction():  # not "a transaction within a transaction"
+            pass
 
     async def test_a_reader_waits_for_a_transaction(self) -> None:
         inside = asyncio.Event()

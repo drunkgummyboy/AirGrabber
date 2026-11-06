@@ -63,11 +63,11 @@ class HistoryRepoTest(ForgeDbTestCase):
         assert await self.repo.finish_run(run_id) is False
         assert await self.repo.list_runs() == []
 
-    async def test_retention_keeps_50(self) -> None:
+    async def test_retention_keeps_the_newest_runs(self) -> None:
         start = datetime(2026, 1, 1)
-        ids = [await self._run_with_rename(start + timedelta(minutes=i)) for i in range(52)]
+        ids = [await self._run_with_rename(start + timedelta(minutes=i)) for i in range(HISTORY_LIMIT + 2)]
         runs = await self.repo.list_runs()
-        assert len(runs) == HISTORY_LIMIT == 50
+        assert len(runs) == HISTORY_LIMIT == 500
         assert [r.id for r in runs] == list(reversed(ids[2:]))
         assert await self.repo.operations(ids[0]) == []  # cascaded away
 

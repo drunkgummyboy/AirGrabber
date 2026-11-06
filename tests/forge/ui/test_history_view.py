@@ -19,7 +19,7 @@ from unittest import mock
 import customtkinter as ctk
 
 from app.forge.core.executor import Executor
-from app.forge.core.history_service import HistoryService
+from app.forge.core.history_service import HistoryService, matching_operations
 from app.forge.core.planner import build_plan
 from app.forge.core.undo import MOVED_AGAIN, UndoService
 from app.forge.db.database import Database
@@ -29,7 +29,7 @@ from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind
 from app.forge.models.preset import PresetOptions
 from app.forge.services import ForgeServices
-from app.forge.ui.history_view import HistoryView, day_label, when_label
+from app.forge.ui.history_view import HistoryView, day_label
 from app.forge.ui.look import app_look
 from app.i18n import Language, current_language, set_language, t
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
@@ -390,19 +390,109 @@ class HistoryViewTest(HistoryViewCase):
         self.assertTrue(task.cancelled())
 
 
+class HistorySearchTest(HistoryViewCase):
+    async def searched(self, query: str) -> None:
+        self.view.search(query)
+        await asyncio.gather(*self.view._tasks, return_exceptions=True)
+        await pump(self.root, 0.05)
+
+    async def test_keeps_the_runs_with_a_match_and_shows_just_those_files(self) -> None:
+        heat = await self.forge({"a.mkv": "Heat", "b.mkv": "Ran"}, "Auto")
+        alien = await self.forge({"c.mkv": "Alien"}, "Movie (Flat)")
+        await self.view.reload()
+        self.assertEqual([card.run.id for card in self.view.cards], [alien, heat])
+        await self.searched("heat")
+        [card] = self.view.cards
+        self.assertEqual(card.run.id, heat)
+        self.assertTrue(card.expanded)  # opens by itself
+        assert card.files is not None
+        self.assertEqual(len([r for r in card.files.rows if r.kind == "item"]), 1)
+        self.assertEqual(len(card.checks), 1)  # Undo N selected takes just that one
+        await self.searched("")
+        self.assertEqual([card.run.id for card in self.view.cards], [alien, heat])
+        self.assertFalse(self.view.cards[0].expanded)
+
+    async def test_nothing_found_says_so(self) -> None:
+        await self.forge({"a.mkv": "Heat"}, "Auto")
+        await self.view.reload()
+        await self.searched("dune")
+        self.assertEqual(self.view.cards, [])
+        self.assertIn("dune", self.view.empty_label.cget("text"))
+        self.assertTrue(self.view.empty_label.winfo_manager())
+
+    async def test_typing_searches_a_moment_after_the_last_key_and_escape_clears(self) -> None:
+        await self.forge({"a.mkv": "Heat"}, "Auto")
+        await self.forge({"c.mkv": "Alien"}, "Auto")
+        await self.view.reload()
+        self.view.search_entry.insert(0, "alien")
+        self.view._search_typed()
+        self.assertEqual(self.view.query, "")  # not yet
+        await pump(self.root, 0.3)
+        await asyncio.gather(*self.view._tasks, return_exceptions=True)
+        self.assertEqual(self.view.query, "alien")
+        self.assertEqual(len(self.view.cards), 1)
+        self.assertEqual(self.view._search_cleared(), "break")
+        await pump(self.root, 0.3)
+        await asyncio.gather(*self.view._tasks, return_exceptions=True)
+        self.assertEqual(self.view.query, "")
+        self.assertEqual(len(self.view.cards), 2)
+
+
+class ManyRunsTest(HistoryViewCase):
+    async def test_a_batch_at_a_time_with_the_rest_on_request(self) -> None:
+        with mock.patch("app.forge.ui.history_view._RUNS_AT_A_TIME", 2):
+            newest_first = [
+                await self.forge({f"{n}.mkv": f"Film {n}"}, "Auto") for n in range(5)
+            ][::-1]
+            await self.view.reload()
+            await pump(self.root, 0.05)
+            self.assertEqual([c.run.id for c in self.view.cards], newest_first[:2])
+            self.assertEqual(self.view.more_button.cget("text"), "Show 2 more")
+            self.assertTrue(self.view.more_button.winfo_manager())
+            await self.view._add_cards(self.view._generation)
+            self.assertEqual([c.run.id for c in self.view.cards], newest_first[:4])
+            self.assertEqual(self.view.more_button.cget("text"), "Show 1 more")
+            await self.view._add_cards(self.view._generation)
+            self.assertEqual([c.run.id for c in self.view.cards], newest_first)
+            self.assertEqual(self.view.more_button.winfo_manager(), "")
+
+    async def test_a_short_list_asks_only_for_its_rows_room(self) -> None:
+        run = await self.forge({"a.mkv": "Heat"}, "Auto")
+        await self.view.reload()
+        await pump(self.root, 0.05)
+        card = self.view._card(run)
+        assert card is not None
+        await card.expand()
+        await pump(self.root, 0.05)
+        assert card.files is not None
+        self.assertLess(card.files.winfo_reqheight(), card.files._px(200))
+
+
+class MatchingTest(ForgeTestCase):
+    def test_every_word_in_a_name_without_capitals_or_accents(self) -> None:
+        ops = [
+            (1, 10, r"D:\Downloads\Copper.Harbor.S02E01.mkv", r"S:\Series\Copper Harbor\S02E01.mkv"),
+            (1, 11, r"D:\Downloads\Amélie.2001.mkv", r"M:\Amélie (2001).mkv"),
+            (2, 12, None, r"M:\Heat (1995)\Heat (1995).mkv"),
+        ]
+        self.assertEqual(matching_operations("copper s02e01", ops), {1: {10}})
+        self.assertEqual(matching_operations("AMELIE", ops), {1: {11}})
+        self.assertEqual(matching_operations("heat", ops), {2: {12}})
+        self.assertEqual(matching_operations("copper amelie", ops), {})  # one file holds them all
+        self.assertEqual(matching_operations("  ", ops), {})
+
+    def test_folders_higher_up_are_not_searched(self) -> None:
+        ops = [(1, 10, r"D:\Downloads\Heat\heat.mkv", r"S:\Library\Heat\heat.mkv")]
+        self.assertEqual(matching_operations("downloads", ops), {})
+        self.assertEqual(matching_operations("library", ops), {})
+
+
 class LabelTest(ForgeTestCase):
     def setUp(self) -> None:
         super().setUp()
         language = current_language()
         self.addCleanup(set_language, language)
         set_language(Language.EN)
-
-    def test_when_labels(self) -> None:
-        now = datetime(2026, 10, 26, 15, 0)
-        self.assertEqual(when_label(datetime(2026, 10, 26, 14, 2), now), "Today 14:02")
-        self.assertEqual(when_label(datetime(2026, 10, 25, 21, 40), now), "Yesterday 21:40")
-        self.assertEqual(when_label(datetime(2026, 10, 19, 22, 23), now), "19 Oct 22:23")
-        self.assertEqual(when_label(datetime(2025, 3, 4, 8, 5), now), "4 Mar 2025 08:05")
 
     def test_day_label_texts(self) -> None:
         today = datetime(2026, 10, 31, 15, 0)
@@ -418,4 +508,3 @@ class LabelTest(ForgeTestCase):
         self.assertEqual(day_label(datetime(2026, 10, 30, 23, 59), today), "Gisteren")
         self.assertEqual(day_label(datetime(2026, 10, 29, 8, 0), today), "do 29 okt")
         self.assertEqual(day_label(datetime(2025, 3, 4, 8, 5), today), "di 4 mrt 2025")
-        self.assertEqual(when_label(datetime(2026, 10, 30, 21, 40), today), "Gisteren 21:40")

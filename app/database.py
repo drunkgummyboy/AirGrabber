@@ -681,11 +681,14 @@ class Database:
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
         """Atomic unit of work. Use the yielded connection — not `fetch_*` — inside the block."""
         async with self._lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # Inside the try: a task cancelled here leaves BEGIN on its way to the worker
+                # thread, and the ROLLBACK behind it closes what it opens.
+                await self._conn.execute("BEGIN IMMEDIATE")
                 yield self._conn
             except BaseException:
-                await self._conn.execute("ROLLBACK")
+                with contextlib.suppress(sqlite3.OperationalError):  # BEGIN itself failed
+                    await self._conn.execute("ROLLBACK")
                 raise
             else:
                 await self._conn.execute("COMMIT")
@@ -802,17 +805,19 @@ class LibraryRepository:
                 await conn.executemany(_EPISODE_UPSERT, episode_rows)
 
     async def save_schedule_day(
-        self, day: date, shows: Iterable[Show], episodes: Iterable[Episode]
+        self, day: date, shows: Iterable[Show], episodes: Iterable[Episode], *, whole: bool = True
     ) -> None:
-        """Cache one day of TVMaze's schedules (feeds the calendar's suggestions)."""
+        """Cache one day of TVMaze's schedules (feeds the calendar's suggestions). `whole`: all of
+        them came in; otherwise the day counts as not fetched, and is tried again at the next look."""
         async with self._db.transaction() as conn:
             await conn.executemany(_SHOW_UPSERT, [_show_to_row(s) for s in shows])
             await conn.executemany(_EPISODE_UPSERT, [_episode_to_row(e) for e in episodes])
-            await conn.execute(
-                "INSERT INTO schedule_fetches (air_date, fetched_at) VALUES (?, ?) "
-                "ON CONFLICT (air_date) DO UPDATE SET fetched_at = excluded.fetched_at",
-                (day.isoformat(), _now()),
-            )
+            if whole:
+                await conn.execute(
+                    "INSERT INTO schedule_fetches (air_date, fetched_at) VALUES (?, ?) "
+                    "ON CONFLICT (air_date) DO UPDATE SET fetched_at = excluded.fetched_at",
+                    (day.isoformat(), _now()),
+                )
 
     async def track(self, show_id: int, *, profile_id: int, auto_download: bool = False) -> None:
         """Add a show to a person's library. The show must already be saved (`save_show`).

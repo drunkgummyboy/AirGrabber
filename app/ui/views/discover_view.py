@@ -1,12 +1,16 @@
-"""TV discovery (TMDB): trending this week, currently airing, upcoming premieres."""
+"""TV discovery (TMDB): trending this week, currently airing, upcoming premieres. Each show's
+details (fetched for its card anyway, kept by the discovery service) name where it airs: the card
+says so, and a menu in the filter bar keeps the page to one service."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import asyncio
+from collections import Counter
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from app.i18n import N_, t
-from app.models import DiscoverShow, DiscoverShowEntry
+from app.models import DiscoverShow, DiscoverShowEntry, TVDetails
 from app.services import DiscoveryService, ImageCache, SettingsService
 from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError
@@ -15,10 +19,22 @@ from app.ui import theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.media_cards import DiscoverShowCard
 from app.ui.poster_card import TrackState
-from app.ui.shelf_filter import HIDE_FOLLOWED_TEXT, TV_GENRES, Genre, genres_of
+from app.ui.shelf_filter import (
+    HIDE_FOLLOWED_TEXT,
+    TV_GENRES,
+    Genre,
+    genres_of,
+    service_empty_text,
+)
 from app.ui.views.base import StatusReporter
 from app.ui.views.shelves import Shelf, ShelvesView
 from app.ui.widgets import FlexGrid
+
+
+def service_names(sources: Iterable[tuple[str, ...]]) -> list[str]:
+    """The services to choose from: those with the most shows here first, then by name."""
+    counts = Counter(name for names in sources for name in names)
+    return sorted(counts, key=lambda name: (-counts[name], name.casefold()))
 
 
 class DiscoverView(ShelvesView[DiscoverShowEntry]):
@@ -63,12 +79,21 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         # The person whose "already following" marks the shelves show (read at every fetch):
         # a card's + Track adds to their library.
         self._profile_id = settings.current.current_profile
+        self._sources: dict[int, tuple[str, ...]] = {}  # TMDB id → where it airs, once known
+        self._service: str | None = None  # the service the page is kept to; None = all
 
     async def _fetch_shelves(self, *, force: bool) -> list[Shelf[DiscoverShowEntry]]:
         profile_id = self._settings.current.current_profile
         dashboard = await self._discovery.tv_dashboard(profile_id=profile_id, force=force)
         self._profile_id = profile_id
         failed = set(dashboard.failed)
+        ids = {
+            entry.show.id
+            for shelf in (dashboard.trending, dashboard.on_air, dashboard.premieres)
+            for entry in shelf
+        }
+        if ids - self._sources.keys():
+            self._start(self._load_sources(ids), "DiscoverView.sources")
         return [
             Shelf(
                 "🔥",
@@ -88,6 +113,45 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
                 "premieres" in failed,
             ),
         ]
+
+    async def _load_sources(self, ids: Iterable[int]) -> None:
+        """Where the shows air: the menu fills once they are all in (those TMDB couldn't tell
+        about just aren't in it)."""
+        wanted = sorted(ids)
+        results = await asyncio.gather(
+            *(self._discovery.tv_details(show_id) for show_id in wanted), return_exceptions=True
+        )
+        if not self.winfo_exists():
+            return
+        for details in results:
+            if isinstance(details, TVDetails):
+                self._sources[details.id] = details.networks
+        self._offer_services()
+        if self._service is not None:
+            self._refilter()
+
+    def _offer_services(self) -> None:
+        shown = self._shelves or ()
+        on_page = {item.show.id for shelf in shown for item in shelf.items}
+        names = service_names(names for key, names in self._sources.items() if key in on_page)
+        self.filter_bar.show_services(names, self._service)
+
+    def _show_filter_bar(self, genres: Sequence[Genre]) -> None:
+        super()._show_filter_bar(genres)
+        self._offer_services()
+
+    def _keep(self, item: DiscoverShowEntry) -> bool:
+        return self._service is None or self._service in self._sources.get(item.show.id, ())
+
+    def _empty_line(self, genre: Genre | None) -> str:
+        if self._service is not None:
+            return service_empty_text(self._service)
+        return super()._empty_line(genre)
+
+    def _pick_service(self, service: str | None) -> None:
+        if service != self._service:
+            self._service = service
+            self._refilter()
 
     def _genres(self, item: DiscoverShowEntry) -> frozenset[Genre]:
         return genres_of(item.show.genre_ids, TV_GENRES)

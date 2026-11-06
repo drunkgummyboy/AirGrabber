@@ -119,9 +119,16 @@ class UnderlineTabs(ctk.CTkFrame):
     tokens (Forge's `app_look()`) instead of AirGrabber's."""
 
     def __init__(
-        self, master: Any, *, on_select: Callable[[str], None], colors: theme.Look | None = None
+        self,
+        master: Any,
+        *,
+        on_select: Callable[[str], None],
+        colors: theme.Look | None = None,
+        line: bool = True,
     ) -> None:
+        """`line`: the thin line under them all (not on a row they share with other things)."""
         super().__init__(master, fg_color="transparent", corner_radius=0, height=UNDERLINE_BAR)
+        self._with_line = line
         self._on_select = on_select
         self._colors = colors
         self._names: list[str] = []
@@ -181,7 +188,8 @@ class UnderlineTabs(ctk.CTkFrame):
                 mark.grid(row=1, column=column, sticky="ew", padx=(left, UNDERLINE_TAB_GAP))
                 self._labels[name], self._marks[name] = label, mark
             self.grid_columnconfigure(len(self._names), weight=1)
-            self._line.grid(row=2, column=0, columnspan=len(self._names) + 1, sticky="ew")
+            if self._with_line:
+                self._line.grid(row=2, column=0, columnspan=len(self._names) + 1, sticky="ew")
         self.select(current)
 
     def select(self, name: str) -> None:
@@ -199,92 +207,6 @@ class UnderlineTabs(ctk.CTkFrame):
             label.configure(text_color=theme.TEXT if inside else theme.TEXT_MUTED)
 
 
-PILLS_LEFT = 5  # the "pills" look: the first tab's left margin (level with the band's poster)
-PILLS_PAD_X = 16  # inside a tab, either side of its name
-PILLS_PAD_Y = 6  # … above and under it
-PILLS_RADIUS = 9
-PILLS_GAP = 6  # between two tabs
-PILLS_FONT_SIZE = 16
-PILLS_PAGE_GAP = 10  # between the tabs and the page
-_OWN_ROW_LOOKS = frozenset({"underline", "pills"})  # Tabview looks with a tab row of their own
-
-
-class PillTabs(ctk.CTkFrame):
-    """The "pills" look's tab row: the names left-aligned as rounded buttons on the page's
-    background, the chosen one filled with ACCENT and white text (ON_COLOR), the others on a
-    faint CHIP fill in BUTTON_TEXT (CHIP_HOVER under the pointer). A click calls
-    `on_select(name)`. `colors`: a window's own accent tokens (Forge's `app_look()`)
-    instead of AirGrabber's."""
-
-    def __init__(
-        self, master: Any, *, on_select: Callable[[str], None], colors: theme.Look | None = None
-    ) -> None:
-        super().__init__(master, fg_color="transparent", corner_radius=0)
-        self._on_select = on_select
-        self._colors = colors
-        self._names: list[str] = []
-        self._current = ""
-        self._buttons: dict[str, ctk.CTkButton] = {}
-        self._font = theme.font(PILLS_FONT_SIZE, bold=True)
-
-    @property
-    def names(self) -> tuple[str, ...]:
-        return tuple(self._names)
-
-    @property
-    def current(self) -> str:
-        return self._current
-
-    @property
-    def buttons(self) -> dict[str, ctk.CTkButton]:
-        return dict(self._buttons)
-
-    def set_names(self, names: Sequence[str], current: str) -> None:
-        """Show `names` (in order) with `current` chosen; rebuilt only when they changed."""
-        if list(names) != self._names:
-            for button in self._buttons.values():
-                button.destroy()
-            self._buttons = {}
-            self.grid_columnconfigure(len(self._names), weight=0)  # the old spare column
-            self._names = list(names)
-            height = int(self._font.metrics("linespace")) + 2 * PILLS_PAD_Y
-            for column, name in enumerate(self._names):
-                # CTk's border_spacing pads all four sides alike: the room either side of the
-                # name comes from the width instead.
-                button = ctk.CTkButton(
-                    self,
-                    text=name,
-                    width=int(self._font.measure(name)) + 2 * PILLS_PAD_X,
-                    height=height,
-                    corner_radius=PILLS_RADIUS,
-                    border_spacing=PILLS_PAD_Y,
-                    border_width=0,
-                    font=self._font,
-                    command=lambda n=name: self._on_select(n),
-                )
-                left = PILLS_LEFT if column == 0 else 0
-                button.grid(row=0, column=column, sticky="w", padx=(left, PILLS_GAP))
-                self._buttons[name] = button
-            self.grid_columnconfigure(len(self._names), weight=1)
-        self.select(current)
-
-    def select(self, name: str) -> None:
-        """Mark `name` as chosen (the colours read now: the accent is set at startup)."""
-        self._current = name
-        own = self._colors
-        accent = theme.ACCENT if own is None else own.ACCENT
-        chip = theme.CHIP if own is None else own.CHIP
-        chip_hover = theme.CHIP_HOVER if own is None else own.CHIP_HOVER
-        for each, button in self._buttons.items():
-            if each == name:
-                colours = {"fg_color": accent, "hover_color": accent}
-                text: theme.Color = theme.ON_COLOR
-            else:
-                colours = {"fg_color": chip, "hover_color": chip_hover}
-                text = theme.BUTTON_TEXT
-            button.configure(**colours, text_color=text)
-
-
 class Tabview(ctk.CTkTabview):
     """A CTkTabview whose tab pages keep their (light, dark) colour pair.
 
@@ -292,14 +214,12 @@ class Tabview(ctk.CTkTabview):
     one colour as its background (a transparent frame inside a scrolling page, a card's
     rounded corners): after a switch between light and dark it would keep the old one.
 
-    `look="pills"` (the main window's pages): instead of CTk's segmented button over a rounded
-    box, the tab names sit left-aligned in a row of their own as rounded buttons (`PillTabs`),
-    the chosen one filled with the accent colour, and the pages have no box around them (BG, no
-    border). `look="underline"` is the same with `UnderlineTabs` (an accent line under the
-    chosen name) instead. The default "segmented" look is CTk's own (the info window, Import
-    Shows). `pills_master`: the pills' row goes in that widget instead (its owner places it:
-    the main window's tabs row, with the Series / Movies switch at its right end). `colors`: a
-    window's own accent tokens for the pills / underline row and the page (Forge's `app_look()`,
+    `look="underline"` (the main window's pages): instead of CTk's segmented button over a rounded
+    box, the tab names sit left-aligned in a row of their own (`UnderlineTabs`, an accent line under
+    the chosen name), and the pages have no box around them (BG, no border). The default "segmented"
+    look is CTk's own (the info window, Import Shows). `row_master`: the names' row goes in that
+    widget instead (its owner places it: the main window's row under the band, with the page's
+    controls). `colors`: a window's own accent tokens for the row and the page (Forge's `app_look()`,
     app/forge/ui/look.py) instead of AirGrabber's (`look` names the tab row's style).
     """
 
@@ -308,28 +228,28 @@ class Tabview(ctk.CTkTabview):
         master: Any,
         *,
         look: str = "segmented",
-        pills_master: Any = None,
+        row_master: Any = None,
         colors: theme.Look | None = None,
         **kwargs: Any,
     ) -> None:
         self._look = look
+        self._underline_own = True  # the "underline" row is in this widget (not `row_master`)
         self._underline: UnderlineTabs | None = None
-        self._pills: PillTabs | None = None
-        if look in _OWN_ROW_LOOKS:
+        if look == "underline":
             kwargs.setdefault("corner_radius", 0)
             kwargs.setdefault("border_width", 0)
             kwargs.setdefault("fg_color", theme.BG if colors is None else colors.BG)
         super().__init__(master, **kwargs)
         if look == "underline":
-            self._underline = UnderlineTabs(self, on_select=self._tab_clicked, colors=colors)
-            self._underline.grid(row=0, column=0, sticky="nsew")
-        elif look == "pills":
-            own = pills_master is None
-            self._pills = PillTabs(
-                self if own else pills_master, on_select=self._tab_clicked, colors=colors
+            own = row_master is None
+            self._underline_own = own
+            self._underline = UnderlineTabs(
+                self if own else row_master, on_select=self._tab_clicked, colors=colors, line=own
             )
             if own:
-                self._pills.grid(row=0, column=0, sticky="nsew")
+                self._underline.grid(row=0, column=0, sticky="nsew")
+            else:
+                self._configure_grid()  # CTk's start assumed the row was here
 
     @property
     def underline(self) -> UnderlineTabs | None:
@@ -337,19 +257,20 @@ class Tabview(ctk.CTkTabview):
         return self._underline
 
     @property
-    def pills(self) -> PillTabs | None:
-        """The "pills" look's tab row (None in the other looks)."""
-        return self._pills
+    def tab_row(self) -> UnderlineTabs | None:
+        """The tab names' row in the look with its own (None in the segmented one)."""
+        return self._underline
 
     def _own_row(self) -> bool:
         """The tab names in a row of the look's own (not CTk's segmented button)."""
-        return getattr(self, "_look", "segmented") in _OWN_ROW_LOOKS
+        return getattr(self, "_look", "segmented") == "underline"
 
     def _configure_grid(self) -> None:
         if not self._own_row():
             super()._configure_grid()
             return
-        bar = UNDERLINE_BAR if self._look == "underline" else 0  # the pills' own height
+        # A row in `row_master` takes no room here.
+        bar = UNDERLINE_BAR if self._underline_own else 0
         self.grid_rowconfigure(0, weight=0, minsize=self._apply_widget_scaling(bar))
         self.grid_rowconfigure((1, 2), weight=0, minsize=0)
         self.grid_rowconfigure(3, weight=1)
@@ -369,7 +290,8 @@ class Tabview(ctk.CTkTabview):
         if not self._own_row():
             super()._set_grid_current_tab()
             return
-        gap = UNDERLINE_PAGE_GAP if self._look == "underline" else PILLS_PAGE_GAP
+        # A row in `row_master` holds the page's controls too: right above the page.
+        gap = UNDERLINE_PAGE_GAP if self._underline_own else 0
         self._tab_dict[self._current_name].grid(
             row=3,
             column=0,
@@ -380,8 +302,6 @@ class Tabview(ctk.CTkTabview):
     def _sync_underline(self) -> None:
         if self._underline is not None:
             self._underline.set_names(self._name_list, self._current_name)
-        if self._pills is not None:
-            self._pills.set_names(self._name_list, self._current_name)
 
     def _tab_clicked(self, name: str) -> None:
         """A tab name in the look's own row: as a click on CTk's segmented button."""
@@ -479,11 +399,6 @@ def flex_cell(index: int, columns: int, *, center: bool = True) -> tuple[int, in
     above it."""
     row, column = divmod(index, columns)
     return row, column + (1 if center else 0)
-
-
-def flex_margin(width: float, columns: int, slot: float) -> float:
-    """The empty room left (and right) of a centred `FlexGrid`'s block of `columns` columns."""
-    return max(0.0, (width - columns * slot) / 2)
 
 
 class FlexGrid(ctk.CTkFrame):

@@ -230,7 +230,7 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
             settings,
             search=mock.MagicMock(),
             station=mock.MagicMock(),
-            updates=SimpleNamespace(current="2.0.0"),  # type: ignore[arg-type]
+            updates=SimpleNamespace(current="2.0.0", previous_version=None),  # type: ignore[arg-type]
             torrent_app=mock.MagicMock(),
             discovery=mock.MagicMock(),
             prowlarr=prowlarr,  # type: ignore[arg-type]

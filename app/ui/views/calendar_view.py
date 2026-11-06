@@ -28,9 +28,10 @@ box sits over the grid: "You don't follow any shows yet" with "Pick shows to fol
 opens the "Let's get started" window (app/ui/get_started.py, through `on_pick_shows`). The
 quiet reload after a show is followed takes it away.
 
-The top bar, in one line: the visible dates, ◀ Today ▶, and on the right the number of weeks
-(1–5) and the 💡 Suggestions toggle; on a window too narrow for one line the right-hand
-controls move to a second line. The cards follow Settings → Card size (`card_scale`).
+Its controls, on the main window's row under the band (`controls_master`, `show_controls`): in the
+middle the visible dates between ❮ and ❯ (a click on them goes back to today), on the right the
+number of weeks (1–5) and the 💡 Suggestions toggle. The cards follow Settings → Card size
+(`card_scale`).
 """
 
 from __future__ import annotations
@@ -93,14 +94,15 @@ RANGE_FONT_SIZE = 20  # the visible dates, bold
 NAV_HEIGHT = 28  # the ◀ / Today / ▶ buttons, the week count and the Suggestions toggle
 NAV_FONT_SIZE = 13
 NAV_RADIUS = 7
-NAV_GAP = 4  # between the navigation buttons
-TODAY_WIDTH = 60
-RANGE_GAP = 12  # between the date range and the ◀ button
+RANGE_PAD_X = 6  # either side of the dates on their button
+ARROW_SIZE = 32  # the round ❮ and ❯ buttons
+ARROW_FONT_SIZE = 13
+CONTROLS_PAD_RIGHT = 20  # the row's right end, level with the band's name button
+BACK_TO_TODAY = N_("Back to today")
+RANGE_ARROW_GAP = 4  # between the dates and ❮ / ❯
 CONTROL_GAP = 10  # between the week count and the Suggestions toggle
 WEEK_BUTTON_WIDTH = 30  # each of the week count's 1–5
 TOGGLE_PAD_X = 14  # the Suggestions toggle's room left and right of its text
-HEADER_MIN_GAP = 24  # least room between the left and right groups on one line
-WRAP_GAP = 10  # above the right-hand controls when they wrap to a second line
 # Inside a day cell, around its header and cards. Horizontally only 8: the poster cards keep
 # room for their text and Download row at the narrower windows.
 CELL_PAD_X = 8
@@ -146,12 +148,6 @@ def range_slot_width(measure: Callable[[str], int]) -> int:
         if (end := start + timedelta(weeks=weeks, days=-1)).year == start.year
     )
     return max(measure(label) for label in labels) + SLACK
-
-
-def header_wraps(width: float, left: float, right: float, gap: float) -> bool:
-    """Whether the top bar's right-hand controls (`right` wide) go on a second line: when they
-    and the left group (`left` wide) don't fit in `width` with `gap` between them."""
-    return left + gap + right > width
 
 
 def suggestions_look(shown: bool) -> dict[str, Any]:
@@ -290,26 +286,26 @@ async def _yield_to_ui() -> None:
     await asyncio.sleep(0.001)
 
 
-def _nav_button(
-    master: Any, text: str, width: int, command: Callable[[], None], tip: str = ""
+def _arrow_button(
+    master: Any, glyph: str, command: Callable[[], None], tip: str
 ) -> ctk.CTkButton:
-    """A secondary button of the header's week navigation (`tip`: its hover tip)."""
+    """❮ or ❯, either side of the dates: a round button on the page's soft fill, without an
+    outline."""
     button = ctk.CTkButton(
         master,
-        text=text,
-        width=width,
-        height=NAV_HEIGHT,
-        corner_radius=NAV_RADIUS,
-        fg_color="transparent",
-        border_width=1,
-        border_color=theme.EDGE,
-        hover_color=theme.SURFACE,
+        text=glyph,
+        width=ARROW_SIZE,
+        height=ARROW_SIZE,
+        corner_radius=ARROW_SIZE // 2,
+        border_width=0,
+        border_spacing=0,
+        fg_color=theme.SURFACE,
+        hover_color=theme.CHIP_HOVER,
         text_color=theme.TEXT,
-        font=theme.font(NAV_FONT_SIZE),
+        font=theme.font(ARROW_FONT_SIZE),
         command=command,
     )
-    if tip:
-        add_tooltip(button, tip)
+    add_tooltip(button, tip)
     return button
 
 
@@ -332,7 +328,7 @@ def _cell_header(cell: ctk.CTkFrame, day: date, *, is_today: bool) -> ctk.CTkFra
             header,
             text=today,
             font=pill_font,
-            text_color=theme.TEXT,
+            text_color=theme.ON_ACCENT,
             fg_color=theme.ACCENT,
             corner_radius=6,
             width=round(pill_font.measure(today)) + 2 * PILL_PAD_X,
@@ -343,8 +339,8 @@ def _cell_header(cell: ctk.CTkFrame, day: date, *, is_today: bool) -> ctk.CTkFra
 
 class CalendarView(BaseView):
     """Weeks of tracked episodes in a 7-column grid, each day of the current and later weeks
-    with one suggested show after them (unless suggestions are switched off); ◀ / Today / ▶
-    move through the weeks.
+    with one suggested show after them (unless suggestions are switched off); ❮ and ❯ move
+    through the weeks, a click on the dates goes back to today.
 
     `card_scale`: the card size (Settings), read at every load. `on_open_show`: what a click on
     a card's poster or name (suggestions included) does, the show's window."""
@@ -361,6 +357,7 @@ class CalendarView(BaseView):
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_open_show: OpenShow | None = None,
         on_pick_shows: Callable[[], None] | None = None,
+        controls_master: Any = None,
         **kwargs: Any,
     ) -> None:
         """`on_pick_shows`: opens "Let's get started"; with it, the page shows its box over the
@@ -388,7 +385,7 @@ class CalendarView(BaseView):
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        self._build_header()
+        self._build_header(controls_master)
         self._sync_controls(settings.current)
 
         self._scroll = ScrollableFrame(self, fg_color="transparent")
@@ -396,43 +393,50 @@ class CalendarView(BaseView):
 
     # -- header --------------------------------------------------------------------------------
 
-    def _build_header(self) -> None:
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=15, pady=(5, HEADER_GAP))
-        header.grid_columnconfigure(1, weight=1)
+    def _build_header(self, master: Any = None) -> None:
+        """The dates between ❮ and ❯, centred (a click on them goes back to today), and on the
+        right the "Finding suggestions…" note, the week count and the Suggestions toggle: on
+        `master` (the main window's row under the band, `show_controls`), else on a row of the
+        page's own."""
+        header = master
+        if header is None:
+            header = ctk.CTkFrame(self, fg_color="transparent", height=NAV_HEIGHT)
+            header.grid(row=0, column=0, sticky="ew", padx=15, pady=(5, HEADER_GAP))
+            header.grid_columnconfigure(1, weight=1)
         self._header = header
 
-        # Left: the dates in a slot of fixed width (the buttons after it never move), then
-        # ◀ Today ▶; the "Finding suggestions…" note follows in the stretching middle column.
-        left = ctk.CTkFrame(header, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="w")
+        dates = ctk.CTkFrame(header, fg_color="transparent")
+        self._dates = dates
         range_font = theme.font(RANGE_FONT_SIZE, bold=True)
-        self._range = ctk.CTkLabel(
-            left,
+        self._previous = _arrow_button(
+            dates, "❮", lambda: self._go_to(self._offset - 1), t("Previous week")
+        )
+        self._previous.pack(side="left")
+        self._range = ctk.CTkButton(
+            dates,
             text="",
             font=range_font,
             text_color=theme.TEXT,
-            width=range_slot_width(range_font.measure),
-            anchor="w",
+            fg_color="transparent",
+            hover_color=theme.CHIP_HOVER,
+            width=range_slot_width(range_font.measure) + 2 * RANGE_PAD_X,
+            height=NAV_HEIGHT,
+            corner_radius=NAV_RADIUS,
+            border_spacing=0,
+            command=lambda: self._go_to(0),
         )
-        self._range.pack(side="left")
-        _nav_button(
-            left, "◀", NAV_HEIGHT, lambda: self._go_to(self._offset - 1), t("Previous week")
-        ).pack(side="left", padx=(RANGE_GAP, 0))
-        _nav_button(left, t("Today"), TODAY_WIDTH, lambda: self._go_to(0)).pack(
-            side="left", padx=NAV_GAP
+        self._range.pack(side="left", padx=RANGE_ARROW_GAP)
+        add_tooltip(self._range, t(BACK_TO_TODAY))
+        self._next = _arrow_button(
+            dates, "❯", lambda: self._go_to(self._offset + 1), t("Next week")
         )
-        _nav_button(
-            left, "▶", NAV_HEIGHT, lambda: self._go_to(self._offset + 1), t("Next week")
-        ).pack(side="left")
-        self._left = left
-        self._note = ctk.CTkLabel(
-            header, text="", font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="w"
-        )
-        self._note.grid(row=0, column=1, sticky="w", padx=(16, 0))
+        self._next.pack(side="left")
 
-        # Right: the week count, then the Suggestions toggle.
         right = ctk.CTkFrame(header, fg_color="transparent")
+        self._note = ctk.CTkLabel(
+            right, text="", font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="e"
+        )
+        self._note.pack(side="left", padx=(0, CONTROL_GAP))
         self._week_count = ctk.CTkSegmentedButton(
             right,
             values=[str(weeks) for weeks in WEEK_COUNTS],
@@ -465,27 +469,17 @@ class CalendarView(BaseView):
         self._suggestions_toggle.pack(side="left", padx=(CONTROL_GAP, 0))
         add_tooltip(self._suggestions_toggle, t(SUGGESTIONS_TIP))
         self._right = right
-        self._wrapped: bool | None = None
-        self._place_right(wrapped=False)
-        header.bind("<Configure>", self._fit_header, add="+")
+        if master is None:
+            self.show_controls(True)
 
-    def _fit_header(self, event: Any) -> None:
-        """One line while everything fits, else the right-hand controls on a second line."""
-        if event.width <= 1:
-            return
-        gap = round(HEADER_MIN_GAP * ctk.ScalingTracker.get_widget_scaling(self))
-        wraps = header_wraps(
-            event.width, self._left.winfo_reqwidth(), self._right.winfo_reqwidth(), gap
-        )
-        if wraps != self._wrapped:
-            self._place_right(wrapped=wraps)
-
-    def _place_right(self, *, wrapped: bool) -> None:
-        self._wrapped = wrapped
-        if wrapped:
-            self._right.grid(row=1, column=0, columnspan=3, sticky="w", pady=(WRAP_GAP, 0))
+    def show_controls(self, shown: bool) -> None:
+        """The dates in the middle of the row and the rest at its right end, or neither."""
+        if shown:
+            self._dates.place(relx=0.5, rely=0.5, anchor="center")
+            self._right.grid(row=0, column=2, sticky="e", padx=(0, CONTROLS_PAD_RIGHT))
         else:
-            self._right.grid(row=0, column=2, columnspan=1, sticky="e", pady=0)
+            self._dates.place_forget()
+            self._right.grid_remove()
 
     def _go_to(self, offset: int) -> None:
         if offset != self._offset:

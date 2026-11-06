@@ -428,7 +428,7 @@ class SettingsGeneralTests(GuiTestCase):
             settings,
             search=mock.MagicMock(),
             station=remote,
-            updates=SimpleNamespace(current="2.0.0"),  # type: ignore[arg-type]
+            updates=SimpleNamespace(current="2.0.0", previous_version=None),  # type: ignore[arg-type]
             torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
             discovery=mock.MagicMock(),
             prowlarr=FakeProwlarr(),  # type: ignore[arg-type]

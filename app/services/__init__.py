@@ -204,7 +204,7 @@ class Services:
                 downloads,
                 remote,
                 search,
-                UpdateService(http),
+                UpdateService(http, databases=paths.databases),
                 # Connects a Prowlarr on this PC and adds public sites to it (once).
                 ProwlarrSetupService(http, settings),
                 # qBittorrent's setup, with AirGrabber's copy of its qBittorrent theme; it may

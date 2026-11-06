@@ -134,14 +134,6 @@ def sorted_params(params: Mapping[str, str | int]) -> list[tuple[str, str]]:
     )
 
 
-def imdb_number(imdb_id: str | None) -> int | None:
-    """"tt0903747" -> 903747 (OpenSubtitles wants the number without "tt" and leading zeros)."""
-    if not imdb_id:
-        return None
-    digits = imdb_id.strip().lower().removeprefix("tt")
-    return int(digits) if digits.isdigit() and int(digits) > 0 else None
-
-
 @dataclass(slots=True)
 class _Session:
     token: str
@@ -197,9 +189,6 @@ class OpenSubtitlesClient:
     def configured(self) -> bool:
         """There is an API key to use (this version ships one)."""
         return bool(self._api_key().strip())
-
-    def forget_session(self) -> None:
-        self._session = None
 
     async def check_key(self, key: str) -> None:
         """Whether OpenSubtitles accepts `key` (the user's own, not saved yet): one GET

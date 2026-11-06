@@ -246,7 +246,7 @@ class RowsTests(PageCase):
             for child in page.history_tools.winfo_children()
             if isinstance(child, ctk.CTkLabel)
         ]
-        self.assertEqual(words, ["History", "your last 50 runs · newest first"])
+        self.assertEqual(words, ["History", "your last 500 runs · newest first"])
         self.assertIn("Activity", str(page.activity_button.cget("text")))
         self.assertEqual(page.queue.winfo_manager() if page.queue else "x", "")
         assert page.history is not None

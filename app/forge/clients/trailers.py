@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import time
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote_plus
 
@@ -28,6 +28,7 @@ from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.settings import ForgeSettingsService
 from app.forge.models.plan import PlannedTrailer
 from app.i18n import t
+from app.services.tmdb import TMDBError
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +111,10 @@ class TrailerService:
         ffmpeg_url: str = FFMPEG_URL,
         ffmpeg_sums_url: str = FFMPEG_SUMS_URL,
         activity: ActivityFeed | None = None,
+        season_trailer: Callable[[int, int], Awaitable[str | None]] | None = None,
     ) -> None:
+        """`season_trailer(tv_id, season)`: a season's own trailer, when TMDB lists one."""
+        self._season_trailer = season_trailer
         self._tools = tools_dir
         self._say = say_to(activity)  # the Activity strip, next to each English log line
         self._http = http
@@ -254,6 +258,17 @@ class TrailerService:
                 return entry
         return None
 
+    async def _source(self, trailer: PlannedTrailer) -> str:
+        """What yt-dlp fetches: the season's own trailer when TMDB lists one, else a search."""
+        if self._season_trailer is None or trailer.tmdb_id is None or trailer.season is None:
+            return trailer.query
+        try:
+            url = await self._season_trailer(trailer.tmdb_id, trailer.season)
+        except TMDBError as exc:
+            log.info("No season trailer from TMDB (%s); searching instead", type(exc).__name__)
+            return trailer.query
+        return url or trailer.query
+
     async def download(self, trailer: PlannedTrailer) -> Path | None:
         """Download the trailer; on failure leave a YouTube search shortcut instead."""
         stem = trailer.target_stem
@@ -266,7 +281,7 @@ class TrailerService:
             args += ["--ffmpeg-location", str(self._ffmpeg_bin)]
         else:
             args += ["-f", SINGLE_FILE_FORMAT]
-        args += ["-o", f"{stem}.%(ext)s", trailer.query]
+        args += ["-o", f"{stem}.%(ext)s", await self._source(trailer)]
 
         try:
             if await self._run(args) != 0:

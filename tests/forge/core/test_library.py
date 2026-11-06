@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.forge.core.library import inside, library_problems, watched_root
+from app.forge.core.library import inside, library_problems
 from app.forge.models.settings import ForgeSettings
 from app.i18n import Language, set_language
 from tests.forge.base import ForgeTestCase
@@ -46,13 +46,6 @@ class LibraryTest(ForgeTestCase):
         assert inside(Path(r"C:\Media\Series\Show\a.mkv"), Path("c:/media/series"))
         assert not inside(Path(r"\\NAS\Multimedia\Series2"), Path(SERIES))
         assert not inside(Path(r"\\NAS\Other\Series"), Path(r"\\NAS\Multimedia"))
-
-    def test_watched_root_finds_the_folder_a_file_came_from(self) -> None:
-        second = r"D:\Torrents"
-        both = settings(watch_folders=[DOWNLOADS, second])
-        assert watched_root(Path(r"D:\torrents\Show.S01E01\show.mkv"), both) == Path(second)
-        assert watched_root(Path(DOWNLOADS) / "a.mkv", both) == Path(DOWNLOADS)
-        assert watched_root(Path(r"D:\Elsewhere\a.mkv"), both) is None
 
     def test_nested_watched_folders_are_refused(self) -> None:
         nested = settings(watch_folders=[DOWNLOADS, DOWNLOADS + r"\Movies"])

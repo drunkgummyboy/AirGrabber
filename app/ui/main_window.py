@@ -89,8 +89,8 @@ from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.search import SearchResultsWindow, SearchSuggestions
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
-from app.ui.spotlight import PAD_X, SWITCH_MARGIN, SwitchPart
-from app.ui.spotlight_band import ModeSwitch, SpotlightBand
+from app.ui.spotlight import SwitchPart
+from app.ui.spotlight_band import SpotlightBand
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import QBITTORRENT
@@ -100,6 +100,7 @@ from app.ui.views.downloads_view import DownloadsView, PageActions
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action, first_run_defaults
 from app.ui.whats_new_dialog import WhatsNewDialog
 from app.ui.widgets import Tabview, install_edit_menus, install_window_release
+from app.update_guard import WentBack
 from app.whats_new import WhatsNew, whats_new
 
 if TYPE_CHECKING:
@@ -216,6 +217,21 @@ def prowlarr_setup_message(result: ProwlarrSetupResult) -> str | None:
     return None
 
 
+def went_back_notice(went_back: WentBack) -> str:
+    """The status-bar text after going back to an older version (app/update_guard.py)."""
+    if went_back.asked:
+        return t(
+            "Back on v{back}. AirGrabber waits for a version newer than v{left}.",
+            back=went_back.back,
+            left=went_back.left,
+        )
+    return t(
+        "v{left} didn't start, so AirGrabber went back to v{back}. It waits for a newer version.",
+        left=went_back.left,
+        back=went_back.back,
+    )
+
+
 def update_notice(last_run_version: str, running: str) -> str | None:
     """The status-bar text after an update: the version that ran last differs from this one."""
     if last_run_version and last_run_version != running:
@@ -318,31 +334,24 @@ _PART_MODES = {
 _MODE_SIDES = {Mode.SERIES: SpotlightSide.SERIES, Mode.MOVIES: SpotlightSide.MOVIES}
 # The Series tabs' texts. CTkTabview names a tab by its text, so they key the views translated.
 _CALENDAR, _DISCOVER, _TRACKED = N_("Calendar"), N_("Discover"), N_("Tracked")
+TABS_ROW_PADDING = (6, 8)  # above and under the row under the band
 
 
-def build_tabs_row(
-    master: Any, *, on_part: Callable[[SwitchPart], None]
-) -> tuple[ctk.CTkFrame, ModeSwitch]:
-    """The tabs row under the band (its owner grids it): the Series tabs on the left
-    (`show_tabs`) or MediaForge's buttons and status there, the switch at the right end, its pill
-    level with the band's settings button (PAD_X from the edge). The switch shows in every mode,
-    so it never moves; it is the row's tallest part, so the row keeps its height while the tabs
-    are hidden (Movies, Downloads)."""
+def build_tabs_row(master: Any) -> ctk.CTkFrame:
+    """The row under the band (its owner grids it, on the pages with something to put there): the
+    Series tabs on the left (`show_tabs`) or MediaForge's buttons and status there, a page's
+    controls in the middle and on the right."""
     row = ctk.CTkFrame(master, fg_color="transparent", corner_radius=0)
     row.grid_columnconfigure(1, weight=1)
-    switch = ModeSwitch(row, on_part=on_part)
-    # A plain canvas: Tk's grid doesn't scale its padding as CTk's widgets' does.
-    scale = ctk.ScalingTracker.get_widget_scaling(row)
-    switch.grid(row=0, column=2, sticky="e", padx=(0, round((PAD_X - SWITCH_MARGIN) * scale)))
-    return row, switch
+    return row
 
 
-def show_tabs(pills: ctk.CTkFrame, shown: bool) -> None:
-    """The Series tabs on the tabs row's left (level with the band's poster), or hidden."""
+def show_tabs(tabs: ctk.CTkFrame, shown: bool) -> None:
+    """The Series tabs on the row's left (level with the band's poster), or hidden."""
     if shown:
-        pills.grid(row=0, column=0, sticky="w", padx=(15, 0))
+        tabs.grid(row=0, column=0, sticky="w", padx=(15, 0))
     else:
-        pills.grid_remove()
+        tabs.grid_remove()
 
 
 class MainWindow(AsyncCTk, ctk.CTk):
@@ -585,11 +594,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
             profile=lambda: services.profiles.current_id,  # the Series side's episodes
             on_person=self._open_people_menu,  # the name button
             on_home=self._go_home,  # the logo and "AirGrabber": Series › Calendar
+            on_part=self._part_clicked,  # the main menu: Series, Movies, MediaForge
         )
         self._band.grid(row=0, column=0, sticky="ew")
         self._show_person()
-        self._tabs_row, self._switch = build_tabs_row(self, on_part=self._part_clicked)
-        self._tabs_row.grid(row=1, column=0, sticky="ew")
+        self._tabs_row = build_tabs_row(self)
+        self._tabs_row.grid(row=1, column=0, sticky="ew", pady=TABS_ROW_PADDING)
         self._search = self._band.entry
         self._suggestions = SearchSuggestions(
             self._search,
@@ -603,10 +613,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _build_pages(self) -> None:
         library, settings = self._services.library, self._services.settings
         images, discovery = self._services.images, self._services.discovery
-        # Pill tabs on the tabs row under the band (left-aligned, the chosen one filled with the
-        # accent; level with the band's poster).
+        # Quiet tabs on the row under the band (left-aligned, the chosen one underlined; level with
+        # the band's poster).
         self._series_tabs = Tabview(
-            self, look="pills", pills_master=self._tabs_row, command=self._on_tab_changed
+            self, look="underline", row_master=self._tabs_row, command=self._on_tab_changed
         )
         tabs = self._series_tabs
         self._series_views: dict[str, BaseView] = {
@@ -620,6 +630,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 card_scale=self._card_scale,
                 on_open_show=self._show_windows.open_show,
                 on_pick_shows=self.open_get_started,  # the empty calendar's box
+                controls_master=self._tabs_row,  # its dates and buttons, beside the tabs
             ),
             t(_DISCOVER): DiscoverView(
                 tabs.add(t(_DISCOVER)),
@@ -792,7 +803,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _on_forge_needs(self, count: int) -> None:
         """How many files need the owner (ForgeHost's count): the badge on MediaForge's word in
         the switch and the tray's."""
-        self._switch.set_count(count)
+        self._band.set_forge_count(count)
         self.tray.set_forge_count(count)
 
     def _on_forge_notice(self, title: str, text: str) -> None:
@@ -879,10 +890,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if not forge:
             self._band.select(_MODE_SIDES.get(mode))  # None: the Downloads page (⬇ lit)
         parts = {part_mode: part for part, part_mode in _PART_MODES.items()}
-        self._switch.select(parts.get(mode))  # None: no part lit
-        pills = self._series_tabs.pills
-        if pills is not None:
-            show_tabs(pills, mode is Mode.SERIES)
+        self._band.select_part(parts.get(mode))  # None: no part lit
+        tabs = self._series_tabs.tab_row
+        if tabs is not None:
+            show_tabs(tabs, mode is Mode.SERIES)
+        if mode in (Mode.SERIES, Mode.FORGE):  # the others have nothing to put on it
+            self._tabs_row.grid()
+        else:
+            self._tabs_row.grid_remove()
+        self._show_calendar_controls()
         pages: dict[Mode, ctk.CTkFrame] = {
             Mode.SERIES: self._series_tabs,
             Mode.MOVIES: self._movie_view,
@@ -911,7 +927,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._series_tabs.set(calendar)  # CTk's set() doesn't run the tab command
             self._on_tab_changed()
 
+    def _show_calendar_controls(self) -> None:
+        """The calendar's dates and buttons, on the row under the band while it shows."""
+        shown = self._mode is Mode.SERIES and self._series_tabs.get() == t(_CALENDAR)
+        calendar = self._series_views[t(_CALENDAR)]
+        assert isinstance(calendar, CalendarView)
+        calendar.show_controls(shown)
+
     def _on_tab_changed(self) -> None:
+        self._show_calendar_controls()
         view = self._visible_view()
         if view is not None:
             view.refresh_if_stale()
@@ -1237,12 +1261,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # Also replaces a lingering "Syncing library…" message (unless a timed one is showing).
         spawn(self._show_library_summary(), name="library-summary")
 
-    def _open_settings(self, section: str | None = None) -> None:
-        """The one Settings, over this window (at `section`'s page when given); a dialog that is
-        open already is raised, and shows `section`'s page when given."""
+    def _open_settings(self, section: str | None = None, spot: str | None = None) -> None:
+        """The one Settings, over this window (at `section`'s page when given, scrolled to
+        `spot` on it); a dialog that is open already is raised, and shows that page."""
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
             if section is not None:
                 self._settings_dialog.show_section(section)
+                if spot is not None:
+                    self._settings_dialog.go_to_spot(section, spot)
             self._settings_dialog.lift()
             self._settings_dialog.focus_force()
             return
@@ -1257,6 +1283,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             prowlarr=self._services.prowlarr_setup,
             update_info=self._update_info,
             on_update=self._start_update,
+            on_go_back=self._start_going_back,
             on_restart=self.restart,
             images=self._services.images,
             library=self._services.library,
@@ -1265,6 +1292,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             forge=self._services.forge,
             section=section,
         )
+        if section is not None and spot is not None:
+            self._settings_dialog.go_to_spot(section, spot)
 
     async def _set_up_prowlarr(self) -> None:
         message = prowlarr_setup_message(await self._services.prowlarr_setup.run())
@@ -1409,10 +1438,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
         version."""
         settings = self._services.settings
         last_run, first_run = settings.current.last_run_version, not settings.current.setup_done
-        notice = update_notice(last_run, __version__)
+        went_back = self._services.updates.take_went_back()
+        notice = went_back_notice(went_back) if went_back else update_notice(last_run, __version__)
         if notice is not None:
             self.set_status(notice, clear_after_ms=_UPDATE_STATUS_MS)
-        notes = None if first_run else whats_new(last_run, __version__)
+        notes = None if first_run or went_back else whats_new(last_run, __version__)
         await settings.update(last_run_version=__version__)
         if notes is not None and self.winfo_exists():
             self._show_whats_new(notes)
@@ -1453,6 +1483,22 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self.set_status(t("⚠ Update failed: {error}", error=exc), clear_after_ms=15_000)
             return
         self.set_status(t("Updated to v{version}. Restarting…", version=version))
+        self.after(1200, self.restart)
+
+    def _start_going_back(self) -> None:
+        """Settings' "Go back to version …", confirmed."""
+        if self._update_task is not None and not self._update_task.done():
+            return
+        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
+            self._settings_dialog.destroy()
+        self._settings_dialog = None
+        self._update_task = spawn(self._run_going_back(), name="go-back")
+
+    async def _run_going_back(self) -> None:
+        if not await self._services.updates.go_back():
+            self.set_status(t("⚠ Could not go back to the older version."), clear_after_ms=15_000)
+            return
+        self.set_status(t("Going back to the older version. Restarting…"))
         self.after(1200, self.restart)
 
     def restart(self) -> None:

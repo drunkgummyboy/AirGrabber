@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.forge.models.media import MediaKind
 
-HISTORY_LIMIT = 50
+HISTORY_LIMIT = 500
 
 
 class OpKind(StrEnum):

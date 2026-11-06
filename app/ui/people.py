@@ -28,7 +28,6 @@ EDIT_TEXT = N_("✎ Rename or change colour…")
 REMOVE_TEXT = N_("🗑 Remove a person…")
 SWITCHED_TEXT = N_("Now showing {name}'s list")
 
-MENU_AVATAR = 24  # a person's avatar in the name button's menu (CTk units)
 MENU_NAME_WIDTH = 150  # a name there is cut short beyond this (room for the ✓)
 SWATCH = 26  # a colour swatch's disc
 SWATCH_RING = 2  # the ring around the chosen one

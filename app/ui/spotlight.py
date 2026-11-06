@@ -1,7 +1,7 @@
 """The spotlight band's pure parts (the widget: app/ui/spotlight_band.py): its texts (the tag,
 the title, the muted line), when it turns to the next title (`Rotation`) and where everything
-goes (`band_layout`, `hit_target`; the Series / Movies / MediaForge switch on the tabs row:
-`switch_layout`, `switch_hit`), all in CTk's unscaled units."""
+goes (`band_layout`, `hit_target`; the Series / Movies / MediaForge switch beside the logo:
+`switch_layout`), all in CTk's unscaled units."""
 
 from __future__ import annotations
 
@@ -155,7 +155,8 @@ WORD_GAP = 10  # the logo → "AirGrabber"
 WORD_SIZE = 18
 CLUSTER_GAP = 24  # at least between "AirGrabber" and the search field
 SEARCH_WIDTH = 300
-SEARCH_MIN_WIDTH = 200
+SEARCH_MIN_WIDTH = 140
+SWITCH_GAP = 18  # "AirGrabber" → the switch
 SEARCH_GAP = 14  # the search field → the first button
 MAGNIFIER_LEFT = 8  # the 🔍 inside the search field
 MAGNIFIER_WIDTH = 30
@@ -245,6 +246,8 @@ class BandLayout:
     spot: Rect  # a click here opens the title (not on the controls or the dots)
     person: Rect = Rect(0, 0, 0, 0)  # the name button, at the right end (none: 0 wide)
     history: Rect = Rect(0, 0, 0, 0)  # 🕘, just left of ⚙: MediaForge's page only (else 0 wide)
+    pill: Rect = Rect(0, 0, 0, 0)  # the main menu's switch (else 0 wide)
+    parts: tuple[Rect, ...] = ()  # its parts: Series, Movies, MediaForge
 
     @property
     def row_middle(self) -> float:
@@ -283,12 +286,13 @@ def band_layout(
     current: int = 0,
     person_width: float = 0.0,
     history: bool = False,
+    part_widths: Sequence[float] = (),
 ) -> BandLayout:
-    """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left,
-    the search field, ⬇, the settings button and the name button (`person_width` wide; none at
-    0) on the right (the switch is on the tabs row under the band: `switch_layout`); under them
-    the poster and the texts, the `dots` (the `current` one wide) on the right. The search field
-    narrows (to SEARCH_MIN_WIDTH) before it would come too close to "AirGrabber". `history`: 🕘
+    """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left, then
+    the main menu's switch (a part per `part_widths`), the search field, ⬇, the settings button
+    and the name button (`person_width` wide; none at 0) on the right; under them the poster and
+    the texts, the `dots` (the `current` one wide) on the right. The search field narrows (to
+    SEARCH_MIN_WIDTH) before it would come too close to what is on its left. `history`: 🕘
     (MediaForge's page) goes right beside the settings button, with ⬇ and the search field moving
     over for it; the settings button and the name stay where they are on every page and no other
     page has a gap."""
@@ -303,7 +307,8 @@ def band_layout(
     beside = clock if history else settings
     downloads = Rect(beside.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     search_right = downloads.x - SEARCH_GAP
-    room = search_right - (left_end + CLUSTER_GAP)
+    switch = switch_layout(segment_widths=part_widths, x=left_end + SWITCH_GAP) if part_widths else None
+    room = search_right - ((switch.pill.right if switch else left_end) + CLUSTER_GAP)
     search_width = max(SEARCH_MIN_WIDTH, min(SEARCH_WIDTH, room))
     search = Rect(search_right - search_width, ROW_TOP, search_width, ROW_HEIGHT)
     magnifier = Rect(search.x + MAGNIFIER_LEFT, ROW_TOP, MAGNIFIER_WIDTH, ROW_HEIGHT)
@@ -347,6 +352,8 @@ def band_layout(
         spot=spot,
         person=person if person_width > 0 else Rect(0, 0, 0, 0),
         history=clock if history else Rect(0, 0, 0, 0),
+        pill=switch.pill if switch else Rect(0, 0, 0, 0),
+        parts=switch.segments if switch else (),
     )
 
 
@@ -359,16 +366,20 @@ class HitKind(StrEnum):
     PERSON = "person"  # the name button: who is selected, and the people menu
     DOT = "dot"
     SPOT = "spot"  # the title: opens its info window
+    PART = "part"  # a part of the main menu's switch
 
 
 class Hit(NamedTuple):
     kind: HitKind
-    dot: int = 0  # which dot
+    dot: int = 0  # which dot, or which part of the switch
 
 
 def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | None:
     """What a pointer at (x, y) units is over (None: the band's background up top, the logo,
     or the spotlight without titles)."""
+    for index, part in enumerate(layout.parts):
+        if part.contains(x, y):
+            return Hit(HitKind.PART, index)
     if layout.magnifier.contains(x, y):
         return Hit(HitKind.SEARCH)
     if layout.search.contains(x, y):
@@ -392,18 +403,18 @@ def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | N
 def controls(layout: BandLayout) -> Sequence[Rect]:
     """The top row's parts that must never overlap (tests check it at every width)."""
     parts: tuple[Rect, ...] = (layout.brand, layout.search, layout.downloads, layout.settings)
+    if layout.pill.w > 0:
+        parts = (*parts, layout.pill)
     if layout.history.w > 0:
         parts = (*parts, layout.history)
     return (*parts, layout.person) if layout.person.w > 0 else parts
 
 
-# -- the Series / Movies / MediaForge switch (on the tabs row, under the band) ---------------------
+# -- the Series / Movies / MediaForge switch (in the band's top row, beside the logo) ----------
 
 PILL_PAD = 4  # the switch's solid pill around its parts
-SEGMENT_PAD_X = 30  # either side of "Series" / "Movies" / "MediaForge"
-SEGMENT_PAD_Y = 9  # … above and under it
-SEGMENT_FONT_SIZE = 17
-SWITCH_MARGIN = 7  # the switch's own canvas around the pill: room for its shadow
+SEGMENT_PAD_X = 24  # either side of "Series" / "Movies" / "MediaForge"
+SEGMENT_FONT_SIZE = 15
 SWITCH_BADGE_GAP = 5  # MediaForge's word → its "needs you" badge, in the part's own padding
 SWITCH_BADGE_PAD = 6  # the badge's width around its number
 
@@ -418,37 +429,20 @@ class SwitchPart(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SwitchLayout:
-    """The switch on its own canvas (`size`), in unscaled units: the pill and its parts (Series,
+    """The switch in the band's top row, in unscaled units: the pill and its parts (Series,
     Movies, MediaForge)."""
 
-    size: tuple[float, float]
     pill: Rect
     segments: tuple[Rect, ...]
 
 
-def switch_layout(*, segment_widths: Sequence[float], line_height: float) -> SwitchLayout:
-    """A part per width (a name's width plus SEGMENT_PAD_X either side), each a `line_height` line
-    tall plus SEGMENT_PAD_Y above and under it, on a pill PILL_PAD around them, SWITCH_MARGIN in
-    from the canvas's edges."""
-    part_height = line_height + 2 * SEGMENT_PAD_Y
-    pill = Rect(
-        SWITCH_MARGIN,
-        SWITCH_MARGIN,
-        2 * PILL_PAD + sum(segment_widths),
-        2 * PILL_PAD + part_height,
-    )
+def switch_layout(*, segment_widths: Sequence[float], x: float) -> SwitchLayout:
+    """A part per width (a name's width plus SEGMENT_PAD_X either side), on a pill PILL_PAD around
+    them, starting at `x`, as tall as the top row."""
+    pill = Rect(x, ROW_TOP, 2 * PILL_PAD + sum(segment_widths), ROW_HEIGHT)
     segments: list[Rect] = []
-    x = pill.x + PILL_PAD
+    left = pill.x + PILL_PAD
     for width in segment_widths:
-        segments.append(Rect(x, pill.y + PILL_PAD, width, part_height))
-        x += width
-    size = (pill.right + SWITCH_MARGIN, pill.bottom + SWITCH_MARGIN)
-    return SwitchLayout(size=size, pill=pill, segments=tuple(segments))
-
-
-def switch_hit(layout: SwitchLayout, x: float, y: float) -> int | None:
-    """Which part a pointer at (x, y) units is over, by its place in `segments`; None: none."""
-    for index, part in enumerate(layout.segments):
-        if part.contains(x, y):
-            return index
-    return None
+        segments.append(Rect(left, pill.y + PILL_PAD, width, ROW_HEIGHT - 2 * PILL_PAD))
+        left += width
+    return SwitchLayout(pill=pill, segments=tuple(segments))

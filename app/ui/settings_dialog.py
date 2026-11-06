@@ -75,6 +75,7 @@ from app.ui.branding import set_window_icon
 from app.ui.backup_dialog import LoadBackupDialog, SaveBackupDialog, load_backup
 from app.ui.card_preview import CardSizePreview
 from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
+from app.ui.confirm_dialog import ConfirmDialog
 from app.ui.dialog_kit import (
     BUTTON_HEIGHT,
     BUTTON_RADIUS,
@@ -232,6 +233,11 @@ TMDB_KEY_TEXT = N_(
     "without it."
 )
 KEY_GUIDE_LINK = N_("How do I get a free key?")
+SOURCES_LABEL = N_("Where this information comes from")
+SOURCES_TEXT = N_(
+    "Show and film information and pictures come from TVmaze and TMDB. This product uses the "
+    "TMDB API but is not endorsed or certified by TMDB."
+)
 
 WEEK_TITLE = N_("Week starts on")
 WEEK_TEXT = N_("The first day of each week on the Calendar.")
@@ -258,6 +264,15 @@ AUTO_UPDATE_TEXT = N_(
 )
 AUTO_UPDATE_SWITCH = N_("Install updates automatically")
 CHECK_UPDATES_TEXT = N_("Check whether a newer version is out.")
+GO_BACK_TITLE = N_("Not happy with this version?")
+GO_BACK_TEXT = N_(
+    "AirGrabber keeps the version from before its last update. "
+    "If you go back, it waits for a version newer than this one."
+)
+GO_BACK_WARNING = N_(
+    "AirGrabber restarts on the older version. Your library and settings stay, unless this version "
+    "changed how they are stored: then they return to how they were just before the update."
+)
 
 SITES_TITLE = N_("Built-in sites")
 SITES_TEXT = N_("Websites AirGrabber searches by itself.")
@@ -281,12 +296,15 @@ _BACKUP_BUTTON_WIDTH = 190
 _PAGE_WIDTH = PAGE_WIDTH
 _PAGE_PAD_LEFT = PAGE_PAD_LEFT
 _PAGE_BOTTOM = PAGE_BOTTOM
+_SPOT_TRIES = 100  # looks for a spot of a page still getting ready, this many times
+_SPOT_WAIT_S = 0.05
 _BOX_GAP = BOX_GAP
 _TEXT_SIZE = TEXT_SIZE
 _BOX_INNER = BOX_INNER
 _INDENT = 30  # under a radio button's text
 _TEST_BUTTON_WIDTH = 160
 _UPDATE_BUTTON_WIDTH = 180
+_GO_BACK_BUTTON_WIDTH = 240
 _CHECK_BUTTON_WIDTH = 110
 _RESTART_BUTTON_WIDTH = 150
 _SIZE_ENTRY_WIDTH = 70
@@ -625,6 +643,7 @@ class SettingsDialog(ctk.CTkToplevel):
         prowlarr: ProwlarrSetupService,
         update_info: UpdateInfo | None = None,
         on_update: Callable[[], None] | None = None,
+        on_go_back: Callable[[], None] | None = None,
         startup_shortcut: StartupShortcut | None = None,
         on_restart: Callable[[], None] | None = None,
         images: ImageCache | None = None,
@@ -669,6 +688,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._discovery = discovery
         self._prowlarr = prowlarr
         self._on_update = on_update
+        self._on_go_back = on_go_back
         self._on_restart = on_restart
         self._tests: dict[str, asyncio.Task[None]] = {}
         # Variable traces this dialog added, removed in destroy(): a trace's callback is held by
@@ -808,6 +828,27 @@ class SettingsDialog(ctk.CTkToplevel):
         """Show `section`'s page (an open dialog asked for another one); a section that isn't
         shown changes nothing."""
         self._show_section(section)
+
+    def go_to_spot(self, section: str, spot: str) -> None:
+        """Show `section`'s page scrolled to its box `spot` (a part's `spots`), once that shows:
+        a MediaForge page may still be getting ready."""
+        self._show_section(section)
+        spawn(self._scroll_to_spot(section, spot), name="settings-spot")
+
+    async def _scroll_to_spot(self, section: str, spot: str) -> None:
+        for _ in range(_SPOT_TRIES):
+            if not self.winfo_exists() or self._section != section:
+                return
+            spots: dict[str, tk.Misc] = getattr(self.parts.get(section), "spots", {})
+            frame = spots.get(spot)
+            if frame is not None and frame.winfo_ismapped():
+                canvas = self._scroll._parent_canvas
+                canvas.update_idletasks()
+                box = canvas.bbox("all")
+                if box and box[3] > 0:
+                    canvas.yview_moveto(max(0, frame.winfo_rooty() - self._scroll.winfo_rooty()) / box[3])
+                return
+            await asyncio.sleep(_SPOT_WAIT_S)
 
     def _show_section(self, section: str) -> None:
         if section in self._forge_sections and section not in self._pages:
@@ -1138,6 +1179,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._tmdb_guide.bind("<Button-1>", lambda _event: self._open_key_guide())
         self._tmdb_guide.pack(side="left")
         self._trace(self._tmdb_key, self._on_tmdb_key_edited)
+        page.box(t(SOURCES_LABEL), t(SOURCES_TEXT))
         return page
 
     def _check_tmdb_key(self) -> None:
@@ -1395,7 +1437,32 @@ class SettingsDialog(ctk.CTkToplevel):
             line, "", size=SMALL_SIZE, wraplength=_BOX_INNER - _UPDATE_BUTTON_WIDTH - 12
         )
         self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        self._go_back_version = self._updates.previous_version
+        self.go_back_button: ctk.CTkButton | None = None
+        if self._go_back_version is not None:
+            back = page.box(t(GO_BACK_TITLE), t(GO_BACK_TEXT))
+            row = back.frame_row()
+            self.go_back_button = secondary_button(
+                row,
+                t("Go back to version {version}", version=self._go_back_version),
+                self._ask_go_back,
+                width=_GO_BACK_BUTTON_WIDTH,
+            )
+            self.go_back_button.pack(side="left")
         return page
+
+    def _ask_go_back(self) -> None:
+        ConfirmDialog(
+            self,
+            title=t("Go back to version {version}?", version=self._go_back_version),
+            text=t(GO_BACK_WARNING),
+            confirm=t("Go back"),
+            on_confirm=self._go_back,
+        )
+
+    def _go_back(self) -> None:
+        if self._on_go_back is not None:
+            self._on_go_back()
 
     # -- Backup --------------------------------------------------------------------------------
 
@@ -1849,7 +1916,15 @@ class SettingsDialog(ctk.CTkToplevel):
             self._show_update(info)
 
     def _show_update(self, info: UpdateInfo) -> None:
-        if not info.available:
+        if info.skipped:
+            self._update_result.configure(
+                text=t(
+                    "Version {version} was undone on this PC. AirGrabber waits for a newer one.",
+                    version=info.latest,
+                ),
+                text_color=theme.TEXT_MUTED,
+            )
+        elif not info.available:
             self._update_result.configure(
                 text=t("✓ You have the latest version."), text_color=theme.SUCCESS
             )

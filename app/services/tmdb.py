@@ -199,6 +199,15 @@ class TMDBClient:
         payload = await self._get_json(path, params)
         return _parse_one(path, payload, lambda raw: TMDBVideos.model_validate(raw).to_videos())
 
+    async def season_videos(
+        self, tv_id: int, season: int, *, languages: Sequence[str] = ()
+    ) -> list[Video]:
+        """One season's videos, in `languages` as `videos` has them."""
+        path = f"/tv/{tv_id}/season/{season}/videos"
+        params = {"include_video_language": ",".join((*languages, "null"))} if languages else {}
+        payload = await self._get_json(path, params)
+        return _parse_one(path, payload, lambda raw: TMDBVideos.model_validate(raw).to_videos())
+
     async def cast(self, kind: MediaType, item_id: int) -> list[CastMember]:
         """A film's cast in billing order (/credits), or a show's whole run's cast, the most
         seen first (/aggregate_credits)."""

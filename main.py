@@ -35,11 +35,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 # Stdlib-only imports up here: the third-party packages may not be installed until ensure_requirements().
+from app import __version__
 from app.bootstrap import ensure_requirements
 from app.config import AppPaths, configure_logging
 from app.i18n import set_language, t
 from app.identity import set_process_app_id
 from app.single_instance import ForgeRequest, InstanceLock, hand_over
+from app.update_guard import CONFIRM_AFTER_S, before_start, confirm_started
 
 if TYPE_CHECKING:
     from app.services import Services
@@ -145,6 +147,11 @@ def main() -> int:
             log.info("AirGrabber is already running: asked it to show its window; exiting")
             return 0
     try:
+        # Before the package check: a bad update may be what broke the packages.
+        if before_start(_install_dir(), paths.databases):
+            instance.release()  # else the new copy would find this one still running
+            _relaunch(sys.argv[1:])  # this process still has the left version loaded
+            return 0
         try:
             if not ensure_requirements(paths):
                 return 1
@@ -193,7 +200,9 @@ def _run(
             forge_request=forge_request,
         )
         _fix_start_menu_shortcut_soon(loop)
+        loop.call_later(CONFIRM_AFTER_S, confirm_started, _install_dir(), __version__)
         window.async_mainloop(event_loop=loop)  # returns once the window is closed for good (Quit)
+        confirm_started(_install_dir(), __version__)  # closed normally, however soon
         restart = window.restart_requested
         return 0
     except Exception:
@@ -212,7 +221,7 @@ def _run(
             loop.run_until_complete(services.aclose())
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
-        _apply_staged_update()
+        _apply_staged_update(paths)
         if window is not None:
             _stop_tray(window)  # last: the icon stays until everything else has shut down
         log.info("=== AirGrabber stopped ===")
@@ -295,7 +304,11 @@ def _background_done(task: asyncio.Task[Any]) -> None:
         log.error("Background task %s failed", task.get_name(), exc_info=error)
 
 
-def _apply_staged_update() -> None:
+def _install_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _apply_staged_update(paths: AppPaths) -> None:
     """Swap in an update that was downloaded in the background, now that the app has shut down.
 
     Never raises: a failed update must not break closing (or restarting) AirGrabber.
@@ -305,8 +318,9 @@ def _apply_staged_update() -> None:
         from app.services.install_info import ensure_uninstall_entry
         from app.services.updates import apply_staged
 
-        install_dir = Path(__file__).resolve().parent
-        version = apply_staged(install_dir)  # logs what it did; None: nothing installed
+        install_dir = _install_dir()
+        # Logs what it did; None: nothing installed.
+        version = apply_staged(install_dir, databases=paths.databases)
         if version is not None:
             ensure_uninstall_entry(install_dir, version)  # "Installed apps" shows the new version
     except Exception:
@@ -321,12 +335,12 @@ def _stop_tray(window: MainWindow) -> None:
         log.exception("Stopping the tray icon failed")
 
 
-def _relaunch() -> None:
+def _relaunch(args: Sequence[str] = ()) -> None:
     """Start a fresh copy (after an update), now that this one has released the database."""
     script = Path(__file__).resolve()
     log.info("Restarting")
     try:
-        subprocess.Popen([sys.executable, str(script)], cwd=script.parent)
+        subprocess.Popen([sys.executable, str(script), *args], cwd=script.parent)
     except OSError:
         log.exception("Could not restart AirGrabber")
 

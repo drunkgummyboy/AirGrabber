@@ -129,10 +129,10 @@ class Row(BaseModel):
     chip: str = ""  # a band's preset chip under its status ("Series (Folder) ▾"): action "preset"
     code: str = ""  # an episode line's code ("S04E03"), in the link colour (readable accent)
     faint: str = ""  # a line's current (old) file name, on the right
-    faint_label: str = ""  # a quiet word before it ("Now:"), translated
+    faint_label: str = ""  # quiet words before it ("Current name:"), translated
     new: bool = False  # the line's title is the file's new name: a "→ " in the link colour before it
     band: int | None = None  # an item line's band: the pointer over either shows its buttons
-    state: Literal["", "needs", "ready", "would", "done"] = ""  # a band's status (dot + word)
+    state: Literal["", "needs", "ready", "done"] = ""  # a band's status (dot + word)
     state_text: str = ""  # that status's word, translated
     dest: str = ""  # a band's destination ("📦 Moves to Series › …"), after its subtitle
     dest_look: Literal["moves", "stays", "warn"] = "moves"  # link, muted or warning colour
@@ -175,6 +175,10 @@ class _Card:
     bottom: int
 
 
+SCROLLBAR_MIN_HEIGHT = 20
+FOLDERS_ACTION = "folders"  # a band's "Choose your … folder" warning, clicked
+
+
 class _Colours:
     """The colours of one redraw, picked for the current look."""
 
@@ -204,7 +208,6 @@ class _Colours:
         self.states: dict[str, str] = {
             "needs": self.warning,
             "ready": self.link,
-            "would": self.link,
             "done": mix(self.success, self.faded, 0.35),
         }
         self.status: dict[str, tuple[str, str]] = {
@@ -258,6 +261,7 @@ class VirtualList(ctk.CTkFrame):
         self._tip_shown = ""
         # Buttons with a tip of their own as drawn last: (x0, y0, x1, y1, the tip).
         self._tips: list[tuple[int, int, int, int, str]] = []
+        self._on_folders = False  # the pointer is over a band's folder warning
         self.select_bands = False  # a click on a band selects its first line (the queue)
         self.removable = removable
         self.thumbnails = thumbnails
@@ -296,6 +300,7 @@ class VirtualList(ctk.CTkFrame):
         )
         self.scrollbar = ctk.CTkScrollbar(
             self,
+            height=SCROLLBAR_MIN_HEIGHT,  # it fills the list's height; a short list stays short
             command=self._on_scrollbar,
             button_color=self.look.SCROLLBAR,
             button_hover_color=self.look.EDGE,
@@ -781,6 +786,19 @@ class VirtualList(ctk.CTkFrame):
                     font=self._band_sub_font,
                     tags=("band-dest",),
                 )
+                if row.dest_look == "warn":  # "Choose your … folder": a click opens that spot
+                    half = self._px(10)
+                    width = self._measure(self._band_sub_font, dest)
+                    self._hits.append(
+                        (
+                            round(tx + used),
+                            round(sub_y_px - half),
+                            round(tx + used + width),
+                            round(sub_y_px + half),
+                            row.key,
+                            FOLDERS_ACTION,
+                        )
+                    )
 
     def _draw_buttons(
         self,
@@ -1137,6 +1155,13 @@ class VirtualList(ctk.CTkFrame):
         else:
             self._set_hover(None)
         self._point_at(event.x, self.canvas.canvasy(event.y))
+        over = any(
+            action == FOLDERS_ACTION and x0 <= event.x <= x1 and y0 <= cy <= y1
+            for x0, y0, x1, y1, _key, action in self._hits
+        )
+        if over != self._on_folders:  # the warning that opens Settings looks clickable
+            self._on_folders = over
+            self.canvas.configure(cursor="hand2" if over else "")
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:
         self._set_hover(None)
