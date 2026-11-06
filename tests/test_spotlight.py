@@ -1045,13 +1045,15 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.text(band, band._title_item))
 
     async def test_a_light_dark_switch_while_compact_bakes_the_ground_again(self) -> None:
+        self.addCleanup(ctk.set_appearance_mode, ctk.get_appearance_mode())
+        ctk.set_appearance_mode("dark")  # whatever this Windows follows: the switch must be one
+        self.root.update()
         band = self.band()
         band.start()
         await self.settle()
         band.set_compact(True)
         await self.settle()
         ground = band._photo_sources["ground"]
-        self.addCleanup(ctk.set_appearance_mode, ctk.get_appearance_mode())
         ctk.set_appearance_mode("light")
         self.root.update()
         band._repaint()

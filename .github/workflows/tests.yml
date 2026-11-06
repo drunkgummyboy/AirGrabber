@@ -19,6 +19,16 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
+      # The runner's screen is 1024x768 and Tk keeps a window within the screen: the window tests
+      # need the room a real PC has. Stops here, in seconds, if the screen can't be changed.
+      - name: Use a bigger screen
+        shell: powershell
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Add-Type -AssemblyName System.Windows.Forms
+          $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          "Screen: $($screen.Width) x $($screen.Height)"
+          if ($screen.Width -lt 1920) { throw "The screen is still too small" }
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
