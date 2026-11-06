@@ -469,6 +469,8 @@ class KeysTests(MainWindowCase):
         page, taken = await self.spy()
         queue = page.queue
         assert queue is not None
+        queue.set_manual(True)  # the rule box is on the preset bar
+        await pump(self.window, 0.05)
         self.press_all(queue.rule_text._textbox)
         await pump(self.window, 0.05)
         self.assertEqual(taken, [])

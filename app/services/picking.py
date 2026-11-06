@@ -94,11 +94,40 @@ _MULTI_EPISODE = re.compile(
 )
 
 
+# More than one season in a normalized title: "S01-S03" ("s01 s03"), "Seasons 1-3", "Complete Series".
+_SEASONS_SPAN = re.compile(
+    r"(?<!\w)(?:s\d{1,3}\s+s\d{1,3}|seasons?\s+\d{1,3}\s+(?:to\s+)?\d{1,3}|complete\s+series)(?!\w)"
+)
+# A pack that says which episodes it holds: "S02E01-E08", "S02E01-08", "S02E01-S02E08".
+_EPISODE_SPAN = re.compile(
+    r"(?<!\w)s(\d{1,3})\s*e(\d{1,4})\s*(?:e|s\1\s*e)?\s*(\d{1,4})(?!\w)"
+)
+MOST_EPISODES_IN_A_SEASON = 200  # a higher "end" is a year or a resolution, not an episode
+# A pack is too small under this share of its episodes' minimums together: they are only a floor
+# for a normal episode, and a season of short ones is real.
+PACK_FLOOR_SHARE = 0.5
+
+
+def pack_episodes(release: TorrentRelease, request: SearchRequest) -> int | None:
+    """How many episodes a season pack holds: what its title says ("S02E01-E08"), else the
+    season's aired ones (`request.episode_count`); None when it isn't known, or it holds more
+    than one season (its size says nothing against one season's)."""
+    title = _normalize(release.title)
+    if _SEASONS_SPAN.search(title):
+        return None
+    span = _EPISODE_SPAN.search(title)
+    if span is not None:
+        first, last = int(span.group(2)), int(span.group(3))
+        if first < last <= MOST_EPISODES_IN_A_SEASON:
+            return last - first + 1
+    return request.episode_count
+
+
 def is_likely_fake(release: TorrentRelease, request: SearchRequest) -> bool:
     """A title word from FAKE_WORDS (unless the show or film's own title has it: a show called
     "Password"), or a known size too small for the resolution (EPISODE_MIN_MIB for TV,
-    MOVIE_MIN_MIB for films; the *_HEVC tables for x265/HEVC/H.265 titles). An unknown size (0)
-    never counts as too small."""
+    MOVIE_MIN_MIB for films; the *_HEVC tables for x265/HEVC/H.265 titles; a season pack:
+    PACK_FLOOR_SHARE of that for all its episodes). An unknown size (0) never counts as too small."""
     words = set(_normalize(release.title).split())
     if (words & FAKE_WORDS) - set(_normalize(request.title).split()):
         return True
@@ -109,7 +138,11 @@ def is_likely_fake(release: TorrentRelease, request: SearchRequest) -> bool:
     else:
         minimums = EPISODE_MIN_MIB_HEVC if release.is_hevc else EPISODE_MIN_MIB
     resolution = release.resolution
-    floor = minimums[resolution if resolution in minimums else None]
+    floor: float = minimums[resolution if resolution in minimums else None]
+    if request.kind is SearchKind.SEASON:
+        episodes = pack_episodes(release, request)
+        if episodes is not None:
+            floor = max(floor, floor * episodes * PACK_FLOOR_SHARE)
     return release.size_bytes < floor * MIB
 
 
@@ -151,17 +184,31 @@ def size_range(
     release: TorrentRelease, request: SearchRequest, settings: Settings
 ) -> tuple[float | None, float | None] | None:
     """The (smallest, largest) size in GB the release is judged by; None when no range applies:
-    none is set for the kind, the request is a season pack, or the release holds more than one
-    episode (a pack picked for one episode)."""
+    none is set for the kind, a season pack whose episodes aren't known (`pack_episodes`; with
+    them the series range times their number), or the release holds more than one episode (a
+    pack picked for one episode)."""
+    times = 1
     if request.kind is SearchKind.MOVIE:
         low, high = settings.size_movie_min_gb, settings.size_movie_max_gb
     elif request.kind is SearchKind.EPISODE and not is_multi_episode(release):
         low, high = settings.size_tv_min_gb, settings.size_tv_max_gb
+    elif request.kind is SearchKind.SEASON:
+        episodes = pack_episodes(release, request)
+        if episodes is None:
+            return None
+        low, high, times = settings.size_tv_min_gb, settings.size_tv_max_gb, episodes
     else:
         return None
     if low is None and high is None:
         return None
-    return low, high
+    return (
+        low * times if low is not None else None,
+        high * times if high is not None else None,
+    )
+
+
+def _has_tv_range(settings: Settings) -> bool:
+    return settings.size_tv_min_gb is not None or settings.size_tv_max_gb is not None
 
 
 def size_rank(
@@ -171,6 +218,10 @@ def size_rank(
     applies), (1, 0) an unknown size, (2, GB away from the range) outside it, closest first."""
     limits = size_range(release, request, settings)
     if limits is None:
+        if request.kind is SearchKind.SEASON and _has_tv_range(settings):
+            # Not judged while others are: a pack of several seasons doesn't beat one that fits.
+            if request.episode_count is not None and pack_episodes(release, request) is None:
+                return 1, 0.0
         return 0, 0.0
     if not release.size_bytes:
         return 1, 0.0

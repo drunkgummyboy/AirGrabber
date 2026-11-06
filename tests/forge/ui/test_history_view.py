@@ -35,7 +35,7 @@ from app.i18n import Language, current_language, set_language, t
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.core.journal_base import FakePosters, make_inputs
 from tests.forge.ui.subtitle_kit import FakeSubtitleSource
-from tests.forge.tk import pump
+from tests.forge.tk import SPEED_ROOM, pump
 
 
 @dataclass
@@ -278,7 +278,7 @@ class HistoryViewTest(HistoryViewCase):
         start = time.perf_counter()
         await card.expand()
         self.root.update()
-        self.assertLess(time.perf_counter() - start, 0.3)
+        self.assertLess(time.perf_counter() - start, 0.3 * SPEED_ROOM)
         self.assertEqual(len(card.selected_ids()), 300)
         await card.toggle()
         self.assertFalse(card.expanded)

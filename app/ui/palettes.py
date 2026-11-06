@@ -92,10 +92,10 @@ PALETTES: dict[Accent, Palette] = {
         "#4E6A85",
         "#61809D",
         light=Shades(
-            "#F2F4F7", "#FFFFFF", "#E6EBF1", "#DCE2E9", "#768DA4", "#D7E3F0", "#DEE8F3", "#2D6390"
+            "#E9EFF5", "#FFFFFF", "#E6EBF1", "#DCE2E9", "#768DA4", "#D7E3F0", "#DEE8F3", "#2D6390"
         ),
         dark=Shades(
-            "#161616", "#222324", "#2A2B2D", "#2E3033", "#4E6A85", "#2A3A4D", "#182133", "#7FA3C4"
+            "#10161C", "#1C232A", "#232C34", "#27313A", "#4E6A85", "#2A3A4D", "#182133", "#7FA3C4"
         ),
     ),
     Accent.OCEAN: Palette(
@@ -103,10 +103,10 @@ PALETTES: dict[Accent, Palette] = {
         "#3A6EA5",
         "#4C82BA",
         light=Shades(
-            "#F1F4F8", "#FFFFFF", "#E2EAF3", "#D5DFEA", "#7B9DC4", "#D3E2F3", "#DDE8F5", "#2C5F95"
+            "#E8EFF6", "#FFFFFF", "#E2EAF3", "#D5DFEA", "#7B9DC4", "#D3E2F3", "#DDE8F5", "#2C5F95"
         ),
         dark=Shades(
-            "#141619", "#1F2329", "#272D35", "#2C323A", "#3A6EA5", "#1F3550", "#162438", "#86B1E0"
+            "#11161C", "#1D242B", "#252E37", "#29333D", "#3A6EA5", "#1F3550", "#162438", "#86B1E0"
         ),
     ),
     Accent.PETROL: Palette(
@@ -114,10 +114,10 @@ PALETTES: dict[Accent, Palette] = {
         "#2F6676",
         "#3D7B8C",
         light=Shades(
-            "#F0F4F5", "#FFFFFF", "#E0EAEC", "#D3E0E3", "#7099A4", "#CFE2E7", "#DBEBEF", "#275868"
+            "#E5F1F4", "#FFFFFF", "#E0EAEC", "#D3E0E3", "#7099A4", "#CFE2E7", "#DBEBEF", "#275868"
         ),
         dark=Shades(
-            "#131617", "#1E2325", "#262D30", "#2B3336", "#3F7585", "#1E363D", "#15262B", "#79B3C3"
+            "#10181A", "#1B2528", "#223034", "#27363A", "#3F7585", "#1E363D", "#15262B", "#79B3C3"
         ),
     ),
     Accent.TEAL: Palette(
@@ -125,10 +125,10 @@ PALETTES: dict[Accent, Palette] = {
         "#2E7A76",
         "#3B918C",
         light=Shades(
-            "#F0F5F4", "#FFFFFF", "#E0ECEA", "#D3E2DF", "#6E9E99", "#CFE6E3", "#DCEFEC", "#23706B"
+            "#E5F4F4", "#FFFFFF", "#E0ECEA", "#D3E2DF", "#6E9E99", "#CFE6E3", "#DCEFEC", "#23706B"
         ),
         dark=Shades(
-            "#131716", "#1E2423", "#26302E", "#2A3432", "#3E7C77", "#1E3937", "#142826", "#6FBDB6"
+            "#101A1A", "#182524", "#223433", "#263837", "#3E7C77", "#1E3937", "#142826", "#6FBDB6"
         ),
     ),
     Accent.SAGE: Palette(
@@ -136,10 +136,10 @@ PALETTES: dict[Accent, Palette] = {
         "#5E7A66",
         "#718E79",
         light=Shades(
-            "#F2F5F2", "#FFFFFF", "#E4EBE5", "#D8E1D9", "#8DA593", "#DAE6DC", "#E3EDE5", "#4A6652"
+            "#EBF1EC", "#FFFFFF", "#E4EBE5", "#D8E1D9", "#8DA593", "#DAE6DC", "#E3EDE5", "#4A6652"
         ),
         dark=Shades(
-            "#151715", "#212421", "#2A2E2A", "#2F332F", "#5E7A66", "#2C3A30", "#1D2820", "#A3C2AB"
+            "#131915", "#1E2721", "#26322A", "#2B372E", "#5E7A66", "#2C3A30", "#1D2820", "#A3C2AB"
         ),
     ),
     Accent.INDIGO: Palette(
@@ -147,10 +147,10 @@ PALETTES: dict[Accent, Palette] = {
         "#5A5FA3",
         "#6D72B6",
         light=Shades(
-            "#F3F3F8", "#FFFFFF", "#E6E6F2", "#DADAEA", "#8A8DC2", "#DCDDF2", "#E4E5F6", "#4A4F98"
+            "#EAEAF6", "#FFFFFF", "#E6E6F2", "#DADAEA", "#8A8DC2", "#DCDDF2", "#E4E5F6", "#4A4F98"
         ),
         dark=Shades(
-            "#151519", "#212128", "#2A2A34", "#2F2F3A", "#5A5FA3", "#2C2D4A", "#1C1D33", "#9EA2E0"
+            "#11121D", "#1D1E2C", "#262738", "#2A2B3F", "#5A5FA3", "#2C2D4A", "#1C1D33", "#9EA2E0"
         ),
     ),
     Accent.PLUM: Palette(
@@ -158,10 +158,10 @@ PALETTES: dict[Accent, Palette] = {
         "#7A5786",
         "#8D6A99",
         light=Shades(
-            "#F6F2F7", "#FFFFFF", "#EDE4F0", "#E2D6E6", "#A585AF", "#E8DAEC", "#F0E4F3", "#6E4A7B"
+            "#F1EAF4", "#FFFFFF", "#EDE4F0", "#E2D6E6", "#A585AF", "#E8DAEC", "#F0E4F3", "#6E4A7B"
         ),
         dark=Shades(
-            "#171518", "#242026", "#2E2830", "#332C36", "#7A5786", "#3A2B40", "#271D2B", "#C29ACF"
+            "#19121B", "#261C2A", "#302335", "#36273B", "#7A5786", "#3A2B40", "#271D2B", "#C29ACF"
         ),
     ),
     Accent.ROSE: Palette(
@@ -169,10 +169,10 @@ PALETTES: dict[Accent, Palette] = {
         "#9E5A6C",
         "#B16D7F",
         light=Shades(
-            "#F8F2F3", "#FFFFFF", "#F0E3E6", "#E8D6DB", "#C08A98", "#F1DCE2", "#F5E4E8", "#8C4A5C"
+            "#F6E9EC", "#FFFFFF", "#F0E3E6", "#E8D6DB", "#C08A98", "#F1DCE2", "#F5E4E8", "#8C4A5C"
         ),
         dark=Shades(
-            "#181516", "#262022", "#30282B", "#362D30", "#9E5A6C", "#432A33", "#2C1C22", "#D79AAB"
+            "#1C1114", "#2A1C20", "#352328", "#3B282D", "#9E5A6C", "#432A33", "#2C1C22", "#D79AAB"
         ),
     ),
     Accent.MOCHA: Palette(
@@ -180,10 +180,10 @@ PALETTES: dict[Accent, Palette] = {
         "#7A6555",
         "#8D7868",
         light=Shades(
-            "#F6F3F1", "#FFFFFF", "#EDE6E1", "#E2D9D2", "#A6907F", "#EADFD7", "#F1E7DF", "#6A5546"
+            "#F2EDE9", "#FFFFFF", "#EDE6E1", "#E2D9D2", "#A6907F", "#EADFD7", "#F1E7DF", "#6A5546"
         ),
         dark=Shades(
-            "#171615", "#242120", "#2E2A28", "#34302D", "#7A6555", "#3A3029", "#29211C", "#CDB4A0"
+            "#1A1512", "#28211C", "#332A23", "#392F28", "#7A6555", "#3A3029", "#29211C", "#CDB4A0"
         ),
     ),
     Accent.GRAPHITE: Palette(
@@ -191,10 +191,10 @@ PALETTES: dict[Accent, Palette] = {
         "#5D6670",
         "#717B86",
         light=Shades(
-            "#F3F4F5", "#FFFFFF", "#E7E9EB", "#DCDFE2", "#8E969E", "#DDE1E5", "#E6E9EC", "#4A535C"
+            "#ECEEF1", "#FFFFFF", "#E7E9EB", "#DCDFE2", "#8E969E", "#DDE1E5", "#E6E9EC", "#4A535C"
         ),
         dark=Shades(
-            "#151515", "#222222", "#2B2B2B", "#303030", "#5D6670", "#33383F", "#22262B", "#A9B3BE"
+            "#131517", "#1F2225", "#272B2F", "#2C3034", "#5D6670", "#33383F", "#22262B", "#A9B3BE"
         ),
     ),
 }

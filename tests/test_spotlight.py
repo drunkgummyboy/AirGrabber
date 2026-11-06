@@ -534,7 +534,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(layout.search.y, ROW_TOP)
         self.assertEqual(layout.logo.y, ROW_TOP)
         self.assertEqual(POSTER_TOP - (ROW_TOP + ROW_HEIGHT), 22)  # the row → the spotlight
-        self.assertEqual(BAND_HEIGHT - (POSTER_TOP + POSTER_HEIGHT), 18)  # → the page tabs
+        self.assertEqual(BAND_HEIGHT - (POSTER_TOP + POSTER_HEIGHT), 30)  # → the page tabs
 
     def test_at_the_narrowest_window(self) -> None:
         self.check(1220)

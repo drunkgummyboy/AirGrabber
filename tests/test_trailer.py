@@ -119,7 +119,7 @@ class CommandLineTests(unittest.TestCase):
         options = player_look()
         values = dict(zip(options[::2], options[1::2], strict=True))
         self.assertEqual(values["--background"], theme.pick(theme.BG, dark=True).upper())
-        self.assertEqual(values["--button"], "#262626")  # CHIP's dark "gray15"
+        self.assertEqual(values["--button"], "#1E262E")  # CHIP's dark
         self.assertEqual(values["--button-hover"], theme.pick(theme.CLOSE_BUTTON_HOVER, dark=True))
         self.assertEqual(values["--glyph-hover"], "#FFFFFF")
         self.assertEqual(values["--tip"], "Close (Esc)")
@@ -128,7 +128,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(values["--language"], current_language().value)  # YouTube's player's `hl`
         parsed = parse_options([*options, "--", VIDEO])
         assert parsed is not None
-        self.assertEqual(parsed.look.button, "#262626")
+        self.assertEqual(parsed.look.button, "#1E262E")
         self.assertEqual(parsed.look.language, current_language().value)
         self.assertEqual((parsed.look.fill_tip, parsed.look.fit_tip), ("Fill the window", "Show the whole picture"))
 

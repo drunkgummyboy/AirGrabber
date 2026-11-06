@@ -78,6 +78,15 @@ def week_start(day: date, first_day: Weekday) -> date:
     return day - timedelta(days=(day.weekday() - first_day.weekday) % 7)
 
 
+def rolling_range(today: date, *, first_day: Weekday, offset: int = 0) -> tuple[date, date]:
+    """First and last day of the rolling week: today in the middle (offset 0); from there, whole
+    weeks from `first_day`, the first arrow forward starting on the first one to come."""
+    if offset == 0:
+        return today - timedelta(days=3), today + timedelta(days=3)
+    start = week_start(today, first_day) + timedelta(weeks=offset)
+    return start, start + timedelta(days=6)
+
+
 def calendar_range(
     today: date, *, first_day: Weekday, weeks: int, offset: int = 0
 ) -> tuple[date, date]:

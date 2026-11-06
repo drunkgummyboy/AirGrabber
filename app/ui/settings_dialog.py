@@ -41,6 +41,7 @@ from app.models import (
     Accent,
     CardSize,
     DownloadMode,
+    CalendarLayout,
     InfoLayout,
     ProwlarrStatus,
     QualityProfile,
@@ -73,6 +74,7 @@ from app.ui.accent_picker import AccentSwatches
 from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.backup_dialog import LoadBackupDialog, SaveBackupDialog, load_backup
+from app.ui.calendar_layout_picture import CalendarLayoutPicture
 from app.ui.card_preview import CardSizePreview
 from app.ui.card_scale import CARD_SIZE_LABEL, CARD_SIZE_LABELS, CARD_SIZE_TIP, size_from_label
 from app.ui.confirm_dialog import ConfirmDialog
@@ -239,6 +241,15 @@ SOURCES_TEXT = N_(
     "TMDB API but is not endorsed or certified by TMDB."
 )
 
+CALENDAR_LAYOUT_TITLE = N_("Calendar view")
+CALENDAR_LAYOUT_TEXT = N_(
+    "Weeks: a grid of whole weeks, you choose how many on the Calendar. Rolling week: one row with "
+    "today in the middle, three days back and three ahead."
+)
+CALENDAR_LAYOUT_NAMES: dict[CalendarLayout, str] = {
+    CalendarLayout.WEEKS: N_("Weeks"),
+    CalendarLayout.ROLLING: N_("Rolling week"),
+}
 WEEK_TITLE = N_("Week starts on")
 WEEK_TEXT = N_("The first day of each week on the Calendar.")
 
@@ -525,6 +536,7 @@ _FIELD_LABELS = {
     "size_movie_min_gb": N_("Movies size"),
     "size_movie_max_gb": N_("Movies size"),
     "first_day": WEEK_TITLE,
+    "calendar_layout": CALENDAR_LAYOUT_TITLE,
     "card_size": CARD_SIZE_LABEL,
     "theme_mode": THEME_TITLE,
     "accent": ACCENT_TITLE,
@@ -557,6 +569,7 @@ _FIELD_SECTIONS: dict[str, str] = {
     "tmdb_api_key": SECTION_INFO,
     "card_size": SECTION_LOOKS,
     "first_day": SECTION_LOOKS,
+    "calendar_layout": SECTION_LOOKS,
     "theme_mode": SECTION_LOOKS,
     "accent": SECTION_LOOKS,
     "info_layout": SECTION_LOOKS,
@@ -711,6 +724,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self._size_movie_min = ctk.StringVar(value=size_text(current.size_movie_min_gb))
         self._size_movie_max = ctk.StringVar(value=size_text(current.size_movie_max_gb))
         self._first_day = ctk.StringVar(value=weekday_name(current.first_day))
+        self._calendar_layout = ctk.StringVar(
+            value=choice_name(CALENDAR_LAYOUT_NAMES, current.calendar_layout)
+        )
         self._card_size = ctk.StringVar(value=CARD_SIZE_LABELS[current.card_size])
         self._theme_mode = ctk.StringVar(value=theme_name(current.theme_mode))
         self._accent_picker: AccentSwatches | None = None  # Looks → Accent colour
@@ -1288,10 +1304,25 @@ class SettingsDialog(ctk.CTkToplevel):
             ),
             sticky="w",
         )
+        calendar = page.box(t(CALENDAR_LAYOUT_TITLE), t(CALENDAR_LAYOUT_TEXT))
+        row = calendar.frame_row()
+        names = [t(name) for name in CALENDAR_LAYOUT_NAMES.values()]
+        self._segmented(row, names, self._calendar_layout).pack(side="left")
+        self._layout_picture = CalendarLayoutPicture(row, self._chosen_calendar_layout())
+        self._layout_picture.pack(side="left", padx=(16, 0))
+        self._trace(
+            self._calendar_layout,
+            lambda *_args: self._layout_picture.show(self._chosen_calendar_layout()),
+        )
         week = page.box(t(WEEK_TITLE), t(WEEK_TEXT))
         line = week.frame_row()
         self._option_menu(line, self._first_day, [weekday_name(day) for day in Weekday])
         return page
+
+    def _chosen_calendar_layout(self) -> CalendarLayout:
+        return choice_from_name(
+            CALENDAR_LAYOUT_NAMES, self._calendar_layout.get(), CalendarLayout.WEEKS
+        )
 
     def _build_accent(self, page: _Page) -> None:
         """The Accent colour box: a swatch per palette, the chosen one ringed. Another colour
@@ -1751,6 +1782,7 @@ class SettingsDialog(ctk.CTkToplevel):
             size_movie_min_gb=self._size_movie_min.get(),
             size_movie_max_gb=self._size_movie_max.get(),
             first_day=weekday_from_name(self._first_day.get()),
+            calendar_layout=self._chosen_calendar_layout(),
             card_size=size_from_label(self._card_size.get()),
             theme_mode=theme_from_name(self._theme_mode.get()),
             accent=self.accent,

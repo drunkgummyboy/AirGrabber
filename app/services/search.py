@@ -516,12 +516,16 @@ class TorrentSearchService:
     def episode_request(self, show: Show, season: int, episode: int) -> SearchRequest:
         return episode_request(show, season, episode)
 
-    def season_request(self, show: Show, season: int) -> SearchRequest:
+    def season_request(
+        self, show: Show, season: int, *, episodes: int | None = None
+    ) -> SearchRequest:
+        """`episodes`: how many have aired, when known: what a pack's size is judged by."""
         return SearchRequest(
             kind=SearchKind.SEASON,
             title=show.name,
             year=show.year,
             season=season,
+            episode_count=episodes,
             imdb_id=show.imdb_id,
             queries=build_queries(SearchKind.SEASON, show.name, year=show.year, season=season),
         )

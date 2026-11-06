@@ -30,7 +30,7 @@ from app.forge.ui.widgets.virtual_list import (
 )
 from app.ui import theme
 from tests.forge.base import ForgeAsyncTestCase
-from tests.forge.tk import pump
+from tests.forge.tk import SPEED_ROOM, pump
 from tests.test_accent import contrast
 
 
@@ -140,7 +140,7 @@ class VirtualListTests(TkCase):
         rows = many_rows(1000)
         start = time.perf_counter()
         vlist.set_rows(rows)
-        self.assertLess(time.perf_counter() - start, 0.2)
+        self.assertLess(time.perf_counter() - start, 0.2 * SPEED_ROOM)
         await pump(self.root, 0.05)
         visible = vlist.visible_keys()
         self.assertTrue(0 < len(visible) < 40, len(visible))
@@ -259,7 +259,7 @@ class VirtualListTests(TkCase):
         vlist.images = images
         start = time.perf_counter()
         vlist.set_rows(band_rows(1000))
-        self.assertLess(time.perf_counter() - start, 0.3)
+        self.assertLess(time.perf_counter() - start, 0.3 * SPEED_ROOM)
         await pump(self.root, 0.05)
         self.assertTrue(0 < len(set(asked)) < 15, len(set(asked)))
 

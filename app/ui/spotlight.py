@@ -181,10 +181,10 @@ POSTER_TOP = ROW_TOP + ROW_HEIGHT + 22  # the row → the spotlight
 POSTER_WIDTH = 44
 POSTER_HEIGHT = 64
 POSTER_RADIUS = 6
-BAND_BOTTOM = 18  # the poster → the band's lower edge (the page tabs sit right under it)
+BAND_BOTTOM = 30  # the poster → the band's lower edge (the page tabs sit right under it)
 BAND_HEIGHT = POSTER_TOP + POSTER_HEIGHT + BAND_BOTTOM
 # MediaForge's page: only the top row, where it is on every page; so the list gets the room.
-COMPACT_BOTTOM = 10  # the row → the band's lower edge
+COMPACT_BOTTOM = 18  # the row → the band's lower edge
 COMPACT_HEIGHT = ROW_TOP + ROW_HEIGHT + COMPACT_BOTTOM
 POSTER_GAP = 14  # the poster → the texts
 TITLE_GAP = 24  # the texts → the dots

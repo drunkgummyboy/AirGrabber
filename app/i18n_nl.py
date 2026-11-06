@@ -165,6 +165,11 @@ NL: dict[str, str] = {
     "Show and film information and pictures come from TVmaze and TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.":
         "Informatie en afbeeldingen van series en films komen van TVmaze en TMDB. Dit product gebruikt de TMDB API, maar wordt niet door TMDB ondersteund of gecertificeerd.",
     "How do I get a free key?": "Hoe krijg ik een gratis sleutel?",
+    "Calendar view": "Kalenderweergave",
+    "Weeks: a grid of whole weeks, you choose how many on the Calendar. Rolling week: one row with today in the middle, three days back and three ahead.":
+        "Weken: een raster van hele weken, op de Kalender kies je hoeveel. Doorlopende week: één rij met vandaag in het midden, drie dagen terug en drie vooruit.",
+    "Weeks": "Weken",
+    "Rolling week": "Doorlopende week",
     "Week starts on": "Week begint op",
     "The first day of each week on the Calendar.": "De eerste dag van elke week in de Kalender.",
     "Theme": "Thema",
@@ -1321,6 +1326,18 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "MediaForge has an Auto and Manual switch: in Auto the preset bar stays out of the way.":
+        "MediaForge heeft een schakelaar Auto en Handmatig: in Auto blijft de voorinstellingenbalk uit beeld.",
+    "A rolling week for the calendar, with today in the middle: Settings, Looks, Calendar view.":
+        "Een doorlopende week voor de kalender, met vandaag in het midden: Instellingen, Uiterlijk, Kalenderweergave.",
+    "Season packs are judged by your episode size times the season's episodes.":
+        "Seizoenspakketten worden beoordeeld op je afleveringsgrootte maal het aantal afleveringen.",
+    "The movie watchlist is sorted by release date.":
+        "De film-watchlist staat op releasedatum.",
+    "A click on the main window closes info panels and search results.":
+        "Een klik op het hoofdvenster sluit infopanelen en zoekresultaten.",
+    "The pages take a tint of your accent colour, and the top fades out more softly.":
+        "De pagina's krijgen een tint van je accentkleur, en de bovenkant loopt zachter uit.",
     "The main menu moved to the top, with each page's own buttons on one row under it.":
         "Het hoofdmenu staat nu bovenaan, met de knoppen van elke pagina op één rij eronder.",
     "The calendar's date sits between two new arrows; click the date to go back to today.":

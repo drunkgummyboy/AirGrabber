@@ -703,6 +703,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- navigation --------------------------------------------------------------------------
 
     def _start(self) -> None:
+        tk.Misc.bind(self, "<ButtonPress-1>", self._clicked_in_main, "+")
         self._go_home()
         spawn(self._show_library_summary(), name="library-summary")
         spawn(
@@ -1043,6 +1044,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 view.refresh()
         self._band.reload()  # tonight's episodes, a new TMDB key's pictures
 
+    def _close_info_panels(self, _event: object = None) -> None:
+        """A click outside an info panel (a film's or show's, with its torrents) closes it."""
+        self._show_windows.close_shown()
+        self._movie_windows.close_shown()
+
+    def _clicked_in_main(self, _event: object = None) -> None:
+        """A click on the main window closes what floats over it. Clicks in other programs don't:
+        you may be looking something up."""
+        self._close_info_panels()
+        results = self._results_window
+        if results is not None and results.winfo_exists() and results.winfo_ismapped():
+            results.destroy()
+            self._results_window = None
+
     def _on_search(self) -> None:
         self._suggestions.hide()
         query = self._search.get().strip()
@@ -1070,6 +1085,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             card_scale=self._card_scale(),
             on_open_movie=self._movie_windows.open_movie,
         )
+        # The results stay; an info panel opened from them closes at a click on them.
+        tk.Misc.bind(self._results_window, "<ButtonPress-1>", self._close_info_panels, "+")
 
     def _search_episode(self, entry: CalendarEntry) -> None:
         """An episode's "☰ Choose…": its show's info window on the episode's releases (a
@@ -1107,12 +1124,19 @@ class MainWindow(AsyncCTk, ctk.CTk):
         return self._tv_item(show, episode.season, episode.number, again=again)
 
     def _tv_item(
-        self, show: Show, season: int, number: int | None, *, again: bool = False
+        self,
+        show: Show,
+        season: int,
+        number: int | None,
+        *,
+        again: bool = False,
+        aired: int | None = None,
     ) -> QueuedDownload:
-        """The one-click download of an episode (`number` None: its season's pack)."""
+        """The one-click download of an episode (`number` None: its season's pack, `aired` its
+        episodes out so far when known)."""
         search = self._services.search
         if number is None:
-            request = search.season_request(show, season)
+            request = search.season_request(show, season, episodes=aired)
             label = f"{show.name} S{season:02d}"
         else:
             request = search.episode_request(show, season, number)
@@ -1122,14 +1146,16 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
         return QueuedDownload(label=label, target=target, request=request, again=again)
 
-    def _download_season(self, show: Show, season: int, needed: Sequence[CalendarEntry]) -> None:
+    def _download_season(
+        self, show: Show, season: int, needed: Sequence[CalendarEntry], aired: int | None = None
+    ) -> None:
         """The show window's "⬇ Whole season": the season's pack (a click by hand: also when
         grabbed before); when none is good enough, the episodes still `needed` (not grabbed
         yet) instead (the queue does that, and says so)."""
         fallback = tuple(
             item for entry in needed if (item := self._episode_item(entry)) is not None
         )
-        pack = self._tv_item(show, season, None)
+        pack = self._tv_item(show, season, None, aired=aired)
         self._queue_link.download(
             QueuedDownload(
                 label=pack.label,

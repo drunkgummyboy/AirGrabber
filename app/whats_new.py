@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.6.0": (
+        N_("MediaForge has an Auto and Manual switch: in Auto the preset bar stays out of the way."),
+        N_("A rolling week for the calendar, with today in the middle: Settings, Looks, Calendar view."),
+        N_("Season packs are judged by your episode size times the season's episodes."),
+        N_("The movie watchlist is sorted by release date."),
+        N_("A click on the main window closes info panels and search results."),
+        N_("The pages take a tint of your accent colour, and the top fades out more softly."),
+    ),
     "3.5.0": (
         N_("The main menu moved to the top, with each page's own buttons on one row under it."),
         N_("The calendar's date sits between two new arrows; click the date to go back to today."),

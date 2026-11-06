@@ -37,6 +37,7 @@ from app.forge.core.executor import RunResult
 from app.forge.core.matcher import Resolution
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
+from app.forge.models.settings import ForgeSettings
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.services import ForgeServices
 from app.forge.ui import file_drops
@@ -55,7 +56,7 @@ from app.ui import theme
 from app.ui.missing_control import PopupMenu
 from app.models.tmdb import TMDBTitle
 from tests.forge.base import ForgeAsyncTestCase
-from tests.forge.tk import pump, pump_until
+from tests.forge.tk import SPEED_ROOM, pump, pump_until
 from tests.forge.ui.test_file_drops import post_drop
 
 
@@ -151,6 +152,8 @@ class QueueCase(ForgeAsyncTestCase):
         self.addCleanup(self._destroy_view, view)
         await pump_until(self.root, lambda: view.loaded)
         await pump(self.root, 0.05)
+        view.set_manual(True)  # most tests work with the preset bar
+        await pump(self.root, 0.02)
         return view
 
     def _destroy_view(self, view: QueueView) -> None:
@@ -248,7 +251,7 @@ class QueueTest(QueueCase):
         self.assertEqual(self.view.filter_buttons["all"].cget("text"), "All 5")
         self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 5")
         # The first band is selected; the card names it (there is no Shows | Films switch).
-        self.assertEqual(self.view.for_label.cget("text"), "For: Show Name · 5 episodes")
+        self.assertEqual(self.view.for_label.cget("text"), "Only Show Name · 5 episodes. Other cards keep their own preset.")
         self.assertFalse(hasattr(self.view, "kind_switch"))
 
     async def test_shows_and_films_are_one_list(self) -> None:
@@ -277,7 +280,7 @@ class QueueTest(QueueCase):
         self.select_band("Dune")  # the card only: the list stays as it is
         await pump(self.root, 0.1)
         self.assertEqual(self.bands(), ["Dune", "Severance", "Ted Lasso"])
-        self.assertEqual(self.view.for_label.cget("text"), "For: Dune (2021)")
+        self.assertEqual(self.view.for_label.cget("text"), "Only Dune (2021). Other cards keep their own preset.")
 
     async def test_the_filter_shows_needs_you_and_ready(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Heat.1995.mkv"])
@@ -528,7 +531,7 @@ class QueueTest(QueueCase):
             await pump(self.root, 0.01)
         gc.enable()
         await pump_until(self.root, lambda: len(self.view.list.item_keys()) == 1000, within=10)
-        self.assertLess(slowest, 0.1)
+        self.assertLess(slowest, 0.1 * SPEED_ROOM)
 
     async def test_a_destroyed_view_is_freed(self) -> None:
         view = QueueView(self.root, self.services)
@@ -706,6 +709,53 @@ class QueueTest(QueueCase):
         [band] = self.rows("band")
         self.assertEqual((band.state, band.title), ("ready", "Avatar: The Last Airbender"))
         self.assertIn(("choose", "Choose…"), band.actions)
+
+    async def test_the_preset_bar_hides_behind_auto_and_manual(self) -> None:
+        view = self.view
+        make_files(self.tmp / "in", ["Dune.2021.mkv", "Heat.1995.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        view._mode_clicked("  Auto  ")
+        await pump(self.root, 0.1)
+        self.assertFalse(view.manual)
+        self.assertFalse(view.card.winfo_ismapped())
+        self.assertFalse(view.preset_menu.winfo_ismapped())
+        self.assertTrue(view.mode_switch.winfo_ismapped())
+        await pump_until(self.root, lambda: not self.services.settings.current.presets_manual)
+        view._mode_clicked("  Manual  ")
+        await pump(self.root, 0.1)
+        self.assertTrue(view.card.winfo_ismapped())
+        self.assertTrue(view.preset_menu.winfo_ismapped())
+        self.assertEqual(view.mode_switch.get(), "  Manual  ")
+        await pump_until(self.root, lambda: self.services.settings.current.presets_manual)
+        second = await self.make_view()  # remembered
+        self.assertTrue(second.manual)
+
+    async def test_auto_is_the_start_and_a_card_still_changes_its_preset(self) -> None:
+        self.assertFalse(ForgeSettings().presets_manual)
+        view = self.view
+        view.set_manual(False)
+        make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await pump(self.root, 0.05)
+        self.assertIsNone(view.list.selected)  # nothing to show settings of
+        dune = self.item("Dune")
+        view._chip_chosen([dune.id], self.preset("Movie (Flat)"))
+        await pump(self.root, 0.05)
+        self.assertEqual(view.chip_text(dune), "Movie (Flat) ▾")
+        self.assertEqual(view.rule_for(dune), "{ny}")
+        self.assertFalse(view.card.winfo_ismapped())  # a chip doesn't bring the bar
+
+    async def test_a_band_keeps_what_was_chosen_when_going_back_to_auto(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        view = self.view
+        dune = self.item("Dune")
+        self.select_band("Dune")
+        view.set_band_preset([dune.id], self.preset("Movie (Flat)"))
+        view.option_buttons["Quality"].invoke()
+        view.set_manual(False)
+        await pump(self.root, 0.05)
+        self.assertEqual(view.rule_for(dune), "{ny} - {quality}")
 
     async def test_the_queue_fits_the_minimum_window(self) -> None:
         # MediaForge's review focus 5: the toolbar's and the card's buttons stay on screen.
@@ -1283,7 +1333,7 @@ class LookAndLanguageTest(QueueCase):
             [b.cget("text") for b in view.filter_buttons.values()],
             ["Alles 2", "Wacht op jou 0", "Klaar 2"],
         )
-        self.assertEqual(view.for_label.cget("text"), "Voor: Dune (2021)")
+        self.assertEqual(view.for_label.cget("text"), "Alleen Dune (2021). Andere kaarten houden hun eigen voorinstelling.")
         self.assertEqual(
             summary_text(RunResult(renamed=2, posters=1, cancelled=True)),
             "Klaar: 2 hernoemd, 0 al goed, 0 mislukt · 1 poster · geannuleerd",
@@ -1420,8 +1470,8 @@ class SmoothRefreshTest(QueueCase):
             shown = time.thread_time()
             with self.subTest(show=show):
                 self.assertEqual(len([r for r in built.rows if r.kind == "item"]), 1000)
-                self.assertLess(done - start, 0.1)
-                self.assertLess(shown - done, 0.1)
+                self.assertLess(done - start, 0.1 * SPEED_ROOM)
+                self.assertLess(shown - done, 0.1 * SPEED_ROOM)
 
 
 class IgnoreTest(QueueCase):
@@ -1601,13 +1651,13 @@ class PresetPerBandTest(QueueCase):
         await self.films_and_show()
         self.view.set_band_preset([self.item("Heat").id], self.preset("Movie (Flat)"))
         self.select_band("Dune")
-        self.assertEqual(self.view.for_label.cget("text"), "For: Dune (2021)")
+        self.assertEqual(self.view.for_label.cget("text"), "Only Dune (2021). Other cards keep their own preset.")
         self.assertEqual(self.view.preset_menu.get(), "Movie (Folder)")
         self.select_band("Heat")
-        self.assertEqual(self.view.for_label.cget("text"), "For: Heat (1995)")
+        self.assertEqual(self.view.for_label.cget("text"), "Only Heat (1995). Other cards keep their own preset.")
         self.assertEqual(self.view.preset_menu.get(), "Movie (Flat)")
         self.select_band("Show")
-        self.assertEqual(self.view.for_label.cget("text"), "For: Show · 2 episodes")
+        self.assertEqual(self.view.for_label.cget("text"), "Only Show · 2 episodes. Other cards keep their own preset.")
         self.assertIn("Series (Folder)", self.view.preset_menu.cget("values"))
         self.view.list.select(None)  # nothing selected: the first band is, at the next refresh
         self.view.refresh()
@@ -1631,7 +1681,7 @@ class PresetPerBandTest(QueueCase):
         dict(self.view.chip_choices(ids))["Movie (Flat)"]()
         self.view.refresh()
         self.assertEqual(self.band("Heat").chip, "Movie (Flat) ▾")
-        self.assertEqual(self.view.for_label.cget("text"), "For: Heat (1995)")  # selected
+        self.assertEqual(self.view.for_label.cget("text"), "Only Heat (1995). Other cards keep their own preset.")  # selected
         self.view.set_custom("{t}")
         self.view.refresh()
         self.assertEqual(self.band("Heat").chip, "✎ Custom")
@@ -1748,7 +1798,7 @@ class PresetPerBandTest(QueueCase):
         self.assertEqual(self.view.for_label.cget("text"), "Voor: nieuwe bestanden")
         await self.films_and_show()
         self.select_band("Show")
-        self.assertEqual(self.view.for_label.cget("text"), "Voor: Show · 2 afleveringen")
+        self.assertEqual(self.view.for_label.cget("text"), "Alleen Show · 2 afleveringen. Andere kaarten houden hun eigen voorinstelling.")
         self.assertEqual(self.view.use_all_link.cget("text"), "Gebruiken voor alles ▾")
         self.view._preset_chosen("Auto")
         self.assertEqual(

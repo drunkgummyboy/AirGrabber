@@ -419,6 +419,13 @@ class MovieWindows:
             window.destroy()
         self._windows = {}
 
+    def close_shown(self) -> None:
+        """Close the windows on screen (a click outside them). One a click has only just opened
+        isn't on screen yet and stays."""
+        for window in self._live().values():
+            if window.winfo_ismapped():
+                window.destroy()
+
     def _live(self) -> dict[int, MovieDetailsWindow]:
         self._windows = {
             movie_id: window for movie_id, window in self._windows.items() if exists(window)

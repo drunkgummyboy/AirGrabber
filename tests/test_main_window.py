@@ -106,6 +106,7 @@ PAGE_CHANGES: dict[str, Any] = {
     "download_dir": Path("Z:/watch"),
     "movie_download_dir": Path("Z:/films"),
     "first_day": "Sunday",
+    "calendar_layout": "rolling",
     "weeks_to_show": 5,
     "show_suggestions": False,
     "tmdb_api_key": "tmdb",
@@ -143,6 +144,48 @@ class SettingsAffectPagesTests(unittest.TestCase):
 
     def test_no_change(self) -> None:
         self.assertFalse(settings_affect_pages(Settings(), Settings()))
+
+
+class ClickOutsideTests(unittest.TestCase):
+    @staticmethod
+    def panel(*, mapped: bool = True) -> Any:
+        panel = SimpleNamespace(destroyed=False, winfo_ismapped=lambda: mapped, winfo_exists=lambda: True)
+
+        def destroy() -> None:
+            panel.destroyed = True
+
+        panel.destroy = destroy
+        return panel
+
+    def test_only_panels_on_screen_close(self) -> None:
+        from app.ui.movie_details import MovieWindows
+        from app.ui.show_details import ShowWindows
+
+        for windows in (ShowWindows, MovieWindows):
+            shown, just_opened = self.panel(), self.panel(mapped=False)
+            fake: Any = SimpleNamespace(_live=lambda s=shown, j=just_opened: {1: s, 2: j})
+            windows.close_shown(fake)
+            self.assertTrue(shown.destroyed)
+            self.assertFalse(just_opened.destroyed)
+
+    def test_a_click_on_the_main_window_closes_panels_and_the_results(self) -> None:
+        closed: list[str] = []
+        results = self.panel()
+        window: Any = SimpleNamespace(
+            _close_info_panels=lambda: closed.append("panels"), _results_window=results
+        )
+        MainWindow._clicked_in_main(window)
+        self.assertEqual(closed, ["panels"])
+        self.assertTrue(results.destroyed)
+        self.assertIsNone(window._results_window)
+
+    def test_a_click_with_no_results_open_only_closes_panels(self) -> None:
+        closed: list[str] = []
+        window: Any = SimpleNamespace(
+            _close_info_panels=lambda: closed.append("panels"), _results_window=None
+        )
+        MainWindow._clicked_in_main(window)
+        self.assertEqual(closed, ["panels"])
 
 
 class TypingInTests(unittest.TestCase):

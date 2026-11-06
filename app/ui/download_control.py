@@ -398,7 +398,8 @@ class DownloadActions(Generic[T]):
     download_all: Callable[[BatchKey, Sequence[T]], None] | None = None
     # A season pack of a show's season, with the season's titles still needed to queue instead
     # when no pack is good enough (the show window's "⬇ Whole season"); None: not offered.
-    download_season: Callable[[Show, int, Sequence[T]], None] | None = None
+    # The season's aired episodes last, when known (what a pack's size is judged by).
+    download_season: Callable[[Show, int, Sequence[T], int | None], None] | None = None
 
 
 class DownloadControl(ctk.CTkFrame, Generic[T]):

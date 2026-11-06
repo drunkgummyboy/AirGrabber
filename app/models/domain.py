@@ -341,6 +341,7 @@ class SearchRequest(DomainModel):
     year: int | None = None
     season: int | None = None  # EPISODE and SEASON
     episode: int | None = None  # EPISODE only
+    episode_count: int | None = None  # SEASON: its aired episodes, when known (a pack's size)
     imdb_id: ImdbId = None
     tvdb_id: int | None = None
     queries: tuple[str, ...] = ()  # free-text queries, best first (built by the search service)

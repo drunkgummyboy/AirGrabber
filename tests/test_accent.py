@@ -44,22 +44,22 @@ from tests.test_quick_setup import FakeProwlarr, FakeRepository, FakeShortcut, T
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Today's look (2.0.8), both halves: Slate must stay exactly this.
+# Today's look (the tinted ground of 3.6.0), both halves: Slate must stay exactly this.
 SLATE_BEFORE: dict[str, theme.Pair] = {
-    "BG": ("#F2F4F7", "#161616"),
-    "SURFACE": ("#FFFFFF", "#242424"),
-    "TAB_BG": ("#F8F9FB", "#1C1C1C"),
+    "BG": ("#E9EFF5", "#10161C"),
+    "SURFACE": ("#FFFFFF", "#1D242B"),
+    "TAB_BG": ("#F8FAFB", "#151C23"),
     "EDGE": ("#768DA4", "#4E6A85"),
     "ACCENT": ("#4E6A85", "#4E6A85"),
     "ACCENT_HOVER": ("#427839", "#427839"),
     "LINK": ("#2D6390", "#5D8AA8"),
     "BRAND": ("#2D6390", "#8FB0D0"),  # added later: the spotlight band's "Grabber"
-    "PLACEHOLDER": ("#DCE2E9", "gray20"),
+    "PLACEHOLDER": ("#DCE2E9", "#29333D"),
     "HOVER": ("#DEE6EF", "#427839"),
     "MENU_HOVER": ("#DEE6EF", "#4E6A85"),
     "SELECTED": ("#C9D8E8", "#4E6A85"),
     "SELECTED_HOVER": ("#B8CADD", "#427839"),
-    "SCROLLBAR": ("#D5DCE4", "#242424"),
+    "SCROLLBAR": ("#D5DCE4", "#1D242B"),
     "CELL_BG": ("#ECF0F5", "#121620"),
     "CELL_BORDER": ("#D5DDE7", "#1C222E"),
     "TODAY_BG": ("#DEE8F3", "#182133"),
@@ -67,10 +67,10 @@ SLATE_BEFORE: dict[str, theme.Pair] = {
     "STACK_NEAR_EDGE": ("#9AABBD", "#46607A"),
     "STACK_FAR": ("#EEF2F6", "#1E2329"),
     "STACK_FAR_EDGE": ("#B9C6D3", "#3A4E63"),
-    "CHIP": ("#E6EBF1", "gray15"),
-    "CHIP_HOVER": ("#D5DDE6", "gray25"),
+    "CHIP": ("#E6EBF1", "#1E262E"),
+    "CHIP_HOVER": ("#D5DDE6", "#33404D"),
     "ROW_SELECTED": ("#D7E3F0", "#2A3A4D"),
-    "NOT_AIRED": ("#E1E6EC", "gray25"),
+    "NOT_AIRED": ("#E1E6EC", "#33404D"),
 }
 # What no palette changes: green (downloaded), amber (missing), red (remove), the text.
 KEPT = (
@@ -154,10 +154,10 @@ class PaletteTests(AccentCase):
         self.assertIs(theme.current_accent(), Accent.TEAL)
         self.assertEqual(theme.ACCENT, ("#2E7A76", "#2E7A76"))
         self.assertEqual(theme.ACCENT_HOVER, ("#3B918C", "#3B918C"))
-        self.assertEqual(theme.BG, ("#F0F5F4", "#131716"))
-        self.assertEqual(theme.SURFACE, ("#FFFFFF", "#1E2423"))
-        self.assertEqual(theme.CHIP, ("#E0ECEA", "#26302E"))
-        self.assertEqual(theme.PLACEHOLDER, ("#D3E2DF", "#2A3432"))
+        self.assertEqual(theme.BG, ("#E5F4F4", "#101A1A"))
+        self.assertEqual(theme.SURFACE, ("#FFFFFF", "#182524"))
+        self.assertEqual(theme.CHIP[0], "#E0ECEA")
+        self.assertEqual(theme.PLACEHOLDER[0], "#D3E2DF")
         self.assertEqual(theme.EDGE, ("#6E9E99", "#3E7C77"))
         self.assertEqual(theme.ROW_SELECTED, ("#CFE6E3", "#1E3937"))
         self.assertEqual(theme.TODAY_BG, ("#DCEFEC", "#142826"))

@@ -28,9 +28,9 @@ from app.ui import palettes
 Pair = tuple[str, str]  # (light, dark)
 Color = str | Pair  # a colour as CTk takes it: one for both modes, or a pair
 
-BG: Pair = ("#F2F4F7", "#161616")  # window background
-SURFACE: Pair = ("#FFFFFF", "#242424")  # cards and inputs
-TAB_BG: Pair = ("#F8F9FB", "#1C1C1C")  # tab view body
+BG: Pair = ("#E9EFF5", "#10161C")  # window background
+SURFACE: Pair = ("#FFFFFF", "#1D242B")  # cards and inputs
+TAB_BG: Pair = ("#F8FAFB", "#151C23")  # tab view body
 EDGE: Pair = ("#768DA4", "#4E6A85")  # slate-blue borders
 ACCENT: Pair = ("#4E6A85", "#4E6A85")  # primary buttons
 ACCENT_HOVER: Pair = ("#427839", "#427839")  # button hover
@@ -50,7 +50,7 @@ IMDB = "#F5C518"  # IMDb brand yellow, both modes
 PLEX: Pair = ("#E5A00D", "#E5A00D")
 PLEX_HOVER: Pair = ("#C98C0B", "#C98C0B")
 ON_PLEX: Pair = ("#1B1B1B", "#1B1B1B")
-PLACEHOLDER: Pair = ("#DCE2E9", "gray20")  # poster placeholder
+PLACEHOLDER: Pair = ("#DCE2E9", "#29333D")  # poster placeholder
 
 # Buttons that aren't filled with a colour (transparent, SURFACE or CHIP behind the text):
 # their text (CTk's own default in dark) and hover. Accent-filled buttons keep light text
@@ -64,7 +64,7 @@ MENU_HOVER: Pair = ("#DEE6EF", "#4E6A85")  # a popup menu's item under the point
 # both parts, so in light it is a soft tint with dark text rather than the accent.
 SELECTED: Pair = ("#C9D8E8", "#4E6A85")
 SELECTED_HOVER: Pair = ("#B8CADD", "#427839")
-SCROLLBAR: Pair = ("#D5DCE4", "#242424")  # a scrollbar's handle on the page background
+SCROLLBAR: Pair = ("#D5DCE4", "#1D242B")  # a scrollbar's handle on the page background
 
 # Calendar grid
 CELL_BG: Pair = ("#ECF0F5", "#121620")  # day cell
@@ -82,7 +82,7 @@ STACK_NEAR_EDGE: Pair = ("#9AABBD", "#46607A")
 STACK_FAR: Pair = ("#EEF2F6", "#1E2329")
 STACK_FAR_EDGE: Pair = ("#B9C6D3", "#3A4E63")
 GRABBED: Pair = ("#2E7D4F", "#2E7D4F")  # episode button once downloaded
-NOT_AIRED: Pair = ("#E1E6EC", "gray25")  # disabled episode button before broadcast
+NOT_AIRED: Pair = ("#E1E6EC", "#33404D")  # disabled episode button before broadcast
 NOT_AIRED_TEXT: Pair = ("#56616D", "gray60")  # its text
 
 # Discover / Movies shelf titles
@@ -93,8 +93,8 @@ ON_WARNING: Pair = (ON_COLOR, TEXT[0])  # a badge's text on WARNING, readable in
 PANEL_EDGE = PLACEHOLDER  # a quiet 1 px border around a group of settings (Prowlarr)
 
 # Indexer search dialog
-CHIP: Pair = ("#E6EBF1", "gray15")  # unselected season / episode / version button
-CHIP_HOVER: Pair = ("#D5DDE6", "gray25")
+CHIP: Pair = ("#E6EBF1", "#1E262E")  # unselected season / episode / version button
+CHIP_HOVER: Pair = ("#D5DDE6", "#33404D")
 PENDING: Pair = ("#765D00", "#F1C40F")  # indexer still searching
 ROW_SELECTED: Pair = ("#D7E3F0", "#2A3A4D")  # selected results-table row
 GOLD: Pair = ("#7A5200", "#FFD36A")  # the release list's ★ Recommended tag (dark gold in light)

@@ -11,6 +11,7 @@ import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from collections.abc import Sequence
 from typing import Any, cast
 
 from app.models import (
@@ -202,6 +203,7 @@ class SeasonControlTests(SeasonWindowTestCase):
         await super().asyncSetUp()
         self.states = DownloadStates()
         self.seasons: list[tuple[int, int, list[str]]] = []
+        self.aired: int | None = None
         self.batches: list[tuple[BatchKey, list[str]]] = []
         self.actions = DownloadActions[CalendarEntry](
             download=lambda entry: None,
@@ -210,10 +212,14 @@ class SeasonControlTests(SeasonWindowTestCase):
             download_all=lambda batch, entries: self.batches.append(
                 (batch, [e.episode.code for e in entries])
             ),
-            download_season=lambda show, season, entries: self.seasons.append(
-                (show.id, season, [e.episode.code for e in entries])
-            ),
+            download_season=self._season_asked,
         )
+
+    def _season_asked(
+        self, show: Show, season: int, entries: Sequence[CalendarEntry], aired: int | None
+    ) -> None:
+        self.seasons.append((show.id, season, [e.episode.code for e in entries]))
+        self.aired = aired
 
     async def test_a_finished_season_offers_the_whole_season(self) -> None:
         window = self.open(self.actions)
@@ -225,10 +231,11 @@ class SeasonControlTests(SeasonWindowTestCase):
         self.assertIsNone(window._missing_label)  # not the latest season
         control.auto.invoke()
         self.assertEqual(self.seasons, [(SHOW.id, 1, ["S01E02", "S01E03"])])
+        self.assertEqual(self.aired, 3)  # what the pack's size is judged by
         chosen: list[TvTarget] = []
         window.choose = chosen.append  # type: ignore[method-assign,assignment]
         control.choose.invoke()
-        self.assertEqual(chosen, [TvTarget(SHOW, 1, None)])  # the pack's releases
+        self.assertEqual(chosen, [TvTarget(SHOW, 1, None, 3)])  # the pack's releases
 
     async def test_with_plex_the_whole_season_shows_after_an_earlier_grab(self) -> None:
         info = details(downloaded=frozenset(e.id for e in S1))

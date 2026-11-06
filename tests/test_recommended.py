@@ -366,7 +366,7 @@ class PictureTests(unittest.TestCase):
 
     def test_the_rows_tint(self) -> None:
         # A little of the accent in the table's background, more in dark.
-        self.assertEqual(recommended_tint(dark=True), "#30383F")
+        self.assertEqual(recommended_tint(dark=True), "#2B3844")
         self.assertEqual(recommended_tint(dark=False), "#EAEDF0")
 
 

@@ -14,7 +14,7 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.models import CalendarEntry, Episode, LibraryStats, Settings, Show
+from app.models import CalendarEntry, CalendarLayout, Episode, LibraryStats, Settings, Show
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import calendar_range
 from app.services.tvmaze import TVMazeError
@@ -613,6 +613,31 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(range_slot_width(font.measure), widest + SLACK)
         # Close to the usual labels: the buttons sit right after the dates.
         self.assertLess(range_slot_width(font.measure) - font.measure("12 Oct – 8 Nov"), 30)
+
+    async def test_the_rolling_week_has_today_in_the_middle_and_no_week_count(self) -> None:
+        settings = Settings(calendar_layout=CalendarLayout.ROLLING, show_suggestions=False)
+        view = self.view(self.library(), FakeSettings(settings))
+        await view.load()
+        assert view._shown is not None
+        today = view._shown.today
+        self.assertEqual(view._shown.start, today - timedelta(days=3))
+        self.assertEqual(view._shown.end, today + timedelta(days=3))
+        self.assertEqual(view._week_count.winfo_manager(), "")
+        view._offset = 1  # the next week arrow
+        await view.load()
+        assert view._shown is not None
+        self.assertEqual(view._shown.start.weekday(), 0)  # the first Monday to come
+        self.assertGreater(view._shown.start, today)
+        self.assertLessEqual((view._shown.start - today).days, 7)
+        self.assertEqual((view._shown.end - view._shown.start).days, 6)
+
+    async def test_the_week_count_comes_back_with_weeks(self) -> None:
+        settings = FakeSettings(Settings(calendar_layout=CalendarLayout.ROLLING))
+        view = self.view(self.library(), settings)
+        await view.load()
+        settings.current = Settings(calendar_layout=CalendarLayout.WEEKS)
+        await view.load()
+        self.assertNotEqual(view._week_count.winfo_manager(), "")
 
     async def test_range_label_keeps_its_width(self) -> None:
         library = self.library()

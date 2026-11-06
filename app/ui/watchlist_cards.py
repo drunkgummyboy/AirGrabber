@@ -420,7 +420,7 @@ class WatchlistShelf(ctk.CTkFrame):
         """Show the watchlist as it is now."""
         if not self.winfo_exists():
             return
-        entries = self._watchlist.entries()
+        entries = self._watchlist.by_release()
         if not entries:
             self._clear_grid()
             self.pack_forget()

@@ -58,6 +58,7 @@ class ForgeSettings(BaseModel):
     # library's preset for that kind, `series_preset` / `movies_preset`).
     last_show_preset: str | None = None
     last_film_preset: str | None = None
+    presets_manual: bool = False  # the queue's Auto | Manual: Manual shows the preset bar
     legacy_imported: bool = False
     context_menu_presets: list[str] = []
     trailer_tools_ok: bool = False

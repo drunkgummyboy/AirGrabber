@@ -271,7 +271,9 @@ class FakeSearch:
     def movie_request(self, movie: Movie, details: MovieDetails | None = None) -> SearchRequest:
         return movie_request(movie, details)
 
-    def season_request(self, show: Show, season: int) -> SearchRequest:
+    def season_request(
+        self, show: Show, season: int, *, episodes: int | None = None
+    ) -> SearchRequest:
         return SearchRequest(kind=SearchKind.SEASON, title=show.name, season=season)
 
     def episode_request(self, show: Show, season: int, episode: int) -> SearchRequest:

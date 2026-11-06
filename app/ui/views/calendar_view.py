@@ -30,7 +30,8 @@ quiet reload after a show is followed takes it away.
 
 Its controls, on the main window's row under the band (`controls_master`, `show_controls`): in the
 middle the visible dates between ❮ and ❯ (a click on them goes back to today), on the right the
-number of weeks (1–5) and the 💡 Suggestions toggle. The cards follow Settings → Card size
+number of weeks (1–5; not on the rolling week of Settings → Looks → Calendar view, with today in
+the middle: `rolling_range`) and the 💡 Suggestions toggle. The cards follow Settings → Card size
 (`card_scale`).
 """
 
@@ -45,9 +46,9 @@ from typing import Any, Literal, NamedTuple
 import customtkinter as ctk
 
 from app.i18n import N_, day_short, month_short, t
-from app.models import CalendarEntry, Settings
+from app.models import CalendarEntry, CalendarLayout, Settings
 from app.services import ImageCache, LibraryService, SettingsService
-from app.services.library import RECENT_DAYS, calendar_range
+from app.services.library import RECENT_DAYS, calendar_range, rolling_range
 from app.ui import theme
 from app.ui.calendar_cards import (
     CompactEpisodeCard,
@@ -509,6 +510,11 @@ class CalendarView(BaseView):
     def _sync_controls(self, prefs: Settings) -> None:
         """Show the stored values (the window may reload with settings saved elsewhere)."""
         self._week_count.set(str(prefs.weeks_to_show))
+        rolling = prefs.calendar_layout is CalendarLayout.ROLLING
+        if rolling and self._week_count.winfo_manager():  # its row has one length: nothing to pick
+            self._week_count.pack_forget()
+        elif not rolling and not self._week_count.winfo_manager():
+            self._week_count.pack(side="left", before=self._suggestions_toggle)
         self._show_suggestions_state(prefs.show_suggestions)
 
     # -- loading -------------------------------------------------------------------------------
@@ -524,9 +530,12 @@ class CalendarView(BaseView):
         today = date.today()
         self._rendered_for = today
         scale = self._card_scale()
-        start, end = calendar_range(
-            today, first_day=prefs.first_day, weeks=prefs.weeks_to_show, offset=self._offset
-        )
+        if prefs.calendar_layout is CalendarLayout.ROLLING:
+            start, end = rolling_range(today, first_day=prefs.first_day, offset=self._offset)
+        else:
+            start, end = calendar_range(
+                today, first_day=prefs.first_day, weeks=prefs.weeks_to_show, offset=self._offset
+            )
         self._range.configure(text=range_label(start, end))
         profile_id = prefs.current_profile
         shown = _Shown(start, end, today, profile_id, scale, prefs.show_suggestions)

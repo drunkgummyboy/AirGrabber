@@ -269,7 +269,7 @@ class CardWidgetTests(unittest.IsolatedAsyncioTestCase):
 
         current = {"scale": FULL}
         watchlist: Any = SimpleNamespace(
-            entries=lambda: (entry(),),
+            by_release=lambda: (entry(),),
             subscribe=lambda _listener: (lambda: None),
             contains=lambda _id: True,
         )

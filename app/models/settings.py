@@ -230,6 +230,13 @@ class SubtitlesFor(StrEnum):
     FILMS = "films"
 
 
+class CalendarLayout(StrEnum):
+    """Settings → Looks → Calendar view."""
+
+    WEEKS = "weeks"  # the grid of whole weeks (1-5 of them)
+    ROLLING = "rolling"  # one row with today in the middle (`library.rolling_range`)
+
+
 class InfoLayout(StrEnum):
     """How a film's or series' info window shows its releases (app/ui/title_info.py): beside
     the info (the default) or in tabs under it. A window reads it when it opens."""
@@ -331,6 +338,7 @@ class Settings(BaseModel):
     # Newly followed shows get their "download new episodes automatically" switch turned on.
     auto_download_new_shows: bool = False
     first_day: Weekday = Weekday.MONDAY
+    calendar_layout: CalendarLayout = CalendarLayout.WEEKS
     weeks_to_show: int = Field(default=3, ge=1, le=5)
     show_suggestions: bool = True  # the calendar's suggested (untracked) show per day
     # The cards' size on every page, the calendar too (app/ui/card_scale.py). A stored size

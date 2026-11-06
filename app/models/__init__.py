@@ -81,6 +81,7 @@ from app.models.settings import (
     CardSize,
     DownloadMode,
     HearingImpaired,
+    CalendarLayout,
     InfoLayout,
     QualityProfile,
     RemoteKind,
@@ -178,6 +179,7 @@ __all__ = [
     "WatchlistEntry",
     "ThemeMode",
     "Accent",
+    "CalendarLayout",
     "InfoLayout",
     "Weekday",
 ]

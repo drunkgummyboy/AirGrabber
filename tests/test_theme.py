@@ -18,9 +18,9 @@ from app.ui.widgets import Tabview
 
 # The dark look before there was a light one: these values must never change.
 DARK_BEFORE = {
-    "BG": "#161616",
-    "SURFACE": "#242424",
-    "TAB_BG": "#1C1C1C",
+    "BG": "#10161C",
+    "SURFACE": "#1D242B",
+    "TAB_BG": "#151C23",
     "EDGE": "#4E6A85",
     "ACCENT": "#4E6A85",
     "ACCENT_HOVER": "#427839",
@@ -33,24 +33,24 @@ DARK_BEFORE = {
     "BRAND": "#8FB0D0",  # the spotlight band's "Grabber" (added later)
     "DANGER_BUTTON": "#C0392B",
     "DANGER_BUTTON_HOVER": "#922B21",
-    "PLACEHOLDER": "gray20",
+    "PLACEHOLDER": "#29333D",
     "CELL_BG": "#121620",
     "CELL_BORDER": "#1C222E",
     "TODAY_BG": "#182133",
     "SUGGESTION_BG": "#14121A",
     "SUGGESTION_BORDER": "#2A2438",
     "GRABBED": "#2E7D4F",
-    "NOT_AIRED": "gray25",
+    "NOT_AIRED": "#33404D",
     "SECTION_HOT": "#F39C12",
     "SECTION_NEW": "#2ECC71",
     "WARNING": "#F39C12",
     "ON_WARNING": "#1B2530",
-    "PANEL_EDGE": "gray20",
-    "CLOSE_BUTTON": "gray15",  # CHIP: a pop-up's round close button
+    "PANEL_EDGE": "#29333D",
+    "CLOSE_BUTTON": "#1E262E",  # CHIP: a pop-up's round close button
     "CLOSE_BUTTON_HOVER": "#C0392B",  # DANGER_BUTTON
     "CLOSE_GLYPH": "#A4B2C6",  # TEXT_MUTED
-    "CHIP": "gray15",
-    "CHIP_HOVER": "gray25",
+    "CHIP": "#1E262E",
+    "CHIP_HOVER": "#33404D",
     "PENDING": "#F1C40F",
     "ROW_SELECTED": "#2A3A4D",
     "GOLD": "#FFD36A",  # the release list's ★ Recommended tag
@@ -62,7 +62,7 @@ DARK_BEFORE = {
     "MENU_HOVER": "#4E6A85",  # ACCENT
     "SELECTED": "#4E6A85",  # ACCENT
     "SELECTED_HOVER": "#427839",  # ACCENT_HOVER
-    "SCROLLBAR": "#242424",  # SURFACE
+    "SCROLLBAR": "#1D242B",  # SURFACE
     "SUGGESTION_TEXT": "gray40",
     "SUGGESTION_BUTTON_EDGE": "gray30",
     "SUGGESTION_BUTTON_TEXT": "gray60",

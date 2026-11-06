@@ -150,7 +150,18 @@ OPTION_GROUPS: tuple[tuple[str, tuple[OptionButtonSpec, ...]], ...] = (
 
 _KINDS: tuple[Kind, ...] = ("series", "movies")
 
-FOR_LINE = N_("For: {name}")
+FOR_LINE = N_("Only {name}. Other cards keep their own preset.")
+
+PRESETS_CAPTION = N_("Presets")
+
+AUTO_MODE = N_("Auto")
+
+MANUAL_MODE = N_("Manual")
+
+MODE_TIP = N_(
+    "Auto: every show and film gets a preset by itself, and you can change it on its card. "
+    "Manual: shows the preset bar, with the naming code and the extras."
+)
 
 FOR_NEW = N_("For: new files")
 
@@ -168,7 +179,7 @@ CHANGED = N_("Changed for this item")
 
 CUSTOM_TIP = N_("Type a naming rule for this item only; it isn't saved.")
 
-_FOR_MAX = 300  # the "For:" line's name at most (CTk units; cut with "…")
+_FOR_MAX = 560  # the line over the preset menu at most (CTk units; cut with "…")
 
 FILTERS: tuple[tuple[Show, str], ...] = (
     ("all", N_("All")),

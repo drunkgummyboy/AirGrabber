@@ -148,7 +148,11 @@ from app.forge.ui.queue_parts import (
     NO_FIT,
     NO_LIBRARY_FOLDER,
     NO_LIBRARY_FOLDERS,
+    AUTO_MODE,
+    MANUAL_MODE,
+    MODE_TIP,
     OPTION_GROUPS,
+    PRESETS_CAPTION,
     QUALITY_OPTION,
     OptionButtonSpec,
     PAD_X,
@@ -202,6 +206,11 @@ def _one_at_a_time[**P](
     return guarded
 
 
+def _switch_label(text: str) -> str:
+    """A side of the Automatic | One preset for all switch, with room around its words."""
+    return f"  {t(text)}  "
+
+
 class QueueView(ctk.CTkFrame):
     """The queue on MediaForge's page. `tools_master`: where "+ Files" and "+ Folder" go (its
     owner places `toolbar` there and destroys it); without it a row at the view's top."""
@@ -227,6 +236,9 @@ class QueueView(ctk.CTkFrame):
         self.presets: list[Preset] = []
         self._choices: dict[int, Choice] = {}  # item id → its band's Choice (shared in a band)
         self._new_choice = Choice()  # the card with an empty queue: the films' default
+        # Auto: every band has its preset, its chip changes it, and the card stays out of the way.
+        # Manual: the card (the preset bar) shows the selected band's settings.
+        self.manual = services.settings.current.presets_manual
         self._card_key: tuple[object, ...] | None = None  # what the card shows (for refreshes)
         self.show: Show = "all"  # the list's filter
         self.loaded = False  # the presets have been read
@@ -321,6 +333,27 @@ class QueueView(ctk.CTkFrame):
             bar, t("+ Folder") + " ▾", self._folder_menu, edge=look.ACCENT
         )
         self.folder_button.pack(side="left", padx=(10, 0))
+        caption = ctk.CTkLabel(
+            bar, text=t(PRESETS_CAPTION), font=theme.font(13), text_color=theme.TEXT_MUTED
+        )
+        caption.pack(side="left", padx=(18, 8))
+        self.mode_switch = ctk.CTkSegmentedButton(
+            bar,
+            values=[_switch_label(AUTO_MODE), _switch_label(MANUAL_MODE)],
+            height=32,
+            font=theme.font(13),
+            fg_color=look.SURFACE,
+            selected_color=look.SELECTED,
+            selected_hover_color=look.SELECTED_HOVER,
+            unselected_color=look.SURFACE,
+            unselected_hover_color=look.CHIP_HOVER,
+            text_color=theme.BUTTON_TEXT,
+            command=self._mode_clicked,
+        )
+        self.mode_switch.set(_switch_label(MANUAL_MODE if self.manual else AUTO_MODE))
+        self.mode_switch.pack(side="left")
+        add_tooltip(caption, t(MODE_TIP))
+        add_tooltip(self.mode_switch, t(MODE_TIP))
 
     def _build_actions(self, row: Any) -> None:
         """Clear queue, Preview and Forge at the right end of the filters' row."""
@@ -378,8 +411,10 @@ class QueueView(ctk.CTkFrame):
         card.grid(row=1, column=0, sticky="ew", padx=PAD_X, pady=(4, 0))
         card.grid_columnconfigure(0, weight=1)
         self.card = card
+        if not self.manual:
+            card.grid_remove()
 
-        # "For: {name}" and "Use for all ▾" over the preset line.
+        # What the card is for now, and "Use for all ▾", over the preset line.
         line = ctk.CTkFrame(card, fg_color="transparent")
         line.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 0))
         self.for_label = ctk.CTkLabel(
@@ -979,10 +1014,30 @@ class QueueView(ctk.CTkFrame):
         elif not several and self.use_all_link.winfo_manager():
             self.use_all_link.pack_forget()
 
+    def _card_state(self) -> tuple[object, ...]:
+        return (tuple(self.selected_ids[:1]), id(self.choice), self.kind)
+
+    def _mode_clicked(self, value: str) -> None:
+        self.set_manual(value == _switch_label(MANUAL_MODE))
+
+    def set_manual(self, value: bool) -> None:
+        """The Auto | Manual switch: whether the preset bar shows. Remembered. What was chosen
+        for a band stays either way: its chip shows it."""
+        if value == self.manual:
+            return
+        self.manual = value
+        self.mode_switch.set(_switch_label(MANUAL_MODE if value else AUTO_MODE))
+        if value:
+            self.card.grid()
+        else:
+            self.card.grid_remove()
+        self._keep_a_selection()
+        self.spawn(self.services.settings.update(presets_manual=value))
+
     def _show_card(self) -> None:
         """The card for the selected band: its line, the menu, the rule, the options."""
         choice, kind = self.choice, self.kind
-        self._card_key = (tuple(self.selected_ids[:1]), id(choice), kind)
+        self._card_key = self._card_state()
         self._show_for_line()
         names = [p.name for p in self.presets_for(kind)] or ["…"]
         if list(self.preset_menu.cget("values")) != names:
@@ -1023,7 +1078,10 @@ class QueueView(ctk.CTkFrame):
         key = getattr(self._option_specs[name], self.kind)
         if key is None:
             return
-        choice = self.choice
+        self._set_option(self.choice, key, value)
+        self._schedule_flow()
+
+    def _set_option(self, choice: Choice, key: str, value: bool) -> None:
         choice.options = choice.options.model_copy(update={key: value})
         choice.chosen = True
         if key == QUALITY_OPTION:  # it changes the rule, so the names
@@ -1032,7 +1090,6 @@ class QueueView(ctk.CTkFrame):
             self._card_key = None
             self._show_card()
             self._schedule_refresh(0)
-        self._schedule_flow()
 
     def option_keys(self) -> dict[str, str]:
         """The option buttons the card shows for its kind: name → the preset option."""
@@ -1365,14 +1422,12 @@ class QueueView(ctk.CTkFrame):
         self._refresh_cost = time.perf_counter() - started
 
     def _keep_a_selection(self) -> None:
-        """While the list has bands one is selected (the first when none is), and the card shows
-        the selected band; only what changed is configured."""
+        """While the preset bar shows one band is selected (the first when none is), and the bar
+        shows the selected band; only what changed is configured."""
         lines = self.list.item_keys()
-        if self.list.selected is None and lines:
+        if self.list.selected is None and lines and self.manual:
             self.list.select(lines[0], notify=False)
-        ids = self.selected_ids
-        key = (tuple(ids[:1]), id(self.choice), self.kind)
-        if key != self._card_key:
+        if self._card_state() != self._card_key:
             self._show_card()
         else:
             self._show_for_line()

@@ -139,6 +139,7 @@ class TvTarget:
     show: Show
     season: int
     episode: int | None  # None = season pack
+    aired: int | None = None  # the season's episodes out so far, when known (a pack's size)
 
 
 @dataclass(frozen=True)
@@ -1359,12 +1360,12 @@ class ReleasePanel(ctk.CTkFrame):
     def _select_pack(self) -> None:
         target = self._target
         if isinstance(target, TvTarget) and target.episode is not None:
-            self.set_target(TvTarget(target.show, target.season, None))
+            self.set_target(TvTarget(target.show, target.season, None, target.aired))
 
     def _select_episode(self, number: int) -> None:
         target = self._target
         if isinstance(target, TvTarget) and number != target.episode:
-            self.set_target(TvTarget(target.show, target.season, number))
+            self.set_target(TvTarget(target.show, target.season, number, target.aired))
 
     def _select_quality(self, key: str) -> None:
         if key != self._quality:
@@ -1420,7 +1421,7 @@ class ReleasePanel(ctk.CTkFrame):
         if isinstance(target, MovieTarget):
             return self._search.movie_request(target.movie, await self._details_within())
         if target.episode is None:
-            return self._search.season_request(target.show, target.season)
+            return self._search.season_request(target.show, target.season, episodes=target.aired)
         return self._search.episode_request(target.show, target.season, target.episode)
 
     async def _details_within(self) -> MovieDetails | None:

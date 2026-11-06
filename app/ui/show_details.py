@@ -737,6 +737,7 @@ class SeasonItem:
     kind: SeasonKind
     needed: tuple[CalendarEntry, ...]
     keys: tuple[DownloadKey, ...]
+    aired: int | None = None  # its numbered episodes out so far: what a pack's size is judged by
 
     @property
     def key(self) -> DownloadKey:
@@ -1283,7 +1284,12 @@ class ShowDetailsWindow(TitleInfoWindow):
                 return SeasonItem(details.show, season, "missing", missing, keys)
         if self._episode_actions.download_season is None:
             return None
-        return SeasonItem(details.show, season, "whole", needed, keys)
+        aired = sum(
+            1
+            for episode in season_episodes(details.episodes, season)
+            if episode.number is not None and episode.has_aired(_now())
+        )
+        return SeasonItem(details.show, season, "whole", needed, keys, aired or None)
 
     def _paint_season_actions(self, item: SeasonItem | None) -> None:
         """The season's download control for `item` (None: none): updated in place for the
@@ -1315,7 +1321,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             if not item.needed and item.kind != "whole":
                 return
             if item.kind == "whole" and episodes.download_season is not None:
-                episodes.download_season(item.show, item.season, item.needed)
+                episodes.download_season(item.show, item.season, item.needed, item.aired)
             elif episodes.download_all is not None:
                 episodes.download_all(tuple(entry_key(e) for e in item.needed), item.needed)
             else:  # not offered: each on its own
@@ -1323,7 +1329,7 @@ class ShowDetailsWindow(TitleInfoWindow):
                     episodes.download(entry)
 
         def choose(item: SeasonItem) -> None:
-            self.choose(TvTarget(item.show, item.season, None))
+            self.choose(TvTarget(item.show, item.season, None, item.aired))
 
         return DownloadActions(download=download, choose=choose, states=episodes.states)
 
@@ -1516,6 +1522,13 @@ class ShowWindows:
         for window in self._live().values():
             window.destroy()
         self._windows = {}
+
+    def close_shown(self) -> None:
+        """Close the windows on screen (a click outside them). One a click has only just opened
+        isn't on screen yet and stays."""
+        for window in self._live().values():
+            if window.winfo_ismapped():
+                window.destroy()
 
     def _live(self) -> dict[int, ShowDetailsWindow]:
         """The windows still open (the user closes them without telling anyone)."""

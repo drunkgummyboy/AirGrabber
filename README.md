@@ -21,7 +21,8 @@
 ## What it does
 
 **Follow your series.** A calendar shows which episodes air this week, with Netflix, Disney+ and other
-streaming shows on it too. Discover what's new and filter it by service.
+streaming shows on it too. Prefer today in the middle? Choose the rolling week under ⚙ Settings → Looks.
+Discover what's new and filter it by service.
 
 <p align="center"><img src="screenshots/calendar.png" width="800" alt="The calendar with this week's episodes"></p>
 
@@ -123,7 +124,8 @@ posters and, if you want, trailers. Every rename can be undone.
 (its amber number says how many files need you), **Open MediaForge** in the tray icon's menu, or
 **MediaForge** in the Start menu. Drag files or folders from Explorer anywhere onto AirGrabber's
 window to add them. The 🕘 at the top shows the History of what was renamed, where every run can be
-undone.
+undone. In **Auto** every show and film gets its preset by itself and you can change it on its card;
+**Manual** shows the preset bar with the naming code and the extras.
 
 **The right-click menu**: select files or folders in Explorer, right-click and choose
 **MediaForge → Forge: <preset>** (on Windows 11 first **Show more options**). A small window shows

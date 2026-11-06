@@ -177,6 +177,20 @@ class WatchlistService:
             )
         )
 
+    def by_release(self) -> tuple[WatchlistEntry, ...]:
+        """The films on the list in memory by the day they count as out, earliest first; films
+        without a date last. The shelf shows them in this order."""
+        return tuple(
+            sorted(
+                self._entries.values(),
+                key=lambda entry: (
+                    available_on(entry) or date.max,
+                    entry.movie.title.casefold(),
+                    entry.movie_id,
+                ),
+            )
+        )
+
     async def due(
         self,
         now: datetime,

@@ -115,10 +115,10 @@ class PictureTests(unittest.TestCase):
 
     def test_swatches(self) -> None:
         dark = swatch_image(ThemeMode.DARK, (46, 28), "#4E6A85", 6)
-        self.assertEqual(dark.getpixel((23, 14))[:3], (22, 22, 22))  # type: ignore[index]
+        self.assertEqual(dark.getpixel((23, 14))[:3], (16, 22, 28))  # type: ignore[index]
         both = swatch_image(ThemeMode.SYSTEM, (46, 28), "#4E6A85", 6)
-        self.assertEqual(both.getpixel((10, 14))[:3], (242, 244, 247))  # type: ignore[index]
-        self.assertEqual(both.getpixel((36, 14))[:3], (22, 22, 22))  # type: ignore[index]
+        self.assertEqual(both.getpixel((10, 14))[:3], (233, 239, 245))  # type: ignore[index]
+        self.assertEqual(both.getpixel((36, 14))[:3], (16, 22, 28))  # type: ignore[index]
         self.assertEqual(both.getpixel((0, 0))[3], 0)  # type: ignore[index]
 
     def test_dashed_outline(self) -> None:

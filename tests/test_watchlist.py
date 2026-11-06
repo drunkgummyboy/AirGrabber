@@ -388,11 +388,22 @@ class ServiceTests(WatchlistTestCase):
         self.assertIsNone(await self.row(1))
         self.assertEqual(self.changes, changes + 1)
 
+    def test_by_release_goes_earliest_first_with_no_date_last(self) -> None:
+        later = entry(movie=movie(1, "Later", release_date="2027-03-01"))
+        no_date = entry(movie=movie(2, "No date", release_date=None))
+        # The digital release counts over the film's own date, as on its card.
+        soon = entry(movie=movie(3, "Soon", release_date="2030-01-01"), digital_release=date(2026, 12, 1))
+        tied_b = entry(movie=movie(4, "B", release_date="2027-06-01"))
+        tied_a = entry(movie=movie(5, "a", release_date="2027-06-01"))
+        self.service._entries = {e.movie_id: e for e in (later, no_date, soon, tied_b, tied_a)}
+        self.assertEqual([e.movie_id for e in self.service.by_release()], [3, 1, 5, 4, 2])
+
     async def test_entries_newest_first_and_load_from_the_database(self) -> None:
         for movie_id in (1, 2, 3):
             await self.service.add(movie(movie_id), profile_id=1)
             self.now += timedelta(minutes=1)
         self.assertEqual([e.movie_id for e in self.service.entries()], [3, 2, 1])
+        self.assertEqual({e.movie_id for e in self.service.by_release()}, {1, 2, 3})
         fresh = WatchlistService(self.db.watchlist, self.discovery, self.downloads)
         self.assertFalse(fresh.contains(1))
         await fresh.load()

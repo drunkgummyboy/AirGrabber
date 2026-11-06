@@ -34,7 +34,7 @@ from app.services.images import ImageCache
 from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient
 from tests.forge.base import ForgeAsyncTestCase
-from tests.forge.tk import press, pump, pump_until
+from tests.forge.tk import SPEED_ROOM, press, pump, pump_until
 
 
 def _no_network(request: httpx.Request) -> httpx.Response:
@@ -398,7 +398,7 @@ class WindowTests(ConfirmCase):
         start = time.perf_counter()
         win.refresh()
         self.root.update()
-        self.assertLess(time.perf_counter() - start, 0.25)
+        self.assertLess(time.perf_counter() - start, 0.25 * SPEED_ROOM)
 
     async def test_closing_while_files_are_read_leaves_nothing_running(self) -> None:
         files = make_files(self.tmp / "m", [f"Movie.{n}.20{n:02d}.mkv" for n in range(30)])

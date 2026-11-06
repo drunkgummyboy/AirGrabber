@@ -4,6 +4,7 @@ MediaForge's tests/helpers/tk.py)."""
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import tkinter as tk
 from collections.abc import Callable
@@ -25,6 +26,11 @@ async def pump_until(widget: tk.Misc, condition: Callable[[], object], within: f
             raise TimeoutError("condition not reached")
         widget.update()
         await asyncio.sleep(0.01)
+
+
+# How much longer a speed check may take on a busy shared computer (GitHub sets CI): what a check
+# catches there is a real slowdown, not one busy moment. This PC keeps the strict limit.
+SPEED_ROOM = 4.0 if os.environ.get("CI") else 1.0
 
 
 def press(widget: tk.Misc, key: str) -> None:
