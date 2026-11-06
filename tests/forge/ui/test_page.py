@@ -363,6 +363,8 @@ class StatusLineTests(PageCase):
         self.assertEqual(page.status_shown, t(AUTO_OFF))
         # Off because the old MediaForge is still installed: its reason, not "off".
         guard = t("Not watching until the old MediaForge is removed")
+        self.root.geometry("1600x800")  # room for all of it, whatever this PC's font measures
+        await pump(self.root, 0.2)
         page.set_watch_status(WatchStatus("off", guard))
         self.assertEqual(page.status_shown, guard)
 
