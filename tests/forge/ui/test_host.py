@@ -400,6 +400,8 @@ class RenamerTests(HostCase):
         assert self.host.status is not None
         self.assertEqual(self.host.status.state, "trial")
         page = await self.open()
+        self.root.geometry("1600x800")  # room for all of it, whatever this PC's font measures
+        await pump(self.root, 0.2)
         self.assertEqual(page.status_shown, "Manual: watching 1 folder")
         auto.on_status(WatchStatus("watching", "Watching 1 folder"))
         self.assertEqual(page.status_shown, "Watching 1 folder")
@@ -432,6 +434,8 @@ class RenamerTests(HostCase):
             self.root, lambda: self.host.status is not None and self.host.status.state == "trial"
         )
         page = await self.open()
+        self.root.geometry("1600x800")  # room for all of it, whatever this PC's font measures
+        await pump(self.root, 0.2)
         self.assertEqual(page.status_shown, "Manual: watching 1 folder")
         self.assertEqual(page.light, theme.WARNING)
         self.assertEqual(self.host.needs, 0)

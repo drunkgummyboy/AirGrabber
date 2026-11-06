@@ -344,8 +344,22 @@ class FitTests(PageCase):
 
 
 class StatusLineTests(PageCase):
+    async def test_it_fits_the_smallest_main_window_with_the_presets_switch(self) -> None:
+        for language, words in ((Language.EN, "Auto-rename off"), (Language.NL, "Automatisch uit")):
+            set_language(language)
+            page = await self.make_page()
+            self.switch.grid_remove()  # this test's stand-in: the real row has nothing there now
+            self.root.geometry("1220x640")  # MainWindow's minsize
+            await pump(self.root, 0.2)
+            page._fit_status()
+            with self.subTest(language=language):
+                self.assertEqual(page.status_shown, words)
+            page.destroy()
+
     async def test_it_follows_the_status(self) -> None:
         page = await self.make_page()
+        self.root.geometry("1600x800")  # room for all of it, whatever this PC's font measures
+        await pump(self.root, 0.2)
         # Off at first: quiet.
         self.assertEqual(page.status_shown, t(AUTO_OFF))
         self.assertEqual(page.light, theme.TEXT_MUTED)
@@ -363,8 +377,6 @@ class StatusLineTests(PageCase):
         self.assertEqual(page.status_shown, t(AUTO_OFF))
         # Off because the old MediaForge is still installed: its reason, not "off".
         guard = t("Not watching until the old MediaForge is removed")
-        self.root.geometry("1600x800")  # room for all of it, whatever this PC's font measures
-        await pump(self.root, 0.2)
         page.set_watch_status(WatchStatus("off", guard))
         self.assertEqual(page.status_shown, guard)
 
@@ -570,6 +582,8 @@ class DutchTests(PageCase):
     async def test_dutch(self) -> None:
         set_language(Language.NL)
         page = await self.make_page()
+        self.root.geometry("1600x800")
+        await pump(self.root, 0.2)
         self.assertEqual(page.status_shown, "Automatisch uit")
         page.toggle_history()
         await pump(self.root, 0.05)
