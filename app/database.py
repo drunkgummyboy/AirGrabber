@@ -1156,6 +1156,31 @@ class LibraryRepository:
         )
         return [_calendar_entry(row, is_tracked=True) for row in rows]
 
+    async def coming_up(
+        self, after: date, *, profile_id: int, limit: int
+    ) -> list[CalendarEntry]:
+        """The next numbered episode after `after` of each show a person follows, soonest first,
+        at most `limit` (the rolling week's "Coming up" row)."""
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY show_id ORDER BY air_date, season, number
+                ) AS place
+                FROM episodes
+                WHERE air_date > :after AND number IS NOT NULL
+                  AND show_id IN (SELECT show_id FROM tracked_shows WHERE profile_id = :profile)
+            ) AS e
+            JOIN shows AS s ON s.id = e.show_id
+            WHERE e.place = 1
+            ORDER BY e.air_date, e.airstamp, s.name COLLATE NOCASE
+            LIMIT :limit
+            """,
+            {"after": after.isoformat(), "profile": profile_id, "limit": limit},
+        )
+        return [_calendar_entry(row, is_tracked=True) for row in rows]
+
     async def suggestions(
         self,
         start: date,

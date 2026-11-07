@@ -309,6 +309,9 @@ _SOURCE_TAG_FAMILIES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("screener", "scr"), ("screener", "scr", "dvdscr", "bdscr", "webscr")),
 )
 _SOURCE_TAG_ALIASES = {key: tags for keys, tags in _SOURCE_TAG_FAMILIES for key in keys}
+# Skipped whatever Settings' list says: the owner's avoid list, built in (a Russian dub group whose
+# names need not say "rus").
+ALWAYS_SKIPPED: tuple[str, ...] = ("lostfilm", "lostfilms")
 
 
 @functools.lru_cache(maxsize=16)
@@ -324,9 +327,10 @@ def _excluded_phrases(keywords: tuple[str, ...]) -> tuple[str, ...]:
 
 def passes_settings(release: TorrentRelease, settings: Settings) -> bool:
     """False for releases with an excluded keyword: a whole word or phrase; "cam", "telesync",
-    "telecine" and "screener" also cover their scene tags such as CAMRip or HDTS."""
+    "telecine" and "screener" also cover their scene tags such as CAMRip or HDTS. ALWAYS_SKIPPED
+    counts as if it were on the list."""
     text = f" {_normalize(release.title)} "
-    for phrase in _excluded_phrases(settings.excluded_keywords):
+    for phrase in _excluded_phrases((*settings.excluded_keywords, *ALWAYS_SKIPPED)):
         if f" {phrase} " in text:
             return False
     return True

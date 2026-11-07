@@ -213,6 +213,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual({r.faint for r in lines}, {"Dune.2021.mkv", "Heat.1995.1080p.mkv"})
         self.assertEqual({r.status for r in lines}, {"done", "skipped"})
         self.assertEqual(rows.needs, 0)
+        self.assertEqual(rows.waiting, 1)  # the one still to rename: renamed files wait for nothing
 
     def test_done_today_hides_yesterday(self) -> None:
         now = time.time()
@@ -278,6 +279,7 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(rows.targets[item.id].parents[1], series / "VisionQuest")
         self.assertEqual((band.state, band.state_text), ("ready", "Ready"))
         self.assertEqual(rows.needs, 0)
+        self.assertEqual(rows.waiting, 1)  # no decision to make, but Forge still to click
 
     def test_watched_files_are_ready_like_any_other(self) -> None:
         downloads = self.tmp / "dl"

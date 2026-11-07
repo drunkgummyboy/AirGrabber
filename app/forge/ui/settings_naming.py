@@ -14,7 +14,8 @@ Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FO
   same type.
 - **Names language**: TMDB's language for titles and episode names (MediaForge's LANGUAGES,
   en-US by default), separate from AirGrabber's own language.
-- **Remembered matches**: the picks made for uncertain matches; forget one, or all.
+- **Remembered matches**: how many there are, and "Manage…": the picks made for uncertain matches
+  in their own window (app/forge/ui/matches_window.py); forget one, or all.
 
 As the rest of Settings, nothing is stored before Save (D9): `problem()` refuses a preset
 without a name or a name used twice; `save()` stores the presets (merged onto what is stored by
@@ -48,7 +49,8 @@ from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedM
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.models.settings import ForgeSettings
 from app.forge.ui.look import app_look
-from app.i18n import N_, t
+from app.forge.ui.matches_window import MatchesWindow
+from app.i18n import N_, t, tn
 from app.ui import dialog_kit, theme
 from app.ui.settings_layout import BOX_INNER
 from app.ui.tasks import spawn
@@ -143,6 +145,7 @@ MATCHES_TITLE = N_("Remembered matches")
 MATCHES_TEXT = N_("Your picks for uncertain TMDB matches. Forget one to be asked again.")
 FORGET = N_("Forget")
 CLEAR_ALL = N_("Clear all")
+MANAGE = N_("Manage…")
 MATCH_SHOW = N_("{title} → {label} · show")
 MATCH_MOVIE = N_("{title} → {label} · movie")
 LOAD_FAILED = N_("MediaForge's presets couldn't be read. The log has the details.")
@@ -232,7 +235,6 @@ _EXAMPLE_COLUMN = 262  # the examples table's left column
 _MONO_FAMILY = "Consolas"  # the format and the codes, as in release_panel
 _MONO_SIZE = 12
 _FORMAT_FONT_SIZE = 14  # the format field
-_MATCH_WRAP = _BOX_INNER - _BUTTON_WIDTH - 10
 
 
 # -- the right-click menu's hook ----------------------------------------------------------------
@@ -843,11 +845,17 @@ class NamingSection:
 
         # Remembered matches.
         matches = page.box(t(MATCHES_TITLE), t(MATCHES_TEXT))
-        self.match_list = ctk.CTkFrame(matches.body, fg_color="transparent")
-        self.match_list.grid_columnconfigure(0, weight=1)
-        matches.add(self.match_list)
-        self.clear_button = self._button(matches.body, t(CLEAR_ALL), self.clear_matches)
-        matches.add(self.clear_button, gap=_ROW_GAP + 2, sticky="w")
+        self.match_summary = ctk.CTkLabel(
+            matches.body,
+            text="",
+            font=theme.font(_TEXT_SIZE),
+            text_color=theme.TEXT,
+            anchor="w",
+        )
+        matches.add(self.match_summary, sticky="w")
+        self.manage_button = self._button(matches.body, t(MANAGE), self.open_matches)
+        matches.add(self.manage_button, gap=_ROW_GAP + 2, sticky="w")
+        self.matches_window: MatchesWindow | None = None
 
         self._content: list[SettingsBox] = [presets, library, language, matches]
         for box in self._content:
@@ -1325,32 +1333,37 @@ class NamingSection:
         return [match for match in self._matches if _match_key(match) not in self._forgotten]
 
     def _fill_matches(self) -> None:
-        for child in self.match_list.winfo_children():
-            child.destroy()
+        """The box's summary, and the window's list while it shows."""
         shown = self.matches
-        if not shown:
-            ctk.CTkLabel(
-                self.match_list,
-                text=t("None yet"),
-                font=theme.font(_TEXT_SIZE),
-                text_color=theme.TEXT_MUTED,
-                anchor="w",
-            ).grid(row=0, column=0, sticky="w")
-        for row_no, match in enumerate(shown):
-            pady = (0 if row_no == 0 else _ROW_GAP // 2, 0)
-            ctk.CTkLabel(
-                self.match_list,
-                text=match_text(match),
-                font=theme.font(_TEXT_SIZE),
-                text_color=theme.TEXT,
-                anchor="w",
-                justify="left",
-                wraplength=_MATCH_WRAP,
-            ).grid(row=row_no, column=0, sticky="w", pady=pady)
-            self._button(
-                self.match_list, t(FORGET), functools.partial(self.forget_match, match)
-            ).grid(row=row_no, column=1, sticky="e", padx=(10, 0), pady=pady)
-        self.clear_button.configure(state="normal" if shown else "disabled")
+        words = (
+            tn("{n} match remembered", "{n} matches remembered", len(shown)) if shown else t("None yet")
+        )
+        going = len(self._matches) - len(shown)
+        if going:
+            words += " · " + t("{n} to forget when you save", n=going)
+        self.match_summary.configure(text=words)
+        self.manage_button.configure(state="normal" if shown else "disabled")
+        window = self.matches_window
+        if window is not None and not window.closed:
+            window.show(shown)
+
+    def open_matches(self) -> None:
+        """Manage…: the list in its own window, over Settings (once)."""
+        window = self.matches_window
+        if window is not None and not window.closed:
+            window.lift()
+            return
+        self.matches_window = MatchesWindow(
+            self._page.frame.winfo_toplevel(),
+            title=t(MATCHES_TITLE),
+            text=t(MATCHES_TEXT),
+            forget_text=t(FORGET),
+            clear_text=t(CLEAR_ALL),
+            text_of=match_text,
+            on_forget=self.forget_match,
+            on_clear=self.clear_matches,
+        )
+        self.matches_window.show(self.matches)
 
     def forget_match(self, match: RememberedMatch) -> None:
         """Forget one remembered match (on Save)."""
@@ -1437,6 +1450,8 @@ class NamingSection:
             await parts.matches.forget(match)
             self._matches.remove(match)
         self._forgotten.clear()
+        if self.match_summary.winfo_exists():
+            self._fill_matches()
 
 
 def build_naming(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:

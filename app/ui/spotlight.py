@@ -415,7 +415,7 @@ def controls(layout: BandLayout) -> Sequence[Rect]:
 PILL_PAD = 4  # the switch's solid pill around its parts
 SEGMENT_PAD_X = 24  # either side of "Series" / "Movies" / "MediaForge"
 SEGMENT_FONT_SIZE = 15
-SWITCH_BADGE_GAP = 5  # MediaForge's word → its "needs you" badge, in the part's own padding
+SWITCH_BADGE_GAP = 5  # MediaForge's word → its waiting files' badge, in the part's own padding
 SWITCH_BADGE_PAD = 6  # the badge's width around its number
 
 

@@ -10,7 +10,7 @@ start of AirGrabber (app/single_instance.py) brings it back. Without a working t
 `keep_in_tray` off, closing the window quits, as before.
 
 MediaForge (Forge inside AirGrabber) shares the icon: Open MediaForge in its menu, the
-renamer's notifications through `notify`, and its "needs you" count in the tooltip and as a
+renamer's notifications through `notify`, and how many files wait there in the tooltip and as a
 small badge on the icon (`set_forge_count`, MediaForge's `with_badge`), all on the loop.
 """
 
@@ -67,7 +67,7 @@ NOTICE_BUTTON = N_("Got it")
 _IMAGE_PX = 128  # pystray hands Windows an .ico; it picks the size the tray needs from it
 _SHOW_POLL_S = 0.5  # how often a second start's "show the window" is checked for
 _STOP_TIMEOUT_S = 3.0
-# The "needs you" badge (MediaForge's `with_badge`): amber (as the switch's badge) and
+# The waiting files' badge (MediaForge's `with_badge`): amber (as the switch's badge) and
 # AirGrabber's font (D10); one colour in both modes, read when it is painted.
 _BADGE_FONT_FILE = Path(ctk.__file__).parent / "assets" / "fonts" / "Roboto" / "Roboto-Medium.ttf"
 
@@ -89,11 +89,11 @@ def close_action(*, keep_in_tray: bool, tray_running: bool, notice_shown: bool) 
 
 
 def tooltip(count: int) -> str:
-    """The icon's tooltip: AirGrabber, and how many files MediaForge needs the owner for."""
+    """The icon's tooltip: AirGrabber, and how many files wait in MediaForge."""
     if count <= 0:
         return APP_NAME
-    needs = tn("{n} file needs you", "{n} files need you", count)
-    return f"{APP_NAME} · MediaForge: {needs}"
+    waiting = tn("{n} file waiting", "{n} files waiting", count)
+    return f"{APP_NAME} · MediaForge: {waiting}"
 
 
 def with_badge(image: Image.Image, count: int) -> Image.Image:
@@ -124,7 +124,7 @@ def _badge_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 class TrayIcon:
     """The tray icon and its menu: Open AirGrabber (default: clicking the icon), Open MediaForge
     (with `on_open_forge`), Check for new episodes now, Quit; `set_count` puts MediaForge's
-    "needs you" count in its tooltip and as a badge on it.
+    waiting files' count in its tooltip and as a badge on it.
 
     Every callback runs on `loop`'s thread (handed over with call_soon_threadsafe), never on
     pystray's. `start` raises ImportError when pystray is missing; `on_failed` is called (on the
@@ -157,7 +157,7 @@ class TrayIcon:
         self._ready = False  # pystray's loop runs and the icon was shown
         self._stopping = False
         self._failed = False
-        self._count = 0  # MediaForge's "needs you" (only the loop's thread uses it)
+        self._count = 0  # MediaForge's waiting files (only the loop's thread uses it)
 
     @property
     def running(self) -> bool:
@@ -340,7 +340,7 @@ class TrayHost:
             self._icon.notify(title, message)
 
     def set_forge_count(self, count: int) -> None:
-        """MediaForge's "needs you" count on the icon (kept for an icon that starts later)."""
+        """MediaForge's waiting files on the icon (kept for an icon that starts later)."""
         self._forge_count = count
         if self._icon is not None:
             self._icon.set_count(count)

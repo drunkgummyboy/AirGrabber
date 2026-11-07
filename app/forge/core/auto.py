@@ -732,10 +732,18 @@ class AutoRenamer:
         new_needs = len(needing - held_before)
         if new_needs and settings.notify_needs:
             self.notify(*needs_message(new_needs))
-        self.on_needs(len(needing))
+        self.on_needs(self._waiting())
         await self._maybe_summary()
         self._tell_status(self.status([*lost_roots, *lost_libraries]))
         return LookResult(len(new_ids), renamed, len(needing), lost_roots)
+
+    def _waiting(self) -> int:
+        """MediaForge's number before its page is built: the watched files not renamed yet."""
+        return sum(
+            1
+            for i in self._parts.queue.items
+            if i.watched is not None and i.status not in _DONE
+        )
 
     def _needing_owner(self) -> set[int]:
         return {

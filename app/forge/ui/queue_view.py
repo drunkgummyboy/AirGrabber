@@ -244,7 +244,7 @@ class QueueView(ctk.CTkFrame):
         self.loaded = False  # the presets have been read
         self.running = False  # a Forge run is going (its progress and Cancel show)
         self.busy = False  # set by @_one_at_a_time while Preview, Forge or Undo is going
-        self.on_counts: Callable[[int], None] = lambda needs: None  # the switch's badge
+        self.on_counts: Callable[[int], None] = lambda waiting: None  # the switch's badge
         self.on_message: Callable[[str], None] = lambda text: None  # the status bar
         self._bands: dict[int, list[int]] = {}  # band key → its items
         self._targets: dict[int, Path] = {}
@@ -261,7 +261,7 @@ class QueueView(ctk.CTkFrame):
         self._flow_id: str | None = None  # the option line laid out again
         self._refreshed_at = 0.0  # time.monotonic() of the last refresh
         self._refresh_cost = 0.0  # how long it took (s)
-        self._told: tuple[object, int] | None = None  # (on_counts, needs) last told
+        self._told: tuple[object, int] | None = None  # (on_counts, waiting) last told
         self._run_total = 0
         self._run_done: set[int] = set()
         self._run_name = ""
@@ -1414,10 +1414,10 @@ class QueueView(ctk.CTkFrame):
         if not self.running:
             _set_text(self.forge_button, forge_label(len(self._pending(None))))
         self._update_example()
-        told = (self.on_counts, built.needs)
+        told = (self.on_counts, built.waiting)
         if told != self._told:  # a new listener (the page, wired after building) hears it
             self._told = told
-            self.on_counts(built.needs)
+            self.on_counts(built.waiting)
         self._refreshed_at = time.monotonic()
         self._refresh_cost = time.perf_counter() - started
 

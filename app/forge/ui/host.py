@@ -29,9 +29,9 @@ AirGrabber's main window owns one (F-21) and calls it:
 
 What it hands the auto-renamer once Forge has started (`ForgeRuntime.when_ready`, before the
 renamer starts): `on_status` → the page's status line (the last status is kept for a page built
-later); `on_needs` → `needs` and the host's own `on_needs(count)` (the "needs you" count for the
-tray and the switch: the renamer's until the queue is there, then the queue's, which also has the
-files added by hand); `notify` → the host's `notify(title, text)` (the tray's notification).
+later); `on_needs` → `needs` and the host's own `on_needs(count)` (how many files wait in the queue,
+for the tray and the switch: the renamer's until the queue is there, then the queue's, which also
+has the files added by hand); `notify` → the host's `notify(title, text)` (the tray's notification).
 `on_closed()` is called whenever a confirm window closes and `windows_open` says whether any still
 shows or a plain request is on its way (D5: a right-click start leaves AirGrabber when the last one
 closes, if its main window never showed). `on_view(history)`: History or the queue shows (🕘).
@@ -151,7 +151,7 @@ class ForgeHost:
         self.confirm_windows: list[ConfirmWindow] = []
         self._batcher = ConfirmBatcher(self._confirm_batch)
         self._status: WatchStatus | None = None
-        self._renamer_count = 0  # the renamer's "needs you"
+        self._renamer_count = 0  # the watched files the renamer knows waiting
         self._queue_count: int | None = None  # the queue's, once it is there
         self._told = 0  # the count last told
         self._opening = 0  # plain requests on their way to the page
@@ -189,7 +189,7 @@ class ForgeHost:
 
     @property
     def needs(self) -> int:
-        """How many files need the owner, as the switch and the tray say it."""
+        """How many files wait in the queue, as the switch and the tray say it."""
         return self._told
 
     @property
@@ -490,7 +490,7 @@ class ForgeHost:
         try:
             self.on_needs(count)
         except Exception:
-            log.exception("The 'needs you' count callback failed")
+            log.exception("The waiting files' count callback failed")
 
     def _renamer_notify(self, title: str, text: str) -> None:
         try:

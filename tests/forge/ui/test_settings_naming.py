@@ -763,32 +763,70 @@ class NamingSettingsTests(ForgeAsyncTestCase):
 
     async def test_matches_can_be_forgotten(self) -> None:
         dialog, part, forge = await self.ready(matches=[OFFICE, DUNE])
-        texts = labels(part.match_list)
+        self.assertEqual(part.match_summary.cget("text"), "2 matches remembered")
+        window = self.open_matches(part)
+        texts = labels(window.match_list)
         self.assertEqual(texts, [match_text(OFFICE), match_text(DUNE)])
         forget = [
             w
-            for w in part.match_list.winfo_children()
+            for w in window.match_list.winfo_children()
             if isinstance(w, ctk.CTkButton) and w.cget("text") == i18n.t(FORGET)
         ]
         forget[0].invoke()
-        self.assertEqual(labels(part.match_list), [match_text(DUNE)])
+        self.assertEqual(labels(window.match_list), [match_text(DUNE)])
+        self.assertEqual(
+            part.match_summary.cget("text"), "1 match remembered · 1 to forget when you save"
+        )
         self.assertEqual(self.remembered(forge).forgotten, [])  # on Save
+        window.close()
         self.assertTrue(await dialog._save_all())
         self.assertEqual(self.remembered(forge).stored, [DUNE])
         self.assertEqual(self.remembered(forge).forgotten, [OFFICE])
+        self.assertEqual(part.match_summary.cget("text"), "1 match remembered")
+
+    async def test_the_window_opens_once_and_closing_it_keeps_the_form(self) -> None:
+        _dialog, part, forge = await self.ready(matches=[OFFICE])
+        window = self.open_matches(part)
+        part.open_matches()
+        self.assertIs(part.matches_window, window)
+        window.done_button.invoke()
+        self.assertTrue(window.closed)
+        self.assertFalse(window.winfo_exists())
+        self.assertEqual(self.remembered(forge).forgotten, [])
+        again = self.open_matches(part)
+        self.assertIsNot(again, window)
+        again.close()
+
+    async def test_a_cancel_after_forgetting_changes_nothing(self) -> None:
+        _dialog, part, forge = await self.ready(matches=[OFFICE])
+        window = self.open_matches(part)
+        window.clear_button.invoke()
+        window.close()
+        self.assertEqual(part.match_summary.cget("text"), "None yet · 1 to forget when you save")
+        self.assertEqual(self.remembered(forge).stored, [OFFICE])
+
+    @staticmethod
+    def open_matches(part: Any) -> Any:
+        part.manage_button.invoke()
+        window = part.matches_window
+        assert window is not None
+        return window
 
     async def test_clear_all(self) -> None:
         dialog, part, forge = await self.ready(matches=[OFFICE, DUNE])
-        part.clear_button.invoke()
-        self.assertEqual(labels(part.match_list), ["None yet"])
-        self.assertEqual(str(part.clear_button.cget("state")), "disabled")
+        window = self.open_matches(part)
+        window.clear_button.invoke()
+        self.assertEqual(labels(window.match_list), ["None yet"])
+        self.assertEqual(str(window.clear_button.cget("state")), "disabled")
+        window.close()
+        self.assertEqual(str(part.manage_button.cget("state")), "disabled")
         self.assertTrue(await dialog._save_all())
         self.assertEqual(self.remembered(forge).stored, [])
 
     async def test_no_matches_yet(self) -> None:
         _dialog, part, _forge = await self.ready()
-        self.assertEqual(labels(part.match_list), ["None yet"])
-        self.assertEqual(str(part.clear_button.cget("state")), "disabled")
+        self.assertEqual(part.match_summary.cget("text"), "None yet")
+        self.assertEqual(str(part.manage_button.cget("state")), "disabled")
 
     # --- before Forge has started -----------------------------------------------------------------
 
@@ -844,7 +882,10 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.select(part, "Movie (Flat)")
         self.assertEqual(part.type_switch.get(), "Film")
         self.assertEqual(part.language_menu.get(), "Engels (VS)")
-        self.assertEqual(labels(part.match_list), ["the office → The Office (2005) · serie"])
+        self.assertEqual(part.match_summary.cget("text"), "1 keuze onthouden")
+        window = self.open_matches(part)
+        self.assertEqual(labels(window.match_list), ["the office → The Office (2005) · serie"])
+        window.close()
         part.new_preset()
         assert part.editing is not None
         self.assertEqual(part.editing.preset.name, "Nieuwe voorinstelling")

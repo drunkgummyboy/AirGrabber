@@ -28,6 +28,7 @@ from app.ui.views.calendar_view import (
     SUGGESTION_CAP,
     SUGGESTION_POOL,
     CalendarView,
+    coming_up_date,
     range_label,
     kept_scroll,
     range_slot_width,
@@ -82,6 +83,7 @@ class FakeLibrary:
         self.calendar_calls: list[tuple[date, date]] = []
         self.missing_calls: list[tuple[date, date]] = []
         self.plex_calls: list[tuple[date, date]] = []
+        self.coming_calls: list[date] = []
         self.suggestion_calls: list[tuple[date, date, int]] = []
         self.people: list[int] = []  # the person each calendar was asked for
         self.gate: asyncio.Event | None = None
@@ -108,6 +110,10 @@ class FakeLibrary:
     async def plex_between(self, start: date, end: date) -> frozenset[int]:
         self.plex_calls.append((start, end))
         return self._in_plex if self.plex_connected else frozenset()
+
+    async def coming_up(self, after: date, *, profile_id: int, limit: int) -> list[CalendarEntry]:
+        self.coming_calls.append(after)
+        return [e for e in self._tracked if e.episode.air_date and e.episode.air_date > after][:limit]
 
     async def downloaded_between(self, start: date, end: date) -> frozenset[int]:
         return self._downloaded if self.plex_connected else frozenset()
@@ -763,6 +769,47 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         await view.load()
         self.assertFalse(view.empty_box_shown)
         self.assertEqual(library.stats_people, [])
+
+
+    # --- the rolling week's "Coming up" row --------------------------------------------------
+
+    @staticmethod
+    def coming_row(view: CalendarView) -> list[Any]:
+        assert view._weeks is not None
+        return list(view._weeks.grid_slaves(row=2))
+
+    async def test_coming_up_shows_the_next_episodes_with_their_dates(self) -> None:
+        later = TODAY + timedelta(days=20)
+        library = FakeLibrary([entry(1, later, tracked=True)], [])
+        settings = Settings(calendar_layout=CalendarLayout.ROLLING, show_suggestions=False)
+        view = self.view(library, FakeSettings(settings))
+        await view.load()
+        self.assertEqual(library.coming_calls, [TODAY + timedelta(days=3)])
+        [card] = self.coming_row(view)
+        self.assertIsInstance(card, EpisodeCard)
+        self.assertEqual(card._not_aired, coming_up_date(later))
+
+    async def test_coming_up_from_an_earlier_week_still_starts_after_today(self) -> None:
+        library = FakeLibrary([], [])
+        settings = Settings(calendar_layout=CalendarLayout.ROLLING, show_suggestions=False)
+        view = self.view(library, FakeSettings(settings))
+        view._offset = -2
+        await view.load()
+        self.assertEqual(library.coming_calls, [TODAY])
+
+    async def test_nothing_announced_no_coming_up_row(self) -> None:
+        settings = Settings(calendar_layout=CalendarLayout.ROLLING, show_suggestions=False)
+        view = self.view(FakeLibrary([], []), FakeSettings(settings))
+        await view.load()
+        self.assertEqual(self.coming_row(view), [])
+        assert view._weeks is not None
+        self.assertEqual(view._weeks.grid_slaves(row=1), [])
+
+    async def test_no_coming_up_row_on_the_weeks_view(self) -> None:
+        library = FakeLibrary([entry(1, TODAY + timedelta(days=90), tracked=True)], [])
+        view = self.view(library, FakeSettings(Settings(show_suggestions=False)))
+        await view.load()
+        self.assertEqual(library.coming_calls, [])
 
 
 class KeptScrollTests(unittest.TestCase):

@@ -526,6 +526,12 @@ NL: dict[str, str] = {
         "opnieuw gevraagd.",
     "Forget": "Vergeten",
     "Clear all": "Alles wissen",
+    "Manage…": "Beheren…",
+    "{n} match remembered": "{n} keuze onthouden",
+    "{n} matches remembered": "{n} keuzes onthouden",
+    "{n} to forget when you save": "{n} te vergeten bij Opslaan",
+    "Nothing is forgotten until you click Save in Settings.":
+        "Er wordt niets vergeten tot je in Instellingen op Opslaan klikt.",
     "{title} → {label} · show": "{title} → {label} · serie",
     "{title} → {label} · movie": "{title} → {label} · film",
     # app/forge/core/auto.py (F-26: the old MediaForge still installed)

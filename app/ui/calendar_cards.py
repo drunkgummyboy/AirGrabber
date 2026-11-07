@@ -379,7 +379,10 @@ class EpisodeCard(ctk.CTkFrame):
         missing: bool = False,
         new: bool = False,
         have: HaveMark | None = None,
+        not_aired_text: str | None = None,
     ) -> None:
+        """`not_aired_text`: said instead of "Not aired" (the "Coming up" row's date)."""
+        self._not_aired = t(NOT_AIRED_TEXT) if not_aired_text is None else not_aired_text
         self._card_note = card_note(missing=missing, new=new, have=have)
         layout = self._card_layout(scale, self._card_note is not None)
         super().__init__(
@@ -437,7 +440,7 @@ class EpisodeCard(ctk.CTkFrame):
         if self._control is not None:
             self._grid_control()
         else:
-            canvas.itemconfigure(self._status, text=t(NOT_AIRED_TEXT))
+            canvas.itemconfigure(self._status, text=self._not_aired)
         canvas.bind("<Configure>", self._on_resize)
 
     # -- what a stack card does differently ----------------------------------------------------
@@ -606,7 +609,7 @@ class EpisodeCard(ctk.CTkFrame):
             row_middle = layout.pad_bottom + layout.row_height / 2
             canvas.itemconfigure(
                 self._status,
-                text=elide_to_width(t(NOT_AIRED_TEXT), room, self._code_font.measure),
+                text=elide_to_width(self._not_aired, room, self._code_font.measure),
                 font=self._code_font.create_scaled_tuple(scaling),
             )
             canvas.coords(self._status, x, height - round(row_middle * scaling))

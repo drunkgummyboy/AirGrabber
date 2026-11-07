@@ -1191,7 +1191,7 @@ class WatchedTest(QueueCase):
         self.assertEqual(self.view.filter_buttons["all"].cget("text"), "All 1")
         self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 1")
 
-    async def test_needs_counts_only_what_needs_you(self) -> None:
+    async def test_the_number_counts_everything_not_renamed_yet(self) -> None:
         counts: list[int] = []
         self.view.on_counts = counts.append
         downloads, _, _ = await self.library()
@@ -1203,7 +1203,7 @@ class WatchedTest(QueueCase):
         self.services.queue.hold(held, "TMDB doesn't know this episode.")
         self.view.refresh()
         await pump(self.root, 0.1)
-        self.assertEqual(counts[-1], 1)  # the held one only
+        self.assertEqual(counts[-1], 3)  # the dropped file, the ready one and the held one
         self.assertIsNotNone(self.services.queue.get(ready))
 
     async def test_rename_on_a_watched_band_moves_it_to_the_library(self) -> None:

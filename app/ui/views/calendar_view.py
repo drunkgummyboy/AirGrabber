@@ -28,6 +28,10 @@ box sits over the grid: "You don't follow any shows yet" with "Pick shows to fol
 opens the "Let's get started" window (app/ui/get_started.py, through `on_pick_shows`). The
 quiet reload after a show is followed takes it away.
 
+On the rolling week (Settings → Looks → Calendar view) a row sits under the days: "Coming up", the
+next episode of each followed show after what the row of days shows (and never before today),
+soonest first, one card under each day's column (`coming_up`, built with the grid).
+
 Its controls, on the main window's row under the band (`controls_master`, `show_controls`): in the
 middle the visible dates between ❮ and ❯ (a click on them goes back to today), on the right the
 number of weeks (1–5; not on the rolling week of Settings → Looks → Calendar view, with today in
@@ -101,6 +105,9 @@ ARROW_SIZE = 32  # the round ❮ and ❯ buttons
 ARROW_FONT_SIZE = 13
 CONTROLS_PAD_RIGHT = 20  # the row's right end, level with the band's name button
 BACK_TO_TODAY = N_("Back to today")
+COMING_UP_TITLE = N_("Coming up")
+COMING_UP_COUNT = 7  # one under each day's column
+COMING_UP_GAP = 14  # above its heading
 RANGE_ARROW_GAP = 4  # between the dates and ❮ / ❯
 CONTROL_GAP = 10  # between the week count and the Suggestions toggle
 WEEK_BUTTON_WIDTH = 30  # each of the week count's 1–5
@@ -167,6 +174,11 @@ def suggestions_look(shown: bool) -> dict[str, Any]:
         "border_color": theme.EDGE,
         "text_color": theme.TEXT_MUTED,
     }
+
+
+def coming_up_date(day: date) -> str:
+    """A "Coming up" card's date: "Wed 11 Nov" (in Dutch "wo 11 nov")."""
+    return f"{day_short(day)} {_day_month(day)}"
 
 
 def day_label(day: date) -> str:
@@ -575,6 +587,13 @@ class CalendarView(BaseView):
             in_plex=in_plex,
             downloaded=downloaded,
         )
+        if prefs.calendar_layout is CalendarLayout.ROLLING:
+            coming = await self._library.coming_up(
+                max(end, today), profile_id=profile_id, limit=COMING_UP_COUNT
+            )
+            if not self.winfo_exists():
+                return
+            self._render_coming_up(weeks, coming, scale=scale)
 
         failed = False
         first = suggestion_start(start, end, today=today) if prefs.show_suggestions else None
@@ -861,6 +880,31 @@ class CalendarView(BaseView):
             downloaded=downloaded,
             have=have,
         )
+
+    def _render_coming_up(
+        self, weeks: ctk.CTkFrame, entries: Sequence[CalendarEntry], *, scale: CardScale
+    ) -> None:
+        """The heading and a card under each day's column; nothing when nothing is announced."""
+        if not entries:
+            return
+        ctk.CTkLabel(
+            weeks,
+            text=t(COMING_UP_TITLE),
+            font=theme.font(14, bold=True),
+            text_color=theme.TEXT,
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=7, sticky="w", padx=3, pady=(COMING_UP_GAP, 2))
+        for column, entry in enumerate(entries):
+            air_date = entry.episode.air_date
+            EpisodeCard(
+                weeks,
+                entry,
+                images=self._images,
+                actions=self._episode_actions,
+                scale=scale,
+                on_open_show=self._on_open_show,
+                not_aired_text=coming_up_date(air_date) if air_date is not None else None,
+            ).grid(row=2, column=column, sticky="new", padx=3 + CELL_PAD_X, pady=(0, 3))
 
     def _remember_fold(self, key: FoldKey, unfolded: bool) -> None:
         if unfolded:

@@ -294,7 +294,7 @@ class TrayIconTests(unittest.TestCase):
         icon = self._started_icon()
         plain = icon.icon
         self.tray.set_count(3)
-        self.assertEqual(icon.title, "AirGrabber · MediaForge: 3 files need you")
+        self.assertEqual(icon.title, "AirGrabber · MediaForge: 3 files waiting")
         self.assertIsNot(icon.icon, plain)  # the badge
         self.tray.set_count(0)
         self.assertEqual(icon.title, "AirGrabber")
@@ -303,7 +303,7 @@ class TrayIconTests(unittest.TestCase):
     def test_a_count_before_the_icon_starts_with_it(self) -> None:
         self.tray.set_count(1)
         icon = self._started_icon()
-        self.assertEqual(icon.title, "AirGrabber · MediaForge: 1 file needs you")
+        self.assertEqual(icon.title, "AirGrabber · MediaForge: 1 file waiting")
         self.assertEqual(_alpha(icon.icon, (11, 11)), 255)  # the badge on the 16 px picture
         self.assertEqual(_alpha(icon.icon, (0, 0)), 0)
 
@@ -325,8 +325,8 @@ class BadgeTests(unittest.TestCase):
     def test_tooltip(self) -> None:
         self.assertEqual(tooltip(0), "AirGrabber")
         self.assertEqual(tooltip(-2), "AirGrabber")
-        self.assertEqual(tooltip(1), "AirGrabber · MediaForge: 1 file needs you")
-        self.assertEqual(tooltip(12), "AirGrabber · MediaForge: 12 files need you")
+        self.assertEqual(tooltip(1), "AirGrabber · MediaForge: 1 file waiting")
+        self.assertEqual(tooltip(12), "AirGrabber · MediaForge: 12 files waiting")
 
     def test_with_badge_leaves_the_picture_alone(self) -> None:
         plain = Image.new("RGBA", (128, 100), (0, 0, 0, 0))  # the logo isn't square

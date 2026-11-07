@@ -104,6 +104,28 @@ class MissingBetweenTests(DatabaseTestCase):
         self.assertEqual(await self.new_between(start, end, four_hours_later), frozenset())
 
 
+class ComingUpTests(ServiceTestCase):
+    async def test_the_next_episode_of_each_followed_show_soonest_first(self) -> None:
+        after = NOW.date()
+        await self.add_show(1, [ep(11, 1, 1, aired=NOW + 9 * DAY), ep(12, 1, 2, aired=NOW + 16 * DAY)])
+        await self.add_show(
+            2,
+            [
+                ep(21, 3, 4, aired=NOW + 2 * DAY, show_id=2),
+                ep(22, 3, 5, aired=NOW + 9 * DAY, show_id=2),
+            ],
+        )
+        await self.add_show(3, [ep(31, 1, 1, aired=NOW - DAY, show_id=3)])  # nothing to come
+        await self.add_show(4, [ep(41, 1, 1, aired=NOW + DAY, show_id=4)], tracked=False)
+        found = await self.library.coming_up(after, profile_id=1, limit=7)
+        self.assertEqual([e.episode.id for e in found], [21, 11])
+        self.assertTrue(all(e.is_tracked for e in found))
+        self.assertEqual(
+            [e.episode.id for e in await self.library.coming_up(after, profile_id=1, limit=1)], [21]
+        )
+        self.assertEqual(await self.library.coming_up(after, profile_id=2, limit=7), [])
+
+
 class LibraryMissingBetweenTests(ServiceTestCase):
     async def grab_at(self, when: datetime, show_id: int, season: int, number: int | None) -> None:
         await self.db.history.add(

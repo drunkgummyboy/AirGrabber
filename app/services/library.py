@@ -175,6 +175,12 @@ class LibraryService:
         """The episodes of the shows a person follows airing between `start` and `end`."""
         return await self._library.calendar(start, end, profile_id=profile_id)
 
+    async def coming_up(
+        self, after: date, *, profile_id: int, limit: int
+    ) -> list[CalendarEntry]:
+        """The next episode after `after` of each show a person follows, soonest first."""
+        return await self._library.coming_up(after, profile_id=profile_id, limit=limit)
+
     async def episodes(self, show_id: int) -> list[Episode]:
         """The stored episodes of a show, by season and number (specials have no number)."""
         return await self._library.episodes(show_id)

@@ -378,6 +378,13 @@ class RelevanceTests(unittest.TestCase):
 
 
 class SettingsFilterTests(unittest.TestCase):
+    def test_lostfilm_is_skipped_whatever_the_list_says(self) -> None:
+        for keywords in ((), ("cam",)):
+            settings = Settings(excluded_keywords=keywords)
+            for title in ("Show.S01E06.1080p.rus.LostFilm.TV.mkv", "Show S01E06 LostFilms 1080p"):
+                self.assertFalse(passes_settings(release(title), settings), title)
+            self.assertTrue(passes_settings(release("Lost.Films.S01E06.1080p"), settings))
+
     def test_default_excluded_keywords_are_words(self) -> None:
         settings = Settings()
         self.assertEqual(settings.excluded_keywords, ("cam", "telesync", "hdcam", "sample"))
@@ -1163,9 +1170,11 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(self.hosts), ["apibay.org", "bitsearch.eu", "eztvx.to"])
         releases = final.releases
         # 31 raw hits; 5 releases are on both APIBay and Bitsearch, one on all three.
-        self.assertEqual(len(releases), 25)
-        self.assertEqual(final.hidden, ())
-        self.assertEqual(len({r.info_hash for r in releases}), 25)
+        self.assertEqual(len(releases), 24)  # LostFilm's is hidden, whatever the list says
+        self.assertEqual(
+            [r.title for r in final.hidden], ["Severance.S02E01.1080p.rus.LostFilm.TV.mkv"]
+        )
+        self.assertEqual(len({r.info_hash for r in releases}), 24)
         self.assertTrue(all("s02e01" in r.title.lower() for r in releases))
         self.assertEqual(
             [r.seeders for r in releases], sorted((r.seeders for r in releases), reverse=True)

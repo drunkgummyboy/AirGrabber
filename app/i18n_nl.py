@@ -474,6 +474,9 @@ NL: dict[str, str] = {
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
     "In Plex": "In Plex",
+    "Coming up": "Binnenkort",
+    "{n} file waiting": "{n} bestand wacht",
+    "{n} files waiting": "{n} bestanden wachten",
     "This download holds a program ({suffix}) instead of just a video, so it wasn't started.":
         "Deze download bevat een programma ({suffix}) in plaats van alleen een video, dus hij is niet gestart.",
     "✓ In Plex": "✓ In Plex",
@@ -1335,6 +1338,14 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "The rolling week shows what's coming up: under the days, the next episode of each of your shows.":
+        "De doorlopende week toont wat eraan komt: onder de dagen de volgende aflevering van elke serie.",
+    "The number on MediaForge now counts every file waiting in the queue, not only those that need you.":
+        "Het getal op MediaForge telt nu elk bestand dat in de wachtrij staat, niet alleen wat jou nodig heeft.",
+    "Settings, Naming: remembered matches moved to a small window of their own.":
+        "Instellingen, Naamgeving: onthouden keuzes staan nu in een eigen klein venster.",
+    "LostFilm's Russian releases are always skipped.":
+        "Russische releases van LostFilm worden altijd overgeslagen.",
     "A torrent is read before it downloads: one holding a program, like a fake episode.exe, is refused.":
         "Een torrent wordt gelezen voor hij start: een met een programma, zoals een nep-aflevering.exe, wordt geweigerd.",
     "Calendar cards show ✓ In Plex and ✓ Downloaded, and keep them after a restart or an update.":

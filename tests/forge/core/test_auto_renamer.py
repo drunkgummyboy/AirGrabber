@@ -375,6 +375,18 @@ class RenamerTest(RenamerTestCase):
         assert sorted(tuple(r.kinds) for r in runs) == [(MediaKind.EPISODE,), (MediaKind.MOVIE,)]
         assert {r.source for r in runs} == {RunSource.AUTOMATIC}
 
+    async def test_the_number_counts_what_waits_the_notice_only_what_needs_you(self) -> None:
+        await self.use(automatic="trial")
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        clock = Clock()
+        notes: list[tuple[str, str]] = []
+        auto = self.renamer(clock, notes)
+        told: list[int] = []
+        auto.on_needs = told.append
+        await self.two_looks(auto, clock)
+        assert told[-1] == 1  # ready, waiting for Forge
+        assert notes == []  # nothing to decide: no notification
+
     async def test_the_needs_notification_comes_once_per_batch(self) -> None:
         await self.use()
         self.folders.download("Dune.mkv")

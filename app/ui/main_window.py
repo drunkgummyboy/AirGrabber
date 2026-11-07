@@ -818,8 +818,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._report(outcome_text(outcome), _OLD_FORGE_STATUS_MS)
 
     def _on_forge_needs(self, count: int) -> None:
-        """How many files need the owner (ForgeHost's count): the badge on MediaForge's word in
-        the switch and the tray's."""
+        """How many files wait in the queue (ForgeHost's count): the badge on MediaForge's word
+        in the switch and the tray's."""
         self._band.set_forge_count(count)
         self.tray.set_forge_count(count)
 

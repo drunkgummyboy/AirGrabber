@@ -155,8 +155,13 @@ class QueueRows:
 
     @property
     def needs(self) -> int:
-        """Files that need the owner (the Queue tab's badge)."""
+        """Files that need the owner (the "Needs you" filter)."""
         return self.counts.get("needs", 0)
+
+    @property
+    def waiting(self) -> int:
+        """Files not renamed yet, whether they need a decision or just Forge: MediaForge's number."""
+        return self.needs + self.counts.get("ready", 0)
 
 
 def empty_texts(show: Show, *, others: bool) -> tuple[str, str]:

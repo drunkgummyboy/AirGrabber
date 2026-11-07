@@ -23,7 +23,7 @@ meanwhile (a new width, a look, new titles).
 
 The Series / Movies / MediaForge switch (`ModeSwitch`, below) is a canvas of its own at the right
 end of the tabs row under the band: a solid pill over a soft shadow on the page's background, with
-MediaForge's "needs you" count on its word (`set_count`).
+MediaForge's count of waiting files on its word (`set_count`).
 
 Every ROTATE_S seconds the next title fades in (FADE_STEPS frames over FADE_MS, blended in a
 worker thread), not while the pointer is over the band, not at all with Settings'
@@ -219,7 +219,7 @@ class SpotlightBand(tk.Canvas):
         self._on_home = on_home
         self._on_part = on_part  # a click on the main menu's switch (none: no switch)
         self._part: SwitchPart | None = SwitchPart.SERIES  # lit; None: the Downloads page
-        self._forge_count = 0  # MediaForge's "needs you" count, on its part
+        self._forge_count = 0  # MediaForge's waiting files, on its part
         self._switch_images: dict[Hashable, Image.Image] = {}
         self._switch_pads: dict[Hashable, int] = {}
         self._home_hover = False  # the pointer over the logo or "AirGrabber"
@@ -847,7 +847,7 @@ class SpotlightBand(tk.Canvas):
 
     @property
     def forge_count(self) -> int:
-        """MediaForge's "needs you" count on the switch."""
+        """MediaForge's waiting files on the switch."""
         return self._forge_count
 
     def select_part(self, part: SwitchPart | None) -> None:
@@ -857,7 +857,7 @@ class SpotlightBand(tk.Canvas):
             self._paint_switch()
 
     def set_forge_count(self, count: int) -> None:
-        """MediaForge's "needs you" count: the amber badge on its word (hidden at 0)."""
+        """MediaForge's waiting files: the amber badge on its word (hidden at 0)."""
         count = max(0, count)
         if count != self._forge_count:
             self._forge_count = count
