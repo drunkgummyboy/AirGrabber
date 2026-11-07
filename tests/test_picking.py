@@ -14,6 +14,7 @@ from app.models import (
     TorrentRelease,
 )
 from app.services.picking import (
+    is_dual_audio,
     is_likely_fake,
     is_multi_episode,
     is_pre_release,
@@ -263,6 +264,31 @@ class SeederTests(unittest.TestCase):
             ["Severance S02E01 1080p WEB-B", "Severance S02E01 1080p WEB-C",
              "Severance S02E01 1080p WEB-A"],
         )
+
+
+class DualAudioTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = Settings()
+
+    def test_dual_ranks_below_single_audio_of_the_same_quality(self) -> None:
+        dual = rel("Severance S02E01 1080p AMZN WEB DL DDP5 1 H 264 DUAL BiOMA", seeders=900)
+        plain = rel("Severance S02E01 1080p WEB h264-GRACE", seeders=20)
+        self.assertEqual(rank_releases([dual, plain], EPISODE, self.settings), [plain, dual])
+
+    def test_quality_still_comes_first(self) -> None:
+        dual = rel("Severance S02E01 1080p WEB DUAL-GRP", seeders=20)
+        low = rel("Severance S02E01 480p WEB-GRP", seeders=900)
+        self.assertEqual(pick_best([dual, low], EPISODE, self.settings), dual)
+
+    def test_dual_is_still_picked_when_nothing_else_is_there(self) -> None:
+        dual = rel("Severance S02E01 1080p WEB DUAL-GRP", seeders=20)
+        self.assertEqual(pick_best([dual], EPISODE, self.settings), dual)
+
+    def test_only_the_whole_word_and_not_the_shows_own_name(self) -> None:
+        self.assertFalse(is_dual_audio(rel("Severance S02E01 Dualist 1080p"), EPISODE))
+        own = EPISODE.model_copy(update={"title": "Dual Survival"})
+        self.assertFalse(is_dual_audio(rel("Dual Survival S02E01 1080p"), own))
+        self.assertTrue(is_dual_audio(rel("Severance.S02E01.1080p.DUAL.mkv"), EPISODE))
 
 
 class PackTests(unittest.TestCase):

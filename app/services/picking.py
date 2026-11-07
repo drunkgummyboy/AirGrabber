@@ -234,11 +234,19 @@ def size_rank(
     return 0, 0.0
 
 
+def is_dual_audio(release: TorrentRelease, request: SearchRequest) -> bool:
+    """A "DUAL" release: two audio tracks, and the one that plays first may be a dub (the owner
+    got Russian ones). Unless the show or film's own title has the word."""
+    words = set(_normalize(release.title).split())
+    return "dual" in words and "dual" not in _normalize(request.title).split()
+
+
 def _sort_key(
     release: TorrentRelease, request: SearchRequest, settings: Settings
-) -> tuple[int, tuple[int, float], bool, int, bool]:
+) -> tuple[int, bool, tuple[int, float], bool, int, bool]:
     return (
         quality_rank(release, quality_profile(request.kind, settings)),
+        is_dual_audio(release, request),
         size_rank(release, request, settings),
         not is_preferred(release, settings),
         -release.seeders,
@@ -254,9 +262,9 @@ def rank_releases(
     Kept: relevant to `request`, no excluded keyword, not a likely fake, not a pre-release
     copy; and, when any of those has seeders, only the ones that have. For an EPISODE request
     the single-episode releases only, unless there are none (then the packs that hold the
-    episode). Ranked by quality closeness (`quality_profile` for the request's kind), the size
-    range (`size_rank`), preferred group, seeders (most first), known size before unknown; ties
-    keep their order.
+    episode). Ranked by quality closeness (`quality_profile` for the request's kind), single
+    audio before "DUAL" (`is_dual_audio`), the size range (`size_rank`), preferred group, seeders
+    (most first), known size before unknown; ties keep their order.
     """
     candidates = [
         release
