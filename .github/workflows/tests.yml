@@ -37,5 +37,15 @@ jobs:
         run: python -m pip install -r requirements.txt mypy
       - name: Check the types
         run: python -m mypy
+      # What failed also goes in the run's summary (annotations), which needs no sign-in to read.
       - name: Run the tests
-        run: python -m unittest discover -s tests -t .
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -t . 2>&1 | Tee-Object -FilePath tests.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Select-String -Path tests.log -Pattern '^(FAIL|ERROR): |^[A-Za-z_.]*Error: ' |
+              Select-Object -First 9 |
+              ForEach-Object { $line = $_.Line; "::error::$($line.Substring(0, [Math]::Min(180, $line.Length)))" }
+          }
+          exit $code
