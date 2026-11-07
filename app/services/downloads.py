@@ -54,6 +54,7 @@ from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
 from app.services.torrent_app import find_torrent_app
 from app.services.torrent_file import torrent_problem
+from app.services.torrent_files import program_inside
 
 log = logging.getLogger(__name__)
 
@@ -92,8 +93,18 @@ _WINDOWS_DEVICE_NAMES = frozenset(
 )
 
 
+PROGRAM_IN_TORRENT = N_(
+    "This download holds a program ({suffix}) instead of just a video, so it wasn't started."
+)
+
+
 class GrabError(Exception):
     """A release could not be grabbed (user-facing text)."""
+
+
+class ProgramInTorrent(GrabError):
+    """A release's .torrent holds a program (app/services/torrent_files.py): malware dressed up as
+    a video. It is never handed on; a one-click download tries the next best release."""
 
 
 class DownloadService:
@@ -287,6 +298,9 @@ class DownloadService:
             content, _ = await self._fetch_torrent(
                 ITORRENTS_URL.format(info_hash.upper()), "itorrents.org", info_hash
             )
+        if content is not None and (suffix := program_inside(content)) is not None:
+            log.warning("Refused %r: its torrent holds a %s file", release.title, suffix)
+            raise ProgramInTorrent(t(PROGRAM_IN_TORRENT, suffix=suffix))
         return content, magnet, info_hash
 
     async def _grab_to_folder(

@@ -56,6 +56,7 @@ from app.ui.calendar_cards import (
     EpisodeCard,
     OpenShow,
     SuggestionCard,
+    have_mark,
 )
 from app.ui.calendar_stack import CompactStackCard, FoldKey, Stack, StackCard, stack_entries
 from app.ui.card_scale import FULL, CardScale
@@ -552,6 +553,7 @@ class CalendarView(BaseView):
         missing = await self._library.missing_between(start, end, profile_id=profile_id)
         new = await self._library.new_between(start, end, profile_id=profile_id)
         in_plex = await self._library.plex_between(start, end)
+        downloaded = await self._library.downloaded_between(start, end)
         follows_none = (
             self._on_pick_shows is not None
             and (await self._library.stats(profile_id=profile_id)).tracked_shows == 0
@@ -571,6 +573,7 @@ class CalendarView(BaseView):
             missing=missing,
             new=new,
             in_plex=in_plex,
+            downloaded=downloaded,
         )
 
         failed = False
@@ -735,12 +738,14 @@ class CalendarView(BaseView):
         missing: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
         in_plex: Collection[int] = frozenset(),
+        downloaded: Collection[int] = frozenset(),
     ) -> dict[date, ctk.CTkFrame]:
         """Fill the empty grid `weeks` (`_new_grid`): one cell per day with its tracked
         episodes, a show's episodes of one day on one stack card. `marks`: Plex is connected
         (what you have and miss shows); then `missing`: the ids of the episodes that get the
         amber note; `new`: those aired less than a day ago, a blue "New" note; `in_plex`:
-        those in Plex. Returns the cells.
+        those in Plex, `downloaded`: those downloaded and not in Plex yet, a ✓. Returns the
+        cells.
 
         Yields to the event loop after each day: a whole week of poster cards takes Tk ~250 ms
         to draw. Cancelled at a yield, it leaves a partial grid for the next load to destroy.
@@ -773,6 +778,7 @@ class CalendarView(BaseView):
                     missing=missing,
                     new=new,
                     in_plex=in_plex,
+                    downloaded=downloaded,
                 )
                 card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
             await _yield_to_ui()
@@ -789,11 +795,17 @@ class CalendarView(BaseView):
         missing: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
         in_plex: Collection[int] = frozenset(),
+        downloaded: Collection[int] = frozenset(),
     ) -> ctk.CTkFrame:
         """The card of one show's episodes of the day: a single episode's card, or a stack
         card for more. Without Plex (`marks` False) no note: nothing is missing or new."""
         marked = marks and any(entry.episode.id in missing for entry in group)
         fresh = marks and any(entry.episode.id in new for entry in group)
+        have = (
+            have_mark((entry.episode.id for entry in group), in_plex, downloaded)
+            if marks
+            else None
+        )
         if len(group) == 1:
             entry = group[0]
             if style == "full":
@@ -806,6 +818,7 @@ class CalendarView(BaseView):
                     on_open_show=self._on_open_show,
                     missing=marked,
                     new=fresh,
+                    have=have,
                 )
             return CompactEpisodeCard(
                 cell,
@@ -815,6 +828,7 @@ class CalendarView(BaseView):
                 on_open_show=self._on_open_show,
                 missing=marked,
                 new=fresh,
+                have=have,
             )
         stack = Stack(tuple(group))
         if style == "full":
@@ -831,6 +845,8 @@ class CalendarView(BaseView):
                 marks=marks,
                 in_plex=in_plex,
                 new=new,
+                downloaded=downloaded,
+                have=have,
             )
         return CompactStackCard(
             cell,
@@ -842,6 +858,8 @@ class CalendarView(BaseView):
             marks=marks,
             in_plex=in_plex,
             new=new,
+            downloaded=downloaded,
+            have=have,
         )
 
     def _remember_fold(self, key: FoldKey, unfolded: bool) -> None:

@@ -27,8 +27,8 @@ from app.models import (
     SearchRequest,
     TorrentRelease,
 )
-from app.services.downloads import DownloadService
-from app.services.picking import pick_best
+from app.services.downloads import DownloadService, ProgramInTorrent
+from app.services.picking import rank_releases
 from app.services.search import TorrentSearchService
 from app.services.settings import SettingsService
 
@@ -40,6 +40,7 @@ Progress = Callable[[str], None]
 _TargetKey = tuple[MediaType, int, int | None, int | None]
 
 SEARCH_TIMEOUT = 30.0  # seconds a one-click download waits for the sources, in all
+MAX_PICKS = 5  # how many releases it tries when the best ones turn out to hold a program
 
 
 @dataclass(slots=True)
@@ -126,30 +127,36 @@ class QuickDownloadService:
     ) -> QuickDownloadResult:
         settings = self._settings.current
         releases = await self._collect(request, label, progress)
-        best = pick_best(releases, request, settings)
-        if best is None:
+        ranked = rank_releases(releases, request, settings)
+        if not ranked:
             log.info("One-click %s: nothing suitable among %d results", label, len(releases))
             return QuickDownloadResult(found=False)
-        quality = best.resolution.value if best.resolution else None
-        log.info(
-            "One-click %s: picked a %s release with %d seeders from %d results",
-            label,
-            quality or "unknown-quality",
-            best.seeders,
-            len(releases),
-        )
-        if progress is not None:
-            progress(t("Grabbing the best one…"))
-        grab = await self._downloads.grab(best, target)
-        log.info("One-click %s: %s", label, grab.outcome.value)
-        return QuickDownloadResult(
-            found=True,
-            release_title=best.title,
-            quality=quality,
-            seeders=best.seeders,
-            size_bytes=best.size_bytes or None,  # 0 = the source didn't say
-            grab=grab,
-        )
+        for best in ranked[:MAX_PICKS]:
+            quality = best.resolution.value if best.resolution else None
+            log.info(
+                "One-click %s: picked a %s release with %d seeders from %d results",
+                label,
+                quality or "unknown-quality",
+                best.seeders,
+                len(releases),
+            )
+            if progress is not None:
+                progress(t("Grabbing the best one…"))
+            try:
+                grab = await self._downloads.grab(best, target)
+            except ProgramInTorrent:
+                continue  # malware dressed up as a video: on to the next best
+            log.info("One-click %s: %s", label, grab.outcome.value)
+            return QuickDownloadResult(
+                found=True,
+                release_title=best.title,
+                quality=quality,
+                seeders=best.seeders,
+                size_bytes=best.size_bytes or None,  # 0 = the source didn't say
+                grab=grab,
+            )
+        log.warning("One-click %s: every pick held a program, none started", label)
+        return QuickDownloadResult(found=False)
 
     async def _collect(
         self, request: SearchRequest, label: str, progress: Progress | None

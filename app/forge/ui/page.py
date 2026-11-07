@@ -29,8 +29,10 @@ services have started by then).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
+import time
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -41,10 +43,11 @@ from PIL import Image, ImageDraw
 
 from app.forge.ui.look import Pair, app_look, light_colour
 from app.forge.ui.widgets.chips import fit_text
-from app.i18n import N_, t
+from app.i18n import N_, t, tn
 from app.services.updates import is_development_copy
 from app.ui import palettes, tasks, theme
 from app.ui.dialog_kit import primary_button
+from app.ui.tooltip import add_tooltip
 
 if TYPE_CHECKING:
     from app.forge.core.auto import WatchStatus
@@ -71,6 +74,12 @@ STATUS_HEIGHT = 30
 LIGHT_SIZE = 10  # the status line's light
 STATUS_ROOM = 72  # the status button around its words: its rounded ends, the light, the spaces
 SWITCH_GAP = 16  # the status line → the switch
+SCAN_SIZE = 28  # the ↻ after the status line
+SCAN_GAP = 4
+SCAN_ICON = "↻"
+SCAN_BUSY = "…"
+SCAN_TIP = N_("Look for new downloads now")
+OPEN_SCAN_EVERY_S = 60.0  # opening the page looks for new downloads, at most this often
 HEADING_SIZE = 17
 MUTED_SIZE = 12
 MESSAGE_WRAP = 520
@@ -149,6 +158,9 @@ class ForgePage(ctk.CTkFrame):
         self.history_tools: ctk.CTkFrame | None = None  # … with History
         self.status_button: ctk.CTkButton | None = None
         self.activity_button: ctk.CTkButton | None = None
+        self.scan_button: ctk.CTkButton | None = None
+        self._scan_task: asyncio.Task[None] | None = None
+        self._scanned_at = float("-inf")  # time.monotonic() of the last scan asked for
         self.status: WatchStatus | None = None
         self.status_text = ""  # the status line's words, whole (it may show them cut)
         self._status_font = theme.font(STATUS_SIZE)
@@ -194,6 +206,20 @@ class ForgePage(ctk.CTkFrame):
             command=self._status_clicked,
         )
         self.status_button.pack(side="left", padx=(STATUS_GAP, 0))
+        self.scan_button = ctk.CTkButton(
+            self.queue_tools,
+            text=SCAN_ICON,
+            width=SCAN_SIZE,
+            height=SCAN_SIZE,
+            corner_radius=SCAN_SIZE // 2,
+            fg_color="transparent",
+            hover_color=self.look.CHIP,
+            text_color=theme.BUTTON_TEXT,
+            text_color_disabled=theme.TEXT_MUTED,
+            font=theme.font(15),
+            command=self.scan_now,
+        )
+        add_tooltip(self.scan_button, t(SCAN_TIP))
         queue.on_counts = lambda needs: self.on_needs(needs)
         queue.on_message = lambda text: self.on_message(text)
         queue.on_choose_folders = self._folders_clicked
@@ -299,11 +325,14 @@ class ForgePage(ctk.CTkFrame):
 
     def set_shown(self, shown: bool) -> None:
         """The main window shows this page, or another one: the tabs row's left part comes or
-        goes, and Activity closes with the page."""
+        goes, Activity closes with the page, and opening it looks for new downloads."""
+        opened = shown and not self.shown
         self.shown = shown
         if not shown:
             self.hide_activity()
         self._place_tools()
+        if opened and time.monotonic() - self._scanned_at >= OPEN_SCAN_EVERY_S:
+            self._start_scan(tell=False)
 
     def _place_tools(self) -> None:
         """The tabs row's left part for what shows now (none on another page)."""
@@ -403,6 +432,49 @@ class ForgePage(ctk.CTkFrame):
         self.hide_activity()
         return "break"
 
+    # --- looking for new downloads -------------------------------------------------------------
+
+    def scan_now(self) -> None:
+        """↻: look in the download folders now, and say what came of it."""
+        self._start_scan(tell=True)
+
+    def _start_scan(self, *, tell: bool) -> None:
+        services = self.services
+        if services is None or not services.auto.running:
+            return  # nothing is being watched
+        if self._scan_task is not None and not self._scan_task.done():
+            return
+        self._scanned_at = time.monotonic()
+        self._scan_task = tasks.spawn(self._scan(services, tell=tell), name="ForgePage.scan")
+
+    async def _scan(self, services: ForgeServices, *, tell: bool) -> None:
+        button = self.scan_button
+        if button is not None:
+            button.configure(text=SCAN_BUSY, state="disabled")
+        try:
+            result = await services.auto.scan_now()
+        finally:
+            if button is not None and self.winfo_exists():
+                button.configure(text=SCAN_ICON, state="normal")
+        if not tell or result is None or not self.winfo_exists():
+            return
+        if result.unreachable:
+            self.on_message(t("Can't reach {folder}", folder=result.unreachable[0]))
+        elif result.added:
+            self.on_message(tn("Found {n} new file", "Found {n} new files", result.added))
+        else:
+            self.on_message(t("No new files found"))
+
+    def _place_scan(self, state: str) -> None:
+        """The ↻ shows while folders are being watched."""
+        button = self.scan_button
+        if button is None:
+            return
+        if state in ("off", "setup"):
+            button.pack_forget()
+        elif not button.winfo_manager():
+            button.pack(side="left", padx=(SCAN_GAP, 0))
+
     # --- the status line --------------------------------------------------------------------
 
     def set_watch_status(self, status: WatchStatus) -> None:
@@ -413,6 +485,7 @@ class ForgePage(ctk.CTkFrame):
         if not self.winfo_exists():
             return
         self.status = status
+        self._place_scan(status.state)
         self.status_text = (
             t(AUTO_OFF)
             if status.state == "off" and status.text != t(OLD_INSTALL_STATUS)
@@ -457,6 +530,8 @@ class ForgePage(ctk.CTkFrame):
             switch = max((s.winfo_reqwidth() for s in row.grid_slaves(column=2)), default=0)
             used = switch + queue.toolbar.winfo_reqwidth()
             pad = TOOLS_PAD + STATUS_GAP + SWITCH_GAP + STATUS_ROOM
+            if self.scan_button is not None and self.scan_button.winfo_manager():
+                pad += SCAN_SIZE + SCAN_GAP
             room = round((width - used) / scale) - pad
             text = "  " + fit_text(self.status_text, self._status_font, max(room, 0))
         if button.cget("text") != text:
@@ -497,6 +572,8 @@ class ForgePage(ctk.CTkFrame):
         return True
 
     def destroy(self) -> None:
+        if self._scan_task is not None:
+            self._scan_task.cancel()
         self._later.clear()
         if self._later_id is not None:
             try:

@@ -474,6 +474,15 @@ NL: dict[str, str] = {
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
     "In Plex": "In Plex",
+    "This download holds a program ({suffix}) instead of just a video, so it wasn't started.":
+        "Deze download bevat een programma ({suffix}) in plaats van alleen een video, dus hij is niet gestart.",
+    "✓ In Plex": "✓ In Plex",
+    "✓ Downloaded": "✓ Gedownload",
+    "✓ downloaded": "✓ gedownload",
+    "This episode is in your Plex.": "Deze aflevering staat in je Plex.",
+    "Downloaded by AirGrabber. Plex doesn't have it yet.":
+        "Gedownload door AirGrabber. Plex heeft hem nog niet.",
+    "Syncing with Plex…": "Synchroniseren met Plex…",
     "More options": "Meer opties",
     "{n} missing": "{n} ontbrekend",
     "Downloading {index} of {total}…": "{index} van {total} downloaden…",
@@ -1326,6 +1335,16 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "A torrent is read before it downloads: one holding a program, like a fake episode.exe, is refused.":
+        "Een torrent wordt gelezen voor hij start: een met een programma, zoals een nep-aflevering.exe, wordt geweigerd.",
+    "Calendar cards show ✓ In Plex and ✓ Downloaded, and keep them after a restart or an update.":
+        "Kalenderkaarten tonen ✓ In Plex en ✓ Gedownload, ook na een herstart of update.",
+    "A small loader in the footer shows while AirGrabber reads your Plex.":
+        "Een kleine lader onderaan toont wanneer AirGrabber je Plex leest.",
+    "MediaForge has a ↻ to look for new downloads now, and looks by itself when you open it.":
+        "MediaForge heeft een ↻ om meteen naar nieuwe downloads te zoeken, en zoekt zelf als je het opent.",
+    "A season pack no longer counts for episodes that came out after you downloaded it.":
+        "Een seizoenspakket telt niet meer voor afleveringen die later zijn uitgekomen.",
     "MediaForge has an Auto and Manual switch: in Auto the preset bar stays out of the way.":
         "MediaForge heeft een schakelaar Auto en Handmatig: in Auto blijft de voorinstellingenbalk uit beeld.",
     "A rolling week for the calendar, with today in the middle: Settings, Looks, Calendar view.":

@@ -70,7 +70,9 @@ class FakeLibrary:
         new: frozenset[int] = frozenset(),
         *,
         plex: bool = True,
+        downloaded: frozenset[int] = frozenset(),
     ) -> None:
+        self._downloaded = downloaded
         self._tracked = tracked
         self._suggestions = suggestions
         self._missing = missing
@@ -106,6 +108,9 @@ class FakeLibrary:
     async def plex_between(self, start: date, end: date) -> frozenset[int]:
         self.plex_calls.append((start, end))
         return self._in_plex if self.plex_connected else frozenset()
+
+    async def downloaded_between(self, start: date, end: date) -> frozenset[int]:
+        return self._downloaded if self.plex_connected else frozenset()
 
     async def suggestions(
         self, start: date, end: date, *, profile_id: int, per_day: int

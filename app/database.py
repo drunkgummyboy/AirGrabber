@@ -403,11 +403,20 @@ _EPISODE_UPSERT = _upsert_sql("episodes", EPISODE_COLUMNS)
 _SHOW_FIELDS = _select("s", SHOW_COLUMNS, "show__")
 _EPISODE_FIELDS = _select("e", EPISODE_COLUMNS, "ep__")
 
-_IS_DOWNLOADED = """
+# The season pack grab `h` can hold the episode `e`: `e` had aired when it was grabbed (what came
+# out later isn't in it). An episode without a date hadn't. The SQL twin of
+# app.services.library.downloaded_ids; tests keep them in step.
+_PACK_HOLDS = """
+    (
+        (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(h.downloaded_at))
+        OR (e.airstamp IS NULL AND e.air_date <= substr(h.downloaded_at, 1, 10))
+    )"""
+
+_IS_DOWNLOADED = f"""
     EXISTS (
         SELECT 1 FROM download_history AS h
         WHERE h.media_type = 'tv' AND h.media_id = e.show_id AND h.season = e.season
-          AND (h.episode IS NULL OR h.episode = e.number)
+          AND (h.episode = e.number OR (h.episode IS NULL AND {_PACK_HOLDS}))
     )"""
 
 # The episode `e` is in Plex (app/services/plex.py): the only thing that counts as had.
@@ -1100,6 +1109,29 @@ class LibraryRepository:
         )
         return frozenset(row["id"] for row in rows)
 
+    async def downloaded_between(
+        self, start: date, end: date, today: date, since: datetime
+    ) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) that AirGrabber
+        downloaded since `since` and Plex doesn't have (the calendar's "✓ Downloaded": on its
+        way to Plex). Only an episode that has aired, and only a recent grab: an older one Plex
+        doesn't have was deleted there."""
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT e.id FROM episodes AS e
+            WHERE e.air_date BETWEEN ? AND ? AND e.air_date <= ?
+              AND EXISTS (
+                  SELECT 1 FROM download_history AS h
+                  WHERE h.media_type = 'tv' AND h.media_id = e.show_id AND h.season = e.season
+                    AND julianday(h.downloaded_at) >= julianday(?)
+                    AND (h.episode = e.number OR (h.episode IS NULL AND {_PACK_HOLDS}))
+              )
+              AND NOT {_IN_PLEX}
+            """,
+            (start.isoformat(), end.isoformat(), today.isoformat(), since.isoformat()),
+        )
+        return frozenset(row["id"] for row in rows)
+
     async def plex_ids(self, show_id: int) -> frozenset[int]:
         """Ids of the show's episodes that are in Plex."""
         rows = await self._db.fetch_all(
@@ -1216,22 +1248,50 @@ class HistoryRepository:
             return cursor.rowcount > 0
 
     async def has_episode(self, show_id: int, season: int, episode: int | None) -> bool:
-        """True if the episode — or a pack of its whole season — was grabbed."""
+        """True if the episode was grabbed, or a pack of its whole season that can hold it: one
+        grabbed after it aired. An episode the cache doesn't know gets the pack's benefit of the
+        doubt (better than fetching it twice). `episode` None: the season's pack itself."""
         row = await self._db.fetch_one(
-            "SELECT EXISTS (SELECT 1 FROM download_history WHERE media_type = ? AND media_id = ? "
-            "AND season = ? AND (episode IS NULL OR episode IS ?))",
-            (MediaType.TV, show_id, season, episode),
+            f"""
+            SELECT EXISTS (
+                SELECT 1 FROM download_history AS h
+                WHERE h.media_type = :tv AND h.media_id = :show AND h.season = :season
+                  AND (
+                      h.episode IS :episode
+                      OR (
+                          h.episode IS NULL
+                          AND (
+                              EXISTS (
+                                  SELECT 1 FROM episodes AS e
+                                  WHERE e.show_id = h.media_id AND e.season = h.season
+                                    AND e.number = :episode AND {_PACK_HOLDS}
+                              )
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM episodes AS e
+                                  WHERE e.show_id = h.media_id AND e.season = h.season
+                                    AND e.number = :episode
+                              )
+                          )
+                      )
+                  )
+            )
+            """,
+            {"tv": MediaType.TV, "show": show_id, "season": season, "episode": episode},
         )
         return bool(row and row[0])
 
-    async def show_grabs(self, show_id: int) -> frozenset[tuple[int, int | None]]:
-        """(season, episode) of every grab for a TV show; episode None = a season pack."""
+    async def show_grabs(self, show_id: int) -> frozenset[tuple[int, int | None, datetime]]:
+        """(season, episode, when: its latest) of every grab for a TV show; episode None = a
+        season pack."""
         rows = await self._db.fetch_all(
-            "SELECT DISTINCT season, episode FROM download_history "
-            "WHERE media_type = ? AND media_id = ?",
+            "SELECT season, episode, MAX(downloaded_at) AS downloaded_at FROM download_history "
+            "WHERE media_type = ? AND media_id = ? GROUP BY season, episode",
             (MediaType.TV, show_id),
         )
-        return frozenset((row["season"], row["episode"]) for row in rows)
+        return frozenset(
+            (row["season"], row["episode"], datetime.fromisoformat(row["downloaded_at"]))
+            for row in rows
+        )
 
     async def has_movie(self, movie_id: int) -> bool:
         row = await self._db.fetch_one(

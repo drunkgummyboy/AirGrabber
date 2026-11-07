@@ -929,7 +929,7 @@ class MissingRuleTests(unittest.IsolatedAsyncioTestCase):
         )
         plex = await self.library.plex_between(NOW.date() - 7 * DAY, NOW.date())
         states = [row_state(entry, None, plex, marks=True) for entry in entries]
-        self.assertEqual(states, ["plex", "quiet", "needed"])  # E02 grabbed: on its way
+        self.assertEqual(states, ["plex", "quiet", "needed"])  # E02: an old grab, nothing said
         self.assertEqual(row_text("plex"), "✓ in Plex")
         self.assertEqual(row_text("quiet"), "")
         self.assertEqual(

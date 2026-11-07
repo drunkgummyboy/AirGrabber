@@ -8,8 +8,9 @@ While Plex is connected (app/services/plex.py; without it nothing is missing or 
 decision for 3.1.0), a missing episode (app.services.missing's rule: aired at least a day ago,
 neither in Plex nor downloaded; the view hands the cards `missing`) gets an amber "Not
 downloaded yet" under its code, on the full and the compact cards alike; a new one (aired less
-than a day ago, `new`) a quiet blue "New" there instead. Whether an episode was downloaded is
-never shown (no "✓ Grabbed"); a run's outcome is. Clicking a show's
+than a day ago, `new`) a quiet blue "New" there instead; one you have (`have`) a green "✓ In Plex",
+or a muted "✓ Downloaded" while it hasn't reached Plex yet. These come from the database, so
+they outlive a restart, unlike a run's outcome (the ✓ button). Clicking a show's
 name (full cards: also the poster) opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
@@ -20,9 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import tkinter as tk
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
@@ -97,6 +98,14 @@ NEW_NOTE_TIP = N_(
     "Aired less than a day ago: a release usually turns up within hours. It counts as missing "
     "after a day."
 )
+# An episode you have: in Plex, or downloaded and on its way there (with Plex only).
+HaveMark = Literal["plex", "downloaded"]
+HAVE_TEXTS: dict[HaveMark, str] = {"plex": N_("✓ In Plex"), "downloaded": N_("✓ Downloaded")}
+HAVE_TIPS: dict[HaveMark, str] = {
+    "plex": N_("This episode is in your Plex."),
+    "downloaded": N_("Downloaded by AirGrabber. Plex doesn't have it yet."),
+}
+HAVE_COLORS: dict[HaveMark, theme.Color] = {"plex": theme.SUCCESS, "downloaded": theme.TEXT_MUTED}
 WORKING_ICON = "…"
 GRABBED_ICON = "✓"
 # A full card's width before its first layout (for where the Download row starts meanwhile).
@@ -229,10 +238,52 @@ def new_note(room: float, measure: Measure) -> str:
     return elide_to_width(t(NEW_NOTE_TEXT), room, measure)
 
 
-def compact_height(missing: bool) -> int:
-    """A compact card's height: the slim line, and the note line of a missing (or new)
-    episode."""
-    return 2 * SLIM_PAD_Y + SLIM_LINE + (NOTE_HEIGHT if missing else 0)
+def have_mark(
+    ids: Iterable[int], in_plex: Collection[int], downloaded: Collection[int]
+) -> HaveMark | None:
+    """What a card says about the episodes it stands for: "plex" when all are in Plex,
+    "downloaded" when all are in Plex or downloaded, else nothing (a stack's rows tell apart)."""
+    wanted = set(ids)
+    if not wanted:
+        return None
+    if wanted <= set(in_plex):
+        return "plex"
+    return "downloaded" if wanted <= set(in_plex) | set(downloaded) else None
+
+
+@dataclass(frozen=True, slots=True)
+class CardNote:
+    """The note under a card's code: the text to start with, how it fits a width, its colour
+    and its tip (not translated yet, like the constants)."""
+
+    text: str
+    fit: Callable[[float, Measure], str]
+    color: theme.Color
+    tip: str
+
+
+def card_note(
+    *, missing: bool = False, new: bool = False, have: HaveMark | None = None
+) -> CardNote | None:
+    """A card's note: missing wins, then new, then what you have."""
+    if missing:
+        return CardNote(MISSING_TEXTS[0], missing_note, MISSING_COLOR, MISSING_TIP)
+    if new:
+        return CardNote(NEW_NOTE_TEXT, new_note, theme.LINK, NEW_NOTE_TIP)
+    if have is not None:
+        text = HAVE_TEXTS[have]
+        return CardNote(
+            text,
+            lambda room, measure: elide_to_width(t(text), room, measure),
+            HAVE_COLORS[have],
+            HAVE_TIPS[have],
+        )
+    return None
+
+
+def compact_height(noted: bool) -> int:
+    """A compact card's height: the slim line, and the line of a note."""
+    return 2 * SLIM_PAD_Y + SLIM_LINE + (NOTE_HEIGHT if noted else 0)
 
 
 def slim_name_room(row_width: float, code_width: float, buttons_width: float) -> float:
@@ -305,8 +356,8 @@ class EpisodeCard(ctk.CTkFrame):
     left side and fades into the card; the show's name, the episode code and the bottom row
     (a muted "Not aired", else the Download row) sit on the right, over the faded part.
     Clicking the poster or the name opens the show's window (`on_open_show`). A `missing`
-    episode gets the amber note under its code, a `new` one the blue "New" note (both only
-    with Plex: the view passes them).
+    episode gets the amber note under its code, a `new` one the blue "New" note, one you have
+    `have`'s (all only with Plex: the view passes them).
 
     Everything but the Download row is drawn on one canvas (see app/ui/calendar_face.py): the
     baked poster piece and right cap, the stretch between them, and the texts. Switching
@@ -327,9 +378,10 @@ class EpisodeCard(ctk.CTkFrame):
         on_open_show: OpenShow | None = None,
         missing: bool = False,
         new: bool = False,
+        have: HaveMark | None = None,
     ) -> None:
-        self._new = new and not missing
-        layout = self._card_layout(scale, missing or self._new)
+        self._card_note = card_note(missing=missing, new=new, have=have)
+        layout = self._card_layout(scale, self._card_note is not None)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
@@ -390,9 +442,9 @@ class EpisodeCard(ctk.CTkFrame):
 
     # -- what a stack card does differently ----------------------------------------------------
 
-    def _card_layout(self, scale: CardScale, missing: bool) -> EpisodeLayout:
-        """The card's sizes (a missing or new episode has room for its note)."""
-        return episode_layout(scale, linespace=_font_linespace, note=missing)
+    def _card_layout(self, scale: CardScale, noted: bool) -> EpisodeLayout:
+        """The card's sizes (with room for a note)."""
+        return episode_layout(scale, linespace=_font_linespace, note=noted)
 
     def _card_height(self, layout: EpisodeLayout) -> int:
         """The card's height in CTk units: the card, and the cards behind a stack card."""
@@ -426,7 +478,8 @@ class EpisodeCard(ctk.CTkFrame):
             canvas.itemconfigure(edge, fill=pick(theme.EDGE))
         canvas.itemconfigure(self._title, fill=pick(theme.TEXT))
         canvas.itemconfigure(self._code, fill=pick(theme.TEXT_MUTED))
-        canvas.itemconfigure(self._note, fill=pick(theme.LINK if self._new else MISSING_COLOR))
+        if self._card_note is not None:
+            canvas.itemconfigure(self._note, fill=pick(self._card_note.color))
         canvas.itemconfigure(self._status, fill=pick(theme.TEXT_MUTED))
 
     def _set_appearance_mode(self, mode_string: str) -> None:
@@ -540,13 +593,12 @@ class EpisodeCard(ctk.CTkFrame):
         )
         code_y = title_bottom + round(layout.code_gap * scaling)
         canvas.coords(self._code, x, code_y)
-        if layout.note:
+        if self._card_note is not None:
             box = canvas.bbox(self._code)
             code_bottom = box[3] if box else code_y
-            note = new_note if self._new else missing_note
             canvas.itemconfigure(
                 self._note,
-                text=note(room, self._code_font.measure),
+                text=self._card_note.fit(room, self._code_font.measure),
                 font=self._code_font.create_scaled_tuple(scaling),
             )
             canvas.coords(self._note, x, code_bottom + round(layout.code_gap * scaling))
@@ -764,7 +816,7 @@ class SlimDownload(ctk.CTkFrame):
 class CompactEpisodeCard(ctk.CTkFrame):
     """A tracked episode on one slim line (older days): the show's name and the episode code,
     then small buttons (SlimDownload). A `missing` episode adds the amber note under the line,
-    a `new` one the blue "New" note. Clicking the name opens the show's window
+    a `new` one the blue "New" note, one you have `have`'s. Clicking the name opens the show's window
     (`on_open_show`); a right-click anywhere opens the search window, as the ⋯ does."""
 
     def __init__(
@@ -777,9 +829,10 @@ class CompactEpisodeCard(ctk.CTkFrame):
         on_open_show: OpenShow | None = None,
         missing: bool = False,
         new: bool = False,
+        have: HaveMark | None = None,
     ) -> None:
-        new = new and not missing
-        height = compact_height(missing or new)
+        noted = card_note(missing=missing, new=new, have=have)
+        height = compact_height(noted is not None)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
@@ -813,18 +866,17 @@ class CompactEpisodeCard(ctk.CTkFrame):
 
         self.note: ctk.CTkLabel | None = None
         note_font = theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN))
-        if missing or new:
+        if noted is not None:
             self.note = ctk.CTkLabel(
                 self,
-                text=t(NEW_NOTE_TEXT) if new else t(MISSING_TEXTS[0]),
+                text=t(noted.text),
                 font=note_font,
-                text_color=theme.LINK if new else MISSING_COLOR,
+                text_color=noted.color,
                 height=NOTE_HEIGHT,
                 anchor="w",
             )
             self.note.pack(side="top", anchor="w", padx=SLIM_PAD_X)
-            add_tooltip(self.note, t(NEW_NOTE_TIP) if new else t(MISSING_TIP))
-        note_text = new_note if new else missing_note
+            add_tooltip(self.note, t(noted.tip))
 
         line_width: float | None = None  # unscaled, once laid out
 
@@ -834,8 +886,8 @@ class CompactEpisodeCard(ctk.CTkFrame):
             code_width = code_font.measure(entry.episode.code)
             room = slim_name_room(line_width, code_width, self.buttons.width_units)
             self.name_label.configure(text=elide_to_width(show.name, room, name_font.measure))
-            if self.note is not None:
-                self.note.configure(text=note_text(line_width - SLACK, note_font.measure))
+            if self.note is not None and noted is not None:
+                self.note.configure(text=noted.fit(line_width - SLACK, note_font.measure))
 
         def resized(event: Any) -> None:
             nonlocal line_width

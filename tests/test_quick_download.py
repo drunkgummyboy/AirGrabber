@@ -17,7 +17,7 @@ from app.models import (
     SearchRequest,
     TorrentRelease,
 )
-from app.services.downloads import DownloadService, GrabError
+from app.services.downloads import DownloadService, GrabError, ProgramInTorrent
 from app.services.quick_download import QuickDownloadService, request_label
 from app.services.search import TorrentSearchService
 from tests.test_search import MIB, fake, release, running_searches, settings_service
@@ -235,6 +235,33 @@ class QuickDownloadTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await first
         self.assertEqual(service._target_locks, {})
+
+    async def test_a_pick_holding_a_program_gives_way_to_the_next_best(self) -> None:
+        bad = release("Severance S02E01 1080p WEB-A", h=1, seeders=900, size=1200 * MIB)
+        good = release("Severance S02E01 1080p WEB-B", h=2, seeders=40, size=1200 * MIB)
+        grabber = downloads()
+        real_grab = grabber.grab.side_effect
+        tried: list[str] = []
+
+        async def grab(chosen: TorrentRelease, target: GrabTarget) -> GrabResult:
+            tried.append(chosen.title)
+            if chosen.title == bad.title:
+                raise ProgramInTorrent("holds a program")
+            result: GrabResult = await real_grab(chosen, target)
+            return result
+
+        grabber.grab.side_effect = grab
+        result = await self.service([fake("a", result=[bad, good])], grabber).download(EPISODE, TARGET)
+        self.assertEqual(tried, [bad.title, good.title])
+        self.assertTrue(result.found)
+        self.assertEqual(result.release_title, good.title)
+
+    async def test_when_all_hold_one_nothing_is_grabbed(self) -> None:
+        bad = release("Severance S02E01 1080p WEB-A", h=1, seeders=900, size=1200 * MIB)
+        grabber = downloads()
+        grabber.grab.side_effect = ProgramInTorrent("holds a program")
+        result = await self.service([fake("a", result=[bad])], grabber).download(EPISODE, TARGET)
+        self.assertFalse(result.found)
 
 
 async def _until(condition: Callable[[], bool]) -> None:

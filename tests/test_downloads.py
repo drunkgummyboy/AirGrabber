@@ -43,6 +43,7 @@ from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.torrent_app import TorrentAppService
 from app.services.settings import SettingsService
+from app.services.downloads import ProgramInTorrent
 from tests.test_torrent_file import info_hash_of, make_torrent, single_info
 
 INFO = single_info()
@@ -198,6 +199,46 @@ class DownloadTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def history(self) -> list[DownloadRecord]:
         return await self.db.history.recent()
+
+
+class ProgramInTorrentTests(DownloadTestCase):
+    """A .torrent holding a program is malware dressed up as a video: it goes nowhere."""
+
+    def setUp(self) -> None:
+        info = single_info("Gold Rush S17E06 1080p WEB H264-CAKES.exe")
+        self.bad = make_torrent(info)
+        self.bad_hash = info_hash_of(info)  # a torrent must be the release's own to count
+
+    async def assert_refused(self) -> None:
+        self.serve(DIRECT_URL, self.bad)
+        with self.assertRaises(ProgramInTorrent) as caught:
+            await self.service.grab(
+                release(download_url=DIRECT_URL, info_hash=self.bad_hash), EPISODE
+            )
+        self.assertIn(".exe", str(caught.exception))
+        self.assertEqual(self.watch_files(), [])
+        self.assertEqual(await self.history(), [])  # free to fetch another release
+        self.assertEqual(self.notifications, 0)
+
+    async def test_not_saved_to_the_watch_folder(self) -> None:
+        await self.assert_refused()
+
+    async def test_not_sent_to_the_remote_program(self) -> None:
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+        await self.set_up_remote()
+        await self.assert_refused()
+        self.assertEqual(self.remote_calls(), 0)
+
+    async def test_not_opened_in_the_torrent_program(self) -> None:
+        await self.settings.update(download_mode=DownloadMode.APP)
+        await self.assert_refused()
+        self.assertEqual(self.opened, [])
+
+    async def test_the_itorrents_copy_is_read_too(self) -> None:
+        self.serve(f"https://itorrents.org/torrent/{self.bad_hash.upper()}.torrent", self.bad)
+        with self.assertRaises(ProgramInTorrent):
+            await self.service.grab(release(info_hash=self.bad_hash), EPISODE)
+        self.assertEqual(self.watch_files(), [])
 
 
 class TorrentFileTests(DownloadTestCase):

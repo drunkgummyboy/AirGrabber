@@ -153,6 +153,10 @@ NL: dict[str, str] = {
     "No year in the name: is it a movie?": "Geen jaartal in de naam: is het een film?",
     "You undid this once; click Rename to move it again.":
         "Je hebt dit eerder ongedaan gemaakt; klik op Hernoemen om het opnieuw te verplaatsen.",
+    "Look for new downloads now": "Nu naar nieuwe downloads zoeken",
+    "Found {n} new file": "{n} nieuw bestand gevonden",
+    "Found {n} new files": "{n} nieuwe bestanden gevonden",
+    "No new files found": "Geen nieuwe bestanden gevonden",
     "{n} file needs you": "{n} bestand heeft je nodig",
     "{n} files need you": "{n} bestanden hebben je nodig",
     "Open MediaForge to pick or confirm them.": "Open MediaForge om ze te kiezen of te bevestigen.",

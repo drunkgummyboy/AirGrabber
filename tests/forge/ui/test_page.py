@@ -16,14 +16,15 @@ import logging
 import tkinter as tk
 import unittest
 from collections.abc import Callable
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import customtkinter as ctk
 import httpx
 
 from app.config import AppPaths
-from app.forge.core.auto import WatchStatus
+from app.forge.core.auto import LookResult, WatchStatus
 from app.forge.services import ForgeServices
 from app.forge.ui import file_drops
 from app.forge.ui.activity_panel import ActivityPanel
@@ -470,6 +471,59 @@ class ActivityTests(PageCase):
         self.assertIsNone(page.activity)
         page.toggle_history()
         self.assertIsNone(page.history)
+
+
+class ScanTests(PageCase):
+    """↻ beside the status line, and a look when the page opens."""
+
+    def watching(self, page: ForgePage, result: LookResult) -> mock.AsyncMock:
+        scan = mock.AsyncMock(return_value=result)
+        services: Any = SimpleNamespace(
+            auto=SimpleNamespace(running=True, scan_now=scan, status=self.services.auto.status)
+        )
+        page.services = services
+        return scan
+
+    async def test_it_shows_only_while_folders_are_watched(self) -> None:
+        page = await self.make_page()
+        button = page.scan_button
+        assert button is not None
+        for state, shown in (("off", False), ("setup", False), ("watching", True), ("trial", True)):
+            page.set_watch_status(WatchStatus(state, "Words"))  # type: ignore[arg-type]
+            self.assertEqual(bool(button.winfo_manager()), shown, state)
+
+    async def test_a_click_says_what_came_of_it(self) -> None:
+        page = await self.make_page()
+        heard: list[str] = []
+        page.on_message = heard.append
+        for result, words in (
+            (LookResult(2, 0, 0, []), "Found 2 new files"),
+            (LookResult(0, 0, 0, []), "No new files found"),
+        ):
+            self.watching(page, result)
+            page.scan_now()
+            assert page._scan_task is not None
+            await page._scan_task
+            self.assertEqual(heard[-1], words)
+        assert page.scan_button is not None
+        self.assertEqual(page.scan_button.cget("state"), "normal")
+
+    async def test_opening_the_page_looks_quietly_and_not_too_often(self) -> None:
+        page = await self.make_page()
+        heard: list[str] = []
+        page.on_message = heard.append
+        scan = self.watching(page, LookResult(1, 0, 0, []))
+        page.set_shown(False)
+        page.set_shown(True)
+        assert page._scan_task is not None
+        await page._scan_task
+        self.assertEqual(scan.await_count, 1)
+        self.assertEqual(heard, [])
+        page.set_shown(False)
+        page.set_shown(True)  # a moment later
+        await pump(self.root, 0.05)
+        self.assertEqual(scan.await_count, 1)
+        page.services = self.services  # it closes for real
 
 
 class MessagesTests(PageCase):

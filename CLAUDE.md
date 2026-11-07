@@ -95,6 +95,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   items, ttk, Pillow-baked images) takes `theme.pick(token)` and repaints on a switch
   (`theme.on_mode_change`, or the CTk widget's own `_set_appearance_mode`). Tabs: `widgets.Tabview`.
 - Never call live APIs from tests: use `httpx.MockTransport` and `tests/fixtures/`.
+- A .torrent holding a program (`.exe` and the like) never leaves `DownloadService._obtain`
+  (`app/services/torrent_files.py`, `ProgramInTorrent`): malware dressed up as a video. Magnets can't be read first.
 - qBittorrent's settings file (`%APPDATA%\qBittorrent\qBittorrent.ini`) is changed only by
   `app/services/qbittorrent_setup.py`: just the "Add new torrent" dialog keys (and its look's and
   Web UI's keys, below), only while qBittorrent isn't running, the original backed up once; never
@@ -130,7 +132,9 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   is the only thing that counts as had (`plex_episodes` / `plex_movies`, replaced per check); without
   Plex connected (no token) the UI shows no have / missing cues at all, not even for AirGrabber's own
   grabs (owner's decision, 3.1.0): no ✓, "missing", counts or manual marks (`have_episodes` is kept,
-  never read). The download history only keeps things from being fetched twice. Connecting or
+  never read). The download history keeps things from being fetched twice; with Plex connected the
+  calendar also marks a grab of the last 14 days that Plex doesn't have "✓ Downloaded" (on its way;
+  older means it was deleted there). Connecting or
   disconnecting reloads the pages (`on_change`). Tests use `tests/fixtures/plex/` and MockTransport
   (`tests/plex_link.py` for settings with a token); never plex.tv or a real server.
 

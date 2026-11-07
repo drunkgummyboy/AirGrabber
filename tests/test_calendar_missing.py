@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from app.models import DownloadRecord, MediaType
 from app.models.plex import PlexScan
 from app.services.library import downloaded_ids
 from app.services.missing import missing_episodes, new_episodes
@@ -104,6 +105,18 @@ class MissingBetweenTests(DatabaseTestCase):
 
 
 class LibraryMissingBetweenTests(ServiceTestCase):
+    async def grab_at(self, when: datetime, show_id: int, season: int, number: int | None) -> None:
+        await self.db.history.add(
+            DownloadRecord(
+                media_type=MediaType.TV,
+                media_id=show_id,
+                season=season,
+                episode=number,
+                release_title=f"Show.{show_id}.S{season:02d}",
+                downloaded_at=when,
+            )
+        )
+
     async def test_plex_and_grabs_take_episodes_off(self) -> None:
         await self.severance()  # season 2: episodes 21-23 aired, 99 still to come
         start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
@@ -113,6 +126,45 @@ class LibraryMissingBetweenTests(ServiceTestCase):
         await self.grab(1, 2, 2)
         missing = await self.library.missing_between(start, end, now=NOW, profile_id=1)
         self.assertEqual(missing, {23})
+
+    async def test_downloaded_between_is_what_is_on_its_way_to_plex(self) -> None:
+        await self.severance()  # season 2: 21-23 aired, 99 still to come
+        start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
+        today = NOW.date()
+        recent = NOW - DAY
+        await self.grab_at(recent, 1, 2, 1)
+        await self.grab_at(recent, 1, 2, 2)
+        await self.in_plex((2, 2))  # already there: says "In Plex" instead
+        found = await self.library.downloaded_between(start, end, today=today)
+        self.assertEqual(found, {21})
+
+    async def test_a_deleted_episode_stops_counting_as_on_its_way(self) -> None:
+        await self.severance()
+        start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
+        await self.grab_at(NOW - 15 * DAY, 1, 2, 1)
+        found = await self.library.downloaded_between(start, end, today=NOW.date())
+        self.assertEqual(found, frozenset())
+
+    async def test_a_season_pack_holds_only_what_had_aired_when_it_was_grabbed(self) -> None:
+        await self.severance()
+        start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
+        await self.grab_at(NOW - 2 * DAY - timedelta(hours=1), 1, 2, None)
+        found = await self.library.downloaded_between(start, end, today=NOW.date())
+        self.assertEqual(found, {21})  # 22 and 23 came out after the pack, 99 hasn't aired
+
+    async def test_a_pack_keeps_counting_only_for_what_it_can_hold(self) -> None:
+        await self.severance()
+        start, end = NOW.date() - 7 * DAY, NOW.date() + 7 * DAY
+        await self.grab_at(NOW - 2 * DAY - timedelta(hours=1), 1, 2, None)
+        # Aired later, so still missing, and in step with the Python rule.
+        missing = await self.library.missing_between(start, end, now=NOW, profile_id=1)
+        self.assertEqual(missing, {22, 23})
+        details = await self.library.show_details(1, now=NOW, profile_id=1)
+        self.assertEqual(details.missing, {22, 23})
+        self.assertTrue(await self.db.history.has_episode(1, 2, 1))
+        self.assertFalse(await self.db.history.has_episode(1, 2, 2))
+        self.assertTrue(await self.db.history.has_episode(1, 2, None))
+        self.assertTrue(await self.db.history.has_episode(1, 2, 50))  # not known: not twice
 
     async def test_plex_between_lists_the_episodes_in_plex_of_the_range(self) -> None:
         await self.severance()  # season 1 long ago; season 2: 21-23 aired, 99 to come

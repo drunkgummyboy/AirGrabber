@@ -91,6 +91,7 @@ from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
 from app.ui.spotlight import SwitchPart
 from app.ui.spotlight_band import SpotlightBand
+from app.ui.sync_loader import PLEX_SYNC_TEXT, SyncLoader
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import QBITTORRENT
@@ -470,6 +471,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_library = services.library.subscribe(self._on_library_changed)
         # A grab changes what is still missing (with Plex).
         self._unsubscribe_downloads = services.downloads.subscribe(self._reload_pages)
+        # The footer's loader while Plex is being read.
+        self._unsubscribe_plex = services.plex.subscribe(self._show_plex_sync)
         # The automatic downloads: a tray notification (or the status bar) per event.
         self._auto_throttle = AutoNoticeThrottle()
         self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
@@ -550,6 +553,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_settings()
         self._unsubscribe_library()
         self._unsubscribe_downloads()
+        self._unsubscribe_plex()
         self._unsubscribe_auto()
         self._unsubscribe_backup()
         self._unsubscribe_profiles()
@@ -697,8 +701,14 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._version_label = ctk.CTkLabel(
             bar, text=f"v{__version__}", font=theme.font(11), text_color=theme.EDGE
         )
-        self._version_label.grid(row=0, column=1, sticky="e")
+        self._version_label.grid(row=0, column=2, sticky="e")
+        self._plex_loader = SyncLoader(bar, t(PLEX_SYNC_TEXT))
+        self._plex_loader.grid(row=0, column=1, sticky="e", padx=(0, 12))
+        self._plex_loader.grid_remove()
         self._version_tip = add_tooltip(self._version_label, "")  # the update badge's
+
+    def _show_plex_sync(self) -> None:
+        self._plex_loader.set_busy(self._services.plex.checking)
 
     # -- navigation --------------------------------------------------------------------------
 

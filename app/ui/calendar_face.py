@@ -199,7 +199,7 @@ def episode_layout(
     pill_height = linespace(pills, True) + 2 * scale.px(PILL_PAD_Y, minimum=1) if stack else 0
     pill_gap = scale.px(PILL_GAP) if stack else 0
     if stack:
-        height = max(plain, needed + pill_gap + pill_height)
+        height = max(plain, needed + pill_gap + pill_height + (code_line if note else 0))
     return EpisodeLayout(
         height=height,
         poster_min=POSTER_STEP * -(-scale.px(POSTER_MIN) // POSTER_STEP),  # rounded up

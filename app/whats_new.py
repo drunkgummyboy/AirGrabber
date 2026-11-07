@@ -20,6 +20,13 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.7.0": (
+        N_("A torrent is read before it downloads: one holding a program, like a fake episode.exe, is refused."),
+        N_("Calendar cards show ✓ In Plex and ✓ Downloaded, and keep them after a restart or an update."),
+        N_("A small loader in the footer shows while AirGrabber reads your Plex."),
+        N_("MediaForge has a ↻ to look for new downloads now, and looks by itself when you open it."),
+        N_("A season pack no longer counts for episodes that came out after you downloaded it."),
+    ),
     "3.6.0": (
         N_("MediaForge has an Auto and Manual switch: in Auto the preset bar stays out of the way."),
         N_("A rolling week for the calendar, with today in the middle: Settings, Looks, Calendar view."),

@@ -27,6 +27,7 @@ from app.ui.calendar_cards import (
     SLIM_ICON,
     SLIM_ICON_GAP,
     CompactEpisodeCard,
+    HaveMark,
     SuggestionCard,
     EpisodeCard,
     IconLook,
@@ -581,6 +582,37 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card.note.cget("text"), MISSING_TEXTS[0])
         self.assertEqual(card.note.cget("text_color"), theme.WARNING)
         self.assertEqual(placed_parts(card), [])  # no amber bar on the left edge
+
+    async def test_compact_cards_say_what_you_have(self) -> None:
+        actions, _asked = self.actions()
+        entry = calendar_entry(aired=True)
+        looks: tuple[tuple[HaveMark, str, theme.Color], ...] = (
+            ("plex", "✓ In Plex", theme.SUCCESS),
+            ("downloaded", "✓ Downloaded", theme.TEXT_MUTED),
+        )
+        for have, text, color in looks:
+            card = CompactEpisodeCard(self.root, entry, actions=actions, have=have)
+            self.assertEqual(card.cget("height"), compact_height(True))
+            assert card.note is not None
+            self.assertEqual(card.note.cget("text"), text)
+            self.assertEqual(card.note.cget("text_color"), color)
+
+    async def test_full_card_says_what_you_have(self) -> None:
+        plain = self.card(calendar_entry(aired=True), FakeImages())
+        images: Any = FakeImages()
+        card = EpisodeCard(
+            self.root,
+            calendar_entry(aired=True),
+            images=images,
+            actions=self.actions()[0],
+            have="plex",
+        )
+        self.assertGreater(card.cget("height"), plain.cget("height"))
+        scaling = ctk.ScalingTracker.get_widget_scaling(card)
+        height = round(card.cget("height") * scaling)
+        card._on_resize(SimpleNamespace(width=round(200 * scaling), height=height))
+        canvas: Any = card._art
+        self.assertEqual(canvas.itemcget(card._note, "text"), "✓ In Plex")
 
     async def test_compact_buttons_follow_the_run_and_right_click_chooses(self) -> None:
         entry = calendar_entry(aired=True)

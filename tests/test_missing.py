@@ -99,7 +99,7 @@ def missing_ids(
     in_plex: frozenset[int] = frozenset(),
     now: datetime = NOW,
 ) -> list[int]:
-    downloaded = downloaded_ids(episodes, grabs)
+    downloaded = downloaded_ids(episodes, {(season, number, NOW) for season, number in grabs})
     return ids(missing_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now))
 
 
@@ -110,7 +110,7 @@ def new_ids(
     in_plex: frozenset[int] = frozenset(),
     now: datetime = NOW,
 ) -> list[int]:
-    downloaded = downloaded_ids(episodes, grabs)
+    downloaded = downloaded_ids(episodes, {(season, number, NOW) for season, number in grabs})
     return ids(new_episodes(episodes, downloaded=downloaded, in_plex=in_plex, now=now))
 
 

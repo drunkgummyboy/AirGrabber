@@ -471,6 +471,38 @@ class RenamerTest(RenamerTestCase):
         result = await auto.rename([item.id], source=RunSource.APP)
         assert result.renamed == 1 and item.status is ItemStatus.DONE
 
+    async def test_a_scan_finds_what_just_finished_without_waiting(self) -> None:
+        await self.use(automatic="trial")
+        clock = Clock()
+        auto = AutoRenamer(self.parts, now=clock, interval_s=3600, second_look_s=3600, scan_look_s=0.01)
+        self.addAsyncCleanup(auto.stop)
+        auto.start()
+        await asyncio.sleep(0.1)
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        clock.now += 300
+        result = await auto.scan_now()
+        assert result is not None and result.added == 1
+        assert len(self.queue.items) == 1
+        result = await auto.scan_now()  # nothing new since
+        assert result is not None and result.added == 0
+
+    async def test_no_scan_while_nothing_is_watched(self) -> None:
+        await self.use(automatic="off")
+        auto = self.renamer(Clock())
+        auto.start()
+        assert await auto.scan_now() is None
+
+    async def test_two_scans_at_once_share_one_and_a_stop_ends_the_wait(self) -> None:
+        await self.use(automatic="trial")
+        auto = AutoRenamer(self.parts, now=Clock(), interval_s=3600, second_look_s=3600, scan_look_s=3600)
+        self.addAsyncCleanup(auto.stop)
+        auto.start()
+        await asyncio.sleep(0.1)
+        waiting = [asyncio.ensure_future(auto.scan_now()) for _ in range(2)]
+        await asyncio.sleep(0.1)
+        await auto.stop()
+        assert await asyncio.gather(*waiting) == [None, None]
+
     async def test_after_a_start_the_second_look_comes_soon_then_the_interval(self) -> None:
         await self.use()
         file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")

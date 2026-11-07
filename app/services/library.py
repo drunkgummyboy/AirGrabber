@@ -13,7 +13,8 @@ What you have and miss (owner's decision for 3.1.0): only while Plex is connecte
 Plex; missing is what aired and is neither in Plex nor grabbed by AirGrabber (app.services.
 missing). Without Plex the calls about it answer "nothing" (no missing, no new, nothing in
 Plex): the pages show no have / missing cues at all. The download history is still read where
-it keeps an episode from being fetched twice, but is never shown as "have it".
+it keeps an episode from being fetched twice; with Plex connected the calendar also says what
+was downloaded and hasn't reached Plex yet (`downloaded_between`, owner's decision for 3.7.0).
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ DETAILS_TTL = timedelta(minutes=15)
 DETAILS_CACHE_SIZE = 20
 # The calendar always shows this many days before today (on a Monday, the weekend's episodes).
 RECENT_DAYS = 3
+DOWNLOADED_MARK_DAYS = 14  # how long a grab Plex doesn't have counts as on its way there
 
 
 def week_start(day: date, first_day: Weekday) -> date:
@@ -344,6 +346,20 @@ class LibraryService:
         if not self.plex_connected:
             return frozenset()
         return await self._library.plex_between(start, end)
+
+    async def downloaded_between(
+        self, start: date, end: date, *, today: date | None = None
+    ) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) downloaded in the
+        last DOWNLOADED_MARK_DAYS and not in Plex (the calendar's "✓ Downloaded"; an older grab
+        Plex doesn't have was deleted there); none without Plex. `today`: tests."""
+        if not self.plex_connected:
+            return frozenset()
+        day = today if today is not None else date.today()
+        since = datetime(day.year, day.month, day.day, tzinfo=UTC) - timedelta(
+            days=DOWNLOADED_MARK_DAYS
+        )
+        return await self._library.downloaded_between(start, end, day, since)
 
     async def _fetch_show(self, show_id: int) -> tuple[Show, list[Episode]]:
         """The show and its episodes from TVMaze, or from memory when fetched recently."""
@@ -813,16 +829,31 @@ def next_episode(episodes: Iterable[Episode], now: datetime) -> Episode | None:
 
 
 def downloaded_ids(
-    episodes: Iterable[Episode], grabs: Iterable[tuple[int, int | None]]
+    episodes: Iterable[Episode], grabs: Iterable[tuple[int, int | None, datetime]]
 ) -> frozenset[int]:
-    """Ids of the episodes `grabs` ((season, episode) pairs; episode None = a season pack)
-    cover: the episode itself, or its season's pack (as the calendar flags them)."""
-    grabbed = set(grabs)
-    packs = {season for season, number in grabbed if number is None}
+    """Ids of the episodes `grabs` ((season, episode, when); episode None = a season pack)
+    cover: the episode itself, or its season's pack if it had aired by then (what came out later
+    isn't in the pack; as the calendar flags them, _PACK_HOLDS in app/database.py)."""
+    grabbed: set[tuple[int, int]] = set()
+    packs: dict[int, datetime] = {}
+    for season, number, when in grabs:
+        if number is not None:
+            grabbed.add((season, number))
+        elif season not in packs or when > packs[season]:
+            packs[season] = when
+
+    def held(episode: Episode) -> bool:
+        when = packs.get(episode.season)
+        if when is None:
+            return False
+        if episode.airstamp is not None:
+            return episode.airstamp <= when
+        return episode.air_date is not None and episode.air_date <= when.astimezone(UTC).date()
+
     return frozenset(
         episode.id
         for episode in episodes
-        if episode.season in packs
+        if held(episode)
         or (episode.number is not None and (episode.season, episode.number) in grabbed)
     )
 

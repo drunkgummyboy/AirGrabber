@@ -897,15 +897,32 @@ class NextEpisodeTests(unittest.TestCase):
 
 class DownloadedIdsTests(unittest.TestCase):
     def test_episodes_and_season_packs(self) -> None:
+        aired = datetime(2026, 1, 1, tzinfo=UTC)
+        when = aired + timedelta(days=30)
         episodes = [
-            numbered(11, 1, 1),
-            numbered(12, 1, None),  # unnumbered: only its season's pack covers it
-            numbered(21, 2, 1),
-            numbered(22, 2, 2),
+            numbered(11, 1, 1, airs=aired),
+            numbered(12, 1, None, airs=aired),  # unnumbered: only its season's pack covers it
+            numbered(21, 2, 1, airs=aired),
+            numbered(22, 2, 2, airs=aired),
         ]
-        self.assertEqual(downloaded_ids(episodes, {(1, None), (2, 2)}), {11, 12, 22})
-        self.assertEqual(downloaded_ids(episodes, {(2, 1), (3, None)}), {21})
+        self.assertEqual(downloaded_ids(episodes, {(1, None, when), (2, 2, when)}), {11, 12, 22})
+        self.assertEqual(downloaded_ids(episodes, {(2, 1, when), (3, None, when)}), {21})
         self.assertEqual(downloaded_ids(episodes, set()), frozenset())
+
+    def test_a_season_pack_holds_only_what_had_aired_when_it_was_grabbed(self) -> None:
+        when = datetime(2026, 1, 10, 12, tzinfo=UTC)
+        episodes = [
+            numbered(1, 1, 1, airs=when - timedelta(hours=1)),
+            numbered(2, 1, 2, airs=when + timedelta(hours=1)),
+            numbered(3, 1, 3, air_date=date(2026, 1, 10)),  # no time: that day counts
+            numbered(4, 1, 4, air_date=date(2026, 1, 11)),
+            numbered(5, 1, 5),  # no date: hadn't aired
+        ]
+        self.assertEqual(downloaded_ids(episodes, {(1, None, when)}), {1, 3})
+        # Its own grab counts whenever; a later pack of the same season holds more.
+        self.assertEqual(downloaded_ids(episodes, {(1, 2, when - timedelta(days=9))}), {2})
+        later = when + timedelta(days=2)
+        self.assertEqual(downloaded_ids(episodes, {(1, None, when), (1, None, later)}), {1, 2, 3, 4})
 
 
 class ServicesTests(unittest.IsolatedAsyncioTestCase):

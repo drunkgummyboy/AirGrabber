@@ -47,10 +47,7 @@ from app.models import CalendarEntry, Episode, Show
 from app.ui import theme
 from app.ui.calendar_cards import (
     GRABBED_ICON,
-    MISSING_TEXTS,
-    MISSING_TIP,
-    NEW_NOTE_TEXT,
-    NEW_NOTE_TIP,
+    HaveMark,
     NOTE_HEIGHT,
     SLIM_BUTTONS_GAP,
     SLIM_CODE_GAP,
@@ -78,9 +75,8 @@ from app.ui.calendar_cards import (
     _open_on_click,
     _rgb,
     buttons_width,
+    card_note,
     compact_height,
-    missing_note,
-    new_note,
 )
 from app.ui.calendar_face import (
     PILL_PAD_X,
@@ -120,9 +116,9 @@ if TYPE_CHECKING:
 
 FoldKey = tuple[int, date]  # (show id, air date): which stacks are unfolded
 StateOf = Callable[[DownloadKey], RunState | None]  # a title's one-click run state
-# "quiet": nothing to say (every aired episode without Plex; with Plex one grabbed by AirGrabber
-# that Plex doesn't have yet, on its way).
-RowState = Literal["not_aired", "plex", "new", "needed", "quiet"]
+# "quiet": nothing to say (every aired episode without Plex). "downloaded": with Plex, one grabbed
+# by AirGrabber that Plex doesn't have yet, on its way.
+RowState = Literal["not_aired", "plex", "downloaded", "new", "needed", "quiet"]
 
 # The texts are shown through t().
 DOWNLOAD_ALL_TEXT = N_("⬇ Download all ({n})")
@@ -130,6 +126,7 @@ DOWNLOAD_ALL_SHORTER = (N_("⬇ Download ({n})"), N_("⬇ All ({n})"))  # when i
 ROW_TEXTS: dict[RowState, str] = {
     "not_aired": N_("not aired"),
     "plex": N_("✓ in Plex"),  # in the user's Plex libraries (app/services/plex.py)
+    "downloaded": N_("✓ downloaded"),
     "new": N_("new"),
     "needed": N_("still needed"),
 }
@@ -244,17 +241,20 @@ def row_state(
     new: Collection[int] = frozenset(),
     *,
     marks: bool = False,
+    downloaded: Collection[int] = frozenset(),
 ) -> RowState:
     """An episode's state in its unfolded row: not aired; without Plex (`marks` False) nothing
     more; with Plex: in Plex (`in_plex`: episode ids), still needed (`is_needed`), unless aired
-    less than a day ago (`new`: episode ids; a quiet blue "new", not missing yet); a grabbed
-    one Plex doesn't have yet gets nothing."""
+    less than a day ago (`new`: episode ids; a quiet blue "new", not missing yet); downloaded
+    and not in Plex yet (`downloaded`: episode ids, or a run that just grabbed it)."""
     if not entry.episode.has_aired():
         return "not_aired"
     if not marks:
         return "quiet"
     if entry.episode.id in in_plex:
         return "plex"
+    if entry.episode.id in downloaded or (state is not None and state.phase is Phase.DONE):
+        return "downloaded"
     if not is_needed(entry, state, in_plex):
         return "quiet"
     if entry.episode.id in new:
@@ -372,10 +372,11 @@ def menu_label(
     in_plex: Collection[int],
     *,
     marks: bool = False,
+    downloaded: Collection[int] = frozenset(),
 ) -> str:
     """An episode in the compact stack card's menu: "S01E07 · ✓ in Plex", or just "S01E07"
     with nothing to say."""
-    text = row_text(row_state(entry, state, in_plex, marks=marks))
+    text = row_text(row_state(entry, state, in_plex, marks=marks, downloaded=downloaded))
     return f"{entry.episode.code} · {text}" if text else entry.episode.code
 
 
@@ -535,8 +536,9 @@ class _EpisodeRow:
 class StackCard(EpisodeCard):
     """Several episodes of one show on one day as one wide card (see the module docstring).
     `marks`: Plex is connected (what you have and miss shows); `in_plex`: the ids of the
-    episodes in Plex ("✓ in Plex"), `new`: those aired less than a day ago; `unfolded`: the
-    rows open from the start; `on_fold(open)` hears every fold and unfold."""
+    episodes in Plex ("✓ in Plex"), `new`: those aired less than a day ago, `downloaded`: those
+    downloaded and not in Plex yet; `have`: the note when that goes for all of them; `unfolded`:
+    the rows open from the start; `on_fold(open)` hears every fold and unfold."""
 
     def __init__(
         self,
@@ -552,12 +554,15 @@ class StackCard(EpisodeCard):
         marks: bool = False,
         in_plex: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
+        downloaded: Collection[int] = frozenset(),
+        have: HaveMark | None = None,
     ) -> None:
         # What the overridden steps of EpisodeCard's set-up read.
         self._stack = stack
         self._marks = marks
         self._in_plex = frozenset(in_plex)
         self._new_ids = frozenset(new)
+        self._downloaded = frozenset(downloaded)
         self._unfolded = unfolded
         self._scale = scale
         self._rows: list[_EpisodeRow] = []
@@ -570,6 +575,7 @@ class StackCard(EpisodeCard):
             actions=actions,
             scale=scale,
             on_open_show=on_open_show,
+            have=have,
         )
         self._on_fold = on_fold
         self._code_text = with_source(stack.range, stack.entries[0].show)
@@ -607,8 +613,8 @@ class StackCard(EpisodeCard):
 
     # -- EpisodeCard's steps, for a stack ------------------------------------------------------
 
-    def _card_layout(self, scale: CardScale, missing: bool) -> EpisodeLayout:
-        return episode_layout(scale, linespace=_font_linespace, stack=True)
+    def _card_layout(self, scale: CardScale, noted: bool) -> EpisodeLayout:
+        return episode_layout(scale, linespace=_font_linespace, stack=True, note=noted)
 
     def _card_height(self, layout: EpisodeLayout) -> int:
         height = layout.height + layout.stack_depth
@@ -739,11 +745,11 @@ class StackCard(EpisodeCard):
             self._placing = False
 
     def _place_stack(self) -> None:
-        """The pill under the range, and the unfolded rows under the pill."""
+        """The pill under the range (and its note), and the unfolded rows under the pill."""
         layout, canvas, scaling = self._layout, self._art, self._scaling
         room = self._text_room()
         x = round(self._area.text_x * scaling)
-        box = canvas.bbox(self._code)
+        box = canvas.bbox(self._note if layout.note else self._code)
         top = (box[3] if box else round(layout.pad_top * scaling)) + round(
             layout.pill_gap * scaling
         )
@@ -791,6 +797,7 @@ class StackCard(EpisodeCard):
                 self._in_plex,
                 self._new_ids,
                 marks=self._marks,
+                downloaded=self._downloaded,
             )
             canvas.itemconfigure(
                 row.state,
@@ -816,7 +823,7 @@ class CompactStackCard(ctk.CTkFrame):
     with a small "3" badge, then a small ⬇ (with Plex: download all still needed), … or a run's
     ✓. Clicking the name opens the show's window; a right-click, or the ✓, opens a menu of the
     episodes (each opens its search window). `missing` (with Plex): the amber note line under
-    it; `marks`, `in_plex`, `new`: as StackCard's."""
+    it; `marks`, `in_plex`, `new`, `downloaded`, `have`: as StackCard's."""
 
     def __init__(
         self,
@@ -830,9 +837,12 @@ class CompactStackCard(ctk.CTkFrame):
         marks: bool = False,
         in_plex: Collection[int] = frozenset(),
         new: Collection[int] = frozenset(),
+        downloaded: Collection[int] = frozenset(),
+        have: HaveMark | None = None,
     ) -> None:
-        any_new = not missing and any(entry.episode.id in new for entry in stack.entries)
-        height = compact_height(missing or any_new)
+        any_new = any(entry.episode.id in new for entry in stack.entries)
+        noted = card_note(missing=missing, new=any_new, have=have)
+        height = compact_height(noted is not None)
         super().__init__(
             master,
             fg_color=theme.SURFACE,
@@ -846,6 +856,7 @@ class CompactStackCard(ctk.CTkFrame):
         self._actions = actions
         self._marks = marks
         self._in_plex = frozenset(in_plex)
+        self._downloaded = frozenset(downloaded)
         self._look: IconLook | None = None
         show = stack.show
         line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
@@ -894,18 +905,17 @@ class CompactStackCard(ctk.CTkFrame):
 
         self.note: ctk.CTkLabel | None = None
         note_font = theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN))
-        if missing or any_new:
+        if noted is not None:
             self.note = ctk.CTkLabel(
                 self,
-                text=t(NEW_NOTE_TEXT) if any_new else t(MISSING_TEXTS[0]),
+                text=t(noted.text),
                 font=note_font,
-                text_color=theme.LINK if any_new else MISSING_COLOR,
+                text_color=noted.color,
                 height=NOTE_HEIGHT,
                 anchor="w",
             )
             self.note.pack(side="top", anchor="w", padx=SLIM_PAD_X)
-            add_tooltip(self.note, t(NEW_NOTE_TIP) if any_new else t(MISSING_TIP))
-        note_text = new_note if any_new else missing_note
+            add_tooltip(self.note, t(noted.tip))
 
         line_width: float | None = None  # unscaled, once laid out
 
@@ -922,8 +932,8 @@ class CompactStackCard(ctk.CTkFrame):
             self.range_label.configure(
                 text=elide_to_width(range_label, range_room, code_font.measure)
             )
-            if self.note is not None:
-                self.note.configure(text=note_text(line_width - SLACK, note_font.measure))
+            if self.note is not None and noted is not None:
+                self.note.configure(text=noted.fit(line_width - SLACK, note_font.measure))
 
         def resized(event: Any) -> None:
             nonlocal line_width
@@ -981,7 +991,13 @@ class CompactStackCard(ctk.CTkFrame):
 
         return [
             (
-                menu_label(entry, states.get(entry_key(entry)), self._in_plex, marks=self._marks),
+                menu_label(
+                    entry,
+                    states.get(entry_key(entry)),
+                    self._in_plex,
+                    marks=self._marks,
+                    downloaded=self._downloaded,
+                ),
                 opener(entry),
             )
             for entry in self._stack.entries

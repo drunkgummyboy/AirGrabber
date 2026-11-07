@@ -184,9 +184,9 @@ class StateTests(unittest.TestCase):
             return row_state(entry, run, kw.get("in_plex", ()), kw.get("new", ()), marks=True)
 
         self.assertEqual(state(ep(1, 1, 1, aired=False)), "not_aired")
-        # Grabbed (before, or by a run just now) and not in Plex yet: on its way, nothing said.
+        # Grabbed long ago and not in Plex: nothing said. By a run just now: on its way.
         self.assertEqual(state(ep(1, 1, 1, done=True)), "quiet")
-        self.assertEqual(state(ep(1, 1, 1), RunState(Phase.DONE, GrabOutcome.SENT)), "quiet")
+        self.assertEqual(state(ep(1, 1, 1), RunState(Phase.DONE, GrabOutcome.SENT)), "downloaded")
         in_plex = ep(1, 1, 1, done=True)
         self.assertEqual(state(in_plex, in_plex={in_plex.episode.id}), "plex")
         self.assertEqual(state(ep(1, 1, 1)), "needed")
@@ -628,7 +628,7 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         # Grabbed by a run: it is no longer needed (on its way), its button shows the outcome.
         sent = RunState(Phase.DONE, GrabOutcome.SENT)
         self.actions.states.set(entry_key(card._rows[2].entry), sent)
-        self.assertEqual(self.text(card, card._rows[2].state), "")
+        self.assertEqual(self.text(card, card._rows[2].state), "✓ downloaded")
         self.assertEqual(card.rows[2].look.text if card.rows[2].look else "", "✓")
         card.toggle()
         self.assertEqual(card.rows, [])

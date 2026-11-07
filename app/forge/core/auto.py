@@ -362,6 +362,9 @@ class LookResult(NamedTuple):
     unreachable: list[Path]
 
 
+SCAN_SECOND_LOOK_S = 3.0  # "look now": a file counts as finished from its second look on
+
+
 def needs_message(new: int) -> tuple[str, str]:
     """The notification's title and text when `new` watched downloads start to wait."""
     title = tn("{n} file needs you", "{n} files need you", new)
@@ -418,6 +421,7 @@ class AutoRenamer:
         now: Callable[[], float] = time.time,
         interval_s: float = LOOK_INTERVAL_S,
         second_look_s: float = SECOND_LOOK_S,
+        scan_look_s: float = SCAN_SECOND_LOOK_S,
         activity: ActivityFeed | None = None,
     ) -> None:
         self._parts = parts
@@ -426,6 +430,10 @@ class AutoRenamer:
         self._now = now
         self._interval = interval_s
         self._second_look = min(second_look_s, interval_s)
+        self._scan_look = min(scan_look_s, interval_s)
+        self._scan_looks = 0  # looks still to come for `scan_now`
+        self._scan_found = LookResult(0, 0, 0, [])  # what they found so far
+        self._scan_waiting: list[asyncio.Future[LookResult | None]] = []
         self._watcher = Watcher(now=now)
         self._retry: set[int] = set()  # held for a passing reason (the NAS was away)
         self._undone: set[int] = set()  # put back by an undo: never moved on its own again
@@ -503,6 +511,44 @@ class AutoRenamer:
     def look_soon(self) -> None:
         self._wake.set()
 
+    async def scan_now(self) -> LookResult | None:
+        """Look now and once more a moment later, so that what just finished comes in without
+        waiting for the next timed look (a file counts as finished from its second look on).
+        What both found; None when nothing is being watched. A call during a scan shares it."""
+        if not self.running or self._stopping:
+            return None
+        if not self._scan_waiting:
+            self._scan_looks = 2
+            self._scan_found = LookResult(0, 0, 0, [])
+        future: asyncio.Future[LookResult | None] = asyncio.get_running_loop().create_future()
+        self._scan_waiting.append(future)
+        self._wake.set()
+        return await future
+
+    def _scan_look_done(self, result: LookResult | None) -> None:
+        """A look ended: count it for `scan_now`, and answer once both have."""
+        if self._scan_looks == 0:
+            return
+        self._scan_looks -= 1
+        found = self._scan_found
+        if result is not None:
+            found = LookResult(
+                found.added + result.added,
+                found.renamed + result.renamed,
+                result.held,
+                result.unreachable,
+            )
+        self._scan_found = found
+        if self._scan_looks == 0:
+            self._answer_scan(found)
+
+    def _answer_scan(self, result: LookResult | None) -> None:
+        self._scan_looks = 0
+        waiting, self._scan_waiting = self._scan_waiting, []
+        for future in waiting:
+            if not future.done():
+                future.set_result(result)
+
     def reconfigure(self) -> None:
         """The settings changed: start, stop, or look again at once."""
         if self._closed:
@@ -527,20 +573,26 @@ class AutoRenamer:
 
     async def _loop(self) -> None:
         wait = self._second_look  # a file counts as finished from its second look on
-        while not self._stopping:
-            try:
-                await self.look()
-            except Exception:
-                log.exception("Looking at the download folders failed")
-                self._say(t("Looking at the download folders failed"), level=logging.ERROR)
-            self._wake.clear()
-            if self._stopping:
-                break
-            try:
-                await asyncio.wait_for(self._wake.wait(), wait)
-            except TimeoutError:
-                pass
-            wait = self._interval
+        try:
+            while not self._stopping:
+                result: LookResult | None = None
+                try:
+                    result = await self.look()
+                except Exception:
+                    log.exception("Looking at the download folders failed")
+                    self._say(t("Looking at the download folders failed"), level=logging.ERROR)
+                self._scan_look_done(result)
+                self._wake.clear()
+                if self._stopping:
+                    break
+                try:
+                    pause = self._scan_look if self._scan_looks else wait
+                    await asyncio.wait_for(self._wake.wait(), pause)
+                except TimeoutError:
+                    pass
+                wait = self._interval
+        finally:
+            self._answer_scan(None)  # stopped in between: nobody keeps waiting
 
     # --- one look ------------------------------------------------------------------------------
 
