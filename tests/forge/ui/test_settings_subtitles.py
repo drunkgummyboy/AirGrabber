@@ -434,7 +434,7 @@ class AirGrabberTests(TkCase):
     async def test_no_subtitles_section_under_downloading(self) -> None:
         self.assertNotIn("Subtitles", SECTIONS)
         downloading = next(names for group, names in SECTION_GROUPS if group == "Downloading")
-        self.assertEqual(downloading, ("Where downloads go", "Quality", "Automatic", "Plex"))
+        self.assertEqual(downloading, ("Where downloads go", "Quality", "Automatic", "Plex", "Phone connection"))
 
     def test_the_fields_section(self) -> None:
         self.assertEqual(section_for_field("subtitles_folder"), SECTION_WHERE)

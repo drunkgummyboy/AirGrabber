@@ -1556,4 +1556,69 @@ NL: dict[str, str] = {
         "Kies een paar series en hun nieuwe afleveringen verschijnen hier.",
     "Pick shows to follow…": "Kies series om te volgen…",
     "+ Pick shows…": "+ Series kiezen…",
+    # The phone connection (app/services/phone)
+    "AirGrabber couldn't read that request, so try again or update the Companion app.":
+        "AirGrabber kon dat verzoek niet lezen, dus probeer het opnieuw of werk de Companion-app bij.",
+    "This phone isn't connected to AirGrabber any more, so connect it again from AirGrabber's Settings.":
+        "Deze telefoon is niet meer verbonden met AirGrabber, dus verbind hem opnieuw via de instellingen van AirGrabber.",
+    "AirGrabber doesn't know that request, so update AirGrabber and the Companion app.":
+        "AirGrabber kent dat verzoek niet, dus werk AirGrabber en de Companion-app bij.",
+    "Something went wrong in AirGrabber, so try again in a moment.":
+        "Er ging iets mis in AirGrabber, dus probeer het zo opnieuw.",
+    "Another program is using the port the phone connection needs, so close that program or restart your PC.":
+        "Een ander programma gebruikt de poort die de telefoonverbinding nodig heeft, dus sluit dat programma of start je pc opnieuw op.",
+    "AirGrabber couldn't start the phone connection, so restart AirGrabber and try again.":
+        "AirGrabber kon de telefoonverbinding niet starten, dus start AirGrabber opnieuw en probeer het nog eens.",
+    "Another program is in the way of the phone connection, so your phone may not find this PC when its address changes: restart your PC to fix it.":
+        "Een ander programma zit de telefoonverbinding in de weg, dus je telefoon vindt deze pc misschien niet als zijn adres verandert: start je pc opnieuw op om dit op te lossen.",
+    "AirGrabber had to replace its security certificate, so phones connected earlier won't connect any more: connect each of them again.":
+        "AirGrabber moest zijn beveiligingscertificaat vervangen, dus eerder verbonden telefoons maken geen verbinding meer: verbind ze allemaal opnieuw.",
+    "AirGrabber couldn't install what the phone connection needs, so check your internet connection: it tries again when you start it tomorrow.":
+        "AirGrabber kon niet installeren wat de telefoonverbinding nodig heeft, dus controleer je internetverbinding: het probeert het opnieuw als je het morgen start.",
+    "The phone connection isn't running, so turn it on first.":
+        "De telefoonverbinding staat niet aan, dus zet hem eerst aan.",
+    "This PC isn't on a home network, so connect it to the same network as your phone and try again.":
+        "Deze pc zit niet op een thuisnetwerk, dus verbind hem met hetzelfde netwerk als je telefoon en probeer het opnieuw.",
+    "That code has expired or was already used, so show a new code in AirGrabber's Settings and scan that one.":
+        "Die code is verlopen of al gebruikt, dus toon een nieuwe code in de instellingen van AirGrabber en scan die.",
+    "AirGrabber couldn't read that code, so scan it again.":
+        "AirGrabber kon die code niet lezen, dus scan hem opnieuw.",
+    "Phone": "Telefoon",
+    "Phone connection": "Telefoonverbinding",
+    "Windows may ask if AirGrabber may use your network. Choose Allow.":
+        "Windows vraagt misschien of AirGrabber je netwerk mag gebruiken. Kies Toestaan.",
+    "Connect a phone": "Telefoon verbinden",
+    "Scan this with the Companion app": "Scan dit met de Companion-app",
+    "That code has expired, so click Connect a phone for a new one.":
+        "Die code is verlopen, dus klik op Telefoon verbinden voor een nieuwe.",
+    "Connected phones": "Verbonden telefoons",
+    "No phones are connected yet.": "Er zijn nog geen telefoons verbonden.",
+    "The Companion app on your phone reaches AirGrabber over your home network, never from outside it.":
+        "De Companion-app op je telefoon bereikt AirGrabber via je thuisnetwerk, nooit van buitenaf.",
+    "The person this phone follows was removed from AirGrabber, so connect the phone again from AirGrabber's Settings.":
+        "De persoon die deze telefoon volgt is uit AirGrabber verwijderd, dus verbind de telefoon opnieuw via de Instellingen van AirGrabber.",
+    "That isn't on your list any more, so refresh the list.":
+        "Dat staat niet meer op je lijst, dus ververs de lijst.",
+    "{label} isn't out yet, so try again once it is.":
+        "{label} is nog niet uit, dus probeer het opnieuw zodra het uit is.",
+    "No downloads found for {label}, so try again later.":
+        "Geen downloads gevonden voor {label}, dus probeer het later opnieuw.",
+    "That download isn't available any more, so look for downloads again.":
+        "Die download is niet meer beschikbaar, dus zoek opnieuw naar downloads.",
+    "The Forge is still starting, so try again in a moment.":
+        "De Forge start nog op, dus probeer het zo opnieuw.",
+    "Already sorted, or AirGrabber restarted.":
+        "Al geregeld, of AirGrabber is opnieuw gestart.",
+    "TMDB can't be reached just now, so try again in a moment.":
+        "TMDB is nu niet bereikbaar, dus probeer het zo opnieuw.",
+    "TMDB doesn't know that title, so search for it again.":
+        "TMDB kent die titel niet, dus zoek hem opnieuw.",
+    "Sort this out on the PC.": "Los dit op op de pc.",
+    "Couldn't move it.": "Verplaatsen lukte niet.",
+    "{reason} Sort this out on the PC.": "{reason} Los dit op op de pc.",
+    "Moved {n} file into the library.": "{n} bestand naar de bibliotheek verplaatst.",
+    "Moved {n} files into the library.": "{n} bestanden naar de bibliotheek verplaatst.",
+    "Moved {moved} of {total} files. {reason} Sort out the rest on the PC.":
+        "{moved} van {total} bestanden verplaatst. {reason} Los de rest op op de pc.",
+    "Nothing needed moving.": "Er hoefde niets verplaatst te worden.",
 }

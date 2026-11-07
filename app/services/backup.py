@@ -113,6 +113,11 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "plex_server_name",
         "plex_server_uri",
         "plex_sections_off",
+        # This PC's phone connection: its phones belong to this PC's certificate.
+        "phone_connection_on",
+        "phone_devices",
+        "phone_pc_id",
+        "phone_fingerprint",
     }
 )
 # Where downloads go: kept as on this PC when either PC uses its own qBittorrent that AirGrabber

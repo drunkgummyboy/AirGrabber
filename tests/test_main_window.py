@@ -8,6 +8,7 @@ import asyncio
 import tkinter as tk
 import unittest
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,7 @@ from app.models import (
     AutoError,
     AutoGaveUp,
     LibraryStats,
+    PairedPhone,
     ProwlarrSetupResult,
     Settings,
 )
@@ -94,6 +96,18 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "plex_server_name": "Alex-NAS",
     "plex_server_uri": "http://192.168.1.20:32400",
     "plex_sections_off": ("3",),
+    "phone_connection_on": True,
+    "phone_pc_id": "a1b2",
+    "phone_fingerprint": "c3d4",
+    "phone_devices": (
+        PairedPhone(
+            id="a",
+            name="Phone",
+            token_hash="h",
+            profile_id=1,
+            paired_at=datetime(2026, 11, 6, tzinfo=UTC),
+        ),
+    ),
 }
 
 PAGE_CHANGES: dict[str, Any] = {

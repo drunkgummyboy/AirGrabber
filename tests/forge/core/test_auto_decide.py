@@ -108,7 +108,25 @@ class DecideTest(unittest.TestCase):
         ]
         for label, item, reason in cases:
             with self.subTest(label):
-                assert decide(item) == (False, reason)
+                assert decide(item)[:2] == (False, reason)
+
+    def test_only_a_missing_or_wrong_match_is_a_match_problem(self) -> None:
+        for item in (
+            episode(state=MatchState.NOT_FOUND),
+            movie(year=2021, tmdb_year=1984),
+            episode(tmdb_title="Something Else"),
+        ):
+            assert decide(item).match_problem
+        for item in (
+            episode(state=MatchState.UNCERTAIN),
+            episode(state=MatchState.OFFLINE),
+            episode(state=MatchState.SKIPPED),
+            movie(year=None),
+            episode(number=None),
+            episode(known=False),
+            episode(),
+        ):
+            assert not decide(item).match_problem
 
     def test_reasons_follow_the_language(self) -> None:
         set_language(Language.NL)
@@ -120,22 +138,22 @@ class DecideTest(unittest.TestCase):
         assert decide(movie(year=None, state=MatchState.REMEMBERED)).sure
 
     def test_a_confident_episode_is_sure(self) -> None:
-        assert decide(episode()) == (True, "")
+        assert decide(episode())[:2] == (True, "")
         # TMDB lists it under another name, but its original title is the file's.
         assert decide(
             episode("La Casa de Papel", tmdb_title="Money Heist", original="La Casa de Papel")
         ).sure
 
     def test_a_confident_movie_with_its_year_is_sure(self) -> None:
-        assert decide(movie()) == (True, "")
+        assert decide(movie())[:2] == (True, "")
 
     def test_a_remembered_episode_still_needs_its_numbers(self) -> None:
         # A remembered match vouches for the show, not for the episode.
-        assert decide(episode(number=None, state=MatchState.REMEMBERED)) == (
+        assert decide(episode(number=None, state=MatchState.REMEMBERED))[:2] == (
             False,
             "No season or episode number in the name.",
         )
-        assert decide(episode(known=False, state=MatchState.REMEMBERED)) == (
+        assert decide(episode(known=False, state=MatchState.REMEMBERED))[:2] == (
             False,
             "TMDB doesn't know this episode.",
         )
@@ -218,6 +236,15 @@ class LibraryRunsTest(unittest.TestCase):
         [run] = library_runs([first, second], SETTINGS, DEFAULT_PRESETS, never)
         assert run.plan.files == ()
         assert run.held == {1: SAME_NAME, 2: SAME_NAME}
+
+    def test_only_the_preferred_one_of_a_contested_name_goes(self) -> None:
+        items = [episode(item_id=1), episode(item_id=2), episode(number=1, item_id=3)]
+        [run] = library_runs(items, SETTINGS, DEFAULT_PRESETS, never, preferred=2)
+        assert run.held == {1: SAME_NAME}
+        assert {f.item_id for f in run.plan.files} == {2, 3}
+        [run] = library_runs(items, SETTINGS, DEFAULT_PRESETS, never, preferred=3)
+        assert run.held == {1: SAME_NAME, 2: SAME_NAME}
+        assert {f.item_id for f in run.plan.files} == {3}
 
     def test_the_same_title_with_another_extension_is_already_there(self) -> None:
         other = MOVIES / "Dune (2021)" / "Dune (2021).mp4"

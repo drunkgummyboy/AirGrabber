@@ -22,6 +22,7 @@ from pydantic import (
 )
 
 from app.i18n import N_, Language, t
+from app.models.types import UtcDatetime
 
 
 class QualityProfile(StrEnum):
@@ -314,6 +315,19 @@ def _normalize_url(value: Any) -> Any:
 ServiceUrl = Annotated[str, BeforeValidator(_normalize_url)]
 
 
+class PairedPhone(BaseModel):
+    """A phone paired with the phone connection (app/services/phone/devices.py). Only its
+    token's hash is kept: the token itself went to the phone once."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    id: str
+    name: str
+    token_hash: str
+    profile_id: int  # the person whose lists this phone follows
+    paired_at: UtcDatetime
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -445,6 +459,12 @@ class Settings(BaseModel):
     plex_server_name: str = ""
     plex_server_uri: str = ""  # the server's connection that answered last
     plex_sections_off: tuple[str, ...] = ()  # the libraries (section keys) switched off
+    # The phone connection (app/services/phone): off until turned on. This PC's own, never in a
+    # backup (app/services/backup.py).
+    phone_connection_on: bool = False
+    phone_devices: tuple[PairedPhone, ...] = ()
+    phone_pc_id: str = ""  # how a phone recognises this PC: a random id made once
+    phone_fingerprint: str = ""  # the certificate the paired phones trust
 
     @property
     def remote_configured(self) -> bool:

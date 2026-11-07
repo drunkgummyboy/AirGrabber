@@ -40,6 +40,7 @@ from app.ui.settings_dialog import (
     SECTION_ICONS,
     SECTION_INFO,
     SECTION_LOOKS,
+    SECTION_PHONE,
     SECTION_PLEX,
     SECTION_QUALITY,
     SECTION_UPDATES,
@@ -150,7 +151,7 @@ class SectionTests(unittest.TestCase):
             [
                 (
                     "Downloading",
-                    ["Where downloads go", "Quality", "Automatic", "Plex"],
+                    ["Where downloads go", "Quality", "Automatic", "Plex", "Phone connection"],
                 ),
                 ("App", ["Movie & show info", "Looks", "Updates", "Backup", "Advanced"]),
                 # MediaForge's group goes between these two when the dialog is given `forge`.
@@ -395,11 +396,11 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         dialog, _settings = self.dialog()
         self.assertEqual(dialog.section, SECTION_WHERE)
         self.assertTrue(dialog.page(SECTION_WHERE).winfo_manager())
-        # Without their services there are no Backup or Plex sections (
+        # Without their services there are no Backup, Plex or Phone connection sections (
         # without theirs, nor a MediaForge group without Forge).
         self.assertEqual(
             list(dialog._items),
-            [s for s in SECTIONS if s not in (SECTION_BACKUP, SECTION_PLEX)],
+            [s for s in SECTIONS if s not in (SECTION_BACKUP, SECTION_PLEX, SECTION_PHONE)],
         )
         self.assertNotIn("MEDIAFORGE", labels(dialog._sidebar))
         dialog._items[SECTION_LOOKS].click()

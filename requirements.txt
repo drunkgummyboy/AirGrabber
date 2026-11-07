@@ -8,3 +8,5 @@ pystray>=0.19
 # optional: AirGrabber starts without these (app/bootstrap.py, install.ps1)
 pywebview>=6.0
 guessit>=4.4
+cryptography>=43
+segno>=1.6

@@ -74,6 +74,7 @@ _NO_YEAR = N_("No year in the name: is it a movie?")
 class Decision(NamedTuple):
     sure: bool
     reason: str  # empty when sure; translated
+    match_problem: bool = False  # not sure because the match is missing or wrong
 
 
 def decide(item: QueueItem) -> Decision:
@@ -81,7 +82,8 @@ def decide(item: QueueItem) -> Decision:
     media, parsed = item.media, item.parsed
     remembered = media.match_state is MatchState.REMEMBERED
     if not remembered and media.match_state is not MatchState.CONFIDENT:
-        return Decision(False, t(_NOT_SURE[media.match_state]))
+        missing = media.match_state is MatchState.NOT_FOUND
+        return Decision(False, t(_NOT_SURE[media.match_state]), match_problem=missing)
     if media.kind is MediaKind.EPISODE:  # a remembered show still needs a known episode
         if parsed.season is None or parsed.episode is None:
             return Decision(False, t(_NO_NUMBERS))
@@ -93,10 +95,10 @@ def decide(item: QueueItem) -> Decision:
         if parsed.year is None:
             return Decision(False, t(_NO_YEAR))
         if media.year != parsed.year:
-            return Decision(False, t(_DISAGREE))
+            return Decision(False, t(_DISAGREE), match_problem=True)
     names = {normalize_title(media.title), normalize_title(media.original_title or "")}
     if normalize_title(parsed.title) not in names:
-        return Decision(False, t(_DISAGREE))
+        return Decision(False, t(_DISAGREE), match_problem=True)
     return Decision(True, "")
 
 
@@ -184,8 +186,10 @@ def _runs(
     *,
     hold_taken: bool,
     naming: Mapping[int, NamingChoice] | None = None,
+    preferred: int | None = None,
 ) -> list[LibraryRun]:
-    """One run per kind, or (with the owner's `naming` per item) one per kind and naming."""
+    """One run per kind, or (with the owner's `naming` per item) one per kind and naming.
+    Downloads wanting one name all wait, unless one of them is `preferred`: that one goes."""
     runs: list[LibraryRun] = []
     chosen = naming or {}
     for kind, folder, preset_name, fallback in (
@@ -212,7 +216,9 @@ def _runs(
         if hold_taken:
             claims = Counter(os.path.normcase(str(w)) for n, w in wanted.items() if n not in held)
             for item_id, target in wanted.items():
-                if item_id not in held and claims[os.path.normcase(str(target))] > 1:
+                if item_id in held or item_id == preferred:
+                    continue
+                if claims[os.path.normcase(str(target))] > 1:
                     held[item_id] = t(SAME_NAME)
         groups: dict[tuple[str, str, str], list[QueueItem]] = {}
         for item in mine:
@@ -255,9 +261,11 @@ def library_runs(
     settings: ForgeSettings,
     presets: Sequence[Preset],
     exists: Callable[[Path], bool] = fsops.exists,
+    *,
+    preferred: int | None = None,
 ) -> list[LibraryRun]:
     """One run per kind for renaming on its own; a taken name holds the file instead."""
-    return _runs(items, settings, presets, exists, hold_taken=True)
+    return _runs(items, settings, presets, exists, hold_taken=True, preferred=preferred)
 
 
 def owner_runs(
@@ -677,7 +685,7 @@ class AutoRenamer:
                 continue
             verdict = decide(item)
             if not verdict.sure and item.status is not ItemStatus.NEEDS_CHOICE:
-                queue.hold(item_id, verdict.reason)
+                queue.hold(item_id, verdict.reason, match_problem=verdict.match_problem)
         self._retry.clear()
         newly_kept = {_key(i.path) for i in queue.items if i.id in self._undone} - kept
         present_keys = {_key(f) for f, _ in listed}
@@ -759,8 +767,13 @@ class AutoRenamer:
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cancel: asyncio.Event | None = None,
         naming: Mapping[int, NamingChoice] | None = None,
+        hold_taken: bool = False,
+        preferred: int | None = None,
     ) -> RunResult:
         """The owner's Rename on watched downloads: into the library, whatever decide says.
+        `hold_taken` (the phone's tap, where no preview shows the name): a taken name holds the
+        file instead of making a numbered copy, and downloads wanting one name all wait, except
+        `preferred`, the one the owner tapped.
         `cancel` is the Inbox's (its Cancel button, or closing), not the renamer's own.
         `naming`: the preset, rule and options the owner chose per download (the queue's band);
         a download without one goes by its library's preset."""
@@ -790,6 +803,8 @@ class AutoRenamer:
             on_progress=on_progress,
             cancel=cancel or asyncio.Event(),
             naming=naming,
+            hold_taken=hold_taken,
+            preferred=preferred,
         )
 
     async def keep_back(self, paths: Sequence[Path]) -> None:
@@ -808,6 +823,8 @@ class AutoRenamer:
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cancel: asyncio.Event | None = None,
         naming: Mapping[int, NamingChoice] | None = None,
+        hold_taken: bool = False,
+        preferred: int | None = None,
     ) -> RunResult:
         parts = self._parts
         queue = parts.queue
@@ -821,7 +838,11 @@ class AutoRenamer:
             if not items:
                 return total
             presets = await parts.presets.list()
-            if owner:
+            if hold_taken:
+                runs = await asyncio.to_thread(
+                    library_runs, items, self._settings, presets, preferred=preferred
+                )
+            elif owner:
                 runs = await asyncio.to_thread(
                     owner_runs, items, self._settings, presets, fsops.exists, naming
                 )

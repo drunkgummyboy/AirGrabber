@@ -22,6 +22,10 @@ from app.services.download_status import DownloadStatusService, forge_moves
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.phone.coming_up import ComingUp, GrabbedFilms
+from app.services.phone.downloads import PhoneDownloads
+from app.services.phone.forge import PhoneForge
+from app.services.phone.service import PhoneService
 from app.services.plex import PlexClient, PlexService
 from app.services.profiles import ProfileService
 from app.services.prowlarr_setup import ProwlarrSetupService
@@ -67,6 +71,7 @@ class Services:
         "forge",
         "images",
         "library",
+        "phone",
         "plex",
         "profiles",
         "prowlarr_setup",
@@ -96,6 +101,7 @@ class Services:
         torrent_app: TorrentAppService,
         *,
         forge: ForgeRuntime,
+        paths: AppPaths,
     ) -> None:
         self._db = db
         self._http = http
@@ -156,6 +162,35 @@ class Services:
             db.plex,
             settings,
             on_change=library.notify_changed,
+        )
+        # The Companion app's way in, on the home network; off until turned on in Settings
+        # (`run` from the UI). What it may ask besides pairing comes from `routes_factory`.
+        grabbed_films = GrabbedFilms(self.download_status)
+        phone_routes = {
+            **ComingUp(
+                library,
+                self.watchlist,
+                self.download_status,
+                downloads,
+                self.quick_download,
+                self.download_queue,
+                self.profiles,
+                grabbed_films,
+            ).routes(),
+            **PhoneDownloads(
+                library,
+                self.watchlist,
+                search,
+                downloads,
+                self.quick_download,
+                settings,
+                self.profiles,
+                grabbed_films,
+            ).routes(),
+            **PhoneForge(forge, self.profiles).routes(),
+        }
+        self.phone = PhoneService(
+            settings, paths, self.profiles, routes_factory=lambda: phone_routes
         )
 
     @classmethod
@@ -218,6 +253,7 @@ class Services:
                 # Forge shares the HTTP client, the TMDB client (its own names language) and
                 # the poster cache; nothing of it is imported or opened until it starts.
                 forge=ForgeRuntime(paths, http, tmdb, images, settings),
+                paths=paths,
             )
             await services.profiles.load()  # also the selected person's watchlist
             await services.torrent_app.refresh_qbittorrent_theme()  # after an update: new files
@@ -233,13 +269,17 @@ class Services:
         # The queue is kept in memory only: what still waits is dropped (the log says how many).
         self.download_queue.close()
         try:
-            # First: Forge uses the HTTP client, and forge.db's aiosqlite thread is no daemon.
-            await self.forge.aclose()
+            await self.phone.aclose()  # no phone is answered from here on
         finally:
             try:
-                await self._http.aclose()
+                # Before these: Forge uses the HTTP client, and forge.db's aiosqlite thread is no
+                # daemon.
+                await self.forge.aclose()
             finally:
-                await self._db.close()
+                try:
+                    await self._http.aclose()
+                finally:
+                    await self._db.close()
 
 
 async def _known_titles(db: Database) -> tuple[list[Show], list[Movie]]:
@@ -278,6 +318,7 @@ __all__ = [
     "DownloadStationClient",
     "ImageCache",
     "LibraryService",
+    "PhoneService",
     "PlexService",
     "ProfileService",
     "ProwlarrSetupService",

@@ -75,9 +75,12 @@ class ParseRequirementsTests(unittest.TestCase):
         )
         self.assertEqual(Requirement("plain", ((">=", "1.0"),)).spec, "plain>=1.0")
 
-    def test_in_the_project_only_pywebview_and_guessit_are_optional(self) -> None:
+    def test_in_the_project_only_what_a_feature_alone_needs_is_optional(self) -> None:
         requirements = parse_requirements(REQUIREMENTS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual([r.name for r in requirements if r.optional], ["pywebview", "guessit"])
+        self.assertEqual(
+            [r.name for r in requirements if r.optional],
+            ["pywebview", "guessit", "cryptography", "segno"],  # the last two: the phone connection
+        )
         self.assertIn("customtkinter", [r.name for r in requirements if not r.optional])
 
 

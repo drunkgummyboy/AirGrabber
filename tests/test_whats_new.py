@@ -78,6 +78,19 @@ class WhatsNewTests(unittest.TestCase):
                     self.assertTrue(line.endswith("."), line)
         self.assertEqual(whats_new("2.0.4", "2.0.5"), WhatsNew("2.0.5", NOTES["2.0.5"]))
 
+    def test_3_8_0_has_nothing_to_tell(self) -> None:
+        # Its one change is the phone connection, which others don't get: no window coming from
+        # 3.7.0, and 3.7.0's notes for whoever skipped that one.
+        self.assertIsNone(whats_new("3.7.0", "3.8.0"))
+        self.assertEqual(whats_new("3.6.0", "3.8.0"), WhatsNew("3.7.0", NOTES["3.7.0"]))
+
+    def test_the_notes_never_mention_the_phone_connection(self) -> None:
+        for version, lines in NOTES.items():
+            for line in lines:
+                with self.subTest(version, line=line):
+                    self.assertNotIn("phone", line.lower())
+                    self.assertNotIn("companion", line.lower())
+
     def test_an_entry_with_features_only_lines_only_or_both(self) -> None:
         features = {"2.2": (FAKE_FEATURE,), "2.3": (FAKE_FEATURE, OTHER_FEATURE), "2.4": ()}
         notes: dict[str, tuple[str, ...]] = {"2.1": ("A", "B", "C"), "2.3": ("D", "E", "F"), "2.4": ()}

@@ -100,6 +100,10 @@ def due_order(entry: WatchlistEntry) -> tuple[int, datetime, date, int]:
     )
 
 
+def _release_order(entry: WatchlistEntry) -> tuple[date, str, int]:
+    return (available_on(entry) or date.max, entry.movie.title.casefold(), entry.movie_id)
+
+
 class WatchlistService:
     """The watchlists over their repository, the selected person's kept in memory; listeners
     hear every change to it."""
@@ -180,16 +184,13 @@ class WatchlistService:
     def by_release(self) -> tuple[WatchlistEntry, ...]:
         """The films on the list in memory by the day they count as out, earliest first; films
         without a date last. The shelf shows them in this order."""
-        return tuple(
-            sorted(
-                self._entries.values(),
-                key=lambda entry: (
-                    available_on(entry) or date.max,
-                    entry.movie.title.casefold(),
-                    entry.movie_id,
-                ),
-            )
-        )
+        return tuple(sorted(self._entries.values(), key=_release_order))
+
+    async def by_release_of(self, profile_id: int) -> tuple[WatchlistEntry, ...]:
+        """`by_release` for any person, read from the database: a phone follows its own person,
+        whoever is selected on the PC."""
+        entries = await self._repository.entries(profile_id=profile_id)
+        return tuple(sorted(entries, key=_release_order))
 
     async def due(
         self,

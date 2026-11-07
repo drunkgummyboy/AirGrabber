@@ -181,6 +181,11 @@ _OFF_PAGE_SETTINGS = frozenset(
         "plex_server_name",
         "plex_server_uri",
         "plex_sections_off",
+        # The phone connection: no page shows it, only its own part of Settings.
+        "phone_connection_on",
+        "phone_devices",
+        "phone_pc_id",
+        "phone_fingerprint",
     }
 )
 
@@ -724,6 +729,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
         # What is in Plex: checked now, then every 30 minutes (a change reloads the pages).
         spawn(self._services.plex.run_periodic(), name="plex")
+        spawn(self._services.phone.run(), name="phone")  # does nothing while off, or without its marker
         # The Downloads page's progress and the header badge (they listen to it themselves).
         spawn(self._services.download_status.run_periodic(), name="download-status")
         spawn(self._services.images.prune(), name="poster-prune")
@@ -1325,6 +1331,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             library=self._services.library,
             backup=self._services.backup,
             plex=self._services.plex,
+            phone=self._services.phone,
             forge=self._services.forge,
             section=section,
         )

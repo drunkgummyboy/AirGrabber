@@ -92,6 +92,11 @@ class QuickDownloadService:
             if entry.users == 0:
                 del self._target_locks[key]
 
+    def is_running(self, target: GrabTarget) -> bool:
+        """A download of exactly `target` is searching, grabbing or waiting for its turn here."""
+        key = (target.media_type, target.media_id, target.season, target.episode)
+        return key in self._target_locks
+
     async def download(
         self,
         request: SearchRequest,

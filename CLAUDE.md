@@ -137,5 +137,13 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   older means it was deleted there). Connecting or
   disconnecting reloads the pages (`on_change`). Tests use `tests/fixtures/plex/` and MockTransport
   (`tests/plex_link.py` for settings with a token); never plex.tv or a real server.
+- The phone connection (`app/services/phone/`, page `app/ui/phone_settings.py`, for the Companion app; design in
+  `docs/companion/`): for now only on a PC whose data folder holds the file `phone-connection.enabled` (`ENABLED_MARKER`,
+  owner's decision): without it no Settings page, `PhoneService.run` ends at once and nothing listens, even with
+  `phone_connection_on` true, and no text tells others about it (no What's new line either). Opening it up is one line:
+  `OPEN_TO_EVERYONE` in `app/services/phone/service.py`. Home addresses and paired phones only; only a token's hash is
+  kept; the Plex token only in `/v1/pair`'s and `/v1/hello`'s answers; release links never leave the PC; the log gets no
+  token, code, address or exception text. `cryptography` and `segno` are optional (below `# optional`), imported only
+  inside `certificate.py`'s and `code_picture`'s functions; without them the page says so.
 
 See `filemap.md` for where things live.

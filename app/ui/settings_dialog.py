@@ -1,5 +1,5 @@
 """Preferences dialog in plain words, the one Settings window of AirGrabber and MediaForge: a
-sidebar of sections (Downloading: where downloads go, quality, automatic, Plex;
+sidebar of sections (Downloading: where downloads go, quality, automatic, Plex, phone connection;
 MediaForge: FORGE_SECTIONS of app/forge/ui/settings_pages.py; App: movie & show info, looks,
 updates, advanced) and one scrolling page per section, its settings grouped in boxes that each
 say what they are for (the layout is app/ui/settings_layout.py's). Every change goes through
@@ -67,6 +67,7 @@ from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
 from app.models.backup import BackupLoadResult
 from app.services.backup import BackupService
+from app.services.phone.service import PhoneService
 from app.services.plex import PlexService
 from app.services.tmdb import TMDBError
 from app.ui import theme
@@ -90,6 +91,7 @@ from app.ui.dialog_kit import (
     secondary_button,
     text_label,
 )
+from app.ui.phone_settings import PhoneBox
 from app.ui.plex_settings import PlexBox
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
 from app.ui.quick_setup import OPEN_TEXT as QUICK_SETUP_TEXT
@@ -143,13 +145,14 @@ SECTION_UPDATES = N_("Updates")
 SECTION_ADVANCED = N_("Advanced")
 SECTION_BACKUP = N_("Backup")
 SECTION_PLEX = N_("Plex")  # app/ui/plex_settings.py: what is in Plex counts as had
+SECTION_PHONE = N_("Phone connection")  # app/ui/phone_settings.py: for the Companion app
 
 # The sidebar: a small group label above each part of the list, then its sections in order.
 # MediaForge's group goes between these two (the dialog adds it when it is given `forge`).
 SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         N_("Downloading"),
-        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_PLEX),
+        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_PLEX, SECTION_PHONE),
     ),
     (
         N_("App"),
@@ -162,6 +165,7 @@ SECTION_ICONS: dict[str, str] = {
     SECTION_QUALITY: "🎚",
     SECTION_AUTOMATIC: "⏱",
     SECTION_PLEX: "▶",
+    SECTION_PHONE: "📱",
     SECTION_INFO: "🎬",
     SECTION_LOOKS: "🖼",
     SECTION_UPDATES: "⟳",
@@ -178,6 +182,10 @@ SECTION_NOTES: dict[str, str] = {
     SECTION_PLEX: N_(
         "What's in your Plex libraries counts as something you already have: it isn't missing "
         "and isn't downloaded again."
+    ),
+    SECTION_PHONE: N_(
+        "The Companion app on your phone reaches AirGrabber over your home network, never from "
+        "outside it."
     ),
     SECTION_INFO: N_(
         "The Movies and Discover pages get their lists, posters and release dates from TMDB, "
@@ -664,6 +672,7 @@ class SettingsDialog(ctk.CTkToplevel):
         backup: BackupService | None = None,
         section: str | None = None,
         plex: PlexService | None = None,
+        phone: PhoneService | None = None,
         forge: ForgeRuntime | None = None,
     ) -> None:
         """`on_restart`: restarts
@@ -686,6 +695,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._backup = backup
         self._plex = plex  # the Plex section shows when it is given
         self.plex_box: PlexBox | None = None
+        self._phone = phone  # the Phone connection section shows when it is given and available
+        self.phone_box: PhoneBox | None = None
         self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
         self._images = images
         self._library = library
@@ -798,6 +809,9 @@ class SettingsDialog(ctk.CTkToplevel):
         if self._plex is not None:
             plex_service = self._plex
             builders[SECTION_PLEX] = lambda: self._build_plex(plex_service)
+        if self._phone is not None and self._phone.available:
+            phone_service = self._phone
+            builders[SECTION_PHONE] = lambda: self._build_phone(phone_service)
         for name in SECTIONS:
             if name in builders:
                 self._pages[name] = builders[name]()
@@ -1515,6 +1529,13 @@ class SettingsDialog(ctk.CTkToplevel):
         """The Plex box (app/ui/plex_settings.py); it acts at once, not on Save."""
         page = self._new_page(SECTION_PLEX)
         self.plex_box = PlexBox(page, plex)
+        return page
+
+    def _build_phone(self, phone: PhoneService) -> _Page:
+        """The phone connection's boxes (app/ui/phone_settings.py); they act at once, not on
+        Save."""
+        page = self._new_page(SECTION_PHONE)
+        self.phone_box = PhoneBox(page, phone)
         return page
 
     def _backup_dialog_open(self) -> bool:
