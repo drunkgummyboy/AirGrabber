@@ -268,6 +268,7 @@ class MainWindowTests(unittest.TestCase):
         window: Any = SimpleNamespace(
             _series_views={"calendar": visible, "tracked": other},
             _movie_view=mock.Mock(),
+            _library_view=mock.Mock(),
             _visible_view=lambda: visible,
             _band=mock.Mock(),
         )

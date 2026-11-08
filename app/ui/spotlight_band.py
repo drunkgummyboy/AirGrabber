@@ -124,8 +124,12 @@ T = TypeVar("T")
 PART_LABELS = {
     SwitchPart.SERIES: N_("Series"),
     SwitchPart.MOVIES: N_("Movies"),
+    SwitchPart.LIBRARY: N_("Library"),
     SwitchPart.FORGE: N_("MediaForge"),
 }
+# The parts on the switch without and with Plex (the Library part).
+PARTS = (SwitchPart.SERIES, SwitchPart.MOVIES, SwitchPart.FORGE)
+PARTS_WITH_LIBRARY = (SwitchPart.SERIES, SwitchPart.MOVIES, SwitchPart.LIBRARY, SwitchPart.FORGE)
 SEARCH_PLACEHOLDER = N_("Search shows & movies…")
 SEARCH_TIP = N_("Search")
 HISTORY_TIP = N_("History")
@@ -219,6 +223,7 @@ class SpotlightBand(tk.Canvas):
         self._on_home = on_home
         self._on_part = on_part  # a click on the main menu's switch (none: no switch)
         self._part: SwitchPart | None = SwitchPart.SERIES  # lit; None: the Downloads page
+        self._parts: tuple[SwitchPart, ...] = PARTS  # on the switch, left to right
         self._forge_count = 0  # MediaForge's waiting files, on its part
         self._switch_images: dict[Hashable, Image.Image] = {}
         self._switch_pads: dict[Hashable, int] = {}
@@ -856,6 +861,18 @@ class SpotlightBand(tk.Canvas):
             self._part = part
             self._paint_switch()
 
+    @property
+    def parts(self) -> tuple[SwitchPart, ...]:
+        """The switch's parts, left to right."""
+        return self._parts
+
+    def set_library_shown(self, shown: bool) -> None:
+        """The Library part on the switch (while Plex is connected) or not."""
+        parts = PARTS_WITH_LIBRARY if shown else PARTS
+        if parts != self._parts:
+            self._parts = parts
+            self._relayout()
+
     def set_forge_count(self, count: int) -> None:
         """MediaForge's waiting files: the amber badge on its word (hidden at 0)."""
         count = max(0, count)
@@ -863,12 +880,16 @@ class SpotlightBand(tk.Canvas):
             self._forge_count = count
             self._paint_switch()
 
-    def _part_widths(self) -> tuple[float, float, float]:
-        """Series and Movies as wide as each other, MediaForge by its own word."""
+    def _part_widths(self) -> tuple[float, ...]:
+        """Series, Movies (and Library) as wide as each other, MediaForge by its own word."""
         font = self._fonts["switch"]
         names = {part: font.measure(t(label)) for part, label in PART_LABELS.items()}
-        side = max(names[SwitchPart.SERIES], names[SwitchPart.MOVIES]) + 2 * SEGMENT_PAD_X
-        return side, side, names[SwitchPart.FORGE] + 2 * SEGMENT_PAD_X
+        even = [part for part in self._parts if part is not SwitchPart.FORGE]
+        side = max(names[part] for part in even) + 2 * SEGMENT_PAD_X
+        return tuple(
+            names[part] + 2 * SEGMENT_PAD_X if part is SwitchPart.FORGE else side
+            for part in self._parts
+        )
 
     def _switch_box(self, rect: Rect, fill: RGBA) -> Image.Image:
         """A part's or the badge's round box, the same picture for the same look."""
@@ -905,13 +926,13 @@ class SpotlightBand(tk.Canvas):
         if layout is None or not layout.parts:
             return
         px = self._px
-        parts = dict(zip(SwitchPart, layout.parts, strict=True))
+        parts = dict(zip(self._parts, layout.parts, strict=True))
         track, pad = self._switch_pill(layout.pill)
         self.coords(self._switch_track, px(layout.pill.x) - pad, px(layout.pill.y) - pad)
         self._set_image(self._switch_track, "switch-track", track)
         lit = self._part
         hit = self._hover
-        hovered = tuple(SwitchPart)[hit.dot] if hit is not None and hit.kind is HitKind.PART else None
+        hovered = self._parts[hit.dot] if hit is not None and hit.kind is HitKind.PART else None
         if hovered is not None and hovered is not lit:
             part = parts[hovered]
             self.coords(self._switch_hover, px(part.x), px(part.y))
@@ -920,7 +941,7 @@ class SpotlightBand(tk.Canvas):
             self.itemconfigure(self._switch_hover, state="normal")
         else:
             self.itemconfigure(self._switch_hover, state="hidden")
-        if lit is not None:
+        if lit is not None and lit in parts:
             part = parts[lit]
             self.coords(self._switch_active, px(part.x), px(part.y))
             box = self._switch_box(part, self._rgba(theme.ACCENT))
@@ -929,6 +950,10 @@ class SpotlightBand(tk.Canvas):
         else:
             self.itemconfigure(self._switch_active, state="hidden")
         for key, item in self._switch_texts.items():
+            if key not in parts:
+                self.itemconfigure(item, state="hidden")
+                continue
+            self.itemconfigure(item, state="normal")
             part = parts[key]
             colour = theme.ON_COLOR if key is lit else theme.TEXT
             self.coords(item, px(part.x + part.w / 2), px(part.y + part.h / 2))
@@ -1230,7 +1255,7 @@ class SpotlightBand(tk.Canvas):
         kind = hit.kind
         if kind is HitKind.PART:
             if self._on_part is not None:
-                self._on_part(tuple(SwitchPart)[hit.dot])
+                self._on_part(self._parts[hit.dot])
             return
         if kind is HitKind.SEARCH:
             self._on_search()

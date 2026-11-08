@@ -303,11 +303,11 @@ class MixedPlanTest(ForgeTestCase):
         shows = [inp(1, R / "e1.mkv", episode(1, title="Same", year=None))]
         films = [inp(2, R / "m.mkv", film(title="Same", year=None))]
         plan = build_mixed_plan(
-            [(shows, "{t}", PresetOptions()), (films, "{t}", PresetOptions())],
+            [(shows, "{t} - {s00e00}", PresetOptions()), (films, "{t} - S01E01", PresetOptions())],
             exists=fake_exists([]),
         )
         names = [f.target.name for f in plan.files]
-        self.assertEqual(names, ["Same.mkv", "Same (1).mkv"])
+        self.assertEqual(names, ["Same - S01E01.mkv", "Same - S01E01 (1).mkv"])
 
     def test_tidying_up_where_a_part_asks_for_it(self) -> None:
         other = Path(r"C:\other")

@@ -24,7 +24,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from app.forge.core.formatter import render
+from app.forge.core.formatter import name_file
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MediaKind
 from app.forge.ui.name_diff import name_changes
@@ -91,7 +91,7 @@ def build_rows(
     targets: dict[int, Path] = {}
     for item in items:
         media = item.media
-        rendered = render(fmt, media, item.path.suffix)
+        rendered = name_file(fmt, media, item.path.suffix)
         root = item.root if root_of is None else root_of(item)
         targets[item.id] = root.joinpath(*rendered.parts)
         if len(rendered.parts) > 1:
@@ -301,7 +301,7 @@ def build_queue_rows(
             if wanted:
                 moves[item.id] = library is not None
                 root = library or root
-        rendered[item.id] = render(item_fmt, item.media, item.path.suffix)
+        rendered[item.id] = name_file(item_fmt, item.media, item.path.suffix)
         roots[item.id] = root
         out.targets[item.id] = root.joinpath(*rendered[item.id].parts)
         shown.append(item)

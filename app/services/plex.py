@@ -74,6 +74,7 @@ from app.models.plex import (
     PlexResourceReply,
     PlexScan,
     PlexServer,
+    PlexTitle,
     PlexStatus,
 )
 from app.models import Settings
@@ -181,6 +182,58 @@ def _first_int(values: Sequence[str]) -> int | None:
     return int(values[0]) if values else None
 
 
+# A thumb the server names for an item: "/library/metadata/1001/thumb/1699999999".
+_THUMB = re.compile(r"/library/metadata/\d+/(?:thumb|art|poster)(?:/\d+)?")
+_RESOLUTIONS = {"4k": "4K", "2160": "4K", "1080": "1080p", "720": "720p", "576": "SD", "480": "SD", "sd": "SD"}
+
+
+def resolution_name(value: str | None) -> str | None:
+    """Plex's videoResolution ("1080", "4k", "sd") as the cards say it ("1080p", "4K", "SD")."""
+    if not value:
+        return None
+    return _RESOLUTIONS.get(value.strip().lower())
+
+
+POSTER_PREFIX = "plex:"  # a Library card's picture "url": "plex:/library/metadata/1001/thumb/…"
+POSTER_SIZE = (400, 600)  # asked of the server: enough for the biggest card at 175 % scaling
+PICTURE_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+
+
+def poster_url(title: PlexTitle) -> str | None:
+    """The "url" a Library card loads its picture by (None: the title has none)."""
+    return f"{POSTER_PREFIX}{title.thumb}" if title.thumb else None
+
+
+def plex_title(
+    item: PlexItemReply, kind: LibraryKind, show_id: int | None = None
+) -> PlexTitle | None:
+    """A show or film for the Library page; None without a rating key or a title."""
+    if item.rating_key is None or not item.title.strip():
+        return None
+    ids = external_ids(item)
+    thumb = item.thumb if item.thumb and _THUMB.fullmatch(item.thumb) else None
+    added = (
+        datetime.fromtimestamp(item.added_at, UTC)
+        if item.added_at is not None and item.added_at > 0
+        else None
+    )
+    return PlexTitle(
+        kind=kind,
+        key=item.rating_key,
+        title=item.title.strip(),
+        year=item.year if item.year and item.year > 0 else None,
+        thumb=thumb,
+        added_at=added,
+        seasons=item.child_count if kind == "show" else None,
+        episodes=item.leaf_count if kind == "show" else None,
+        resolution=resolution_name(item.media[0].video_resolution) if item.media else None,
+        show_id=show_id,
+        tvdb_id=_first_int(ids.get("tvdb", [])),
+        imdb_id=ids["imdb"][0] if ids.get("imdb") else None,
+        tmdb_id=_first_int(ids.get("tmdb", [])),
+    )
+
+
 def match_scan(
     *,
     shows: Iterable[PlexItemReply],
@@ -202,6 +255,7 @@ def match_scan(
         if imdb_id:
             by_imdb.setdefault(imdb_id, known_id)
     show_of: dict[str, int] = {}  # Plex ratingKey → TVMaze id
+    titles: list[PlexTitle] = []
     read = unmatched = 0
     for item in shows:
         read += 1
@@ -209,6 +263,8 @@ def match_scan(
         match = next((by_tvdb[int(v)] for v in ids.get("tvdb", ()) if int(v) in by_tvdb), None)
         if match is None:
             match = next((by_imdb[v] for v in ids.get("imdb", ()) if v in by_imdb), None)
+        if (title := plex_title(item, "show", match)) is not None:
+            titles.append(title)
         if match is None or item.rating_key is None:
             unmatched += 1
             continue
@@ -223,6 +279,8 @@ def match_scan(
     kept: set[tuple[int | None, str | None]] = set()
     no_ids = 0
     for film in films:
+        if (title := plex_title(film, "movie")) is not None:
+            titles.append(title)
         ids = external_ids(film)
         tmdb_id = _first_int(ids.get("tmdb", []))
         imdb_id = ids["imdb"][0] if ids.get("imdb") else None
@@ -237,6 +295,7 @@ def match_scan(
         unmatched_shows=unmatched,
         unmatched_films=no_ids,
         libraries=tuple(libraries),
+        titles=tuple(titles),
     )
 
 
@@ -527,6 +586,32 @@ class PlexClient:
         return found
 
 
+    async def picture(self, uri: str, token: str, thumb: str, width: int, height: int) -> bytes | None:
+        """A title's picture from the server, resized there; None when it can't be had. The
+        token in its header only; neither the address nor the answer is logged."""
+        try:
+            response = await self._http.get(
+                f"{uri}/photo/:/transcode",
+                params={
+                    "url": thumb,
+                    "width": width,
+                    "height": height,
+                    "minSize": 1,
+                    "upscale": 1,
+                },
+                headers=self._headers(token, {"Accept": "image/*"}),
+                timeout=PICTURE_TIMEOUT,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            log.debug("Plex picture: no answer (%s)", type(exc).__name__)
+            return None
+        if response.status_code != 200:
+            log.debug("Plex picture: HTTP %d", response.status_code)
+            return None
+        return response.content
+
+
 def _read[M: BaseModel](model: type[M], data: Any, what: str) -> M:
     try:
         return model.model_validate(data)
@@ -797,6 +882,28 @@ class PlexService:
         finally:
             self._run = None
             self._notify()
+
+    async def titles(self) -> list[PlexTitle]:
+        """The shows and films of the last check (the Library page); none without Plex."""
+        if not self.connected:
+            return []
+        return await self._repository.titles()
+
+    async def checked_at(self) -> datetime | None:
+        """When the last check succeeded."""
+        return (await self._repository.counts()).checked_at
+
+    async def poster(self, url: str) -> bytes | None:
+        """A Library card's picture: `url` is "plex:<the title's thumb path>" (the Plex
+        posters' ImageCache hands it here). From the server the last check reached; None
+        without one, for a path that isn't a title's picture, or when it can't be had."""
+        thumb = url.removeprefix(POSTER_PREFIX)
+        uri = self._settings.current.plex_server_uri
+        if not url.startswith(POSTER_PREFIX) or not _THUMB.fullmatch(thumb) or not uri:
+            return None
+        if not self.connected:
+            return None
+        return await self._client.picture(uri, self._token(), thumb, *POSTER_SIZE)
 
     async def scan_folders(self, folders: Iterable[str]) -> int:
         """Ask Plex to scan these folders (where MediaForge just moved files): how many scans

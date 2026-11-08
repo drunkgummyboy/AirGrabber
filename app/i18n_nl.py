@@ -980,6 +980,27 @@ NL: dict[str, str] = {
         "haalt de op een na beste release.",
     "Never": "Nooit",
     "🧩 Find gaps in Plex…": "🧩 Gaten in Plex zoeken…",
+    "Library": "Bibliotheek",
+    "Shows ({n})": "Series ({n})",
+    "Films ({n})": "Films ({n})",
+    "Search your library…": "Zoek in je bibliotheek…",
+    "+ Follow": "+ Volgen",
+    "Couldn't follow {name}: TVmaze doesn't know it": "Kon {name} niet volgen: TVmaze kent het niet",
+    "Couldn't find {name} on TVmaze": "Kon {name} niet vinden op TVmaze",
+    "Show more ({n})": "Meer tonen ({n})",
+    "Nothing from Plex yet": "Nog niets uit Plex",
+    "AirGrabber reads Plex every half hour; Settings → Plex → Check now reads it at once.":
+        "AirGrabber leest Plex elk half uur; Instellingen → Plex → Nu controleren leest het meteen.",
+    "Nothing here with this search or filter.": "Niets gevonden met deze zoekopdracht of dit filter.",
+    "Not followed": "Niet gevolgd",
+    "With gaps": "Met gaten",
+    "{n} gap": "{n} gat",
+    "{n} gaps": "{n} gaten",
+    "From Plex": "Uit Plex",
+    "Recently added": "Recent toegevoegd",
+    "Year": "Jaar",
+    "4K": "4K",
+    "From Plex · checked {time}": "Uit Plex · gecontroleerd om {time}",
     "From Sonarr": "Uit Sonarr",
     "AirGrabber follows every show your Sonarr has. Its API key is used once and never stored.":
         "AirGrabber volgt elke serie die je Sonarr heeft. De API-sleutel wordt één keer gebruikt en "
@@ -1413,6 +1434,13 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "A Library page for what's in Plex": "Een bibliotheekpagina voor wat er in Plex staat",
+    "Your shows and films from Plex as posters: follow a show from there, or see which ones have gaps.":
+        "Je series en films uit Plex als posters: volg er een serie vanaf, of zie welke gaten hebben.",
+    "MediaForge: a file it isn't sure about joins the other files of the same show.":
+        "MediaForge: een bestand waar het niet zeker van is, sluit aan bij de andere bestanden van dezelfde serie.",
+    "An episode's new name always says which episode it is, whatever preset names it.":
+        "De nieuwe naam van een aflevering zegt altijd welke aflevering het is, welke voorinstelling ook hernoemt.",
     "MediaForge checks each renamed video and warns when its audio is a dub or its picture smaller than its name says.":
         "MediaForge controleert elke hernoemde video: een waarschuwing bij een nagesynchroniseerd geluid of een kleiner beeld.",
     "Downloads: block a fake release's group, swap a download that stops moving, and wait a while after an episode airs.":
@@ -1488,12 +1516,6 @@ NL: dict[str, str] = {
         "Het opmaakvak toont elke code met wat die geeft, en voorbeelden die je met een klik gebruikt.",
     "New format codes: y for the year, and sxe for the 1x02 style.":
         "Nieuwe opmaakcodes: y voor het jaar, en sxe voor de stijl 1x02.",
-    "MediaForge is now a page in AirGrabber": "MediaForge is nu een pagina in AirGrabber",
-    "No second window any more: Series, Movies, MediaForge. The number on it shows how many files need you.":
-        "Geen tweede venster meer: Series, Films, MediaForge. Het getal erop laat zien hoeveel bestanden op je wachten.",
-    "Every show or film is one card": "Elke serie of film is één kaart",
-    "Its picture runs behind all its files, and 📂 opens them in Explorer.":
-        "De afbeelding loopt door achter alle bestanden, en 📂 opent ze in Verkenner.",
     "History is behind the 🕘 next to Settings.": "Geschiedenis zit achter de 🕘 naast Instellingen.",
     "MediaForge now has AirGrabber's colours.": "MediaForge heeft nu de kleuren van AirGrabber.",
     "Auto-rename moved to Settings, and there is now one Settings window for everything.":

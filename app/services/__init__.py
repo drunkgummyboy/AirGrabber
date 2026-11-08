@@ -27,6 +27,7 @@ from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.forge import PhoneForge
 from app.services.phone.service import PhoneService
 from app.services.plex import PlexClient, PlexService
+from app.services.plex_library import PlexLibraryService
 from app.services.plex_scans import PlexScansAfterMoves
 from app.services.sonarr import SonarrClient
 from app.services.profiles import ProfileService
@@ -62,6 +63,8 @@ class Services:
 
     __slots__ = (
         "plex_scans",
+        "plex_library",
+        "plex_posters",
         "sonarr",
         "_db",
         "_http",
@@ -167,6 +170,9 @@ class Services:
             settings,
             on_change=library.notify_changed,
         )
+        # The Library page: Plex's shows and films, their posters from the Plex server.
+        self.plex_library = PlexLibraryService(self.plex, library)
+        self.plex_posters = ImageCache(http, paths.posters / "plex", fetch=self.plex.poster)
         # Import Shows → From Sonarr (a one-off read; nothing of it is stored).
         self.sonarr = SonarrClient(http)
         # What MediaForge moves into a library folder, Plex scans soon after (once Forge runs).

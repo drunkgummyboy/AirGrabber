@@ -920,6 +920,29 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         x, y = layout.downloads.x + 20, layout.downloads.y + 20
         self.assertEqual(band._hit_at(round(x * scale), round(y * scale)), Hit(HitKind.DOWNLOADS))
 
+    async def test_the_library_part_comes_with_plex(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        self.assertEqual(band.parts, (SwitchPart.SERIES, SwitchPart.MOVIES, SwitchPart.FORGE))
+        self.assertEqual(option(band, band._switch_texts[SwitchPart.LIBRARY], "state"), "hidden")
+        band.set_library_shown(True)
+        layout = band.layout
+        assert layout is not None
+        self.assertEqual(len(layout.parts), 4)
+        self.assertEqual(self.text(band, band._switch_texts[SwitchPart.LIBRARY]), "Library")
+        self.assertEqual(option(band, band._switch_texts[SwitchPart.LIBRARY], "state"), "normal")
+        scale = band._scale
+        x, y = middle(layout.parts[2])
+        event = SimpleNamespace(x=round(x * scale), y=round(y * scale))
+        band._on_press(event)
+        band._on_release(event)
+        self.assertEqual(self.events, [SwitchPart.LIBRARY])
+        band.select_part(SwitchPart.LIBRARY)
+        band.set_library_shown(False)  # Plex disconnected: the lit part is gone too
+        self.assertEqual(len(band.layout.parts), 3)  # type: ignore[union-attr]
+        self.assertEqual(option(band, band._switch_active, "state"), "hidden")
+
     async def test_the_main_menu_lights_clicks_and_counts(self) -> None:
         band = self.band()
         band.start()

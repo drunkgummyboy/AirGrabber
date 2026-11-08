@@ -20,6 +20,10 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.11.0": (
+        N_("MediaForge: a file it isn't sure about joins the other files of the same show."),
+        N_("An episode's new name always says which episode it is, whatever preset names it."),
+    ),
     "3.10.0": (
         N_("MediaForge checks each renamed video and warns when its audio is a dub or its picture smaller than its name says."),
         N_("Downloads: block a fake release's group, swap a download that stops moving, and wait a while after an episode airs."),
@@ -219,19 +223,14 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.2.0": (
+    "3.11.0": (
         Feature(
-            N_("MediaForge is now a page in AirGrabber"),
+            N_("A Library page for what's in Plex"),
             N_(
-                "No second window any more: Series, Movies, MediaForge. The number on it shows "
-                "how many files need you."
+                "Your shows and films from Plex as posters: follow a show from there, or see "
+                "which ones have gaps."
             ),
-            "mediaforge_page.png",
-        ),
-        Feature(
-            N_("Every show or film is one card"),
-            N_("Its picture runs behind all its files, and 📂 opens them in Explorer."),
-            "one_card.png",
+            "library.png",
         ),
     ),
 }

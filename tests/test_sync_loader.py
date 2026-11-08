@@ -45,6 +45,7 @@ class FooterTests(unittest.TestCase):
         window: Any = SimpleNamespace(
             _services=SimpleNamespace(plex=SimpleNamespace(checking=True)),
             _plex_loader=SimpleNamespace(set_busy=busy.append),
+            _show_library_part=lambda: None,  # the switch's Library part: tests/test_plex_library.py
         )
         MainWindow._show_plex_sync(window)
         window._services.plex.checking = False

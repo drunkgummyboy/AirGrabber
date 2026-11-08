@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.forge.core import fsops
-from app.forge.core.formatter import render, sanitize_segment
+from app.forge.core.formatter import name_file, sanitize_segment
 from app.forge.core.nfo import episode_nfo, movie_nfo, show_nfo
 from app.forge.core.parser import is_video
 from app.forge.models.media import MediaKind, ResolvedMedia
@@ -166,7 +166,7 @@ def build_plan(
 
     for item in inputs:
         media = item.media
-        rendered = render(fmt, media, item.source.suffix)
+        rendered = name_file(fmt, media, item.source.suffix)
         wanted = item.root.joinpath(*rendered.parts)
         if str(wanted) == str(item.source):
             files.append(

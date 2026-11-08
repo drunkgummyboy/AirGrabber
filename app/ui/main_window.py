@@ -17,6 +17,7 @@ than closing), the pages and the band reload, and the status bar says "Now showi
 from __future__ import annotations
 
 import asyncio
+import webbrowser
 import dataclasses
 from datetime import UTC, date, datetime
 import logging
@@ -56,6 +57,7 @@ from app.models import (
     SyncProgress,
     UpdateInfo,
 )
+from app.models.plex import PlexTitle
 from app.services import Services, UpdateError
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
@@ -103,6 +105,7 @@ from app.ui.tray_menu import downloads_line, pause_until, resume_text, today_lin
 from app.ui.tray import TrayHost
 from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, TrackedView
 from app.ui.gaps_window import GapsWindow, group_gaps
+from app.ui.views.library_view import LibraryView
 from app.ui.views.downloads_view import DownloadsView, PageActions
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action, first_run_defaults
 from app.ui.whats_new_dialog import WhatsNewDialog
@@ -121,6 +124,7 @@ log = logging.getLogger(__name__)
 
 _UPDATE_CHECK_DELAY_S = 5  # let the pages load first
 STUCK_SWAP_TEXT = N_("{title} stopped moving: AirGrabber is fetching another release")
+IMDB_TITLE_URL = "https://www.imdb.com/title/{}/"
 _DOWNLOAD_STATUS_MS = 10_000  # how long a one-click download's result stays in the status bar
 _DETAILS_WAIT_S = 5.0  # a one-click movie download waits this long for TMDB details (IMDb id)
 _UPDATE_STATUS_MS = 10_000  # how long "… is ready" / "Updated to …" stay in the status bar
@@ -346,7 +350,8 @@ class Mode(StrEnum):
     SERIES = "Series"
     MOVIES = "Movies"
     DOWNLOADS = "Downloads"  # the band's ⬇ button; the switch leads back
-    FORGE = "MediaForge"  # the switch's third part: MediaForge's page
+    FORGE = "MediaForge"  # the switch's last part: MediaForge's page
+    LIBRARY = "Library"  # what is in Plex (the switch shows it only while Plex is connected)
 
 
 # The switch's parts and their modes (the Downloads page lights none), and whose titles the band
@@ -354,9 +359,14 @@ class Mode(StrEnum):
 _PART_MODES = {
     SwitchPart.SERIES: Mode.SERIES,
     SwitchPart.MOVIES: Mode.MOVIES,
+    SwitchPart.LIBRARY: Mode.LIBRARY,
     SwitchPart.FORGE: Mode.FORGE,
 }
-_MODE_SIDES = {Mode.SERIES: SpotlightSide.SERIES, Mode.MOVIES: SpotlightSide.MOVIES}
+_MODE_SIDES = {
+    Mode.SERIES: SpotlightSide.SERIES,
+    Mode.MOVIES: SpotlightSide.MOVIES,
+    Mode.LIBRARY: SpotlightSide.SERIES,
+}
 # The Series tabs' texts. CTkTabview names a tab by its text, so they key the views translated.
 _CALENDAR, _DISCOVER, _TRACKED = N_("Calendar"), N_("Discover"), N_("Tracked")
 TABS_ROW_PADDING = (6, 8)  # above and under the row under the band
@@ -727,6 +737,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
             actions=PageActions(again=self._download_entry_again),
             queue=self._services.download_queue,  # its waiting downloads at the top
         )
+        # What is in Plex (the switch's Library part, only while Plex is connected).
+        self._library_view = LibraryView(
+            self,
+            service=self._services.plex_library,
+            posters=self._services.plex_posters,
+            settings=settings,
+            status=self.set_status,
+            on_open_show=self._open_plex_show,
+            on_open_film=self._open_plex_film,
+            card_scale=self._card_scale,
+        )
         # MediaForge's page goes in here at its first visit (ForgeHost.open).
         self._forge_holder = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
 
@@ -802,11 +823,36 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _show_plex_sync(self) -> None:
         self._plex_loader.set_busy(self._services.plex.checking)
+        self._show_library_part()
+
+    def _show_library_part(self) -> None:
+        """The switch's Library part only while Plex is connected; leaving its page when Plex
+        goes."""
+        shown = self._services.plex_library.available
+        self._band.set_library_shown(shown)
+        if not shown and self._mode is Mode.LIBRARY:
+            self._go_home()
+
+    async def _open_plex_show(self, title: PlexTitle) -> bool:
+        """A Library show card: its window (looked up on TVmaze when AirGrabber didn't know it)."""
+        show = await self._services.plex_library.show(title)
+        if show is None or not self.winfo_exists():
+            return False
+        self._show_windows.open_show(show)
+        return True
+
+    def _open_plex_film(self, title: PlexTitle) -> None:
+        """A Library film card: its info window (TMDB), else its IMDb page."""
+        if title.tmdb_id is not None:
+            spawn(self._movie_windows.open_movie_id(title.tmdb_id), name="library-film")
+        elif title.imdb_id is not None:
+            webbrowser.open(IMDB_TITLE_URL.format(title.imdb_id))
 
     # -- navigation --------------------------------------------------------------------------
 
     def _start(self) -> None:
         tk.Misc.bind(self, "<ButtonPress-1>", self._clicked_in_main, "+")
+        self._show_library_part()
         self._go_home()
         spawn(self._show_library_summary(), name="library-summary")
         spawn(
@@ -1009,6 +1055,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             Mode.SERIES: self._series_tabs,
             Mode.MOVIES: self._movie_view,
             Mode.DOWNLOADS: self._downloads_view,
+            Mode.LIBRARY: self._library_view,
             Mode.FORGE: self._forge_holder,
         }
         for page_mode, page in pages.items():
@@ -1099,6 +1146,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             return self._movie_view
         if self._mode is Mode.DOWNLOADS:
             return self._downloads_view
+        if self._mode is Mode.LIBRARY:
+            return self._library_view
         return self._series_views[self._series_tabs.get()]
 
     # -- keyboard shortcuts --------------------------------------------------------------------
@@ -1139,7 +1188,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _reload_pages(self, *, quiet: bool = False) -> None:
         """Settings or library changed: every page is outdated; reload the one on screen now
         (`quiet`, a library change: without a visible rebuild, BaseView.refresh_quietly)."""
-        for page in (*self._series_views.values(), self._movie_view):
+        for page in (*self._series_views.values(), self._movie_view, self._library_view):
             page.invalidate()
         view = self._visible_view()
         if view is not None:  # MediaForge's page has nothing of these

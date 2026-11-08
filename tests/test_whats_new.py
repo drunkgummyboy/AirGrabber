@@ -43,8 +43,11 @@ FAKE_NOTES = {
 # tools/ is not a package; importing by name keeps mypy from seeing the module twice.
 PICTURES = importlib.import_module("tools.whats_new_art").PICTURES
 
-FAKE_FEATURE = Feature("Big thing", "It does a lot.", "mediaforge_page.png")
-OTHER_FEATURE = Feature("Other thing", "It does more.", "one_card.png")
+FAKE_FEATURE = Feature("Big thing", "It does a lot.", "library.png")
+OTHER_FEATURE = Feature("Other thing", "It does more.", "library.png")
+# Pictures that aren't there or don't read (the release has one real picture).
+MISSING_FEATURE = Feature("Big thing", "It does a lot.", "missing.png")
+BROKEN_FEATURE = Feature("Other thing", "It does more.", "broken.png")
 LINES = ("One.", "Two.", "Three.")
 TALL_SCREEN = (0, 0, 4000, 4000)
 SHORT_SCREEN = (0, 0, 2000, 700)
@@ -378,16 +381,16 @@ class FeatureCardsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_missing_or_broken_picture_leaves_the_words(self) -> None:
         with tempfile.TemporaryDirectory(prefix="whats-new-") as folder:
-            Path(folder, OTHER_FEATURE.picture).write_bytes(b"not a picture")
+            Path(folder, BROKEN_FEATURE.picture).write_bytes(b"not a picture")
             with self.assertLogs(whats_new_dialog.log, logging.WARNING) as logs:
                 with mock.patch.object(whats_new_dialog, "PICTURES_DIR", Path(folder)):
-                    dialog = self.dialog()
+                    dialog = self.dialog(features=(MISSING_FEATURE, BROKEN_FEATURE))
                     task = dialog._load_task
                     assert task is not None
                     await self.landed(dialog)
             output = "\n".join(logs.output)
-            self.assertIn(f"{FAKE_FEATURE.picture} (FileNotFoundError)", output)
-            self.assertIn(f"{OTHER_FEATURE.picture} (UnidentifiedImageError)", output)
+            self.assertIn(f"{MISSING_FEATURE.picture} (FileNotFoundError)", output)
+            self.assertIn(f"{BROKEN_FEATURE.picture} (UnidentifiedImageError)", output)
             self.assertNotIn("whats-new-", output)  # never the folder
         self.assertIsNone(task.exception())
         scaling = ctk.ScalingTracker.get_widget_scaling(dialog)
@@ -399,10 +402,10 @@ class FeatureCardsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_bad_picture_leaves_the_others(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
-            Image.new("RGBA", (30, 10)).save(Path(folder, OTHER_FEATURE.picture))
+            Image.new("RGBA", (30, 10)).save(Path(folder, BROKEN_FEATURE.picture))
             with mock.patch.object(whats_new_dialog, "PICTURES_DIR", Path(folder)):
                 with self.assertLogs(whats_new_dialog.log, logging.WARNING):
-                    dialog = self.dialog()
+                    dialog = self.dialog(features=(MISSING_FEATURE, BROKEN_FEATURE))
                     await self.landed(dialog)
         self.assertEqual([card.has_picture for card in dialog.cards], [False, True])
 

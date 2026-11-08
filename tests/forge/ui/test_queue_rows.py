@@ -261,7 +261,8 @@ class QueueRowsTests(ForgeTestCase):
         item = episode(self.folder, name, "Gold Rush", 17, 3)
         [line] = [r for r in build([item], rule=rule("{ny}")).rows if r.kind == "item"]
         self.assertEqual(line.code, "S17E03")
-        self.assertEqual(line.title, "Gold Rush.mkv")
+        # The rule doesn't say which episode: the name says it anyway (formatter.episode_rule).
+        self.assertEqual(line.title, "Gold Rush - S17E03 - Episode 03.mkv")
         named = episode(
             self.folder, "Gold.Rush.S17E04.mkv", "Gold Rush", 17, 4, episode_title="Gold"
         )

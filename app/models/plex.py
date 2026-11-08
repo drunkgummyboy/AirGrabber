@@ -82,6 +82,12 @@ class PlexGuidReply(_Wire):
     id: str
 
 
+class PlexMediaReply(_Wire):
+    """A film's file as Plex describes it (the first one counts)."""
+
+    video_resolution: _Key | None = Field(default=None, alias="videoResolution")  # "1080", "4k"
+
+
 class PlexItemReply(_Wire):
     """A show, a film or an episode of /library/sections/{id}/all."""
 
@@ -92,6 +98,14 @@ class PlexItemReply(_Wire):
     grandparent_rating_key: _Key | None = Field(default=None, alias="grandparentRatingKey")
     parent_index: _Index = Field(default=None, alias="parentIndex")  # an episode's season
     index: _Index = None  # an episode's number
+    # The Library page's (shows and films): year, the server's picture path, when it came in
+    # (Unix seconds), a show's seasons and episodes, a film's files.
+    year: _Index = None
+    thumb: str | None = None
+    added_at: _Index = Field(default=None, alias="addedAt")
+    child_count: _Index = Field(default=None, alias="childCount")
+    leaf_count: _Index = Field(default=None, alias="leafCount")
+    media: list[PlexMediaReply] = Field(default_factory=list, alias="Media")
 
     def guid_texts(self) -> tuple[str, ...]:
         """Every guid the item names: its own, then the Guid list."""
@@ -208,6 +222,27 @@ class PlexStatus(DomainModel):
     checking: bool = False
 
 
+class PlexTitle(DomainModel):
+    """A show or film in Plex as the Library page shows it (`plex_titles`, replaced per check).
+    `thumb`: the server's picture path (fetched with the token in its header only); `show_id`:
+    the TVMaze id AirGrabber matched a show to (None: not known yet); `resolution`: "4K",
+    "1080p", "720p", "SD" (films)."""
+
+    kind: LibraryKind
+    key: str
+    title: str
+    year: int | None = None
+    thumb: str | None = None
+    added_at: UtcDatetime | None = None
+    seasons: int | None = None
+    episodes: int | None = None
+    resolution: str | None = None
+    show_id: int | None = None
+    tvdb_id: int | None = None
+    imdb_id: str | None = None
+    tmdb_id: int | None = None
+
+
 class PlexScan(DomainModel):
     """One check's result, ready to store: the matched episodes as (TVMaze show id, season,
     episode), the films as (TMDB id, IMDb id), and what was counted."""
@@ -218,3 +253,4 @@ class PlexScan(DomainModel):
     unmatched_shows: int = 0
     unmatched_films: int = 0  # films without a TMDB or IMDb id
     libraries: tuple[PlexLibrary, ...] = ()
+    titles: tuple[PlexTitle, ...] = ()  # every show and film read, for the Library page

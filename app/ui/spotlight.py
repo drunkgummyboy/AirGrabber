@@ -424,6 +424,7 @@ class SwitchPart(StrEnum):
 
     SERIES = "series"
     MOVIES = "movies"
+    LIBRARY = "library"  # only while Plex is connected (SpotlightBand.set_library_shown)
     FORGE = "forge"
 
 

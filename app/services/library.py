@@ -177,6 +177,45 @@ class LibraryService:
 
     # -- reads ---------------------------------------------------------------------------------
 
+    async def tracked_ids(self, *, profile_id: int) -> frozenset[int]:
+        """The ids of the shows a person follows."""
+        return await self._library.tracked_ids(profile_id=profile_id)
+
+    async def cached_shows(self, show_ids: Iterable[int]) -> dict[int, Show]:
+        """The cached shows of these ids (the Library page's "Ended")."""
+        found: dict[int, Show] = {}
+        for show_id in dict.fromkeys(show_ids):
+            show = await self._library.get_show(show_id)
+            if show is not None:
+                found[show_id] = show
+        return found
+
+    async def find_show(
+        self,
+        *,
+        show_id: int | None = None,
+        tvdb_id: int | None = None,
+        imdb_id: str | None = None,
+        name: str = "",
+    ) -> Show | None:
+        """A show by its TVMaze id (cached first), else TheTVDB's or IMDb's id, else its name
+        (the best search hit); None when TVMaze knows none or can't be reached (logged)."""
+        try:
+            if show_id is not None:
+                cached = await self._library.get_show(show_id)
+                return cached if cached is not None else await self._tvmaze.get_show(show_id)
+            found: Show | None = None
+            if tvdb_id is not None:
+                found = await self._tvmaze.lookup_show(thetvdb=tvdb_id)
+            if found is None and imdb_id:
+                found = await self._tvmaze.lookup_show(imdb=imdb_id)
+            if found is None and name:
+                found = await self._best_hit(name)
+            return found
+        except TVMazeError as exc:
+            log.info("Finding a show failed (%s)", type(exc).__name__)
+            return None
+
     async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
         """The shows a person follows, by name."""
         return await self._library.tracked(profile_id=profile_id)

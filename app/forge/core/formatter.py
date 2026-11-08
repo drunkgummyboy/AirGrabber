@@ -8,7 +8,7 @@ from pathlib import PureWindowsPath
 
 from pydantic import BaseModel
 
-from app.forge.models.media import ResolvedMedia
+from app.forge.models.media import MediaKind, ResolvedMedia
 
 KNOWN_VARIABLES = ("ny", "t", "y", "s", "e", "s00e00", "sxe", "en", "quality")
 
@@ -18,6 +18,12 @@ _VARIABLE = re.compile(r"\{([A-Za-z0-9]+)\}")
 _SEPARATOR = re.compile(r"[\\/]")
 # A file whose name says nothing of its quality: the code goes, with the dash or brackets around it.
 _EMPTY_QUALITY = re.compile(r"\s*(?:-\s*)?[\[(]?\{quality\}[\])]?", re.IGNORECASE)
+# The codes that say which episode a file is. An episode named by a rule without one (the built-in
+# "Auto" preset's "{ny}", a film rule) gets EPISODE_TAIL after its name: otherwise every episode of
+# a show would get the same name.
+_EPISODE_CODES = re.compile(r"\{(?:e|s00e00|sxe)\}", re.IGNORECASE)
+_EPISODE_TITLE = re.compile(r"\{en\}", re.IGNORECASE)
+EPISODE_TAIL = " - {s00e00} - {en}"
 _RESERVED = {"CON", "PRN", "AUX", "NUL"} | {f"{p}{n}" for p in ("COM", "LPT") for n in range(1, 10)}
 
 
@@ -65,6 +71,23 @@ def _values(media: ResolvedMedia) -> dict[str, str]:
     }
     # Values never contain path separators, so a "/" in an episode name can't make a folder.
     return {k: _clean_text(v) for k, v in raw.items()}
+
+
+def episode_rule(fmt: str) -> str:
+    """`fmt` for an episode: as it is when its file name says which episode, else with
+    " - {s00e00} - {en}" after it (" - {s00e00}" when it names the episode's title already)."""
+    name = _SEPARATOR.split(fmt)[-1]
+    if _EPISODE_CODES.search(name):
+        return fmt
+    return fmt + (" - {s00e00}" if _EPISODE_TITLE.search(name) else EPISODE_TAIL)
+
+
+def name_file(fmt: str, media: ResolvedMedia, extension: str) -> Rendered:
+    """What a rename names a file: `render`, an episode's rule made to say which episode it is
+    (`episode_rule`)."""
+    if media.kind is MediaKind.EPISODE:
+        fmt = episode_rule(fmt)
+    return render(fmt, media, extension)
 
 
 def render(fmt: str, media: ResolvedMedia, extension: str) -> Rendered:

@@ -81,7 +81,7 @@ from app.forge.core import fsops
 from app.forge.core.airgrabber_folders import watched_folders
 from app.forge.core.auto import TOOLS_NOT_THERE, NamingChoice, library_naming
 from app.forge.core.executor import ProgressEvent, RunResult
-from app.forge.core.formatter import render
+from app.forge.core.formatter import name_file
 from app.forge.core.ignored import top_folder
 from app.forge.core.library import inside, library_folder, route_inputs
 from app.forge.core.parser import VIDEO_EXTENSIONS
@@ -1480,7 +1480,7 @@ class QueueView(ctk.CTkFrame):
         if item is None:
             text, colour = t(NO_EXAMPLE), theme.TEXT_MUTED
         else:
-            rendered = render(self.fmt, item.media, item.path.suffix)
+            rendered = name_file(self.fmt, item.media, item.path.suffix)
             if rendered.unknown:
                 codes = ", ".join("{" + code + "}" for code in rendered.unknown)
                 text, colour = "⚠ " + t("not a known code: {codes}", codes=codes), theme.WARNING

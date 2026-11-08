@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import contextlib
 import hashlib
 import io
@@ -63,9 +64,13 @@ class ImageCache:
         *,
         memory_items: int = 300,
         max_concurrent: int = 6,
+        fetch: Callable[[str], Awaitable[bytes | None]] | None = None,
     ) -> None:
+        """`fetch`: gets a "url"'s bytes instead of an HTTP GET (the Library page's Plex
+        posters: PlexService.poster, the token in its header only)."""
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be at least 1")
+        self._fetcher = fetch
         self._http = http
         self._directory = directory
         self._memory_items = max(0, memory_items)
@@ -230,6 +235,10 @@ class ImageCache:
 
     async def _fetch(self, url: str) -> bytes | None:
         """The response body, or None for a non-200 status or a body over the size limit."""
+        if self._fetcher is not None:
+            async with self._downloads:
+                data = await self._fetcher(url)
+            return data if data is not None and len(data) <= MAX_DOWNLOAD_BYTES else None
         async with (
             self._downloads,
             self._http.stream("GET", url, follow_redirects=True) as response,

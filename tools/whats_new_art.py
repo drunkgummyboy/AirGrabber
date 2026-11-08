@@ -406,6 +406,64 @@ def draw_one_card() -> Image.Image:
     return layer.image
 
 
+def _poster(layer: Layer, x: float, y: float, colour: str, dark: str) -> None:
+    """A poster card of the Library page: the picture with a ring, a title and a line under it."""
+    layer.rect(x, y, 62, 112, 7, "#20262d")
+    poster: Box = (x + 5, y + 5, 52, 74)
+    layer.rect(*poster, 5, down(poster, ((0, colour, 1), (1, dark, 1))))
+    layer.paint(solid(dark), Mask().add(circle(x + 40, y + 36, 11)).done())
+    layer.paint(solid(colour), Mask().add(circle(x + 40, y + 36, 5)).done())
+    layer.rect(x + 11, y + 86, 40, 6, 3, WHITE)
+    layer.rect(x + 16, y + 97, 30, 4, 2, MUTED)
+
+
+def draw_library() -> Image.Image:
+    """The main window with a Library part lit on its switch (a shelf of spines) and Plex's
+    shows and films under it as posters, an amber Plex chevron glowing beside them; one poster
+    followed (a green tick), one to follow (a plus)."""
+    layer = _background()
+    layer.paint(glow("#E5A00D", (0.12, 0.55), 0.35, 0.30))
+    layer.paint(glow(STEEL, (0.7, 0.4), 0.55, 0.32))
+
+    # Plex's chevron, beside the window.
+    chevron = ((52, 82), (84, 82), (120, 120), (84, 158), (52, 158), (88, 120))
+    layer.paint(solid("#E5A00D"), Mask().add(chevron).done())
+
+    # The main window and its switch: Series, Movies, Library (lit), MediaForge.
+    layer.rect(150, 18, 540, 206, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(150, 18, 540, 206, 14, 1.5))
+    layer.paint(solid(STEEL), Mask().add(circle(172, 40, 8)).done())
+    layer.rect(188, 35, 58, 9, 4.5, ON_ACCENT)
+    layer.rect(380, 25, 296, 31, 15.5, SURFACE)
+    layer.paint(solid("#3a3a3a"), border_mask(380, 25, 296, 31, 15.5, 1))
+    layer.rect(398, 37, 34, 7, 3.5, MUTED)
+    layer.rect(450, 37, 34, 7, 3.5, MUTED)
+    layer.rect(500, 28, 80, 25, 12.5, "#5f84a8")
+    for index, height in enumerate((13, 11, 13, 9)):  # a shelf of spines
+        layer.rect(526 + index * 7, 47 - height, 5, height, 1, WHITE)
+    layer.rect(530 - 6, 47, 34, 2, 1, WHITE)
+    layer.rect(598, 37, 62, 7, 3.5, MUTED)
+
+    # The posters.
+    colours = (
+        ("#4ac0d8", "#13315a"), ("#7ad04f", "#1e5a2a"), ("#e0b44a", "#5a3a12"),
+        ("#b46ad8", "#3a1a5a"), ("#e06a5a", "#5a1a20"), ("#4ad8b0", "#13504a"),
+        ("#6a8ad8", "#1a2a5a"),
+    )
+    for index, (colour, dark) in enumerate(colours):
+        _poster(layer, 170 + index * 72, 72, colour, dark)
+    # Followed: a green tick on the second; to follow: a plus on the fifth.
+    layer.paint(solid("#2FA572"), Mask().add(circle(276, 82, 9)).done())
+    layer.paint(
+        solid(WHITE), Mask().line(((271.5, 82), (275, 85.5), (281, 78.5)), 2.2, round_ends=True).done()
+    )
+    layer.paint(solid("#5f84a8"), Mask().add(circle(492, 82, 9)).done())
+    layer.paint(solid(WHITE), Mask().line(((487, 82), (497, 82)), 2.2, round_ends=True).done())
+    layer.paint(solid(WHITE), Mask().line(((492, 77), (492, 87)), 2.2, round_ends=True).done())
+    layer.rect(170, 196, 500, 14, 7, "#20262d")
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -423,8 +481,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "mediaforge_page.png": draw_mediaforge_page,
-    "one_card.png": draw_one_card,
+    "library.png": draw_library,
 }
 
 

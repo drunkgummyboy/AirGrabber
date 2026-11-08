@@ -36,7 +36,7 @@ from app.models import (
     Show,
     WatchlistEntry,
 )
-from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan
+from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan, PlexTitle
 from app.models.backup import (
     BackupData,
     BackupFilm,
@@ -202,6 +202,27 @@ PLEX_MIGRATION = """
     ) STRICT;
 """
 
+# The Library page's titles: every show and film the last Plex check read (replaced per check, like
+# plex_episodes). A version before it never reads the table.
+LIBRARY_MIGRATION = """
+    CREATE TABLE plex_titles (
+        kind       TEXT    NOT NULL,                        -- 'show' or 'movie'
+        rating_key TEXT    NOT NULL,                        -- Plex's own key
+        title      TEXT    NOT NULL,
+        year       INTEGER,
+        thumb      TEXT,                                    -- the server's picture path
+        added_at   TEXT,                                    -- UTC ISO-8601
+        seasons    INTEGER,
+        episodes   INTEGER,
+        resolution TEXT,                                    -- "4K", "1080p", "720p", "SD"
+        show_id    INTEGER,                                 -- TVMaze id it was matched to
+        tvdb_id    INTEGER,
+        imdb_id    TEXT,
+        tmdb_id    INTEGER,
+        PRIMARY KEY (kind, rating_key)
+    ) STRICT;
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -353,6 +374,8 @@ MIGRATIONS: tuple[str, ...] = (
     SEEN_MIGRATION,
     # v10: what is in Plex; see PLEX_MIGRATION.
     PLEX_MIGRATION,
+    # v11: Plex's titles for the Library page; see LIBRARY_MIGRATION.
+    LIBRARY_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -1679,6 +1702,23 @@ class WatchlistRepository:
             )
 
 
+# plex_titles' columns and the PlexTitle fields they hold, in the same order.
+_TITLE_COLUMNS = (
+    "kind", "rating_key", "title", "year", "thumb", "added_at", "seasons", "episodes",
+    "resolution", "show_id", "tvdb_id", "imdb_id", "tmdb_id",
+)
+_TITLE_FIELDS = (
+    "kind", "key", "title", "year", "thumb", "added_at", "seasons", "episodes",
+    "resolution", "show_id", "tvdb_id", "imdb_id", "tmdb_id",
+)
+
+
+def _title_row(title: PlexTitle) -> tuple[Any, ...]:
+    values = title.model_dump()
+    values["added_at"] = _utc(title.added_at) if title.added_at is not None else None
+    return tuple(values[field] for field in _TITLE_FIELDS)
+
+
 def _plex_library(item: Any) -> PlexLibrary | None:
     """A library as plex_state.libraries keeps it; None for one that doesn't read."""
     try:
@@ -1731,6 +1771,13 @@ class PlexRepository:
                 "INSERT INTO plex_movies (tmdb_id, imdb_id) VALUES (?, ?)",
                 sorted(scan.films, key=lambda film: (film[0] or 0, film[1] or "")),
             )
+            await conn.execute("DELETE FROM plex_titles")
+            await conn.executemany(
+                f"INSERT INTO plex_titles ({', '.join(_TITLE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _TITLE_COLUMNS)}) "
+                "ON CONFLICT (kind, rating_key) DO NOTHING",
+                [_title_row(title) for title in scan.titles],
+            )
             await conn.execute(
                 "INSERT INTO plex_state "
                 "(id, checked_at, shows, unmatched_shows, unmatched_films, libraries) "
@@ -1747,9 +1794,24 @@ class PlexRepository:
                 },
             )
 
+    async def titles(self) -> list[PlexTitle]:
+        """The Library page's shows and films, as the last check read them, by title."""
+        rows = await self._db.fetch_all(
+            f"SELECT {', '.join(_TITLE_COLUMNS)} FROM plex_titles ORDER BY title COLLATE NOCASE"
+        )
+        found = []
+        for row in rows:
+            values = dict(zip(_TITLE_FIELDS, tuple(row), strict=True))
+            try:
+                found.append(PlexTitle.model_validate(values))
+            except ValidationError:
+                continue  # a row a newer version wrote differently
+        return found
+
     async def clear(self) -> None:
         """Forget everything (Disconnect)."""
         async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM plex_titles")
             await conn.execute("DELETE FROM plex_episodes")
             await conn.execute("DELETE FROM plex_movies")
             await conn.execute("DELETE FROM plex_state")

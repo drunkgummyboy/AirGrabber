@@ -779,7 +779,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(db.close)
         version = await db.fetch_one("PRAGMA user_version")
         assert version is not None
-        self.assertEqual(version[0], 10)
+        self.assertEqual(version[0], len(MIGRATIONS))
         kept = await db.library.get_show(1)
         assert kept is not None
         self.assertEqual((kept.name, kept.imdb_id, kept.tvdb_id), ("Kept", "tt0000001", None))

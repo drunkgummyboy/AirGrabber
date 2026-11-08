@@ -37,7 +37,7 @@ from app.forge.core import fsops
 from app.forge.core.activity import ActivityFeed, say_to
 from app.forge.core.airgrabber_folders import watched_folders
 from app.forge.core.executor import ProgressEvent, RunResult
-from app.forge.core.formatter import render
+from app.forge.core.formatter import name_file
 from app.forge.core.library import inside, library_problems
 from app.forge.core.matcher import normalize_title
 from app.forge.core.parser import VIDEO_EXTENSIONS
@@ -210,7 +210,7 @@ def _runs(
             i.id: t(NOT_WATCHED) for i in mine if i.watched is None or not inside(i.path, i.watched)
         }
         wanted = {
-            i.id: library.joinpath(*render(naming_of(i).rule, i.media, i.path.suffix).parts)
+            i.id: library.joinpath(*name_file(naming_of(i).rule, i.media, i.path.suffix).parts)
             for i in mine
         }
         if hold_taken:

@@ -216,7 +216,68 @@ class Queue:
         item.resolution = resolution
         uncertain = resolution.media.match_state is MatchState.UNCERTAIN
         item.status = ItemStatus.NEEDS_CHOICE if uncertain else ItemStatus.READY
-        self._on_change(QueueEvent(kind="updated", ids=(item.id,)))
+        changed = [item.id]
+        if uncertain:
+            await self._follow_sibling(item)
+        else:
+            changed += await self._settle_siblings(item)
+        if self.get(item.id) is item:
+            self._on_change(QueueEvent(kind="updated", ids=tuple(changed)))
+
+    def _sibling_match(self, item: QueueItem) -> TMDBTitle | None:
+        """What an unsure file is when another file of the same name (and kind) in the queue was
+        matched surely: that show or film, if it is one of TMDB's suggestions for this file and
+        the two names don't say different years ("The Boys - S05E07" beside "The Boys (2019) -
+        S01E01"). None when there is no such file, or files of that name were matched to
+        different titles."""
+        resolution = item.resolution
+        if resolution is None or not resolution.candidates:
+            return None
+        kind, title, year = match_key(item.parsed)
+        sure = (MatchState.CONFIDENT, MatchState.REMEMBERED)
+        found: set[int] = set()
+        for other in self.items:
+            media = other.resolution.media if other.resolution is not None else None
+            if other is item or media is None or media.tmdb_id is None:
+                continue
+            other_kind, other_title, other_year = match_key(other.parsed)
+            if other_kind != kind or other_title != title or media.match_state not in sure:
+                continue
+            if year is not None and other_year is not None and year != other_year:
+                continue
+            found.add(media.tmdb_id)
+        if len(found) != 1:
+            return None
+        [wanted] = found
+        return next((c for c in resolution.candidates if c.id == wanted), None)
+
+    async def _follow_sibling(self, item: QueueItem) -> bool:
+        """An unsure file takes `_sibling_match`'s title (not remembered: the name alone stays
+        unsure). Whether it did."""
+        chosen = self._sibling_match(item)
+        if chosen is None:
+            return False
+        media = await self._resolver.apply_choice(item.parsed, chosen, remember=False)
+        if self.get(item.id) is not item or item.status is not ItemStatus.NEEDS_CHOICE:
+            return False
+        candidates = item.resolution.candidates if item.resolution else ()
+        item.resolution = Resolution(media=media, candidates=candidates)
+        item.status, item.message = ItemStatus.READY, ""
+        return True
+
+    async def _settle_siblings(self, item: QueueItem) -> list[int]:
+        """A file matched surely: the unsure files of its name that can follow it do."""
+        _kind, title, _year = match_key(item.parsed)
+        settled: list[int] = []
+        for other in list(self.items):
+            if (
+                other is not item
+                and other.status is ItemStatus.NEEDS_CHOICE
+                and match_key(other.parsed)[1] == title
+                and await self._follow_sibling(other)
+            ):
+                settled.append(other.id)
+        return settled
 
     async def add_watched(self, files: Sequence[tuple[Path, Path]]) -> list[int]:
         """Finished downloads, as (file, watched folder) pairs; returns the ids of new items.
