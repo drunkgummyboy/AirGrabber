@@ -252,8 +252,8 @@ NL: dict[str, str] = {
         "Aan: wat TMDB zeker herkent, wordt hernoemd en verplaatst; de rest wacht in de wachtrij.",
     "Manual and On need these first:": "Voor Handmatig en Aan is eerst dit nodig:",
     "Download folders to watch": "Downloadmappen om te bewaken",
-    "MediaForge looks here when AirGrabber opens and every few minutes for finished downloads.":
-        "MediaForge kijkt hier als AirGrabber opent en om de paar minuten naar voltooide downloads.",
+    "MediaForge looks in these folders and every folder inside them for finished downloads, when AirGrabber opens and every few minutes.":
+        "MediaForge kijkt in deze mappen en elke map daarin naar voltooide downloads, als AirGrabber opent en om de paar minuten.",
     "Library folders": "Bibliotheekmappen",
     "Downloads MediaForge finds always move here. Files you add yourself only when their preset "
     "has Move to library folder on.":
@@ -526,6 +526,8 @@ NL: dict[str, str] = {
         "opnieuw gevraagd.",
     "Forget": "Vergeten",
     "Clear all": "Alles wissen",
+    "No trailer: the trailer tools aren't downloaded yet.":
+        "Geen trailer: de trailerhulpmiddelen zijn nog niet gedownload.",
     "Manage…": "Beheren…",
     "{n} match remembered": "{n} keuze onthouden",
     "{n} matches remembered": "{n} keuzes onthouden",
@@ -778,4 +780,29 @@ NL: dict[str, str] = {
         "De ondertiteldownloads van vandaag zijn op; na {time} weer",
     "Open in Explorer": "Openen in Verkenner",
     "That file isn't there any more.": "Dat bestand is er niet meer.",
+    "{name}: the audio is {language}": "{name}: het geluid is {language}",
+    "🧰 Fix my library": "🧰 Mijn bibliotheek opknappen",
+    "🔁 Find duplicates…": "🔁 Dubbele bestanden zoeken…",
+    "Looking for duplicates in your library…": "Dubbele bestanden zoeken in je bibliotheek…",
+    "Duplicates in your library": "Dubbele bestanden in je bibliotheek",
+    "The same episode or film more than once. The biggest copy stays; the others move to a "
+    "\"Duplicates\" folder beside the library folder. Nothing is deleted, and History can undo it.":
+        "Dezelfde aflevering of film meer dan eens. Het grootste exemplaar blijft; de andere gaan naar "
+        "een map \"Duplicates\" naast de bibliotheekmap. Er wordt niets verwijderd, en Geschiedenis "
+        "kan het terugdraaien.",
+    "No duplicates: every episode and film is in your library once.":
+        "Geen dubbele bestanden: elke aflevering en film staat er één keer in.",
+    "Choose your Series and Movies folders in Settings › Auto-rename first.":
+        "Kies eerst je map voor series en films in Instellingen › Automatisch hernoemen.",
+    "Keeps {name} ({size})": "Houdt {name} ({size})",
+    "Moves {name} ({size})": "Verplaatst {name} ({size})",
+    "Move {n} extra copy aside": "{n} extra exemplaar wegzetten",
+    "Move {n} extra copies aside": "{n} extra exemplaren wegzetten",
+    "✓ Moved {n} copy to Duplicates": "✓ {n} exemplaar naar Duplicates verplaatst",
+    "✓ Moved {n} copies to Duplicates": "✓ {n} exemplaren naar Duplicates verplaatst",
+    "Moving…": "Verplaatsen…",
+    "{name}: plays {language} first; {wanted} is there too":
+        "{name}: speelt eerst {language} af; {wanted} zit er ook in",
+    "{name}: says {promised}p, but the picture is {height}p":
+        "{name}: zegt {promised}p, maar het beeld is {height}p",
 }

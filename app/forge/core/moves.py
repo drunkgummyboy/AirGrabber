@@ -71,6 +71,11 @@ class ForgeMoveService:
         (kept for a year)."""
         return await self._repo.moves_from(folder)
 
+    async def moved_after(self, when: float) -> list[MoveRecord]:
+        """The moves made after `when` (seconds since the epoch), oldest first (AirGrabber asks
+        Plex to scan where they went)."""
+        return await self._repo.moved_after(when)
+
     async def of_operation(self, op_id: int) -> MoveRecord | None:
         """What the journal's rename `op_id` recorded of its file, if anything (History's CC)."""
         return await self._repo.of_operation(op_id)

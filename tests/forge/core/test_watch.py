@@ -127,6 +127,13 @@ class WatchTest(ForgeTestCase):
         done = video(self.tmp / "Other.S01" / "Other.S01E01.mkv")
         assert candidates(self.tmp) == [done]
 
+    def test_a_folder_still_coming_in_through_utorrent_waits_too(self) -> None:
+        pack = self.tmp / "Show.S02.1080p"
+        video(pack / "Show.S02E01.mkv")
+        video(pack / "Show.S02E02.mkv.!ut")  # µTorrent's unfinished file
+        deep = video(self.tmp / "Shows" / "Other" / "Season 1" / "Other.S01E01.mkv")
+        assert candidates(self.tmp) == [deep]  # every folder inside, however deep
+
     def test_extras_are_never_candidates(self) -> None:
         from app.forge.core.watch import is_extra
 

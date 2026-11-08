@@ -109,6 +109,14 @@ from app.ui.title_info import (
     target_code,
 )
 from app.ui.tooltip import add_tooltip
+from app.ui.season_progress import (
+    EpisodeSquares,
+    SeasonStrip,
+    counts_text,
+    had_text,
+    progress_shown,
+    season_states,
+)
 from app.ui.widgets import FlexGrid, LoadingBar
 
 if TYPE_CHECKING:
@@ -130,6 +138,9 @@ __all__ = ["SUMMARY_LINES", "ShowDetailsWindow", "ShowWindows", "collapsed_summa
 # Logical (unscaled) CTk units.
 CHIP_WIDTH = 96
 CHIP_HEIGHT = 32
+PROGRESS_INSET = 10  # the bar under a chip: this much in from its ends
+PROGRESS_GAP = 4  # between the chip and its bar
+SQUARES_GAP = 14  # before the open season's squares, and before their counts
 EPISODE_ROW_HEIGHT = 52
 CODE_WIDTH = 72
 DATE_WIDTH = 64
@@ -888,6 +899,8 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._season: int | None = None
         self._seasons: list[int] = []
         self._chips: dict[int, ctk.CTkButton] = {}
+        self._chip_slots: dict[int, ctk.CTkFrame] = {}  # a chip with its progress under it
+        self._strips: dict[int, tuple[SeasonStrip, ctk.CTkLabel]] = {}
         self._rows: dict[int, _EpisodeRow] = {}  # by episode id
         self._row_episodes: tuple[Episode, ...] = ()  # what the rows show, in order
         self._load_task: asyncio.Task[None] | None = None
@@ -905,6 +918,8 @@ class ShowDetailsWindow(TitleInfoWindow):
         )
         self._chip_grid.pack(fill="x")
         self._season_bar = self._build_season_bar(content)
+        # The open season's squares and their counts, on a line of their own under the bar.
+        self._squares_row = ctk.CTkFrame(content, fg_color="transparent")
         self._episode_list = ctk.CTkFrame(content, fg_color="transparent")
         self._episode_list.pack(fill="x", pady=(12, 0))
         LoadingBar(self._episode_list).pack(fill="x", pady=(8, 0))
@@ -942,6 +957,9 @@ class ShowDetailsWindow(TitleInfoWindow):
         `_paint_season_bar`."""
         bar = ctk.CTkFrame(master, fg_color="transparent", height=CONTROL_HEIGHT)
         self._missing_label: ctk.CTkLabel | None = None  # "3 missing": with Plex only
+        # The open season's squares and their counts (season progress, with Plex only).
+        self._squares: EpisodeSquares | None = None
+        self._counts_label: ctk.CTkLabel | None = None
         return bar
 
     def _paint_header(self, show: Show, details: ShowDetails | None) -> None:
@@ -1092,6 +1110,8 @@ class ShowDetailsWindow(TitleInfoWindow):
         if seasons != self._seasons:
             self._seasons = seasons
             self._render_chips()
+        else:
+            self._paint_progress()
         if self._season not in seasons:
             self._season = default_season(details, _now())
             self._show_trailer()
@@ -1111,11 +1131,13 @@ class ShowDetailsWindow(TitleInfoWindow):
     # -- seasons -----------------------------------------------------------------------------
 
     def _render_chips(self) -> None:
-        for chip in self._chips.values():
-            chip.destroy()
-        self._chips = {
-            season: ctk.CTkButton(
-                self._chip_grid,
+        for slot in self._chip_slots.values():
+            slot.destroy()
+        self._chip_slots, self._chips, self._strips = {}, {}, {}
+        for season in self._seasons:
+            slot = ctk.CTkFrame(self._chip_grid, fg_color="transparent", width=CHIP_WIDTH)
+            chip = ctk.CTkButton(
+                slot,
                 text=t("Season {n}", n=season),
                 width=CHIP_WIDTH,
                 height=CHIP_HEIGHT,
@@ -1126,10 +1148,36 @@ class ShowDetailsWindow(TitleInfoWindow):
                 text_color=theme.BUTTON_TEXT,
                 command=lambda s=season: self._select_season(s),
             )
-            for season in self._seasons
-        }
+            chip.pack()
+            self._chip_slots[season], self._chips[season] = slot, chip
         self._chip_grid.relayout()
         self._paint_chips()
+        self._paint_progress()
+
+    def _paint_progress(self) -> None:
+        """Under each chip its season's bar and "9 of 12", while progress shows (a followed show
+        with Plex connected); none otherwise."""
+        details = self._details
+        shown = progress_shown(details)
+        for season, slot in self._chip_slots.items():
+            pair = self._strips.get(season)
+            if not shown or details is None:
+                if pair is not None:
+                    pair[0].destroy()
+                    pair[1].destroy()
+                    del self._strips[season]
+                continue
+            states = [state for _episode, state in season_states(details, season, _now())]
+            if pair is None:
+                strip = SeasonStrip(slot, CHIP_WIDTH - 2 * PROGRESS_INSET)
+                strip.pack(pady=(PROGRESS_GAP, 0))
+                label = ctk.CTkLabel(
+                    slot, text="", font=theme.font(11), text_color=theme.TEXT_MUTED, height=16
+                )
+                label.pack()
+                pair = self._strips[season] = (strip, label)
+            pair[0].show(states)
+            pair[1].configure(text=had_text(states))
 
     def _paint_chips(self) -> None:
         for season, chip in self._chips.items():
@@ -1229,11 +1277,13 @@ class ShowDetailsWindow(TitleInfoWindow):
         details, season = self._details, self._season
         if details is None or season is None:
             self._season_bar.pack_forget()
+            self._squares_row.pack_forget()
             return
         missing, in_plex = season_marks(details, season)
         item = self._season_item(details, season)
         self._paint_season_actions(item)
         self._paint_missing_label(missing, in_plex)
+        self._paint_squares(details, season)
         if not (missing or in_plex or item is not None):
             self._season_bar.pack_forget()
             return
@@ -1242,7 +1292,32 @@ class ShowDetailsWindow(TitleInfoWindow):
             # In line with the rows' controls.
             self._season_actions.pack(side="right", padx=(0, 10))
         if not self._season_bar.winfo_manager():
-            self._season_bar.pack(fill="x", pady=(12, 0), before=self._episode_list)
+            before = self._squares_row if self._squares_row.winfo_manager() else self._episode_list
+            self._season_bar.pack(fill="x", pady=(12, 0), before=before)
+
+    def _paint_squares(self, details: ShowDetails, season: int) -> bool:
+        """The open season's squares, after "3 missing", and their counts; whether they show."""
+        states = season_states(details, season, _now()) if progress_shown(details) else []
+        if not states:
+            for widget in (self._squares, self._counts_label):
+                if widget is not None:
+                    widget.destroy()
+            self._squares = self._counts_label = None
+            self._squares_row.pack_forget()
+            return False
+        if self._squares is None:
+            self._squares = EpisodeSquares(self._squares_row)
+            self._squares.pack(side="left")
+            self._counts_label = ctk.CTkLabel(
+                self._squares_row, text="", font=theme.font(12), text_color=theme.TEXT_MUTED
+            )
+            self._counts_label.pack(side="left", padx=(SQUARES_GAP, 0))
+        if not self._squares_row.winfo_manager():
+            self._squares_row.pack(fill="x", pady=(10, 0), before=self._episode_list)
+        self._squares.show([(e.number or 0, state) for e, state in states])
+        assert self._counts_label is not None
+        self._counts_label.configure(text=counts_text([state for _e, state in states]))
+        return True
 
     def _paint_missing_label(self, missing: Sequence[int], in_plex: Sequence[int]) -> None:
         """"3 missing" (amber), or "Nothing missing" (muted) when none is but some are in

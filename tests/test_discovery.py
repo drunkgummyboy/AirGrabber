@@ -363,6 +363,41 @@ class TVDashboardTests(DiscoveryTestCase):
             await self.service.movie_dashboard()
 
 
+class BecauseTests(DiscoveryTestCase):
+    """"Because you follow …": TMDB's picks for a show the person followed last."""
+
+    def picks(self, tmdb_id: int, *names: str) -> None:
+        self.server.tmdb[f"/3/find/tt{tmdb_id:07d}"] = {"tv_results": [{"id": tmdb_id, "name": "Show"}]}
+        self.server.tmdb[f"/3/tv/{tmdb_id}/recommendations"] = {
+            "results": [{"id": 900 + n, "name": name} for n, name in enumerate(names)]
+        }
+
+    async def follow(self, show_id: int, name: str, tmdb_id: int) -> None:
+        await self.db.library.save_show(Show(id=show_id, name=name, imdb_id=f"tt{tmdb_id:07d}"))
+        await self.db.library.track(show_id, profile_id=1)
+
+    async def test_picks_for_a_followed_show_without_what_is_followed(self) -> None:
+        self.picks(77, "Slow Horses", "The Diplomat", "Reacher")
+        await self.follow(1, "Reacher", 77)
+        dashboard = await self.service.tv_dashboard(profile_id=1)
+        self.assertEqual(dashboard.because_name, "Reacher")
+        self.assertEqual([e.show.name for e in dashboard.because], ["Slow Horses", "The Diplomat"])
+
+    async def test_nothing_without_a_followed_show_or_its_tmdb_match(self) -> None:
+        self.assertEqual((await self.service.tv_dashboard(profile_id=1)).because, ())
+        await self.add_tracked(1, "No ids")  # no IMDb id: TMDB isn't asked
+        dashboard = await self.service.tv_dashboard(profile_id=1)
+        self.assertEqual((dashboard.because_name, dashboard.because), ("", ()))
+
+    async def test_a_tmdb_failure_leaves_the_shelf_out(self) -> None:
+        self.picks(77, "Slow Horses")
+        await self.follow(1, "Reacher", 77)
+        self.server.failures["/3/tv/77/recommendations"] = 500
+        dashboard = await self.service.tv_dashboard(profile_id=1)
+        self.assertEqual(dashboard.because, ())
+        self.assertNotEqual(dashboard.trending, ())  # the other shelves still come
+
+
 class MovieDashboardTests(DiscoveryTestCase):
     async def test_shelves_requests_and_windows(self) -> None:
         dashboard = await self.service.movie_dashboard()

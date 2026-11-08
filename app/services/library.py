@@ -35,6 +35,7 @@ from app.models import (
     Episode,
     ImportMatch,
     ImportResult,
+    FollowRecord,
     LibraryEntry,
     LibraryStats,
     Show,
@@ -52,6 +53,18 @@ from app.services.settings import SettingsService
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
 log = logging.getLogger(__name__)
+
+# An import line naming its show by an id another site gives it: "tvdb:81189 Breaking Bad",
+# "imdb:tt0903747" (a Sonarr import, app/services/sonarr.py).
+_ID_ENTRY = re.compile(r"(tvdb|imdb):(\d+|tt\d+)(?:\s+(.+))?", re.IGNORECASE)
+
+
+def entry_name(entry: str) -> str:
+    """What an import line is called in the summary: an id line's name, else the line."""
+    by_id = _ID_ENTRY.fullmatch(entry)
+    if by_id is not None and by_id.group(3):
+        return by_id.group(3)
+    return entry
 
 P = ParamSpec("P")
 
@@ -286,6 +299,16 @@ class LibraryService:
             )
         ]
 
+    async def gaps(
+        self, *, profile_id: int, now: datetime | None = None
+    ) -> list[CalendarEntry]:
+        """The episodes Plex doesn't have in the seasons it has some of, of every show the
+        person follows (the gap finder); none without Plex. `now`: an aware instant (tests)."""
+        if not self.plex_connected:
+            return []
+        now = now if now is not None else datetime.now().astimezone()
+        return await self._library.gaps(profile_id=profile_id, now=now, today=now.date())
+
     async def missing_counts(
         self, *, profile_id: int, now: datetime | None = None
     ) -> dict[int, int]:
@@ -394,11 +417,20 @@ class LibraryService:
 
     # -- library changes -----------------------------------------------------------------------
 
-    async def untrack(self, show_id: int, *, profile_id: int) -> None:
+    async def untrack(self, show_id: int, *, profile_id: int) -> FollowRecord | None:
         """Stop following a show (the person's own follow only: the show's cache, episodes and
-        marks stay while anyone follows it)."""
-        await self._library.untrack(show_id, profile_id=profile_id)
+        marks stay while anyone follows it). Returns the follow as it was, for `restore`."""
+        record = await self._library.untrack(show_id, profile_id=profile_id)
         self._notify()
+        return record
+
+    async def restore(self, record: FollowRecord) -> bool:
+        """Undo a removal: the follow back as it was, Auto switch and all."""
+        restored = await self._library.restore_follow(record)
+        if restored:
+            log.info("Following TVMaze show %d again (undone)", record.show_id)
+            self._notify()
+        return restored
 
     async def set_auto_download(self, show_id: int, on: bool, *, profile_id: int) -> None:
         """Switch a person's automatic downloads of new episodes of a show they follow on (from
@@ -435,8 +467,9 @@ class LibraryService:
         *,
         profile_id: int,
     ) -> ImportResult:
-        """Add the shows listed in `entries` to a person's library: TVMaze ids, or names (the
-        best search hit wins).
+        """Add the shows listed in `entries` to a person's library: TVMaze ids, names (the
+        best search hit wins), or "tvdb:<id> <name>" / "imdb:<id> <name>" (looked up by that id,
+        the name when TVMaze doesn't know it: a Sonarr import).
 
         Entries are handled one by one to stay within TVMaze's rate limit; `progress(done, total)`
         follows each. Listeners are notified once, at the end, if anything was added.
@@ -452,13 +485,13 @@ class LibraryService:
                 try:
                     outcome = await self._import_entry(entry, tracked, profile_id=profile_id)
                 except TVMazeNotFound:
-                    not_found.append(entry)
+                    not_found.append(entry_name(entry))
                 except TVMazeError as exc:
-                    log.warning("Import of %r failed: %s", entry, exc)
-                    failed.append(entry)
+                    log.warning("Import of %r failed: %s", entry_name(entry), exc)
+                    failed.append(entry_name(entry))
                 else:
                     if outcome is None:
-                        not_found.append(entry)
+                        not_found.append(entry_name(entry))
                     else:
                         name, is_new = outcome
                         (added if is_new else already_tracked).append(name)
@@ -482,7 +515,21 @@ class LibraryService:
         Returns (display name, newly added), or None when nothing matched. Adds newly tracked
         ids to `tracked`, so later entries naming the same show count as already tracked.
         """
-        if entry.isascii() and entry.isdigit():
+        by_id = _ID_ENTRY.fullmatch(entry)
+        if by_id is not None:
+            kind, ident, name = by_id.group(1).lower(), by_id.group(2), by_id.group(3) or ""
+            if kind == "tvdb":
+                hit = await self._tvmaze.lookup_show(thetvdb=int(ident))
+            else:
+                hit = await self._tvmaze.lookup_show(imdb=ident)
+            if hit is None and name:
+                hit = await self._best_hit(name)
+            if hit is None:
+                return None
+            show_id = hit.id
+            if show_id in tracked:
+                return hit.name, False
+        elif entry.isascii() and entry.isdigit():
             show_id = int(entry)
             if show_id in tracked:
                 known = await self._library.get_show(show_id)

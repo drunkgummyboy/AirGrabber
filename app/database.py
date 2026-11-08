@@ -25,6 +25,7 @@ from app.models import (
     CalendarEntry,
     DownloadRecord,
     Episode,
+    FollowRecord,
     LibraryEntry,
     LibraryStats,
     MediaType,
@@ -578,6 +579,27 @@ _MISSING_CTE = f"""
 _MISSING_COUNTS_SQL = f"""{_MISSING_CTE}
     SELECT show_id, COUNT(*) AS missing FROM missing GROUP BY show_id
 """
+# The gaps (My shows ⋯ → Find gaps in Plex…): aired episodes of the shows a person follows
+# that Plex doesn't have, in the seasons from the first to the last one Plex has some of.
+_GAPS_SQL = f"""
+    WITH have AS (
+        SELECT show_id, MIN(season) AS first, MAX(season) AS last
+        FROM plex_episodes GROUP BY show_id
+    )
+    SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, {_IS_DOWNLOADED} AS is_downloaded
+    FROM episodes AS e
+    JOIN tracked_shows AS t ON t.show_id = e.show_id AND t.profile_id = :profile
+    JOIN have AS h ON h.show_id = e.show_id
+    JOIN shows AS s ON s.id = e.show_id
+    WHERE e.season > 0 AND e.number IS NOT NULL AND e.type = 'regular'
+      AND e.season BETWEEN h.first AND h.last
+      AND (
+          (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(:now))
+          OR (e.airstamp IS NULL AND e.air_date <= :today)
+      )
+      AND NOT {_IN_PLEX}
+    ORDER BY s.name COLLATE NOCASE, s.id, e.season, e.number
+"""
 # The missing episodes airing between :start and :end (the calendar's amber marks).
 _MISSING_BETWEEN_SQL = f"""{_MISSING_CTE}
     SELECT id FROM missing WHERE air_date BETWEEN :start AND :end
@@ -924,15 +946,50 @@ class LibraryRepository:
             )
         return entries
 
-    async def untrack(self, show_id: int, *, profile_id: int) -> None:
-        """Take a show off a person's library. The show, its episodes and their "I already have
-        this" marks stay: they are shared (another person may follow it; `prune_schedule`
-        forgets what nobody follows)."""
+    async def untrack(self, show_id: int, *, profile_id: int) -> FollowRecord | None:
+        """Take a show off a person's library: the follow as it was (for Undo), or None when
+        they didn't follow it. The show, its episodes and their "I already have this" marks
+        stay: they are shared (another person may follow it; `prune_schedule` forgets what
+        nobody follows)."""
         async with self._db.transaction() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT show_id, profile_id, tracked_at, auto_download, synced_at, auto_since "
+                "FROM tracked_shows WHERE profile_id = ? AND show_id = ?",
+                (profile_id, show_id),
+            )
             await conn.execute(
                 "DELETE FROM tracked_shows WHERE profile_id = ? AND show_id = ?",
                 (profile_id, show_id),
             )
+        for row in rows:
+            return FollowRecord(
+                show_id=row[0],
+                profile_id=row[1],
+                tracked_at=row[2],
+                auto_download=bool(row[3]),
+                synced_at=row[4],
+                auto_since=row[5],
+            )
+        return None
+
+    async def restore_follow(self, record: FollowRecord) -> bool:
+        """Put a removed follow back as it was (Undo); False when the show left the cache
+        meanwhile, or is followed again already."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "INSERT OR IGNORE INTO tracked_shows "
+                "(profile_id, show_id, tracked_at, auto_download, synced_at, auto_since) "
+                "SELECT ?, id, ?, ?, ?, ? FROM shows WHERE id = ?",
+                (
+                    record.profile_id,
+                    record.tracked_at,
+                    int(record.auto_download),
+                    record.synced_at,
+                    record.auto_since,
+                    record.show_id,
+                ),
+            )
+            return cursor.rowcount > 0
 
     async def untrack_ended(self, *, profile_id: int) -> int:
         """Drop every show a person follows whose status is Ended (other people keep theirs).
@@ -1153,6 +1210,15 @@ class LibraryRepository:
         rows = await self._db.fetch_all(
             _CALENDAR_SQL,
             {"profile": profile_id, "start": start.isoformat(), "end": end.isoformat()},
+        )
+        return [_calendar_entry(row, is_tracked=True) for row in rows]
+
+    async def gaps(self, *, profile_id: int, now: datetime, today: date) -> list[CalendarEntry]:
+        """The aired episodes (by `now`; without an airstamp by `today`) of the shows a person
+        follows that Plex doesn't have, in the seasons from the first to the last one Plex has
+        some of; by show name, season and number. `is_downloaded`: grabbed already."""
+        rows = await self._db.fetch_all(
+            _GAPS_SQL, {"profile": profile_id, "now": _utc(now), "today": today.isoformat()}
         )
         return [_calendar_entry(row, is_tracked=True) for row in rows]
 

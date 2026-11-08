@@ -51,6 +51,9 @@ import customtkinter as ctk
 from app.forge.core.library import NESTED, OVERLAP, library_problems
 from app.forge.models.settings import ForgeSettings
 from app.forge.ui.look import app_look, light_colour
+from app.forge.ui import settings_menu as _menu
+from app.forge.ui import settings_naming as _naming
+from app.forge.ui import settings_subtitles as _subtitles
 from app.forge.ui.settings_menu import MENU_ICON, MENU_NOTE, SECTION_MENU, build_menu
 from app.forge.ui.settings_naming import NAMING_ICON, NAMING_NOTE, SECTION_NAMING, build_naming
 from app.forge.ui.settings_subtitles import (
@@ -322,7 +325,10 @@ class LibrarySection:
         # The download folders to watch.
         watch = page.box(
             t("Download folders to watch"),
-            t("MediaForge looks here when AirGrabber opens and every few minutes for finished downloads."),
+            t(
+                "MediaForge looks in these folders and every folder inside them for finished downloads, "
+                "when AirGrabber opens and every few minutes."
+            ),
         )
         self.watch_list = ctk.CTkFrame(watch.body, fg_color="transparent")
         self.watch_list.grid_columnconfigure(0, weight=1)
@@ -889,6 +895,33 @@ def _build_library(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:
 
 
 # Settings' MediaForge group, in the sidebar's order.
+# What Settings' search finds a MediaForge page by before its first visit (its boxes' titles and
+# a few words in them); once built, the page's own boxes are searched.
+FORGE_SEARCH: dict[str, tuple[str, ...]] = {
+    SECTION_LIBRARY: (
+        N_("Download folders to watch"),
+        AIRGRABBER_TITLE,
+        IGNORED_TITLE,
+        N_("Library folders"),
+        OPTIONS_TITLE,
+    ),
+    SECTION_NAMING: (
+        _naming.PRESETS_TITLE,
+        _naming.LIBRARY_TITLE,
+        _naming.LANGUAGE_TITLE,
+        _naming.MATCHES_TITLE,
+        N_("Trailer"),
+        N_("Poster"),
+    ),
+    SECTION_SUBTITLES: (
+        _subtitles.LANGUAGES_TITLE,
+        _subtitles.HEARING_TITLE,
+        _subtitles.ACCOUNT_LABEL,
+        _subtitles.OWN_KEY_LABEL,
+    ),
+    SECTION_MENU: (_menu.MENU_TITLE, _menu.PRESETS_TITLE, _menu.FILES_TITLE),
+}
+
 FORGE_SECTIONS: dict[str, ForgeSection] = {
     SECTION_LIBRARY: ForgeSection("📁", LIBRARY_NOTE, _build_library),
     SECTION_NAMING: ForgeSection(NAMING_ICON, NAMING_NOTE, build_naming),

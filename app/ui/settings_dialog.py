@@ -66,6 +66,7 @@ from app.services import startup
 from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
 from app.models.backup import BackupLoadResult
+from app.models.settings import AUTO_WAIT_CHOICES, STUCK_CHOICES, TextSize
 from app.services.backup import BackupService
 from app.services.phone.service import PhoneService
 from app.services.plex import PlexService
@@ -122,6 +123,7 @@ from app.ui.settings_layout import (
 from app.ui.settings_layout import SCREEN_RESERVE as SCREEN_RESERVE
 from app.ui.settings_layout import dialog_height as dialog_height
 from app.ui.settings_layout import sidebar_width as _sidebar_width
+from app.ui.settings_search import Match, Place, SettingsSearch, places
 from app.ui.tasks import async_command, spawn
 from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
@@ -229,6 +231,18 @@ START_TEXT = N_("Start AirGrabber when Windows starts")
 NEW_SHOWS_TITLE = N_("New shows")
 NEW_SHOWS_TEXT = N_("You can still change this for each show.")
 NEW_SHOWS_SWITCH = N_("Download new episodes for shows I start following")
+WAIT_TITLE = N_("Wait after an episode airs")
+WAIT_TEXT = N_(
+    "Automatic downloads wait this long, so good releases can turn up. The first ones are more "
+    "often fakes."
+)
+WAIT_HOURS = N_("{n} h")
+STUCK_TITLE = N_("Swap a stuck download after")
+STUCK_TEXT = N_(
+    "When a download hasn't moved for this long, AirGrabber removes it from your torrent program "
+    "and fetches the next best release."
+)
+STUCK_NEVER = N_("Never")
 
 FOLDER_LABEL = N_("Where finished downloads end up")
 FOLDER_HINT = N_(
@@ -268,6 +282,13 @@ THEME_TEXT = N_("Light or dark. Follow Windows uses the same look as your other 
 ACCENT_TITLE = N_("Accent colour")
 ACCENT_TEXT = N_("The colour of buttons, chosen items and links.")
 ACCENT_RESTART_TEXT = N_("Applies after a restart")
+TEXT_SIZE_TITLE = N_("Text size")
+TEXT_SIZE_TEXT = N_("Every text in AirGrabber a little larger, apart from Windows' own scaling.")
+TEXT_SIZE_NAMES = {
+    TextSize.NORMAL: N_("Normal"),
+    TextSize.LARGE: N_("Large"),
+    TextSize.LARGER: N_("Larger"),
+}
 INFO_LAYOUT_TITLE = N_("Info window layout")
 INFO_LAYOUT_TEXT = N_("Where a film's or series' info window shows its releases.")
 SPOTLIGHT_TITLE = N_("Spotlight")
@@ -299,6 +320,12 @@ EXCLUDED_TITLE = N_("Skip releases with these words")
 EXCLUDED_TEXT = N_("Separate with commas, for example: cam, telesync")
 PREFERRED_TITLE = N_("Prefer releases from")
 PREFERRED_TEXT = N_("Release group names, separated with commas")
+BLOCKED_TITLE = N_("Never use releases from")
+BLOCKED_TEXT = N_(
+    "Release group names, separated with commas. \"Wrong or fake?\" in a download's ⋯ menu adds "
+    "one."
+)
+LEARNED_LINE = N_("Learned from the downloads you kept: {groups}")
 
 BACKUP_TEXT = N_(
     "One file with your followed shows, film watchlist, download history and settings. Load "
@@ -548,6 +575,7 @@ _FIELD_LABELS = {
     "card_size": CARD_SIZE_LABEL,
     "theme_mode": THEME_TITLE,
     "accent": ACCENT_TITLE,
+    "text_size": TEXT_SIZE_TITLE,
     "info_layout": INFO_LAYOUT_TITLE,
     "spotlight_motion": SPOTLIGHT_TITLE,
     "language": LANGUAGE_TITLE,
@@ -556,6 +584,7 @@ _FIELD_LABELS = {
     "disabled_indexers": SITES_TITLE,
     "excluded_keywords": EXCLUDED_TITLE,
     "preferred_groups": PREFERRED_TITLE,
+    "blocked_groups": BLOCKED_TITLE,
     "prowlarr_url": N_("Prowlarr URL"),
     "prowlarr_api_key": N_("Prowlarr API key"),
     "subtitles_folder": FOLDER_LABEL,
@@ -574,12 +603,15 @@ _FIELD_SECTIONS: dict[str, str] = {
     "keep_in_tray": SECTION_AUTOMATIC,
     "start_with_windows": SECTION_AUTOMATIC,
     "auto_download_new_shows": SECTION_AUTOMATIC,
+    "auto_wait_hours": SECTION_AUTOMATIC,
+    "stuck_swap_hours": SECTION_AUTOMATIC,
     "tmdb_api_key": SECTION_INFO,
     "card_size": SECTION_LOOKS,
     "first_day": SECTION_LOOKS,
     "calendar_layout": SECTION_LOOKS,
     "theme_mode": SECTION_LOOKS,
     "accent": SECTION_LOOKS,
+    "text_size": SECTION_LOOKS,
     "info_layout": SECTION_LOOKS,
     "spotlight_motion": SECTION_LOOKS,
     "language": SECTION_LOOKS,
@@ -587,9 +619,15 @@ _FIELD_SECTIONS: dict[str, str] = {
     "disabled_indexers": SECTION_ADVANCED,
     "excluded_keywords": SECTION_ADVANCED,
     "preferred_groups": SECTION_ADVANCED,
+    "blocked_groups": SECTION_ADVANCED,
     "prowlarr_url": SECTION_ADVANCED,
     "prowlarr_api_key": SECTION_ADVANCED,
 }
+
+
+def stuck_name(hours: int) -> str:
+    """"Never" for 0, else "6 h"."""
+    return t(STUCK_NEVER) if hours <= 0 else t(WAIT_HOURS, n=hours)
 
 
 def section_for_field(name: str) -> str:
@@ -745,11 +783,13 @@ class SettingsDialog(ctk.CTkToplevel):
             value=choice_name(INFO_LAYOUT_NAMES, current.info_layout)
         )
         self._spotlight_motion = ctk.BooleanVar(value=current.spotlight_motion)
+        self._text_size = ctk.StringVar(value=t(TEXT_SIZE_NAMES[current.text_size]))
         self._language = ctk.StringVar(value=current.language.native_name)
         self._download_dir = ctk.StringVar(value=str(current.download_dir))
         self._tmdb_key = ctk.StringVar(value=current.tmdb_api_key.get_secret_value())
         self._excluded = ctk.StringVar(value=", ".join(current.excluded_keywords))
         self._preferred = ctk.StringVar(value=", ".join(current.preferred_groups))
+        self._blocked = ctk.StringVar(value=", ".join(current.blocked_groups))
         disabled = set(current.disabled_indexers)
         self._sources = {
             name: ctk.BooleanVar(value=name not in disabled) for name, _label in _BUILT_IN_SITES
@@ -766,6 +806,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._startup_shown = self._startup.is_enabled()
         self._start_with_windows = ctk.BooleanVar(value=self._startup_shown)
         self._auto_new_shows = ctk.BooleanVar(value=current.auto_download_new_shows)
+        self._auto_wait = ctk.StringVar(value=t(WAIT_HOURS, n=current.auto_wait_hours))
+        self._stuck_swap = ctk.StringVar(value=stuck_name(current.stuck_swap_hours))
         self._finished_folder = ctk.StringVar(value=current.subtitles_folder)
 
         layout = build_layout(self, sidebar_width(tuple(self._forge_sections)))
@@ -823,6 +865,10 @@ class SettingsDialog(ctk.CTkToplevel):
             **SECTION_ICONS,
             **{name: part.icon for name, part in self._forge_sections.items()},
         }
+        self.search_box = SettingsSearch(
+            self._sidebar, look_up=self._search_places, on_pick=self._go_to_match
+        )
+        self.search_box.pack(fill="x", padx=(6, 6), pady=(0, 12))
         self._items = fill_sidebar(self._sidebar, shown, icons, self._show_section)
         self._section = section if section in self._items else SECTION_WHERE
         self._show_section(self._section)
@@ -858,6 +904,43 @@ class SettingsDialog(ctk.CTkToplevel):
         """Show `section`'s page (an open dialog asked for another one); a section that isn't
         shown changes nothing."""
         self._show_section(section)
+
+    def _search_places(self) -> list[Place]:
+        """What Settings' search looks through now: the built pages' boxes, and the MediaForge
+        pages not built yet by their words."""
+        from app.forge.ui.settings_pages import FORGE_SEARCH
+
+        built = {name: page.boxes for name, page in self._pages.items()}
+        unbuilt = {
+            name: FORGE_SEARCH.get(name, ())
+            for name in self._forge_sections
+            if name not in self._pages
+        }
+        return places(built, unbuilt)
+
+    def _go_to_match(self, match: Match) -> None:
+        """A search match: its page, scrolled to its box (a MediaForge page's box once built)."""
+        self._show_section(match.section)
+        if match.title:
+            spawn(self._scroll_to_box(match.section, match.title), name="settings-search")
+
+    async def _scroll_to_box(self, section: str, title: str) -> None:
+        for _ in range(_SPOT_TRIES):
+            if not self.winfo_exists() or self._section != section:
+                return
+            page = self._pages.get(section)
+            frame = next((f for name, f in page.boxes if name == title), None) if page else None
+            if frame is not None and frame.winfo_ismapped():
+                self._scroll_to_frame(frame)
+                return
+            await asyncio.sleep(_SPOT_WAIT_S)
+
+    def _scroll_to_frame(self, frame: tk.Misc) -> None:
+        canvas = self._scroll._parent_canvas
+        canvas.update_idletasks()
+        box = canvas.bbox("all")
+        if box and box[3] > 0:
+            canvas.yview_moveto(max(0, frame.winfo_rooty() - self._scroll.winfo_rooty()) / box[3])
 
     def go_to_spot(self, section: str, spot: str) -> None:
         """Show `section`'s page scrolled to its box `spot` (a part's `spots`), once that shows:
@@ -1181,7 +1264,27 @@ class SettingsDialog(ctk.CTkToplevel):
         shows.add(
             self._checkbox(shows.body, t(NEW_SHOWS_SWITCH), self._auto_new_shows), sticky="w"
         )
+        wait = page.box(t(WAIT_TITLE), t(WAIT_TEXT))
+        hours = [t(WAIT_HOURS, n=n) for n in AUTO_WAIT_CHOICES]
+        wait.add(self._segmented(wait.body, hours, self._auto_wait, width=320), sticky="w")
+        stuck = page.box(t(STUCK_TITLE), t(STUCK_TEXT))
+        names = [stuck_name(n) for n in STUCK_CHOICES]
+        stuck.add(self._segmented(stuck.body, names, self._stuck_swap, width=340), sticky="w")
         return page
+
+    def _stuck_hours(self) -> int:
+        """The swap time chosen in Automatic's row (0: never)."""
+        for n in STUCK_CHOICES:
+            if self._stuck_swap.get() == stuck_name(n):
+                return n
+        return self._settings.current.stuck_swap_hours
+
+    def _wait_hours(self) -> int:
+        """The wait chosen in Automatic's row of hours."""
+        for n in AUTO_WAIT_CHOICES:
+            if self._auto_wait.get() == t(WAIT_HOURS, n=n):
+                return n
+        return self._settings.current.auto_wait_hours
 
     # -- Movie & show info ---------------------------------------------------------------------
 
@@ -1286,6 +1389,7 @@ class SettingsDialog(ctk.CTkToplevel):
         themes = [theme_name(mode) for mode in THEME_NAMES]
         looks.add(self._segmented(looks.body, themes, self._theme_mode, width=360), sticky="w")
         self._build_accent(page)
+        self._build_text_size(page)
         cards = page.box(t(CARD_SIZE_LABEL), t(CARD_SIZE_TIP))
         cards.add(
             self._segmented(
@@ -1337,6 +1441,41 @@ class SettingsDialog(ctk.CTkToplevel):
         return choice_from_name(
             CALENDAR_LAYOUT_NAMES, self._calendar_layout.get(), CalendarLayout.WEEKS
         )
+
+    def _build_text_size(self, page: _Page) -> None:
+        """Normal / Large / Larger, with "Applies after a restart" while another than this run's
+        is chosen."""
+        box = page.box(t(TEXT_SIZE_TITLE), t(TEXT_SIZE_TEXT))
+        names = [t(name) for name in TEXT_SIZE_NAMES.values()]
+        box.add(
+            self._segmented(
+                box.body, names, self._text_size, width=300,
+                command=lambda _name: self._text_size_changed(),
+            ),
+            sticky="w",
+        )
+        self._text_size_restart = box.text(t(ACCENT_RESTART_TEXT))
+        self._text_size_restart.configure(text_color=theme.WARNING)
+        self._text_size_row = box.take_row()
+        self._text_size_changed()
+
+    @property
+    def text_size(self) -> TextSize:
+        """The text size the Text size box shows chosen."""
+        chosen = self._text_size.get()
+        for size, name in TEXT_SIZE_NAMES.items():
+            if chosen == t(name):
+                return size
+        return self._settings.current.text_size
+
+    def _text_size_changed(self) -> None:
+        label = getattr(self, "_text_size_restart", None)
+        if label is None:
+            return
+        if self.text_size.value != theme.current_text_size():
+            label.grid()
+        else:
+            label.grid_remove()
 
     def _build_accent(self, page: _Page) -> None:
         """The Accent colour box: a swatch per palette, the chosen one ringed. Another colour
@@ -1578,6 +1717,11 @@ class SettingsDialog(ctk.CTkToplevel):
         excluded.add(self._entry(excluded.body, self._excluded))
         preferred = page.box(t(PREFERRED_TITLE), t(PREFERRED_TEXT))
         preferred.add(self._entry(preferred.body, self._preferred))
+        learned = self._settings.current.learned_groups
+        if learned:
+            preferred.text(t(LEARNED_LINE, groups=", ".join(learned)))
+        blocked = page.box(t(BLOCKED_TITLE), t(BLOCKED_TEXT))
+        blocked.add(self._entry(blocked.body, self._blocked))
         return page
 
     def _build_prowlarr(self, page: _Page) -> None:
@@ -1807,6 +1951,7 @@ class SettingsDialog(ctk.CTkToplevel):
             card_size=size_from_label(self._card_size.get()),
             theme_mode=theme_from_name(self._theme_mode.get()),
             accent=self.accent,
+            text_size=self.text_size,
             info_layout=choice_from_name(
                 INFO_LAYOUT_NAMES, self._info_layout.get(), InfoLayout.SIDE
             ),
@@ -1825,6 +1970,7 @@ class SettingsDialog(ctk.CTkToplevel):
             tmdb_api_key=self._tmdb_key.get(),
             excluded_keywords=self._excluded.get(),
             preferred_groups=self._preferred.get(),
+            blocked_groups=self._blocked.get(),
             disabled_indexers=disabled,
             prowlarr_url=self._prowlarr_url.get(),
             prowlarr_api_key=self._prowlarr_key.get(),
@@ -1832,6 +1978,8 @@ class SettingsDialog(ctk.CTkToplevel):
             auto_update=self._auto_update.get(),
             keep_in_tray=self._keep_in_tray.get(),
             auto_download_new_shows=self._auto_new_shows.get(),
+            auto_wait_hours=self._wait_hours(),
+            stuck_swap_hours=self._stuck_hours(),
             subtitles_folder=self._finished_folder.get(),
         )
 

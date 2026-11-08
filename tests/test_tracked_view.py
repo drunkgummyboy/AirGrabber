@@ -13,7 +13,7 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.models import Episode, ImportResult, LibraryEntry, Settings, Show, ShowActivity
+from app.models import FollowRecord, Episode, ImportResult, LibraryEntry, Settings, Show, ShowActivity
 from app.models.settings import TrackedFilter, TrackedSort
 from app.services import SettingsService
 from app.ui import poster_card
@@ -257,6 +257,8 @@ class _Library:
         self.removed_ended = 0
         self.removed_for: list[int] = []  # whose ended shows went
         self.people: list[int] = []  # whose shows each load asked for
+        self.untracked: list[int] = []
+        self.restored: list[FollowRecord] = []
 
     async def tracked(self, *, profile_id: int) -> list[LibraryEntry]:
         self.people.append(profile_id)
@@ -271,10 +273,78 @@ class _Library:
     async def last_downloads(self) -> dict[int, datetime]:
         return {2: NOW - timedelta(days=3), 3: NOW - timedelta(days=1)}
 
+    async def untrack(self, show_id: int, *, profile_id: int) -> FollowRecord | None:
+        self.untracked.append(show_id)
+        return FollowRecord(
+            show_id=show_id, profile_id=profile_id, tracked_at="2026-01-01T00:00:00Z",
+            auto_download=True,
+        )
+
+    async def restore(self, record: FollowRecord) -> bool:
+        self.restored.append(record)
+        return True
+
     async def remove_ended(self, *, profile_id: int) -> int:
         self.removed_ended += 1
         self.removed_for.append(profile_id)
         return 1
+
+
+class UndoRemoveTests(unittest.IsolatedAsyncioTestCase):
+    """Removing a show offers "Undo" for a while, which puts the follow back as it was."""
+
+    def setUp(self) -> None:
+        gc.collect()
+        try:
+            self.root = ctk.CTk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk unavailable: {exc}")
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def page(self) -> tuple[TrackedView, _Library]:
+        library = _Library([], {})
+        any_library: Any = library
+        images: Any = _NoImages()
+        repository: Any = _Repository()
+        view = TrackedView(
+            self.root,
+            library=any_library,
+            settings=SettingsService(repository, Settings()),
+            airdates=mock.Mock(),
+            images=images,
+            status=lambda text, clear_after_ms=None: None,
+        )
+        self.addCleanup(view.destroy)
+        return view, library
+
+    async def test_undo_puts_the_show_back(self) -> None:
+        view, library = self.page()
+        await view._untrack(_show(1, "Charlie"))
+        self.assertTrue(view._undo_bar.winfo_manager())
+        self.assertEqual(view._undo_label.cget("text"), "Removed Charlie")
+        view.undo_button.invoke()
+        await asyncio.gather(*view._tasks)
+        self.assertEqual([r.show_id for r in library.restored], [1])
+        self.assertTrue(library.restored[0].auto_download)  # its switch comes back too
+        self.assertFalse(view._undo_bar.winfo_manager())
+
+    async def test_the_offer_goes_after_a_while(self) -> None:
+        view, library = self.page()
+        await view._untrack(_show(1, "Charlie"))
+        view._hide_undo()  # what the timer does
+        self.assertFalse(view._undo_bar.winfo_manager())
+        view._undo()  # too late: nothing comes back
+        self.assertEqual(library.restored, [])
+
+    async def test_a_second_removal_is_the_one_undone(self) -> None:
+        view, library = self.page()
+        await view._untrack(_show(1, "Charlie"))
+        await view._untrack(_show(3, "Bravo"))
+        self.assertEqual(view._undo_label.cget("text"), "Removed Bravo")
+        view._undo()
+        await asyncio.gather(*view._tasks)
+        self.assertEqual([r.show_id for r in library.restored], [3])
 
 
 class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):

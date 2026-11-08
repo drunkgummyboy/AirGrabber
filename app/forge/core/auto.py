@@ -370,6 +370,7 @@ class LookResult(NamedTuple):
     unreachable: list[Path]
 
 
+TOOLS_NOT_THERE = N_("No trailer: the trailer tools aren't downloaded yet.")
 SCAN_SECOND_LOOK_S = 3.0  # "look now": a file counts as finished from its second look on
 
 
@@ -866,6 +867,9 @@ class AutoRenamer:
                 if not tools and (plan.options.trailer or plan.trailers):
                     # Without the tools no trailer can be fetched: drop the planned ones too,
                     # or the executor would still try (and report a failure) for each.
+                    if plan.trailers:
+                        log.info("No trailer: the trailer tools aren't downloaded yet")
+                        self._say(t(TOOLS_NOT_THERE))
                     options = plan.options.model_copy(update={"trailer": False})
                     plan = plan.model_copy(update={"options": options, "trailers": ()})
                 targets = {f.item_id: f.target for f in plan.files}

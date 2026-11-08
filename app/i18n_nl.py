@@ -474,6 +474,34 @@ NL: dict[str, str] = {
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
     "In Plex": "In Plex",
+    "Text size": "Tekstgrootte",
+    "Every text in AirGrabber a little larger, apart from Windows' own scaling.":
+        "Alle tekst in AirGrabber iets groter, los van de schaal van Windows zelf.",
+    "Normal": "Normaal",
+    "Larger": "Groter",
+    "Nothing airs today": "Vandaag wordt er niets uitgezonden",
+    "Today: {episodes}": "Vandaag: {episodes}",
+    "+{n} more": "+{n} meer",
+    "Downloading {n} · {percent}%": "{n} aan het downloaden · {percent}%",
+    "Downloading {n}": "{n} aan het downloaden",
+    "Pause automatic downloads": "Automatische downloads pauzeren",
+    "For {n} hours": "{n} uur",
+    "Until tomorrow": "Tot morgen",
+    "Resume automatic downloads (paused until {time})": "Automatische downloads hervatten (gepauzeerd tot {time})",
+    "Because you follow {name}": "Omdat je {name} volgt",
+    "Wait after an episode airs": "Wachten nadat een aflevering is uitgezonden",
+    "Automatic downloads wait this long, so good releases can turn up. The first ones are more often fakes.":
+        "Automatische downloads wachten zo lang, zodat er goede releases kunnen verschijnen. De eerste zijn vaker nep.",
+    "{n} h": "{n} u",
+    "Clear recent searches": "Recente zoekopdrachten wissen",
+    "Search settings": "Instellingen zoeken",
+    "Nothing found": "Niets gevonden",
+    "Following {name} again": "Je volgt {name} weer",
+    "Couldn't bring {name} back": "Kon {name} niet terugzetten",
+    "{had} of {total}": "{had} van {total}",
+    "{n} in Plex": "{n} in Plex",
+    "{n} downloaded": "{n} gedownload",
+    "{n} not downloaded": "{n} niet gedownload",
     "Coming up": "Binnenkort",
     "{n} file waiting": "{n} bestand wacht",
     "{n} files waiting": "{n} bestanden wachten",
@@ -709,7 +737,6 @@ NL: dict[str, str] = {
     "Click ☰ Choose… on an episode to see its releases here.":
         "Klik op ☰ Kiezen… bij een aflevering om de releases hier te zien.",
     "Releases · {code}": "Releases · {code}",
-    "+{n} more": "+{n} meer",
     # app/ui/tray.py
     "Open AirGrabber": "AirGrabber openen",
     "Open MediaForge": "MediaForge openen",
@@ -937,6 +964,54 @@ NL: dict[str, str] = {
     "large size": "groot bestand",
     "size unknown": "grootte onbekend",
     "your preferred group": "je favoriete releasegroep",
+    "a group that worked for you before": "een groep die eerder goed werkte",
+    "🚫 Wrong or fake? Block {group}…": "🚫 Fout of nep? {group} blokkeren…",
+    "Block {group}?": "{group} blokkeren?",
+    "AirGrabber never shows or picks releases from {group} again. You can undo this in "
+    "Settings → Advanced.":
+        "AirGrabber toont of kiest nooit meer releases van {group}. Je kunt dit terugdraaien in "
+        "Instellingen → Geavanceerd.",
+    "Block": "Blokkeren",
+    "Never use releases from": "Nooit releases gebruiken van",
+    "Swap a stuck download after": "Vervang een vastgelopen download na",
+    "When a download hasn't moved for this long, AirGrabber removes it from your torrent program "
+    "and fetches the next best release.":
+        "Als een download zo lang niet opschiet, haalt AirGrabber hem uit je torrentprogramma en "
+        "haalt de op een na beste release.",
+    "Never": "Nooit",
+    "🧩 Find gaps in Plex…": "🧩 Gaten in Plex zoeken…",
+    "From Sonarr": "Uit Sonarr",
+    "AirGrabber follows every show your Sonarr has. Its API key is used once and never stored.":
+        "AirGrabber volgt elke serie die je Sonarr heeft. De API-sleutel wordt één keer gebruikt en "
+        "nooit bewaard.",
+    "API key (Sonarr › Settings › General)": "API-sleutel (Sonarr › Settings › General)",
+    "Import from Sonarr": "Importeren uit Sonarr",
+    "Reading Sonarr…": "Sonarr lezen…",
+    "Sonarr has no shows yet.": "Sonarr heeft nog geen series.",
+    "Enter Sonarr's address, such as http://localhost:8989.":
+        "Vul het adres van Sonarr in, zoals http://localhost:8989.",
+    "Enter Sonarr's API key (Sonarr › Settings › General › API Key).":
+        "Vul de API-sleutel van Sonarr in (Sonarr › Settings › General › API Key).",
+    "Sonarr didn't accept that API key.": "Sonarr accepteerde die API-sleutel niet.",
+    "That address doesn't answer like Sonarr does.": "Dat adres antwoordt niet zoals Sonarr.",
+    "Couldn't reach Sonarr at that address.": "Sonarr was niet bereikbaar op dat adres.",
+    "Gaps in Plex": "Gaten in Plex",
+    "Episodes Plex doesn't have, in the seasons it has some of.":
+        "Afleveringen die Plex niet heeft, in de seizoenen waarvan het er een paar heeft.",
+    "No gaps: every season Plex has of your shows is complete.":
+        "Geen gaten: elk seizoen van je series in Plex is compleet.",
+    "⬇ Download all {n}": "⬇ Alle {n} downloaden",
+    "⬇ Download {n}": "⬇ {n} downloaden",
+    "✓ Queued": "✓ In de wachtrij",
+    "{n} on its way": "{n} onderweg",
+    "{n} on their way": "{n} onderweg",
+    "{title} stopped moving: AirGrabber is fetching another release":
+        "{title} schoot niet meer op: AirGrabber haalt een andere release",
+    "Release group names, separated with commas. \"Wrong or fake?\" in a download's ⋯ menu adds "
+    "one.":
+        "Namen van releasegroepen, gescheiden door komma's. \"Fout of nep?\" in het ⋯-menu van "
+        "een download voegt er een toe.",
+    "Learned from the downloads you kept: {groups}": "Geleerd uit de downloads die je hield: {groups}",
     "a pack with this episode": "een bundel met deze aflevering",
     # app/services/downloads.py
     "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose another option under \"Where downloads go\" in Settings.":
@@ -1338,6 +1413,18 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "MediaForge checks each renamed video and warns when its audio is a dub or its picture smaller than its name says.":
+        "MediaForge controleert elke hernoemde video: een waarschuwing bij een nagesynchroniseerd geluid of een kleiner beeld.",
+    "Downloads: block a fake release's group, swap a download that stops moving, and wait a while after an episode airs.":
+        "Downloads: blokkeer de groep van een nep-release, vervang een download die vastloopt en wacht even na de uitzending.",
+    "Plex: find the gaps in your seasons, and after MediaForge moves files Plex scans just that folder.":
+        "Plex: zoek de gaten in je seizoenen, en na een verplaatsing door MediaForge scant Plex alleen die map.",
+    "MediaForge's + Folder menu fixes your library and finds duplicates; it gets the trailer tools by itself.":
+        "Het menu + Map van MediaForge knapt je bibliotheek op en zoekt dubbele bestanden; trailerhulpmiddelen haalt het zelf.",
+    "Tray: today's episodes, download progress and a pause. Settings: a search box and larger text.":
+        "Systeemvak: de afleveringen van vandaag, downloadvoortgang en een pauze. Instellingen: een zoekvak en grotere tekst.",
+    "Season progress on a show's page, picks like your shows in Discover, undo after removing a show, Sonarr import.":
+        "Seizoensvoortgang bij een serie, tips zoals je series in Ontdekken, verwijderen ongedaan maken en Sonarr-import.",
     "The rolling week shows what's coming up: under the days, the next episode of each of your shows.":
         "De doorlopende week toont wat eraan komt: onder de dagen de volgende aflevering van elke serie.",
     "The number on MediaForge now counts every file waiting in the queue, not only those that need you.":

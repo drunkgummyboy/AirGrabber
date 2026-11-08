@@ -192,6 +192,7 @@ def _run(
         # The accent colour's palette, likewise before the first widget takes its colours
         # (app/ui/theme.py; a change in Settings takes a restart too).
         theme.apply_accent(services.settings.current.accent)
+        theme.apply_text_size(services.settings.current.text_size.value)
         window = MainWindow(
             services,
             start_hidden=start_hidden,

@@ -1,9 +1,10 @@
-"""Dialog for importing shows: paste a list of names / TVMaze ids, or bring them over from
-airdates.tv (the shared AirdatesImportPanel)."""
+"""Dialog for importing shows: paste a list of names / TVMaze ids, bring them over from
+airdates.tv (the shared AirdatesImportPanel), or from a Sonarr (its address and API key: the
+shows it has, handed to `on_import` as "tvdb:<id> <name>" lines; the key is never stored)."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import customtkinter as ctk
 
@@ -21,11 +22,20 @@ from app.ui.dialog_kit import (
     heading_row,
     place_over,
 )
+from app.services.sonarr import DEFAULT_ADDRESS, SonarrError
+from app.ui.tasks import spawn
 from app.ui.widgets import Tabview
 
 # The tabs' texts (CTkTabview names a tab by its text: always through t()).
 TAB_NAMES = N_("Show names")
 TAB_AIRDATES = N_("From airdates.tv")
+TAB_SONARR = N_("From Sonarr")
+SONARR_TEXT = N_("AirGrabber follows every show your Sonarr has. Its API key is used once and never stored.")
+SONARR_ADDRESS = N_("Address")
+SONARR_KEY = N_("API key (Sonarr › Settings › General)")
+SONARR_BUTTON = N_("Import from Sonarr")
+SONARR_READING = N_("Reading Sonarr…")
+SONARR_NONE = N_("Sonarr has no shows yet.")
 
 _TAB_PAD = 24  # around the content inside a tab
 _TABS_WIDTH = CONTENT_WIDTH + 2 * _TAB_PAD
@@ -45,11 +55,14 @@ class ImportShowsDialog(ctk.CTkToplevel):
         airdates: PreviewFinder,
         library: ShowImporter,
         profile_id: int,
+        sonarr: Callable[[str, str], Awaitable[list[str]]] | None = None,
     ) -> None:
         """`profile_id`: the person whose library the shows go into (the airdates.tv tab
-        imports by itself; `on_import` gets the names)."""
+        imports by itself; `on_import` gets the names). `sonarr(address, key)`: a Sonarr's
+        shows as import lines (raises SonarrError); no Sonarr tab without it."""
         super().__init__(master, fg_color=theme.BG)
         self._on_import = on_import
+        self._sonarr = sonarr
 
         title = t("Import Shows")
         self.title(title)
@@ -85,6 +98,8 @@ class ImportShowsDialog(ctk.CTkToplevel):
             profile_id=profile_id,
         )
         self._panel.pack(fill="x", padx=_TAB_PAD, pady=(_TAB_PAD - 8, 0))
+        if sonarr is not None:
+            self._build_sonarr(self._tabs.add(t(TAB_SONARR)))
         self._tabs.set(t(TAB_NAMES))
 
         self.bind("<Escape>", lambda _event: self.destroy())
@@ -131,11 +146,82 @@ class ImportShowsDialog(ctk.CTkToplevel):
             command=self._import,
         ).pack(side="right", padx=(0, 8))
 
+    def _build_sonarr(self, tab: ctk.CTkFrame) -> None:
+        body = ctk.CTkFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=25, pady=20)
+        ctk.CTkLabel(
+            body,
+            text=t(SONARR_TEXT),
+            text_color=theme.TEXT_MUTED,
+            wraplength=CONTENT_WIDTH - 20,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
+        fields = []
+        for label, value, secret in (
+            (SONARR_ADDRESS, DEFAULT_ADDRESS, False),
+            (SONARR_KEY, "", True),
+        ):
+            ctk.CTkLabel(body, text=t(label), text_color=theme.TEXT).pack(anchor="w")
+            entry = ctk.CTkEntry(
+                body,
+                width=460,
+                fg_color=theme.SURFACE,
+                border_color=theme.EDGE,
+                text_color=theme.TEXT,
+                show="•" if secret else "",
+            )
+            entry.insert(0, value)
+            entry.pack(anchor="w", pady=(4, 12))
+            fields.append(entry)
+        self.sonarr_address, self.sonarr_key = fields
+        self.sonarr_hint = ctk.CTkLabel(body, text="", text_color=theme.DANGER, wraplength=460)
+        self.sonarr_hint.pack(anchor="w")
+        self.sonarr_button = ctk.CTkButton(
+            body,
+            text=t(SONARR_BUTTON),
+            width=180,
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            command=self.import_sonarr,
+        )
+        self.sonarr_button.pack(anchor="e", pady=(6, 0))
+        self.sonarr_key.bind("<Return>", lambda _event: self.import_sonarr())
+
+    def import_sonarr(self) -> None:
+        if self._sonarr is None or self.sonarr_button.cget("state") == "disabled":
+            return
+        self.sonarr_hint.configure(text=t(SONARR_READING), text_color=theme.TEXT_MUTED)
+        self.sonarr_button.configure(state="disabled")
+        spawn(
+            self._read_sonarr(self.sonarr_address.get(), self.sonarr_key.get()),
+            name="ImportShowsDialog.sonarr",
+        )
+
+    async def _read_sonarr(self, address: str, key: str) -> None:
+        assert self._sonarr is not None
+        try:
+            lines = await self._sonarr(address, key)
+        except SonarrError as exc:
+            if self.winfo_exists():
+                self.sonarr_hint.configure(text=str(exc), text_color=theme.DANGER)
+                self.sonarr_button.configure(state="normal")
+            return
+        if not self.winfo_exists():
+            return
+        if not lines:
+            self.sonarr_hint.configure(text=t(SONARR_NONE), text_color=theme.TEXT_MUTED)
+            self.sonarr_button.configure(state="normal")
+            return
+        self.destroy()
+        self._on_import(lines)
+
     def _focus_tab(self) -> None:
         if not self.winfo_exists():
             return
         if self._tabs.get() == t(TAB_AIRDATES):
             self._panel.focus_paste()
+        elif self._tabs.get() == t(TAB_SONARR):
+            self.sonarr_key.focus_set()
         else:
             self._text.focus_set()
 

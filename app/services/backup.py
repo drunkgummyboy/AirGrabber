@@ -106,6 +106,9 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "start_with_windows",  # mirrors the Startup-folder shortcut on this PC
         "prowlarr_seeded_url",  # the Prowlarr on this PC that got AirGrabber's sites
         "current_profile",  # who is selected on this PC (the people themselves are in it)
+        "recent_searches",  # what was searched on this PC
+        "auto_paused_until",  # the tray menu's pause, on this PC
+        "learned_groups",  # learned again from the history at every start
         # This PC's link to Plex: its identifier, the token and the server it found.
         "plex_client_id",
         *MACHINE_SECRETS,

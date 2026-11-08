@@ -252,6 +252,7 @@ _SIZE_TEXTS: dict[SizeNote, str] = {
     SizeNote.UNKNOWN: N_("size unknown"),
 }
 PREFERRED_TEXT = N_("your preferred group")
+LEARNED_TEXT = N_("a group that worked for you before")
 PACK_TEXT = N_("a pack with this episode")
 # The row pictures, in CTk units: a speed dot, then (the recommended row) the ★ tag, a pill.
 _DOT = 8  # the dot's diameter (the legend's dots too)
@@ -458,6 +459,8 @@ def recommendation_reason(recommendation: Recommendation) -> str:
         parts.append(t(_SIZE_TEXTS[recommendation.size]))
     if recommendation.preferred:
         parts.append(t(PREFERRED_TEXT))
+    elif recommendation.learned:
+        parts.append(t(LEARNED_TEXT))
     if recommendation.pack:
         parts.append(t(PACK_TEXT))
     return ", ".join(part for part in parts if part)

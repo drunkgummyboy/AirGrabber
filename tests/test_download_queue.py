@@ -97,6 +97,7 @@ class FakeQuick:
     async def download(
         self, request: SearchRequest, grab_target: GrabTarget, progress: object = None, *,
         again: bool = False,
+        avoid: object = (),  # a stuck download's swap
     ) -> QuickDownloadResult:
         one = target_key(grab_target)
         self.started.append(one)

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
 from app.i18n import t, tn
@@ -104,6 +104,7 @@ class QuickDownloadService:
         progress: Progress | None = None,
         *,
         again: bool = False,
+        avoid: Iterable[str] = (),
     ) -> QuickDownloadResult:
         """Search every source for `request`, pick the best release (`pick_best`) and grab it
         for `target`.
@@ -116,7 +117,8 @@ class QuickDownloadService:
         The search runs to completion, but after `timeout` seconds in all the pick is made from
         whatever has arrived. Nothing suitable: `found=False` and nothing is grabbed. Grab
         failures propagate (GrabError, or RemoteError from the remote torrent program).
-        `progress` receives short status texts along the way.
+        `progress` receives short status texts along the way. `avoid`: release titles and info
+        hashes (casefolded) never picked: the ones a stuck download was swapped from.
         """
         label = request_label(request)
         async with self._target_lock(target):
@@ -125,14 +127,26 @@ class QuickDownloadService:
                 return QuickDownloadResult(found=False, already_downloaded=True)
             if again:
                 log.info("One-click %s: downloading again, as asked", label)
-            return await self._search_and_grab(request, target, label, progress)
+            return await self._search_and_grab(
+                request, target, label, progress, frozenset(avoid)
+            )
 
     async def _search_and_grab(
-        self, request: SearchRequest, target: GrabTarget, label: str, progress: Progress | None
+        self,
+        request: SearchRequest,
+        target: GrabTarget,
+        label: str,
+        progress: Progress | None,
+        avoid: frozenset[str] = frozenset(),
     ) -> QuickDownloadResult:
         settings = self._settings.current
         releases = await self._collect(request, label, progress)
-        ranked = rank_releases(releases, request, settings)
+        ranked = [
+            release
+            for release in rank_releases(releases, request, settings)
+            if release.title.casefold() not in avoid
+            and not (release.info_hash and release.info_hash.casefold() in avoid)
+        ]
         if not ranked:
             log.info("One-click %s: nothing suitable among %d results", label, len(releases))
             return QuickDownloadResult(found=False)

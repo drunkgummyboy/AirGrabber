@@ -346,7 +346,9 @@ def labels(widget: Any) -> list[str]:
     return found
 
 
-class DialogTests(unittest.IsolatedAsyncioTestCase):
+class DialogCase(unittest.IsolatedAsyncioTestCase):
+    """A Settings window on fakes (`dialog`), for the tests here and Settings' search's."""
+
     def setUp(self) -> None:
         try:
             self.root = ctk.CTk()
@@ -392,6 +394,8 @@ class DialogTests(unittest.IsolatedAsyncioTestCase):
         if dialog.winfo_exists():
             dialog.destroy()
 
+
+class DialogTests(DialogCase):
     async def test_opens_on_where_downloads_go_and_switches_pages(self) -> None:
         dialog, _settings = self.dialog()
         self.assertEqual(dialog.section, SECTION_WHERE)

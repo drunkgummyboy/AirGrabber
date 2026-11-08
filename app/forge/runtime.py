@@ -78,7 +78,11 @@ class ForgeRuntime:
         *,
         parser_ready: Callable[[], bool] | None = None,
         old_install_blocks: Callable[[], bool] | None = None,
+        fetch_tools: bool = False,
     ) -> None:
+        """`fetch_tools`: get the trailer tools once started, if they're missing (AirGrabber's
+        own start says so; a test never downloads them unless it asks)."""
+        self._fetch_tools = fetch_tools
         self._paths = paths
         self._http = http
         self._tmdb_client = tmdb_client
@@ -172,6 +176,8 @@ class ForgeRuntime:
             except Exception:
                 log.exception("A MediaForge start callback failed")
         services.start_watching()
+        if self._fetch_tools:
+            services.fetch_trailer_tools()
         return services
 
     async def aclose(self) -> None:

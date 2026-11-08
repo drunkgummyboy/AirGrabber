@@ -84,8 +84,10 @@ def _extract_bin(zip_path: Path, target: Path) -> None:
             parts = PurePosixPath(info.filename).parts
             if len(parts) == 3 and parts[1] == "bin" and not info.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
-                with z.open(info) as src, (target / parts[2]).open("wb") as dst:
+                part = target / f"{parts[2]}.part"  # a start cut short leaves no half a program
+                with z.open(info) as src, part.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
+                os.replace(part, target / parts[2])
 
 
 def _remove_partials(stem: Path) -> None:
@@ -181,6 +183,11 @@ class TrailerService:
             os.replace(part, dest)
         finally:
             part.unlink(missing_ok=True)
+
+    @property
+    def installing(self) -> bool:
+        """The tools are being downloaded right now (Forge's start fetches them)."""
+        return self._install_lock.locked()
 
     async def install_tools(self, on_progress: Progress) -> None:
         async with self._install_lock:

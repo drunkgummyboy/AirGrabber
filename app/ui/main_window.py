@@ -17,6 +17,8 @@ than closing), the pages and the band reload, and the status bar says "Now showi
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+from datetime import UTC, date, datetime
 import logging
 import time
 import tkinter as tk
@@ -31,6 +33,7 @@ from async_tkinter_loop.mixins import AsyncCTk
 from app import APP_NAME, __version__
 from app.i18n import N_, month_short, number, t
 from app.models import (
+    DownloadsOverview,
     AutoDownloaded,
     AutoError,
     AutoEvent,
@@ -56,6 +59,7 @@ from app.models import (
 from app.services import Services, UpdateError
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
+from app.services.stuck_downloads import StuckWatch
 from app.services.missing import MAX_PER_RUN
 from app.services.auto_download import GIVE_UP_AFTER
 from app.services.watchlist import GIVE_UP_AFTER as MOVIE_GIVE_UP_AFTER
@@ -86,7 +90,7 @@ from app.ui.release_panel import PanelServices, TvTarget
 from app.forge.ui.host import ForgeHost
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
-from app.ui.search import SearchResultsWindow, SearchSuggestions
+from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_search
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
 from app.ui.spotlight import SwitchPart
@@ -95,8 +99,10 @@ from app.ui.sync_loader import PLEX_SYNC_TEXT, SyncLoader
 from app.ui.tasks import on_task_error, spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import QBITTORRENT
+from app.ui.tray_menu import downloads_line, pause_until, resume_text, today_line
 from app.ui.tray import TrayHost
 from app.ui.views import BaseView, CalendarView, DiscoverView, MovieView, TrackedView
+from app.ui.gaps_window import GapsWindow, group_gaps
 from app.ui.views.downloads_view import DownloadsView, PageActions
 from app.ui.welcome_dialog import FirstRun, WelcomeDialog, first_run_action, first_run_defaults
 from app.ui.whats_new_dialog import WhatsNewDialog
@@ -110,9 +116,11 @@ if TYPE_CHECKING:
     from app.forge.old_install import Outcome
     from app.forge.services import ForgeServices
 
+TRAY_TODAY_S = 900  # the tray menu's line of today's episodes is read again this often
 log = logging.getLogger(__name__)
 
 _UPDATE_CHECK_DELAY_S = 5  # let the pages load first
+STUCK_SWAP_TEXT = N_("{title} stopped moving: AirGrabber is fetching another release")
 _DOWNLOAD_STATUS_MS = 10_000  # how long a one-click download's result stays in the status bar
 _DETAILS_WAIT_S = 5.0  # a one-click movie download waits this long for TMDB details (IMDb id)
 _UPDATE_STATUS_MS = 10_000  # how long "… is ready" / "Updated to …" stay in the status bar
@@ -168,8 +176,10 @@ _OFF_PAGE_SETTINGS = frozenset(
         "info_layout",
         # The spotlight band turning by itself: the band follows it (`set_motion`).
         "spotlight_motion",
-        # The accent colour: applied at the next start (main.py), like the language.
+        # The accent colour and the text size: applied at the next start (main.py), like the
+        # language.
         "accent",
+        "text_size",
         # Who is selected: a switch reloads the pages itself (_on_profiles_changed), once that
         # person's watchlist is read.
         "current_profile",
@@ -181,6 +191,15 @@ _OFF_PAGE_SETTINGS = frozenset(
         "plex_server_name",
         "plex_server_uri",
         "plex_sections_off",
+        # The automatic downloads' wait after airing, and their pause: read at their next run.
+        "auto_wait_hours",
+        "auto_paused_until",
+        "stuck_swap_hours",
+        # The search box's recent searches: only its dropdown shows them, read when it opens.
+        "recent_searches",
+        # Release groups: read by the next search and pick.
+        "blocked_groups",
+        "learned_groups",
         # The phone connection: no page shows it, only its own part of Settings.
         "phone_connection_on",
         "phone_devices",
@@ -478,6 +497,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_downloads = services.downloads.subscribe(self._reload_pages)
         # The footer's loader while Plex is being read.
         self._unsubscribe_plex = services.plex.subscribe(self._show_plex_sync)
+        # The tray menu's line of downloads in progress.
+        self._unsubscribe_tray = services.download_status.subscribe(self._tray_downloads_changed)
+        self._gaps_window: GapsWindow | None = None  # My shows ⋯ → Find gaps in Plex…
+        # Downloads that stopped moving: swapped for the next best release.
+        self._stuck = StuckWatch()
+        self._unsubscribe_stuck = services.download_status.subscribe(self._swap_stuck)
         # The automatic downloads: a tray notification (or the status bar) per event.
         self._auto_throttle = AutoNoticeThrottle()
         self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
@@ -532,7 +557,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_open_forge=self.open_forge,
             on_quit=self.quit_app,
             on_reopen=self._go_home,  # back from the tray: Series › Calendar
+            on_pause=self._pause_auto,
+            on_resume=self._resume_auto,
         )
+        self._tray_today = ""
+        self._tray_downloads = ""
         self.protocol("WM_DELETE_WINDOW", self._close_window)
         if start_hidden or self._started_for_forge:
             # main.py --tray: only the tray icon shows; a start for Forge: what its request shows.
@@ -559,6 +588,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_library()
         self._unsubscribe_downloads()
         self._unsubscribe_plex()
+        self._unsubscribe_tray()
+        self._unsubscribe_stuck()
         self._unsubscribe_auto()
         self._unsubscribe_backup()
         self._unsubscribe_profiles()
@@ -617,6 +648,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=services.discovery,
             on_open=self._open_search_results,
             profile=lambda: services.profiles.current_id,
+            recent=lambda: services.settings.current.recent_searches,
+            on_clear_recent=lambda: spawn(
+                services.settings.update(recent_searches=()), name="clear-recent-searches"
+            ),
         )
 
     def _build_pages(self) -> None:
@@ -660,6 +695,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 status=self.set_status,
                 on_open_show=self._show_windows.open_show,
                 missing_actions=self._missing_actions,
+                on_find_gaps=self._find_gaps,
+                sonarr=self._services.sonarr.import_lines,
                 card_scale=self._card_scale,
                 on_pick_shows=self.open_get_started,  # "+ Pick shows…"
             ),
@@ -712,6 +749,57 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._plex_loader.grid_remove()
         self._version_tip = add_tooltip(self._version_label, "")  # the update badge's
 
+    def _pause_auto(self, hours: int | None) -> None:
+        """The tray menu: no automatic download starts for `hours` (None: until tomorrow)."""
+        until = pause_until(datetime.now(UTC), hours)
+        spawn(self._services.settings.update(auto_paused_until=until), name="pause-auto")
+
+    def _resume_auto(self) -> None:
+        spawn(self._services.settings.update(auto_paused_until=None), name="resume-auto")
+
+    def _show_tray_lines(self) -> None:
+        until = self._services.settings.current.auto_paused_until
+        resume = resume_text(until) if until is not None and until > datetime.now(UTC) else ""
+        lines = tuple(line for line in (self._tray_today, self._tray_downloads) if line)
+        self.tray.set_lines(lines, resume)
+
+    def _swap_stuck(self, overview: DownloadsOverview) -> None:
+        hours = self._services.settings.current.stuck_swap_hours
+        for entry in self._stuck.stuck(overview, hours):
+            spawn(self._swap(entry), name="swap-stuck")
+
+    async def _swap(self, entry: DownloadEntry) -> None:
+        """A download that stopped moving: out of the torrent program, then the next best
+        release (the ones fetched for it before left out)."""
+        avoid = await self._services.downloads.avoided(entry.record)
+        problem = await self._services.download_status.remove(entry)
+        if problem:
+            log.info("A stuck download (grab %s) couldn't be removed", entry.record.id)
+            return
+        log.info("Swapping a stuck download (grab %s)", entry.record.id)
+        self._report(t(STUCK_SWAP_TEXT, title=entry.title), _DOWNLOAD_STATUS_MS)
+        self._download_entry_again(entry, True, avoid=avoid)
+
+    def _tray_downloads_changed(self, overview: DownloadsOverview) -> None:
+        self._tray_downloads = downloads_line(overview)
+        self._show_tray_lines()
+
+    async def _keep_tray_today(self) -> None:
+        """Today's episodes in the tray menu: at the start, after a library change and every
+        TRAY_TODAY_S (the date turns)."""
+        while True:
+            today = date.today()
+            try:
+                entries = await self._services.library.calendar(
+                    today, today, profile_id=self._services.profiles.current_id
+                )
+            except Exception:
+                log.debug("Today's episodes for the tray menu failed", exc_info=True)
+            else:
+                self._tray_today = today_line(entries)
+                self._show_tray_lines()
+            await asyncio.sleep(TRAY_TODAY_S)
+
     def _show_plex_sync(self) -> None:
         self._plex_loader.set_busy(self._services.plex.checking)
 
@@ -729,6 +817,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
         # What is in Plex: checked now, then every 30 minutes (a change reloads the pages).
         spawn(self._services.plex.run_periodic(), name="plex")
+        spawn(self._keep_tray_today(), name="tray-today")
         spawn(self._services.phone.run(), name="phone")  # does nothing while off, or without its marker
         # The Downloads page's progress and the header badge (they listen to it themselves).
         spawn(self._services.download_status.run_periodic(), name="download-status")
@@ -1082,8 +1171,13 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._open_search_results(query)
 
     def _open_search_results(self, query: str) -> None:
-        """One results window at a time: a new search replaces the previous window."""
+        """One results window at a time: a new search replaces the previous window. The search
+        goes first in the recent ones."""
         self._suggestions.hide()
+        settings = self._services.settings
+        recent = remember_search(settings.current.recent_searches, query)
+        if recent != settings.current.recent_searches:
+            spawn(settings.update(recent_searches=recent), name="remember-search")
         if self._results_window is not None and self._results_window.winfo_exists():
             self._results_window.destroy()
         self._results_window = SearchResultsWindow(
@@ -1182,8 +1276,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             )
         )
 
-    def _download_entry_again(self, entry: DownloadEntry, auto: bool) -> None:
-        """The Downloads page's "Download again…": ⬇ Auto (`auto`) or ☰ Choose…."""
+    def _download_entry_again(
+        self, entry: DownloadEntry, auto: bool, *, avoid: tuple[str, ...] = ()
+    ) -> None:
+        """The Downloads page's "Download again…": ⬇ Auto (`auto`) or ☰ Choose…. `avoid`:
+        releases never picked (a stuck download's swap)."""
         record = entry.record
         if record.media_type is MediaType.TV:
             show = entry.show
@@ -1191,14 +1288,18 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 return
             if auto:
                 item = self._tv_item(show, record.season, record.episode, again=True)
-                self._queue_link.download(item)
+                self._queue_link.download(dataclasses.replace(item, avoid=avoid))
             else:
                 target = TvTarget(show, record.season, record.episode)
                 self._show_windows.open_show(show, target=target)
             return
-        spawn(self._film_again(record.media_id, entry.title, auto), name="download-again")
+        spawn(
+            self._film_again(record.media_id, entry.title, auto, avoid), name="download-again"
+        )
 
-    async def _film_again(self, movie_id: int, title: str, auto: bool) -> None:
+    async def _film_again(
+        self, movie_id: int, title: str, auto: bool, avoid: tuple[str, ...] = ()
+    ) -> None:
         """A film known by its TMDB id downloaded again, or its info window on its releases,
         once TMDB has described it."""
         if not auto:
@@ -1214,7 +1315,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.info("Film %d: no TMDB description to download it again: %s", movie_id, exc)
             self._report(t("Couldn't look up {title} on TMDB", title=title), _DOWNLOAD_STATUS_MS)
             return
-        self._download_movie(movie)
+        self._download_movie(movie, avoid=avoid)
 
     def _download_episodes(self, batch: BatchKey, entries: Sequence[CalendarEntry]) -> None:
         """A calendar stack's "⬇ Download all" (and the show window's "⬇ All missing"): its
@@ -1223,8 +1324,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         items = [item for entry in entries if (item := self._episode_item(entry)) is not None]
         self._queue_link.download_batch(batch, items)
 
-    def _download_movie(self, movie: Movie) -> None:
-        """A film's ⬇ / ⬇ Auto (a click by hand: also when it was grabbed before)."""
+    def _download_movie(self, movie: Movie, *, avoid: tuple[str, ...] = ()) -> None:
+        """A film's ⬇ / ⬇ Auto (a click by hand: also when it was grabbed before). `avoid`:
+        releases never picked (a stuck download's swap)."""
 
         async def request() -> SearchRequest:  # when its turn comes
             details = await self._movie_details(movie)
@@ -1232,7 +1334,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
         target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie.id)
         self._queue_link.download(
-            QueuedDownload(label=movie_title(movie), target=target, request=request, again=True)
+            QueuedDownload(
+                label=movie_title(movie), target=target, request=request, again=True, avoid=avoid
+            )
         )
 
     async def _movie_details(self, movie: Movie) -> MovieDetails | None:
@@ -1291,6 +1395,30 @@ class MainWindow(AsyncCTk, ctk.CTk):
         batch = tuple(item.key for item in items)
         if not self._queue_link.download_batch(batch, items, on_progress=progress, on_done=done):
             runs.set(show.id, None)  # the same episodes are queued already as a batch
+
+    def _find_gaps(self) -> None:
+        """My shows ⋯ → "🧩 Find gaps in Plex…": the gaps of the selected person's shows, in a
+        window whose buttons queue them."""
+        task = spawn(self._open_gaps(), name="find-gaps")
+        self._download_tasks.add(task)
+        task.add_done_callback(self._download_tasks.discard)
+
+    async def _open_gaps(self) -> None:
+        entries = await self._services.library.gaps(
+            profile_id=self._services.profiles.current_id
+        )
+        if not self.winfo_exists():
+            return
+        window = self._gaps_window
+        if window is not None and window.winfo_exists():
+            window.close()
+        self._gaps_window = GapsWindow(self, group_gaps(entries), on_download=self._download_gaps)
+
+    def _download_gaps(self, entries: Sequence[CalendarEntry]) -> None:
+        """One show's gaps, queued as one batch (what was grabbed before is skipped)."""
+        items = [item for entry in entries if (item := self._episode_item(entry)) is not None]
+        if items:
+            self._queue_link.download_batch(tuple(item.key for item in items), items)
 
     def _report(self, text: str, clear_after_ms: int) -> None:
         try:

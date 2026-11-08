@@ -49,6 +49,7 @@ Clock = Callable[[], datetime]
 DASHBOARD_TTL = timedelta(minutes=30)
 DETAILS_TTL = timedelta(hours=24)
 SHELF_SIZE = 18
+BECAUSE_FROM = 5  # "Because you follow …" picks one of the shows followed last, this many
 PREMIERES_AHEAD = timedelta(days=90)
 JUST_DROPPED_SINCE = timedelta(days=14)
 UPCOMING_AHEAD = timedelta(days=21)
@@ -262,6 +263,8 @@ class DiscoveryService:
         # TMDB id → TVMaze id of every show matched through resolve() (and so track()): flags
         # it as tracked even when the two services spell its name differently.
         self._tracked_via_tmdb: dict[int, int] = {}
+        # TMDB id → TMDB's picks for people who like that show ("Because you follow …").
+        self._recommended: dict[int, _Entry[tuple[DiscoverShow, ...]]] = {}
 
     def clear_cache(self) -> None:
         """Forget every cached TMDB list and details (e.g. after the API key changed)."""
@@ -275,6 +278,7 @@ class DiscoveryService:
         self._movie_extras.clear()
         self._tv_extras.clear()
         self._tmdb_ids.clear()
+        self._recommended.clear()
 
     # -- dashboards ----------------------------------------------------------------------------
 
@@ -305,12 +309,56 @@ class DiscoveryService:
             name: tuple(DiscoverShowEntry(show=show, is_tracked=is_tracked(show)) for show in shows)
             for name, shows in lists.items()
         }
+        because_name, because = await self._because(profile_id, is_tracked)
         return TVDashboard(
             trending=shelves.get("trending", ()),
             on_air=shelves.get("on_air", ()),
             premieres=shelves.get("premieres", ()),
+            because_name=because_name,
+            because=because,
             failed=failed,
         )
+
+    async def _because(
+        self, profile_id: int, is_tracked: Callable[[DiscoverShow], bool]
+    ) -> tuple[str, tuple[DiscoverShowEntry, ...]]:
+        """TMDB's picks for one of the BECAUSE_FROM shows the person followed last, another one
+        each day; shows they follow left out. ("", ()) when there is none, or TMDB can't say."""
+        entries = sorted(
+            await self._library.tracked(profile_id=profile_id),
+            key=lambda entry: entry.tracked_at,
+            reverse=True,
+        )[:BECAUSE_FROM]
+        if not entries:
+            return "", ()
+        start = self._today().toordinal() % len(entries)
+        for entry in entries[start:] + entries[:start]:
+            try:
+                tmdb_id = await self._tmdb_id_of(entry.show)
+                if tmdb_id is None:
+                    continue
+                picks = await self._recommendations(tmdb_id)
+            except TMDBError as exc:
+                log.info("Discover: no picks for TVMaze show %d (%s)", entry.show.id, type(exc).__name__)
+                return "", ()
+            shown = tuple(
+                DiscoverShowEntry(show=show, is_tracked=False)
+                for show in picks
+                if not is_tracked(show)
+            )[:SHELF_SIZE]
+            if shown:
+                return entry.show.name, shown
+        return "", ()
+
+    async def _recommendations(self, tmdb_id: int) -> tuple[DiscoverShow, ...]:
+        cached = self._recommended.get(tmdb_id)
+        if cached is not None and _is_fresh(cached.stored_at, self._clock(), DASHBOARD_TTL):
+            return cached.value
+        generation = self._generation
+        picks = tuple(await self._tmdb.tv_recommendations(tmdb_id))
+        if generation == self._generation:
+            self._recommended[tmdb_id] = _Entry(picks, self._clock())
+        return picks
 
     async def plex_films(self) -> PlexFilms:
         """The films in Plex (the film cards' quiet ✓ "In Plex", app/services/plex.py); none

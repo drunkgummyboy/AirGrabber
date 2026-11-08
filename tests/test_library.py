@@ -121,6 +121,7 @@ class FakeTVMaze:
         self.searches: dict[str, Any] = {"severance": load("search.json")}
         self.schedules: dict[date, Any] = {}
         self.updates: dict[str, int] = {}
+        self.lookups: dict[str, int] = {}  # "thetvdb=81189" / "imdb=tt…" -> a show in `shows`
         self.failures: dict[str, int] = {}
         self.gates: dict[str, asyncio.Event] = {}
         self.delay = 0.0
@@ -166,6 +167,10 @@ class FakeTVMaze:
             return httpx.Response(200, json=self.searches.get(request.url.params["q"].lower(), []))
         if path == "/updates/shows":
             return httpx.Response(200, json=self.updates)
+        if path == "/lookup/shows":
+            (name, value), = request.url.params.items()
+            show_id = self.lookups.get(f"{name}={value}")
+            return httpx.Response(404) if show_id is None else httpx.Response(200, json=self.shows[show_id])
         if path == "/schedule":
             day = date.fromisoformat(request.url.params["date"])
             return httpx.Response(200, json=self.schedules.get(day, []))
@@ -240,6 +245,20 @@ class ListenerTests(LibraryTestCase):
         unsubscribe()
         await self.service.untrack(DUNE, profile_id=1)
         self.assertEqual(calls, ["b"])
+
+    async def test_a_removal_can_be_undone_as_it_was(self) -> None:
+        await self.service.track(DUNE, profile_id=1)
+        await self.service.set_auto_download(DUNE, True, profile_id=1)
+        before = await self.db.library.tracked_entry(DUNE, profile_id=1)
+        record = await self.service.untrack(DUNE, profile_id=1)
+        assert record is not None and before is not None
+        self.assertTrue(record.auto_download)
+        self.assertIsNone(await self.db.library.tracked_entry(DUNE, profile_id=1))
+        self.assertTrue(await self.service.restore(record))
+        after = await self.db.library.tracked_entry(DUNE, profile_id=1)
+        self.assertEqual(after, before)  # the same follow: since, switch and its start
+        self.assertFalse(await self.service.restore(record))  # followed already: nothing twice
+        self.assertIsNone(await self.service.untrack(12345, profile_id=1))  # not followed
 
     async def test_remove_ended_notifies_only_when_it_removed_something(self) -> None:
         await self.service.track(DUNE, profile_id=1)
@@ -334,6 +353,23 @@ class ImportTests(LibraryTestCase):
         )
         self.assertEqual(self.server.requests[f"/shows/{DRAGON}"], 1)  # only the initial track
         self.assertEqual(self.server.requests[f"/shows/{DUNE}"], 1)
+
+    async def test_lines_by_another_sites_id_from_sonarr(self) -> None:
+        self.server.shows[SEVERANCE] = show_payload(SEVERANCE, "Severance")
+        self.server.lookups["thetvdb=371980"] = SEVERANCE
+        self.server.lookups["imdb=tt11280740"] = SEVERANCE
+        result = await self.service.import_shows(
+            [
+                "tvdb:371980 Severance",  # by TheTVDB's id
+                "imdb:tt11280740",  # the same show by IMDb's: already followed by then
+                "tvdb:1 Severance",  # TVMaze doesn't know the id: the name finds it
+                "tvdb:2 Nothing Matches",  # neither: the summary names it by its name
+            ],
+            profile_id=1,
+        )
+        self.assertEqual(result.added, ("Severance",))
+        self.assertEqual(result.already_tracked, ("Severance", "Severance"))
+        self.assertEqual(result.not_found, ("Nothing Matches",))
 
     async def test_nothing_added_means_no_notification(self) -> None:
         result = await self.service.import_shows(["Nothing Matches", ""], profile_id=1)

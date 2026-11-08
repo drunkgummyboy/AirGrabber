@@ -915,6 +915,23 @@ class QueueTest(QueueCase):
         self.assertEqual(asked, ["Download trailer tools?"])
         self.assertEqual(self.names(self.tmp / "lib" / "Dune (2021)"), ["Dune (2021).mkv"])
 
+    async def test_while_the_tools_come_a_forge_goes_on_without_a_trailer(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.services.settings.update(movies_folder=str(self.tmp / "lib"))
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Folder)")
+        asked: list[str] = []
+
+        async def never(title: str, message: str, choices: Sequence[str]) -> str | None:
+            asked.append(title)
+            return None
+
+        self.view.ask = never
+        async with self.services.trailers._install_lock:
+            await self.view.forge()
+        self.assertEqual(asked, [])
+        self.assertEqual(self.names(self.tmp / "lib" / "Dune (2021)"), ["Dune (2021).mkv"])
+
     async def test_the_quality_button_changes_the_rule_and_the_new_name(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.1080p.x265.mkv"])
         await self.add_and_settle(self.tmp / "in")
@@ -1074,7 +1091,9 @@ class QueueTest(QueueCase):
         self.view.folder_button.invoke()
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(menu.labels, ("Choose a folder…", "☑  Scan subfolders"))
+        self.assertEqual(
+            menu.labels, ("Choose a folder…", "☑  Scan subfolders", "🔁 Find duplicates…")
+        )
         menu.buttons[1].invoke()  # off
         await pump_until(self.root, lambda: len(self.services.queue.items) == 1)
         self.assertFalse(self.services.settings.current.scan_subfolders)
@@ -1083,6 +1102,28 @@ class QueueTest(QueueCase):
         assert menu is not None
         self.assertEqual(menu.labels[1], "☐  Scan subfolders")
         menu.close()
+
+    async def test_fix_my_library_queues_the_library_folders_with_their_subfolders(self) -> None:
+        _downloads, series, movies = await self.library(automatic="off")
+        await self.services.settings.update(scan_subfolders=False)
+        make_files(series / "Lost" / "Season 01", ["Lost - S01E01 - Pilot.mkv"])
+        make_files(movies / "Heat (1995)", ["Heat (1995).mkv"])
+        self.view.folder_button.invoke()
+        menu = PopupMenu._open
+        assert menu is not None
+        self.assertEqual(menu.labels[2:], ("🧰 Fix my library", "🔁 Find duplicates…"))
+        menu.buttons[2].invoke()
+        await pump_until(self.root, lambda: len(self.services.queue.items) == 2)
+
+    async def test_find_duplicates_opens_its_window(self) -> None:
+        _downloads, series, _movies = await self.library(automatic="off")
+        make_files(series / "Lost" / "Season 01", ["Lost - S01E01 - Pilot.mkv", "Lost.S01E01.720p.mkv"])
+        self.view.find_duplicates()
+        await pump_until(self.root, lambda: self.view.duplicates_window is not None)
+        window = self.view.duplicates_window
+        assert window is not None and window.move_button is not None
+        self.assertEqual(window.move_button.cget("text"), "Move 1 extra copy aside")
+        window.close()
 
     async def test_clear_queue_empties_it(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])

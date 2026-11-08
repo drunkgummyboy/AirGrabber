@@ -522,6 +522,7 @@ class FakeQuickDownload(QuickDownloadService):
         progress: Progress | None = None,
         *,
         again: bool = False,
+        avoid: object = (),  # a stuck download's swap
     ) -> QuickDownloadResult:
         self.calls.append((request, target))
         if await self._downloads.has_grabbed(target):

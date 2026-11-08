@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.10.0": (
+        N_("MediaForge checks each renamed video and warns when its audio is a dub or its picture smaller than its name says."),
+        N_("Downloads: block a fake release's group, swap a download that stops moving, and wait a while after an episode airs."),
+        N_("Plex: find the gaps in your seasons, and after MediaForge moves files Plex scans just that folder."),
+        N_("MediaForge's + Folder menu fixes your library and finds duplicates; it gets the trailer tools by itself."),
+        N_("Tray: today's episodes, download progress and a pause. Settings: a search box and larger text."),
+        N_("Season progress on a show's page, picks like your shows in Discover, undo after removing a show, Sonarr import."),
+    ),
     "3.9.0": (
         N_("The rolling week shows what's coming up: under the days, the next episode of each of your shows."),
         N_("The number on MediaForge now counts every file waiting in the queue, not only those that need you."),

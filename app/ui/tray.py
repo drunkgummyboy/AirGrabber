@@ -48,6 +48,7 @@ from app.ui.dialog_kit import (
     text_label,
 )
 from app.ui.tasks import spawn
+from app.ui.tray_menu import PAUSE_FOR, PAUSE_HOURS, PAUSE_MENU, PAUSE_UNTIL_TOMORROW
 
 log = logging.getLogger(__name__)
 
@@ -141,8 +142,18 @@ class TrayIcon:
         on_quit: Callable[[], None],
         on_open_forge: Callable[[], None] | None = None,
         on_failed: Callable[[], None] | None = None,
+        on_pause: Callable[[int | None], None] | None = None,
+        on_resume: Callable[[], None] | None = None,
         backend: Any = None,
     ) -> None:
+        """`on_pause(hours)` (None: until tomorrow) / `on_resume`: the automatic downloads'
+        pause and today's lines in the menu (none without them)."""
+        self._on_pause = on_pause
+        self._on_resume = on_resume
+        # What the menu shows of AirGrabber: set on the loop, read on pystray's thread (one
+        # assignment each, so either thread sees a whole value).
+        self._lines: tuple[str, ...] = ()
+        self._resume = ""  # "Resume … (paused until 14:30)" while paused
         self._loop = loop
         self._image = image
         self._on_open = on_open
@@ -172,8 +183,12 @@ class TrayIcon:
         items = [pystray.MenuItem(t(OPEN_LABEL), self._menu_action(self._on_open), default=True)]
         if self._on_open_forge is not None:
             items.append(pystray.MenuItem(t(OPEN_FORGE_LABEL), self._menu_action(self._on_open_forge)))
+        if self._on_pause is not None:
+            items += [pystray.Menu.SEPARATOR, *self._status_items(pystray), pystray.Menu.SEPARATOR]
+        items.append(pystray.MenuItem(t(CHECK_NOW_LABEL), self._menu_action(self._on_check_now)))
+        if self._on_pause is not None:
+            items += self._pause_items(pystray)
         items += [
-            pystray.MenuItem(t(CHECK_NOW_LABEL), self._menu_action(self._on_check_now)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(t(QUIT_LABEL), self._menu_action(self._on_quit)),
         ]
@@ -205,6 +220,51 @@ class TrayIcon:
             thread.join(_STOP_TIMEOUT_S)
             if thread.is_alive():
                 log.warning("The tray icon did not stop in time")
+
+    def _status_items(self, pystray: Any) -> list[Any]:
+        """Today's episodes and the downloads: greyed lines, hidden while empty."""
+
+        def line(index: int) -> Any:
+            return pystray.MenuItem(
+                lambda _item: self._lines[index] if index < len(self._lines) else "",
+                None,
+                enabled=False,
+                visible=lambda _item: index < len(self._lines) and bool(self._lines[index]),
+            )
+
+        return [line(0), line(1)]
+
+    def _pause_items(self, pystray: Any) -> list[Any]:
+        """Pause automatic downloads ▸ For 3 hours / Until tomorrow; while paused, Resume."""
+        pause, resume = self._on_pause, self._on_resume
+        assert pause is not None
+        choices = pystray.Menu(
+            pystray.MenuItem(
+                t(PAUSE_FOR, n=PAUSE_HOURS), self._menu_action(lambda: pause(PAUSE_HOURS))
+            ),
+            pystray.MenuItem(t(PAUSE_UNTIL_TOMORROW), self._menu_action(lambda: pause(None))),
+        )
+        return [
+            pystray.MenuItem(t(PAUSE_MENU), choices, visible=lambda _item: not self._resume),
+            pystray.MenuItem(
+                lambda _item: self._resume,
+                self._menu_action(resume if resume is not None else lambda: None),
+                visible=lambda _item: bool(self._resume),
+            ),
+        ]
+
+    def set_lines(self, lines: tuple[str, ...], resume: str = "") -> None:
+        """The menu's lines (today's episodes, the downloads) and, while paused, its Resume
+        item's text. On the loop; the menu reads them when it opens."""
+        if lines == self._lines and resume == self._resume:
+            return
+        self._lines, self._resume = lines, resume
+        icon = self._icon
+        if icon is not None:
+            try:
+                icon.update_menu()
+            except Exception:
+                log.debug("Could not refresh the tray menu", exc_info=True)
 
     def notify(self, title: str, message: str) -> None:
         """A Windows notification from the tray icon; nothing when the icon isn't showing."""
@@ -304,6 +364,8 @@ class TrayHost:
         on_open_forge: Callable[[], None] | None = None,
         on_quit: Callable[[], None] | None = None,
         on_reopen: Callable[[], None] | None = None,
+        on_pause: Callable[[int | None], None] | None = None,
+        on_resume: Callable[[], None] | None = None,
     ) -> None:
         """`on_open_forge`: the menu's Open MediaForge (no such item without it). `on_quit`:
         what quitting does (the main window's, which first waits for MediaForge); without it
@@ -320,6 +382,9 @@ class TrayHost:
         self._icon: TrayIcon | None = None
         self._notice: TrayNotice | None = None
         self._forge_count = 0
+        self._on_pause = on_pause
+        self._on_resume = on_resume
+        self._lines: tuple[tuple[str, ...], str] = ((), "")
 
     @property
     def running(self) -> bool:
@@ -344,6 +409,12 @@ class TrayHost:
         self._forge_count = count
         if self._icon is not None:
             self._icon.set_count(count)
+
+    def set_lines(self, lines: tuple[str, ...], resume: str = "") -> None:
+        """The menu's lines and its Resume text (kept for an icon that starts later)."""
+        self._lines = (lines, resume)
+        if self._icon is not None:
+            self._icon.set_lines(lines, resume)
 
     def close_window(self) -> None:
         """WM_DELETE_WINDOW: into the tray, or quit (see close_action)."""
@@ -415,8 +486,11 @@ class TrayHost:
             on_check_now=self._on_check_now,
             on_quit=self.quit,
             on_failed=lambda: self._fall_back("its message loop failed"),
+            on_pause=self._on_pause,
+            on_resume=self._on_resume,
         )
         icon.set_count(self._forge_count)  # a count that came before the icon
+        icon.set_lines(*self._lines)
         try:
             icon.start()
         except Exception as exc:  # ImportError: pystray is missing

@@ -6,7 +6,8 @@ A run (at startup, then every 30 minutes; one at a time) first gives up on the e
 were not found within GIVE_UP_AFTER of airing, then fetches the due ones through the one-click
 Download (`QuickDownloadService`), at most MAX_PER_RUN: least-tried first (so episodes that keep
 coming back empty can't crowd newer ones out), then oldest first. An episode is due once it
-aired DUE_DELAY ago (releases need time to appear), after its show's switch went on, and while
+aired Settings' `auto_wait_hours` ago (releases need time to appear; the first ones are more
+often fakes), after its show's switch went on, and while
 it is neither downloaded nor given up. Nothing found: the try is counted and the next run tries
 again. Downloaded meanwhile by hand: skipped, not counted. A failed grab (no torrent program, unwritable folder, the remote torrent program refusing) is
 counted too, reported as one AutoError and ends the run.
@@ -64,7 +65,7 @@ log = logging.getLogger(__name__)
 
 AutoListener = Callable[[AutoEvent], None]
 
-DUE_DELAY = timedelta(hours=2)  # wait this long after airing: releases need time to appear
+DUE_DELAY = timedelta(hours=2)  # the default wait after airing (Settings' `auto_wait_hours`)
 GIVE_UP_AFTER = timedelta(days=3)  # stop looking this long after airing
 MAX_PER_RUN = 5  # episodes fetched per run, one after another
 MAX_MOVIES_PER_RUN = 5  # watchlist films fetched per run, after the episodes
@@ -134,12 +135,20 @@ class AutoDownloadService:
                 log.exception("Auto-download run failed")
             await asyncio.sleep(interval_s)
 
+    def paused(self) -> bool:
+        """The tray menu's pause is on (Settings' `auto_paused_until` is still to come)."""
+        until = self._settings.current.auto_paused_until
+        return until is not None and self._clock() < until
+
     async def run_once(self) -> AutoDownloadReport:
         """Give up on overdue episodes, then fetch the due ones (see the module docstring).
 
         Runs never overlap: a call made during a run starts once that run has finished.
         Unexpected errors propagate; events already emitted stand.
         """
+        if self.paused():
+            log.info("Automatic downloads are paused (the tray menu)")
+            return AutoDownloadReport()
         async with self._run_lock:
             return await self._run()
 
@@ -157,7 +166,9 @@ class AutoDownloadService:
             self._emit(AutoGaveUp(label=label))
 
         due = await self._library.auto_due(
-            aired_from=now - GIVE_UP_AFTER, aired_until=now - DUE_DELAY, limit=MAX_PER_RUN
+            aired_from=now - GIVE_UP_AFTER,
+            aired_until=now - timedelta(hours=self._settings.current.auto_wait_hours),
+            limit=MAX_PER_RUN,
         )
         downloaded: list[AutoDownloaded] = []
         not_found: list[str] = []

@@ -60,6 +60,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   release name; a moved grab shows as finished whatever its torrent program says). There is no
   library index and no "have it" from the library (removed by the owner's decision, 2026-11-02). AirGrabber's start
   imports Forge's types only under `TYPE_CHECKING`; these log ids and counts, never a file's path.
+  The other bridge: `app/services/plex_scans.py` hears the same move records and has Plex scan
+  the folders they went to (`PlexService.scan_folders`).
 - Where a forged file goes: a preset's `move_to_library` extra (`app/forge/core/library.py`'s `route_inputs`;
   one-time `carry_move_option` ticks Series (Folder) and Movie (Folder)). On: to the Series / Movies folder, whose
   absence leaves the file alone and says so. Off: renamed where it is. Downloads Auto-rename finds always move

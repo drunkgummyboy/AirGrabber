@@ -63,6 +63,10 @@ _SERIES_END = re.compile(
 _YEAR = re.compile(r"(?:19|20)\d\d")
 # The release group: what follows the last '-' up to a space, bracket, parenthesis or dot.
 _GROUP = re.compile(r"[^\s\[\](){}.]+")
+# What follows a '-' without being a group: "WEB-DL", "BluRay-Rip", "x264", "1080p", a number.
+_NOT_A_GROUP = re.compile(
+    r"\d+|dl|rip|ray|web|\d{3,4}p|[xh]\.?26[45]|hevc|avc|xvid|av1", re.IGNORECASE
+)
 _RESOLUTION_KEYS = {
     "2160p": Resolution.UHD,
     "1080p": Resolution.FULL_HD,
@@ -328,30 +332,43 @@ def _excluded_phrases(keywords: tuple[str, ...]) -> tuple[str, ...]:
 def passes_settings(release: TorrentRelease, settings: Settings) -> bool:
     """False for releases with an excluded keyword: a whole word or phrase; "cam", "telesync",
     "telecine" and "screener" also cover their scene tags such as CAMRip or HDTS. ALWAYS_SKIPPED
-    counts as if it were on the list."""
+    counts as if it were on the list. Also False for a release of a blocked group
+    (`blocked_groups`, ignoring case)."""
     text = f" {_normalize(release.title)} "
     for phrase in _excluded_phrases((*settings.excluded_keywords, *ALWAYS_SKIPPED)):
         if f" {phrase} " in text:
             return False
-    return True
+    return not _in_groups(release, settings.blocked_groups)
 
 
-def _release_group(title: str) -> str | None:
+def release_group(title: str) -> str | None:
     """The text after the last '-', up to a space, bracket or extension: "x265-ELiTE EZTV"
-    -> "ELiTE", "h264-successfulcrab[EZTVx.to].mkv" -> "successfulcrab"."""
+    -> "ELiTE", "h264-successfulcrab[EZTVx.to].mkv" -> "successfulcrab". None without one, or
+    when that text is no group ("WEB-DL", "x264", "1080p", a number)."""
     _, dash, tail = title.rpartition("-")
     if not dash:
         return None
     match = _GROUP.search(tail)
-    return match.group() if match else None
+    if match is None or _NOT_A_GROUP.fullmatch(match.group()):
+        return None
+    return match.group()
+
+
+def _in_groups(release: TorrentRelease, groups: Iterable[str]) -> bool:
+    group = release_group(release.title)
+    if group is None:
+        return False
+    return group.casefold() in {name.casefold() for name in groups}
 
 
 def is_preferred(release: TorrentRelease, settings: Settings) -> bool:
     """Whether the release group is one of the user's `preferred_groups` (ignoring case)."""
-    group = _release_group(release.title)
-    if group is None:
-        return False
-    return group.casefold() in {preferred.casefold() for preferred in settings.preferred_groups}
+    return _in_groups(release, settings.preferred_groups)
+
+
+def is_learned(release: TorrentRelease, settings: Settings) -> bool:
+    """Whether the release group is one AirGrabber learned to trust (`learned_groups`)."""
+    return _in_groups(release, settings.learned_groups)
 
 
 # --- de-duplication -----------------------------------------------------------------------------

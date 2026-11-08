@@ -412,3 +412,15 @@ class SettingsStorageTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaitHoursTests(unittest.TestCase):
+    def test_the_nearest_choice(self) -> None:
+        from app.models.settings import AUTO_WAIT_CHOICES
+
+        self.assertEqual(Settings().auto_wait_hours, 2)
+        self.assertEqual(Settings(auto_wait_hours=6).auto_wait_hours, 6)
+        self.assertEqual(Settings(auto_wait_hours=5).auto_wait_hours, 4)  # nearest, lower first
+        self.assertEqual(Settings(auto_wait_hours=48).auto_wait_hours, 12)
+        self.assertEqual(Settings(auto_wait_hours="soon").auto_wait_hours, 2)
+        self.assertIn(Settings().auto_wait_hours, AUTO_WAIT_CHOICES)

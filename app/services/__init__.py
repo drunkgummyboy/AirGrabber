@@ -27,6 +27,8 @@ from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.forge import PhoneForge
 from app.services.phone.service import PhoneService
 from app.services.plex import PlexClient, PlexService
+from app.services.plex_scans import PlexScansAfterMoves
+from app.services.sonarr import SonarrClient
 from app.services.profiles import ProfileService
 from app.services.prowlarr_setup import ProwlarrSetupService
 from app.services.qbittorrent_local import QBittorrentStarter
@@ -59,6 +61,8 @@ class Services:
     """
 
     __slots__ = (
+        "plex_scans",
+        "sonarr",
         "_db",
         "_http",
         "airdates",
@@ -163,6 +167,11 @@ class Services:
             settings,
             on_change=library.notify_changed,
         )
+        # Import Shows → From Sonarr (a one-off read; nothing of it is stored).
+        self.sonarr = SonarrClient(http)
+        # What MediaForge moves into a library folder, Plex scans soon after (once Forge runs).
+        self.plex_scans = PlexScansAfterMoves(self.plex)
+        forge.when_ready(lambda started: self.plex_scans.attach(started.moves))
         # The Companion app's way in, on the home network; off until turned on in Settings
         # (`run` from the UI). What it may ask besides pairing comes from `routes_factory`.
         grabbed_films = GrabbedFilms(self.download_status)
@@ -252,10 +261,11 @@ class Services:
                 ),
                 # Forge shares the HTTP client, the TMDB client (its own names language) and
                 # the poster cache; nothing of it is imported or opened until it starts.
-                forge=ForgeRuntime(paths, http, tmdb, images, settings),
+                forge=ForgeRuntime(paths, http, tmdb, images, settings, fetch_tools=True),
                 paths=paths,
             )
             await services.profiles.load()  # also the selected person's watchlist
+            await services.downloads.learn_groups()  # the groups whose grabs were kept
             await services.torrent_app.refresh_qbittorrent_theme()  # after an update: new files
             cleanup.pop_all()
         return services
@@ -274,6 +284,7 @@ class Services:
             try:
                 # Before these: Forge uses the HTTP client, and forge.db's aiosqlite thread is no
                 # daemon.
+                await self.plex_scans.aclose()
                 await self.forge.aclose()
             finally:
                 try:

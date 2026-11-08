@@ -17,14 +17,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import tkinter as tk
-from collections.abc import Callable, Coroutine, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, time
 from typing import Any, NamedTuple
 
 import customtkinter as ctk
 
 from app.i18n import N_, t, tn
-from app.models import Episode, ImportResult, LibraryEntry, Show, ShowActivity
+from app.models import Episode, FollowRecord, ImportResult, LibraryEntry, Show, ShowActivity
 from app.models.settings import TrackedFilter, TrackedSort
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.tvmaze import TVMazeError
@@ -73,7 +73,10 @@ SORT_TEXT = N_("Sort:")
 FILTER_TEXT = N_("Show:")
 MORE_TEXT = "⋯"
 MORE_TIP = SEASON_MENU_TIP  # "More options"
+FIND_GAPS_TEXT = N_("🧩 Find gaps in Plex…")
 REMOVE_ENDED_TEXT = N_("Remove ended shows…")
+UNDO_TEXT = N_("Undo")
+UNDO_S = 10  # how long "Removed … · Undo" stays
 PICK_SHOWS_TEXT = N_("+ Pick shows…")
 HEADER_BUTTON_PAD = 14  # "+ Pick shows…"'s room left and right of its text
 
@@ -266,11 +269,14 @@ class TrackedView(BaseView):
         missing_actions: MissingActions | None = None,
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_pick_shows: Callable[[], None] | None = None,
+        on_find_gaps: Callable[[], None] | None = None,
+        sonarr: Callable[[str, str], Awaitable[list[str]]] | None = None,
         **kwargs: Any,
     ) -> None:
         """`on_open_show`: what a click on a card's poster or title does (the show details).
         `on_pick_shows`: "+ Pick shows…" opens "Let's get started" (no button without it).
         `missing_actions`: the cards show their missing episodes and "Download missing".
+        `on_find_gaps`: the ⋯ menu's "🧩 Find gaps in Plex…" (only while Plex is connected).
         `card_scale`: the card size (Settings), read at every load. `settings`: the sort and
         filter choices (`tracked_sort`, `tracked_filter`)."""
         super().__init__(master, **kwargs)
@@ -282,6 +288,8 @@ class TrackedView(BaseView):
         self._images = images
         self._status = status
         self._on_open_show = on_open_show
+        self._on_find_gaps = on_find_gaps
+        self._sonarr = sonarr  # Import Shows → From Sonarr
         self._missing_actions = missing_actions
         self._tasks: set[asyncio.Task[None]] = set()
         self._import_dialog: ImportShowsDialog | None = None
@@ -347,6 +355,29 @@ class TrackedView(BaseView):
         )
         self._more_button.pack(side="left")
         add_tooltip(self._more_button, t(MORE_TIP))
+        # "Removed The Ark · Undo", for UNDO_S seconds after a removal.
+        self._undo_bar = ctk.CTkFrame(header, fg_color="transparent")
+        self._undo_label = ctk.CTkLabel(
+            self._undo_bar, text="", font=theme.font(13), text_color=theme.TEXT_MUTED
+        )
+        self._undo_label.pack(side="left", padx=(16, 8))
+        self.undo_button = ctk.CTkButton(
+            self._undo_bar,
+            text=t(UNDO_TEXT),
+            width=70,
+            height=HEADER_BUTTON_HEIGHT,
+            font=theme.font(13, bold=True),
+            fg_color="transparent",
+            hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
+            border_width=1,
+            border_color=theme.EDGE,
+            command=self._undo,
+        )
+        self.undo_button.pack(side="left")
+        self._removed: FollowRecord | None = None
+        self._removed_name = ""
+        self._undo_job: str | None = None
 
         self._bar = ctk.CTkFrame(self, fg_color="transparent")
         self._bar.grid(row=1, column=0, sticky="w", padx=15, pady=(0, 8))
@@ -568,11 +599,47 @@ class TrackedView(BaseView):
             self._own_changes -= 1
 
     async def _untrack(self, show: Show) -> None:
-        await self._library.untrack(show.id, profile_id=self._profile_id)
-        self._report(t("Removed {name}", name=show.name), clear_after_ms=4000)
+        record = await self._library.untrack(show.id, profile_id=self._profile_id)
+        if record is None or not self.winfo_exists():
+            return
+        self._offer_undo(record, show.name)
+
+    def _offer_undo(self, record: FollowRecord, name: str) -> None:
+        """"Removed The Ark · Undo" in the header for UNDO_S seconds (the latest removal)."""
+        self._removed, self._removed_name = record, name
+        self._undo_label.configure(text=t("Removed {name}", name=name))
+        if not self._undo_bar.winfo_manager():
+            self._undo_bar.pack(side="left")
+        if self._undo_job is not None:
+            self.after_cancel(self._undo_job)
+        self._undo_job = self.after(UNDO_S * 1000, self._hide_undo)
+
+    def _hide_undo(self) -> None:
+        self._undo_job = None
+        self._removed = None
+        if self._undo_bar.winfo_exists():
+            self._undo_bar.pack_forget()
+
+    def _undo(self) -> None:
+        record, name = self._removed, self._removed_name
+        if self._undo_job is not None:
+            self.after_cancel(self._undo_job)
+        self._hide_undo()
+        if record is not None:
+            self._start(self._restore(record, name), "TrackedView.undo")
+
+    async def _restore(self, record: FollowRecord, name: str) -> None:
+        if await self._library.restore(record):
+            self._report(t("Following {name} again", name=name), clear_after_ms=4000)
+        else:
+            self._report(t("Couldn't bring {name} back", name=name), clear_after_ms=6000)
 
     def _open_more_menu(self) -> None:
-        popup_menu(self._more_button, [(t(REMOVE_ENDED_TEXT), self._remove_ended)])
+        items: list[tuple[str, Callable[[], None]]] = []
+        if self._plex and self._on_find_gaps is not None:
+            items.append((t(FIND_GAPS_TEXT), self._on_find_gaps))
+        items.append((t(REMOVE_ENDED_TEXT), self._remove_ended))
+        popup_menu(self._more_button, items)
 
     def _remove_ended(self) -> None:
         self._start(self._cleanup(), "TrackedView.cleanup")
@@ -601,6 +668,7 @@ class TrackedView(BaseView):
                 window,
                 on_import=self._on_import,
                 airdates=self._airdates,
+                sonarr=self._sonarr,
                 library=self._library,
                 profile_id=self._profile_id,
             )
@@ -633,6 +701,9 @@ class TrackedView(BaseView):
             show_info(window, t("Import complete"), import_summary(result))
 
     def destroy(self) -> None:
+        if self._undo_job is not None:
+            self.after_cancel(self._undo_job)
+            self._undo_job = None
         for task in list(self._tasks):
             task.cancel()
         super().destroy()

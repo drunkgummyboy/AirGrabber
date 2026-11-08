@@ -8,12 +8,12 @@ import asyncio
 import dataclasses
 import logging
 import tkinter as tk
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
-from app.i18n import t
+from app.i18n import N_, t
 from app.models import Movie, Show, ShowSearchResult
 from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
@@ -72,6 +72,29 @@ def suggestion_rows(
     return rows
 
 
+RECENT_MAX = 8  # searches kept
+RECENT_ICON = "🕘"
+CLEAR_RECENT = N_("Clear recent searches")
+_CLEAR = "\x00clear"  # the row that clears them, not a search
+
+
+def remember_search(recent: Sequence[str], query: str) -> tuple[str, ...]:
+    """`query` first, an earlier same search (ignoring case) dropped, at most RECENT_MAX."""
+    query = query.strip()
+    if not query:
+        return tuple(recent)
+    kept = [q for q in recent if q.casefold() != query.casefold()]
+    return tuple([query, *kept][:RECENT_MAX])
+
+
+def recent_rows(recent: Sequence[str]) -> list[tuple[str, str]]:
+    """The dropdown while nothing is typed: "🕘 Reacher" per search, then "Clear recent
+    searches"; nothing without any."""
+    if not recent:
+        return []
+    return [(f"{RECENT_ICON}  {q}", q) for q in recent] + [(t(CLEAR_RECENT), _CLEAR)]
+
+
 class SearchSuggestions:
     """A dropdown of the best TVMaze and TMDB matches for what is typed in `entry` (debounced,
     latest wins). Each source fails silently on its own: the other's rows still show.
@@ -89,9 +112,15 @@ class SearchSuggestions:
         discovery: DiscoveryService,
         on_open: Callable[[str], None],
         profile: Callable[[], int],
+        recent: Callable[[], Sequence[str]] = lambda: (),
+        on_clear_recent: Callable[[], object] = lambda: None,
     ) -> None:
         """`root`: the window `entry` is in (the main window, or the search results window).
-        `profile`: the selected person, read at every lookup (the shows they follow get a ✓)."""
+        `profile`: the selected person, read at every lookup (the shows they follow get a ✓).
+        `recent`: the last searches, listed while the box is empty and has the focus;
+        `on_clear_recent`: their "Clear recent searches"."""
+        self._recent = recent
+        self._on_clear_recent = on_clear_recent
         self._entry = entry
         self._root = root
         self._library = library
@@ -109,6 +138,7 @@ class SearchSuggestions:
         entry.bind("<KeyRelease>", self._on_key)
         entry.bind("<Escape>", lambda _event: self.hide())
         entry.bind("<FocusOut>", self._on_focus_out)
+        entry.bind("<FocusIn>", self._on_focus_in, add="+")
         self._configure_id = root.bind("<Configure>", self._on_root_configure, add="+")
         self._unmap_id = root.bind("<Unmap>", self._on_root_unmap, add="+")
 
@@ -119,6 +149,10 @@ class SearchSuggestions:
             return
         self._cancel_job("_debounce_job")
         self._debounce_job = self._root.after(_DEBOUNCE_MS, self._start_fetch)
+
+    def _on_focus_in(self, _event: tk.Event[Any]) -> None:
+        if not self._closed and not self._entry.get().strip():
+            self._render(recent_rows(self._recent()))
 
     def _on_focus_out(self, _event: tk.Event[Any]) -> None:
         if self._closed:
@@ -158,6 +192,9 @@ class SearchSuggestions:
         self._debounce_job = None
         query = self._entry.get().strip()
         self._cancel_fetch()
+        if not query:
+            self._render(recent_rows(self._recent()))
+            return
         if len(query) < _MIN_QUERY:
             self._withdraw()
             return
@@ -250,6 +287,9 @@ class SearchSuggestions:
 
     def _choose(self, name: str) -> None:
         self.hide()
+        if name == _CLEAR:
+            self._on_clear_recent()
+            return
         self._entry.delete(0, "end")
         self._on_open(name)
 

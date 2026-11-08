@@ -95,6 +95,14 @@ class MoveRepository:
         )
         return [_move(r) for r in rows]
 
+    async def moved_after(self, when: float, *, limit: int = 500) -> list[MoveRecord]:
+        """The moves made after `when` (seconds since the epoch), oldest first, at most `limit`."""
+        rows = await self._db.fetch_all(
+            f"SELECT {_MOVE_COLUMNS} FROM moves WHERE moved_at > ? ORDER BY moved_at, id LIMIT ?",
+            (when, limit),
+        )
+        return [_move(r) for r in rows]
+
     async def of_operation(self, op_id: int) -> MoveRecord | None:
         """The record of the rename `op_id` (None: it went nowhere near a library folder, or
         the record is older than a year)."""

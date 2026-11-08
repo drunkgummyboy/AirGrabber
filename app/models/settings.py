@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import Path
+from datetime import datetime
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
@@ -157,6 +158,15 @@ class ThemeMode(StrEnum):
     LIGHT = "light"
 
 
+class TextSize(StrEnum):
+    """Settings › Looks › Text size: every text a little larger, apart from Windows' scaling
+    (app/ui/theme.py's `apply_text_size`, at the next start)."""
+
+    NORMAL = "normal"
+    LARGE = "large"
+    LARGER = "larger"
+
+
 class Accent(StrEnum):
     """AirGrabber's accent colour (Settings → Looks; the palettes in app/ui/palettes.py): the
     buttons, chosen items, links and a slight tint of the backgrounds. Slate, the slate blue it
@@ -268,6 +278,30 @@ def _split_csv(value: Any) -> Any:
 KeywordList = Annotated[tuple[str, ...], BeforeValidator(_split_csv)]
 
 
+AUTO_WAIT_CHOICES = (1, 2, 4, 6, 12)  # hours, Settings › Automatic
+
+
+def _wait_hours(value: Any) -> Any:
+    """A wait the choices don't have (a newer version's, a hand-edited one) is the nearest one."""
+    try:
+        hours = int(value)
+    except (TypeError, ValueError):
+        return 2
+    return min(AUTO_WAIT_CHOICES, key=lambda choice: abs(choice - hours))
+
+
+STUCK_CHOICES = (0, 3, 6, 12, 24)  # hours, Settings › Automatic; 0 = never swap
+
+
+def _stuck_hours(value: Any) -> Any:
+    """A swap time the choices don't have is the nearest one."""
+    try:
+        hours = int(value)
+    except (TypeError, ValueError):
+        return 6
+    return min(STUCK_CHOICES, key=lambda choice: abs(choice - hours))
+
+
 def _size_gb(value: Any) -> Any:
     """A size limit as typed: "" = no limit, "2,5" and "2.5" both 2.5 (GB)."""
     if not isinstance(value, str):
@@ -351,6 +385,14 @@ class Settings(BaseModel):
     movie_download_dir: Path | None = None
     # Newly followed shows get their "download new episodes automatically" switch turned on.
     auto_download_new_shows: bool = False
+    # How long the automatic downloads wait after an episode airs (proper releases need time to
+    # turn up; the first ones are more often fakes): one of AUTO_WAIT_CHOICES.
+    auto_wait_hours: Annotated[int, BeforeValidator(_wait_hours)] = 2
+    # A download that hasn't moved for this long is swapped for the next best release
+    # (app/services/stuck_downloads.py); 0 = never. One of STUCK_CHOICES.
+    stuck_swap_hours: Annotated[int, BeforeValidator(_stuck_hours)] = 6
+    # The tray menu's pause: no automatic download starts before then (None: not paused).
+    auto_paused_until: datetime | None = None
     first_day: Weekday = Weekday.MONDAY
     calendar_layout: CalendarLayout = CalendarLayout.WEEKS
     weeks_to_show: int = Field(default=3, ge=1, le=5)
@@ -369,6 +411,7 @@ class Settings(BaseModel):
     # The accent colour (app/ui/palettes.py); applied at startup (main.py), so a change takes a
     # restart. An unknown stored value (a newer version's) is Slate.
     accent: Annotated[Accent, _known(Accent, Accent.SLATE)] = Accent.SLATE
+    text_size: Annotated[TextSize, _known(TextSize, TextSize.NORMAL)] = TextSize.NORMAL
     # The interface language (app/i18n.py): English for everyone until chosen otherwise. It
     # takes effect at the next start (main.py applies it before the first window).
     language: Annotated[Language, BeforeValidator(_language)] = Language.EN
@@ -382,7 +425,14 @@ class Settings(BaseModel):
     hide_owned_movies: bool = False
     tmdb_api_key: StoredSecret = SecretStr("")
     excluded_keywords: KeywordList = ("cam", "telesync", "hdcam", "sample")
+    # The last searches, newest first (the search box lists them while it is empty): this PC's.
+    recent_searches: tuple[str, ...] = ()
     preferred_groups: KeywordList = ()
+    # Never shown or picked ("Wrong or fake?" on the Downloads page adds one; Settings › Advanced).
+    blocked_groups: KeywordList = ()
+    # The groups whose grabs the user kept (app/services/release_groups.py), ranked after the
+    # preferred ones; learned again from the download history at every start and grab.
+    learned_groups: tuple[str, ...] = ()
     prowlarr_url: ServiceUrl = ""
     prowlarr_api_key: StoredSecret = SecretStr("")
     # The Prowlarr on this PC that AirGrabber already added its public sites to (its base URL);

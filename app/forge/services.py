@@ -26,7 +26,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,10 +34,12 @@ from app.config import AppPaths
 from app.forge.clients.opensubtitles import APP_API_KEY, OpenSubtitlesClient, effective_api_key
 from app.forge.clients.posters import CachedPosters
 from app.forge.clients.tmdb import ForgeTmdb
-from app.forge.clients.trailers import TrailerService
+from app.forge.clients.trailers import ToolInstallError, TrailerService
 from app.forge.core.activity import ActivityFeed
 from app.forge.core.airgrabber_folders import AirGrabberFolderSync, watched_folders
 from app.forge.core.auto import AutoRenamer, RenamerParts
+from app.forge.core.file_check import FileCheck
+from app.forge.core.duplicates import Duplicate, find_duplicates, quarantine_plan
 from app.forge.core.executor import Executor
 from app.forge.core.history_service import HistoryService
 from app.forge.core.matcher import Resolver
@@ -55,13 +57,14 @@ from app.forge.core.undo import UndoService
 from app.forge.db.cache import CacheRepo
 from app.forge.db.database import Database, db_path
 from app.forge.db.history import HistoryRepo
+from app.forge.models.history import RunSource
 from app.forge.db.ignored import IgnoredRepo
 from app.forge.db.matches import MatchRepo
 from app.forge.db.moves import MoveRepository
 from app.forge.db.presets import PresetRepo
 from app.forge.db.settings import SettingsRepo
 from app.forge.models.settings import ForgeSettings
-from app.i18n import tn
+from app.i18n import t, tn
 
 if TYPE_CHECKING:
     import httpx
@@ -225,6 +228,12 @@ class ForgeServices:
             activity=self.activity,
             moves=self.moves,
             subtitles=self.subtitles,
+            # Each renamed video read with the trailer tools' ffprobe: audio the user doesn't
+            # understand (English or a Settings › Subtitles language), a smaller picture.
+            checker=FileCheck(
+                paths.forge / TOOLS_DIR,
+                lambda: airgrabber_settings.current.subtitle_languages,
+            ),
         )
         self.undo = UndoService(history_repo, activity=self.activity)
         self.run_lock = asyncio.Lock()  # one rename run at a time: the owner's or the renamer's
@@ -250,6 +259,7 @@ class ForgeServices:
         self._renamer_settings = _renamer_view(settings.current)
         self._unsubscribe = settings.subscribe(self._settings_saved)
         self._closed = False
+        self._tools_task: asyncio.Task[None] | None = None  # fetching the trailer tools
         self._warm_task: asyncio.Task[None] | None = None  # the idle warm-up, while it waits
 
     @classmethod
@@ -351,6 +361,61 @@ class ForgeServices:
             self.auto.start()
             self.airgrabber_folders.start()
 
+    def library_folders(self) -> list[Path]:
+        """The Series and Movies folders Settings › Auto-rename names (those set)."""
+        current = self.settings.current
+        return [Path(folder) for folder in (current.series_folder, current.movies_folder) if folder]
+
+    async def find_duplicates(self) -> list[Duplicate]:
+        """The episodes and films found twice in the library folders (read in a thread)."""
+        current = self.settings.current
+        series = Path(current.series_folder) if current.series_folder else None
+        movies = Path(current.movies_folder) if current.movies_folder else None
+        found = await asyncio.to_thread(find_duplicates, series, movies)
+        log.info("Found %d duplicate(s) in the library folders", len(found))
+        return found
+
+    async def move_duplicates(self, duplicates: Sequence[Duplicate]) -> int:
+        """Move the extra copies to the Duplicates folder beside their library folder, as one
+        run (History can undo it); how many moved."""
+        plan = quarantine_plan(duplicates, self.library_folders())
+        if not plan.files:
+            return 0
+        async with self.run_lock:  # never alongside another run
+            result = await self.executor.run(
+                plan,
+                source=RunSource.APP,
+                preset_name=None,
+                on_progress=lambda _event: None,
+                cancel=asyncio.Event(),
+                check_files=False,
+            )
+        log.info("Moved %d duplicate copies aside", result.renamed)
+        return result.renamed
+
+    def fetch_trailer_tools(self) -> None:
+        """Get yt-dlp and ffmpeg in the background when a preset wants trailers and they aren't
+        there (the owner's decision: no question first, about 110 MB once). A failure is said in
+        Activity; the next start, or the question on Forge, tries again."""
+        if self._closed or self._tools_task is not None or self.trailers.tools_present():
+            return
+        self._tools_task = asyncio.get_running_loop().create_task(
+            self._fetch_trailer_tools(), name="forge-trailer-tools"
+        )
+
+    async def _fetch_trailer_tools(self) -> None:
+        try:
+            if any(preset.options.trailer for preset in await self.presets.list()):
+                await self.trailers.install_tools(lambda _step, _fraction: None)
+        except ToolInstallError as exc:  # its text is translated and names no address
+            log.warning("Couldn't install the trailer tools at the start")
+            self.activity.say(
+                t("Couldn't install the trailer tools: {reason}", reason=exc),
+                level=logging.WARNING,
+            )
+        except Exception as exc:  # the type only: a message could hold a path or an address
+            log.warning("Couldn't install the trailer tools at the start (%s)", type(exc).__name__)
+
     async def aclose(self) -> None:
         """Stop the renamer (a run stops after its current file, a pending restart never
         happens), drop the queue and close forge.db. Safe to call twice."""
@@ -360,6 +425,9 @@ class ForgeServices:
         self._unsubscribe()
         if self._warm_task is not None:
             self._warm_task.cancel()
+        if self._tools_task is not None:
+            self._tools_task.cancel()
+            await asyncio.gather(self._tools_task, return_exceptions=True)
         try:
             await self.auto.close()
         finally:

@@ -213,8 +213,36 @@ class DownloadService:
             await self._history.add(record)
         except Exception:
             log.exception("Could not record the grab of %r in the download history", release.title)
+        await self.learn_groups()
         self._notify(target)
         return result
+
+    async def avoided(self, record: DownloadRecord) -> tuple[str, ...]:
+        """What swapping `record` (a stuck download) leaves out: every release fetched for its
+        episode, season pack or film so far (`stuck_downloads.avoided`)."""
+        from app.services.stuck_downloads import avoided
+
+        try:
+            grabs = await self._history.every_grab()
+        except Exception:
+            log.exception("Could not read the download history")
+            grabs = []
+        return avoided(grabs, record)
+
+    async def learn_groups(self) -> None:
+        """Learn the release groups whose grabs the user kept from the whole history
+        (`learned_groups`, app/services/release_groups.py) into the settings. Never raises: a
+        failure only keeps the groups learned before."""
+        from app.services.release_groups import learned_groups
+
+        try:
+            grabs = await self._history.every_grab()
+            learned = learned_groups(grabs, self._settings.current.blocked_groups)
+            if learned != self._settings.current.learned_groups:
+                await self._settings.update(learned_groups=learned)
+                log.info("Learned %d trusted release group(s)", len(learned))
+        except Exception:
+            log.exception("Could not learn the release groups from the download history")
 
     async def _grab_in_app(self, release: TorrentRelease) -> tuple[GrabResult, str, str | None]:
         """Open the .torrent (saved in the cache folder) or else a magnet in the torrent program.

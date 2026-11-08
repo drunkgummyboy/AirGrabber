@@ -33,6 +33,12 @@ Checks run at start, every CHECK_INTERVAL_S (`run_periodic`) and on "↻ Check n
 whenever Plex gets connected or disconnected, `on_change` runs (the pages reload: their have /
 missing cues appear or vanish without a restart).
 
+After MediaForge moves a file into a library folder, `scan_folders` asks the server to scan just
+that folder (/library/sections/{key}/refresh?path=…), so it shows in Plex within minutes; the
+folder as Windows sees it is found in a library's own folders by their shared ending
+(`plex_folder`: the share video's folder TV/Show is /volume1/video/TV/Show). Nothing is asked when no
+library holds it. app/services/plex_scans.py hears the moves.
+
 Secrets: the token goes in the X-Plex-Token header only, never in a URL, log line, message or
 exception text. Request URLs are never logged, no httpx exception (which may carry a URL) is
 chained to or left as the context of a PlexError, and redirects are never followed (a header
@@ -47,6 +53,7 @@ import logging
 import re
 import uuid
 from collections.abc import Callable, Iterable, Sequence
+from pathlib import PurePosixPath, PureWindowsPath
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -233,6 +240,51 @@ def match_scan(
     )
 
 
+# -- folders ------------------------------------------------------------------------------------
+
+
+def _windows_parts(folder: str) -> list[str]:
+    """A Windows folder's names, a network path's share first (its server left out)."""
+    path = PureWindowsPath(folder)
+    share = [path.drive.rstrip("\\").split("\\")[-1]] if path.drive.startswith("\\\\") else []
+    return [name for name in [*share, *path.parts[1:]] if name]
+
+
+def _server_parts(location: str) -> tuple[list[str], str]:
+    """A library folder's names as the server writes them, and its separator."""
+    if "\\" in location or re.match(r"^[A-Za-z]:", location):
+        return _windows_parts(location), "\\"
+    return [name for name in PurePosixPath(location).parts[1:] if name], "/"
+
+
+def plex_folder(folder: str, locations: Sequence[tuple[str, str]]) -> tuple[str, str] | None:
+    """Where `folder` (as Windows sees it) is on the Plex server: (library key, the server's
+    path), found by the longest ending of a library's folder that `folder` holds in one piece;
+    None when no library's folder fits, or two fit equally well with only their last name."""
+    names = [name.casefold() for name in _windows_parts(folder)]
+    best: list[tuple[int, str, str]] = []
+    for key, location in locations:
+        parts, separator = _server_parts(location)
+        lowered = [name.casefold() for name in parts]
+        for size in range(len(lowered), 0, -1):
+            ending = lowered[-size:]
+            found = next(
+                (i for i in range(len(names) - size + 1) if names[i : i + size] == ending), None
+            )
+            if found is not None:
+                rest = _windows_parts(folder)[found + size :]
+                path = separator.join([location.rstrip("/\\"), *rest])
+                best.append((size, key, path))
+                break
+    if not best:
+        return None
+    best.sort(key=lambda match: match[0], reverse=True)
+    if best[0][0] == 1 and len(best) > 1 and best[1][0] == 1:
+        return None  # only a last name in common, with more than one library: unsure
+    _size, key, path = best[0]
+    return key, path
+
+
 def connection_order(server: PlexServer) -> list[PlexConnection]:
     """The order a server's connections are tried in: local https (the plex.direct
     addresses) first, then the other local ones, then the remote ones."""
@@ -296,8 +348,10 @@ class PlexClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
+        answer: bool = True,
     ) -> Any:
-        """The JSON of a call. `what` names it in errors and logs (never the URL)."""
+        """The JSON of a call (None without `answer`: a call that returns nothing). `what`
+        names it in errors and logs (never the URL)."""
         error_name = ""
         response: httpx.Response | None = None
         try:
@@ -325,6 +379,8 @@ class PlexClient:
         if status >= 300:
             log.info("Plex %s: HTTP %d", what, status)
             raise PlexError(f"Plex said no ({what}, HTTP {status})")
+        if not answer:
+            return None
         try:
             return response.json()
         except ValueError:
@@ -406,6 +462,32 @@ class PlexClient:
             if kind is not None and _SECTION_KEY.fullmatch(directory.key):
                 libraries.append(PlexLibrary(key=directory.key, title=directory.title, kind=kind))
         return libraries
+
+    async def locations(self, uri: str, token: str) -> list[tuple[str, str]]:
+        """The show and film libraries' folders as the server sees them: (library key, path)."""
+        data = await self._request(
+            "GET", f"{uri}/library/sections", what="libraries", token=token
+        )
+        return [
+            (directory.key, location.path)
+            for directory in _read(PlexReply, data, "libraries").container.directories
+            if library_kind(directory.type) is not None and _SECTION_KEY.fullmatch(directory.key)
+            for location in directory.locations
+            if location.path
+        ]
+
+    async def scan(self, uri: str, token: str, section: str, path: str) -> None:
+        """Ask the server to scan one folder of a library."""
+        if not _SECTION_KEY.fullmatch(section):
+            raise PlexError("A library key that doesn't read")
+        await self._request(
+            "GET",
+            f"{uri}/library/sections/{section}/refresh",
+            what="scan",
+            token=token,
+            params={"path": path},
+            answer=False,
+        )
 
     async def items(
         self, uri: str, token: str, section: str, item_type: int, *, guids: bool = False
@@ -715,6 +797,38 @@ class PlexService:
         finally:
             self._run = None
             self._notify()
+
+    async def scan_folders(self, folders: Iterable[str]) -> int:
+        """Ask Plex to scan these folders (where MediaForge just moved files): how many scans
+        were asked for. Only with Plex connected and its address known (a check found it);
+        a folder no library holds is left alone. Never raises: a failure is logged (counts and
+        the error's kind only)."""
+        uri = self._settings.current.plex_server_uri
+        wanted = sorted(set(folders))
+        if not self.connected or not uri or not wanted:
+            return 0
+        token = self._token()
+        try:
+            locations = await self._client.locations(uri, token)
+        except PlexError as exc:
+            log.info("Plex scan: the libraries didn't read (%s)", type(exc).__name__)
+            return 0
+        scans = {found for folder in wanted if (found := plex_folder(folder, locations))}
+        asked = 0
+        for key, path in sorted(scans):
+            try:
+                await self._client.scan(uri, token, key, path)
+            except PlexError as exc:
+                log.info("Plex scan of library %s failed (%s)", key, type(exc).__name__)
+                continue
+            asked += 1
+        log.info(
+            "Plex scan: %d folder(s) asked for, %d of %d not in a library",
+            asked,
+            len(wanted) - len({folder for folder in wanted if plex_folder(folder, locations)}),
+            len(wanted),
+        )
+        return asked
 
     async def _reach(self, token: str) -> str:
         """The address of the chosen server that answers (see the module docstring)."""

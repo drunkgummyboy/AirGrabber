@@ -89,7 +89,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         failed = set(dashboard.failed)
         ids = {
             entry.show.id
-            for shelf in (dashboard.trending, dashboard.on_air, dashboard.premieres)
+            for shelf in (dashboard.trending, dashboard.on_air, dashboard.premieres, dashboard.because)
             for entry in shelf
         }
         if ids - self._sources.keys():
@@ -111,6 +111,18 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
                 theme.SECTION_NEW,
                 dashboard.premieres,
                 "premieres" in failed,
+            ),
+            *(
+                [
+                    Shelf(
+                        "💡",
+                        t("Because you follow {name}", name=dashboard.because_name),
+                        theme.TEXT_MUTED,
+                        dashboard.because,
+                    )
+                ]
+                if dashboard.because
+                else []
             ),
         ]
 

@@ -84,6 +84,7 @@ class QueuedDownload:
     request: RequestSource
     again: bool = False
     fallback: tuple[QueuedDownload, ...] = ()
+    avoid: tuple[str, ...] = ()  # releases never picked (a stuck download's swap)
 
     @property
     def key(self) -> QueueKey:
@@ -258,6 +259,10 @@ class DownloadQueue:
     async def _download(self, item: QueuedDownload) -> QuickDownloadResult:
         source = item.request
         request = source if isinstance(source, SearchRequest) else await source()
+        if item.avoid:
+            return await self._quick.download(
+                request, item.target, again=item.again, avoid=item.avoid
+            )
         return await self._quick.download(request, item.target, again=item.again)
 
     def _fail(self, entry: _Entry, message: str) -> None:

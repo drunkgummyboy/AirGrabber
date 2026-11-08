@@ -106,6 +106,7 @@ class FakeQuickDownload(QuickDownloadService):
         progress: Progress | None = None,
         *,
         again: bool = False,
+        avoid: object = (),  # a stuck download's swap
     ) -> QuickDownloadResult:
         self.calls.append((request, target))
         self.active += 1
@@ -601,6 +602,25 @@ class RunTests(DatabaseTestCase):
         self.assertEqual(await self.service.run_once(), AutoDownloadReport())
         self.assertEqual(len(self.quick.calls), 1)
         self.assertEqual(self.events, [expected])
+
+    async def test_the_wait_after_airing_follows_the_setting(self) -> None:
+        await self.add_show(1, [episode(11, 1, NOW - timedelta(hours=3), number=1)], name="Lost")
+        await self.service._settings.update(auto_wait_hours=4)
+        self.assertEqual(await self.service.run_once(), AutoDownloadReport())  # 3 h: too early
+        self.now += timedelta(hours=1, seconds=1)
+        report = await self.service.run_once()
+        self.assertEqual([d.label for d in report.downloaded], ["Lost S01E01"])
+
+    async def test_a_pause_from_the_tray_holds_them_until_it_ends(self) -> None:
+        await self.add_show(1, [episode(11, 1, NOW - timedelta(hours=3), number=1)], name="Lost")
+        await self.service._settings.update(auto_paused_until=NOW + timedelta(hours=3))
+        self.assertTrue(self.service.paused())
+        self.assertEqual(await self.service.run_once(), AutoDownloadReport())
+        self.assertEqual(self.quick.calls, [])
+        self.now += timedelta(hours=3)
+        self.assertFalse(self.service.paused())
+        report = await self.service.run_once()
+        self.assertEqual([d.label for d in report.downloaded], ["Lost S01E01"])
 
     async def test_nothing_found_counts_a_try_and_retries_next_run(self) -> None:
         await self.add_show(1, [episode(11, 1, NOW - timedelta(hours=3), number=1)], name="Lost")

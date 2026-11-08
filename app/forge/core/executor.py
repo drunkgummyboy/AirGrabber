@@ -1,5 +1,9 @@
 """Carry out a Plan. Every change is journaled before it happens and settled right after.
 
+With `checker` (app/forge/core/file_check.py), every video renamed is read afterwards and what
+doesn't match (audio in a language the user doesn't understand, a smaller picture than its name
+promised) is said in the Activity strip as a warning.
+
 With `moves` (ForgeMoveService), a rename into the Series or Movies folder also writes a move
 record in the same journal step, with what the caller's `media` (by item id) says the file is.
 """
@@ -24,6 +28,7 @@ from app.forge.core.cleanup import (
     find_cleanup_targets,
     videos_left,
 )
+from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import subtitle_moves
 from app.forge.core.undo import FOLDER_NOT_EMPTY
 from app.forge.db.history import HistoryRepo
@@ -73,6 +78,7 @@ class RunResult(BaseModel):
     pruned: int = 0
     subtitles: int = 0  # subtitles moved along with their video
     subtitles_fetched: int = 0  # subtitles found and saved right after the rename
+    warnings: int = 0  # what the file check found wrong in the renamed videos
     cancelled: bool = False
     errors: list[str] = []
 
@@ -93,6 +99,12 @@ class SubtitleFetcher(Protocol):
     ) -> SubtitleFetch: ...
 
     async def missing(self, video: Path) -> tuple[str, ...]: ...
+
+
+class FileChecker(Protocol):
+    """The check of a renamed video (app/forge/core/file_check.py's FileCheck)."""
+
+    async def check(self, video: Path, release_name: str) -> list[str]: ...
 
 
 class MoveNotes(Protocol):
@@ -148,8 +160,10 @@ class Executor:
         activity: ActivityFeed | None = None,
         moves: MoveNotes | None = None,
         subtitles: SubtitleFetcher | None = None,
+        checker: FileChecker | None = None,
     ) -> None:
         self._history = history
+        self._checker = checker
         self._posters = posters
         self._trailers = trailers
         self._say = say_to(activity)  # the Activity strip, next to each English log line
@@ -218,9 +232,11 @@ class Executor:
         cancel: asyncio.Event,
         kinds: Collection[MediaKind] = (),
         media: Mapping[int, ResolvedMedia] | None = None,
+        check_files: bool = True,
     ) -> RunResult:
         """Carry out `plan`. `media` (by item id) is what each file is, for the move records;
-        without it a file moved into a library folder is recorded with that folder's kind."""
+        without it a file moved into a library folder is recorded with that folder's kind.
+        `check_files`: read the renamed videos (False: duplicates moved aside)."""
         history = self._history
         result = RunResult()
         run_id = await history.start_run(source, preset_name, kinds=kinds)
@@ -229,6 +245,8 @@ class Executor:
             succeeded = await self._files(run_id, plan, result, on_progress, cancel, media or {})
             if not result.cancelled:
                 await self._fetch_subtitles(run_id, plan, result, succeeded, cancel)
+                if check_files:
+                    await self._check_files(plan, result, succeeded, cancel)
                 await self._artwork(run_id, plan, result, succeeded)
                 await self._prune(run_id, plan, result)
                 await self._leftovers(run_id, plan, result, succeeded)
@@ -236,6 +254,30 @@ class Executor:
             kept = await history.finish_run(run_id)
             result.run_id = run_id if kept else None
         return result
+
+    async def _check_files(
+        self, plan: Plan, result: RunResult, ok: set[int], cancel: asyncio.Event
+    ) -> None:
+        """Read every video renamed this run; each finding is an Activity warning. Never raises
+        (but for a cancellation): a rename never fails for its check."""
+        if self._checker is None:
+            return
+        for planned in plan.files:
+            if cancel.is_set():
+                return
+            renamed = planned.item_id in ok and not planned.skip_reason
+            if not renamed or planned.target.suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+            try:
+                found = await self._checker.check(planned.target, planned.source.name)
+            except Exception as exc:  # noqa: BLE001 - only the check is lost
+                log.warning("Couldn't check a renamed video: %s", log_reason(exc))
+                continue
+            for warning in found:
+                result.warnings += 1
+                self._say(warning, level=logging.WARNING)
+        if result.warnings:
+            log.warning("The file check found %d thing(s) to look at", result.warnings)
 
     async def _clean(self, run_id: int, plan: Plan, result: RunResult) -> None:
         for root in plan.clean_roots:

@@ -99,6 +99,16 @@ class QuickDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(full_hd.title, text)  # no release objects or titles in the log
         self.assertNotIn("http", text)
 
+    async def test_a_swap_leaves_out_what_was_fetched_before(self) -> None:
+        stuck = release("Severance S02E01 1080p WEB-C", h=3, seeders=900, size=1200 * MIB)
+        older = release("Severance S02E01 1080p WEB-D", h=4, seeders=800, size=1200 * MIB)
+        other = release("Severance S02E01 1080p WEB-E", h=5, seeders=40, size=1200 * MIB)
+        grabber = downloads()
+        service = self.service([fake("a", result=[stuck, older, other])], grabber)
+        avoid = (stuck.title.casefold(), (older.info_hash or "").casefold())
+        result = await service.download(EPISODE, TARGET, again=True, avoid=avoid)
+        self.assertEqual(result.release_title, other.title)
+
     async def test_nothing_found_grabs_nothing(self) -> None:
         fake_release = release("Severance S02E01 1080p WEB.exe", h=1)
         wrong = release("Severance S02E02 1080p WEB", h=2)

@@ -106,6 +106,10 @@ class TMDBClient:
         """This week's trending shows (first page, at most 20)."""
         return await self._list("/trending/tv/week", {}, _discover_show)
 
+    async def tv_recommendations(self, tv_id: int) -> list[DiscoverShow]:
+        """TMDB's picks for people who like show `tv_id` (first page)."""
+        return await self._list(f"/tv/{int(tv_id)}/recommendations", {}, _discover_show)
+
     async def tv_on_the_air(self) -> list[DiscoverShow]:
         """Shows with an episode airing in the next seven days (first page)."""
         return await self._list("/tv/on_the_air", {}, _discover_show)

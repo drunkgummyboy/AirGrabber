@@ -19,6 +19,17 @@ class DomainModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class FollowRecord(DomainModel):
+    """A person's follow of a show as it was stored: what Undo puts back after a removal."""
+
+    show_id: int
+    profile_id: int
+    tracked_at: str
+    auto_download: bool
+    synced_at: str | None = None
+    auto_since: str | None = None
+
+
 class MediaType(StrEnum):
     TV = "tv"
     MOVIE = "movie"
@@ -313,6 +324,10 @@ class TVDashboard(DomainModel):
     trending: tuple[DiscoverShowEntry, ...] = ()
     on_air: tuple[DiscoverShowEntry, ...] = ()
     premieres: tuple[DiscoverShowEntry, ...] = ()
+    # "Because you follow Reacher": TMDB's picks for one show the person follows (none followed
+    # yet, or TMDB knows none: empty).
+    because_name: str = ""
+    because: tuple[DiscoverShowEntry, ...] = ()
     failed: tuple[str, ...] = ()  # names of the shelves that couldn't be loaded ("trending", ...)
 
 

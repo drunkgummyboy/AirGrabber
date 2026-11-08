@@ -219,8 +219,32 @@ _LIGHT_DEFAULTS: dict[tuple[str, str], str] = {
 _CTK_MODES = {ThemeMode.SYSTEM: "system", ThemeMode.DARK: "dark", ThemeMode.LIGHT: "light"}
 
 
+# Settings › Looks › Text size: every font a little larger (`apply_text_size`, at startup).
+TEXT_SCALES = {"normal": 1.0, "large": 1.1, "larger": 1.2}
+_text_scale = 1.0
+_text_size = "normal"
+
+
+def apply_text_size(size: str) -> None:
+    """Make every font of this run `size` (a TextSize value). Once at startup, before the first
+    widget is made, as the accent colour; CTk's own default size follows too."""
+    global _text_scale, _text_size
+    _text_size = size if size in TEXT_SCALES else "normal"
+    _text_scale = TEXT_SCALES[_text_size]
+    defaults = ctk.ThemeManager.theme.get("CTkFont")
+    if isinstance(defaults, dict) and isinstance(defaults.get("size"), int):
+        defaults["size"] = round(13 * _text_scale)
+
+
+def current_text_size() -> str:
+    """The text size this run started with."""
+    return _text_size
+
+
 def font(size: int = 13, *, bold: bool = False, underline: bool = False) -> ctk.CTkFont:
-    return ctk.CTkFont(size=size, weight="bold" if bold else "normal", underline=underline)
+    return ctk.CTkFont(
+        size=round(size * _text_scale), weight="bold" if bold else "normal", underline=underline
+    )
 
 
 def is_dark() -> bool:

@@ -6,7 +6,7 @@ screener: whatever the excluded keywords say) and dead torrents, prefers a singl
 multi-episode pack, and ranks the rest: quality closest to the user's profile for the kind (the
 series one for episodes and season packs, the movie one for films), then the size range (inside
 it first, an unknown size next, then the closest size; never a filter), then preferred release
-groups, then seeders, then a known size before an unknown one.
+groups (then the ones learned from the grabs the user kept), then seeders, then a known size before an unknown one.
 
 `recommend` is the same pick with its reasons, in the picker's own terms (the release list's
 ★ Recommended row and the line under it); `speed` says how fast a release will likely download
@@ -34,6 +34,7 @@ from app.models import (
 from app.services.search import (
     _SOURCE_TAG_FAMILIES,
     _normalize,
+    is_learned,
     is_preferred,
     is_relevant,
     passes_settings,
@@ -241,14 +242,22 @@ def is_dual_audio(release: TorrentRelease, request: SearchRequest) -> bool:
     return "dual" in words and "dual" not in _normalize(request.title).split()
 
 
+def group_rank(release: TorrentRelease, settings: Settings) -> int:
+    """0 for one of the user's preferred groups, 1 for a group AirGrabber learned to trust from
+    the grabs the user kept (`learned_groups`), 2 for the rest."""
+    if is_preferred(release, settings):
+        return 0
+    return 1 if is_learned(release, settings) else 2
+
+
 def _sort_key(
     release: TorrentRelease, request: SearchRequest, settings: Settings
-) -> tuple[int, bool, tuple[int, float], bool, int, bool]:
+) -> tuple[int, bool, tuple[int, float], int, int, bool]:
     return (
         quality_rank(release, quality_profile(request.kind, settings)),
         is_dual_audio(release, request),
         size_rank(release, request, settings),
-        not is_preferred(release, settings),
+        group_rank(release, settings),
         -release.seeders,
         not release.size_bytes,
     )
@@ -263,8 +272,8 @@ def rank_releases(
     copy; and, when any of those has seeders, only the ones that have. For an EPISODE request
     the single-episode releases only, unless there are none (then the packs that hold the
     episode). Ranked by quality closeness (`quality_profile` for the request's kind), single
-    audio before "DUAL" (`is_dual_audio`), the size range (`size_rank`), preferred group, seeders
-    (most first), known size before unknown; ties keep their order.
+    audio before "DUAL" (`is_dual_audio`), the size range (`size_rank`), preferred then learned
+    group (`group_rank`), seeders (most first), known size before unknown; ties keep their order.
     """
     candidates = [
         release
@@ -352,6 +361,7 @@ class Recommendation:
     size: SizeNote | None  # None: no range applies and no other size to compare it with
     preferred: bool  # from one of the user's preferred release groups
     pack: bool  # an episode was asked for, and no single-episode release qualified
+    learned: bool = False  # from a group whose grabs the user kept (not a preferred one)
 
 
 def seed_note(release: TorrentRelease, listed: Iterable[TorrentRelease]) -> SeedNote | None:
@@ -412,4 +422,5 @@ def recommend(
         size=size_note(best, listed, request, settings),
         preferred=is_preferred(best, settings),
         pack=request.kind is SearchKind.EPISODE and is_multi_episode(best),
+        learned=group_rank(best, settings) == 1,
     )

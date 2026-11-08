@@ -74,6 +74,8 @@ from app.models.downloads import MovedTo
 from app.services import DiscoveryService, DownloadStatusService, ImageCache, SettingsService
 from app.services.download_queue import DownloadQueue
 from app.services.download_status import Located
+from app.services.release_groups import block_group
+from app.services.search import release_group
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.confirm_dialog import ConfirmDialog
@@ -133,6 +135,13 @@ REMOVE_PARTIAL = N_(
     "too; finished files stay."
 )
 REMOVE_BUTTON = N_("Remove")
+BLOCK_TEXT = N_("🚫 Wrong or fake? Block {group}…")
+BLOCK_TITLE = N_("Block {group}?")
+BLOCK_QUESTION = N_(
+    "AirGrabber never shows or picks releases from {group} again. You can undo this in "
+    "Settings → Advanced."
+)
+BLOCK_BUTTON = N_("Block")
 CLEAR_TITLE = N_("Clear finished downloads?")
 CLEAR_ONE = N_(
     "{n} finished download is removed from {program} and from this list. Its files stay where "
@@ -301,9 +310,11 @@ def row_menu(
     pause: Callable[[], None] | None = None,
     resume: Callable[[], None] | None = None,
     remove_from_program: Callable[[], None] | None = None,
+    block: tuple[str, Callable[[], None]] | None = None,
 ) -> list[MenuEntry]:
     """A row's ⋯ menu, as the mockup has it: Download again…, ⏸ Pause / ▶ Resume, Open the
-    folder, then "🗑 Remove from <program>…" (red; a task in the program, with
+    folder, "🚫 Wrong or fake? Block <group>…" (`block`: the grab's release group and what
+    blocks it), then "🗑 Remove from <program>…" (red; a task in the program, with
     `remove_from_program`) or Remove from list. A grab's items are always there, greyed with
     their reason as tip when they can't be done now; a task added in the program has no
     Download again."""
@@ -323,6 +334,9 @@ def row_menu(
             folder_tip(located),
         )
     )
+    if block is not None:
+        group, on_block = block
+        items.append(MenuEntry(t(BLOCK_TEXT, group=group), on_block))
     if remove_from_program is not None:
         items.append(MENU_SEPARATOR)
         items.append(
@@ -887,6 +901,8 @@ class DownloadsView(BaseView):
                 popup_menu(row.more, items)
 
             again = again_menu
+        group = release_group(entry.record.release_title)
+        block = (group, functools.partial(self._ask_block, group)) if group else None
         return row_menu(
             entry,
             located,
@@ -897,6 +913,18 @@ class DownloadsView(BaseView):
             pause=pause,
             resume=resume,
             remove_from_program=remove_from_program,
+            block=block,
+        )
+
+    def _ask_block(self, group: str) -> None:
+        """"Block <group>?", then its releases are never shown or picked again."""
+        self._ask(
+            title=t(BLOCK_TITLE, group=group),
+            text=t(BLOCK_QUESTION, group=group),
+            confirm=t(BLOCK_BUTTON),
+            on_confirm=lambda: spawn(
+                block_group(self._settings, group), name="DownloadsView.block"
+            ),
         )
 
     def _pause(self, item: ListedDownload) -> None:

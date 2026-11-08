@@ -57,6 +57,7 @@ from app.forge.ui.images import (
     line_highlight,
 )
 from app.forge.ui.look import app_look, mix
+from app.forge.ui.name_diff import runs
 from app.ui import palettes, theme
 from app.ui.tooltip import Tooltip, add_tooltip
 
@@ -130,6 +131,10 @@ class Row(BaseModel):
     code: str = ""  # an episode line's code ("S04E03"), in the link colour (readable accent)
     faint: str = ""  # a line's current (old) file name, on the right
     faint_label: str = ""  # quiet words before it ("Current name:"), translated
+    # What the rename leaves out of `faint` ("1080p.WEB.H264-CAKES") and what it adds to `title`
+    # ("2021"), as spans (app/forge/ui/name_diff.py): struck through, and in the link colour.
+    faint_dropped: tuple[tuple[int, int], ...] = ()
+    title_added: tuple[tuple[int, int], ...] = ()
     new: bool = False  # the line's title is the file's new name: a "→ " in the link colour before it
     band: int | None = None  # an item line's band: the pointer over either shows its buttons
     state: Literal["", "needs", "ready", "done"] = ""  # a band's status (dot + word)
@@ -350,6 +355,9 @@ class VirtualList(ctk.CTkFrame):
         self._box = self._px(16)
         self._title_font = self._font(sizes.item_title, bold=True)
         self._sub_font = tkfont.Font(root=self, family=MONO_FAMILY, size=-self._px(sizes.mono))
+        self._sub_struck = tkfont.Font(
+            root=self, family=MONO_FAMILY, size=-self._px(sizes.mono), overstrike=True
+        )
         self._group_font = self._font(10, bold=True)
         self._status_font = self._font(13)
         self._thumb_font = self._font(max(9, sizes.band_title // 2), bold=True)
@@ -998,16 +1006,27 @@ class VirtualList(ctk.CTkFrame):
             label = row.faint_label
             label_w = self._measure(self._label_font, label) + self._px(6) if label else 0
             room = round((right - x) * 0.45) - label_w
-            faint_w = min(self._measure(self._sub_font, row.faint), room)
-            c.create_text(
-                right,
-                middle,
-                text=self._fit(row.faint, self._sub_font, faint_w),
-                anchor="e",
-                fill=p.muted,
-                font=self._sub_font,
-                tags=("line-old",),
-            )
+            full_w = self._measure(self._sub_font, row.faint)
+            faint_w = min(full_w, room)
+            if row.faint_dropped and full_w <= room and not row.faded:
+                self._draw_runs(
+                    right - full_w,
+                    middle,
+                    runs(row.faint, row.faint_dropped),
+                    plain=(self._sub_font, p.muted),
+                    marked=(self._sub_struck, p.faint),
+                    tag="line-old",
+                )
+            else:
+                c.create_text(
+                    right,
+                    middle,
+                    text=self._fit(row.faint, self._sub_font, faint_w),
+                    anchor="e",
+                    fill=p.muted,
+                    font=self._sub_font,
+                    tags=("line-old",),
+                )
             right -= faint_w
             if label:
                 c.create_text(
@@ -1044,15 +1063,45 @@ class VirtualList(ctk.CTkFrame):
             )
             widest = self._measure(self._code_font, "S00E00-E00")
             x += max(widest, self._measure(self._code_font, row.code)) + self._px(10)
-        c.create_text(
-            x,
-            middle,
-            text=self._fit(row.title, self._line_font, right - x),
-            anchor="w",
-            fill=p.muted if row.faded else p.text,
-            font=self._line_font,
-        )
+        title_w = self._measure(self._line_font, row.title)
+        if row.title_added and not row.faded and title_w <= right - x:
+            self._draw_runs(
+                x,
+                middle,
+                runs(row.title, row.title_added),
+                plain=(self._line_font, p.text),
+                marked=(self._line_font, p.link),
+                tag="line-new",
+            )
+        else:
+            c.create_text(
+                x,
+                middle,
+                text=self._fit(row.title, self._line_font, right - x),
+                anchor="w",
+                fill=p.muted if row.faded else p.text,
+                font=self._line_font,
+            )
         self._draw_status(p, row, middle, width)
+
+    def _draw_runs(
+        self,
+        x: float,
+        middle: float,
+        pieces: Sequence[tuple[str, bool]],
+        *,
+        plain: tuple[tkfont.Font, str],
+        marked: tuple[tkfont.Font, str],
+        tag: str,
+    ) -> None:
+        """A text drawn piece by piece from `x`: the marked pieces in `marked`'s font and colour,
+        the rest in `plain`'s (the whole of it fits)."""
+        for piece, is_marked in pieces:
+            font, fill = marked if is_marked else plain
+            self.canvas.create_text(
+                x, middle, text=piece, anchor="w", fill=fill, font=font, tags=(tag,)
+            )
+            x += self._measure(font, piece)
 
     def _draw_item(self, p: _Colours, row: Row, y: int, width: int) -> None:
         c, pad, h = self.canvas, self._pad, self._row_h

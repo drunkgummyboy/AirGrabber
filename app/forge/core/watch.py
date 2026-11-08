@@ -24,7 +24,10 @@ from app.forge.core.parser import is_video
 LOOK_INTERVAL_S = 300  # a look every 5 minutes
 SECOND_LOOK_S = 30  # after the first look of a start: nothing is remembered from before it
 QUIET_S = 600  # untouched for 10 minutes
-TEMP_SUFFIXES = (".part", ".!qb", ".crdownload", ".tmp", ".partial", ".download", ".aria2")
+# µTorrent's .!ut, qBittorrent's .!qb, the rest browsers' and other downloaders'.
+TEMP_SUFFIXES = (
+    ".part", ".!qb", ".!ut", ".crdownload", ".tmp", ".partial", ".download", ".aria2"
+)
 SKIP_FOLDERS = frozenset({"@eadir", "#recycle", "#snapshot", "$recycle.bin"})
 # "sample" as a word of its own: "-sample", ".Sample.", "_sample" (not "Samples.Of.Life").
 _SAMPLE = re.compile(r"(?<![a-z0-9])sample(?![a-z0-9])", re.IGNORECASE)

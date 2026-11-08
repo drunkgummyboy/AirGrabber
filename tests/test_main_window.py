@@ -99,6 +99,13 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "phone_connection_on": True,
     "phone_pc_id": "a1b2",
     "phone_fingerprint": "c3d4",
+    "recent_searches": ("Reacher",),
+    "blocked_groups": ("FAKE",),
+    "learned_groups": ("NTb",),
+    "auto_wait_hours": 6,
+    "stuck_swap_hours": 12,
+    "text_size": "larger",
+    "auto_paused_until": datetime(2026, 11, 8, 12, tzinfo=UTC),
     "phone_devices": (
         PairedPhone(
             id="a",

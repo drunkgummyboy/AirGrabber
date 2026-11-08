@@ -79,7 +79,7 @@ import customtkinter as ctk
 from app.forge.clients.trailers import ToolInstallError
 from app.forge.core import fsops
 from app.forge.core.airgrabber_folders import watched_folders
-from app.forge.core.auto import NamingChoice, library_naming
+from app.forge.core.auto import TOOLS_NOT_THERE, NamingChoice, library_naming
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.formatter import render
 from app.forge.core.ignored import top_folder
@@ -93,6 +93,7 @@ from app.forge.models.preset import Preset, PresetOptions, has_quality, without_
 from app.forge.ui.file_drops import attach_file_drops
 from app.forge.ui.file_browser import explorer_target, open_explorer
 from app.forge.ui.images import BandImages, CardShape, Key
+from app.forge.ui.duplicates_window import DuplicatesWindow
 from app.forge.ui.look import Pair, app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.queue_rows import (
@@ -116,7 +117,7 @@ from app.forge.ui.widgets.virtual_list import (
     VirtualList,
     faded_fill,
 )
-from app.i18n import number, t, tn
+from app.i18n import N_, number, t, tn
 from app.ui import tasks, theme
 from app.ui.missing_control import MenuEntry, popup_menu
 from app.ui.tooltip import Tooltip, add_tooltip
@@ -187,6 +188,9 @@ if TYPE_CHECKING:
     from app.forge.services import ForgeServices
 
 log = logging.getLogger(__name__)
+FIX_LIBRARY_TEXT = N_("🧰 Fix my library")  # the Series and Movies folders into the queue
+FIND_DUPLICATES_TEXT = N_("🔁 Find duplicates…")
+LOOKING_TEXT = N_("Looking for duplicates in your library…")
 
 def _one_at_a_time[**P](
     method: Callable[Concatenate[QueueView, P], Awaitable[None]],
@@ -256,6 +260,7 @@ class QueueView(ctk.CTkFrame):
         self._close_after_run: Callable[[], None] | None = None
         # Right-click presets asked before the presets were read: (name, the files it added).
         self._requests: list[tuple[str, list[int] | None]] = []
+        self.duplicates_window: DuplicatesWindow | None = None  # "+ Folder ▾" → Find duplicates…
         self._refresh_id: str | None = None  # a refresh coming (after a queue event, typing …)
         self._show_id: str | None = None  # its rows, built, shown when Tk is idle next
         self._flow_id: str | None = None  # the option line laid out again
@@ -1282,13 +1287,43 @@ class QueueView(ctk.CTkFrame):
     def _folder_menu(self) -> None:
         scan = self.services.settings.current.scan_subfolders
         box = "☑" if scan else "☐"
-        popup_menu(
-            self.folder_button,
-            [
-                (t("Choose a folder…"), self._browse_folder),
-                (f"{box}  {t('Scan subfolders')}", lambda: self.set_scan_subfolders(not scan)),
-            ],
-            look=self.look,
+        items: list[tuple[str, Callable[[], None]]] = [
+            (t("Choose a folder…"), self._browse_folder),
+            (f"{box}  {t('Scan subfolders')}", lambda: self.set_scan_subfolders(not scan)),
+        ]
+        if self.services.library_folders():
+            items.append((t(FIX_LIBRARY_TEXT), self.fix_library))
+        items.append((t(FIND_DUPLICATES_TEXT), self.find_duplicates))
+        popup_menu(self.folder_button, items, look=self.look)
+
+    def fix_library(self) -> None:
+        """"🧰 Fix my library": the Series and Movies folders into the queue, every subfolder
+        read. Files already named right stay as they are and get what their preset adds
+        (posters, trailers, subtitles); the others are renamed in place."""
+        folders = self.services.library_folders()
+        if folders:
+            self.spawn(self.add(folders, recursive=True))
+
+    def find_duplicates(self) -> None:
+        """"🔁 Find duplicates…": the library folders read, then their duplicates in a window."""
+        self.spawn(self._show_duplicates())
+
+    async def _show_duplicates(self) -> None:
+        services = self.services
+        folders = services.library_folders()
+        if folders:
+            self._say(t(LOOKING_TEXT))
+        found = await services.find_duplicates() if folders else []
+        if not self.winfo_exists():
+            return
+        window = self.duplicates_window
+        if window is not None and window.winfo_exists():
+            window.close()
+        self.duplicates_window = DuplicatesWindow(
+            self.winfo_toplevel(),
+            found,
+            on_move=services.move_duplicates,
+            has_folders=bool(folders),
         )
 
     # --- the filter --------------------------------------------------------------------------
@@ -1757,9 +1792,13 @@ class QueueView(ctk.CTkFrame):
         if paths:
             self.spawn(self.add(paths, preset=preset))
 
-    async def add(self, paths: Sequence[Path], *, preset: str | None = None) -> int:
-        """`add_paths`, awaited: how many files were new."""
-        recursive = self.services.settings.current.scan_subfolders
+    async def add(
+        self, paths: Sequence[Path], *, preset: str | None = None, recursive: bool | None = None
+    ) -> int:
+        """`add_paths`, awaited: how many files were new. `recursive`: read the subfolders
+        (None: as the "Scan subfolders" setting says)."""
+        if recursive is None:
+            recursive = self.services.settings.current.scan_subfolders
         queue = self.services.queue
         before = {i.id for i in queue.items}
         added = await queue.add_paths(list(paths), recursive)
@@ -1829,6 +1868,9 @@ class QueueView(ctk.CTkFrame):
         if not any(self.choice_for(i).options.trailer for i in items):
             return True
         without = False
+        if trailers.installing:  # Forge's start is fetching them: no question, no waiting
+            self._say(t(TOOLS_NOT_THERE), level=logging.INFO)
+            return without
         if not trailers.tools_present():
             download = t("Download")
             answer = await self.ask(
@@ -2013,10 +2055,16 @@ class QueueView(ctk.CTkFrame):
         await self.settled()
         if not self._pending(only) or not await self._settle_uncertain(only):
             return
-        # Asked for dropped files only: a download's trailer comes when the tools are there.
+        # Asked for dropped files only; a download's trailer comes once Forge's start has
+        # fetched the tools, and until then Activity says it was skipped.
         trailers = await self._trailers_allowed(
             [i for i in self._pending(only) if i.watched is None]
         )
+        if not self.services.trailers.tools_present() and any(
+            i.watched is not None and self.choice_for(i).options.trailer
+            for i in self._pending(only)
+        ):
+            self.services.activity.say(t(TOOLS_NOT_THERE))
         items = self._pending(only)
         left = [
             i for i in items if i.watched is None and self._move_route(i) == (True, None)

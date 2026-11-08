@@ -26,6 +26,7 @@ from app.forge.models.preset import DEFAULT_PRESETS, PresetOptions
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import QueueEvent
 from app.forge.runtime import FAILED_REASON, NOT_READY_REASON, ForgeRuntime, ForgeState
+from app.forge.clients.trailers import ToolInstallError
 from app.forge.services import ForgeServices, QueueEvents
 from app.i18n import Language, current_language, set_language, t
 from app.services.images import ImageCache
@@ -171,6 +172,63 @@ class ForgeServicesTest(ForgeAsyncTestCase):
         services = await self.parts.create()
         self.addAsyncCleanup(services.aclose)
         return services
+
+    async def test_the_trailer_tools_come_by_themselves(self) -> None:
+        services = await self.open()
+        with mock.patch.object(
+            services.trailers, "install_tools", new=mock.AsyncMock()
+        ) as install:
+            services.fetch_trailer_tools()
+            assert services._tools_task is not None
+            await services._tools_task
+            services.fetch_trailer_tools()  # once a run
+            await asyncio.sleep(0)
+        install.assert_awaited_once()
+
+    async def test_no_trailer_tools_when_they_are_there_or_no_preset_wants_them(self) -> None:
+        services = await self.open()
+        with mock.patch.object(services.trailers, "tools_present", return_value=True):
+            services.fetch_trailer_tools()
+        self.assertIsNone(services._tools_task)
+        for preset in await services.presets.list():
+            options = preset.options.model_copy(update={"trailer": False})
+            await services.presets.save(
+                preset.model_copy(update={"options": options}), old_name=preset.name
+            )
+        with mock.patch.object(
+            services.trailers, "install_tools", new=mock.AsyncMock()
+        ) as install:
+            services.fetch_trailer_tools()
+            assert services._tools_task is not None
+            await services._tools_task
+        install.assert_not_awaited()
+
+    async def test_a_failed_download_of_the_tools_is_said_and_stops_nothing(self) -> None:
+        services = await self.open()
+        with mock.patch.object(
+            services.trailers,
+            "install_tools",
+            new=mock.AsyncMock(side_effect=ToolInstallError("Download failed")),
+        ):
+            services.fetch_trailer_tools()
+            assert services._tools_task is not None
+            await services._tools_task
+        said = [line.text for line in services.activity.lines()]
+        self.assertTrue(any("Download failed" in text for text in said), said)
+
+    async def test_closing_stops_the_download_of_the_tools(self) -> None:
+        services = await self.parts.create()
+        gate = asyncio.Event()
+
+        async def forever(_progress: object) -> None:
+            await gate.wait()
+
+        with mock.patch.object(services.trailers, "install_tools", new=forever):
+            services.fetch_trailer_tools()
+            await asyncio.sleep(0.01)
+            await services.aclose()
+        assert services._tools_task is not None
+        self.assertTrue(services._tools_task.done())
 
     async def test_create_and_close_leave_no_thread_alive(self) -> None:
         before = _forge_threads()
@@ -338,6 +396,9 @@ class ForgeRuntimeTest(ForgeAsyncTestCase):
         runtime = self.parts.runtime(parser_ready=parser_ready)
         self.addAsyncCleanup(runtime.aclose)
         return runtime
+
+    def test_only_airgrabbers_own_start_fetches_the_trailer_tools(self) -> None:
+        self.assertFalse(self.runtime()._fetch_tools)
 
     async def test_it_is_off_until_started(self) -> None:
         runtime = self.runtime()

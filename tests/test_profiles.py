@@ -115,6 +115,7 @@ class Quick(FakeQuickDownload):
         progress: Progress | None = None,
         *,
         again: bool = False,
+        avoid: object = (),  # a stuck download's swap
     ) -> QuickDownloadResult:
         if target.media_type is not MediaType.MOVIE:
             return await super().download(request, target, progress, again=again)

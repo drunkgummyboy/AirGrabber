@@ -99,12 +99,19 @@ class PlexItemReply(_Wire):
         return own + tuple(guid.id for guid in self.guids)
 
 
+class PlexLocationReply(_Wire):
+    """One of a library's folders, as the server sees it ("/volume1/video/TV", "D:\\TV")."""
+
+    path: str = ""
+
+
 class PlexDirectoryReply(_Wire):
     """A library of /library/sections."""
 
     key: _Key
     type: str = ""
     title: str = ""
+    locations: list[PlexLocationReply] = Field(default_factory=list, alias="Location")
 
 
 class PlexContainerReply(_Wire):

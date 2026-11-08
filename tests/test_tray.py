@@ -66,10 +66,13 @@ class CloseActionTests(unittest.TestCase):
 
 
 class FakeMenuItem:
-    def __init__(self, text: str, action: Callable[..., None], default: bool = False) -> None:
+    def __init__(
+        self, text: Any, action: Any, default: bool = False, **options: Any
+    ) -> None:
         self.text = text
         self.action = action
         self.default = default
+        self.options = options  # pystray's enabled= / visible=
 
 
 class FakeMenu:
@@ -77,6 +80,49 @@ class FakeMenu:
 
     def __init__(self, *items: Any) -> None:
         self.items = items
+
+
+class PauseMenuTests(unittest.TestCase):
+    """With a pause handler the menu also has today's lines and Pause / Resume."""
+
+    def test_the_lines_and_the_pause(self) -> None:
+        from app.ui.tray import TrayIcon
+
+        paused: list[int | None] = []
+        resumed: list[bool] = []
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        backend = FakePystray()
+        icon = TrayIcon(
+            loop,
+            Image.new("RGBA", (16, 16)),
+            on_open=lambda: None,
+            on_check_now=lambda: None,
+            on_quit=lambda: None,
+            on_pause=paused.append,
+            on_resume=lambda: resumed.append(True),
+            backend=backend,
+        )
+        icon.set_lines(("Today: Reacher S04E08", "Downloading 2 · 45%"))
+        icon.start()
+        self.addCleanup(icon.stop)
+        items = [i for i in backend.icons[0].menu.items if i is not FakeMenu.SEPARATOR]
+        texts = [i.text(i) if callable(i.text) else i.text for i in items]
+        self.assertIn("Today: Reacher S04E08", texts)
+        self.assertIn("Downloading 2 · 45%", texts)
+        [pause] = [i for i in items if i.text == "Pause automatic downloads"]
+        self.assertTrue(pause.options["visible"](pause))
+        for choice in pause.action.items:
+            choice.action()
+        loop.run_until_complete(asyncio.sleep(0))
+        self.assertEqual(paused, [3, None])
+        icon.set_lines((), "Resume automatic downloads (paused until 14:30)")
+        self.assertFalse(pause.options["visible"](pause))
+        [resume] = [i for i in items if callable(i.text) and "Resume" in i.text(i)]
+        self.assertTrue(resume.options["visible"](resume))
+        resume.action()
+        loop.run_until_complete(asyncio.sleep(0))
+        self.assertEqual(resumed, [True])
 
 
 class FakeIcon:

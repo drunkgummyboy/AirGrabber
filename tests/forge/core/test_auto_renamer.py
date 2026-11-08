@@ -17,6 +17,7 @@ from pathlib import Path
 
 from app.forge.clients.tmdb import TmdbError
 from app.forge.core.auto import (
+    TOOLS_NOT_THERE,
     AutoRenamer,
     LookResult,
     NamingChoice,
@@ -38,7 +39,7 @@ from app.forge.db.settings import SettingsRepo
 from app.forge.models.history import RunSource
 from app.forge.models.media import MediaKind
 from app.forge.models.plan import PlannedTrailer
-from app.i18n import Language, set_language
+from app.i18n import Language, set_language, t
 from app.models.tmdb import TMDBSeason, TMDBSeasonEpisode, TMDBTitle
 from tests.forge.core.journal_base import FakePosters
 from tests.forge.db.base import ForgeDbTestCase
@@ -240,6 +241,20 @@ class RenamerTest(RenamerTestCase):
         clock = Clock()
         await self.two_looks(self.renamer(clock), clock)
         assert (self.folders.movies / "Dune (2021)" / "Dune (2021).mkv").exists()
+
+    async def test_without_trailer_tools_activity_says_there_is_no_trailer(self) -> None:
+        presets = PresetRepo(self.db)
+        [movie] = [p for p in await presets.list() if p.name == "Movie (Folder)"]
+        options = movie.options.model_copy(update={"trailer": True})
+        await presets.save(movie.model_copy(update={"options": options}), old_name=movie.name)
+        await self.use()
+        said: list[str] = []
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        clock = Clock()
+        auto = self.renamer(clock)
+        auto._say = lambda text, **_kw: said.append(text)
+        await self.two_looks(auto, clock)
+        self.assertIn(t(TOOLS_NOT_THERE), said)
 
     async def test_without_trailer_tools_no_trailer_is_tried(self) -> None:
         presets = PresetRepo(self.db)

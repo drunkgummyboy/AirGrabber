@@ -27,6 +27,7 @@ from typing import Literal
 from app.forge.core.formatter import render
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MediaKind
+from app.forge.ui.name_diff import name_changes
 from app.forge.ui.subtitle_control import CC_ACTION, CC_LABEL, CcLook
 from app.forge.ui.widgets.virtual_list import Row
 from app.i18n import N_, number, t, tn
@@ -389,6 +390,7 @@ def build_queue_rows(
         for item in group:
             name = rendered[item.id].parts[-1]
             title = item.media.episode_title if episodes and item.media.episode_title else name
+            dropped, added = name_changes(item.parsed.source_name, name)
             out.rows.append(
                 Row(
                     key=item.id,
@@ -397,6 +399,8 @@ def build_queue_rows(
                     code=episode_code(item) if episodes else "",
                     faint=item.parsed.source_name,
                     faint_label=t(CURRENT_NAME),
+                    faint_dropped=dropped,
+                    title_added=added if title == name else (),
                     new=not episodes,
                     status=item.status.value,
                     badge=first.title,

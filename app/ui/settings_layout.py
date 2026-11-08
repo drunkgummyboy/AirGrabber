@@ -152,10 +152,12 @@ class SettingsPage:
             self.frame, note, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=PAGE_WIDTH
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._next_row = 2
+        self.boxes: list[tuple[str, Any]] = []  # (shown title, frame): Settings' search
 
     def box(self, title: str | None = None, text: str | None = None) -> SettingsBox:
         box = SettingsBox(self.frame, title, text)
         self.add(box.frame)
+        self.boxes.append((title or "", box.frame))
         return box
 
     def add(self, widget: Any, *, gap: int | None = None) -> None:
