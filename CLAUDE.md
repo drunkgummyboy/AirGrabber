@@ -102,7 +102,9 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - qBittorrent's settings file (`%APPDATA%\qBittorrent\qBittorrent.ini`) is changed only by
   `app/services/qbittorrent_setup.py`: just the "Add new torrent" dialog keys (and its look's and
   Web UI's keys, below), only while qBittorrent isn't running, the original backed up once; never
-  accept its legal notice for the user. install.ps1 installs qBittorrent only when Windows has no
+  accept its legal notice for the user. Settings' "Reinstall qBittorrent…" (winget `--force`) only
+  while it isn't running; its Clean start renames that folder and `%LOCALAPPDATA%\qBittorrent`
+  aside (`set_aside`), never deletes them. install.ps1 installs qBittorrent only when Windows has no
   torrent program (`-NoQBittorrent` skips it) and sets it up through `main.py --setup-qbittorrent`.
   AirGrabber may register qBittorrent for magnet links / .torrent files (`QBittorrentLinker`,
   app/services/torrent_app.py) under HKCU\Software\Classes only (never UserChoice or HKLM), and
@@ -147,5 +149,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   kept; the Plex token only in `/v1/pair`'s and `/v1/hello`'s answers; release links never leave the PC; the log gets no
   token, code, address or exception text. `cryptography` and `segno` are optional (below `# optional`), imported only
   inside `certificate.py`'s and `code_picture`'s functions; without them the page says so.
+  Roles: the Library manager tick decides a phone's role (`manager` in `/v1/pair` and `/v1/hello`; missing means manager,
+  so a phone from before keeps its tabs); the Forge routes refuse others with 403 `not_manager`. `GET /v1/suggestions` is
+  what the phone may fetch, without what Plex has; its genres are always in English with compound names split
+  (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;
+  a tap fetches by the row's id only, never by its text. No Plex, no phone app (owner, 2026-11-08): without a Plex
+  token the page is one line and no code is made, and every route but `/v1/pair` / `/v1/hello` answers 409 `no_plex`.
 
 See `filemap.md` for where things live.

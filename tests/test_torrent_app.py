@@ -17,6 +17,7 @@ from unittest import mock
 from app.models import QBittorrentInstallResult, TorrentApp
 from app.services import torrent_app
 from app.services.torrent_app import (
+    reinstall_qbittorrent,
     LinkOutcome,
     QBittorrentLinker,
     TorrentAppService,
@@ -247,6 +248,47 @@ class InstallTests(unittest.IsolatedAsyncioTestCase):
         service = TorrentAppService(lambda: TorrentApp(name="qBittorrent"))
         self.assertEqual(await service.find(), TorrentApp(name="qBittorrent"))
         self.assertIs(await service.install_qbittorrent(), Result.INSTALLED)
+
+    async def test_a_reinstall_forces_winget_and_sets_up_nothing_itself(self) -> None:
+        spawn = self.patch_winget(0)
+        steps: list[str] = []
+        result = await reinstall_qbittorrent(steps.append, lambda: TorrentApp(name="qBittorrent"))
+        self.assertIs(result, Result.INSTALLED)
+        args = spawn.await_args
+        assert args is not None
+        self.assertEqual(args.args[1:], (*torrent_app.WINGET_COMMAND, "--force"))
+        self.assertIn("Reinstalling qBittorrent…", steps)
+
+    async def test_a_reinstall_that_found_it_there_did_nothing(self) -> None:
+        self.patch_winget(-1978335189)  # UPDATE_NOT_APPLICABLE: winget didn't run the installer
+        self.assertIs(
+            await reinstall_qbittorrent(None, lambda: TorrentApp(name="qBittorrent")),
+            Result.FAILED,
+        )
+
+    async def test_the_service_waits_for_qbittorrent_to_close(self) -> None:
+        spawn = self.patch_winget(0)
+        setup = mock.Mock(running=mock.Mock(return_value=True))
+        service = TorrentAppService(lambda: TorrentApp(name="qBittorrent"), qbittorrent=setup)
+        self.assertIs(await service.reinstall_qbittorrent(clean=True), Result.RUNNING)
+        spawn.assert_not_awaited()
+        setup.set_aside.assert_not_called()
+
+    async def test_repair_keeps_the_folders_and_clean_sets_them_aside_first(self) -> None:
+        from app.models import QBittorrentSetupResult
+
+        self.patch_winget(0)
+        setup = mock.Mock(
+            running=mock.Mock(return_value=False),
+            set_aside=mock.Mock(return_value=QBittorrentSetupResult.DONE),
+        )
+        service = TorrentAppService(lambda: TorrentApp(name="qBittorrent"), qbittorrent=setup)
+        self.assertIs(await service.reinstall_qbittorrent(clean=False), Result.INSTALLED)
+        setup.set_aside.assert_not_called()
+        self.assertIs(await service.reinstall_qbittorrent(clean=True), Result.INSTALLED)
+        setup.set_aside.assert_called_once()
+        setup.set_aside.return_value = QBittorrentSetupResult.FAILED
+        self.assertIs(await service.reinstall_qbittorrent(clean=True), Result.FAILED)
 
     async def test_cancellation_kills_winget(self) -> None:
         gate = asyncio.Event()

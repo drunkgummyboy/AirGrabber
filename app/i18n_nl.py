@@ -222,6 +222,28 @@ NL: dict[str, str] = {
     "Prowlarr URL": "Prowlarr-URL",
     "Prowlarr API key": "Prowlarr-API-sleutel",
     "Cancel": "Annuleren",
+    "Reinstall qBittorrent…":
+        "qBittorrent opnieuw installeren…",
+    "Reinstall qBittorrent?":
+        "qBittorrent opnieuw installeren?",
+    "Repair":
+        "Herstellen",
+    "Installs qBittorrent again over itself. Your torrents and its settings stay.":
+        "Installeert qBittorrent opnieuw over zichzelf heen. Je torrents en de instellingen blijven.",
+    "Clean start":
+        "Schone start",
+    "Also puts qBittorrent's settings and torrent list aside, in a folder beside them, and sets it up anew. Downloaded files stay where they are.":
+        "Zet ook de instellingen en torrentlijst van qBittorrent opzij, in een map ernaast, en stelt het opnieuw in. Gedownloade bestanden blijven waar ze zijn.",
+    "Close qBittorrent first. Windows may ask for permission.":
+        "Sluit qBittorrent eerst. Windows kan om toestemming vragen.",
+    "qBittorrent is open. Close it (also from the tray), then try again.":
+        "qBittorrent is geopend. Sluit het (ook vanuit het systeemvak) en probeer het opnieuw.",
+    "Reinstalling… Windows may ask for permission":
+        "Opnieuw installeren… Windows kan om toestemming vragen",
+    "Couldn't reinstall qBittorrent.":
+        "qBittorrent kon niet opnieuw worden geïnstalleerd.",
+    "Reinstalling qBittorrent…":
+        "qBittorrent opnieuw installeren…",
     "Save": "Opslaan",
     "Browse": "Bladeren",
     "between": "tussen",
@@ -1311,6 +1333,23 @@ NL: dict[str, str] = {
     "Let AirGrabber see what's in your Plex libraries, so it never downloads something you already have. It only reads; your Plex password isn't needed.":
         "Laat AirGrabber zien wat er in je Plex-bibliotheken staat, zodat het nooit iets downloadt wat je al hebt. Het leest alleen; je Plex-wachtwoord is niet nodig.",
     "Connect to Plex…": "Verbinden met Plex…",
+    "With and without Plex": "Met en zonder Plex",
+    "Without Plex": "Zonder Plex",
+    "With Plex": "Met Plex",
+    "Phone app": "Telefoon-app",
+    "Search, download and follow shows and films": "Series en films zoeken, downloaden en volgen",
+    "Rename and sort files with MediaForge": "Bestanden hernoemen en ordenen met MediaForge",
+    "Never download the same release twice": "Nooit dezelfde release twee keer downloaden",
+    "Skip what's already in your library": "Overslaan wat al in je bibliotheek staat",
+    "See which episodes you have and which are missing": "Zien welke afleveringen je hebt en welke ontbreken",
+    "The Library page with your posters": "De bibliotheekpagina met je posters",
+    "Find the gaps in your seasons": "De gaten in je seizoenen vinden",
+    "Plex picks up new files as soon as MediaForge moves them": "Plex ziet nieuwe bestanden zodra MediaForge ze verplaatst",
+    "Use the phone app": "De telefoon-app gebruiken",
+    "Browse your library on the phone": "Je bibliotheek op de telefoon bekijken",
+    "Play on your TVs": "Afspelen op je tv's",
+    "Take films and episodes along": "Films en afleveringen meenemen",
+    "Keep track of what you've watched": "Bijhouden wat je hebt gekeken",
     "↻ Check now": "↻ Nu controleren",
     "Disconnect": "Verbinding verbreken",
     "Libraries:": "Bibliotheken:",
@@ -1434,6 +1473,16 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "Settings, Plex: a table of what AirGrabber does with and without Plex.":
+        "Instellingen, Plex: een tabel van wat AirGrabber doet met en zonder Plex.",
+    "Settings: reinstall qBittorrent, as a repair that keeps everything or as a clean start.":
+        "Instellingen: installeer qBittorrent opnieuw, als herstel dat alles houdt of als schone start.",
+    "MediaForge's queue puts a thin divider between seasons, since each season goes to its own folder.":
+        "De wachtrij van MediaForge zet een dunne lijn tussen seizoenen, want elk seizoen gaat naar een eigen map.",
+    "A season's trailer is searched with its season, so Season 4's folder doesn't get the show's first trailer.":
+        "Een seizoenstrailer wordt gezocht met het seizoen erbij, zodat seizoen 4 niet de eerste trailer van de serie krijgt.",
+    "A folder holding several seasons gets the show's own trailer.":
+        "Een map met meerdere seizoenen krijgt de trailer van de serie zelf.",
     "A Library page for what's in Plex": "Een bibliotheekpagina voor wat er in Plex staat",
     "Your shows and films from Plex as posters: follow a show from there, or see which ones have gaps.":
         "Je series en films uit Plex als posters: volg er een serie vanaf, of zie welke gaten hebben.",
@@ -1707,6 +1756,12 @@ NL: dict[str, str] = {
     "Phone connection": "Telefoonverbinding",
     "Windows may ask if AirGrabber may use your network. Choose Allow.":
         "Windows vraagt misschien of AirGrabber je netwerk mag gebruiken. Kies Toestaan.",
+    "Library manager": "Bibliotheekbeheerder",
+    "Connect Plex first to use the phone app.": "Koppel eerst Plex om de telefoon-app te gebruiken.",
+    "AirGrabber isn't connected to Plex, so connect Plex in AirGrabber on your PC.":
+        "AirGrabber is niet met Plex verbonden, dus koppel Plex in AirGrabber op je pc.",
+    "Only a library manager's phone can do this, so ask the person who set up AirGrabber to connect this phone again as a library manager.":
+        "Alleen de telefoon van een bibliotheekbeheerder kan dit, dus vraag degene die AirGrabber heeft ingesteld om deze telefoon opnieuw te verbinden als bibliotheekbeheerder.",
     "Connect a phone": "Telefoon verbinden",
     "Scan this with the Companion app": "Scan dit met de Companion-app",
     "That code has expired, so click Connect a phone for a new one.":
@@ -1717,6 +1772,15 @@ NL: dict[str, str] = {
         "De Companion-app op je telefoon bereikt AirGrabber via je thuisnetwerk, nooit van buitenaf.",
     "The person this phone follows was removed from AirGrabber, so connect the phone again from AirGrabber's Settings.":
         "De persoon die deze telefoon volgt is uit AirGrabber verwijderd, dus verbind de telefoon opnieuw via de Instellingen van AirGrabber.",
+    "The shortlist is full, so clear it first.":
+        "De shortlist is vol, dus maak hem eerst leeg.",
+    "AirGrabber can't find {title} to download, so choose something else.":
+        "AirGrabber kan {title} niet vinden om te downloaden, dus kies iets anders.",
+    "AirGrabber couldn't look up {title} just now, so try again in a moment.":
+        "AirGrabber kon {title} nu niet opzoeken, dus probeer het zo nog eens.",
+    # app/services/phone/collection.py
+    "AirGrabber couldn't look up the films in this series just now, so try again in a moment.":
+        "AirGrabber kon de films uit deze reeks nu niet opzoeken, dus probeer het zo nog eens.",
     "That isn't on your list any more, so refresh the list.":
         "Dat staat niet meer op je lijst, dus ververs de lijst.",
     "{label} isn't out yet, so try again once it is.":

@@ -1,7 +1,8 @@
 """The phone's downloads: `POST /v1/download` (a tap: AirGrabber chooses, as the PC's button does),
 `POST /v1/releases` and `POST /v1/grab` (holding it: choose by hand).
 
-A phone asks only for what is on its own person's lists, and what's out; a film just grabbed has
+A phone asks only for what is on its own person's lists or was suggested to it (`Suggestions`, whose
+series are a `kind` of their own: season 1 as a pack), and what's out; a film just grabbed has
 left every list, but can still be asked about (a tap then says it was downloaded already, and
 `again` works). The releases stay here,
 under short random `ref`s for RELEASE_TTL_S: their links (`download_url`, `magnet_uri`) may hold a
@@ -40,6 +41,7 @@ from app.services.downloads import DownloadService, GrabError
 from app.services.library import LibraryService
 from app.services.phone.coming_up import GrabbedFilms, person_gone
 from app.services.phone.server import Handler, Reply, Request, bad_request, error_reply
+from app.services.phone.suggestions import Suggestions
 from app.services.picking import is_likely_fake, rank_releases
 from app.services.profiles import ProfileService
 from app.services.quick_download import SEARCH_TIMEOUT, QuickDownloadService, request_label
@@ -107,6 +109,7 @@ class PhoneDownloads:
         settings: SettingsService,
         profiles: ProfileService,
         films: GrabbedFilms,
+        suggestions: Suggestions,
         *,
         timeout: float = SEARCH_TIMEOUT,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
@@ -121,6 +124,7 @@ class PhoneDownloads:
         self._settings = settings
         self._profiles = profiles
         self._grabbed_films = films
+        self._suggestions = suggestions
         self._timeout = timeout
         self._now = now
         self._clock = clock
@@ -254,6 +258,8 @@ class PhoneDownloads:
             and _whole_number(number)
         ):
             return await self._episode(id, season, number, request.phone.profile_id)
+        if kind == "series" and _whole_number(id):
+            return await self._series(id, request.phone.profile_id)
         return bad_request()
 
     async def _episode(self, show_id: int, season: int, number: int, person: int) -> _Title | Reply:
@@ -273,13 +279,35 @@ class PhoneDownloads:
             episode.has_aired(self._now()),
         )
 
+    async def _series(self, tmdb_id: int, person: int) -> _Title | Reply:
+        """Season 1 of a suggested series, as a pack; how many episodes it has may be unknown."""
+        found = await self._suggestions.season_one(tmdb_id, person)
+        if found is None:
+            return _gone()
+        if isinstance(found, Reply):
+            return found
+        return _Title(
+            self._search.season_request(found.show, 1, episodes=found.aired),
+            GrabTarget(media_type=MediaType.TV, media_id=found.show.id, season=1),
+            found.out,
+        )
+
     async def _film(self, movie_id: int, person: int) -> _Title | Reply:
         entries = await self._watchlist.by_release_of(person)
         entry = next((one for one in entries if one.movie_id == movie_id), None)
         target = GrabTarget(media_type=MediaType.MOVIE, media_id=movie_id)
         if entry is None:
-            return await self._grabbed_film(target, person)
-        self._grabbed_films.note(entry, person)
+            grabbed = await self._grabbed_film(target, person)
+            if isinstance(grabbed, _Title):
+                return grabbed
+            suggested = await self._suggestions.film(movie_id)
+            if suggested is None:
+                return grabbed
+            if isinstance(suggested, Reply):
+                return suggested
+            entry = suggested
+        else:
+            self._grabbed_films.note(entry, person)
         movie = entry.movie
         return _Title(
             movie_request(movie, MovieDetails(id=movie.id, imdb_id=entry.imdb_id)),

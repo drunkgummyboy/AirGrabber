@@ -137,6 +137,8 @@ RESTART_TIP = N_("Installs the downloaded update and restarts AirGrabber")
 # do) leaves the pages as they are.
 _OFF_PAGE_SETTINGS = frozenset(
     {
+        "phone_shortlist",  # changed by the phones, shown only on them
+        "phone_shortlist_version",
         "prowlarr_url",
         "prowlarr_api_key",
         "prowlarr_seeded_url",

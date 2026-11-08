@@ -22,10 +22,13 @@ from app.services.download_status import DownloadStatusService, forge_moves
 from app.services.downloads import DownloadService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.phone.collection import FilmSeries
 from app.services.phone.coming_up import ComingUp, GrabbedFilms
 from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.forge import PhoneForge
 from app.services.phone.service import PhoneService
+from app.services.phone.shortlist import Shortlist
+from app.services.phone.suggestions import Suggestions
 from app.services.plex import PlexClient, PlexService
 from app.services.plex_library import PlexLibraryService
 from app.services.plex_scans import PlexScansAfterMoves
@@ -181,6 +184,8 @@ class Services:
         # The Companion app's way in, on the home network; off until turned on in Settings
         # (`run` from the UI). What it may ask besides pairing comes from `routes_factory`.
         grabbed_films = GrabbedFilms(self.download_status)
+        suggestions = Suggestions(library, self.watchlist, discovery, self.profiles, settings)
+        shortlist = Shortlist(settings, self.profiles, suggestions)
         phone_routes = {
             **ComingUp(
                 library,
@@ -201,8 +206,12 @@ class Services:
                 settings,
                 self.profiles,
                 grabbed_films,
+                suggestions,
             ).routes(),
+            **suggestions.routes(),
+            **shortlist.routes(),
             **PhoneForge(forge, self.profiles).routes(),
+            **FilmSeries(discovery.film_series).routes(),
         }
         self.phone = PhoneService(
             settings, paths, self.profiles, routes_factory=lambda: phone_routes

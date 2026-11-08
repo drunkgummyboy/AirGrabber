@@ -399,6 +399,68 @@ class SettingsSectionTests(TkTestCase):
         await dialog.plex_box.loaded()
         self.assertIn("Connected to Alex-NAS", texts(dialog.page(SECTION_PLEX)))
 
+    def dialog_with(self, phone: Any) -> Any:
+        from app.services import SettingsService
+        from app.ui.settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(
+            self.root,
+            SettingsService(FakeRepository(), Settings()),  # type: ignore[arg-type]
+            search=mock.MagicMock(),
+            station=mock.MagicMock(),
+            updates=SimpleNamespace(current="3.1.0", previous_version=None),  # type: ignore[arg-type]
+            torrent_app=mock.MagicMock(find=mock.AsyncMock(return_value=None)),
+            discovery=mock.MagicMock(),
+            prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
+            startup_shortcut=FakeShortcut(),
+            plex=FakePlex(),  # type: ignore[arg-type]
+            phone=phone,
+        )
+        self.keep(dialog)
+        return dialog
+
+    async def test_the_plex_page_compares_with_and_without_plex(self) -> None:
+        from app.ui.plex_compare import PHONE_HEADING, PHONE_LINES, TITLE_TEXT
+        from app.ui.settings_dialog import SECTION_PLEX
+
+        dialog = self.dialog_with(None)
+        shown = texts(dialog.page(SECTION_PLEX))
+        self.assertIn(TITLE_TEXT, shown)
+        assert dialog.plex_compare is not None
+        rows = dict((text, (left, right)) for text, left, right in dialog.plex_compare.rows)
+        self.assertEqual(rows["Rename and sort files with MediaForge"], ("✓", "✓"))
+        self.assertEqual(rows["The Library page with your posters"], ("—", "✓"))
+        # No word of the phone app where the phone connection isn't offered.
+        self.assertNotIn(PHONE_HEADING, shown)
+        self.assertFalse(any(line.text in rows for line in PHONE_LINES))
+        # Where the phone connection is offered: its lines too.
+        from app.ui.plex_compare import PlexCompareBox
+
+        frame = ctk.CTkFrame(self.root)
+        self.keep(frame)
+        page = SettingsPage(frame, "Plex", "A note")
+        box = PlexCompareBox(page, phone=True)
+        self.assertIn(PHONE_HEADING, texts(page.frame))
+        self.assertIn(("Play on your TVs", "—", "✓"), box.rows)
+
+
+class CompareTests(unittest.TestCase):
+    def test_only_what_needs_plex_is_a_dash_without_it(self) -> None:
+        from app.ui.plex_compare import AIRGRABBER_LINES, PHONE_LINES, compare_lines
+
+        self.assertEqual(compare_lines(phone=False), (("", AIRGRABBER_LINES),))
+        self.assertEqual(compare_lines(phone=True)[1][1], PHONE_LINES)
+        self.assertFalse(any(line.without for line in PHONE_LINES))  # no Plex, no phone app
+        without = [line.text for line in AIRGRABBER_LINES if line.without]
+        self.assertEqual(
+            without,
+            [
+                "Search, download and follow shows and films",
+                "Rename and sort files with MediaForge",
+                "Never download the same release twice",
+            ],
+        )
+
 
 # -- the marks --------------------------------------------------------------------------------------
 

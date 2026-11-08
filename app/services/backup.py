@@ -121,6 +121,8 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "phone_devices",
         "phone_pc_id",
         "phone_fingerprint",
+        "phone_shortlist",
+        "phone_shortlist_version",
     }
 )
 # Where downloads go: kept as on this PC when either PC uses its own qBittorrent that AirGrabber

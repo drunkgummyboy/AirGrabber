@@ -36,7 +36,7 @@ from app.models import (
     Show,
     WatchlistEntry,
 )
-from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan, PlexTitle
+from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan, PlexTitle, PlexShows
 from app.models.backup import (
     BackupData,
     BackupFilm,
@@ -1224,6 +1224,17 @@ class LibraryRepository:
         rows = await self._db.fetch_all("SELECT tmdb_id, imdb_id FROM plex_movies")
         return PlexFilms(
             tmdb=frozenset(row["tmdb_id"] for row in rows if row["tmdb_id"] is not None),
+            imdb=frozenset(row["imdb_id"] for row in rows if row["imdb_id"] is not None),
+        )
+
+    async def plex_shows(self) -> PlexShows:
+        """The shows with an episode in Plex, by TheTVDB id and IMDb id."""
+        rows = await self._db.fetch_all(
+            "SELECT DISTINCT s.tvdb_id, s.imdb_id FROM plex_episodes AS p "
+            "JOIN shows AS s ON s.id = p.show_id"
+        )
+        return PlexShows(
+            tvdb=frozenset(row["tvdb_id"] for row in rows if row["tvdb_id"] is not None),
             imdb=frozenset(row["imdb_id"] for row in rows if row["imdb_id"] is not None),
         )
 

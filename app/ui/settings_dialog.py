@@ -93,6 +93,7 @@ from app.ui.dialog_kit import (
     text_label,
 )
 from app.ui.phone_settings import PhoneBox
+from app.ui.plex_compare import PlexCompareBox
 from app.ui.plex_settings import PlexBox
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
 from app.ui.quick_setup import OPEN_TEXT as QUICK_SETUP_TEXT
@@ -733,6 +734,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._backup = backup
         self._plex = plex  # the Plex section shows when it is given
         self.plex_box: PlexBox | None = None
+        self.plex_compare: PlexCompareBox | None = None
         self._phone = phone  # the Phone connection section shows when it is given and available
         self.phone_box: PhoneBox | None = None
         self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
@@ -1008,6 +1010,7 @@ class SettingsDialog(ctk.CTkToplevel):
             app.body,
             torrent_app=self._torrent_app,
             wraplength=_BOX_INNER - _INDENT - INSTALL_BUTTON_WIDTH - 16,
+            reinstall=True,
         )
         self._torrent_row = app.take_row()
 
@@ -1018,6 +1021,14 @@ class SettingsDialog(ctk.CTkToplevel):
         remote.add(remote.text(t(REMOTE_TEXT), indent=_INDENT), gap=2, sticky="w", padx=_INDENT)
         self._local_line = remote.text(t(LOCAL_QBITTORRENT_TEXT), indent=_INDENT)
         self._local_row = remote.take_row()
+        # That qBittorrent's status, its look and "Reinstall qBittorrent…", while it is chosen.
+        self._local_torrent = TorrentAppStatus(
+            remote.body,
+            torrent_app=self._torrent_app,
+            wraplength=_BOX_INNER - _INDENT - INSTALL_BUTTON_WIDTH - 16,
+            reinstall=True,
+        )
+        self._local_torrent_row = remote.take_row()
         self._remote_box = remote
         self._remote_row = remote.take_row()
 
@@ -1103,6 +1114,8 @@ class SettingsDialog(ctk.CTkToplevel):
         if not self.winfo_exists():
             return
         self._show_local_line(updated)
+        if not set_up_by_airgrabber(updated):
+            self._local_torrent.grid_remove()
         shown = download_settings(updated)
         if self._storing or shown == self._download_shown:
             return
@@ -1121,6 +1134,17 @@ class SettingsDialog(ctk.CTkToplevel):
         self._grid_download_rows(rows, form_in_folder=self._form_in_folder)
         if rows.torrent_status:
             self._torrent.refresh()  # again each time: a program may have been installed
+        if rows.remote_form and set_up_by_airgrabber(self._settings.current):
+            self._local_torrent.grid(
+                row=self._local_torrent_row,
+                column=0,
+                sticky="ew",
+                padx=(_INDENT, 0),
+                pady=(10, 0),
+            )
+            self._local_torrent.refresh()
+        else:
+            self._local_torrent.grid_remove()
 
     def _current_note(self) -> FolderNote:
         # The remote form is hidden in FOLDER mode (until opened), so what it holds is what
@@ -1665,9 +1689,12 @@ class SettingsDialog(ctk.CTkToplevel):
     # -- Plex ----------------------------------------------------------------------------------
 
     def _build_plex(self, plex: PlexService) -> _Page:
-        """The Plex box (app/ui/plex_settings.py); it acts at once, not on Save."""
+        """The Plex box (app/ui/plex_settings.py), which acts at once, not on Save; under it what
+        AirGrabber does with and without Plex (app/ui/plex_compare.py)."""
         page = self._new_page(SECTION_PLEX)
         self.plex_box = PlexBox(page, plex)
+        phone = self._phone is not None and self._phone.available
+        self.plex_compare = PlexCompareBox(page, phone=phone)
         return page
 
     def _build_phone(self, phone: PhoneService) -> _Page:

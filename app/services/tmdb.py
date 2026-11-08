@@ -36,6 +36,8 @@ from app.models.tmdb import (
     TMDBAggregateCredits,
     TMDBCredits,
     TMDBFindResults,
+    TMDBGenreList,
+    TMDBMovieCollection,
     TMDBMovieDetails,
     TMDBMovieInfo,
     TMDBMovieItem,
@@ -174,6 +176,31 @@ class TMDBClient:
         payload = await self._get_json(path, {})
         return _parse_one(path, payload, _movie)
 
+    async def collection_of(self, movie_id: int) -> list[Movie]:
+        """The films of the collection (film series) film `movie_id` belongs to, itself included,
+        by release date (those without one last); empty when it belongs to none. A malformed
+        part is left out, as in a list."""
+        path = f"/movie/{movie_id}"
+        payload = await self._get_json(path, {})
+        link = _parse_one(
+            path, payload, lambda raw: TMDBMovieCollection.model_validate(raw).belongs_to_collection
+        )
+        if link is None:
+            return []
+        path = f"/collection/{link.id}"
+        parts = _parse_results(path, await self._get_json(path, {}), _movie, key="parts")
+        return sorted(
+            parts,
+            key=lambda part: (part.release_date is None, part.release_date or date.min, part.id),
+        )
+
+    async def tv(self, tv_id: int) -> DiscoverShow:
+        """A show as TMDB's lists describe it, from its details: for a show known only by its id
+        (a row of the phones' shortlist)."""
+        path = f"/tv/{tv_id}"
+        payload = await self._get_json(path, {})
+        return _parse_one(path, payload, _discover_show)
+
     @property
     def configured(self) -> bool:
         """Whether a key is set (not whether TMDB accepts it)."""
@@ -192,6 +219,12 @@ class TMDBClient:
         path = f"/tv/{tv_id}"
         payload = await self._get_json(path, {}, language=language)
         return _parse_one(path, payload, lambda raw: TMDBTVInfo.model_validate(raw).to_info())
+
+    async def genres(self, kind: MediaType, *, language: str | None = None) -> dict[int, str]:
+        """What a list item's `genre_ids` mean for this kind, in `language`."""
+        path = f"/genre/{kind.value}/list"
+        payload = await self._get_json(path, {}, language=language)
+        return _parse_one(path, payload, lambda raw: TMDBGenreList.model_validate(raw).to_names())
 
     async def videos(
         self, kind: MediaType, item_id: int, *, languages: Sequence[str] = ()
@@ -443,10 +476,15 @@ def _parse_one(path: str, payload: object, convert: Callable[[object], T]) -> T:
     raise TMDBBadReply(t("TMDB {path}: unexpected payload ({problem})", path=path, problem=problem))
 
 
-def _parse_results(path: str, payload: object, convert: Callable[[object], T]) -> list[T]:
-    """Convert a page's `results` one by one so a single malformed entry can't sink the rest."""
-    results = payload.get("results") if isinstance(payload, dict) else None
+def _parse_results(
+    path: str, payload: object, convert: Callable[[object], T], *, key: str = "results"
+) -> list[T]:
+    """Convert a page's `results` (or `key`) one by one so a single malformed entry can't sink
+    the rest."""
+    results = payload.get(key) if isinstance(payload, dict) else None
     if not isinstance(results, list):
+        if key != "results":
+            raise TMDBBadReply(f"TMDB {path}: expected an object with a '{key}' list")
         raise TMDBBadReply(t("TMDB {path}: expected an object with a 'results' list", path=path))
     parsed: list[T] = []
     for index, item in enumerate(results):

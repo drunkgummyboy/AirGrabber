@@ -25,6 +25,7 @@ import httpx
 from app.forge.core import fsops
 from app.forge.core.activity import ActivityFeed, say_to
 from app.forge.core.parser import VIDEO_EXTENSIONS
+from app.forge.core.planner import trailer_words
 from app.forge.core.settings import ForgeSettingsService
 from app.forge.models.plan import PlannedTrailer
 from app.i18n import t
@@ -56,9 +57,10 @@ class ToolInstallError(Exception):
     """yt-dlp or ffmpeg couldn't be downloaded or didn't match its published checksum."""
 
 
-def youtube_search_url(title: str, year: int | None) -> str:
-    words = f"{title} {year} official trailer" if year else f"{title} official trailer"
-    return "https://www.youtube.com/results?search_query=" + quote_plus(words)
+def youtube_search_url(title: str, year: int | None, season: int | None = None) -> str:
+    return "https://www.youtube.com/results?search_query=" + quote_plus(
+        trailer_words(title, year, season)
+    )
 
 
 def sha256_for(sums_text: str, filename: str) -> str | None:
@@ -302,7 +304,7 @@ class TrailerService:
             return found
 
         shortcut = stem.with_name(stem.name + ".url")
-        url = youtube_search_url(trailer.title, trailer.year)
+        url = youtube_search_url(trailer.title, trailer.year, trailer.season)
         content = f"[InternetShortcut]\nURL={url}\n".encode()
         await asyncio.to_thread(Path(fsops.long_path(shortcut)).write_bytes, content)
         log.warning("Trailer for %s couldn't be downloaded; saved a search link", trailer.title)

@@ -387,7 +387,14 @@ def build_queue_rows(
                 faded=state == "done",
             )
         )
+        seasons = {i.media.parsed.season for i in group} if episodes else set()
+        previous = group[0].media.parsed.season
         for item in group:
+            season = item.media.parsed.season
+            divider = ""
+            if len(seasons) > 1 and season != previous and season is not None:
+                divider = t("Season {n}", n=season)
+            previous = season
             name = rendered[item.id].parts[-1]
             title = item.media.episode_title if episodes and item.media.episode_title else name
             dropped, added = name_changes(item.parsed.source_name, name)
@@ -406,6 +413,7 @@ def build_queue_rows(
                     badge=first.title,
                     band=band_key,
                     faded=state == "done",
+                    divider=divider,
                 )
             )
     return out

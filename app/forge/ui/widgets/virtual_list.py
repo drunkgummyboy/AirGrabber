@@ -142,6 +142,9 @@ class Row(BaseModel):
     dest: str = ""  # a band's destination ("📦 Moves to Series › …"), after its subtitle
     dest_look: Literal["moves", "stays", "warn"] = "moves"  # link, muted or warning colour
     faded: bool = False  # done today: drawn quieter
+    # An episode line's divider: a thin line along its top with these words at its start
+    # ("Season 2"), above a new season's first line (its files go to another folder).
+    divider: str = ""
 
 
 def faded_fill(look: theme.Look) -> str:
@@ -997,6 +1000,8 @@ class VirtualList(ctk.CTkFrame):
         """A file line under a band: code, name, the old name faint on the right."""
         c, pad, h = self.canvas, self._pad, self._row_h
         self._draw_selection(p, row, y, width, 1)
+        if row.divider:
+            self._draw_divider(p, row, y, width)
         middle = y + h / 2
         x = self._line_x
         if row.checked is not None:
@@ -1083,6 +1088,28 @@ class VirtualList(ctk.CTkFrame):
                 font=self._line_font,
             )
         self._draw_status(p, row, middle, width)
+
+    def _draw_divider(self, p: _Colours, row: Row, y: int, width: int) -> None:
+        """A line's divider on its top edge, between it and the line above: its words in small
+        quiet letters where the lines' text starts, a thin line after them to the right."""
+        c = self.canvas
+        x = self._line_x
+        colour = p.faint if row.faded else p.muted
+        c.create_text(
+            x,
+            y,
+            text=row.divider,
+            anchor="w",
+            fill=colour,
+            font=self._label_font,
+            tags=("line-divider",),
+        )
+        start = x + self._measure(self._label_font, row.divider) + self._px(8)
+        right = width - self._pad - self._px(12)
+        if right > start:
+            c.create_line(
+                start, y, right, y, fill=p.line, width=max(1, self._px(1)), tags=("line-divider",)
+            )
 
     def _draw_runs(
         self,

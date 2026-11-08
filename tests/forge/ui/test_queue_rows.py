@@ -238,6 +238,19 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(band.subtitle, "Seasons 1, 3 · 2 episodes")
         self.assertEqual(band.dest, "📁 Stays here, in VisionQuest › …")
 
+    def test_a_new_season_starts_under_a_divider(self) -> None:
+        items = [
+            episode(self.folder, f"Show.S0{s}E0{e}.mkv", "Show", s, e)
+            for s, e in ((2, 1), (1, 2), (1, 1), (3, 1))
+        ]
+        lines = [r for r in build(items).rows if r.kind == "item"]
+        self.assertEqual([r.code for r in lines], ["S01E01", "S01E02", "S02E01", "S03E01"])
+        self.assertEqual([r.divider for r in lines], ["", "", "Season 2", "Season 3"])
+        # One season: no divider; films never.
+        one = [episode(self.folder, f"Show.S01E0{e}.mkv", "Show", 1, e) for e in (1, 2)]
+        self.assertFalse(any(r.divider for r in build(one).rows))
+        self.assertFalse(any(r.divider for r in build([movie(self.folder, "Ran.mkv", "Ran", None)]).rows))
+
     def test_seasons_in_a_row_are_a_range(self) -> None:
         items = [episode(self.folder, f"Show.S0{s}E01.mkv", "Show", s, 1) for s in (1, 2, 3)]
         [band] = bands(build(items))

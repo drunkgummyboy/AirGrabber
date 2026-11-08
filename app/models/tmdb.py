@@ -173,6 +173,16 @@ class TMDBMovieDetails(_Wire):
         )
 
 
+class TMDBCollectionLink(_Wire):
+    id: int
+
+
+class TMDBMovieCollection(_Wire):
+    """/movie/{id}, read only for the collection (film series) it belongs to."""
+
+    belongs_to_collection: TMDBCollectionLink | None = None
+
+
 class TMDBNetwork(_Wire):
     name: str = ""
 
@@ -199,6 +209,20 @@ class TMDBTVDetails(_Wire):
 
 class TMDBGenre(_Wire):
     name: str = ""
+
+
+class TMDBListedGenre(_Wire):
+    id: int
+    name: str = ""
+
+
+class TMDBGenreList(_Wire):
+    """/genre/movie/list and /genre/tv/list: what a list item's `genre_ids` mean."""
+
+    genres: list[TMDBListedGenre] = Field(default_factory=list)
+
+    def to_names(self) -> dict[int, str]:
+        return {genre.id: name for genre in self.genres if (name := genre.name.strip())}
 
 
 def _genre_names(genres: Sequence[TMDBGenre]) -> tuple[str, ...]:

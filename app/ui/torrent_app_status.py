@@ -15,7 +15,12 @@ runs, the line asks to close it and the setup tries again every few seconds.
 Once qBittorrent is set up, an "AirGrabber look in qBittorrent" switch shows under the line (the
 setup turns that look on when qBittorrent has no theme yet; not shown while a theme of the user's
 own is in use). Switching it changes qBittorrent's settings under the same rule: while qBittorrent
-runs the line asks to close it, and the change is tried again every few seconds."""
+runs the line asks to close it, and the change is tried again every few seconds.
+
+In Settings (`reinstall=True`, not the welcome) a qBittorrent of AirGrabber's choice gets
+"Reinstall qBittorrent…" under it all: app/ui/reinstall_dialog.py asks Repair or Clean start, then
+TorrentAppService.reinstall_qbittorrent runs and qBittorrent is set up again, as after an install.
+While qBittorrent is open nothing happens and the line says to close it, with "Try again"."""
 
 from __future__ import annotations
 
@@ -56,6 +61,7 @@ INSTALL_BUTTON_WIDTH = 170
 RETRY_BUTTON_WIDTH = 120  # at least; wider when "Try again" needs it
 # Shown through t().
 SETUP_BUTTON_TEXT = N_("Set up qBittorrent for AirGrabber (no pop-up for each download)")
+REINSTALL_BUTTON_TEXT = N_("Reinstall qBittorrent…")
 LOOK_SWITCH_TEXT = N_("AirGrabber look in qBittorrent")
 LOOK_TIP = N_(
     "qBittorrent in AirGrabber's colours, light or dark like Windows (qBittorrent 5). "
@@ -89,6 +95,9 @@ INSTALL_PROBLEM_TEXTS: dict[QBittorrentInstallResult, str] = {
     QBittorrentInstallResult.NOT_LINKED: N_(
         "In Default apps, choose qBittorrent for .torrent and MAGNET, then click Try again."
     ),
+    QBittorrentInstallResult.RUNNING: N_(
+        "qBittorrent is open. Close it (also from the tray), then try again."
+    ),
     QBittorrentInstallResult.FAILED: N_(
         "Try again, or get qBittorrent from its website and install it yourself."
     ),
@@ -110,6 +119,19 @@ class TorrentStatus(Enum):
     SETUP_WAITING = "setup_waiting"  # qBittorrent runs: waiting for it to close
     SETUP_FAILED = "setup_failed"
     READY = "ready"  # qBittorrent, set up for AirGrabber
+    REINSTALLING = "reinstalling"
+    REINSTALL_FAILED = "reinstall_failed"
+
+
+# Where "Reinstall qBittorrent…" shows (with `reinstall`): qBittorrent is the torrent program.
+_REINSTALLABLE = frozenset(
+    {
+        TorrentStatus.SETUP_NEEDED,
+        TorrentStatus.SETUP_FAILED,
+        TorrentStatus.READY,
+        TorrentStatus.REINSTALL_FAILED,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +200,13 @@ def torrent_look(
         )
     if status is TorrentStatus.READY:
         return TorrentLook(t("✓ qBittorrent is installed and ready"), theme.SUCCESS)
+    if status is TorrentStatus.REINSTALLING:
+        return TorrentLook(t("Reinstalling… Windows may ask for permission"), theme.TEXT_MUTED)
+    if status is TorrentStatus.REINSTALL_FAILED:
+        reason, retry = install_reason(problem)
+        return TorrentLook(
+            t("Couldn't reinstall qBittorrent."), theme.DANGER, reason=reason, retry_button=retry
+        )
     return TorrentLook("", theme.TEXT_MUTED)
 
 
@@ -226,9 +255,19 @@ class TorrentAppStatus(ctk.CTkFrame):
     qBittorrent still opens a pop-up for each download, or once it is set up the "AirGrabber
     look in qBittorrent" switch. `refresh()` looks for the program (again)."""
 
-    def __init__(self, master: Any, *, torrent_app: TorrentAppService, wraplength: int) -> None:
+    def __init__(
+        self,
+        master: Any,
+        *,
+        torrent_app: TorrentAppService,
+        wraplength: int,
+        reinstall: bool = False,
+    ) -> None:
+        """`reinstall`: offer "Reinstall qBittorrent…" (Settings)."""
         super().__init__(master, fg_color="transparent")
         self._torrent_app = torrent_app
+        self._reinstall_offered = reinstall
+        self._reinstall_clean: bool | None = None  # the last reinstall's choice, for Try again
         self._status = TorrentStatus.LOOKING
         self._find_task: asyncio.Task[None] | None = None
         self._install_task: asyncio.Task[None] | None = None
@@ -258,7 +297,7 @@ class TorrentAppStatus(ctk.CTkFrame):
         )
         self._reason.pack(side="left", anchor="w")
         self._retry_button = secondary_button(
-            self._reason_row, retry_text, self._install, width=retry_width
+            self._reason_row, retry_text, self._retry, width=retry_width
         )
         self._setup_button = secondary_button(self, t(SETUP_BUTTON_TEXT), self._set_up)
         self._look_var = tk.BooleanVar(self, value=False)
@@ -274,6 +313,9 @@ class TorrentAppStatus(ctk.CTkFrame):
             progress_color=theme.ACCENT,
         )
         add_tooltip(self._look_switch, t(LOOK_TIP))
+        self.reinstall_button = secondary_button(
+            self, t(REINSTALL_BUTTON_TEXT), self.ask_reinstall
+        )
 
     @property
     def status(self) -> TorrentStatus:
@@ -289,6 +331,7 @@ class TorrentAppStatus(ctk.CTkFrame):
             return True
         return self._status in (
             TorrentStatus.INSTALLING,
+            TorrentStatus.REINSTALLING,
             TorrentStatus.SETTING_UP,
             TorrentStatus.SETUP_WAITING,
         )
@@ -334,6 +377,43 @@ class TorrentAppStatus(ctk.CTkFrame):
         self._install_problem = None
         self.show(TorrentStatus.INSTALLED)
         self._set_up()  # a fresh qBittorrent: no pop-up for each download from the start
+
+    def _retry(self) -> None:
+        """"Try again": the reinstall that failed, else the install."""
+        if self._status is TorrentStatus.REINSTALL_FAILED and self._reinstall_clean is not None:
+            self.reinstall(clean=self._reinstall_clean)
+        else:
+            self._install()
+
+    def ask_reinstall(self) -> None:
+        """Repair or Clean start (app/ui/reinstall_dialog.py)."""
+        from app.ui.reinstall_dialog import ReinstallDialog
+
+        if self._busy():
+            return
+        ReinstallDialog(self.winfo_toplevel(), on_choice=lambda clean: self.reinstall(clean=clean))
+
+    def reinstall(self, *, clean: bool) -> None:
+        if not _alive(self) or self._busy():
+            return
+        if self._install_task is not None and not self._install_task.done():
+            return
+        self._reinstall_clean = clean
+        self.show(TorrentStatus.REINSTALLING)
+        # Not cancelled with the widget, like an install.
+        self._install_task = spawn(self._run_reinstall(clean), name="qbittorrent-reinstall")
+
+    async def _run_reinstall(self, clean: bool) -> None:
+        result = await self._torrent_app.reinstall_qbittorrent(clean=clean)
+        if not _alive(self):
+            return
+        if not result.installed:
+            self._install_problem = result
+            self.show(TorrentStatus.REINSTALL_FAILED, QBITTORRENT)
+            return
+        self._install_problem = None
+        self.show(TorrentStatus.INSTALLED)
+        self._set_up()  # as after an install; after a clean start, from an empty settings file
 
     def _set_up(self) -> None:
         if self._setup_task is not None and not self._setup_task.done():
@@ -438,6 +518,10 @@ class TorrentAppStatus(ctk.CTkFrame):
             self._look_switch.pack(anchor="w", pady=(10, 0))
         else:
             self._look_switch.pack_forget()
+        if self._reinstall_offered and status in _REINSTALLABLE:
+            self.reinstall_button.pack(anchor="w", pady=(10, 0))
+        else:
+            self.reinstall_button.pack_forget()
 
     def destroy(self) -> None:
         for task in (self._find_task, self._setup_task, self._look_task):

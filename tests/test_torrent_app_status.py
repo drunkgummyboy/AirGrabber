@@ -144,6 +144,7 @@ class FakeTorrentApp:
             else [installed]
         )
         self.install_calls = 0
+        self.reinstalls: list[bool] = []
         self.setups = 0
         self.look = look
         self.look_answers = list(look_answers or [QBittorrentSetupResult.DONE])
@@ -170,6 +171,11 @@ class FakeTorrentApp:
         answer = self.installs.pop(0) if len(self.installs) > 1 else self.installs[0]
         if answer.installed:
             self.app = QBIT
+        return answer
+
+    async def reinstall_qbittorrent(self, *, clean: bool) -> QBittorrentInstallResult:
+        self.reinstalls.append(clean)
+        answer = self.installs.pop(0) if len(self.installs) > 1 else self.installs[0]
         return answer
 
     async def set_up_qbittorrent(self) -> QBittorrentSetupResult:
@@ -206,6 +212,67 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
 
     def button_shows(self, widget: TorrentAppStatus) -> bool:
         return bool(widget._setup_button.winfo_manager())
+
+    def reinstall_shows(self, widget: TorrentAppStatus) -> bool:
+        return bool(widget.reinstall_button.winfo_manager())
+
+    async def test_settings_offers_a_reinstall_of_qbittorrent_only(self) -> None:
+        widget = TorrentAppStatus(
+            self.root, torrent_app=FakeTorrentApp(QBIT, QUIET), wraplength=400, reinstall=True  # type: ignore[arg-type]
+        )
+        widget.refresh()
+        await self.until(lambda: widget.status is TorrentStatus.READY)
+        self.assertTrue(self.reinstall_shows(widget))
+        other = TorrentAppStatus(
+            self.root, torrent_app=FakeTorrentApp(TorrentApp(name="Deluge")), wraplength=400, reinstall=True  # type: ignore[arg-type]
+        )
+        other.refresh()
+        await self.until(lambda: other.status is TorrentStatus.FOUND)
+        self.assertFalse(self.reinstall_shows(other))
+        welcome = self.status(FakeTorrentApp(QBIT, QUIET))  # the welcome: no reinstall
+        welcome.refresh()
+        await self.until(lambda: welcome.status is TorrentStatus.READY)
+        self.assertFalse(self.reinstall_shows(welcome))
+
+    async def test_the_dialog_asks_repair_or_clean_start(self) -> None:
+        from app.ui.reinstall_dialog import ReinstallDialog
+
+        chosen: list[bool] = []
+        dialog = ReinstallDialog(self.root, on_choice=chosen.append)
+        self.assertEqual(dialog.repair_button.cget("text"), "Repair")
+        dialog.clean_button.invoke()
+        self.assertEqual(chosen, [True])
+        self.assertFalse(dialog.winfo_exists())
+        dialog = ReinstallDialog(self.root, on_choice=chosen.append)
+        dialog.cancel_button.invoke()
+        self.assertEqual(chosen, [True])
+
+    async def test_a_reinstall_sets_it_up_again(self) -> None:
+        service = FakeTorrentApp(QBIT, QUIET)
+        widget = TorrentAppStatus(self.root, torrent_app=service, wraplength=400, reinstall=True)  # type: ignore[arg-type]
+        widget.pack()
+        widget.reinstall(clean=True)
+        self.assertEqual(widget._label.cget("text"), "Reinstalling… Windows may ask for permission")
+        await self.until(lambda: widget.status is TorrentStatus.READY)
+        self.assertEqual((service.reinstalls, service.setups), ([True], 1))
+
+    async def test_while_qbittorrent_is_open_it_says_close_it_and_tries_again(self) -> None:
+        service = FakeTorrentApp(QBIT, QUIET, installed=QBittorrentInstallResult.RUNNING)
+        widget = TorrentAppStatus(self.root, torrent_app=service, wraplength=400, reinstall=True)  # type: ignore[arg-type]
+        widget.pack()
+        widget.reinstall(clean=False)
+        await self.until(lambda: widget.status is TorrentStatus.REINSTALL_FAILED)
+        self.assertEqual(widget._label.cget("text"), "Couldn't reinstall qBittorrent.")
+        self.assertEqual(
+            widget._reason.cget("text"),
+            "qBittorrent is open. Close it (also from the tray), then try again.",
+        )
+        self.assertTrue(self.reinstall_shows(widget))
+        service.installs = [QBittorrentInstallResult.INSTALLED]
+        widget._retry_button.invoke()
+        await self.until(lambda: widget.status is TorrentStatus.READY)
+        self.assertEqual(service.reinstalls, [False, False])  # the same choice again
+        self.assertEqual(service.install_calls, 0)
 
     async def test_a_set_up_qbittorrent_is_ready(self) -> None:
         widget = self.status(FakeTorrentApp(QBIT, QUIET))

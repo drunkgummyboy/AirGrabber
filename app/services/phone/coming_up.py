@@ -89,7 +89,7 @@ def person_gone(phone: PairedPhone | None, profiles: ProfileService) -> Reply | 
     )
 
 
-def _safe_poster(url: str | None) -> str | None:
+def safe_poster(url: str | None) -> str | None:
     """A plain web address, or nothing: a query, a sign-in or a fragment could hold a key."""
     if not url:
         return None
@@ -265,7 +265,7 @@ class ComingUp:
                     "title": entry.show.name,
                     "code": episode.code,
                     "date": episode.air_date.isoformat() if episode.air_date else None,
-                    "poster_url": _safe_poster(entry.show.poster_url),
+                    "poster_url": safe_poster(entry.show.poster_url),
                     "state": self._state(
                         (target, pack),
                         out=episode.has_aired(now),
@@ -386,7 +386,7 @@ def _film_item(movie: Movie, day: date | None, state: ItemState) -> dict[str, An
         "title": movie.title,
         "code": None,
         "date": day.isoformat() if day else None,
-        "poster_url": _safe_poster(movie.poster_url()),
+        "poster_url": safe_poster(movie.poster_url()),
         "state": state,
     }
 

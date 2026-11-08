@@ -21,6 +21,7 @@ from app.models import (
     PairedPhone,
     ProwlarrSetupResult,
     Settings,
+    ShortItem,
 )
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
@@ -43,6 +44,16 @@ from app.ui.main_window import (
 # Settings no page shows: connections, how downloads are handed over, the first-run marker,
 # updates, the tray and starting with Windows.
 OFF_PAGE_CHANGES: dict[str, Any] = {
+    "phone_shortlist": (
+        ShortItem(
+            key="a",
+            kind="movie",
+            title="Dune",
+            added_by="Pixel",
+            added_at=datetime(2026, 11, 7, tzinfo=UTC),
+        ),
+    ),
+    "phone_shortlist_version": 1,
     "prowlarr_url": "http://127.0.0.1:9696",
     "prowlarr_api_key": "0123456789abcdef0123456789abcdef",
     "prowlarr_seeded_url": "http://127.0.0.1:9696",

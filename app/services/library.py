@@ -46,7 +46,7 @@ from app.models import (
     SyncReport,
     Weekday,
 )
-from app.models.plex import PlexFilms
+from app.models.plex import PlexFilms, PlexShows
 from app.services.missing import latest_season, missing_cutoffs, missing_episodes, new_episodes
 from app.services.plex import plex_connected
 from app.services.settings import SettingsService
@@ -243,6 +243,13 @@ class LibraryService:
         if not self.plex_connected:
             return PlexFilms()
         return await self._library.plex_films()
+
+    async def plex_shows(self) -> PlexShows:
+        """The series with an episode in Plex (the phone's suggestions); none while Plex isn't
+        connected."""
+        if not self.plex_connected:
+            return PlexShows()
+        return await self._library.plex_shows()
 
     async def activity(
         self, *, profile_id: int, now: datetime | None = None

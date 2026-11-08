@@ -1,8 +1,9 @@
 """The phone connection's small HTTPS server: JSON over HTTP/1.1, one request per connection.
 
 It answers only paired phones (`POST /v1/pair` being how a phone becomes one) and only addresses
-on the home network. Never log a token, a request's query or body, or an exception's text: any of
-them can hold a token or a file's path.
+on the home network; `manager_only` keeps a route to a library manager's phone. Never log a
+token, a request's query or body, or an exception's text: any of them can hold a token or a file's
+path.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import ssl
 import traceback
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from functools import partial
+from functools import partial, wraps
 from http.client import responses
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, cast
@@ -53,6 +54,8 @@ _HOME_NETWORKS = tuple(
 
 ErrorCode = Literal[
     "not_paired",
+    "no_plex",
+    "not_manager",
     "bad_request",
     "not_found",
     "forge_starting",
@@ -132,6 +135,29 @@ def _not_paired() -> Reply:
             "so connect it again from AirGrabber's Settings."
         ),
     )
+
+
+def _not_manager() -> Reply:
+    return error_reply(
+        403,
+        "not_manager",
+        t(
+            "Only a library manager's phone can do this, so ask the person who set up AirGrabber "
+            "to connect this phone again as a library manager."
+        ),
+    )
+
+
+def manager_only(handler: Handler) -> Handler:
+    """`handler`, for a library manager's phone only: any other gets a `not_manager` reply."""
+
+    @wraps(handler)
+    async def for_a_manager(request: Request) -> Reply:
+        if request.phone is None or not request.phone.manager:
+            return _not_manager()
+        return await handler(request)
+
+    return for_a_manager
 
 
 def _not_found() -> Reply:

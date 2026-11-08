@@ -170,6 +170,10 @@ class _Shelves(Generic[T]):
     stored_at: datetime
 
 
+async def _as_tuple(items: Awaitable[Iterable[T]]) -> tuple[T, ...]:
+    return tuple(await items)
+
+
 class _DetailsCache(Generic[T]):
     """Details by id, kept for `ttl`; concurrent requests for one id share a single fetch.
 
@@ -254,12 +258,17 @@ class DiscoveryService:
         self._tv_details = _DetailsCache("tmdb-tv", tmdb.tv_details, DETAILS_TTL, clock)
         # The info window's extras by TMDB id (in the app's language, which is fixed per run).
         self._movies = _DetailsCache("tmdb-movie-item", tmdb.movie, DETAILS_TTL, clock)
+        self._film_series = _DetailsCache(
+            "tmdb-film-series", lambda id: _as_tuple(tmdb.collection_of(id)), DETAILS_TTL, clock
+        )
+        self._shows = _DetailsCache("tmdb-tv-item", lambda id: tmdb.tv(id), DETAILS_TTL, clock)
         self._movie_extras = _DetailsCache(
             "tmdb-movie-extras", self._fetch_movie_extras, DETAILS_TTL, clock
         )
         self._tv_extras = _DetailsCache("tmdb-tv-extras", self._fetch_tv_extras, DETAILS_TTL, clock)
         # TVMaze id → its TMDB id by IMDb id (None: TMDB knows none), for a show's extras.
         self._tmdb_ids: dict[int, _Entry[int | None]] = {}
+        self._genre_names: dict[MediaType, _Entry[Mapping[int, str]]] = {}
         # TMDB id → TVMaze id of every show matched through resolve() (and so track()): flags
         # it as tracked even when the two services spell its name differently.
         self._tracked_via_tmdb: dict[int, int] = {}
@@ -275,9 +284,12 @@ class DiscoveryService:
         self._tv_details.clear()
         self._season_trailers.clear()
         self._movies.clear()
+        self._film_series.clear()
+        self._shows.clear()
         self._movie_extras.clear()
         self._tv_extras.clear()
         self._tmdb_ids.clear()
+        self._genre_names.clear()
         self._recommended.clear()
 
     # -- dashboards ----------------------------------------------------------------------------
@@ -521,6 +533,16 @@ class DiscoveryService:
         rating); cached for DETAILS_TTL. TMDB errors propagate."""
         return await self._movies.get(movie_id)
 
+    async def film_series(self, movie_id: int) -> tuple[Movie, ...]:
+        """The films of the collection (film series) a film belongs to, by release date; empty
+        when it belongs to none. Cached for DETAILS_TTL. TMDB errors propagate."""
+        return await self._film_series.get(movie_id)
+
+    async def show(self, tv_id: int) -> DiscoverShow:
+        """A show by its TMDB id, as the lists know shows; cached for DETAILS_TTL. TMDB errors
+        propagate."""
+        return await self._shows.get(tv_id)
+
     async def movie_extras(self, movie_id: int) -> TitleExtras:
         """A film's details in the app's language (the overview in English where TMDB has none
         in it), its trailer (`pick_trailer`) and its first CAST_LIMIT actors; cached for
@@ -625,6 +647,18 @@ class DiscoveryService:
         if kind is MediaType.MOVIE:
             return self._tmdb.movie_info(item_id, language=language)
         return self._tmdb.tv_info(item_id, language=language)
+
+    async def genre_names(self, kind: MediaType) -> Mapping[int, str]:
+        """What the lists' `genre_ids` mean for this kind, in English as Plex's genres are, to go
+        with those on the phone; kept for DETAILS_TTL. TMDB errors propagate."""
+        cached = self._genre_names.get(kind)
+        if cached is not None and _is_fresh(cached.stored_at, self._clock(), DETAILS_TTL):
+            return cached.value
+        generation = self._generation
+        names = await self._tmdb.genres(kind, language=ENGLISH)
+        if generation == self._generation:  # not cleared meanwhile
+            self._genre_names[kind] = _Entry(names, self._clock())
+        return names
 
     async def search_movies(self, query: str, *, limit: int = 12) -> list[Movie]:
         return await self._tmdb.search_movies(query, limit=limit)

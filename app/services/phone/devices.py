@@ -39,7 +39,9 @@ class DeviceStore:
         # started while the first is being saved would otherwise undo it.
         self._lock = asyncio.Lock()
 
-    async def add(self, name: str, profile_id: int) -> tuple[PairedPhone, str]:
+    async def add(
+        self, name: str, profile_id: int, *, manager: bool = False
+    ) -> tuple[PairedPhone, str]:
         """Pair a phone. The token comes back only here: it can't be read again later."""
         token = secrets.token_urlsafe(32)
         phone = PairedPhone(
@@ -48,6 +50,7 @@ class DeviceStore:
             token_hash=_token_hash(token),
             profile_id=profile_id,
             paired_at=datetime.now(UTC),
+            manager=manager,
         )
         async with self._lock:
             await self._settings.update(

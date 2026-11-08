@@ -6,7 +6,7 @@ import math
 from enum import StrEnum
 from pathlib import Path
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -360,6 +360,24 @@ class PairedPhone(BaseModel):
     token_hash: str
     profile_id: int  # the person whose lists this phone follows
     paired_at: UtcDatetime
+    manager: bool = True  # a library manager's phone; one saved before there were roles was one
+
+
+class ShortItem(BaseModel):
+    """A row of tonight's shortlist (app/services/phone/shortlist.py). `plex_key`: where it is in
+    Plex; `suggestion_id`: what `POST /v1/download` takes with this `kind`."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    key: str
+    kind: Literal["movie", "series"]
+    title: str
+    year: int | None = None
+    poster_url: str | None = None
+    plex_key: str | None = None
+    suggestion_id: int | None = None
+    added_by: str
+    added_at: UtcDatetime
 
 
 class Settings(BaseModel):
@@ -515,6 +533,8 @@ class Settings(BaseModel):
     phone_devices: tuple[PairedPhone, ...] = ()
     phone_pc_id: str = ""  # how a phone recognises this PC: a random id made once
     phone_fingerprint: str = ""  # the certificate the paired phones trust
+    phone_shortlist: tuple[ShortItem, ...] = ()  # tonight's, shared by the phones
+    phone_shortlist_version: int = 0  # moves with every change to it
 
     @property
     def remote_configured(self) -> bool:

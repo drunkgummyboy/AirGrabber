@@ -352,6 +352,50 @@ class ServiceTests(SetupTestCase):
         self.assertIsNone(asyncio.run(service.qbittorrent_state()))
 
 
+class SetAsideTests(SetupTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.data = self.folder.parent.parent / "Local" / "qBittorrent"
+        self.setup = QBittorrentSetup(
+            self.path, running=self.running, home=HOME, data=self.data
+        )
+
+    def test_both_folders_go_aside_with_what_was_in_them(self) -> None:
+        self.write(b"[LegalNotice]\nAccepted=true\n")
+        (self.data / "BT_backup").mkdir(parents=True)
+        (self.data / "BT_backup" / "a.torrent").write_bytes(b"d")
+        with self.assertLogs("app.services.qbittorrent_setup", "INFO") as logs:
+            self.assertIs(self.setup.set_aside("2026-11-08 15.30"), QBittorrentSetupResult.DONE)
+        self.assertFalse(self.folder.exists())
+        self.assertFalse(self.data.exists())
+        roaming = self.folder.with_name("qBittorrent (before reinstall 2026-11-08 15.30)")
+        local = self.data.with_name("qBittorrent (before reinstall 2026-11-08 15.30)")
+        self.assertEqual((roaming / "qBittorrent.ini").read_bytes(), b"[LegalNotice]\nAccepted=true\n")
+        self.assertTrue((local / "BT_backup" / "a.torrent").is_file())
+        self.assertNotIn("Zoë", "\n".join(logs.output))  # no path in the log
+
+    def test_a_taken_name_gets_a_number_and_a_missing_folder_is_fine(self) -> None:
+        self.write(b"x")
+        self.folder.with_name("qBittorrent (before reinstall 2026-11-08 15.30)").mkdir()
+        self.assertIs(self.setup.set_aside("2026-11-08 15.30"), QBittorrentSetupResult.DONE)
+        self.assertTrue(
+            self.folder.with_name("qBittorrent (before reinstall 2026-11-08 15.30 2)").is_dir()
+        )
+        self.assertFalse(self.data.exists())
+
+    def test_never_while_qbittorrent_runs(self) -> None:
+        self.write(b"x")
+        self.running.running = True
+        self.assertIs(self.setup.set_aside("now"), QBittorrentSetupResult.RUNNING)
+        self.assertTrue(self.path.is_file())
+
+    def test_a_failed_rename_says_so(self) -> None:
+        self.write(b"x")
+        with mock.patch.object(Path, "rename", side_effect=PermissionError(13, "in use")):
+            self.assertIs(self.setup.set_aside("now"), QBittorrentSetupResult.FAILED)
+        self.assertTrue(self.path.is_file())
+
+
 # -- AirGrabber's look ----------------------------------------------------------------------------
 
 

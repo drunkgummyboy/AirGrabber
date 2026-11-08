@@ -665,6 +665,7 @@ class QBittorrentInstallResult(StrEnum):
     BLOCKED = "blocked"  # the PC's policies don't allow installing it
     RESTART = "restart"  # Windows needs a restart first
     NOT_LINKED = "not_linked"  # qBittorrent is there, but Windows doesn't open torrents with it
+    RUNNING = "running"  # a reinstall: qBittorrent is open, and has to be closed first
     FAILED = "failed"  # anything else
 
     @property

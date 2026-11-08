@@ -76,7 +76,8 @@ class PhoneCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
-        self.db = await Database.open(Path(self.tmp.name) / "library.db")
+        self.database_file = Path(self.tmp.name) / "library.db"
+        self.db = await Database.open(self.database_file)
         self.addAsyncCleanup(self.db.close)
         self.settings = await SettingsService.load(self.db.settings)
         self.library = LibraryService(

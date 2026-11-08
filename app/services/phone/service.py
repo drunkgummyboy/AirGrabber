@@ -10,9 +10,14 @@ where it is now, for when the PC's address changes. A start that fails never sto
 says why in one plain sentence (`problem`), and `run` tries again now and then, for a port that a
 closing AirGrabber still held.
 
+No Plex, no phone app (the owner's decision): without a Plex token no code is made, and every route
+but `/v1/pair` and `/v1/hello` answers 409 `no_plex` with one plain sentence (`/v1/hello` says
+`"plex": null`, which the phone shows as that sentence). The page follows Plex (`plex_connected`).
+
 A phone pairs by scanning a code (`new_pairing_payload`), and from then on follows the person who
-was selected at that moment. The Plex token goes out only in `/v1/pair`'s and `/v1/hello`'s
-answers: never in the code, never in a log.
+was selected at that moment. Whoever makes the code says whether it pairs a library manager's
+phone: the code itself doesn't say and the phone has no say in it. The Plex token goes out only in
+`/v1/pair`'s and `/v1/hello`'s answers: never in the code, never in a log.
 
 Nothing here logs a token, a code, an address or an exception's text.
 """
@@ -89,6 +94,8 @@ CODE_REFUSED_TEXT = N_(
     "scan that one."
 )
 BAD_PAIRING_TEXT = N_("AirGrabber couldn't read that code, so scan it again.")
+NEEDS_PLEX_TEXT = N_("Connect Plex first to use the phone app.")
+NO_PLEX_TEXT = N_("AirGrabber isn't connected to Plex, so connect Plex in AirGrabber on your PC.")
 PHONE_NAME_TEXT = N_("Phone")
 
 # Windows says "access denied" for a port it keeps for itself (Hyper-V's ranges, for one).
@@ -187,6 +194,7 @@ class PhoneService:
         self.available = OPEN_TO_EVERYONE or (paths.root / ENABLED_MARKER).is_file()
         self._devices = DeviceStore(settings)
         self._code = PairingCode()
+        self._code_makes_manager = False  # what the current code pairs
         self._server: PhoneServer | None = None
         self._finder: asyncio.DatagramTransport | None = None
         self._fingerprint = ""  # of the certificate in use, once it runs
@@ -194,6 +202,8 @@ class PhoneService:
         self._closed = False
         self._listeners: list[Callable[[], None]] = []
         self.problem: str | None = None  # why it isn't (fully) working, in one plain sentence
+        self._had_plex = plex_connected(settings.current)
+        self._unsubscribe_settings = settings.subscribe(self._settings_changed)
 
     # -- what the page shows ---------------------------------------------------------------------
 
@@ -227,6 +237,18 @@ class PhoneService:
 
     def phones(self) -> tuple[PairedPhone, ...]:
         return self._settings.current.phone_devices
+
+    @property
+    def plex_connected(self) -> bool:
+        """Plex is connected: without it the phone app has nothing to show."""
+        return plex_connected(self._settings.current)
+
+    def _settings_changed(self, current: Any) -> None:
+        """Plex connected or disconnected: the page follows."""
+        now = plex_connected(current)
+        if now != self._had_plex:
+            self._had_plex = now
+            self._notify()
 
     def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Call `listener` after every change the page shows. Returns what unsubscribes it."""
@@ -274,6 +296,7 @@ class PhoneService:
 
     async def aclose(self) -> None:
         """The app is closing: stop, and don't start again."""
+        self._unsubscribe_settings()
         async with self._lock:
             self._closed = True
             await self._stop()
@@ -304,7 +327,8 @@ class PhoneService:
             return t(START_FAILED_TEXT)
         await self._remember_identity(fingerprint)
         self._fingerprint = fingerprint
-        routes = {**self._routes_factory(), **self._own_routes()}
+        others = {key: self._needs_plex(handler) for key, handler in self._routes_factory().items()}
+        routes = {**others, **self._own_routes()}
         server = PhoneServer(routes, self._devices, cert, key)
         try:
             await server.start(self._port)
@@ -361,14 +385,18 @@ class PhoneService:
 
     # -- pairing ---------------------------------------------------------------------------------
 
-    def new_pairing_payload(self) -> str:
-        """What the code on the screen holds; it cancels the code before it. Raises
-        PairingUnavailable when a phone couldn't connect anyway."""
+    def new_pairing_payload(self, manager: bool) -> str:
+        """What the code on the screen holds; it cancels the code before it. `manager`: the phone
+        that uses it is a library manager's. Raises PairingUnavailable when a phone couldn't
+        connect anyway."""
+        if not self.plex_connected:
+            raise PairingUnavailable(t(NEEDS_PLEX_TEXT))
         if self._server is None:
             raise PairingUnavailable(t(OFF_TEXT))
         hosts = self._addresses()
         if not hosts:
             raise PairingUnavailable(t(NO_NETWORK_TEXT))
+        self._code_makes_manager = manager
         return json.dumps(
             {
                 "v": 1,
@@ -386,6 +414,16 @@ class PhoneService:
         await self._devices.remove(id)
         self._notify()
 
+    def _needs_plex(self, handler: Handler) -> Handler:
+        """`handler`, answering `no_plex` while Plex isn't connected."""
+
+        async def guarded(request: Request) -> Reply:
+            if not self.plex_connected:
+                return error_reply(409, "no_plex", t(NO_PLEX_TEXT))
+            return await handler(request)
+
+        return guarded
+
     def _own_routes(self) -> dict[tuple[str, str], Handler]:
         return {("POST", "/v1/pair"): self._pair, ("GET", "/v1/hello"): self._hello}
 
@@ -396,7 +434,9 @@ class PhoneService:
             return error_reply(400, "bad_request", t(BAD_PAIRING_TEXT))
         if not self._code.take(code, datetime.now(UTC)):
             return error_reply(401, "not_paired", t(CODE_REFUSED_TEXT))
-        phone, token = await self._devices.add(_clean_name(name), self._profiles.current_id)
+        phone, token = await self._devices.add(
+            _clean_name(name), self._profiles.current_id, manager=self._code_makes_manager
+        )
         # Someone is using this certificate now: the note about the earlier one has done its work.
         await self._settings.update(phone_fingerprint=self._fingerprint)
         self._notify()
@@ -409,6 +449,7 @@ class PhoneService:
     def _about(self, phone: PairedPhone) -> dict[str, Any]:
         return {
             "phone_id": phone.id,
+            "manager": phone.manager,
             "api_version": API_VERSION,
             "app_version": __version__,
             "plex": self._plex_details(),

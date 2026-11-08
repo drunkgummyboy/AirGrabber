@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime
 from enum import StrEnum
 from pathlib import PureWindowsPath
 
@@ -71,6 +72,10 @@ WINGET_COMMAND = (
     "--accept-package-agreements",
     "--accept-source-agreements",
 )
+
+# A reinstall: `--force` makes winget run the installer again although qBittorrent is installed
+# (without it winget looks for an upgrade, finds none and does nothing).
+WINGET_REINSTALL_COMMAND = (*WINGET_COMMAND, "--force")
 
 # winget's exit codes (github.com/microsoft/winget-cli, doc/.../winget/returnCodes.md) and the
 # Windows errors it passes on, as unsigned 32-bit numbers, by what they mean for the user.
@@ -511,15 +516,51 @@ async def install_qbittorrent(
         log.info("qBittorrent is installed already: linking it, no winget")
         report(t("Checking the installation…"))
         return await _linked_result(find, linker)
+    problem = await _run_winget(WINGET_COMMAND, lambda: report(t("Installing qBittorrent…")))
+    if problem is not None:
+        return problem
+    report(t("Checking the installation…"))
+    return await _linked_result(find, linker)
+
+
+async def reinstall_qbittorrent(
+    progress: Callable[[str], None] | None = None,
+    find: Callable[[], TorrentApp | None] = find_torrent_app,
+    linker: QBittorrentLinker | None = None,
+) -> QBittorrentInstallResult:
+    """Install qBittorrent again over itself (winget `--force`; Windows shows a UAC prompt), then
+    as `install_qbittorrent`. winget saying it was there already means nothing was reinstalled:
+    FAILED. Only the exit code is logged."""
+
+    def report(text: str) -> None:
+        if progress is not None:
+            progress(text)
+
+    problem = await _run_winget(
+        WINGET_REINSTALL_COMMAND,
+        lambda: report(t("Reinstalling qBittorrent…")),
+        reinstall=True,
+    )
+    if problem is not None:
+        return problem
+    report(t("Checking the installation…"))
+    return await _linked_result(find, linker)
+
+
+async def _run_winget(
+    command: tuple[str, ...], started: Callable[[], None], *, reinstall: bool = False
+) -> QBittorrentInstallResult | None:
+    """winget with `command`: None when it went well (or, unless `reinstall`, qBittorrent was
+    there already), else why not. `started` once winget is found."""
     winget = shutil.which("winget")
     if sys.platform != "win32" or winget is None:
         log.info("qBittorrent install skipped: winget is not available")
         return QBittorrentInstallResult.NO_WINGET
-    report(t("Installing qBittorrent…"))
+    started()
     try:
         process = await asyncio.create_subprocess_exec(
             winget,
-            *WINGET_COMMAND,
+            *command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -539,9 +580,11 @@ async def install_qbittorrent(
         log.info("qBittorrent install failed: winget exit code %s", process.returncode)
         return problem
     if returncode != 0:
+        if reinstall:
+            log.info("qBittorrent reinstall: winget exit code %s, nothing ran", process.returncode)
+            return QBittorrentInstallResult.FAILED
         log.info("winget exit code %s: qBittorrent is there already", process.returncode)
-    report(t("Checking the installation…"))
-    return await _linked_result(find, linker)
+    return None
 
 
 async def _installed(linker: QBittorrentLinker) -> bool:
@@ -598,6 +641,23 @@ class TorrentAppService:
         self, progress: Callable[[str], None] | None = None
     ) -> QBittorrentInstallResult:
         return await install_qbittorrent(progress, self._find, self._linker)
+
+    async def reinstall_qbittorrent(
+        self, *, clean: bool, progress: Callable[[str], None] | None = None
+    ) -> QBittorrentInstallResult:
+        """Install qBittorrent again over itself: RUNNING (nothing done) while it runs. `clean`:
+        its settings and torrent list are set aside first (renamed, never deleted), so the setup
+        afterwards starts from scratch. Then as `install_qbittorrent`; the caller sets it up."""
+        if await asyncio.to_thread(self._qbittorrent.running):
+            return QBittorrentInstallResult.RUNNING
+        if clean:
+            when = datetime.now().strftime("%Y-%m-%d %H.%M")
+            aside = await asyncio.to_thread(self._qbittorrent.set_aside, when)
+            if aside is QBittorrentSetupResult.RUNNING:
+                return QBittorrentInstallResult.RUNNING
+            if aside is not QBittorrentSetupResult.DONE:
+                return QBittorrentInstallResult.FAILED
+        return await reinstall_qbittorrent(progress, self._find, self._linker)
 
     async def qbittorrent_state(self) -> QBittorrentState | None:
         """qBittorrent's settings file (set up for AirGrabber or not, its save folder); None

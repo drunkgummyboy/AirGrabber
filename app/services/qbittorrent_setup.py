@@ -43,6 +43,11 @@ password, so AirGrabber can send downloads to it and show their progress; only t
 the same rules (never while qBittorrent runs, the same one-time backup), and never over a Web UI
 of the user's own. app/services/qbittorrent_local.py decides when (and points AirGrabber at it).
 
+A clean reinstall (Settings, `set_aside`): qBittorrent's settings folder and its own data folder
+(`%LOCALAPPDATA%\\qBittorrent`: the torrent list) are renamed "qBittorrent (before reinstall
+<when>)" beside where they were, never deleted, only while qBittorrent isn't running; the setup
+after the reinstall then starts from an empty settings file.
+
 Also run by install.ps1 right after it installed qBittorrent (main.py `--setup-qbittorrent`,
 after the package check: `run_setup`; on a new AirGrabber install that also sets the Web UI up). Blocking: the app calls it through `asyncio.to_thread`
 (TorrentAppService). The file and the process check are injectable, so tests never touch the
@@ -120,6 +125,35 @@ def settings_file(appdata: str | None = None) -> Path:
     root = appdata if appdata is not None else os.environ.get("APPDATA", "")
     base = Path(root) if root else Path.home() / "AppData" / "Roaming"
     return base / SETTINGS_DIR / SETTINGS_NAME
+
+
+def data_folder(localappdata: str | None = None) -> Path:
+    """%LOCALAPPDATA%\\qBittorrent: qBittorrent's torrent list (BT_backup), logs and RSS."""
+    root = localappdata if localappdata is not None else os.environ.get("LOCALAPPDATA", "")
+    base = Path(root) if root else Path.home() / "AppData" / "Local"
+    return base / SETTINGS_DIR
+
+
+SET_ASIDE_NAME = "{name} (before reinstall {when})"
+
+
+def set_aside(folders: tuple[Path, ...], when: str) -> int:
+    """Rename each folder that exists to SET_ASIDE_NAME beside it (a number after it when that
+    name is taken); how many were. Raises OSError (the ones before stay renamed)."""
+    moved = 0
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        target = folder.with_name(SET_ASIDE_NAME.format(name=folder.name, when=when))
+        number = 2
+        while target.exists():
+            target = folder.with_name(
+                SET_ASIDE_NAME.format(name=folder.name, when=f"{when} {number}")
+            )
+            number += 1
+        folder.rename(target)
+        moved += 1
+    return moved
 
 
 def default_save_path(home: Path | None = None) -> Path:
@@ -438,11 +472,33 @@ class QBittorrentSetup:
         running: RunningCheck = qbittorrent_running,
         home: Path | None = None,
         theme: ThemeFolder | None = None,
+        data: Path | None = None,
     ) -> None:
+        """`data`: qBittorrent's own data folder (default `data_folder()`; tests)."""
         self._path = path
         self._running = running
         self._home = home
         self._theme = theme
+        self._data = data
+
+    def running(self) -> bool:
+        """Whether qBittorrent runs now."""
+        return self._running()
+
+    def set_aside(self, when: str) -> SetupResult:
+        """A clean reinstall's first step: the settings folder and the data folder renamed
+        (`set_aside`), unless qBittorrent runs (RUNNING). DONE, or FAILED when a rename failed.
+        Logs counts only, never a path."""
+        if self._running():
+            return SetupResult.RUNNING
+        data = self._data if self._data is not None else data_folder()
+        try:
+            moved = set_aside((self.path.parent, data), when)
+        except OSError as exc:
+            log.warning("qBittorrent's folders couldn't be set aside (%s)", type(exc).__name__)
+            return SetupResult.FAILED
+        log.info("Set %s of qBittorrent's folders aside for a clean reinstall", moved)
+        return SetupResult.DONE
 
     @property
     def path(self) -> Path:

@@ -1,8 +1,12 @@
 """Settings → Phone connection: the box over PhoneService (app/services/phone/service.py).
 
 A switch; the first time, a line that Windows will ask about the network; what's wrong in plain
-words; "Connect a phone" with the code to scan (black on white in both looks: a scanner needs
+words; a tick for whether the next phone is a library manager's (on for the first phone, off
+afterward); "Connect a phone" with the code to scan (black on white in both looks: a scanner needs
 that); and a box listing the connected phones, each with "Disconnect".
+
+Without Plex the page is one line, NEEDS_PLEX_TEXT: no Plex, no phone app. It follows Plex
+connecting and disconnecting while it is open.
 
 Everything acts at once (like the Plex box), not on Save. The box follows the service
 (`PhoneService.subscribe`) and stops when it goes.
@@ -23,7 +27,7 @@ from PIL import Image
 
 from app.i18n import N_, t
 from app.services.phone.devices import CODE_LIFETIME
-from app.services.phone.service import PACKAGES_MISSING_TEXT, PairingUnavailable
+from app.services.phone.service import NEEDS_PLEX_TEXT, PACKAGES_MISSING_TEXT, PairingUnavailable
 from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, DETAIL_SIZE, primary_button, secondary_button
 from app.ui.settings_layout import BOX_INNER, SettingsBox, SettingsPage
@@ -34,6 +38,7 @@ if TYPE_CHECKING:
 
 SWITCH_TEXT = N_("Phone connection")
 FIREWALL_TEXT = N_("Windows may ask if AirGrabber may use your network. Choose Allow.")
+MANAGER_TEXT = N_("Library manager")
 CONNECT_TEXT = N_("Connect a phone")
 SCAN_TEXT = N_("Scan this with the Companion app")
 CODE_EXPIRED_TEXT = N_("That code has expired, so click Connect a phone for a new one.")
@@ -87,6 +92,8 @@ class PhoneBox:
 
         self.box: SettingsBox = page.box()
         body = self.box.body
+        self.needs_plex = self.box.text(t(NEEDS_PLEX_TEXT))
+        self.box.add(self.needs_plex, gap=0, sticky="w")
         self.switch = ctk.CTkSwitch(
             body,
             text=t(SWITCH_TEXT),
@@ -102,10 +109,27 @@ class PhoneBox:
         self.box.add(self._problem, gap=8, sticky="w")
         self._notice = self._line(body, theme.WARNING)
         self.box.add(self._notice, gap=8, sticky="w")
+        self.manager_tick = ctk.CTkCheckBox(
+            body,
+            text=t(MANAGER_TEXT),
+            width=0,
+            height=BUTTON_HEIGHT,
+            checkbox_width=22,
+            checkbox_height=22,
+            corner_radius=6,
+            font=theme.font(DETAIL_SIZE),
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            border_color=theme.EDGE,
+            command=self._tick_changed,
+        )
+        if not self._phones_shown:
+            self.manager_tick.select()
+        self.box.add(self.manager_tick, gap=12, sticky="w")
         self.connect_button = primary_button(
             body, t(CONNECT_TEXT), self.show_code, width=CONNECT_WIDTH
         )
-        self.box.add(self.connect_button, gap=12, sticky="w")
+        self.box.add(self.connect_button, gap=8, sticky="w")
         self._code_message = self._line(body, theme.TEXT_MUTED)
         self.box.add(self._code_message, gap=8, sticky="w")
         self._code_label = ctk.CTkLabel(body, text="")
@@ -144,6 +168,24 @@ class PhoneBox:
         if not self.listening:
             return
         phone = self._phone
+        plex = phone.plex_connected
+        _show(self.needs_plex, not plex)
+        _show(self.phones_box.frame, plex)
+        if not plex:
+            self._cancel_code()
+            self._hide_code()
+            for widget in (
+                self.switch,
+                self._firewall,
+                self._problem,
+                self._notice,
+                self.manager_tick,
+                self.connect_button,
+                self._code_message,
+            ):
+                _show(widget, False)
+            return
+        _show(self.switch, True)
         if phone.on:
             self.switch.select()
         else:
@@ -151,6 +193,7 @@ class PhoneBox:
         _show(self._firewall, self._first_time)
         _show_text(self._problem, phone.problem)
         _show_text(self._notice, phone.notice)
+        _show(self.manager_tick, phone.running)
         _show(self.connect_button, phone.running)
         if not phone.running:
             self._cancel_code()
@@ -162,6 +205,9 @@ class PhoneBox:
                 self._cancel_code()
                 self._hide_code()
                 _show_text(self._code_message, None)
+                self.manager_tick.deselect()
+            elif not phones:
+                self.manager_tick.select()
             self._phones_shown = phones
             self._fill_list()
 
@@ -217,7 +263,7 @@ class PhoneBox:
         """A new code on screen, for as long as it's good. Clicking again makes another."""
         self._cancel_code()
         try:
-            payload = self._phone.new_pairing_payload()
+            payload = self._phone.new_pairing_payload(bool(self.manager_tick.get()))
         except PairingUnavailable as exc:
             self._hide_code()
             _show_text(self._code_message, str(exc))
@@ -238,6 +284,11 @@ class PhoneBox:
         _show(self._code_label, True)
         _show(self._scan_line, True)
         self._code_task = self._start(self._expire_code(), "phone-code")
+
+    def _tick_changed(self) -> None:
+        """A code on screen pairs what the tick said when it was made, so it makes way."""
+        if self._code_task is not None and not self._code_task.done():
+            self.show_code()
 
     async def _expire_code(self) -> None:
         await asyncio.sleep(self._code_seconds)  # cancelled when the box goes

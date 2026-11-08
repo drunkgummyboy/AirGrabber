@@ -677,6 +677,18 @@ class SettingsDialogTests(unittest.IsolatedAsyncioTestCase):
         nas, _ = self.dialog(Settings(download_dir=self.folder, download_mode=DownloadMode.REMOTE))
         self.assertEqual(nas._local_line.winfo_manager(), "")
 
+    async def test_its_own_qbittorrent_can_be_reinstalled_from_there(self) -> None:
+        dialog, _settings = self.dialog(local_settings(download_dir=self.folder))
+        self.assertEqual(dialog._local_torrent.winfo_manager(), "grid")
+        self.assertTrue(dialog._local_torrent._reinstall_offered)
+        self.assertEqual(dialog._torrent.winfo_manager(), "")  # one status, not two
+        nas, _ = self.dialog(Settings(download_dir=self.folder, download_mode=DownloadMode.REMOTE))
+        self.assertEqual(nas._local_torrent.winfo_manager(), "")
+        dialog._mode.set("app")
+        dialog._mode_changed()
+        self.assertEqual(dialog._local_torrent.winfo_manager(), "")
+        self.assertEqual(dialog._torrent.winfo_manager(), "grid")
+
     async def test_a_setup_while_open_shows_and_save_keeps_it(self) -> None:
         dialog, settings = self.dialog(
             Settings(download_dir=self.folder, download_mode=DownloadMode.APP)

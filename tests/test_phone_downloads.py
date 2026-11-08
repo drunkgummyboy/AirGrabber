@@ -31,6 +31,7 @@ from app.i18n import t
 from app.services.downloads import PROGRAM_IN_TORRENT, GrabError, ProgramInTorrent
 from app.services.phone.downloads import RELEASE_TTL_S, PhoneDownloads
 from app.services.phone.server import Reply, Request
+from app.services.phone.suggestions import Suggestions
 from app.services.quick_download import SEARCH_TIMEOUT, QuickDownloadService
 from app.services.remote import RemoteError
 from app.services.search import TorrentSearchService
@@ -51,6 +52,9 @@ class DownloadsCase(PhoneCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.grabs.grab = mock.AsyncMock(return_value=SENT)
+        self.suggestions: Any = mock.Mock(spec=Suggestions)  # nothing was suggested
+        self.suggestions.film = mock.AsyncMock(return_value=None)
+        self.suggestions.season_one = mock.AsyncMock(return_value=None)
         self.use_sources(self.good())
         await self.follow(episode(1, TODAY))
 
@@ -74,6 +78,7 @@ class DownloadsCase(PhoneCase):
             self.settings,
             self.profiles,
             self.films,
+            self.suggestions,
             timeout=timeout,
             clock=lambda: self.seconds,
         )
@@ -474,6 +479,11 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
                 ("POST", "/v1/download"),
                 ("POST", "/v1/releases"),
                 ("POST", "/v1/grab"),
+                ("GET", "/v1/suggestions"),
+                ("GET", "/v1/shortlist"),
+                ("PUT", "/v1/shortlist/{key}"),
+                ("DELETE", "/v1/shortlist/{key}"),
+                ("DELETE", "/v1/shortlist"),
             },
             set(routes),
         )

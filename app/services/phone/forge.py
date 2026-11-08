@@ -1,5 +1,5 @@
 """The Forge on the phone: `GET /v1/forge`, `GET /v1/forge/{id}/search` and
-`POST /v1/forge/{id}/choose`.
+`POST /v1/forge/{id}/choose`, for a library manager's phone only (`manager_only`).
 
 Only watched downloads are shown: those the Forge found in the watched folders and that always go
 into the library. A file that needs a match, or was held because its match is missing or wrong
@@ -43,7 +43,14 @@ from typing import TYPE_CHECKING, Any
 from app.i18n import t, tn
 from app.models.domain import TMDB_IMAGE_BASE
 from app.services.phone.coming_up import person_gone
-from app.services.phone.server import Handler, Reply, Request, bad_request, error_reply
+from app.services.phone.server import (
+    Handler,
+    Reply,
+    Request,
+    bad_request,
+    error_reply,
+    manager_only,
+)
 from app.services.profiles import ProfileService
 
 if TYPE_CHECKING:  # Forge's types: only typed here
@@ -191,9 +198,9 @@ class PhoneForge:
 
     def routes(self) -> dict[tuple[str, str], Handler]:
         return {
-            ("GET", "/v1/forge"): self._list,
-            ("GET", "/v1/forge/{id}/search"): self._search,
-            ("POST", "/v1/forge/{id}/choose"): self._choose,
+            ("GET", "/v1/forge"): manager_only(self._list),
+            ("GET", "/v1/forge/{id}/search"): manager_only(self._search),
+            ("POST", "/v1/forge/{id}/choose"): manager_only(self._choose),
         }
 
     async def _list(self, request: Request) -> Reply:

@@ -134,6 +134,23 @@ def _show_folder(item: PlanInput, folders: tuple[str, ...]) -> Path | None:
     return None
 
 
+def trailer_words(title: str, year: int | None, season: int | None = None) -> str:
+    """What a trailer search looks for: "The Boys 2019 season 4 official trailer" (a
+    season's), "Dune 2021 official trailer"."""
+    words = [title]
+    if year:
+        words.append(str(year))
+    if season is not None:
+        words += ["season", str(season)]
+    return " ".join(words) + " official trailer"
+
+
+def _trailer_query(title: str, year: int | None, season: int | None = None) -> str:
+    """yt-dlp's search for a trailer: the first video found for `trailer_words`; a
+    season's says the season (when TMDB lists no trailer of its own for it)."""
+    return f"ytsearch1:{trailer_words(title, year, season)}"
+
+
 def build_plan(
     inputs: Sequence[PlanInput],
     fmt: str,
@@ -215,19 +232,23 @@ def build_plan(
         if options.trailer:
             stem = target.parent / f"{ny} - Trailer"
             key = _key(stem)
+            season = media.season if media.kind is MediaKind.EPISODE else None
             if key in trailers:
                 known = trailers[key]
-                trailers[key] = known.model_copy(update={"item_ids": (*known.item_ids, item_id)})
+                update: dict[str, object] = {"item_ids": (*known.item_ids, item_id)}
+                if known.season is not None and known.season != season:
+                    # One folder, several seasons: the show's trailer, not one season's.
+                    update |= {"season": None, "query": _trailer_query(media.title, media.year)}
+                trailers[key] = known.model_copy(update=update)
             elif not exists(stem.with_name(stem.name + ".mp4")):
-                words = [media.title, str(media.year)] if media.year else [media.title]
                 trailers[key] = PlannedTrailer(
-                    query=f"ytsearch1:{' '.join(words)} official trailer",
+                    query=_trailer_query(media.title, media.year, season),
                     title=media.title,
                     year=media.year,
                     target_stem=stem,
                     item_ids=(item_id,),
                     tmdb_id=media.tmdb_id if media.kind is MediaKind.EPISODE else None,
-                    season=media.season if media.kind is MediaKind.EPISODE else None,
+                    season=season,
                 )
 
     subtitles: list[PlannedSubtitles] = []

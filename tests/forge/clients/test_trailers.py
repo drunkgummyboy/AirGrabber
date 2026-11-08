@@ -370,6 +370,9 @@ class PureTest(ForgeTestCase):
         assert sha256_for(text, "missing") is None
 
     def test_youtube_search_url(self) -> None:
+        assert youtube_search_url("The Boys", 2019, 4) == (
+            "https://www.youtube.com/results?search_query=The+Boys+2019+season+4+official+trailer"
+        )
         assert youtube_search_url("Fast & Furious", None) == (
             "https://www.youtube.com/results?search_query=Fast+%26+Furious+official+trailer"
         )

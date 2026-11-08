@@ -199,6 +199,19 @@ class PlexFilms(DomainModel):
         )
 
 
+class PlexShows(DomainModel):
+    """The series with an episode in Plex, by their TheTVDB and IMDb ids (only those AirGrabber's
+    shows cache knows: `match_scan`)."""
+
+    tvdb: frozenset[int] = frozenset()
+    imdb: frozenset[str] = frozenset()
+
+    def has(self, tvdb_id: int | None, imdb_id: str | None = None) -> bool:
+        return (tvdb_id is not None and tvdb_id in self.tvdb) or (
+            imdb_id is not None and imdb_id in self.imdb
+        )
+
+
 class PlexCounts(DomainModel):
     """What the last check found: `episodes` of `shows` of the series anyone follows, `films`,
     and the Plex shows AirGrabber doesn't know (`unmatched_shows`, counted, not stored)."""

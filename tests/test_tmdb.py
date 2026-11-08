@@ -1091,5 +1091,40 @@ class ForgeLookupTests(TMDBTestCase):
         with self.assertRaises(TMDBError):
             await self.client(FakeTMDB(ok({"episodes": []}))).tv_season(1, 1)
 
+class CollectionTests(TMDBTestCase):
+    """`collection_of`: a film's series ("In deze reeks"), by release date."""
+
+    async def test_the_film_then_its_collection(self) -> None:
+        server = FakeTMDB(
+            ok({"id": 105, "belongs_to_collection": {"id": 264, "name": "Back to the Future"}}),
+            ok(
+                {
+                    "id": 264,
+                    "parts": [
+                        {"id": 196, "title": "Part III", "release_date": "1990-05-25"},
+                        {"id": 7, "title": "Someday", "release_date": ""},
+                        {"id": 105, "title": "Back to the Future", "release_date": "1985-07-03"},
+                    ],
+                }
+            ),
+        )
+        parts = await self.client(server).collection_of(105)
+        self.assertEqual([movie.id for movie in parts], [105, 196, 7])
+        self.assertEqual(parts[0].year, 1985)
+        film, collection = server.requests
+        self.assert_request(film, "/movie/105", {})
+        self.assert_request(collection, "/collection/264", {})
+
+    async def test_a_film_in_no_collection_asks_once(self) -> None:
+        server = FakeTMDB(ok({"id": 1, "belongs_to_collection": None}))
+        self.assertEqual(await self.client(server).collection_of(1), [])
+        self.assertEqual(len(server.requests), 1)
+
+    async def test_a_collection_without_parts_is_a_bad_reply(self) -> None:
+        server = FakeTMDB(ok({"id": 1, "belongs_to_collection": {"id": 2}}), ok({"id": 2}))
+        with self.assertRaises(TMDBError):
+            await self.client(server).collection_of(1)
+
+
 if __name__ == "__main__":
     unittest.main()

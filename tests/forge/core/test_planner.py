@@ -186,10 +186,39 @@ class PlannerTest(ForgeTestCase):
         )
         [planned] = plan.trailers
         self.assertEqual((planned.tmdb_id, planned.season), (7, media.season))
+        # Without a trailer of its own on TMDB, the search says the season.
+        self.assertEqual(planned.query, "ytsearch1:VisionQuest 2026 season 1 official trailer")
         plan = build_plan(
             [inp(1, R / "x.mkv", film(tmdb_id=9))], "{ny}", PresetOptions(trailer=True), fake_exists([])
         )
         self.assertIsNone(plan.trailers[0].season)
+
+    def test_one_trailer_per_season_folder_and_the_shows_for_a_shared_folder(self) -> None:
+        def in_season(n: int, season: int) -> ResolvedMedia:
+            media = episode(n, tmdb_id=7)
+            return media.model_copy(
+                update={"parsed": media.parsed.model_copy(update={"season": season})}
+            )
+
+        items = [
+            inp(1, R / "1.mkv", in_season(1, 1)),
+            inp(2, R / "2.mkv", in_season(2, 1)),
+            inp(3, R / "3.mkv", in_season(1, 2)),
+        ]
+        opts = PresetOptions(trailer=True)
+        plan = build_plan(items, "{ny}/Season {s}/{ny} - {s00e00}", opts, fake_exists([]))
+        self.assertEqual(
+            [(tr.season, tr.item_ids, tr.query) for tr in plan.trailers],
+            [
+                (1, (1, 2), "ytsearch1:VisionQuest 2026 season 1 official trailer"),
+                (2, (3,), "ytsearch1:VisionQuest 2026 season 2 official trailer"),
+            ],
+        )
+        [shared] = build_plan(items, "{ny}/{ny} - {s00e00}", opts, fake_exists([])).trailers
+        self.assertEqual(
+            (shared.season, shared.item_ids, shared.query),
+            (None, (1, 2, 3), "ytsearch1:VisionQuest 2026 official trailer"),
+        )
 
     def test_trailer_query_and_dedupe(self) -> None:
         opts = PresetOptions(trailer=True)
