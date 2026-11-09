@@ -7,10 +7,12 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 from app.single_instance import (
@@ -21,6 +23,7 @@ from app.single_instance import (
     hand_over,
     handover_folder,
     send_request,
+    show_running,
     take_requests,
 )
 
@@ -92,6 +95,110 @@ class InstanceLockTests(unittest.TestCase):
     def test_the_default_names_stay(self) -> None:
         lock = InstanceLock()
         self.assertEqual(lock.forge_event_name, "Local\\AirGrabber-forge")
+
+    def test_the_running_copy_answers_a_show_request(self) -> None:
+        self.assertTrue(self.first.acquire())
+        self.assertFalse(self.second.acquire())
+        answered: list[bool] = []
+
+        def running_copy() -> None:  # the running copy's poll, on its own thread here
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if self.first.show_requested():
+                    self.first.answer_show()
+                    answered.append(True)
+                    return
+                time.sleep(0.01)
+
+        worker = threading.Thread(target=running_copy)
+        worker.start()
+        self.assertTrue(self.second.ask_to_show(answer_s=5))
+        worker.join()
+        self.assertEqual(answered, [True])
+
+    def test_no_answer_from_a_copy_that_doesnt_poll(self) -> None:
+        self.assertTrue(self.first.acquire())
+        self.assertFalse(self.second.acquire())
+        self.assertFalse(self.second.ask_to_show(answer_s=0.05))
+        self.assertTrue(self.first.show_requested())  # the request still waits for it
+
+    def test_an_old_answer_doesnt_count(self) -> None:
+        self.assertTrue(self.first.acquire())
+        self.first.answer_show()  # nobody waited for this one
+        self.assertFalse(self.second.acquire())
+        self.assertFalse(self.second.ask_to_show(answer_s=0.05))
+
+
+class _FakeLock:
+    def __init__(self, *, acquired: bool, answers: bool = False) -> None:
+        self.acquired = acquired
+        self.answers = answers
+        self.asked = False
+        self.drained = False
+        self.released = False
+
+    def acquire(self) -> bool:
+        return self.acquired
+
+    def ask_to_show(self, answer_s: float = 5.0) -> bool:
+        self.asked = True
+        return self.answers
+
+    def show_requested(self) -> bool:
+        self.drained = True
+        return True
+
+    def release(self) -> None:
+        self.released = True
+
+
+class ShowRunningTests(unittest.TestCase):
+    """A plain second start: shown by the running copy, or that copy is waited out."""
+
+    def setUp(self) -> None:
+        self.clock = 0.0
+        self.made: list[_FakeLock] = []
+        self.free_after = 3  # polls until the running copy has let go
+
+    def sleep(self, seconds: float) -> None:
+        self.clock += seconds
+
+    def new_lock(self) -> Any:
+        lock = _FakeLock(acquired=len(self.made) + 1 >= self.free_after)
+        self.made.append(lock)
+        return lock
+
+    def show(self, first: _FakeLock, wait_s: float = 10.0) -> Any:
+        return show_running(
+            cast(Any, first),
+            self.new_lock,
+            wait_s=wait_s,
+            poll_s=1.0,
+            sleep=self.sleep,
+            clock=lambda: self.clock,
+        )
+
+    def test_an_answer_ends_this_start(self) -> None:
+        first = _FakeLock(acquired=False, answers=True)
+        self.assertIsNone(self.show(first))
+        self.assertTrue(first.asked)
+        self.assertTrue(first.released)
+        self.assertEqual(self.made, [])
+
+    def test_a_closing_copy_is_waited_out(self) -> None:
+        first = _FakeLock(acquired=False)
+        lock = self.show(first)
+        self.assertIs(lock, self.made[-1])
+        self.assertTrue(first.released)
+        self.assertTrue(self.made[-1].drained)  # its own unanswered request: nothing to show
+        self.assertFalse(self.made[-1].released)  # held: this start is AirGrabber now
+        self.assertTrue(all(lock.released for lock in self.made[:-1]))
+
+    def test_a_copy_that_never_lets_go_is_given_up_on(self) -> None:
+        self.free_after = 1000
+        self.assertIsNone(self.show(_FakeLock(acquired=False), wait_s=5.0))
+        self.assertEqual(len(self.made), 5)
+        self.assertTrue(all(lock.released for lock in self.made))
 
 
 class MailboxTests(_TempDataDir):
@@ -312,6 +419,7 @@ class NotWindowsTests(_TempDataDir):
             self.assertTrue(lock.acquire())
             self.assertTrue(InstanceLock(*_unique_names()).acquire())
             self.assertFalse(lock.signal_show())
+            self.assertFalse(lock.ask_to_show(answer_s=0))
             self.assertFalse(lock.show_requested())
             self.assertFalse(lock.forge_requested())
             send_request(self.data_dir, REQUEST)

@@ -72,8 +72,9 @@ class ParseOptionsTests(unittest.TestCase):
 
 
 class _FakeLock:
-    def __init__(self, *, acquired: bool) -> None:
+    def __init__(self, *, acquired: bool, answers: bool = True) -> None:
         self.acquired = acquired
+        self.answers = answers
         self.shown = False
         self.released = False
 
@@ -83,6 +84,13 @@ class _FakeLock:
     def signal_show(self) -> bool:
         self.shown = True
         return True
+
+    def ask_to_show(self, answer_s: float = 5.0) -> bool:
+        self.shown = True
+        return self.answers
+
+    def show_requested(self) -> bool:
+        return False
 
     def release(self) -> None:
         self.released = True
@@ -221,6 +229,16 @@ class MainTests(unittest.TestCase):
         self.assertTrue(lock.shown)
         self.assertTrue(lock.released)
         self.requirements.assert_not_called()
+
+    def test_a_start_while_the_running_copy_closes_starts_after_it(self) -> None:
+        # The running copy doesn't answer (it is closing); once it lets go this start runs.
+        locks = iter([_FakeLock(acquired=False, answers=False), _FakeLock(acquired=True)])
+        with (
+            mock.patch.object(main, "hand_over", side_effect=AssertionError("no hand-over")),
+            mock.patch.object(main, "InstanceLock", side_effect=lambda **_kw: next(locks)),
+        ):  # one real 0.25 s poll
+            self.assertEqual(self.main(), 1)  # the package check (patched to fail) was reached
+        self.requirements.assert_called_once()
 
     def test_a_request_that_cannot_be_written_shows_the_window(self) -> None:
         lock = _FakeLock(acquired=False)

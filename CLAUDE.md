@@ -37,6 +37,10 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   await httpx/aiosqlite directly, then update widgets. CPU-heavy Pillow work goes through `asyncio.to_thread`.
 - The one exception: the tray icon (`app/ui/tray.py`, pystray) runs its own Win32 message loop on a daemon
   thread. Its callbacks may only hand work to the loop with `loop.call_soon_threadsafe` and never touch Tk.
+  And the quit watchdog (`app/ui/quit_watchdog.py`, 2026-11-09): armed once quitting starts, it logs every
+  thread's stack and ends the process if closing takes over a minute; it touches neither Tk nor the loop.
+- A plain second start waits for the running copy's answer (`single_instance.show_running`); a copy that
+  is quitting gives none, and the new start waits for it to close, then runs (before, nothing opened).
 - GC guard (D6, adopted 2026-11-08 after F-28's soaks had said no): `app/ui/gc_guard.py`, started in `main._run`: automatic GC off,
   the Tk thread collects on a timer. A collection on aiosqlite's thread had freed a Tk font there and hung that thread
   for good in `Font.__del__` (every search and grab froze). Never turn automatic GC back on; keep Tk images made and dropped on the loop.

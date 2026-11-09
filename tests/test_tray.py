@@ -431,7 +431,7 @@ class TrayHostOpenTests(unittest.TestCase):
         self.calls: list[str] = []
         self.state = "withdrawn"
 
-    def host(self) -> TrayHost:
+    def host(self, closing: bool = False) -> TrayHost:
         calls = self.calls
         window: Any = SimpleNamespace(
             winfo_exists=lambda: True,
@@ -446,6 +446,8 @@ class TrayHostOpenTests(unittest.TestCase):
             settings=settings,
             on_check_now=lambda: None,
             on_reopen=lambda: calls.append("home"),
+            answer_show=lambda: calls.append("answer"),
+            closing=lambda: closing,
         )
 
     def test_open_from_the_tray_goes_home_first(self) -> None:
@@ -466,7 +468,15 @@ class TrayHostOpenTests(unittest.TestCase):
         self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
 
     def test_a_second_start_goes_home(self) -> None:
-        host = self.host()
+        self.watch(self.host())
+        self.assertEqual(self.calls, ["home", "deiconify", "lift", "focus", "answer"])
+
+    def test_while_closing_a_second_start_gets_no_window_nor_answer(self) -> None:
+        # Unanswered, that start waits for this copy to close and then starts itself.
+        self.watch(self.host(closing=True))
+        self.assertEqual(self.calls, [])
+
+    def watch(self, host: TrayHost) -> None:
         requested = iter([True])
 
         async def run() -> None:
@@ -479,7 +489,6 @@ class TrayHostOpenTests(unittest.TestCase):
                 task.cancel()
 
         asyncio.run(run())
-        self.assertEqual(self.calls, ["home", "deiconify", "lift", "focus"])
 
 
 def _alpha(image: Image.Image, xy: tuple[int, int]) -> int:

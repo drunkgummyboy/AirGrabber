@@ -17,6 +17,7 @@ than closing), the pages and the band reload, and the status bar says "Now showi
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import webbrowser
 import dataclasses
 from datetime import UTC, date, datetime
@@ -66,7 +67,7 @@ from app.services.missing import MAX_PER_RUN
 from app.services.auto_download import GIVE_UP_AFTER
 from app.services.watchlist import GIVE_UP_AFTER as MOVIE_GIVE_UP_AFTER
 from app.services.tmdb import TMDBError
-from app.ui import theme
+from app.ui import quit_watchdog, theme
 from app.ui.branding import set_window_icon
 from app.ui.card_scale import CardScale
 from app.ui.download_control import (
@@ -403,10 +404,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
         *,
         start_hidden: bool = False,
         show_requests: Callable[[], bool] | None = None,
+        answer_show: Callable[[], None] = lambda: None,
         forge_mailbox: Mailbox | None = None,
         forge_request: ForgeRequest | None = None,
     ) -> None:
-        """`forge_mailbox`: where later starts hand MediaForge requests over (main.py's
+        """`show_requests` / `answer_show`: a second start's "show the window" and the answer
+        to it (main.py's InstanceLock). `forge_mailbox`: where later starts hand MediaForge requests over (main.py's
         InstanceLock). `forge_request`: the one this start carries (the right-click menu, the
         "MediaForge" shortcut): the window starts hidden; a plain request shows it on MediaForge's
         page, a confirm request only its confirm window (D5: AirGrabber quits or stays in the
@@ -560,7 +563,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             close_forge=services.forge.aclose,
             finish=self._destroy_for_good,
             on_asked=self._forge_pump.stop,  # what arrives from now on waits in the folder
-            on_leaving=self.withdraw,
+            on_leaving=self._leaving,
         )
 
         # Closing the window keeps AirGrabber running in the tray; main.py stops the icon at exit.
@@ -569,6 +572,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             settings=services.settings,
             on_check_now=self._check_now,
             show_requests=show_requests,  # a second start of AirGrabber asks for the window
+            answer_show=answer_show,
+            closing=lambda: self._quit_gate.asked,
             on_open_forge=self.open_forge,
             on_quit=self.quit_app,
             on_reopen=self._go_home,  # back from the tray: Series › Calendar
@@ -1026,12 +1031,27 @@ class MainWindow(AsyncCTk, ctk.CTk):
         main.py shuts the rest down."""
         self._quit_gate.request()
 
+    def _leaving(self) -> None:
+        """Quitting starts now (MediaForge finished its file): the window goes, and AirGrabber
+        ends within a minute whatever gets stuck on the way (`quit_watchdog`)."""
+        quit_watchdog.arm()
+        self.withdraw()
+
     def _destroy_for_good(self) -> None:
+        """The last step of quitting. A window that fails to go is taken down at Tk's level, so
+        the loop ends and main.py's shutdown runs (before, a half-destroyed window stayed:
+        empty, and deaf to Quit)."""
         try:
-            if self.winfo_exists():
-                self.destroy()
+            if not self.winfo_exists():
+                return
         except tk.TclError:
-            pass  # gone already
+            return  # gone already
+        try:
+            self.destroy()
+        except Exception as exc:  # TclError ("can't delete Tcl command"), or a page's own error
+            log.warning("The window didn't close cleanly (%s): ending it", type(exc).__name__)
+            with contextlib.suppress(tk.TclError):
+                self.tk.call("destroy", ".")
 
     def _check_now(self) -> None:
         """The tray's "Check for new episodes now": refresh the library, then auto-download."""

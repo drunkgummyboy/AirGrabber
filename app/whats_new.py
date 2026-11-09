@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.13.1": (
+        N_("Opening AirGrabber while it's still closing now opens it once it has closed, instead of nothing."),
+        N_("Quit always quits: if closing gets stuck, AirGrabber ends itself within a minute."),
+        N_("A window that fails to close properly no longer stays open, empty."),
+    ),
     "3.13.0": (
         N_("Fixed AirGrabber sometimes freezing: searches and downloads no longer hang until a restart."),
         N_("One-click downloads are quicker: once a good release turns up, slow sources get only a few more seconds."),

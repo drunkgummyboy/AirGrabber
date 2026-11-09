@@ -1,8 +1,11 @@
 """One AirGrabber at a time (Windows), and the mailbox later starts hand Forge requests over through.
 
 The running copy holds the named mutex `Local\\AirGrabber`. A second start finds it there, sets the
-named auto-reset event `Local\\AirGrabber-show` and exits; the running copy polls that event
-(`show_requested`, non-blocking) and brings its window back.
+named auto-reset event `Local\\AirGrabber-show` and waits for the answer `Local\\AirGrabber-shown`
+(`show_running`): the running copy polls the first event (`show_requested`, non-blocking), brings
+its window back and sets the second (`answer_show`). A copy that is closing doesn't answer; the
+new start then waits for it to let go of the lock and becomes AirGrabber itself (before, it just
+exited and nothing opened).
 
 A second start that carries a Forge request (`main.py --forge [--confirm] [--preset NAME] PATH…`,
 the Explorer right-click menu starts one process per selected file) hands it over instead: it
@@ -36,12 +39,16 @@ log = logging.getLogger(__name__)
 
 MUTEX_NAME = "Local\\AirGrabber"
 SHOW_EVENT_NAME = "Local\\AirGrabber-show"
+SHOWN_EVENT_NAME = "Local\\AirGrabber-shown"
 FORGE_EVENT_NAME = "Local\\AirGrabber-forge"
 
 HANDOVER_FOLDER = "handover"  # inside the data folder
 REQUEST_MAX_AGE_S = 120.0  # older requests are dropped: nothing pops up long after the right-click
 HANDOVER_WAIT_S = 3.0  # how long a sender waits for the running copy to take its request
 HANDOVER_POLL_S = 0.05
+SHOW_ANSWER_S = 5.0  # how long a plain second start waits for the running copy to show its window
+CLOSING_WAIT_S = 75.0  # then how long for a closing copy to let go (quitting ends within a minute)
+CLOSING_POLL_S = 0.25
 _REQUEST_SUFFIX = ".json"
 _PART_SUFFIX = ".part"
 _FORMAT_VERSION = 1
@@ -75,14 +82,20 @@ class InstanceLock:
         forge_event_name: str = FORGE_EVENT_NAME,
         *,
         data_dir: Path | None = None,
+        shown_event_name: str | None = None,
     ) -> None:
         self._mutex_name = mutex_name
         self._event_name = show_event_name
         self._forge_event_name = forge_event_name
+        # The answer to a show request; by default named after the show event (tests' own names).
+        self._shown_event_name = shown_event_name or (
+            SHOWN_EVENT_NAME if show_event_name == SHOW_EVENT_NAME else f"{show_event_name}-shown"
+        )
         self._data_dir = data_dir
         self._mutex: int | None = None
         self._event: int | None = None
         self._forge_event: int | None = None
+        self._shown_event: int | None = None
 
     @property
     def forge_event_name(self) -> str:
@@ -100,6 +113,7 @@ class InstanceLock:
         # The events first, so a second start that finds the mutex taken can always reach them.
         self._event = kernel32.CreateEventW(None, False, False, self._event_name) or None
         self._forge_event = kernel32.CreateEventW(None, False, False, self._forge_event_name) or None
+        self._shown_event = kernel32.CreateEventW(None, False, False, self._shown_event_name) or None
         ctypes.set_last_error(0)
         mutex = kernel32.CreateMutexW(None, False, self._mutex_name)
         error = ctypes.get_last_error()
@@ -119,6 +133,23 @@ class InstanceLock:
         # This process was just started by the user, so it may bring another one to the front.
         _user32().AllowSetForegroundWindow(_ASFW_ANY)
         return bool(_kernel32().SetEvent(self._event))
+
+    def ask_to_show(self, answer_s: float = SHOW_ANSWER_S) -> bool:
+        """Ask the running copy to show its window and wait up to `answer_s` for its answer
+        (after `acquire` returned False). False: no answer (it is closing, or busy), and
+        outside Windows."""
+        if sys.platform != "win32" or self._event is None or self._shown_event is None:
+            return False
+        self._signalled(self._shown_event)  # an old answer nobody waited for
+        if not self.signal_show():
+            return False
+        waited = _kernel32().WaitForSingleObject(self._shown_event, max(0, int(answer_s * 1000)))
+        return bool(waited == _WAIT_OBJECT_0)
+
+    def answer_show(self) -> None:
+        """The running copy: the window asked for is on screen (the waiting start may exit)."""
+        if sys.platform == "win32" and self._shown_event is not None:
+            _kernel32().SetEvent(self._shown_event)
 
     def show_requested(self) -> bool:
         """Whether a second start asked for the window since the last call. Never blocks."""
@@ -143,7 +174,9 @@ class InstanceLock:
         mutex, self._mutex = self._mutex, None
         event, self._event = self._event, None
         forge_event, self._forge_event = self._forge_event, None
-        for handle in (mutex, event, forge_event):  # the mutex first: a start in between then just runs
+        shown_event, self._shown_event = self._shown_event, None
+        # The mutex first: a start in between then just runs.
+        for handle in (mutex, event, forge_event, shown_event):
             if handle is not None:
                 _kernel32().CloseHandle(handle)
 
@@ -285,6 +318,40 @@ def hand_over(
         lock.release()
         if clock() >= deadline:
             return None
+
+
+def show_running(
+    lock: InstanceLock,
+    new_lock: Callable[[], InstanceLock],
+    *,
+    answer_s: float = SHOW_ANSWER_S,
+    wait_s: float = CLOSING_WAIT_S,
+    poll_s: float = CLOSING_POLL_S,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> InstanceLock | None:
+    """A plain start that found AirGrabber running (`lock.acquire()` returned False): ask it to
+    show its window. None: it did, so this process exits. When it doesn't answer (it is closing,
+    or stuck) this start waits up to `wait_s` for it to let go of the lock and returns the
+    acquired lock: this process becomes AirGrabber. None after `wait_s` too (that copy still
+    runs). `lock` is released either way."""
+    try:
+        if lock.ask_to_show(answer_s):
+            return None
+    finally:
+        lock.release()
+    log.info("The running AirGrabber didn't show its window: waiting for it to close")
+    deadline = clock() + wait_s
+    while clock() < deadline:
+        sleep(poll_s)
+        candidate = new_lock()
+        if candidate.acquire():
+            candidate.show_requested()  # this start's own unanswered request: nothing to show
+            log.info("The other AirGrabber has closed: starting")
+            return candidate
+        candidate.release()
+    log.warning("The running AirGrabber neither showed its window nor closed: exiting")
+    return None
 
 
 def _decode(text: str) -> tuple[ForgeRequest, float] | None:

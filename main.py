@@ -40,7 +40,7 @@ from app.bootstrap import ensure_requirements
 from app.config import AppPaths, configure_logging
 from app.i18n import set_language, t
 from app.identity import set_process_app_id
-from app.single_instance import ForgeRequest, InstanceLock, hand_over
+from app.single_instance import ForgeRequest, InstanceLock, hand_over, show_running
 from app.update_guard import CONFIRM_AFTER_S, before_start, confirm_started
 
 if TYPE_CHECKING:
@@ -142,10 +142,12 @@ def main() -> int:
     if instance is None:
         instance = InstanceLock(data_dir=paths.root)
         if not instance.acquire():
-            instance.signal_show()
-            instance.release()
-            log.info("AirGrabber is already running: asked it to show its window; exiting")
-            return 0
+            # A copy that is closing doesn't answer: then this start waits it out and runs.
+            taken_over = show_running(instance, lambda: InstanceLock(data_dir=paths.root))
+            if taken_over is None:
+                log.info("AirGrabber is already running: asked it to show its window; exiting")
+                return 0
+            instance = taken_over
     try:
         # Before the package check: a bad update may be what broke the packages.
         if before_start(_install_dir(), paths.databases):
@@ -174,7 +176,7 @@ def _run(
     """The app. `forge_request`: the Forge request this first start carries (it starts hidden;
     the request decides what shows); later starts' requests arrive through `instance`."""
     from app.services import Services
-    from app.ui import gc_guard, tasks, theme
+    from app.ui import gc_guard, quit_watchdog, tasks, theme
     from app.ui.main_window import MainWindow
 
     # One event loop for everything. aiosqlite/httpx awaitables and Tk callbacks all run on it,
@@ -197,6 +199,7 @@ def _run(
             services,
             start_hidden=start_hidden,
             show_requests=instance.show_requested,
+            answer_show=instance.answer_show,
             forge_mailbox=instance,  # later starts' Forge requests
             forge_request=forge_request,
         )
@@ -214,6 +217,9 @@ def _run(
         _show_fatal_error(paths)
         return 1
     finally:
+        # From here AirGrabber ends within a minute, whatever gets stuck (already armed when
+        # Quit started it; a fatal error or a closed window arms it now).
+        quit_watchdog.arm()
         if services is not None:
             # Forge first, before every task is cancelled: its renamer finishes the file it is
             # renaming (bounded). Quit has normally closed it already; then this does nothing.
@@ -225,6 +231,7 @@ def _run(
             loop.run_until_complete(services.aclose())
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
+        quit_watchdog.disarm()  # closed: the update install has its own safety (update_guard)
         _apply_staged_update(paths)
         if window is not None:
             _stop_tray(window)  # last: the icon stays until everything else has shut down

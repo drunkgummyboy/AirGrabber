@@ -361,6 +361,8 @@ class TrayHost:
         settings: SettingsService,
         on_check_now: Callable[[], None],
         show_requests: Callable[[], bool] | None = None,
+        answer_show: Callable[[], None] = lambda: None,
+        closing: Callable[[], bool] = lambda: False,
         on_open_forge: Callable[[], None] | None = None,
         on_quit: Callable[[], None] | None = None,
         on_reopen: Callable[[], None] | None = None,
@@ -371,8 +373,12 @@ class TrayHost:
         what quitting does (the main window's, which first waits for MediaForge); without it
         the window is destroyed at once. `on_reopen`: called when a plain Open (the menu's
         Open, a second start) brings the window back from the tray (the main window's start
-        page: Series › Calendar)."""
+        page: Series › Calendar). `answer_show`: tells the second start the window is on
+        screen (it then exits); never while `closing()` (quitting was asked for): that start
+        then waits for this copy to close and starts itself."""
         self._window = window
+        self._answer_show = answer_show
+        self._closing = closing
         self._settings = settings
         self._on_check_now = on_check_now
         self._show_requests = show_requests
@@ -508,9 +514,14 @@ class TrayHost:
     async def _watch_show_requests(self, requested: Callable[[], bool]) -> None:
         while True:
             await asyncio.sleep(_SHOW_POLL_S)
-            if requested() and _alive(self._window):
-                log.info("AirGrabber was started again: showing the window")
-                self.open_window()
+            if not requested() or not _alive(self._window):
+                continue
+            if self._closing():
+                log.info("AirGrabber was started again while closing: the new start takes over")
+                continue
+            log.info("AirGrabber was started again: showing the window")
+            self.open_window()
+            self._answer_show()
 
 
 def _alive(widget: tk.Misc) -> bool:

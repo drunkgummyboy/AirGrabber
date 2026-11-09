@@ -1473,6 +1473,12 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "Opening AirGrabber while it's still closing now opens it once it has closed, instead of nothing.":
+        "AirGrabber openen terwijl het nog afsluit, opent het nu zodra het is afgesloten, in plaats van niets.",
+    "Quit always quits: if closing gets stuck, AirGrabber ends itself within a minute.":
+        "Afsluiten sluit altijd af: blijft het afsluiten hangen, dan stopt AirGrabber zichzelf binnen een minuut.",
+    "A window that fails to close properly no longer stays open, empty.":
+        "Een venster dat niet goed sluit, blijft niet meer leeg openstaan.",
     "Fixed AirGrabber sometimes freezing: searches and downloads no longer hang until a restart.":
         "AirGrabber bevriest niet meer af en toe: zoeken en downloaden blijven niet meer hangen tot een herstart.",
     "One-click downloads are quicker: once a good release turns up, slow sources get only a few more seconds.":
