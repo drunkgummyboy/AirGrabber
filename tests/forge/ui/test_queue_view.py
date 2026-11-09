@@ -33,7 +33,7 @@ from PIL import Image
 
 from app.config import AppPaths
 from app.forge.core import fsops
-from app.forge.core.executor import RunResult
+from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.matcher import Resolution
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
@@ -643,6 +643,19 @@ class QueueTest(QueueCase):
         self.assertFalse(self.view.cancel_button.winfo_ismapped())
         self.assertTrue(self.view.forge_button.winfo_ismapped())
         self.assertIn("cancelled", self.services.activity.lines()[-1].text)
+
+    async def test_a_trailer_download_after_the_renames_shows_on_the_bar(self) -> None:
+        # Before, the bar stayed at the last rename while the trailers came, one by one.
+        self.view._set_running(True, total=2)
+        step = "Downloading trailer 1 of 2 · Alien"
+        self.view._heard_progress(
+            ProgressEvent(item_id=None, status="working", message=step, fraction=0.5)
+        )
+        self.assertEqual(self.view.progress.text, step)
+        self.view._set_running(False)
+        self.view._set_running(True, total=2)
+        self.assertTrue(self.view.progress.text.startswith("Renaming 1 of 2"))  # a new run
+        self.view._set_running(False)
 
     async def test_request_close_while_idle_closes_at_once(self) -> None:
         self.assertTrue(self.view.request_close(lambda: None))

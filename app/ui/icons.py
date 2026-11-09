@@ -57,6 +57,24 @@ def draw_lines(segments: tuple[Segment, ...], size_px: int, color: RGB) -> Image
     return image.resize((size_px, size_px), Image.Resampling.BOX)
 
 
+def phone_icon(size_px: int, color: RGB) -> Image.Image:
+    """The phone icon (the header's 📱 button): a rounded upright outline with a short speaker
+    line at the top and a dot at the bottom, `size_px` square, RGBA."""
+    big = size_px * _SUPERSAMPLE
+    scale = big / VIEWBOX
+    width = max(1, round(STROKE * scale))
+    image = Image.new("RGBA", (big, big), (*color, 0))
+    draw = ImageDraw.Draw(image)
+    fill = (*color, 255)
+    draw.rounded_rectangle(
+        (6 * scale, 2 * scale, 18 * scale, 22 * scale), radius=3 * scale, outline=fill, width=width
+    )
+    draw.line((10 * scale, 5.5 * scale, 14 * scale, 5.5 * scale), fill=fill, width=width)
+    dot = 1.3 * scale
+    draw.ellipse((12 * scale - dot, 18.3 * scale - dot, 12 * scale + dot, 18.3 * scale + dot), fill=fill)
+    return image.resize((size_px, size_px), Image.Resampling.BOX)
+
+
 def sliders_icon(size_px: int, color: RGB) -> Image.Image:
     """The settings icon: three sliders (SLIDERS), `size_px` square, RGBA."""
     return draw_lines(SLIDERS, size_px, color)

@@ -571,6 +571,29 @@ class LayoutTests(unittest.TestCase):
                     for rest in parts[index + 1 :]:
                         self.assertFalse(part.overlaps(rest), (width, part, rest))
 
+    def test_the_phone_button_beside_the_name(self) -> None:
+        """📱 right beside the name button, the size of the others; the rest moves over for it,
+        the name stays."""
+        for width in (1220, 1650, 2560):
+            for history in (False, True):
+                with self.subTest(width=width, history=history):
+                    other = band_layout(width, word_width=WORD, person_width=100, history=history)
+                    self.assertEqual(other.phone.w, 0)
+                    layout = band_layout(
+                        width, word_width=WORD, person_width=100, history=history, phone=True
+                    )
+                    mobile = layout.phone
+                    self.assertEqual((mobile.w, mobile.h, mobile.y), (layout.settings.w, layout.settings.h, layout.settings.y))
+                    self.assertAlmostEqual(mobile.right + BUTTON_GAP, layout.person.x)
+                    self.assertAlmostEqual(layout.settings.right + BUTTON_GAP, mobile.x)
+                    self.assertEqual(layout.person, other.person)
+                    self.assertEqual(hit_target(layout, *middle(mobile), items=3), Hit(HitKind.PHONE))
+                    parts = controls(layout)
+                    self.assertIn(mobile, parts)
+                    for index, part in enumerate(parts):
+                        for rest in parts[index + 1 :]:
+                            self.assertFalse(part.overlaps(rest), (width, part, rest))
+
     def test_wide_windows(self) -> None:
         for width in (1650, 1920, 2560):
             with self.subTest(width):
@@ -845,6 +868,21 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         self.events: list[Any] = []
         self.person = 1  # the selected person the band reads
 
+    async def test_the_phone_button(self) -> None:
+        band = self.band()
+        band.start()
+        await self.settle()
+        self.assertEqual(option(band, band._phone_glyph, "state"), "hidden")
+        self.assertIsNone(band.phone_box())
+        band.set_phone(True)
+        self.assertEqual(option(band, band._phone_glyph, "state"), "normal")
+        box = band.phone_box()
+        assert box is not None and band._layout is not None
+        band._activate(Hit(HitKind.PHONE))
+        self.assertEqual(self.events[-1], "phone")
+        band.set_phone(False)
+        self.assertEqual(option(band, band._phone_glyph, "state"), "hidden")
+
     def band(self, *, motion: bool = True) -> SpotlightBand:
         band = SpotlightBand(
             self.root,
@@ -860,6 +898,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
             report=lambda text, ms: self.events.append(("report", text, ms)),
             profile=lambda: self.person,
             on_person=lambda: self.events.append("person"),
+            on_phone=lambda: self.events.append("phone"),
             on_home=lambda: self.events.append("home"),
             clock=lambda: NOW,
             on_part=lambda part: self.events.append(part),

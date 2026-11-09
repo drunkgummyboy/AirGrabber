@@ -43,14 +43,16 @@ from app.config import AppPaths
 from app.i18n import N_, t
 from app.models import PairedPhone, Profile
 from app.services.phone.certificate import ensure_certificate
+from app.services.phone.copies import PhoneCopies
 from app.services.phone.devices import DeviceStore, PairingCode
 from app.services.phone.sends import PhoneSends
 from app.services.phone.server import (
     PORT,
-    Handler,
+    FileReply,
     PhoneServer,
     Reply,
     Request,
+    Route,
     error_reply,
     is_home_address,
 )
@@ -178,12 +180,13 @@ class PhoneService:
         settings: SettingsService,
         paths: AppPaths,
         profiles: ProfileService,
-        routes_factory: Callable[[], Mapping[tuple[str, str], Handler]],
+        routes_factory: Callable[[], Mapping[tuple[str, str], Route]],
         *,
         port: int = PORT,
         finder_port: int = FINDER_PORT,
         addresses: Callable[[], list[str]] = this_pcs_addresses,
         sends: PhoneSends | None = None,
+        copies: PhoneCopies | None = None,
     ) -> None:
         """`routes_factory`: the routes of everything else the phone may ask (read at each
         start). `port`, `finder_port`, `addresses`: for tests."""
@@ -196,6 +199,8 @@ class PhoneService:
         self._addresses = addresses
         # What was sent to each phone and what it holds (its menu in Settings).
         self.sends = sends if sends is not None else PhoneSends(settings)
+        # Phone-sized copies of 4K films (copies.py): started with the server, said in hello.
+        self.copies = copies
         # Read once: the page and the service agree until the next start.
         self.available = OPEN_TO_EVERYONE or (paths.root / ENABLED_MARKER).is_file()
         self._devices = DeviceStore(settings)
@@ -310,6 +315,8 @@ class PhoneService:
         async with self._lock:
             self._closed = True
             await self._stop()
+        if self.copies is not None:
+            await self.copies.aclose()
 
     @property
     def _fully_running(self) -> bool:
@@ -352,6 +359,8 @@ class PhoneService:
             self._log_start_failure("The phone connection can't start", exc)
             return t(PORT_BUSY_TEXT if exc.errno in _PORT_ERRORS else START_FAILED_TEXT)
         self._server = server
+        if self.copies is not None:
+            await self.copies.start()  # tries the card once: hello says what it found
         return None
 
     async def _remember_identity(self, fingerprint: str) -> None:
@@ -442,17 +451,17 @@ class PhoneService:
         )
         self._notify()
 
-    def _needs_plex(self, handler: Handler) -> Handler:
+    def _needs_plex(self, handler: Route) -> Route:
         """`handler`, answering `no_plex` while Plex isn't connected."""
 
-        async def guarded(request: Request) -> Reply:
+        async def guarded(request: Request) -> Reply | FileReply:
             if not self.plex_connected:
                 return error_reply(409, "no_plex", t(NO_PLEX_TEXT))
             return await handler(request)
 
         return guarded
 
-    def _own_routes(self) -> dict[tuple[str, str], Handler]:
+    def _own_routes(self) -> dict[tuple[str, str], Route]:
         return {("POST", "/v1/pair"): self._pair, ("GET", "/v1/hello"): self._hello}
 
     async def _pair(self, request: Request) -> Reply:
@@ -482,6 +491,7 @@ class PhoneService:
             "api_version": API_VERSION,
             "app_version": __version__,
             "plex": self._plex_details(),
+            "phone_copies": self.copies is not None and self.copies.available,
         }
 
     def _plex_details(self) -> dict[str, str] | None:

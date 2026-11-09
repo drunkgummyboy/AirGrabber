@@ -4,6 +4,9 @@ It answers only paired phones (`POST /v1/pair` being how a phone becomes one) an
 on the home network; `manager_only` keeps a route to a library manager's phone. Never log a
 token, a request's query or body, or an exception's text: any of them can hold a token or a file's
 path.
+
+A handler answers with a `Reply` (JSON) or a `FileReply`: a file sent in pieces (a phone-sized
+copy, gigabytes), `Range: bytes=N-` giving 206 from byte N (`file_range`), so a broken copy resumes.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import logging
 import ssl
 import traceback
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial, wraps
 from http.client import responses
 from pathlib import Path
@@ -33,6 +36,7 @@ READ_TIMEOUT = 10.0  # seconds for a whole request to arrive; also for its answe
 TLS_TIMEOUT = 10.0  # seconds for the TLS greeting and goodbye, each
 LINGER_TIME = 2.0  # seconds to wait for what's still coming after an early answer
 MAX_BODY = 64 * 1024
+FILE_CHUNK = 1024 * 1024  # a file's piece: read off the disk, then sent
 MAX_CONNECTIONS = 32  # open at once, all sharing the loop with the window
 _MAX_HEAD = 16 * 1024
 _MAX_DISCARD = 4 * MAX_BODY  # thrown away after an early answer; a body just over the limit fits
@@ -74,6 +78,7 @@ class Request:
     query: dict[str, str]
     body: dict[str, Any]
     phone: PairedPhone | None
+    headers: Mapping[str, str] = field(default_factory=dict)  # lowercase names (Range)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +87,47 @@ class Reply:
     body: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class FileReply:
+    """A file to send: `length` bytes from `start` of the file at `path`, `size` bytes in all
+    (206 with Content-Range when `partial`)."""
+
+    path: Path
+    content_type: str
+    size: int
+    start: int = 0
+    partial: bool = False
+
+    @property
+    def length(self) -> int:
+        return self.size - self.start
+
+
 Handler = Callable[[Request], Awaitable[Reply]]
+Route = Callable[[Request], Awaitable[Reply | FileReply]]  # what the server takes: a Handler too
 
 
 class _Answer(NamedTuple):
     data: bytes
     may_still_come: int = 0  # bytes of the request not read yet that the other side may send
+    file: FileReply | None = None  # sent after `data` (its head), in pieces
+
+
+def file_range(path: Path, content_type: str, headers: Mapping[str, str]) -> FileReply | None:
+    """The file at `path` as a FileReply, from where the request's `Range: bytes=N-` (or
+    `bytes=N-M`, read as to the end) asks; None when it starts past the end (416)."""
+    size = path.stat().st_size
+    wanted = headers.get("range", "").strip()
+    if not wanted:
+        return FileReply(path, content_type, size)
+    unit, _, spec = wanted.partition("=")
+    first, dash, _last = spec.partition("-")
+    if unit.strip().lower() != "bytes" or not dash or not first.isascii() or not first.isdigit():
+        return FileReply(path, content_type, size)  # a Range not understood: the whole file
+    start = int(first)
+    if start >= size:
+        return None
+    return FileReply(path, content_type, size, start=start, partial=True)
 
 
 def error_reply(status: int, code: ErrorCode, message: str) -> Reply:
@@ -175,7 +215,9 @@ def _failed() -> Reply:
 
 
 def _as_http(reply: Reply) -> bytes:
-    body = json.dumps(reply.body).encode()  # all ASCII: \u escapes, whatever the text holds
+    # All ASCII (\u escapes, whatever the text holds); a 204 has none (a phone's HTTP library
+    # refuses a body there).
+    body = b"" if reply.status == 204 else json.dumps(reply.body).encode()
     head = (
         f"HTTP/1.1 {reply.status} {responses.get(reply.status, '')}\r\n"
         "Content-Type: application/json; charset=utf-8\r\n"
@@ -183,6 +225,19 @@ def _as_http(reply: Reply) -> bytes:
         "Connection: close\r\n\r\n"
     )
     return head.encode() + body
+
+
+def _file_head(reply: FileReply) -> bytes:
+    status = 206 if reply.partial else 200
+    head = (
+        f"HTTP/1.1 {status} {responses[status]}\r\n"
+        f"Content-Type: {reply.content_type}\r\n"
+        f"Content-Length: {reply.length}\r\n"
+        "Accept-Ranges: bytes\r\n"
+    )
+    if reply.partial:
+        head += f"Content-Range: bytes {reply.start}-{reply.size - 1}/{reply.size}\r\n"
+    return (head + "Connection: close\r\n\r\n").encode()
 
 
 def _parse_head(raw: bytes) -> tuple[str, str, dict[str, str]]:
@@ -263,7 +318,7 @@ def _path_values(pattern: str, path: str) -> dict[str, str] | None:
 class PhoneServer:
     def __init__(
         self,
-        routes: Mapping[tuple[str, str], Handler],
+        routes: Mapping[tuple[str, str], Route],
         devices: DeviceStore,
         cert: Path,
         key: Path,
@@ -361,6 +416,8 @@ class PhoneServer:
                 async with asyncio.timeout(READ_TIMEOUT):
                     writer.write(answer.data)
                     await writer.drain()
+                if answer.file is not None:
+                    await _send_file(writer, answer.file)
                 await _discard(reader, answer.may_still_come)
         except OSError:  # a timeout is one too
             log.debug("A phone connection ended early")
@@ -408,14 +465,17 @@ class PhoneServer:
         if body is None:
             return _Answer(_as_http(_bad_request(400)))
         query = dict(parse_qsl(query_text, keep_blank_values=True)) | path_values
-        request = Request(method, path, query, body, phone)
+        request = Request(method, path, query, body, phone, headers)
         try:
-            return _Answer(_as_http(await handler(request)))
+            reply = await handler(request)
+            if isinstance(reply, FileReply):
+                return _Answer(_file_head(reply), file=reply)
+            return _Answer(_as_http(reply))
         except Exception as exc:
             _log_failure(f"answering {method} {pattern}", exc)
             return _Answer(_as_http(_failed()))
 
-    def _find_route(self, method: str, path: str) -> tuple[str, Handler, dict[str, str]] | None:
+    def _find_route(self, method: str, path: str) -> tuple[str, Route, dict[str, str]] | None:
         for (route_method, pattern), handler in self._routes.items():
             if route_method == method:
                 values = _path_values(pattern, path)
@@ -428,6 +488,22 @@ def _log_failure(where: str, exc: Exception) -> None:
     """Where it went wrong and the exception's kind; never its text, which may hold secrets."""
     frames = "".join(traceback.format_tb(exc.__traceback__))
     log.error("Phone connection: %s failed: %s\n%s", where, type(exc).__name__, frames)
+
+
+async def _send_file(writer: asyncio.StreamWriter, reply: FileReply) -> None:
+    """The file's bytes in FILE_CHUNK pieces, each read in a worker thread (the disk mustn't
+    hold up the window) and given READ_TIMEOUT to leave. Raises OSError when it can't go on."""
+    with reply.path.open("rb") as source:
+        source.seek(reply.start)
+        left = reply.length
+        while left > 0:
+            piece = await asyncio.to_thread(source.read, min(FILE_CHUNK, left))
+            if not piece:
+                raise OSError("the file got shorter while it was being sent")
+            left -= len(piece)
+            async with asyncio.timeout(READ_TIMEOUT):
+                writer.write(piece)
+                await writer.drain()
 
 
 async def _discard(reader: asyncio.StreamReader, most: int) -> None:

@@ -82,10 +82,21 @@ class PlexGuidReply(_Wire):
     id: str
 
 
+class PlexPartReply(_Wire):
+    """A version's file: `key` is where the server hands it out ("/library/parts/…")."""
+
+    key: str | None = None
+    size: int | None = None
+    container: str | None = None
+
+
 class PlexMediaReply(_Wire):
-    """A film's file as Plex describes it (the first one counts)."""
+    """A film's version as Plex describes it (the first one counts on the Library page)."""
 
     video_resolution: _Key | None = Field(default=None, alias="videoResolution")  # "1080", "4k"
+    height: _Index = None
+    duration: _Index = None  # milliseconds
+    parts: list[PlexPartReply] = Field(default_factory=list, alias="Part")
 
 
 class PlexItemReply(_Wire):
@@ -142,6 +153,17 @@ class PlexReply(_Wire):
 
 
 # -- domain ----------------------------------------------------------------------------------------
+
+
+class PlexFilmFile(DomainModel):
+    """A film's biggest version's file (for a phone-sized copy): where the server hands it out
+    (`part_key`, never logged with the server's address), its size, height and length."""
+
+    part_key: str
+    size: int
+    height: int
+    duration_s: float
+    container: str = ""
 
 
 class PlexPin(DomainModel):

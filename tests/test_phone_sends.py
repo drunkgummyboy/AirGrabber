@@ -256,10 +256,17 @@ class ContentsWindowTests(WindowCase):
         ]}
         await handler(Request("PUT", "/v1/on-phone", {}, body, self.alex))
         await self.settle()
+        # A show is one folded row (the owner, 2026-11-09: no single episodes).
         self.assertEqual(window.rows, [
             "Dune | 2.0 GB",
-            "VisionQuest · S01E01 · Pilot | Copying 30%",
-            "VisionQuest · S01E02 · Second | Couldn't copy",
+            "▸ VisionQuest | 2 episodes · 1 copying · 1 couldn't copy",
+        ])
+        window.buttons["fold:visionquest"].invoke()  # unfolded: its episodes under it
+        self.assertEqual(window.rows, [
+            "Dune | 2.0 GB",
+            "▾ VisionQuest | 2 episodes · 1 copying · 1 couldn't copy",
+            "  S01E01 · Pilot | Copying 30%",
+            "  S01E02 · Second | Couldn't copy",
         ])
         self.assertIn("Today", str(window.heard.cget("text")))
         window.buttons["501"].invoke()  # Remove
@@ -270,6 +277,49 @@ class ContentsWindowTests(WindowCase):
         await window.settled()
         await self.settle()
         self.assertEqual(window.rows[0], "Dune | 2.0 GB")
+        self.assertEqual(window.rows[1][0], "▾")  # still unfolded after the phone's news
+
+    async def test_a_show_is_removed_and_taken_back_as_a_whole(self) -> None:
+        window = self.contents()
+        handler = self.sends.routes()["PUT", "/v1/on-phone"]
+        body = {"items": [
+            item("702", kind="episode", show="VisionQuest", season=1, episode=2, size=700 * 1024**2),
+            item("701", kind="episode", show="VisionQuest", season=1, episode=1, size=1024**3),
+            item("801", kind="episode", show="Alpha Line", season=3, episode=4),
+        ]}
+        await handler(Request("PUT", "/v1/on-phone", {}, body, self.alex))
+        await self.settle()
+        self.assertEqual(window.rows, [
+            "▸ Alpha Line | 1 episode",
+            "▸ VisionQuest | 2 episodes · 1.7 GB",
+        ])
+        self.assertEqual(window.buttons["show:visionquest"].cget("text"), "Remove all")
+        window.buttons["show:visionquest"].invoke()
+        await window.settled()
+        await self.settle()
+        removals = [o.key for o in self.sends.orders_for("a") if o.action == "remove"]
+        self.assertEqual(sorted(removals), ["701", "702"])
+        self.assertEqual(window.rows[1], "▸ VisionQuest | Being removed")
+        self.assertEqual(window.buttons["show:visionquest"].cget("text"), "Cancel")
+        window.buttons["show:visionquest"].invoke()  # takes the whole removal back
+        await window.settled()
+        await self.settle()
+        self.assertEqual(self.sends.orders_for("a"), ())
+        self.assertEqual(window.rows[1], "▸ VisionQuest | 2 episodes · 1.7 GB")
+
+    async def test_waiting_episodes_are_grouped_too(self) -> None:
+        window = self.contents()
+        show = PlexTitle(kind="show", key="700", title="VisionQuest", year=2025)
+        await self.sends.send_episodes(self.alex, show, list(EPISODES[:2]))
+        await self.settle()
+        self.assertEqual(window.rows, ["▸ VisionQuest | 2 episodes"])
+        window.buttons["fold:visionquest"].invoke()
+        self.assertEqual(len(window.rows), 3)
+        window.buttons["show:visionquest"].invoke()  # Cancel all
+        await window.settled()
+        await self.settle()
+        self.assertEqual(self.sends.orders_for("a"), ())
+        self.assertEqual(window.rows, [NOTHING_TEXT])
 
     def test_labels(self) -> None:
         film = PhoneItem(key="1", kind="movie", title="Dune", state="ready")

@@ -59,6 +59,9 @@ SUBTITLES_RUN_LIMIT_S = 300.0  # all subtitles of one run at most
 
 
 class ProgressEvent(BaseModel):
+    """A step of a run. With an `item_id`: that file's rename. Without one, "working": a step
+    after the renames (a trailer download), `message` saying which and `fraction` how far."""
+
     item_id: int | None
     status: Literal["working", "done", "error", "skipped"]
     message: str  # shown as it is: already in the interface language
@@ -247,7 +250,7 @@ class Executor:
                 await self._fetch_subtitles(run_id, plan, result, succeeded, cancel)
                 if check_files:
                     await self._check_files(plan, result, succeeded, cancel)
-                await self._artwork(run_id, plan, result, succeeded)
+                await self._artwork(run_id, plan, result, succeeded, on_progress, cancel)
                 await self._prune(run_id, plan, result)
                 await self._leftovers(run_id, plan, result, succeeded)
         finally:
@@ -557,7 +560,15 @@ class Executor:
         log.warning("Subtitles stopped for this run (%s)", found.outcome.value)
         self._say(found.message, level=logging.WARNING)
 
-    async def _artwork(self, run_id: int, plan: Plan, result: RunResult, ok: set[int]) -> None:
+    async def _artwork(
+        self,
+        run_id: int,
+        plan: Plan,
+        result: RunResult,
+        ok: set[int],
+        on_progress: Callable[[ProgressEvent], None] = lambda _event: None,
+        cancel: asyncio.Event | None = None,
+    ) -> None:
         if self._posters is not None:
             for poster in plan.posters:
                 if not ok.intersection(poster.item_ids):
@@ -612,29 +623,70 @@ class Executor:
                 await self._write_nfo(run_id, nfo, result)
 
         if self._trailers is not None:
-            for trailer in plan.trailers:
-                if not ok.intersection(trailer.item_ids):
-                    continue
-                expected = trailer.target_stem.with_name(trailer.target_stem.name + ".mp4")
-                op = await self._history.record_pending(run_id, OpKind.CREATE_FILE, None, expected)
-                try:
-                    created = await self._trailers.download(trailer)
-                except Exception as exc:
-                    await self._history.mark_failed(op, _journal_text(exc))
-                    log.warning("Trailer for %s failed: %s", trailer.title, log_reason(exc))
-                    self._say(
-                        t("Trailer for {title} failed", title=trailer.title),
-                        level=logging.WARNING,
-                    )
-                    continue
-                if created is None:
-                    await self._history.mark_failed(op, NOTHING_DOWNLOADED)
-                    continue
-                size, mtime = await asyncio.to_thread(fsops.stamp, created)
-                await self._history.mark_done(op, size=size, mtime_ns=mtime, dst=created)
-                result.trailers += 1
-                log.info("Saved trailer: %s", created.name, extra=_SUCCESS)
-                self._say(t("Saved trailer: {name}", name=created.name), success=True)
+            await self._fetch_trailers(run_id, plan, result, ok, on_progress, cancel)
+
+    async def _fetch_trailers(
+        self,
+        run_id: int,
+        plan: Plan,
+        result: RunResult,
+        ok: set[int],
+        on_progress: Callable[[ProgressEvent], None],
+        cancel: asyncio.Event | None,
+    ) -> None:
+        """One at a time (each takes half a minute or so), each shown on the progress bar
+        ("Downloading trailer 3 of 28 · Thor"); Stop ends them after the current one."""
+        trailers = self._trailers
+        if trailers is None:
+            return
+        due = [trailer for trailer in plan.trailers if ok.intersection(trailer.item_ids)]
+        for index, trailer in enumerate(due):
+            if cancel is not None and cancel.is_set():
+                left = len(due) - index
+                result.cancelled = True
+                log.warning("Run stopped; %d trailer(s) not downloaded", left)
+                self._say(
+                    tn(
+                        "Stopped; {n} trailer not downloaded",
+                        "Stopped; {n} trailers not downloaded",
+                        left,
+                    ),
+                    level=logging.WARNING,
+                )
+                return
+            on_progress(
+                ProgressEvent(
+                    item_id=None,
+                    status="working",
+                    message=t(
+                        "Downloading trailer {n} of {total} · {title}",
+                        n=index + 1,
+                        total=len(due),
+                        title=trailer.title,
+                    ),
+                    fraction=index / len(due),
+                )
+            )
+            expected = trailer.target_stem.with_name(trailer.target_stem.name + ".mp4")
+            op = await self._history.record_pending(run_id, OpKind.CREATE_FILE, None, expected)
+            try:
+                created = await trailers.download(trailer)
+            except Exception as exc:
+                await self._history.mark_failed(op, _journal_text(exc))
+                log.warning("Trailer for %s failed: %s", trailer.title, log_reason(exc))
+                self._say(
+                    t("Trailer for {title} failed", title=trailer.title),
+                    level=logging.WARNING,
+                )
+                continue
+            if created is None:
+                await self._history.mark_failed(op, NOTHING_DOWNLOADED)
+                continue
+            size, mtime = await asyncio.to_thread(fsops.stamp, created)
+            await self._history.mark_done(op, size=size, mtime_ns=mtime, dst=created)
+            result.trailers += 1
+            log.info("Saved trailer: %s", created.name, extra=_SUCCESS)
+            self._say(t("Saved trailer: {name}", name=created.name), success=True)
 
     async def _write_nfo(self, run_id: int, nfo: PlannedNfo, result: RunResult) -> None:
         name = nfo.target.name

@@ -26,6 +26,7 @@ import time
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from enum import StrEnum
+from functools import partial
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -48,6 +49,7 @@ from app.models import (
     MediaType,
     Movie,
     MovieDetails,
+    PairedPhone,
     ProwlarrSetupResult,
     QueueEvent,
     SearchRequest,
@@ -83,6 +85,7 @@ from app.ui.missing_control import (
     MissingRuns,
     MissingRunState,
     outcome_status_text,
+    popup_menu,
     queued_run_report,
 )
 from app.ui.movie_details import MovieWindows, movie_title
@@ -96,6 +99,7 @@ from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_search
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
+from app.ui.phone_contents import PhoneContentsWindow
 from app.ui.send_to_phone import SendToPhoneDialog
 from app.ui.spotlight import SwitchPart
 from app.ui.spotlight_band import SpotlightBand
@@ -614,6 +618,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_backup()
         self._unsubscribe_profiles()
         self._unsubscribe_old_remover()
+        self._unsubscribe_phone()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
         for job in self.tk.splitlist(self.tk.call("after", "info")):
@@ -653,11 +658,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
             report=self._report,
             profile=lambda: services.profiles.current_id,  # the Series side's episodes
             on_person=self._open_people_menu,  # the name button
+            on_phone=self._open_phone,  # 📱 beside it: what's on your phone
             on_home=self._go_home,  # the logo and "AirGrabber": Series › Calendar
             on_part=self._part_clicked,  # the main menu: Series, Movies, MediaForge
         )
         self._band.grid(row=0, column=0, sticky="ew")
         self._show_person()
+        self._phone_window: PhoneContentsWindow | None = None
+        self._show_phone_button()
+        self._unsubscribe_phone = services.phone.subscribe(self._show_phone_button)
         self._tabs_row = build_tabs_row(self)
         self._tabs_row.grid(row=1, column=0, sticky="ew", pady=TABS_ROW_PADDING)
         self._search = self._band.entry
@@ -852,6 +861,41 @@ class MainWindow(AsyncCTk, ctk.CTk):
             return False
         self._show_windows.open_show(show)
         return True
+
+    def _show_phone_button(self) -> None:
+        """📱 beside the name button while there is a phone to look at (connected, with Plex)."""
+        phone = self._services.phone
+        self._band.set_phone(phone.available and phone.plex_connected and bool(phone.phones()))
+
+    def _open_phone(self) -> None:
+        """📱: the phone's list of what's on it; with several phones a menu first, the selected
+        person's phones on top."""
+        phone = self._services.phone
+        current = self._services.profiles.current_id
+        phones = sorted(phone.phones(), key=lambda one: one.profile_id != current)
+        if len(phones) == 1:
+            self._open_phone_contents(phones[0])
+            return
+        names = {person.id: person_name(person) for person in phone.people}
+        entries = [
+            (
+                f"{one.name} ({names[one.profile_id]})" if one.profile_id in names else one.name,
+                partial(self._open_phone_contents, one),
+            )
+            for one in phones
+        ]
+        box = self._band.phone_box()
+        if entries and box is not None:
+            popup_menu(self._band, entries, under=box)
+
+    def _open_phone_contents(self, phone: PairedPhone) -> None:
+        """One phone's list at a time."""
+        window, self._phone_window = self._phone_window, None
+        if window is not None and window.winfo_exists():
+            window.close()
+        self._phone_window = PhoneContentsWindow(
+            self, phone=phone, sends=self._services.phone_sends
+        )
 
     def _can_send_to_phone(self) -> bool:
         """A Library card gets 📱 while the phone connection has a phone to send to."""

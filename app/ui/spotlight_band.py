@@ -6,7 +6,8 @@ background (darkest behind the logo), or without one a soft glow in the accent c
 on the top row: the logo (over a soft shadow) and "AirGrabber" ("Grabber" in BRAND) on the left
 (a click on either goes home, `on_home`: Series > Calendar),
 the search field, ⬇ Downloads (with its badge while downloads are on their way), the
-settings button and, at the right end, the name button (the selected person's avatar, name and
+settings button, 📱 while a phone is connected (`set_phone`, `on_phone`: what's on your phone)
+and, at the right end, the name button (the selected person's avatar, name and
 ▾, `set_person`; a click calls `on_person`, the people menu) on the right. The Series side's
 titles are the selected person's (`profile`). Under them the
 spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the title, a muted line
@@ -70,7 +71,7 @@ from app.ui.backdrop import (
     shadowed_box,
 )
 from app.ui.branding import load_logo
-from app.ui.icons import sliders_icon
+from app.ui.icons import phone_icon, sliders_icon
 from app.ui.people import avatar_image
 from app.ui.poster_card import rgb
 from app.ui.spotlight import (
@@ -135,11 +136,13 @@ SEARCH_TIP = N_("Search")
 HISTORY_TIP = N_("History")
 DOWNLOADS_TIP = N_("Downloads")
 SETTINGS_TIP = N_("Settings")
+PHONE_TIP = N_("What's on your phone")
 _TIPS = {
     HitKind.SEARCH: SEARCH_TIP,
     HitKind.HISTORY: HISTORY_TIP,
     HitKind.DOWNLOADS: DOWNLOADS_TIP,
     HitKind.SETTINGS: SETTINGS_TIP,
+    HitKind.PHONE: PHONE_TIP,
 }
 _CONTROLS = frozenset(
     {
@@ -149,6 +152,7 @@ _CONTROLS = frozenset(
         HitKind.DOWNLOADS,
         HitKind.SETTINGS,
         HitKind.PERSON,
+        HitKind.PHONE,
     }
 )
 
@@ -196,6 +200,7 @@ class SpotlightBand(tk.Canvas):
         report: Callable[[str, int], None],
         profile: Callable[[], int],
         on_person: Callable[[], None] | None = None,
+        on_phone: Callable[[], None] | None = None,
         on_home: Callable[[], None] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         on_part: Callable[[SwitchPart], None] | None = None,
@@ -220,6 +225,8 @@ class SpotlightBand(tk.Canvas):
         self._report = report
         self._profile = profile
         self._on_person = on_person
+        self._on_phone = on_phone
+        self._phone_shown = False  # 📱: a phone is connected (`set_phone`)
         self._on_home = on_home
         self._on_part = on_part  # a click on the main menu's switch (none: no switch)
         self._part: SwitchPart | None = SwitchPart.SERIES  # lit; None: the Downloads page
@@ -298,6 +305,8 @@ class SpotlightBand(tk.Canvas):
         self._downloads_glyph = self.create_text(0, 0, anchor="center", text="⬇")
         self._settings_item = self.create_image(0, 0, anchor="nw")
         self._settings_icon = self.create_image(0, 0, anchor="center")
+        self._phone_item = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._phone_glyph = self.create_image(0, 0, anchor="center", state="hidden")
         self._badge_item = self.create_image(0, 0, anchor="nw", state="hidden")
         self._badge_text = self.create_text(0, 0, anchor="center", text="", state="hidden")
         self._person_item = self.create_image(0, 0, anchor="nw", state="hidden")
@@ -434,13 +443,27 @@ class SpotlightBand(tk.Canvas):
             self._person = person
             self._relayout(texts=False)
 
+    def set_phone(self, shown: bool) -> None:
+        """📱 beside the name button, or not (a phone connected or not)."""
+        shown = shown and self._on_phone is not None
+        if shown != self._phone_shown:
+            self._phone_shown = shown
+            self._relayout(texts=False)
+
+    def phone_box(self) -> tuple[int, int, int, int] | None:
+        """📱 on the screen (as `person_box`): where the phones' menu opens under."""
+        layout = self._layout
+        return None if layout is None or layout.phone.w <= 0 else self._screen_box(layout.phone)
+
     def person_box(self) -> tuple[int, int, int, int] | None:
         """The name button on the screen (x, y, width, height in physical pixels): where its
         menu opens under; None without one."""
         layout = self._layout
         if layout is None or layout.person.w <= 0:
             return None
-        rect = layout.person
+        return self._screen_box(layout.person)
+
+    def _screen_box(self, rect: Rect) -> tuple[int, int, int, int]:
         return (
             self.winfo_rootx() + self._px(rect.x),
             self.winfo_rooty() + self._px(rect.y),
@@ -789,6 +812,7 @@ class SpotlightBand(tk.Canvas):
             current=self._rotation.index,
             person_width=self._person_width(),
             history=self._compact,
+            phone=self._phone_shown,
             part_widths=self._part_widths() if self._on_part is not None else (),
         )
         self._layout = layout
@@ -1018,6 +1042,16 @@ class SpotlightBand(tk.Canvas):
             self.itemconfigure(self._history_glyph, fill=theme.pick(glyph))
         for item in (self._history_item, self._history_glyph):
             self.itemconfigure(item, state="normal" if history.w > 0 else "hidden")
+        mobile = layout.phone
+        if mobile.w > 0:
+            buttons.append((HitKind.PHONE, mobile, self._phone_item, "phone"))
+            self.coords(
+                self._phone_glyph, px(mobile.x + mobile.w / 2), px(mobile.y + mobile.h / 2)
+            )
+            colour = rgb(self, theme.BUTTON_TEXT)
+            self._set_image(self._phone_glyph, "phone-icon", _phone(px(ICON_SIZE), colour))
+        for item in (self._phone_item, self._phone_glyph):
+            self.itemconfigure(item, state="normal" if mobile.w > 0 else "hidden")
         for kind, rect, item, name in buttons:
             lit_button = lit.get(kind, False)
             fill = theme.ACCENT if lit_button else theme.HOVER if self._hovered(kind) else theme.SURFACE
@@ -1270,6 +1304,9 @@ class SpotlightBand(tk.Canvas):
         elif kind is HitKind.PERSON:
             if self._on_person is not None:
                 self._on_person()
+        elif kind is HitKind.PHONE:
+            if self._on_phone is not None:
+                self._on_phone()
         elif kind is HitKind.DOT:
             self.jump(hit.dot)
         elif (item := self.current) is not None:
@@ -1290,6 +1327,7 @@ class SpotlightBand(tk.Canvas):
             HitKind.HISTORY: layout.history,
             HitKind.DOWNLOADS: layout.downloads,
             HitKind.SETTINGS: layout.settings,
+            HitKind.PHONE: layout.phone,
         }[hit.kind]
         left, top = self.winfo_rootx() + self._px(rect.x), self.winfo_rooty() + self._px(rect.y)
         screen = (left, top, left + self._px(rect.w), top + self._px(rect.h))
@@ -1440,6 +1478,16 @@ def _shadowed_logo(
 
 
 _sliders_cache: dict[tuple[int, tuple[int, int, int]], Image.Image] = {}
+_phone_cache: dict[tuple[int, tuple[int, int, int]], Image.Image] = {}
+
+
+def _phone(size: int, colour: tuple[int, int, int]) -> Image.Image:
+    """📱's icon, drawn once per size and colour."""
+    key = (size, colour)
+    image = _phone_cache.get(key)
+    if image is None:
+        image = _phone_cache[key] = phone_icon(size, colour)
+    return image
 
 
 def _sliders(size: int, colour: tuple[int, int, int]) -> Image.Image:

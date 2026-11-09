@@ -24,9 +24,12 @@ from app.services.images import ImageCache
 from app.services.library import LibraryService
 from app.services.phone.collection import FilmSeries
 from app.services.phone.coming_up import ComingUp, GrabbedFilms
+from app.services.phone.copies import FOLDER as COPIES_FOLDER
+from app.services.phone.copies import PhoneCopies
 from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.forge import PhoneForge
 from app.services.phone.sends import PhoneSends
+from app.services.phone.server import Route
 from app.services.phone.service import PhoneService
 from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
@@ -190,7 +193,7 @@ class Services:
         shortlist = Shortlist(settings, self.profiles, suggestions)
         # Send to phone (the Library page) and each phone's menu of what it holds.
         self.phone_sends = PhoneSends(settings)
-        phone_routes = {
+        phone_routes: dict[tuple[str, str], Route] = {
             **ComingUp(
                 library,
                 self.watchlist,
@@ -218,12 +221,19 @@ class Services:
             **PhoneForge(forge, self.profiles).routes(),
             **FilmSeries(discovery.film_series).routes(),
         }
+        # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
+        # ffmpeg (app/services/phone/copies.py).
+        copies = PhoneCopies(
+            self.plex, paths.root / COPIES_FOLDER, paths.forge / "tools" / "ffmpeg" / "bin"
+        )
+        phone_routes = {**phone_routes, **copies.routes()}
         self.phone = PhoneService(
             settings,
             paths,
             self.profiles,
             routes_factory=lambda: phone_routes,
             sends=self.phone_sends,
+            copies=copies,
         )
 
     @classmethod

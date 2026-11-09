@@ -27,6 +27,19 @@ class FakeTrailers:
         return url
 
 
+class StoppingTrailers(FakeTrailers):
+    """Stop is pressed while the first trailer downloads."""
+
+    def __init__(self, cancel: asyncio.Event) -> None:
+        self.cancel = cancel
+        self.titles: list[str] = []
+
+    async def download(self, trailer: PlannedTrailer) -> Path | None:
+        self.titles.append(trailer.title)
+        self.cancel.set()
+        return await super().download(trailer)
+
+
 class FailingTrailers:
     def __init__(self, error: Exception | None) -> None:
         self.error = error
@@ -206,6 +219,30 @@ class ExecutorTest(HistoryTestCase):
         ]
         assert trailer_op.dst == str(self.tmp / "Dune (2024)-trailer.url")
         assert trailer_op.state is OpState.DONE and trailer_op.size
+
+    async def test_each_trailer_shows_on_the_progress_bar(self) -> None:
+        inputs = make_inputs(self.tmp, {"a.mkv": "Alien", "b.mkv": "Heat"})
+        plan = build_plan(inputs, "{ny}", PresetOptions(trailer=True))
+        events: list[ProgressEvent] = []
+        result = await self.execute(plan, events, trailers=FakeTrailers())
+        assert result.trailers == 2
+        steps = [(e.message, e.fraction) for e in events if e.item_id is None]
+        assert steps == [
+            ("Downloading trailer 1 of 2 · Alien", 0.0),
+            ("Downloading trailer 2 of 2 · Heat", 0.5),
+        ]
+        assert all(e.status == "working" for e in events if e.item_id is None)
+        assert [e.status for e in events if e.item_id is not None].count("done") == 2
+
+    async def test_stop_ends_the_trailers_after_the_current_one(self) -> None:
+        # Before, Stop only stopped the renames: the trailers went on to the last one.
+        inputs = make_inputs(self.tmp, {"a.mkv": "Alien", "b.mkv": "Heat", "c.mkv": "Jaws"})
+        plan = build_plan(inputs, "{ny}", PresetOptions(trailer=True))
+        cancel = asyncio.Event()
+        trailers = StoppingTrailers(cancel)
+        result = await self.execute(plan, cancel=cancel, trailers=trailers)
+        assert trailers.titles == ["Alien"]
+        assert (result.renamed, result.trailers, result.cancelled) == (3, 1, True)
 
     async def test_junk_deletes_are_journaled_as_delete_file(self) -> None:
         (self.tmp / "desktop.ini").write_bytes(b"j")

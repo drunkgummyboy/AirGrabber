@@ -1785,6 +1785,26 @@ NL: dict[str, str] = {
     "Copying {percent}%": "Kopiëren {percent}%",
     "Couldn't copy": "Kopiëren mislukt",
     "Being removed": "Wordt verwijderd",
+    # app/services/phone/copies.py
+    "This PC can't make phone-sized copies.": "Deze pc kan geen telefoonformaat-kopieën maken.",
+    "Plex doesn't have this film any more.": "Plex heeft deze film niet meer.",
+    "This film is already small enough for the phone.": "Deze film is al klein genoeg voor de telefoon.",
+    "There isn't enough free space on this PC to make the copy.":
+        "Er is niet genoeg vrije ruimte op deze pc om de kopie te maken.",
+    "Your PC couldn't get the film from Plex.": "Je pc kon de film niet uit Plex halen.",
+    "This film is in Dolby Vision only, and a phone-sized copy would get its colours wrong.":
+        "Deze film is alleen in Dolby Vision, en een telefoonkopie zou de kleuren verkeerd krijgen.",
+    "Your PC couldn't convert this film.": "Je pc kon deze film niet omzetten.",
+    "The phone-sized copy isn't ready yet, so wait a moment.":
+        "De telefoonkopie is nog niet klaar, wacht dus even.",
+    "That part of the copy doesn't exist.": "Dat deel van de kopie bestaat niet.",
+    "AirGrabber has no phone-sized copy of that film, so ask for it again.":
+        "AirGrabber heeft geen telefoonkopie van die film, vraag er dus opnieuw om.",
+    "Cancel all": "Alles annuleren",
+    "Remove all": "Alles verwijderen",
+    "{n} copying": "{n} wordt gekopieerd",
+    "{n} couldn't copy": "{n} kon niet kopiëren",
+    "What's on your phone": "Wat er op je telefoon staat",
     "What's on it…": "Wat staat erop…",
     "Send to phone": "Naar telefoon sturen",
     "To": "Naar",

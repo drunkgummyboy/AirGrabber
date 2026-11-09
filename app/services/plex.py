@@ -52,7 +52,7 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import PurePosixPath, PureWindowsPath
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -66,6 +66,7 @@ from app.models.plex import (
     LibraryKind,
     PlexConnection,
     PlexEpisode,
+    PlexFilmFile,
     PlexItemReply,
     PlexLibrary,
     PlexPin,
@@ -199,6 +200,9 @@ def resolution_name(value: str | None) -> str | None:
 POSTER_PREFIX = "plex:"  # a Library card's picture "url": "plex:/library/metadata/1001/thumb/…"
 POSTER_SIZE = (400, 600)  # asked of the server: enough for the biggest card at 175 % scaling
 PICTURE_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+FETCH_TIMEOUT = httpx.Timeout(60.0, connect=5.0)  # a film's file: a pause this long gives up
+FETCH_CHUNK = 1024 * 1024
+_PART_KEY = re.compile(r"/library/parts/\d{1,12}/\d{1,15}/[^?#\\]{1,200}")
 
 
 def poster_url(title: PlexTitle) -> str | None:
@@ -601,6 +605,54 @@ class PlexClient:
         )
         return list(_read(PlexReply, data, "episodes").container.metadata)
 
+    async def metadata(self, uri: str, token: str, key: str) -> PlexItemReply | None:
+        """One title with its versions and their files; None when the server doesn't have it."""
+        if not _ITEM_KEY.fullmatch(key):
+            raise PlexError("A title's key that doesn't read")
+        try:
+            data = await self._request(
+                "GET", f"{uri}/library/metadata/{key}", what="title", token=token,
+                timeout=LIBRARY_TIMEOUT,
+            )
+        except PlexError as exc:
+            if "HTTP 404" in str(exc):
+                return None
+            raise
+        found = _read(PlexReply, data, "title").container.metadata
+        return found[0] if found else None
+
+    async def fetch(
+        self,
+        uri: str,
+        token: str,
+        part_key: str,
+        write: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        """A file the server hands out at `part_key`, piece by piece to `write`. Raises
+        PlexUnreachable when it breaks off, PlexError when the server says no. The token in
+        its header only; nothing of the address is logged."""
+        if not _PART_KEY.fullmatch(part_key):
+            raise PlexError("A file's key that doesn't read")
+        try:
+            async with self._http.stream(
+                "GET",
+                f"{uri}{part_key}",
+                params={"download": 1},
+                headers=self._headers(token, {"Accept": "*/*"}),
+                timeout=FETCH_TIMEOUT,
+                follow_redirects=False,
+            ) as response:
+                if response.status_code == 401:
+                    raise PlexAuthError("Plex refused the sign-in (file)")
+                if response.status_code != 200:
+                    log.info("Plex file: HTTP %d", response.status_code)
+                    raise PlexError(f"Plex said no (file, HTTP {response.status_code})")
+                async for piece in response.aiter_bytes(FETCH_CHUNK):
+                    await write(piece)
+        except httpx.HTTPError as exc:
+            log.info("Plex file: broke off (%s)", type(exc).__name__)
+            raise PlexUnreachable("Plex stopped sending the file") from None
+
     async def picture(self, uri: str, token: str, thumb: str, width: int, height: int) -> bytes | None:
         """A title's picture from the server, resized there; None when it can't be had. The
         token in its header only; neither the address nor the answer is logged."""
@@ -941,6 +993,41 @@ class PlexService:
         found.sort(key=lambda one: (one.season is None, one.season or 0, one.episode or 0))
         log.info("Plex: %d episode(s) of a show read", len(found))
         return found
+
+    async def film_file(self, key: str) -> PlexFilmFile | None:
+        """A film's tallest version's file (its first part), from the server the last check
+        reached; None when Plex isn't connected, the server doesn't have it, or it has no file
+        to hand out. Raises PlexError (PlexUnreachable when it didn't answer)."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri:
+            return None
+        item = await self._client.metadata(uri, self._token(), key)
+        if item is None:
+            return None
+        best: PlexFilmFile | None = None
+        for media in item.media:
+            part = media.parts[0] if media.parts else None
+            if part is None or not part.key or not part.size:
+                continue
+            found = PlexFilmFile(
+                part_key=part.key,
+                size=part.size,
+                height=media.height or 0,
+                duration_s=(media.duration or 0) / 1000,
+                container=part.container or "",
+            )
+            if best is None or found.height > best.height:
+                best = found
+        return best
+
+    async def fetch_film(
+        self, film: PlexFilmFile, write: Callable[[bytes], Awaitable[None]]
+    ) -> None:
+        """`film`'s file, piece by piece to `write` (see PlexClient.fetch)."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri:
+            raise PlexUnreachable("Plex isn't connected")
+        await self._client.fetch(uri, self._token(), film.part_key, write)
 
     async def scan_folders(self, folders: Iterable[str]) -> int:
         """Ask Plex to scan these folders (where MediaForge just moved files): how many scans

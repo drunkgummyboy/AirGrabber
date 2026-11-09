@@ -21,10 +21,13 @@ from app.services.phone.certificate import ensure_certificate
 from app.services.phone.devices import DeviceStore
 from app.services.phone.server import (
     MAX_BODY,
+    FileReply,
     Handler,
     PhoneServer,
     Reply,
     Request,
+    Route,
+    file_range,
     is_home_address,
 )
 
@@ -694,6 +697,70 @@ class LifetimeTests(ServerCase):
         self.assertTrue(ended.is_set())
         await _assert_closed(self, reader)
         await _close(writer)
+
+
+class FileTests(ServerCase):
+    """A FileReply (a phone-sized copy): the whole file, or from a byte on (Range)."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.film = Path(self.tmp.name) / "501.mkv"
+        self.data = bytes(range(256)) * 12_000  # ~3 MB: more than one piece
+        self.film.write_bytes(self.data)
+
+    async def _film(self, request: Request) -> Reply | FileReply:
+        self.seen.append(request)
+        reply = file_range(self.film, "video/x-matroska", request.headers)
+        return reply if reply is not None else Reply(416, {"error": "bad_request"})
+
+    async def _gone(self, request: Request) -> Reply:
+        return Reply(204, {"ignored": True})
+
+    async def _raw(self, head: str) -> bytes:
+        reader, writer = await self._connect()
+        try:
+            writer.write(head.encode())
+            await writer.drain()
+            return await asyncio.wait_for(reader.read(-1), 10)
+        finally:
+            await _close(writer)
+
+    async def _get(self, path: str, extra: str = "") -> tuple[int, dict[str, str], bytes]:
+        raw = await self._raw(
+            f"GET {path} HTTP/1.1\r\nHost: pc\r\nAuthorization: Bearer {self.token}\r\n{extra}\r\n"
+        )
+        top, _, body = raw.partition(b"\r\n\r\n")
+        lines = top.decode("latin-1").split("\r\n")
+        headers = {n.lower(): v.strip() for n, _, v in (line.partition(":") for line in lines[1:])}
+        return int(lines[0].split(" ")[1]), headers, body
+
+    async def test_the_whole_file_then_from_a_byte_on(self) -> None:
+        routes: dict[tuple[str, str], Route] = {
+            ("GET", "/v1/films/{key}/file"): self._film,
+            ("DELETE", "/v1/films/{key}"): self._gone,
+        }
+        self.server = PhoneServer(routes, self.devices, self.cert, self.key)
+        await self.server.start(self.port)
+        status, headers, body = await self._get("/v1/films/501/file")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "video/x-matroska")
+        self.assertEqual(int(headers["content-length"]), len(self.data))
+        self.assertEqual(headers["accept-ranges"], "bytes")
+        self.assertEqual(body, self.data)
+        status, headers, body = await self._get("/v1/films/501/file", "Range: bytes=1000000-\r\n")
+        self.assertEqual(status, 206)
+        size = len(self.data)
+        self.assertEqual(headers["content-range"], f"bytes 1000000-{size - 1}/{size}")
+        self.assertEqual(body, self.data[1_000_000:])
+        status, _, _ = await self._get("/v1/films/501/file", f"Range: bytes={size}-\r\n")
+        self.assertEqual(status, 416)
+        self.assertTrue(self.seen[0].headers["authorization"].startswith("Bearer"))
+        raw = await self._raw(
+            f"DELETE /v1/films/501 HTTP/1.1\r\nAuthorization: Bearer {self.token}\r\n\r\n"
+        )
+        self.assertTrue(raw.startswith(b"HTTP/1.1 204"))
+        self.assertIn(b"Content-Length: 0", raw)
+        self.assertTrue(raw.endswith(b"\r\n\r\n"))  # no body after a 204
 
 
 if __name__ == "__main__":

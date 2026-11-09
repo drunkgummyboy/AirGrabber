@@ -163,5 +163,9 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;
   a tap fetches by the row's id only, never by its text. No Plex, no phone app (owner, 2026-11-08): without a Plex
   token the page is one line and no code is made, and every route but `/v1/pair` / `/v1/hello` answers 409 `no_plex`.
+  Phone-sized copies (`copies.py`, contract in the Companion's docs/2026-11-09-phone-sized-copies.md): a 4K film fetched
+  from Plex into `<data>\phone-copies` and made 1080p HEVC on the card (MediaForge's ffmpeg, `hevc_nvenc`), one at a
+  time; `hello`'s `phone_copies` says whether the card works. The file goes out as a `FileReply` (server.py, Range).
+  ffmpeg runs as a subprocess of the loop (no threads); its output holds paths: never logged. Tests fake Plex and ffmpeg.
 
 See `filemap.md` for where things live.

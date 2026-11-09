@@ -201,6 +201,7 @@ class PairingTests(ServiceCase):
                     "server_id": "a1b2",
                     "server_name": "Alex-NAS",
                 },
+                "phone_copies": False,  # no copy maker here
             },
         )
         self.assertTrue(body["token"])

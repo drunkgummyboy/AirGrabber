@@ -246,6 +246,7 @@ class BandLayout:
     spot: Rect  # a click here opens the title (not on the controls or the dots)
     person: Rect = Rect(0, 0, 0, 0)  # the name button, at the right end (none: 0 wide)
     history: Rect = Rect(0, 0, 0, 0)  # 🕘, just left of ⚙: MediaForge's page only (else 0 wide)
+    phone: Rect = Rect(0, 0, 0, 0)  # 📱, between ⚙ and the name: with a phone connected (else 0 wide)
     pill: Rect = Rect(0, 0, 0, 0)  # the main menu's switch (else 0 wide)
     parts: tuple[Rect, ...] = ()  # its parts: Series, Movies, MediaForge
 
@@ -287,6 +288,7 @@ def band_layout(
     person_width: float = 0.0,
     history: bool = False,
     part_widths: Sequence[float] = (),
+    phone: bool = False,
 ) -> BandLayout:
     """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left, then
     the main menu's switch (a part per `part_widths`), the search field, ⬇, the settings button
@@ -295,13 +297,17 @@ def band_layout(
     SEARCH_MIN_WIDTH) before it would come too close to what is on its left. `history`: 🕘
     (MediaForge's page) goes right beside the settings button, with ⬇ and the search field moving
     over for it; the settings button and the name stay where they are on every page and no other
-    page has a gap."""
+    page has a gap. `phone`: 📱 (what's on your phone) right beside the name button, the other
+    buttons moving over for it (shown while a phone is connected, on every page alike)."""
     right = width - PAD_X
     logo = Rect(PAD_X, ROW_TOP, LOGO_SIZE, LOGO_SIZE)
     word_x = logo.right + WORD_GAP
     left_end = word_x + word_width
     person = Rect(right - person_width, ROW_TOP, person_width, BUTTON_SIZE)
     buttons_right = person.x - BUTTON_GAP if person_width > 0 else right
+    mobile = Rect(buttons_right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
+    if phone:
+        buttons_right = mobile.x - BUTTON_GAP
     settings = Rect(buttons_right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     clock = Rect(settings.x - BUTTON_GAP - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
     beside = clock if history else settings
@@ -352,6 +358,7 @@ def band_layout(
         spot=spot,
         person=person if person_width > 0 else Rect(0, 0, 0, 0),
         history=clock if history else Rect(0, 0, 0, 0),
+        phone=mobile if phone else Rect(0, 0, 0, 0),
         pill=switch.pill if switch else Rect(0, 0, 0, 0),
         parts=switch.segments if switch else (),
     )
@@ -364,6 +371,7 @@ class HitKind(StrEnum):
     DOWNLOADS = "downloads"
     SETTINGS = "settings"
     PERSON = "person"  # the name button: who is selected, and the people menu
+    PHONE = "phone"  # 📱: what's on your phone
     DOT = "dot"
     SPOT = "spot"  # the title: opens its info window
     PART = "part"  # a part of the main menu's switch
@@ -392,6 +400,8 @@ def hit_target(layout: BandLayout, x: float, y: float, *, items: int) -> Hit | N
         return Hit(HitKind.SETTINGS)
     if layout.person.w > 0 and layout.person.contains(x, y):
         return Hit(HitKind.PERSON)
+    if layout.phone.w > 0 and layout.phone.contains(x, y):
+        return Hit(HitKind.PHONE)
     for index, dot in enumerate(layout.dots):
         if dot.grown(DOT_HIT).contains(x, y):
             return Hit(HitKind.DOT, index)
@@ -407,6 +417,8 @@ def controls(layout: BandLayout) -> Sequence[Rect]:
         parts = (*parts, layout.pill)
     if layout.history.w > 0:
         parts = (*parts, layout.history)
+    if layout.phone.w > 0:
+        parts = (*parts, layout.phone)
     return (*parts, layout.person) if layout.person.w > 0 else parts
 
 

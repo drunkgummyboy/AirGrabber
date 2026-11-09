@@ -270,6 +270,7 @@ class QueueView(ctk.CTkFrame):
         self._run_total = 0
         self._run_done: set[int] = set()
         self._run_name = ""
+        self._run_step: tuple[str, float] | None = None  # a step after the renames: words, how far
         self._setting_rule = False  # the rule's box is being filled, not typed in
         self._example_font: tuple[float, tkfont.Font] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -1906,6 +1907,7 @@ class QueueView(ctk.CTkFrame):
     def _set_running(self, running: bool, total: int = 0) -> None:
         self.running = running
         self._run_total, self._run_done, self._run_name = total, set(), ""
+        self._run_step = None
         if not self.winfo_exists():
             return
         state = "disabled" if running else "normal"
@@ -1918,6 +1920,10 @@ class QueueView(ctk.CTkFrame):
             self.refresh()
 
     def _show_progress(self) -> None:
+        if self._run_step is not None:  # the renames are done: a trailer download, say
+            text, fraction = self._run_step
+            self.progress.show(fraction, text)
+            return
         total = max(self._run_total, 1)
         done = len(self._run_done)
         if self._run_name:
@@ -1934,7 +1940,9 @@ class QueueView(ctk.CTkFrame):
     def _heard_progress(self, event: ProgressEvent) -> None:
         """A step of the run (dropped files or downloads): the bar and its words."""
         item = self.services.queue.get(event.item_id) if event.item_id is not None else None
-        if event.status == "working" and item is not None:
+        if event.item_id is None and event.status == "working":
+            self._run_step = (event.message, event.fraction)  # already in the interface language
+        elif event.status == "working" and item is not None:
             self._run_name = display_name(item)
         elif event.item_id is not None:
             self._run_done.add(event.item_id)
