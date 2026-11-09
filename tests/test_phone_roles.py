@@ -15,7 +15,13 @@ from app.services.phone.coming_up import ComingUp
 from app.services.phone.forge import PhoneForge
 from app.services.phone.server import Reply, Request, manager_only
 from app.services.profiles import ProfileService
-from app.ui.phone_settings import CONNECT_TEXT, MANAGER_TEXT
+from app.ui.phone_settings import (
+    CONNECT_TEXT,
+    CONTENTS_TEXT,
+    MANAGER_TEXT,
+    RENAME_TEXT,
+    SAVE_NAME_TEXT,
+)
 from app.ui.settings_layout import SettingsPage
 from tests.test_phone_downloads import EPISODE_BODY, DownloadsCase
 from tests.test_phone_service import PageCase, ServiceCase
@@ -53,44 +59,54 @@ class PairingTests(ServiceCase):
         await super().asyncSetUp()
         await self.service.set_on(True)
 
-    async def pair_as(self, manager: bool) -> tuple[int, dict[str, Any]]:
-        code = json.loads(self.service.new_pairing_payload(manager))["code"]
-        return await self.ask("POST", "/v1/pair", {"code": code, "name": "Sam's phone"})
-
-    async def test_code_for_a_viewer_pairs_a_viewer(self) -> None:
-        status, body = await self.pair_as(False)
+    async def pair_one(self, name: str = "Sam's phone") -> dict[str, Any]:
+        code = json.loads(self.service.new_pairing_payload())["code"]
+        status, body = await self.ask("POST", "/v1/pair", {"code": code, "name": name})
         self.assertEqual(status, 200)
-        self.assertIs(body["manager"], False)
-        self.assertFalse(self.service.phones()[0].manager)
+        return body
 
-    async def test_code_for_a_manager_pairs_a_manager(self) -> None:
-        status, body = await self.pair_as(True)
-        self.assertEqual(status, 200)
+    async def test_the_first_phone_pairs_as_a_manager(self) -> None:
+        body = await self.pair_one()
         self.assertIs(body["manager"], True)
         self.assertTrue(self.service.phones()[0].manager)
 
-    async def test_the_newest_code_decides_the_role(self) -> None:
-        self.service.new_pairing_payload(True)
-        _, body = await self.pair_as(False)
+    async def test_later_phones_pair_as_viewers(self) -> None:
+        await self.pair_one()
+        body = await self.pair_one("Kim's phone")
         self.assertIs(body["manager"], False)
+        self.assertFalse(self.service.phones()[1].manager)
 
     async def test_the_phone_cant_choose_its_own_role(self) -> None:
-        payload = json.loads(self.service.new_pairing_payload(False))
+        await self.pair_one()
+        payload = json.loads(self.service.new_pairing_payload())
         self.assertNotIn("manager", payload)
         _, body = await self.ask(
             "POST", "/v1/pair", {"code": payload["code"], "name": "Sam", "manager": True}
         )
         self.assertIs(body["manager"], False)
 
-    async def test_hello_says_the_role(self) -> None:
-        _, viewer = await self.pair_as(False)
-        _, manager = await self.pair_as(True)
+    async def test_hello_says_the_role_and_a_change_counts_at_once(self) -> None:
+        manager = await self.pair_one()
+        viewer = await self.pair_one("Kim's phone")
         status, body = await self.ask("GET", "/v1/hello", token=viewer["token"])
-        self.assertEqual(status, 200)
-        self.assertIs(body["manager"], False)
+        self.assertEqual((status, body["manager"]), (200, False))
         status, body = await self.ask("GET", "/v1/hello", token=manager["token"])
-        self.assertEqual(status, 200)
+        self.assertEqual((status, body["manager"]), (200, True))
+        await self.service.change_phone(viewer["phone_id"], manager=True)
+        _, body = await self.ask("GET", "/v1/hello", token=viewer["token"])
         self.assertIs(body["manager"], True)
+
+    async def test_rename_and_person(self) -> None:
+        body = await self.pair_one()
+        other = await self.profiles.add("Kim", self.profiles.current.colour)
+        await self.service.change_phone(body["phone_id"], name="  Kim's\nphone  ")
+        await self.service.change_phone(body["phone_id"], profile_id=other.id)
+        [phone] = self.service.phones()
+        self.assertEqual((phone.name, phone.profile_id), ("Kim's phone", other.id))
+        await self.service.change_phone(body["phone_id"], profile_id=999)  # nobody: no change
+        self.assertEqual(self.service.phones()[0].profile_id, other.id)
+        await self.service.change_phone("unknown", name="x")  # an unknown phone: nothing
+        self.assertEqual(len(self.service.phones()), 1)
 
 
 class ForgeRouteTests(ServiceCase):
@@ -100,8 +116,9 @@ class ForgeRouteTests(ServiceCase):
         await self.service.set_on(True)
 
     async def pair_as(self, manager: bool) -> str:
-        code = json.loads(self.service.new_pairing_payload(manager))["code"]
+        code = json.loads(self.service.new_pairing_payload())["code"]
         _, body = await self.ask("POST", "/v1/pair", {"code": code, "name": "Sam's phone"})
+        await self.service.change_phone(body["phone_id"], manager=manager)
         return cast(str, body["token"])
 
     async def test_a_viewer_gets_403_on_every_forge_route(self) -> None:
@@ -160,74 +177,87 @@ class EveryPhoneTests(DownloadsCase):
         self.assertIn("items", reply.body)
 
 
-class TickTests(PageCase):
+class PhoneListTests(PageCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         await self.service.set_on(True)
 
-    async def pair_as(self, manager: bool) -> None:
-        code = json.loads(self.service.new_pairing_payload(manager))["code"]
-        await self.ask("POST", "/v1/pair", {"code": code, "name": "Sam's phone"})
+    async def pair_one(self, name: str = "Sam's phone") -> str:
+        code = json.loads(self.service.new_pairing_payload())["code"]
+        _, body = await self.ask("POST", "/v1/pair", {"code": code, "name": name})
+        return cast(str, body["phone_id"])
 
-    def click_connect(self, page: SettingsPage) -> mock.MagicMock:
-        with mock.patch.object(
-            self.service, "new_pairing_payload", wraps=self.service.new_pairing_payload
-        ) as made:
-            self.shown_buttons(page)[CONNECT_TEXT].invoke()
-        return made
+    async def test_there_is_no_tick_before_connecting(self) -> None:
+        _box, page = self.box()
+        self.assertNotIn(MANAGER_TEXT, self.shown(page))
+        self.assertIn(CONNECT_TEXT, self.shown_buttons(page))
 
-    async def test_the_first_phone_is_a_manager_by_default(self) -> None:
-        box, page = self.box()
-        self.assertEqual(box.manager_tick.get(), 1)
-        self.assertEqual(str(box.manager_tick.cget("text")), MANAGER_TEXT)
-        self.click_connect(page).assert_called_once_with(True)
-
-    async def test_later_phones_are_viewers_by_default(self) -> None:
-        await self.pair_as(True)
-        box, page = self.box()
-        self.assertEqual(box.manager_tick.get(), 0)
-        self.click_connect(page).assert_called_once_with(False)
-
-    async def test_the_tick_goes_off_once_the_first_phone_paired(self) -> None:
+    async def test_each_phone_has_its_own_tick(self) -> None:
+        first = await self.pair_one()
+        second = await self.pair_one("Kim's phone")
         box, _ = self.box()
-        await self.pair_as(True)
+        self.assertEqual(box.manager_ticks[first].get(), 1)
+        self.assertEqual(box.manager_ticks[second].get(), 0)
+        self.assertEqual(str(box.manager_ticks[first].cget("text")), MANAGER_TEXT)
+        box.manager_ticks[second].toggle()
+        await box.settled()
         await self.settle()
-        self.assertEqual(box.manager_tick.get(), 0)
+        self.assertTrue(self.service.phones()[1].manager)
+        self.assertEqual(box.manager_ticks[second].get(), 1)  # the list was redrawn as it is
+        box.manager_ticks[first].toggle()
+        await box.settled()
+        self.assertFalse(self.service.phones()[0].manager)
 
-    async def test_the_tick_comes_back_when_no_phone_is_left(self) -> None:
-        await self.pair_as(True)
-        box, _ = self.box()
-        await self.service.disconnect(self.service.phones()[0].id)
-        await self.settle()
-        self.assertEqual(box.manager_tick.get(), 1)
-
-    async def test_a_click_on_the_tick_decides_the_code(self) -> None:
-        await self.pair_as(True)
+    async def test_rename_in_place(self) -> None:
+        id = await self.pair_one()
         box, page = self.box()
-        box.manager_tick.toggle()
-        self.click_connect(page).assert_called_once_with(True)
-
-    async def test_changing_the_tick_replaces_a_code_on_screen(self) -> None:
-        box, page = self.box()
-        self.click_connect(page)
-        first = box.code_image
-        with mock.patch.object(
-            self.service, "new_pairing_payload", wraps=self.service.new_pairing_payload
-        ) as made:
-            box.manager_tick.toggle()
-        made.assert_called_once_with(False)
-        self.assertIsNot(box.code_image, first)
-
-    async def test_changing_the_tick_without_a_code_makes_none(self) -> None:
-        box, _ = self.box()
-        with mock.patch.object(self.service, "new_pairing_payload") as made:
-            box.manager_tick.toggle()
-        made.assert_not_called()
-
-    async def test_the_tick_is_only_there_when_a_phone_can_connect(self) -> None:
-        box, _ = self.box()
-        self.window.update_idletasks()
-        self.assertNotEqual(box.manager_tick.winfo_manager(), "")
-        await self.service.set_on(False)
+        box.rename(id)
+        assert box.name_entry is not None
+        self.assertEqual(box.name_entry.get(), "Sam's phone")
+        self.assertEqual(str(box.rename_buttons[id].cget("text")), SAVE_NAME_TEXT)
+        box.name_entry.delete(0, "end")
+        box.name_entry.insert(0, "Sam's Galaxy")
+        box.rename(id)  # the button, now Save
+        await box.settled()
         await self.settle()
-        self.assertEqual(box.manager_tick.winfo_manager(), "")
+        self.assertEqual(self.service.phones()[0].name, "Sam's Galaxy")
+        self.assertIn("Sam's Galaxy", self.shown(page))
+        self.assertIsNone(box.name_entry)
+
+    async def test_escape_or_an_empty_name_changes_nothing(self) -> None:
+        id = await self.pair_one()
+        box, _ = self.box()
+        box.rename(id)
+        assert box.name_entry is not None
+        box.name_entry.delete(0, "end")
+        box.rename(id)  # saved empty: nothing
+        await box.settled()
+        self.assertEqual(self.service.phones()[0].name, "Sam's phone")
+        box.rename(id)
+        box._stop_renaming()  # Escape
+        self.assertIsNone(box.name_entry)
+        self.assertEqual(str(box.rename_buttons[id].cget("text")), RENAME_TEXT)
+
+    async def test_the_person_is_a_choice_only_with_two_people(self) -> None:
+        id = await self.pair_one()
+        box, _ = self.box()
+        self.assertEqual(box.person_menus, {})
+        kim = await self.profiles.add("Kim", self.profiles.current.colour)
+        await self.settle()
+        box, _ = self.box()
+        self.assertIn(id, box.person_menus)
+        box.choose_person(id, kim.id)
+        await box.settled()
+        self.assertEqual(self.service.phones()[0].profile_id, kim.id)
+
+    async def test_whats_on_it_opens_the_phones_menu(self) -> None:
+        id = await self.pair_one()
+        box, _ = self.box()
+        self.assertEqual(str(box.contents_buttons[id].cget("text")), CONTENTS_TEXT)
+        box.show_contents(id)
+        window = box._open_contents
+        self.assertIsNotNone(window)
+        self.assertTrue(window.winfo_exists())
+        box.show_contents(id)  # one at a time
+        self.assertFalse(window.winfo_exists())
+        box._close_contents()

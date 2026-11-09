@@ -1473,6 +1473,12 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "Fixed AirGrabber sometimes freezing: searches and downloads no longer hang until a restart.":
+        "AirGrabber bevriest niet meer af en toe: zoeken en downloaden blijven niet meer hangen tot een herstart.",
+    "One-click downloads are quicker: once a good release turns up, slow sources get only a few more seconds.":
+        "Downloaden met één klik gaat sneller: zodra er een goede release is, krijgen trage bronnen nog maar een paar seconden.",
+    "Each season's trailer now has its own name, ending in \"-trailer\" so Plex shows it as a trailer.":
+        "De trailer van elk seizoen heeft nu een eigen naam, eindigend op \"-trailer\", zodat Plex hem als trailer toont.",
     "Settings, Plex: a table of what AirGrabber does with and without Plex.":
         "Instellingen, Plex: een tabel van wat AirGrabber doet met en zonder Plex.",
     "Settings: reinstall qBittorrent, as a repair that keeps everything or as a clean start.":
@@ -1760,9 +1766,37 @@ NL: dict[str, str] = {
     "Connect Plex first to use the phone app.": "Koppel eerst Plex om de telefoon-app te gebruiken.",
     "AirGrabber isn't connected to Plex, so connect Plex in AirGrabber on your PC.":
         "AirGrabber is niet met Plex verbonden, dus koppel Plex in AirGrabber op je pc.",
-    "Only a library manager's phone can do this, so ask the person who set up AirGrabber to connect this phone again as a library manager.":
-        "Alleen de telefoon van een bibliotheekbeheerder kan dit, dus vraag degene die AirGrabber heeft ingesteld om deze telefoon opnieuw te verbinden als bibliotheekbeheerder.",
+    "Only a library manager's phone can do this, so ask the person who set up AirGrabber to make this phone a library manager in AirGrabber's Settings.":
+        "Alleen de telefoon van een bibliotheekbeheerder kan dit, dus vraag degene die AirGrabber heeft ingesteld om van deze telefoon een bibliotheekbeheerder te maken in de instellingen van AirGrabber.",
     "Connect a phone": "Telefoon verbinden",
+    "On {phone}": "Op {phone}",
+    "Last heard from this phone: {when}.": "Laatst gehoord van deze telefoon: {when}.",
+    "Not heard from this phone yet. It checks in when the Companion app is open at home.": "Nog niets gehoord van deze telefoon. Hij meldt zich als de Companion-app thuis openstaat.",
+    "Waiting to go": "Wacht om te gaan",
+    "The phone copies these from Plex the next time the Companion app is open at home.": "De telefoon kopieert deze uit Plex zodra de Companion-app weer thuis openstaat.",
+    "On the phone": "Op de telefoon",
+    "Nothing on this phone yet. Send episodes and films from the Library page.": "Nog niets op deze telefoon. Stuur afleveringen en films vanaf de pagina Bibliotheek.",
+    "Copying {percent}%": "Kopiëren {percent}%",
+    "Couldn't copy": "Kopiëren mislukt",
+    "Being removed": "Wordt verwijderd",
+    "What's on it…": "Wat staat erop…",
+    "Send to phone": "Naar telefoon sturen",
+    "To": "Naar",
+    "To {phone} ({person})": "Naar {phone} ({person})",
+    "The phone copies it from Plex the next time the Companion app is open at home.": "De telefoon kopieert het uit Plex zodra de Companion-app weer thuis openstaat.",
+    "Already on this phone or on its way.": "Staat al op deze telefoon of is onderweg.",
+    "Reading the episodes from Plex…": "De afleveringen uit Plex lezen…",
+    "Plex didn't answer, so try again in a moment.": "Plex antwoordde niet, dus probeer het zo nog eens.",
+    "Plex has no episodes of this show.": "Plex heeft geen afleveringen van deze serie.",
+    "Specials": "Specials",
+    "on the phone": "op de telefoon",
+    "{n} episode chosen": "{n} aflevering gekozen",
+    "{n} episodes chosen": "{n} afleveringen gekozen",
+    "Send": "Versturen",
+    "Sent {title} to {phone}.": "{title} naar {phone} gestuurd.",
+    "Sent {n} episode to {phone}.": "{n} aflevering naar {phone} gestuurd.",
+    "Sent {n} episodes to {phone}.": "{n} afleveringen naar {phone} gestuurd.",
+    "📱 Send to phone": "📱 Naar telefoon",
     "Scan this with the Companion app": "Scan dit met de Companion-app",
     "That code has expired, so click Connect a phone for a new one.":
         "Die code is verlopen, dus klik op Telefoon verbinden voor een nieuwe.",

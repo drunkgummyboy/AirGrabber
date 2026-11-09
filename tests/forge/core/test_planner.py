@@ -214,11 +214,39 @@ class PlannerTest(ForgeTestCase):
                 (2, (3,), "ytsearch1:VisionQuest 2026 season 2 official trailer"),
             ],
         )
+        # Each named for its season, so the season folders' trailers don't share a name.
+        show = R / "VisionQuest (2026)"
+        self.assertEqual(
+            [tr.target_stem for tr in plan.trailers],
+            [
+                show / "Season 01" / "VisionQuest (2026) - Season 01-trailer",
+                show / "Season 02" / "VisionQuest (2026) - Season 02-trailer",
+            ],
+        )
         [shared] = build_plan(items, "{ny}/{ny} - {s00e00}", opts, fake_exists([])).trailers
         self.assertEqual(
-            (shared.season, shared.item_ids, shared.query),
-            (None, (1, 2, 3), "ytsearch1:VisionQuest 2026 official trailer"),
+            (shared.season, shared.item_ids, shared.query, shared.target_stem),
+            (
+                None,
+                (1, 2, 3),
+                "ytsearch1:VisionQuest 2026 official trailer",
+                show / "VisionQuest (2026)-trailer",
+            ),
         )
+        # A shared folder whose show trailer is there already gets none.
+        there = fake_exists([show / "VisionQuest (2026)-trailer.mp4"])
+        self.assertEqual(build_plan(items, "{ny}/{ny} - {s00e00}", opts, there).trailers, ())
+
+    def test_a_seasons_trailer_already_there_is_left_alone(self) -> None:
+        media = episode(1, tmdb_id=7)
+        folder = R / "VisionQuest (2026)" / "Season 01"
+        for name in ("VisionQuest (2026) - Season 01-trailer.mp4", "VisionQuest (2026) - Trailer.mp4"):
+            with self.subTest(name=name):  # its own name, or what 3.12.0 called it
+                plan = build_plan(
+                    [inp(1, R / "1.mkv", media)], "{ny}/Season {s}/{ny} - {s00e00}",
+                    PresetOptions(trailer=True), fake_exists([folder / name]),
+                )
+                self.assertEqual(plan.trailers, ())
 
     def test_trailer_query_and_dedupe(self) -> None:
         opts = PresetOptions(trailer=True)
@@ -226,7 +254,10 @@ class PlannerTest(ForgeTestCase):
         [t] = plan.trailers
         assert t.query == "ytsearch1:Dune Part Two 2024 official trailer"
         assert (t.title, t.year) == ("Dune Part Two", 2024)
-        assert t.target_stem == R / "Dune Part Two (2024)" / "Dune Part Two (2024) - Trailer"
+        # Plex takes it for the film's trailer only with a name ending in "-trailer".
+        assert t.target_stem == R / "Dune Part Two (2024)" / "Dune Part Two (2024)-trailer"
+        old = R / "Dune Part Two (2024)" / "Dune Part Two (2024) - Trailer.mp4"  # 3.12.0's name
+        assert build_plan([inp(1, R / "x.mkv", film())], MOVIE_FOLDER, opts, fake_exists([old])).trailers == ()
 
         eps = [inp(1, R / "1.mkv", episode(1)), inp(2, R / "2.mkv", episode(2))]
         assert len(build_plan(eps, "{ny} - {s00e00}", opts, fake_exists([])).trailers) == 1

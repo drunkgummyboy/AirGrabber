@@ -136,6 +136,32 @@ class QuickDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(running_searches(), [])
         self.assertTrue(any("stopped waiting" in line for line in logs.output))
 
+    async def test_once_a_pick_is_in_the_slow_sources_get_only_the_grace(self) -> None:
+        arrived = release("Severance S02E01 1080p WEB-A", h=1, size=1200 * MIB)
+        slow = fake("slow", gate=asyncio.Event())  # never answers
+        grabber = downloads()
+        prefs = settings_service()
+        search = TorrentSearchService([fake("fast", result=[arrived]), slow], prefs)
+        service = QuickDownloadService(search, grabber, prefs, timeout=30.0, grace=0.1)
+        result = await asyncio.wait_for(service.download(EPISODE, TARGET), timeout=5)
+        self.assertEqual(result.release_title, arrived.title)
+        self.assertTrue(slow.cancelled)
+        self.assertEqual(running_searches(), [])
+
+    async def test_nothing_pickable_yet_waits_for_the_timeout_not_the_grace(self) -> None:
+        unwanted = release("Severance S02E01 CAM", h=1, size=1)  # nothing a pick would take
+        later = release("Severance S02E01 1080p WEB-B", h=2, size=1200 * MIB)
+        gate = asyncio.Event()
+        slow = fake("slow", result=[later], gate=gate)
+        grabber = downloads()
+        prefs = settings_service()
+        search = TorrentSearchService([fake("fast", result=[unwanted]), slow], prefs)
+        service = QuickDownloadService(search, grabber, prefs, timeout=5.0, grace=0.01)
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.2, gate.set)  # after the grace would have run out
+        result = await service.download(EPISODE, TARGET)
+        self.assertEqual(result.release_title, later.title)
+
     async def test_timeout_with_nothing_arrived(self) -> None:
         grabber = downloads()
         service = self.service([fake("slow", gate=asyncio.Event())], grabber, timeout=0.05)

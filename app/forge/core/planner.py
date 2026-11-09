@@ -145,6 +145,24 @@ def trailer_words(title: str, year: int | None, season: int | None = None) -> st
     return " ".join(words) + " official trailer"
 
 
+def trailer_name(ny: str) -> str:
+    """A film's or show's trailer, without its extension: "Dune (2021)-trailer". Plex takes a
+    file beside the video for its trailer only when the name ends in exactly "-trailer"; else it
+    lists it as another version of the film or episode."""
+    return f"{ny}-trailer"
+
+
+def season_trailer_name(ny: str, season: int) -> str:
+    """A season's trailer, without its extension: "The Boys (2019) - Season 04-trailer"."""
+    return f"{ny} - Season {season:02d}-trailer"
+
+
+def old_trailer_name(ny: str) -> str:
+    """What a trailer was called up to 3.12.0 ("Dune (2021) - Trailer"): one by that name counts
+    as there, so it isn't fetched again."""
+    return f"{ny} - Trailer"
+
+
 def _trailer_query(title: str, year: int | None, season: int | None = None) -> str:
     """yt-dlp's search for a trailer: the first video found for `trailer_words`; a
     season's says the season (when TMDB lists no trailer of its own for it)."""
@@ -161,6 +179,7 @@ def build_plan(
     posters: dict[str, PlannedPoster] = {}
     nfos: dict[str, PlannedNfo] = {}
     trailers: dict[str, PlannedTrailer] = {}
+    settled_trailers: set[str] = set()  # a folder whose show trailer is there already
     taken: set[str] = set()
 
     def add_poster(kind: PosterKind, tmdb_path: str | None, target: Path, item_id: int) -> None:
@@ -230,17 +249,34 @@ def build_plan(
                 if show_folder is not None:
                     add_nfo(show_folder / "tvshow.nfo", show_nfo(media), item_id)
         if options.trailer:
-            stem = target.parent / f"{ny} - Trailer"
-            key = _key(stem)
+            # One trailer per folder; a season's says its season in its name, so a show's
+            # season folders don't each hold a trailer named the same.
+            plain = target.parent / trailer_name(ny)
+            key = _key(plain)
             season = media.season if media.kind is MediaKind.EPISODE else None
-            if key in trailers:
+            stem = plain if season is None else target.parent / season_trailer_name(ny, season)
+            old = target.parent / f"{old_trailer_name(ny)}.mp4"
+
+            def there(stem: Path, old: Path = old) -> bool:
+                return exists(stem.with_name(stem.name + ".mp4")) or exists(old)
+            if key in settled_trailers:
+                pass
+            elif key in trailers:
                 known = trailers[key]
                 update: dict[str, object] = {"item_ids": (*known.item_ids, item_id)}
                 if known.season is not None and known.season != season:
                     # One folder, several seasons: the show's trailer, not one season's.
-                    update |= {"season": None, "query": _trailer_query(media.title, media.year)}
+                    update |= {
+                        "season": None,
+                        "query": _trailer_query(media.title, media.year),
+                        "target_stem": plain,
+                    }
+                    if there(plain):
+                        del trailers[key]
+                        settled_trailers.add(key)
+                        continue
                 trailers[key] = known.model_copy(update=update)
-            elif not exists(stem.with_name(stem.name + ".mp4")):
+            elif not there(stem):
                 trailers[key] = PlannedTrailer(
                     query=_trailer_query(media.title, media.year, season),
                     title=media.title,

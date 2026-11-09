@@ -40,6 +40,7 @@ Progress = Callable[[str], None]
 _TargetKey = tuple[MediaType, int, int | None, int | None]
 
 SEARCH_TIMEOUT = 30.0  # seconds a one-click download waits for the sources, in all
+GRACE_S = 8.0  # once a release it would pick has turned up: how long the slower sources still get
 MAX_PICKS = 5  # how many releases it tries when the best ones turn out to hold a program
 
 
@@ -69,11 +70,13 @@ class QuickDownloadService:
         settings: SettingsService,
         *,
         timeout: float = SEARCH_TIMEOUT,
+        grace: float = GRACE_S,
     ) -> None:
         self._search = search
         self._downloads = downloads
         self._settings = settings
         self._timeout = timeout
+        self._grace = grace
         self._target_locks: dict[_TargetKey, _TargetLock] = {}
 
     @contextlib.asynccontextmanager
@@ -115,7 +118,9 @@ class QuickDownloadService:
         to download it again: ↻ Again → Auto).
 
         The search runs to completion, but after `timeout` seconds in all the pick is made from
-        whatever has arrived. Nothing suitable: `found=False` and nothing is grabbed. Grab
+        whatever has arrived; once something it would pick has arrived, the sources still
+        searching get `grace` seconds more, not the rest of `timeout` (one source that hardly
+        ever answers made every download wait the whole time). Nothing suitable: `found=False` and nothing is grabbed. Grab
         failures propagate (GrabError, or RemoteError from the remote torrent program).
         `progress` receives short status texts along the way. `avoid`: release titles and info
         hashes (casefolded) never picked: the ones a stuck download was swapped from.
@@ -182,12 +187,23 @@ class QuickDownloadService:
     ) -> tuple[TorrentRelease, ...]:
         """The shown releases of the last search update that arrived within the timeout."""
         releases: tuple[TorrentRelease, ...] = ()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        settings = self._settings.current
         deadline = asyncio.timeout(self._timeout)
+        pickable = False
         try:
             async with deadline:
                 async with contextlib.aclosing(self._search.search(request)) as updates:
                     async for update in updates:
                         releases = update.releases
+                        if not pickable and rank_releases(releases, request, settings):
+                            # Something good enough is in: the others get a little longer.
+                            pickable = True
+                            end = loop.time() + self._grace
+                            when = deadline.when()
+                            if when is None or end < when:
+                                deadline.reschedule(end)
                         if progress is not None:
                             waiting = sum(
                                 status.state is IndexerState.SEARCHING
@@ -207,6 +223,8 @@ class QuickDownloadService:
             if not deadline.expired():
                 raise
             log.info(
-                "One-click %s: stopped waiting for the sources after %g s", label, self._timeout
+                "One-click %s: stopped waiting for the sources after %.0f s",
+                label,
+                loop.time() - started,
             )
         return releases

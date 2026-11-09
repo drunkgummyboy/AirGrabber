@@ -68,13 +68,48 @@ class DeviceStore:
         return None
 
     async def remove(self, id: str) -> None:
-        """Disconnect a phone; its token stops working at once. An unknown id changes nothing."""
+        """Disconnect a phone; its token stops working at once, and what was sent to it and
+        what it said it holds go with it. An unknown id changes nothing."""
         async with self._lock:
-            phones = self._settings.current.phone_devices
+            current = self._settings.current
             await self._settings.update(
-                phone_devices=tuple(phone for phone in phones if phone.id != id)
+                phone_devices=tuple(phone for phone in current.phone_devices if phone.id != id),
+                phone_orders=tuple(order for order in current.phone_orders if order.phone_id != id),
+                phone_contents=tuple(
+                    report for report in current.phone_contents if report.phone_id != id
+                ),
             )
         log.info("Removed phone %s", id)
+
+    async def change(
+        self,
+        id: str,
+        *,
+        name: str | None = None,
+        manager: bool | None = None,
+        profile_id: int | None = None,
+    ) -> PairedPhone | None:
+        """A phone's new name, role or person (None: as it was); None for an unknown phone.
+        The server reads the phone at every request, so a new role counts at once."""
+        changes: dict[str, object] = {}
+        if name is not None:
+            changes["name"] = name
+        if manager is not None:
+            changes["manager"] = manager
+        if profile_id is not None:
+            changes["profile_id"] = profile_id
+        async with self._lock:
+            phones = self._settings.current.phone_devices
+            found = next((phone for phone in phones if phone.id == id), None)
+            if found is None:
+                return None
+            changed = found.model_copy(update=changes)
+            if changed != found:
+                await self._settings.update(
+                    phone_devices=tuple(changed if phone.id == id else phone for phone in phones)
+                )
+                log.info("Changed phone %s", id)
+            return changed
 
 
 class PairingCode:

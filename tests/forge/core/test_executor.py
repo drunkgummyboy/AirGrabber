@@ -204,7 +204,7 @@ class ExecutorTest(HistoryTestCase):
         [trailer_op] = [
             o for o in await self.history.operations(result.run_id) if o.kind is OpKind.CREATE_FILE
         ]
-        assert trailer_op.dst == str(self.tmp / "Dune (2024) - Trailer.url")
+        assert trailer_op.dst == str(self.tmp / "Dune (2024)-trailer.url")
         assert trailer_op.state is OpState.DONE and trailer_op.size
 
     async def test_junk_deletes_are_journaled_as_delete_file(self) -> None:

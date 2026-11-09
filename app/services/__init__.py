@@ -26,6 +26,7 @@ from app.services.phone.collection import FilmSeries
 from app.services.phone.coming_up import ComingUp, GrabbedFilms
 from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.forge import PhoneForge
+from app.services.phone.sends import PhoneSends
 from app.services.phone.service import PhoneService
 from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
@@ -82,6 +83,7 @@ class Services:
         "images",
         "library",
         "phone",
+        "phone_sends",
         "plex",
         "profiles",
         "prowlarr_setup",
@@ -186,6 +188,8 @@ class Services:
         grabbed_films = GrabbedFilms(self.download_status)
         suggestions = Suggestions(library, self.watchlist, discovery, self.profiles, settings)
         shortlist = Shortlist(settings, self.profiles, suggestions)
+        # Send to phone (the Library page) and each phone's menu of what it holds.
+        self.phone_sends = PhoneSends(settings)
         phone_routes = {
             **ComingUp(
                 library,
@@ -210,11 +214,16 @@ class Services:
             ).routes(),
             **suggestions.routes(),
             **shortlist.routes(),
+            **self.phone_sends.routes(),
             **PhoneForge(forge, self.profiles).routes(),
             **FilmSeries(discovery.film_series).routes(),
         }
         self.phone = PhoneService(
-            settings, paths, self.profiles, routes_factory=lambda: phone_routes
+            settings,
+            paths,
+            self.profiles,
+            routes_factory=lambda: phone_routes,
+            sends=self.phone_sends,
         )
 
     @classmethod

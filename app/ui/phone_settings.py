@@ -1,9 +1,11 @@
 """Settings → Phone connection: the box over PhoneService (app/services/phone/service.py).
 
 A switch; the first time, a line that Windows will ask about the network; what's wrong in plain
-words; a tick for whether the next phone is a library manager's (on for the first phone, off
-afterward); "Connect a phone" with the code to scan (black on white in both looks: a scanner needs
-that); and a box listing the connected phones, each with "Disconnect".
+words; "Connect a phone" with the code to scan (black on white in both looks: a scanner needs
+that); and a box listing the connected phones. Each phone (the owner's wish, 2026-11-08): its name
+with Rename (in place: Enter saves, Escape doesn't), the person it belongs to (a choice while there
+is more than one), its own Library manager tick (the first phone pairs as one, later ones don't),
+"What's on it…" (app/ui/phone_contents.py) and Disconnect.
 
 Without Plex the page is one line, NEEDS_PLEX_TEXT: no Plex, no phone app. It follows Plex
 connecting and disconnecting while it is open.
@@ -26,10 +28,12 @@ import customtkinter as ctk
 from PIL import Image
 
 from app.i18n import N_, t
+from app.models import PairedPhone
 from app.services.phone.devices import CODE_LIFETIME
 from app.services.phone.service import NEEDS_PLEX_TEXT, PACKAGES_MISSING_TEXT, PairingUnavailable
 from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, DETAIL_SIZE, primary_button, secondary_button
+from app.ui.people import person_name
 from app.ui.settings_layout import BOX_INNER, SettingsBox, SettingsPage
 from app.ui.tasks import spawn
 
@@ -45,11 +49,18 @@ CODE_EXPIRED_TEXT = N_("That code has expired, so click Connect a phone for a ne
 PHONES_TITLE = N_("Connected phones")
 NO_PHONES_TEXT = N_("No phones are connected yet.")
 DISCONNECT_TEXT = N_("Disconnect")
+RENAME_TEXT = N_("Rename")
+SAVE_NAME_TEXT = N_("Save")
+CONTENTS_TEXT = N_("What's on it…")
 
 CODE_SIDE = 240  # logical units: comfortably scanned from a screen
 CONNECT_WIDTH = 180
 DISCONNECT_WIDTH = 130
-NAME_GAP = 12  # between a phone's name and its button
+RENAME_WIDTH = 110
+CONTENTS_WIDTH = 150
+PERSON_WIDTH = 160
+NAME_GAP = 12  # between a phone's name and its buttons
+PHONE_GAP = 18  # between two phones
 QUIET_MODULES = 4  # the white edge a scanner needs around the code
 _BLACK = 0
 _WHITE = 255
@@ -86,7 +97,17 @@ class PhoneBox:
         self._tasks: set[asyncio.Task[None]] = set()
         self._code_task: asyncio.Task[None] | None = None
         self._phones_shown = phone.phones()
+        self._people_shown = phone.people
         self.code_image: ctk.CTkImage | None = None
+        # What the list shows per phone, by its id (tests reach in here).
+        self.name_labels: dict[str, ctk.CTkLabel] = {}
+        self.rename_buttons: dict[str, ctk.CTkButton] = {}
+        self.manager_ticks: dict[str, ctk.CTkCheckBox] = {}
+        self.person_menus: dict[str, ctk.CTkOptionMenu] = {}
+        self.contents_buttons: dict[str, ctk.CTkButton] = {}
+        self.name_entry: ctk.CTkEntry | None = None  # while a phone is being renamed
+        self._renaming: str | None = None
+        self._open_contents: Any = None
         # Stays for as long as this window is open: that's when Windows asks.
         self._first_time = not phone.ever_started
 
@@ -109,27 +130,10 @@ class PhoneBox:
         self.box.add(self._problem, gap=8, sticky="w")
         self._notice = self._line(body, theme.WARNING)
         self.box.add(self._notice, gap=8, sticky="w")
-        self.manager_tick = ctk.CTkCheckBox(
-            body,
-            text=t(MANAGER_TEXT),
-            width=0,
-            height=BUTTON_HEIGHT,
-            checkbox_width=22,
-            checkbox_height=22,
-            corner_radius=6,
-            font=theme.font(DETAIL_SIZE),
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            border_color=theme.EDGE,
-            command=self._tick_changed,
-        )
-        if not self._phones_shown:
-            self.manager_tick.select()
-        self.box.add(self.manager_tick, gap=12, sticky="w")
         self.connect_button = primary_button(
             body, t(CONNECT_TEXT), self.show_code, width=CONNECT_WIDTH
         )
-        self.box.add(self.connect_button, gap=8, sticky="w")
+        self.box.add(self.connect_button, gap=12, sticky="w")
         self._code_message = self._line(body, theme.TEXT_MUTED)
         self.box.add(self._code_message, gap=8, sticky="w")
         self._code_label = ctk.CTkLabel(body, text="")
@@ -179,7 +183,6 @@ class PhoneBox:
                 self._firewall,
                 self._problem,
                 self._notice,
-                self.manager_tick,
                 self.connect_button,
                 self._code_message,
             ):
@@ -193,27 +196,32 @@ class PhoneBox:
         _show(self._firewall, self._first_time)
         _show_text(self._problem, phone.problem)
         _show_text(self._notice, phone.notice)
-        _show(self.manager_tick, phone.running)
         _show(self.connect_button, phone.running)
         if not phone.running:
             self._cancel_code()
             self._hide_code()
             _show_text(self._code_message, None)
         phones = phone.phones()
-        if phones != self._phones_shown:
+        people = phone.people
+        if phones != self._phones_shown or people != self._people_shown:
             if len(phones) > len(self._phones_shown):  # the code has done its work
                 self._cancel_code()
                 self._hide_code()
                 _show_text(self._code_message, None)
-                self.manager_tick.deselect()
-            elif not phones:
-                self.manager_tick.select()
             self._phones_shown = phones
+            self._people_shown = people
             self._fill_list()
 
     def _fill_list(self) -> None:
         for child in self._list.winfo_children():
             child.destroy()
+        self.name_labels.clear()
+        self.rename_buttons.clear()
+        self.manager_ticks.clear()
+        self.person_menus.clear()
+        self.contents_buttons.clear()
+        self.name_entry = None
+        self._renaming = None
         if not self._phones_shown:
             ctk.CTkLabel(
                 self._list,
@@ -224,24 +232,171 @@ class PhoneBox:
             ).grid(row=0, column=0, sticky="w")
             return
         for row, phone in enumerate(self._phones_shown):
-            ctk.CTkLabel(
-                self._list,
-                text=phone.name,
+            self._phone_block(phone).grid(
+                row=row, column=0, sticky="ew", pady=(0 if row == 0 else PHONE_GAP, 0)
+            )
+
+    def _phone_block(self, phone: PairedPhone) -> ctk.CTkFrame:
+        """One phone: its name with Rename and Disconnect; under it its person, its role and
+        what's on it."""
+        block = ctk.CTkFrame(self._list, fg_color="transparent")
+        block.grid_columnconfigure(0, weight=1)
+        name = ctk.CTkLabel(
+            block,
+            text=phone.name,
+            font=theme.font(DETAIL_SIZE, bold=True),
+            text_color=theme.TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=BOX_INNER - RENAME_WIDTH - DISCONNECT_WIDTH - 2 * NAME_GAP,
+        )
+        name.grid(row=0, column=0, sticky="w")
+        self.name_labels[phone.id] = name
+        rename = secondary_button(
+            block, t(RENAME_TEXT), partial(self.rename, phone.id), width=RENAME_WIDTH
+        )
+        rename.grid(row=0, column=1, sticky="e", padx=(NAME_GAP, 0))
+        self.rename_buttons[phone.id] = rename
+        secondary_button(
+            block, t(DISCONNECT_TEXT), partial(self._disconnect, phone.id), width=DISCONNECT_WIDTH
+        ).grid(row=0, column=2, sticky="e", padx=(NAME_GAP, 0))
+
+        line = ctk.CTkFrame(block, fg_color="transparent")
+        line.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        column = 0
+        people = self._people_shown
+        if len(people) > 1:
+            names = {person_name(person): person.id for person in people}
+            menu = ctk.CTkOptionMenu(
+                line,
+                values=list(names),
+                width=PERSON_WIDTH,
+                height=BUTTON_HEIGHT - 6,
                 font=theme.font(DETAIL_SIZE),
+                fg_color=theme.SURFACE,
+                button_color=theme.EDGE,
+                button_hover_color=theme.ACCENT_HOVER,
                 text_color=theme.TEXT,
-                anchor="w",
-                justify="left",
-                wraplength=BOX_INNER - DISCONNECT_WIDTH - NAME_GAP,
-            ).grid(row=row, column=0, sticky="w", pady=(0 if row == 0 else 8, 0))
-            secondary_button(
-                self._list,
-                t(DISCONNECT_TEXT),
-                partial(self._disconnect, phone.id),
-                width=DISCONNECT_WIDTH,
-            ).grid(row=row, column=1, sticky="e", pady=(0 if row == 0 else 8, 0))
+                dropdown_font=theme.font(DETAIL_SIZE),
+                command=partial(self._person_chosen, phone.id, names),
+            )
+            owner = next((one for one in people if one.id == phone.profile_id), None)
+            menu.set(person_name(owner) if owner is not None else "")
+            menu.grid(row=0, column=column, padx=(0, 16))
+            self.person_menus[phone.id] = menu
+            column += 1
+        tick = ctk.CTkCheckBox(
+            line,
+            text=t(MANAGER_TEXT),
+            width=0,
+            height=BUTTON_HEIGHT,
+            checkbox_width=22,
+            checkbox_height=22,
+            corner_radius=6,
+            font=theme.font(DETAIL_SIZE),
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            border_color=theme.EDGE,
+            command=partial(self._tick_changed, phone.id),
+        )
+        if phone.manager:
+            tick.select()
+        tick.grid(row=0, column=column, padx=(0, 16))
+        self.manager_ticks[phone.id] = tick
+        contents = secondary_button(
+            line, t(CONTENTS_TEXT), partial(self.show_contents, phone.id), width=CONTENTS_WIDTH
+        )
+        contents.grid(row=0, column=column + 1)
+        self.contents_buttons[phone.id] = contents
+        return block
 
     def _disconnect(self, id: str) -> None:
         self._start(self._phone.disconnect(id), "phone-disconnect")
+
+    # -- a phone's name, role and person ---------------------------------------------------------
+
+    def rename(self, id: str) -> None:
+        """The name becomes a field to type in, and the button saves it."""
+        if self._renaming == id and self.name_entry is not None:
+            self._save_name()
+            return
+        self._stop_renaming()
+        label = self.name_labels.get(id)
+        phone = self._shown_phone(id)
+        if label is None or phone is None:
+            return
+        entry = ctk.CTkEntry(
+            label.master,
+            font=theme.font(DETAIL_SIZE),
+            height=BUTTON_HEIGHT - 6,
+            fg_color=theme.SURFACE,
+            border_color=theme.EDGE,
+            text_color=theme.TEXT,
+        )
+        entry.insert(0, phone.name)
+        label.grid_remove()
+        entry.grid(row=0, column=0, sticky="ew")
+        entry.bind("<Return>", lambda _event: self._save_name())
+        entry.bind("<Escape>", lambda _event: self._stop_renaming())
+        entry.focus_set()
+        entry.select_range(0, "end")
+        self.name_entry = entry
+        self._renaming = id
+        self.rename_buttons[id].configure(text=t(SAVE_NAME_TEXT))
+
+    def _save_name(self) -> None:
+        id, entry = self._renaming, self.name_entry
+        if id is None or entry is None:
+            return
+        typed = entry.get().strip()
+        self._stop_renaming()
+        phone = self._shown_phone(id)
+        if typed and phone is not None and typed != phone.name:
+            self._start(self._phone.change_phone(id, name=typed), "phone-rename")
+
+    def _stop_renaming(self) -> None:
+        id, entry = self._renaming, self.name_entry
+        self._renaming = None
+        self.name_entry = None
+        if entry is not None:
+            entry.destroy()
+        if id is not None:
+            if id in self.name_labels:
+                self.name_labels[id].grid()
+            if id in self.rename_buttons:
+                self.rename_buttons[id].configure(text=t(RENAME_TEXT))
+
+    def _shown_phone(self, id: str) -> PairedPhone | None:
+        return next((one for one in self._phones_shown if one.id == id), None)
+
+    def _tick_changed(self, id: str) -> None:
+        tick = self.manager_ticks.get(id)
+        if tick is not None:
+            self._start(self._phone.change_phone(id, manager=bool(tick.get())), "phone-role")
+
+    def _person_chosen(self, id: str, names: dict[str, int], chosen: str) -> None:
+        if chosen in names:
+            self.choose_person(id, names[chosen])
+
+    def choose_person(self, id: str, profile_id: int) -> None:
+        self._start(self._phone.change_phone(id, profile_id=profile_id), "phone-person")
+
+    def show_contents(self, id: str) -> None:
+        """The phone's menu: what's on it and what was sent to it (one at a time)."""
+        from app.ui.phone_contents import PhoneContentsWindow
+
+        self._close_contents()
+        phone = self._shown_phone(id)
+        if phone is None:
+            return
+        self._open_contents = PhoneContentsWindow(
+            self.box.frame.winfo_toplevel(), phone=phone, sends=self._phone.sends
+        )
+
+    def _close_contents(self) -> None:
+        window, self._open_contents = self._open_contents, None
+        if window is not None and window.winfo_exists():
+            window.close()
 
     # -- the switch ------------------------------------------------------------------------------
 
@@ -263,7 +418,7 @@ class PhoneBox:
         """A new code on screen, for as long as it's good. Clicking again makes another."""
         self._cancel_code()
         try:
-            payload = self._phone.new_pairing_payload(bool(self.manager_tick.get()))
+            payload = self._phone.new_pairing_payload()
         except PairingUnavailable as exc:
             self._hide_code()
             _show_text(self._code_message, str(exc))
@@ -284,11 +439,6 @@ class PhoneBox:
         _show(self._code_label, True)
         _show(self._scan_line, True)
         self._code_task = self._start(self._expire_code(), "phone-code")
-
-    def _tick_changed(self) -> None:
-        """A code on screen pairs what the tick said when it was made, so it makes way."""
-        if self._code_task is not None and not self._code_task.done():
-            self.show_code()
 
     async def _expire_code(self) -> None:
         await asyncio.sleep(self._code_seconds)  # cancelled when the box goes
@@ -325,6 +475,7 @@ class PhoneBox:
         self._unsubscribe()
         # Only the code: turning the connection on or off goes on without the window.
         self._cancel_code()
+        self._close_contents()
 
 
 def _show(widget: Any, shown: bool) -> None:

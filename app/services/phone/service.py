@@ -15,9 +15,11 @@ but `/v1/pair` and `/v1/hello` answers 409 `no_plex` with one plain sentence (`/
 `"plex": null`, which the phone shows as that sentence). The page follows Plex (`plex_connected`).
 
 A phone pairs by scanning a code (`new_pairing_payload`), and from then on follows the person who
-was selected at that moment. Whoever makes the code says whether it pairs a library manager's
-phone: the code itself doesn't say and the phone has no say in it. The Plex token goes out only in
-`/v1/pair`'s and `/v1/hello`'s answers: never in the code, never in a log.
+was selected at that moment. The first phone is a library manager's, later ones aren't; the code
+doesn't say and the phone has no say in it. Settings changes each phone's role, name and person
+afterward (`change_phone`); the server reads the phone at every request, so that counts at once.
+The Plex token goes out only in `/v1/pair`'s and `/v1/hello`'s answers: never in the code, never
+in a log.
 
 Nothing here logs a token, a code, an address or an exception's text.
 """
@@ -39,9 +41,10 @@ from typing import Any, cast
 from app import __version__
 from app.config import AppPaths
 from app.i18n import N_, t
-from app.models import PairedPhone
+from app.models import PairedPhone, Profile
 from app.services.phone.certificate import ensure_certificate
 from app.services.phone.devices import DeviceStore, PairingCode
+from app.services.phone.sends import PhoneSends
 from app.services.phone.server import (
     PORT,
     Handler,
@@ -180,6 +183,7 @@ class PhoneService:
         port: int = PORT,
         finder_port: int = FINDER_PORT,
         addresses: Callable[[], list[str]] = this_pcs_addresses,
+        sends: PhoneSends | None = None,
     ) -> None:
         """`routes_factory`: the routes of everything else the phone may ask (read at each
         start). `port`, `finder_port`, `addresses`: for tests."""
@@ -190,11 +194,12 @@ class PhoneService:
         self._port = port
         self._finder_port = finder_port
         self._addresses = addresses
+        # What was sent to each phone and what it holds (its menu in Settings).
+        self.sends = sends if sends is not None else PhoneSends(settings)
         # Read once: the page and the service agree until the next start.
         self.available = OPEN_TO_EVERYONE or (paths.root / ENABLED_MARKER).is_file()
         self._devices = DeviceStore(settings)
         self._code = PairingCode()
-        self._code_makes_manager = False  # what the current code pairs
         self._server: PhoneServer | None = None
         self._finder: asyncio.DatagramTransport | None = None
         self._fingerprint = ""  # of the certificate in use, once it runs
@@ -237,6 +242,11 @@ class PhoneService:
 
     def phones(self) -> tuple[PairedPhone, ...]:
         return self._settings.current.phone_devices
+
+    @property
+    def people(self) -> tuple[Profile, ...]:
+        """AirGrabber's people, whom a phone can belong to."""
+        return self._profiles.people
 
     @property
     def plex_connected(self) -> bool:
@@ -385,10 +395,9 @@ class PhoneService:
 
     # -- pairing ---------------------------------------------------------------------------------
 
-    def new_pairing_payload(self, manager: bool) -> str:
-        """What the code on the screen holds; it cancels the code before it. `manager`: the phone
-        that uses it is a library manager's. Raises PairingUnavailable when a phone couldn't
-        connect anyway."""
+    def new_pairing_payload(self) -> str:
+        """What the code on the screen holds; it cancels the code before it. Raises
+        PairingUnavailable when a phone couldn't connect anyway."""
         if not self.plex_connected:
             raise PairingUnavailable(t(NEEDS_PLEX_TEXT))
         if self._server is None:
@@ -396,7 +405,6 @@ class PhoneService:
         hosts = self._addresses()
         if not hosts:
             raise PairingUnavailable(t(NO_NETWORK_TEXT))
-        self._code_makes_manager = manager
         return json.dumps(
             {
                 "v": 1,
@@ -412,6 +420,26 @@ class PhoneService:
     async def disconnect(self, id: str) -> None:
         """This phone's token stops working at once."""
         await self._devices.remove(id)
+        self._notify()
+
+    async def change_phone(
+        self,
+        id: str,
+        *,
+        name: str | None = None,
+        manager: bool | None = None,
+        profile_id: int | None = None,
+    ) -> None:
+        """A phone's new name (cleaned up as a phone's own is), role or person; None leaves
+        that as it is. A person who isn't there any more changes nothing."""
+        if profile_id is not None and self._profiles.get(profile_id) is None:
+            profile_id = None
+        await self._devices.change(
+            id,
+            name=_clean_name(name) if name is not None else None,
+            manager=manager,
+            profile_id=profile_id,
+        )
         self._notify()
 
     def _needs_plex(self, handler: Handler) -> Handler:
@@ -434,8 +462,9 @@ class PhoneService:
             return error_reply(400, "bad_request", t(BAD_PAIRING_TEXT))
         if not self._code.take(code, datetime.now(UTC)):
             return error_reply(401, "not_paired", t(CODE_REFUSED_TEXT))
+        first = not self._settings.current.phone_devices
         phone, token = await self._devices.add(
-            _clean_name(name), self._profiles.current_id, manager=self._code_makes_manager
+            _clean_name(name), self._profiles.current_id, manager=first
         )
         # Someone is using this certificate now: the note about the earlier one has done its work.
         await self._settings.update(phone_fingerprint=self._fingerprint)

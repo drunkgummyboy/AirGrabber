@@ -143,7 +143,7 @@ def _not_manager() -> Reply:
         "not_manager",
         t(
             "Only a library manager's phone can do this, so ask the person who set up AirGrabber "
-            "to connect this phone again as a library manager."
+            "to make this phone a library manager in AirGrabber's Settings."
         ),
     )
 

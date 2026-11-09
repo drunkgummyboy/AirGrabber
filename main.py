@@ -174,7 +174,7 @@ def _run(
     """The app. `forge_request`: the Forge request this first start carries (it starts hidden;
     the request decides what shows); later starts' requests arrive through `instance`."""
     from app.services import Services
-    from app.ui import tasks, theme
+    from app.ui import gc_guard, tasks, theme
     from app.ui.main_window import MainWindow
 
     # One event loop for everything. aiosqlite/httpx awaitables and Tk callbacks all run on it,
@@ -202,6 +202,9 @@ def _run(
         )
         _fix_start_menu_shortcut_soon(loop)
         loop.call_later(CONFIRM_AFTER_S, confirm_started, _install_dir(), __version__)
+        # The cycle collector only on the Tk thread: off it, a Tk font freed on the database
+        # thread hung that thread for good (app/ui/gc_guard.py).
+        gc_guard.start(window)
         window.async_mainloop(event_loop=loop)  # returns once the window is closed for good (Quit)
         confirm_started(_install_dir(), __version__)  # closed normally, however soon
         restart = window.restart_requested

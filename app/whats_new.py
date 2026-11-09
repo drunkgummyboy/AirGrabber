@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.13.0": (
+        N_("Fixed AirGrabber sometimes freezing: searches and downloads no longer hang until a restart."),
+        N_("One-click downloads are quicker: once a good release turns up, slow sources get only a few more seconds."),
+        N_("Each season's trailer now has its own name, ending in \"-trailer\" so Plex shows it as a trailer."),
+    ),
     "3.12.0": (
         N_("MediaForge's queue puts a thin divider between seasons, since each season goes to its own folder."),
         N_("A season's trailer is searched with its season, so Season 4's folder doesn't get the show's first trailer."),

@@ -134,7 +134,7 @@ class ServiceCase(unittest.IsolatedAsyncioTestCase):
         return int(first.split(b" ")[1]), json.loads(rest)
 
     async def pair(self, name: Any = "Living room phone") -> tuple[int, dict[str, Any]]:
-        code = json.loads(self.service.new_pairing_payload(True))["code"]
+        code = json.loads(self.service.new_pairing_payload())["code"]
         return await self.ask("POST", "/v1/pair", {"code": code, "name": name})
 
     async def port_is_open(self) -> bool:
@@ -206,7 +206,7 @@ class PairingTests(ServiceCase):
         self.assertTrue(body["token"])
 
     async def test_pair_with_used_code_refused(self) -> None:
-        code = json.loads(self.service.new_pairing_payload(True))["code"]
+        code = json.loads(self.service.new_pairing_payload())["code"]
         first, _ = await self.ask("POST", "/v1/pair", {"code": code, "name": "One"})
         second, body = await self.ask("POST", "/v1/pair", {"code": code, "name": "Two"})
         self.assertEqual(first, 200)
@@ -216,14 +216,14 @@ class PairingTests(ServiceCase):
         self.assertEqual([phone.name for phone in self.service.phones()], ["One"])
 
     async def test_pair_with_a_made_up_code_refused(self) -> None:
-        self.service.new_pairing_payload(True)
+        self.service.new_pairing_payload()
         status, _ = await self.ask("POST", "/v1/pair", {"code": "guess", "name": "Thief"})
         self.assertEqual(status, 401)
         self.assertEqual(self.service.phones(), ())
 
     async def test_pair_without_plex_says_null(self) -> None:
         # The code was made while Plex was connected; Plex went before the phone scanned it.
-        code = json.loads(self.service.new_pairing_payload(True))["code"]
+        code = json.loads(self.service.new_pairing_payload())["code"]
         await self.settings.update(plex_token="")
         status, body = await self.ask("POST", "/v1/pair", {"code": code, "name": "Phone"})
         self.assertEqual(status, 200)
@@ -232,7 +232,7 @@ class PairingTests(ServiceCase):
     async def test_no_code_without_plex(self) -> None:
         await self.settings.update(plex_token="")
         with self.assertRaises(PairingUnavailable) as caught:
-            self.service.new_pairing_payload(True)
+            self.service.new_pairing_payload()
         self.assertEqual(str(caught.exception), NEEDS_PLEX_TEXT)
 
     async def test_pair_before_plex_found_its_server_says_null(self) -> None:
@@ -241,7 +241,7 @@ class PairingTests(ServiceCase):
         self.assertIsNone(body["plex"])
 
     async def test_pair_with_anything_but_text_is_a_bad_request(self) -> None:
-        code = json.loads(self.service.new_pairing_payload(True))["code"]
+        code = json.loads(self.service.new_pairing_payload())["code"]
         bodies: tuple[dict[str, Any], ...] = (
             {"code": 1, "name": "Phone"},
             {"code": code, "name": 1},
@@ -306,7 +306,7 @@ class PairingTests(ServiceCase):
         self.assertEqual(body["error"], "not_paired")
 
     async def test_the_code_holds_what_the_phone_needs_and_no_secret(self) -> None:
-        text = self.service.new_pairing_payload(True)
+        text = self.service.new_pairing_payload()
         payload = json.loads(text)
         fingerprint = ensure_certificate(self.paths)[2]
         self.assertEqual(
@@ -323,15 +323,15 @@ class PairingTests(ServiceCase):
         self.assertNotIn(PLEX_TOKEN, text)
 
     async def test_a_new_code_cancels_the_one_before(self) -> None:
-        old = json.loads(self.service.new_pairing_payload(True))["code"]
-        self.service.new_pairing_payload(True)
+        old = json.loads(self.service.new_pairing_payload())["code"]
+        self.service.new_pairing_payload()
         status, _ = await self.ask("POST", "/v1/pair", {"code": old, "name": "Phone"})
         self.assertEqual(status, 401)
 
     async def test_nothing_secret_reaches_the_log(self) -> None:
         with self.assertLogs("app.services.phone", logging.DEBUG) as logs:
             logging.getLogger("app.services.phone").debug("start")
-            code = json.loads(self.service.new_pairing_payload(True))["code"]
+            code = json.loads(self.service.new_pairing_payload())["code"]
             _, body = await self.ask("POST", "/v1/pair", {"code": code, "name": "Phone"})
             await self.ask("GET", "/v1/hello", token=body["token"])
         everything = "\n".join(logs.output)
@@ -457,7 +457,7 @@ class OnOffTests(ServiceCase):
             self.assertFalse(self.service.running)
             self.assertTrue(self.settings.current.phone_connection_on)
             with self.assertRaises(PairingUnavailable):
-                self.service.new_pairing_payload(True)
+                self.service.new_pairing_payload()
 
     async def test_a_freed_port_is_taken_up_by_itself(self) -> None:
         with socket.socket() as taken:
@@ -490,10 +490,10 @@ class OnOffTests(ServiceCase):
             await self.service.set_on(False)
             self.assertIsNone(self.service.problem)
         await self.service.set_on(True)
-        code = json.loads(self.service.new_pairing_payload(True))["code"]
+        code = json.loads(self.service.new_pairing_payload())["code"]
         await self.service.set_on(False)
         with self.assertRaises(PairingUnavailable):
-            self.service.new_pairing_payload(True)
+            self.service.new_pairing_payload()
         await self.service.set_on(True)
         status, _ = await self.ask("POST", "/v1/pair", {"code": code, "name": "Phone"})
         self.assertEqual(status, 401)  # a code shown before doesn't outlive the connection
@@ -560,7 +560,7 @@ class OnOffTests(ServiceCase):
         self.addAsyncCleanup(service.aclose)
         await service.set_on(True)
         with self.assertRaises(PairingUnavailable) as caught:
-            service.new_pairing_payload(True)
+            service.new_pairing_payload()
         self.assertIn("home network", str(caught.exception))
 
 
@@ -790,7 +790,7 @@ class PageTests(PageCase):
         self.assertIn(SCAN_TEXT, self.shown(page))
         self.assertIsNotNone(box.code_image)
 
-        payload = self.service.new_pairing_payload(True)
+        payload = self.service.new_pairing_payload()
         await self.ask(
             "POST", "/v1/pair", {"code": json.loads(payload)["code"], "name": "Sam's phone"}
         )

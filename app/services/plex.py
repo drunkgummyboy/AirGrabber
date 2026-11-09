@@ -65,6 +65,7 @@ from app.database import PlexRepository
 from app.models.plex import (
     LibraryKind,
     PlexConnection,
+    PlexEpisode,
     PlexItemReply,
     PlexLibrary,
     PlexPin,
@@ -99,6 +100,7 @@ TYPE_EPISODE = 4
 
 _RESOURCES = TypeAdapter(list[PlexResourceReply])
 _SECTION_KEY = re.compile(r"\d{1,9}")
+_ITEM_KEY = re.compile(r"\d{1,12}")  # a show's, an episode's or a film's ratingKey
 
 
 class PlexError(Exception):
@@ -586,6 +588,19 @@ class PlexClient:
         return found
 
 
+    async def episodes(self, uri: str, token: str, show_key: str) -> list[PlexItemReply]:
+        """Every episode of a show (its `allLeaves`), specials included."""
+        if not _ITEM_KEY.fullmatch(show_key):
+            raise PlexError("A show's key that doesn't read")
+        data = await self._request(
+            "GET",
+            f"{uri}/library/metadata/{show_key}/allLeaves",
+            what="episodes",
+            token=token,
+            timeout=LIBRARY_TIMEOUT,
+        )
+        return list(_read(PlexReply, data, "episodes").container.metadata)
+
     async def picture(self, uri: str, token: str, thumb: str, width: int, height: int) -> bytes | None:
         """A title's picture from the server, resized there; None when it can't be had. The
         token in its header only; neither the address nor the answer is logged."""
@@ -904,6 +919,28 @@ class PlexService:
         if not self.connected:
             return None
         return await self._client.picture(uri, self._token(), thumb, *POSTER_SIZE)
+
+    async def episodes(self, show: PlexTitle) -> list[PlexEpisode]:
+        """A show's episodes as the Plex server has them now, by season and number, from the
+        server the last check reached. Raises PlexError (PlexUnreachable when it didn't
+        answer); none without Plex or a known server."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri or show.kind != "show":
+            return []
+        replies = await self._client.episodes(uri, self._token(), show.key)
+        found = [
+            PlexEpisode(
+                key=reply.rating_key,
+                season=reply.parent_index,
+                episode=reply.index,
+                title=reply.title.strip(),
+            )
+            for reply in replies
+            if reply.rating_key is not None and _ITEM_KEY.fullmatch(reply.rating_key)
+        ]
+        found.sort(key=lambda one: (one.season is None, one.season or 0, one.episode or 0))
+        log.info("Plex: %d episode(s) of a show read", len(found))
+        return found
 
     async def scan_folders(self, folders: Iterable[str]) -> int:
         """Ask Plex to scan these folders (where MediaForge just moved files): how many scans

@@ -37,7 +37,9 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   await httpx/aiosqlite directly, then update widgets. CPU-heavy Pillow work goes through `asyncio.to_thread`.
 - The one exception: the tray icon (`app/ui/tray.py`, pystray) runs its own Win32 message loop on a daemon
   thread. Its callbacks may only hand work to the loop with `loop.call_soon_threadsafe` and never touch Tk.
-- No GC guard (D6, F-28 measured): in two 30-min soaks (Forge Inbox of 1,000 files with backdrops, pages and band busy) only 8–11 collections ran off the Tk thread (≤ 4.4 ms each) and every one of ~11,600 Tk images and 73 fonts was freed on the Tk thread; keep Tk images made and dropped on the loop.
+- GC guard (D6, adopted 2026-11-08 after F-28's soaks had said no): `app/ui/gc_guard.py`, started in `main._run`: automatic GC off,
+  the Tk thread collects on a timer. A collection on aiosqlite's thread had freed a Tk font there and hung that thread
+  for good in `Font.__del__` (every search and grab froze). Never turn automatic GC back on; keep Tk images made and dropped on the loop.
 - UI code starts coroutines only via `app.ui.tasks.spawn` / `async_command` (they log + report failures).
   Nothing may spawn before the loop runs (see `MainWindow.async_mainloop`).
 - Layers: `app/ui` → `app/services` → repositories (`app/database.py`) and API clients.
@@ -149,8 +151,10 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   kept; the Plex token only in `/v1/pair`'s and `/v1/hello`'s answers; release links never leave the PC; the log gets no
   token, code, address or exception text. `cryptography` and `segno` are optional (below `# optional`), imported only
   inside `certificate.py`'s and `code_picture`'s functions; without them the page says so.
-  Roles: the Library manager tick decides a phone's role (`manager` in `/v1/pair` and `/v1/hello`; missing means manager,
-  so a phone from before keeps its tabs); the Forge routes refuse others with 403 `not_manager`. `GET /v1/suggestions` is
+  Roles: each phone's own Library manager tick in Settings decides its role (the first phone pairs as one; `manager` in
+  `/v1/pair` and `/v1/hello`; missing means manager, so a phone from before keeps its tabs). Settings also renames a phone
+  and sets its person (`change_phone`). Send to phone (`sends.py`, `PUT /v1/on-phone`, design `docs/companion/2026-11-08-send-to-phone-design.md`):
+  orders and each phone's last report in `Settings.phone_orders` / `phone_contents`, this PC's own, titles never logged; the Forge routes refuse others with 403 `not_manager`. `GET /v1/suggestions` is
   what the phone may fetch, without what Plex has; its genres are always in English with compound names split
   (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;
   a tap fetches by the row's id only, never by its text. No Plex, no phone app (owner, 2026-11-08): without a Plex

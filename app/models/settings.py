@@ -380,6 +380,51 @@ class ShortItem(BaseModel):
     added_at: UtcDatetime
 
 
+class PhoneOrder(BaseModel):
+    """What AirGrabber wants a phone to do with one Plex item (app/services/phone/sends.py):
+    `take` it along (copy it from Plex) or `remove` it. `key`: the episode's or film's Plex
+    ratingKey; `show`, `season`, `episode` only for an episode."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    id: str
+    phone_id: str
+    action: Literal["take", "remove"]
+    key: str
+    kind: Literal["movie", "episode"]
+    title: str
+    show: str = ""
+    season: int | None = None
+    episode: int | None = None
+    added_at: UtcDatetime
+
+
+class PhoneItem(BaseModel):
+    """Something on a phone as it last said (`PUT /v1/on-phone`): copying, ready or failed."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    key: str
+    kind: Literal["movie", "episode"]
+    title: str
+    show: str = ""
+    season: int | None = None
+    episode: int | None = None
+    state: Literal["copying", "ready", "failed"]
+    progress: int = 0  # percent, while copying
+    size: int = 0  # bytes
+
+
+class PhoneContents(BaseModel):
+    """A phone's last report of what is on it, and when it came."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    phone_id: str
+    items: tuple[PhoneItem, ...] = ()
+    reported_at: UtcDatetime
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -535,6 +580,8 @@ class Settings(BaseModel):
     phone_fingerprint: str = ""  # the certificate the paired phones trust
     phone_shortlist: tuple[ShortItem, ...] = ()  # tonight's, shared by the phones
     phone_shortlist_version: int = 0  # moves with every change to it
+    phone_orders: tuple[PhoneOrder, ...] = ()  # sent to a phone from the PC, not done yet
+    phone_contents: tuple[PhoneContents, ...] = ()  # each phone's last word on what it holds
 
     @property
     def remote_configured(self) -> bool:

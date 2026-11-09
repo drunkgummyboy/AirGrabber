@@ -235,6 +235,16 @@ class PlexStatus(DomainModel):
     checking: bool = False
 
 
+class PlexEpisode(DomainModel):
+    """One episode of a show in Plex (`PlexService.episodes`): its ratingKey, season, number
+    and title. Season 0 holds the specials."""
+
+    key: str
+    season: int | None = None
+    episode: int | None = None
+    title: str = ""
+
+
 class PlexTitle(DomainModel):
     """A show or film in Plex as the Library page shows it (`plex_titles`, replaced per check).
     `thumb`: the server's picture path (fetched with the token in its header only); `show_id`:

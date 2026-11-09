@@ -95,6 +95,7 @@ from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_search
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
+from app.ui.send_to_phone import SendToPhoneDialog
 from app.ui.spotlight import SwitchPart
 from app.ui.spotlight_band import SpotlightBand
 from app.ui.sync_loader import PLEX_SYNC_TEXT, SyncLoader
@@ -139,6 +140,8 @@ _OFF_PAGE_SETTINGS = frozenset(
     {
         "phone_shortlist",  # changed by the phones, shown only on them
         "phone_shortlist_version",
+        "phone_orders",  # what was sent to a phone and what it holds: its own window shows them
+        "phone_contents",
         "prowlarr_url",
         "prowlarr_api_key",
         "prowlarr_seeded_url",
@@ -748,6 +751,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             status=self.set_status,
             on_open_show=self._open_plex_show,
             on_open_film=self._open_plex_film,
+            on_send=self._send_to_phone,
+            can_send=self._can_send_to_phone,
             card_scale=self._card_scale,
         )
         # MediaForge's page goes in here at its first visit (ForgeHost.open).
@@ -842,6 +847,27 @@ class MainWindow(AsyncCTk, ctk.CTk):
             return False
         self._show_windows.open_show(show)
         return True
+
+    def _can_send_to_phone(self) -> bool:
+        """A Library card gets 📱 while the phone connection has a phone to send to."""
+        phone = self._services.phone
+        return phone.available and bool(phone.phones())
+
+    def _send_to_phone(self, title: PlexTitle) -> None:
+        """A Library card's 📱: the Send to phone window (app/ui/send_to_phone.py)."""
+        phone = self._services.phone
+        if not phone.phones():
+            return
+        SendToPhoneDialog(
+            self,
+            title=title,
+            phones=phone.phones(),
+            people=phone.people,
+            current_person=self._services.profiles.current_id,
+            sends=self._services.phone_sends,
+            episodes=self._services.plex.episodes,
+            on_sent=lambda text: self.set_status(text, clear_after_ms=6000),
+        )
 
     def _open_plex_film(self, title: PlexTitle) -> None:
         """A Library film card: its info window (TMDB), else its IMDb page."""
