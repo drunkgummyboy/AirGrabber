@@ -18,6 +18,8 @@ from app.services.phone.sends import MAX_ITEMS, PhoneSends, read_item
 from app.services.phone.server import Request
 from app.services.plex import PlexClient, PlexError, PlexUnreachable
 from app.ui.phone_contents import (
+    MADE_TEXT,
+    MAKE_FAILED_TEXT,
     NOT_HEARD_TEXT,
     NOTHING_TEXT,
     PhoneContentsWindow,
@@ -25,6 +27,8 @@ from app.ui.phone_contents import (
     size_text,
 )
 from app.ui.send_to_phone import (
+    HOW_TEXT,
+    PHONE_SIZED_HOW_TEXT,
     PLEX_AWAY_TEXT,
     THERE_TEXT,
     SendToPhoneDialog,
@@ -34,12 +38,35 @@ from tests.test_phone_service import PageCase, ServiceCase
 
 NOW = datetime(2026, 11, 8, 20, 0, tzinfo=UTC)
 FILM = PlexTitle(kind="movie", key="501", title="Dune", year=2021)
+FILM_4K = PlexTitle(kind="movie", key="601", title="Arrival", year=2016, resolution="4K")
 SHOW = PlexTitle(kind="show", key="700", title="VisionQuest", year=2026)
 EPISODES = [
     PlexEpisode(key="701", season=1, episode=1, title="Pilot"),
     PlexEpisode(key="702", season=1, episode=2, title="Second"),
     PlexEpisode(key="711", season=2, episode=1, title="Back"),
 ]
+
+
+class FakeCopies:
+    """PhoneCopies as Send to phone sees it: what was made and dropped."""
+
+    def __init__(self) -> None:
+        self.available = True
+        self.made: list[str] = []
+        self.dropped: list[str] = []
+        self.states: dict[str, tuple[str, int, str | None]] = {}
+
+    def make(self, key: str) -> bool:
+        self.made.append(key)
+        self.states.setdefault(key, ("waiting", 0, None))
+        return True
+
+    def state_of(self, key: str) -> tuple[str, int, str | None] | None:
+        return self.states.get(key)
+
+    async def drop(self, key: str) -> None:
+        self.dropped.append(key)
+        self.states.pop(key, None)
 
 
 def item(key: str, **fields: Any) -> dict[str, Any]:
@@ -411,3 +438,119 @@ class SendDialogTests(WindowCase):
         people = self.profiles.people
         self.assertEqual(list(phones_by_person([self.alex], people)), [self.alex.profile_id])
         self.assertEqual(phones_by_person([], people), {})
+
+
+class PhoneSizedTests(SendsCase):
+    """A 4K film sent phone-sized (the owner, 2026-11-10): the PC makes the copy at once."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.copies = FakeCopies()
+        self.sends = PhoneSends(self.settings, copies=self.copies, now=lambda: NOW)  # type: ignore[arg-type]
+
+    async def test_only_a_4k_film_on_a_pc_that_can(self) -> None:
+        self.assertTrue(self.sends.phone_sized_possible(FILM_4K))
+        self.assertFalse(self.sends.phone_sized_possible(FILM))  # not 4K
+        self.assertFalse(self.sends.phone_sized_possible(SHOW))
+        self.copies.available = False
+        self.assertFalse(self.sends.phone_sized_possible(FILM_4K))
+        self.assertFalse(PhoneSends(self.settings).phone_sized_possible(FILM_4K))  # no copies
+
+    async def test_the_copy_starts_and_the_phone_hears_it(self) -> None:
+        self.assertEqual(await self.sends.send_film(self.alex, FILM_4K, phone_sized=True), 1)
+        self.assertEqual(self.copies.made, ["601"])
+        [order] = self.sends.orders_for("a")
+        self.assertTrue(order.phone_sized)
+        self.assertEqual(self.sends.copy_state(order), ("waiting", 0, None))
+        _, body = await self.report(self.alex, [])
+        self.assertTrue(body["take"][0]["phone_sized"])
+        await self.sends.send_film(self.kim, FILM)
+        _, body = await self.report(self.kim, [])
+        self.assertFalse(body["take"][0]["phone_sized"])
+        self.assertIsNone(self.sends.copy_state(self.sends.orders_for("k")[0]))
+        self.assertEqual(self.copies.made, ["601"])  # a plain send makes nothing
+
+    async def test_sent_again_makes_nothing_new(self) -> None:
+        await self.sends.send_film(self.alex, FILM_4K, phone_sized=True)
+        self.assertEqual(await self.sends.send_film(self.alex, FILM_4K, phone_sized=True), 0)
+        await self.report(self.alex, [item("601", state="copying", progress=10)])
+        self.assertEqual(await self.sends.send_film(self.alex, FILM_4K, phone_sized=True), 0)
+        self.assertEqual(self.copies.made, ["601"])
+
+    async def test_cancelling_drops_the_copy_nobody_wants(self) -> None:
+        await self.sends.send_film(self.alex, FILM_4K, phone_sized=True)
+        await self.sends.send_film(self.kim, FILM_4K, phone_sized=True)
+        await self.sends.cancel(self.sends.orders_for("a")[0].id)
+        self.assertEqual(self.copies.dropped, [])  # Kim's phone still wants it
+        await self.sends.remove("k", "601")  # still waiting: simply not sent
+        self.assertEqual(self.copies.dropped, ["601"])
+        self.assertEqual(self.sends.orders_for("k"), ())
+
+    async def test_a_restart_makes_what_is_still_wanted(self) -> None:
+        await self.sends.send_film(self.alex, FILM_4K, phone_sized=True)
+        await self.sends.send_film(self.alex, FILM)
+        again = FakeCopies()
+        PhoneSends(self.settings, copies=again).resume_copies()  # type: ignore[arg-type]
+        self.assertEqual(again.made, ["601"])
+
+
+class PhoneSizedWindowTests(WindowCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.copies = FakeCopies()
+        self.sends = PhoneSends(self.settings, copies=self.copies, now=lambda: NOW)  # type: ignore[arg-type]
+
+    def dialog(self, title: PlexTitle) -> tuple[SendToPhoneDialog, mock.Mock]:
+        sent = mock.Mock()
+        dialog = SendToPhoneDialog(
+            self.window, title=title, phones=self.settings.current.phone_devices,
+            people=self.profiles.people, current_person=self.profiles.current_id,
+            sends=self.sends, episodes=mock.AsyncMock(return_value=[]), on_sent=sent,
+        )
+        self.addCleanup(dialog.close)
+        return dialog, sent
+
+    async def test_the_tick_is_on_for_a_4k_film(self) -> None:
+        dialog, sent = self.dialog(FILM_4K)
+        assert dialog.phone_sized is not None
+        self.assertEqual(dialog.phone_sized.get(), 1)
+        self.assertEqual(str(dialog.note.cget("text")), PHONE_SIZED_HOW_TEXT)
+        dialog.send()
+        await dialog.settled()
+        sent.assert_called_once_with("Sent Arrival to Alex's phone.")
+        self.assertTrue(self.sends.orders_for("a")[0].phone_sized)
+        self.assertEqual(self.copies.made, ["601"])
+        again, _ = self.dialog(FILM_4K)
+        assert again.phone_sized is not None
+        self.assertEqual(str(again.phone_sized.cget("state")), "disabled")  # on its way
+
+    async def test_unticked_it_goes_as_plex_has_it(self) -> None:
+        dialog, _ = self.dialog(FILM_4K)
+        assert dialog.phone_sized is not None
+        dialog.phone_sized.toggle()
+        self.assertEqual(str(dialog.note.cget("text")), HOW_TEXT)
+        dialog.send()
+        await dialog.settled()
+        self.assertFalse(self.sends.orders_for("a")[0].phone_sized)
+        self.assertEqual(self.copies.made, [])
+
+    def test_no_tick_for_a_film_that_isnt_4k(self) -> None:
+        dialog, _ = self.dialog(FILM)
+        self.assertIsNone(dialog.phone_sized)
+
+    async def test_the_phones_menu_says_how_far_the_copy_is(self) -> None:
+        await self.sends.send_film(self.alex, FILM_4K, phone_sized=True)
+        window = PhoneContentsWindow(self.window, phone=self.alex, sends=self.sends, now=lambda: NOW)
+        self.addCleanup(window.close)
+        self.assertEqual(window.rows, ["Arrival | Phone-sized"])
+        self.assertIsNotNone(window._look_again)  # looked at again while it is being made
+        self.copies.states["601"] = ("converting", 40, None)
+        window.refresh()
+        self.assertEqual(window.rows, ["Arrival | Making it phone-sized 40%"])
+        self.copies.states["601"] = ("ready", 100, None)
+        window.refresh()
+        self.assertEqual(window.rows, [f"Arrival | {MADE_TEXT}"])
+        self.assertIsNone(window._look_again)
+        self.copies.states["601"] = ("failed", 0, "Plex doesn't have this film any more.")
+        window.refresh()
+        self.assertEqual(window.rows, [f"Arrival | {MAKE_FAILED_TEXT}"])

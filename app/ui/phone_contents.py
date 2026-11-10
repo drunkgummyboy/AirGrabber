@@ -5,7 +5,8 @@ from the PC and is still waiting to go. A show is one row, folded (the owner, 20
 episodes, but shows and episodes under a folded menu"): its name, how many episodes and their size, and
 Remove all / Cancel all; a click on it unfolds its episodes, each with its own button. A film is a row
 of its own. Cancel takes back what is waiting; Remove has the phone delete an item the next time it
-checks in (until then the row says so, with Cancel). It follows changes while open
+checks in (until then the row says so, with Cancel). A film sent phone-sized says how far this PC is
+with its copy (looked at again every few seconds while it is being made). It follows changes while open
 (`PhoneSends.subscribe`): a phone checking in updates it, unfolded shows stay unfolded. Borderless in
 AirGrabber's style; Escape, the ✕ and Close close it.
 """
@@ -64,6 +65,11 @@ CANCEL_TEXT = N_("Cancel")
 REMOVE_TEXT = N_("Remove")
 CANCEL_ALL_TEXT = N_("Cancel all")
 REMOVE_ALL_TEXT = N_("Remove all")
+MAKING_TEXT = N_("Making it phone-sized {percent}%")
+MADE_TEXT = N_("Phone-sized, ready")
+PHONE_SIZED_TEXT = N_("Phone-sized")
+MAKE_FAILED_TEXT = N_("Phone-sized copy failed")
+MAKING_LOOK_MS = 4000  # how often a copy being made is looked at again
 COPYING_COUNT_TEXT = N_("{n} copying")
 FAILED_COUNT_TEXT = N_("{n} couldn't copy")
 FOLDED = "▸"
@@ -121,6 +127,21 @@ def state_text(item: PhoneItem, removing: bool) -> str:
     if item.state == "failed":
         return t(FAILED_TEXT)
     return size_text(item.size)
+
+
+def copy_text(state: tuple[str, int, str | None] | None, phone_sized: bool) -> tuple[str, bool]:
+    """A waiting order's row: how far this PC is with its phone-sized copy, and whether that
+    failed. ("", False) for an order that isn't phone-sized."""
+    if not phone_sized:
+        return "", False
+    if state is None or state[0] == "waiting":
+        return t(PHONE_SIZED_TEXT), False
+    name, progress, _ = state
+    if name == "ready":
+        return t(MADE_TEXT), False
+    if name == "failed":
+        return t(MAKE_FAILED_TEXT), True
+    return t(MAKING_TEXT, percent=progress), False
 
 
 def heard_text(reported_at: datetime | None, now: datetime) -> str:
@@ -201,6 +222,7 @@ class PhoneContentsWindow(ctk.CTkToplevel):
         self.buttons: dict[str, ctk.CTkButton] = {}
         self.rows: list[str] = []  # what each row says, top to bottom (tests)
         self._unfolded: set[str] = set()  # shows unfolded, by section and name
+        self._look_again: str | None = None  # the `after` that refreshes while a copy is made
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
@@ -230,6 +252,9 @@ class PhoneContentsWindow(ctk.CTkToplevel):
     # -- what it shows ---------------------------------------------------------------------------
 
     def refresh(self) -> None:
+        if self._look_again is not None:  # a change came first: one timer at a time
+            self.after_cancel(self._look_again)
+            self._look_again = None
         if not self.winfo_exists():
             return
         report = self._sends.contents_of(self._phone.id)
@@ -264,9 +289,15 @@ class PhoneContentsWindow(ctk.CTkToplevel):
                     if fold not in self._unfolded:
                         continue
                 for order in group:
+                    copy = self._sends.copy_state(order)
+                    making = copy is not None and copy[0] in ("waiting", "fetching", "converting")
+                    if making and self._look_again is None:
+                        self._look_again = self.after(MAKING_LOOK_MS, self.refresh)
+                    text, failed = copy_text(copy, order.phone_sized)
                     row = self._row(
-                        row, episode_label(order) if show else item_label(order), "", order.id,
-                        t(CANCEL_TEXT), partial(self._cancel, order.id), indent=bool(show),
+                        row, episode_label(order) if show else item_label(order), text, order.id,
+                        t(CANCEL_TEXT), partial(self._cancel, order.id), failed=failed,
+                        indent=bool(show),
                     )
         if items:
             row = self._title(row, t(ON_PHONE_TITLE), first=not waiting)
@@ -414,5 +445,8 @@ class PhoneContentsWindow(ctk.CTkToplevel):
 
     def close(self) -> None:
         self._unsubscribe()
+        if self._look_again is not None:
+            self.after_cancel(self._look_again)
+            self._look_again = None
         if self.winfo_exists():
             self.destroy()

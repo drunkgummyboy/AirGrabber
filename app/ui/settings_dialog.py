@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
@@ -92,6 +93,7 @@ from app.ui.dialog_kit import (
     secondary_button,
     text_label,
 )
+from app.ui.phone_app import PhoneAppDialog
 from app.ui.phone_settings import PhoneBox
 from app.ui.plex_compare import PlexCompareBox
 from app.ui.plex_settings import PlexBox
@@ -305,6 +307,16 @@ AUTO_UPDATE_TEXT = N_(
 )
 AUTO_UPDATE_SWITCH = N_("Install updates automatically")
 CHECK_UPDATES_TEXT = N_("Check whether a newer version is out.")
+# The hidden switch for the phone features (the owner, 2026-11-10): "Version …" clicked
+# SWITCH_CLICKS times, each within SWITCH_GAP_S of the one before. No cue on screen.
+SWITCH_CLICKS = 7
+SWITCH_GAP_S = 1.5
+PHONE_ON_TITLE = N_("Phone features on")
+PHONE_OFF_TITLE = N_("Phone features off")
+PHONE_SWITCH_TEXT = N_(
+    "This counts from the next time AirGrabber starts. Your paired phones are kept."
+)
+PHONE_SWITCH_FAILED = N_("AirGrabber couldn't switch the phone features.")
 GO_BACK_TITLE = N_("Not happy with this version?")
 GO_BACK_TEXT = N_(
     "AirGrabber keeps the version from before its last update. "
@@ -737,6 +749,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.plex_compare: PlexCompareBox | None = None
         self._phone = phone  # the Phone connection section shows when it is given and available
         self.phone_box: PhoneBox | None = None
+        self.phone_switch_dialog: PhoneAppDialog | None = None  # the hidden switch's (tests)
         self._backup_dialog: SaveBackupDialog | LoadBackupDialog | None = None
         self._images = images
         self._library = library
@@ -1645,6 +1658,9 @@ class SettingsDialog(ctk.CTkToplevel):
             line, "", size=SMALL_SIZE, wraplength=_BOX_INNER - _UPDATE_BUTTON_WIDTH - 12
         )
         self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        self._version_clicks: list[float] = []
+        if self._phone is not None and self._phone.can_switch and check.heading is not None:
+            check.heading.bind("<Button-1>", lambda _event: self.version_clicked(), add="+")
         self._go_back_version = self._updates.previous_version
         self.go_back_button: ctk.CTkButton | None = None
         if self._go_back_version is not None:
@@ -1658,6 +1674,40 @@ class SettingsDialog(ctk.CTkToplevel):
             )
             self.go_back_button.pack(side="left")
         return page
+
+    def version_clicked(self, now: float | None = None) -> None:
+        """One click on "Version …": the SWITCH_CLICKSth quick one switches the phone features."""
+        now = time.monotonic() if now is None else now
+        clicks = self._version_clicks
+        if clicks and now - clicks[-1] > SWITCH_GAP_S:
+            clicks.clear()
+        clicks.append(now)
+        if len(clicks) >= SWITCH_CLICKS:
+            clicks.clear()
+            spawn(self._switch_phone(), name="phone-switch")
+
+    async def _switch_phone(self) -> None:
+        phone = self._phone
+        if phone is None:
+            return
+        on = not phone.switched_on_here()
+        try:
+            await phone.switch_here(on)
+        except OSError as exc:
+            log.warning("The phone features couldn't be switched (%s)", type(exc).__name__)
+            if self.winfo_exists():
+                self._update_result.configure(text=t(PHONE_SWITCH_FAILED), text_color=theme.DANGER)
+            return
+        if not self.winfo_exists():
+            return
+        # On: the phone app's download code with it (app/ui/phone_app.py).
+        self.phone_switch_dialog = PhoneAppDialog(
+            self,
+            title=t(PHONE_ON_TITLE if on else PHONE_OFF_TITLE),
+            note=t(PHONE_SWITCH_TEXT),
+            show_code=on,
+            on_restart=async_command(self._restart_now) if self._on_restart is not None else None,
+        )
 
     def _ask_go_back(self) -> None:
         ConfirmDialog(

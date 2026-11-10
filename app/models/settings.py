@@ -383,7 +383,8 @@ class ShortItem(BaseModel):
 class PhoneOrder(BaseModel):
     """What AirGrabber wants a phone to do with one Plex item (app/services/phone/sends.py):
     `take` it along (copy it from Plex) or `remove` it. `key`: the episode's or film's Plex
-    ratingKey; `show`, `season`, `episode` only for an episode."""
+    ratingKey; `show`, `season`, `episode` only for an episode. `phone_sized`: a 4K film to take
+    as the phone-sized copy this PC makes (app/services/phone/copies.py), not as Plex has it."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -397,6 +398,7 @@ class PhoneOrder(BaseModel):
     season: int | None = None
     episode: int | None = None
     added_at: UtcDatetime
+    phone_sized: bool = False
 
 
 class PhoneItem(BaseModel):

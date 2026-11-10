@@ -84,8 +84,9 @@ class SettingsBox:
         self.body.grid_columnconfigure(0, weight=1)
         self._next_row = 0
         self._labels: list[tuple[ctk.CTkLabel, theme.Color]] = []  # greyed by `set_enabled`
+        self.heading: ctk.CTkLabel | None = None  # its bold name, when it has one
         if title is not None:
-            heading = ctk.CTkLabel(
+            heading = self.heading = ctk.CTkLabel(
                 self.body,
                 text=title,
                 font=theme.font(16, bold=True),

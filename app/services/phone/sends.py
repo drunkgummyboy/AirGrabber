@@ -7,6 +7,11 @@ report shows it: a `take` whose key is among the items (in any state), a `remove
 answer that got lost, or a phone that asks twice, does no harm. The last report is kept per phone
 (`Settings.phone_contents`) for the phone's menu in Settings.
 
+A 4K film can go phone-sized (`phone_sized` in the order, the owner's wish, 2026-11-10): this PC starts
+making the smaller copy at once (copies.py), so it is ready when the phone comes home, and the phone
+copies that one from here instead of the film from Plex. Cancelling the order before the phone took it
+drops the copy; a copy still wanted when AirGrabber starts again is started again (`resume_copies`).
+
 Open to every paired phone (a library manager's or not), behind the "no Plex, no phone app" rule. Both
 lists are this PC's own (never in a backup); disconnecting a phone drops its share (`DeviceStore.remove`).
 
@@ -20,12 +25,15 @@ import logging
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal, TypeGuard
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 from app.models import PairedPhone, PhoneContents, PhoneItem, PhoneOrder, Settings
 from app.models.plex import PlexEpisode, PlexTitle
 from app.services.phone.server import Handler, Reply, Request, bad_request
 from app.services.settings import SettingsService
+
+if TYPE_CHECKING:
+    from app.services.phone.copies import PhoneCopies
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +120,7 @@ def order_json(order: PhoneOrder) -> dict[str, Any]:
         "show": order.show,
         "season": order.season,
         "episode": order.episode,
+        "phone_sized": order.phone_sized,
     }
 
 
@@ -131,10 +140,12 @@ class PhoneSends:
         self,
         settings: SettingsService,
         *,
+        copies: PhoneCopies | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        """`now`: for tests."""
+        """`copies`: the phone-sized copies (None: none). `now`: for tests."""
         self._settings = settings
+        self._copies = copies
         self._now = now
         # A change is worked out from the lists as they stand, so one at a time.
         self._lock = asyncio.Lock()
@@ -179,14 +190,54 @@ class PhoneSends:
                 held.discard(order.key)
         return frozenset(held)
 
+    def phone_sized_possible(self, film: PlexTitle) -> bool:
+        """Whether this film can go phone-sized: a 4K film, and a PC whose card makes copies."""
+        return (
+            film.kind == "movie"
+            and film.resolution == "4K"
+            and self._copies is not None
+            and self._copies.available
+        )
+
+    def copy_state(self, order: PhoneOrder) -> tuple[str, int, str | None] | None:
+        """A phone-sized order's copy on this PC: its state ("waiting", "fetching",
+        "converting", "ready", "failed"), progress and, failed, why. None: not phone-sized, or no
+        copy (yet)."""
+        if not order.phone_sized or self._copies is None:
+            return None
+        return self._copies.state_of(order.key)
+
     # -- what the PC does ----------------------------------------------------------------------
 
-    async def send_film(self, phone: PairedPhone, film: PlexTitle) -> int:
-        """Put a film from the Library page on `phone`: 1, or 0 when it is there already."""
-        return await self._send(
+    async def send_film(self, phone: PairedPhone, film: PlexTitle, *, phone_sized: bool = False) -> int:
+        """Put a film from the Library page on `phone`: 1, or 0 when it is there already.
+        `phone_sized`: as this PC's phone-sized copy, started here at once."""
+        added = await self._send(
             phone.id,
-            [{"key": film.key, "kind": "movie", "title": film.title}],
+            [{"key": film.key, "kind": "movie", "title": film.title, "phone_sized": phone_sized}],
         )
+        if added and phone_sized and self._copies is not None and any(
+            o.phone_id == phone.id and o.key == film.key and o.action == "take" and o.phone_sized
+            for o in self._settings.current.phone_orders
+        ):
+            self._copies.make(film.key)
+        return added
+
+    def resume_copies(self) -> None:
+        """AirGrabber started again: the phone-sized copies still waiting for a phone, made
+        (a finished one is there already)."""
+        if self._copies is None:
+            return
+        for key in {o.key for o in self._settings.current.phone_orders if o.phone_sized}:
+            self._copies.make(key)
+
+    async def _drop_unwanted(self, keys: set[str]) -> None:
+        """Copies of these films no open order wants any more: gone."""
+        if self._copies is None:
+            return
+        wanted = {o.key for o in self._settings.current.phone_orders if o.phone_sized}
+        for key in keys - wanted:
+            await self._copies.drop(key)
 
     async def send_episodes(
         self, phone: PairedPhone, show: PlexTitle, episodes: Sequence[PlexEpisode]
@@ -244,12 +295,15 @@ class PhoneSends:
         return added
 
     async def cancel(self, order_id: str) -> None:
-        """Take back an order the phone hasn't carried out yet. An unknown one changes nothing."""
+        """Take back an order the phone hasn't carried out yet (and its phone-sized copy). An
+        unknown one changes nothing."""
         async with self._lock:
             orders = self._settings.current.phone_orders
             kept = tuple(order for order in orders if order.id != order_id)
             if len(kept) != len(orders):
                 await self._settings.update(phone_orders=kept)
+            dropped = {o.key for o in orders if o.id == order_id and o.phone_sized}
+            await self._drop_unwanted(dropped)
 
     async def remove(self, phone_id: str, key: str) -> None:
         """Have this item taken off the phone the next time it checks in; one still waiting to
@@ -262,9 +316,8 @@ class PhoneSends:
                 for order in orders
                 if order.phone_id == phone_id and order.key == key and order.action == "take"
             ]
-            if waiting:
-                for order in waiting:
-                    orders.remove(order)
+            for order in waiting:
+                orders.remove(order)
             report = self.contents_of(phone_id)
             item = next((one for one in report.items if one.key == key), None) if report else None
             asked = any(
@@ -288,6 +341,7 @@ class PhoneSends:
                 )
             if tuple(orders) != current.phone_orders:
                 await self._settings.update(phone_orders=tuple(orders))
+            await self._drop_unwanted({o.key for o in waiting if o.phone_sized})
 
     # -- the phone's side ----------------------------------------------------------------------
 

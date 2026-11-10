@@ -221,6 +221,23 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gone.status, 404)
         self.assertEqual((await self.ask(copies, "DELETE", "/v1/phone-copies/77")).status, 204)
 
+    async def test_the_pc_starts_and_drops_one(self) -> None:
+        copies = self.copies()
+        self.assertFalse(copies.make("601"))  # not started: the card not tried yet
+        await copies.start()
+        self.assertFalse(copies.make("../x"))
+        self.assertTrue(copies.make("601"))
+        self.assertTrue(copies.make("601"))  # the same job
+        body = await self.made(copies, "601")
+        self.assertEqual(body["state"], "ready")
+        self.assertEqual(copies.state_of("601"), ("ready", 100, None))
+        asked = await self.ask(copies, "POST", "/v1/phone-copies", key="601", kind="movie")
+        self.assertEqual(asked.body["state"], "ready")  # the phone finds it made
+        self.assertEqual(len(self.conversions), 1)
+        await copies.drop("601")
+        self.assertIsNone(copies.state_of("601"))
+        self.assertEqual(list(self.folder.iterdir()), [])
+
     async def test_progress_fetching_then_converting(self) -> None:
         copies = self.copies()
         await copies.start()

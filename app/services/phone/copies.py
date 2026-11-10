@@ -5,7 +5,8 @@ A film Plex has only in 4K takes ~18 GB on a phone. The NAS can't shrink it in t
 graphics card can (NVENC): the phone asks for a copy (`POST /v1/phone-copies`), AirGrabber fetches the
 film's tallest version from Plex over the home network and converts it to a ~5 GB 1080p HEVC copy,
 which the phone then copies from here (`GET /v1/phone-copies/<key>/file`, resumable) and drops
-(`DELETE`). One job at a time; the files live in AirGrabber's local data folder (`phone-copies`),
+(`DELETE`). Send to phone's Phone-sized tick (sends.py) starts one from the PC (`make`), so it is
+ready by the time the phone comes home; cancelling that order drops it (`drop`). One job at a time; the files live in AirGrabber's local data folder (`phone-copies`),
 never on a synced drive. A copy nobody touched for STALE_DAYS goes.
 
 The recipe: CUDA decoding, `scale_cuda` to fit 1920 × 1080 (a 10-bit picture stays 10-bit, its
@@ -417,6 +418,34 @@ class PhoneCopies:
                     await asyncio.to_thread(path.unlink)
         await self._clean()
 
+    # -- the PC's side (Send to phone) -----------------------------------------------------------
+
+    def make(self, key: str) -> bool:
+        """Start a copy of this film (a Plex ratingKey) unless there is one: False when this PC
+        can't (`available`) or the key is no film's."""
+        return self._want(key) is not None
+
+    def state_of(self, key: str) -> tuple[State, int, str | None] | None:
+        """A copy's state, its progress (0-100) and, failed, why; None when there's none."""
+        job = self._jobs.get(key)
+        return None if job is None else (job.state, job.progress, job.message)
+
+    async def drop(self, key: str) -> None:
+        """No longer wanted: stopped when it is being made, its files gone."""
+        if _KEY.fullmatch(key):
+            await self._forget(key)
+
+    def _want(self, key: str) -> _Job | None:
+        job = self._jobs.get(key)
+        if job is None:
+            if not self.available or not _KEY.fullmatch(key):
+                return None
+            job = self._jobs[key] = _Job(key, touched=self._clock())
+            self._queue.put_nowait(key)
+            log.info("Phone-sized copy %s asked for (%d waiting)", key, self._queue.qsize())
+        job.touched = self._clock()
+        return job
+
     # -- the phone's requests ------------------------------------------------------------------
 
     async def _ask(self, request: Request) -> Reply:
@@ -425,14 +454,9 @@ class PhoneCopies:
             return bad_request()
         if title is not None and (not isinstance(title, str) or len(title) > 300):
             return bad_request()
-        job = self._jobs.get(key)
+        job = self._want(key)
         if job is None:
-            if not self.available:
-                return error_reply(409, "failed", t(NOT_POSSIBLE_TEXT))
-            job = self._jobs[key] = _Job(key, touched=self._clock())
-            self._queue.put_nowait(key)
-            log.info("Phone-sized copy %s asked for (%d waiting)", key, self._queue.qsize())
-        job.touched = self._clock()
+            return error_reply(409, "failed", t(NOT_POSSIBLE_TEXT))
         return Reply(200, job.answer())
 
     async def _status(self, request: Request) -> Reply:

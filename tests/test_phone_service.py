@@ -907,6 +907,62 @@ class PageTests(PageCase):
         self.assertNotIn(SECTION_PHONE, texts(dialog._sidebar))
         self.assertIsNone(dialog.phone_box)
 
+    async def test_seven_quick_clicks_on_the_version_switch_the_phone_features(self) -> None:
+        from app.ui.settings_dialog import PHONE_OFF_TITLE, PHONE_ON_TITLE, SECTION_UPDATES
+
+        marker = self.root / ENABLED_MARKER
+        dialog = self.settings_window(self.service)
+        dialog.page(SECTION_UPDATES)
+        for n in range(6):
+            dialog.version_clicked(now=100.0 + n)
+        await self.settle()
+        self.assertTrue(marker.is_file())  # six: nothing
+        dialog.version_clicked(now=110.0)  # too slow: counting starts again
+        for n in range(6):
+            dialog.version_clicked(now=111.0 + n)
+        await self.settle()
+        self.assertFalse(marker.exists())
+        self.assertTrue(self.service.available)  # this start keeps what it had
+        off = dialog.phone_switch_dialog
+        assert off is not None
+        self.assertEqual(off.title(), t(PHONE_OFF_TITLE))
+        self.assertIsNone(off.code_image)  # off: no download code
+        self.assertIsNone(off.restart_button)  # no restart to offer here
+        off.close()
+        for n in range(7):
+            dialog.version_clicked(now=200.0 + n)
+        await self.settle()
+        self.assertTrue(marker.is_file())
+        on = dialog.phone_switch_dialog
+        assert on is not None
+        self.assertEqual(on.title(), t(PHONE_ON_TITLE))
+        self.assertIsNotNone(on.code_image)  # the phone app's download code
+        on.close()
+
+    async def test_the_page_offers_the_phone_app(self) -> None:
+        from app.ui.phone_app import GET_APP_TITLE, PHONE_APP_URL
+
+        self.assertTrue(PHONE_APP_URL.startswith("https://github.com/drunkgummyboy/AirGrabber/"))
+        box, _ = self.box()
+        box.app_button.invoke()
+        first = box.app_dialog
+        assert first is not None
+        self.addCleanup(first.close)
+        self.assertEqual(first.title(), t(GET_APP_TITLE))
+        self.assertIsNotNone(first.code_image)
+        box.app_button.invoke()
+        self.assertIs(box.app_dialog, first)  # one at a time
+
+    async def test_the_restart_button(self) -> None:
+        from app.ui.phone_app import PhoneAppDialog
+
+        restarted = mock.Mock()
+        dialog = PhoneAppDialog(self.window, title="x", show_code=False, on_restart=restarted)
+        assert dialog.restart_button is not None
+        dialog.restart_button.invoke()
+        restarted.assert_called_once_with()
+        self.assertFalse(dialog.winfo_exists())
+
 
 class CodePictureTests(unittest.TestCase):
     def test_the_picture_is_square_black_on_white_with_a_quiet_edge(self) -> None:

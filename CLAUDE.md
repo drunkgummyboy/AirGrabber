@@ -150,7 +150,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - The phone connection (`app/services/phone/`, page `app/ui/phone_settings.py`, for the Companion app; design in
   `docs/companion/`): for now only on a PC whose data folder holds the file `phone-connection.enabled` (`ENABLED_MARKER`,
   owner's decision): without it no Settings page, `PhoneService.run` ends at once and nothing listens, even with
-  `phone_connection_on` true, and no text tells others about it (no What's new line either). Opening it up is one line:
+  `phone_connection_on` true, and no text tells others about it (no What's new line either). The hidden switch: seven
+  quick clicks on Settings → Updates' "Version …" write or delete that file (`switch_here`, counts from the next start;
+  no cue on screen); switched on, it shows the Companion app's download code (`app/ui/phone_app.py`, `PHONE_APP_URL`: the
+  APK as the `phone-app` GitHub release's file, replaced per Companion version, uploaded only with the owner's OK).
+  Opening it up is one line:
   `OPEN_TO_EVERYONE` in `app/services/phone/service.py`. Home addresses and paired phones only; only a token's hash is
   kept; the Plex token only in `/v1/pair`'s and `/v1/hello`'s answers; release links never leave the PC; the log gets no
   token, code, address or exception text. `cryptography` and `segno` are optional (below `# optional`), imported only
@@ -165,7 +169,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   token the page is one line and no code is made, and every route but `/v1/pair` / `/v1/hello` answers 409 `no_plex`.
   Phone-sized copies (`copies.py`, contract in the Companion's docs/2026-11-09-phone-sized-copies.md): a 4K film fetched
   from Plex into `<data>\phone-copies` and made 1080p HEVC on the card (MediaForge's ffmpeg, `hevc_nvenc`), one at a
-  time; `hello`'s `phone_copies` says whether the card works. The file goes out as a `FileReply` (server.py, Range).
+  time; `hello`'s `phone_copies` says whether the card works. Send to phone's Phone-sized tick (4K films) starts one from
+  the PC at once (`phone_sized` in the order; cancelling drops it; `resume_copies` after a restart). The file goes out as a `FileReply` (server.py, Range).
   ffmpeg runs as a subprocess of the loop (no threads); its output holds paths: never logged. Tests fake Plex and ffmpeg.
 
 See `filemap.md` for where things live.

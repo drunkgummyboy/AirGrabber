@@ -5,6 +5,8 @@ AirGrabber comes first when they have a phone. A film goes as it is; a show list
 Plex server has them now, by season, to tick episodes or whole seasons. What is on the chosen phone or on
 its way there already shows ticked and greyed, and isn't sent twice. Send hands it to
 `PhoneSends` and closes; the phone copies it from Plex the next time the Companion app is open at home.
+A 4K film, on a PC whose card makes phone-sized copies, gets the Phone-sized tick (on to start with):
+then this PC makes the ~5 GB 1080p copy at once and the phone copies that one from here.
 Borderless in AirGrabber's style; Escape, the ✕ and Cancel close it without sending.
 """
 
@@ -54,6 +56,11 @@ TO_TEXT = N_("To")
 ONE_PHONE_TEXT = N_("To {phone} ({person})")
 HOW_TEXT = N_("The phone copies it from Plex the next time the Companion app is open at home.")
 THERE_TEXT = N_("Already on this phone or on its way.")
+PHONE_SIZED_TEXT = N_("Phone-sized: about 5 GB in 1080p instead of the whole 4K film")
+PHONE_SIZED_HOW_TEXT = N_(
+    "This PC makes the smaller copy now, and the phone copies it from here the next time the "
+    "Companion app is open at home."
+)
 LOADING_TEXT = N_("Reading the episodes from Plex…")
 PLEX_AWAY_TEXT = N_("Plex didn't answer, so try again in a moment.")
 NO_EPISODES_TEXT = N_("Plex has no episodes of this show.")
@@ -129,6 +136,7 @@ class SendToPhoneDialog(ctk.CTkToplevel):
         self.season_ticks: dict[int | None, ctk.CTkCheckBox] = {}
         self.person_menu: ctk.CTkOptionMenu | None = None
         self.phone_menu: ctk.CTkOptionMenu | None = None
+        self.phone_sized: ctk.CTkCheckBox | None = None  # a 4K film's Phone-sized tick
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
@@ -145,6 +153,25 @@ class SendToPhoneDialog(ctk.CTkToplevel):
         self._build_to_row()
         self.note = text_label(body, "", size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=WIDTH)
         self.note.pack(anchor="w", pady=(LINE_GAP + 4, 0))
+        if sends.phone_sized_possible(title):
+            self.phone_sized = ctk.CTkCheckBox(
+                body,
+                text=t(PHONE_SIZED_TEXT),
+                width=0,
+                height=28,
+                checkbox_width=20,
+                checkbox_height=20,
+                corner_radius=5,
+                font=theme.font(DETAIL_SIZE),
+                text_color=theme.TEXT,
+                text_color_disabled=theme.TEXT_MUTED,
+                fg_color=theme.ACCENT,
+                hover_color=theme.ACCENT_HOVER,
+                border_color=theme.EDGE,
+                command=self._show_film,
+            )
+            self.phone_sized.select()
+            self.phone_sized.pack(anchor="w", pady=(LINE_GAP + 4, 0))
         self._scroll = FitScroll(body, follow=True)
         self._list = ctk.CTkFrame(self._scroll, fg_color="transparent")
         self._list.grid(row=0, column=0, sticky="ew")
@@ -250,8 +277,14 @@ class SendToPhoneDialog(ctk.CTkToplevel):
 
     def _show_film(self) -> None:
         there = self._item.key in self._sends.taken_keys(self._phone.id)
-        self.note.configure(text=t(THERE_TEXT if there else HOW_TEXT))
+        how = PHONE_SIZED_HOW_TEXT if self._wants_phone_sized() else HOW_TEXT
+        self.note.configure(text=t(THERE_TEXT if there else how))
         self.send_button.configure(state="disabled" if there else "normal")
+        if self.phone_sized is not None:
+            self.phone_sized.configure(state="disabled" if there else "normal")
+
+    def _wants_phone_sized(self) -> bool:
+        return self.phone_sized is not None and bool(self.phone_sized.get())
 
     async def _load(self) -> None:
         try:
@@ -376,7 +409,7 @@ class SendToPhoneDialog(ctk.CTkToplevel):
             count = await self._sends.send_episodes(phone, self._item, self.chosen_episodes())
             text = tn(SENT_ONE, SENT_MORE, count, phone=phone.name)
         else:
-            await self._sends.send_film(phone, self._item)
+            await self._sends.send_film(phone, self._item, phone_sized=self._wants_phone_sized())
             text = t(SENT_FILM_TEXT, title=self._item.title, phone=phone.name)
         self.close()
         self._on_sent(text)

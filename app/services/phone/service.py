@@ -2,7 +2,9 @@
 
 For now it exists only on a PC whose data folder holds the file ENABLED_MARKER: without it there
 is no Settings page, `run` returns at once and nothing starts, whatever the settings say. Setting
-OPEN_TO_EVERYONE to True opens it up.
+OPEN_TO_EVERYONE to True opens it up. The hidden switch (the owner, 2026-11-10): seven quick clicks on
+"Version …" in Settings → Updates write or delete that file (`switch_here`); it counts from the next
+start, and the paired phones stay in the settings either way.
 
 Off (the default) it does nothing: no port, no certificate. On, it runs the HTTPS server
 (app/services/phone/server.py) and a small UDP finder, which tells a phone that knows this PC's id
@@ -203,6 +205,8 @@ class PhoneService:
         self.copies = copies
         # Read once: the page and the service agree until the next start.
         self.available = OPEN_TO_EVERYONE or (paths.root / ENABLED_MARKER).is_file()
+        # The hidden switch has something to switch while it isn't open to everyone.
+        self.can_switch = not OPEN_TO_EVERYONE
         self._devices = DeviceStore(settings)
         self._code = PairingCode()
         self._server: PhoneServer | None = None
@@ -214,6 +218,20 @@ class PhoneService:
         self.problem: str | None = None  # why it isn't (fully) working, in one plain sentence
         self._had_plex = plex_connected(settings.current)
         self._unsubscribe_settings = settings.subscribe(self._settings_changed)
+
+    def switched_on_here(self) -> bool:
+        """Whether this PC's data folder holds ENABLED_MARKER now (the next start's say)."""
+        return (self._paths.root / ENABLED_MARKER).is_file()
+
+    async def switch_here(self, on: bool) -> None:
+        """The hidden switch: write or delete ENABLED_MARKER. Counts from the next start; raises
+        OSError when the file can't be written or deleted."""
+        marker = self._paths.root / ENABLED_MARKER
+        if on:
+            await asyncio.to_thread(marker.write_text, "", encoding="utf-8")
+        else:
+            await asyncio.to_thread(marker.unlink, missing_ok=True)
+        log.info("Phone features switched %s here (from the next start)", "on" if on else "off")
 
     # -- what the page shows ---------------------------------------------------------------------
 
@@ -361,6 +379,7 @@ class PhoneService:
         self._server = server
         if self.copies is not None:
             await self.copies.start()  # tries the card once: hello says what it found
+            self.sends.resume_copies()  # sent phone-sized from the PC before a restart
         return None
 
     async def _remember_identity(self, fingerprint: str) -> None:

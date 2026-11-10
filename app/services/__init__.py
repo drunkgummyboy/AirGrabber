@@ -191,8 +191,13 @@ class Services:
         grabbed_films = GrabbedFilms(self.download_status)
         suggestions = Suggestions(library, self.watchlist, discovery, self.profiles, settings)
         shortlist = Shortlist(settings, self.profiles, suggestions)
+        # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
+        # ffmpeg (app/services/phone/copies.py); the phone asks, or Send to phone does.
+        copies = PhoneCopies(
+            self.plex, paths.root / COPIES_FOLDER, paths.forge / "tools" / "ffmpeg" / "bin"
+        )
         # Send to phone (the Library page) and each phone's menu of what it holds.
-        self.phone_sends = PhoneSends(settings)
+        self.phone_sends = PhoneSends(settings, copies=copies)
         phone_routes: dict[tuple[str, str], Route] = {
             **ComingUp(
                 library,
@@ -221,11 +226,6 @@ class Services:
             **PhoneForge(forge, self.profiles).routes(),
             **FilmSeries(discovery.film_series).routes(),
         }
-        # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
-        # ffmpeg (app/services/phone/copies.py).
-        copies = PhoneCopies(
-            self.plex, paths.root / COPIES_FOLDER, paths.forge / "tools" / "ffmpeg" / "bin"
-        )
         phone_routes = {**phone_routes, **copies.routes()}
         self.phone = PhoneService(
             settings,

@@ -5,7 +5,8 @@ words; "Connect a phone" with the code to scan (black on white in both looks: a 
 that); and a box listing the connected phones. Each phone (the owner's wish, 2026-11-08): its name
 with Rename (in place: Enter saves, Escape doesn't), the person it belongs to (a choice while there
 is more than one), its own Library manager tick (the first phone pairs as one, later ones don't),
-"What's on it…" (app/ui/phone_contents.py) and Disconnect.
+"What's on it…" (app/ui/phone_contents.py) and Disconnect. Under the phones, "Get the phone app…": the
+Companion app's download code (app/ui/phone_app.py).
 
 Without Plex the page is one line, NEEDS_PLEX_TEXT: no Plex, no phone app. It follows Plex
 connecting and disconnecting while it is open.
@@ -34,6 +35,7 @@ from app.services.phone.service import NEEDS_PLEX_TEXT, PACKAGES_MISSING_TEXT, P
 from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, DETAIL_SIZE, primary_button, secondary_button
 from app.ui.people import person_name
+from app.ui.phone_app import GET_APP_BUTTON, GET_APP_TITLE, PhoneAppDialog
 from app.ui.settings_layout import BOX_INNER, SettingsBox, SettingsPage
 from app.ui.tasks import spawn
 
@@ -58,6 +60,7 @@ CONNECT_WIDTH = 180
 DISCONNECT_WIDTH = 130
 RENAME_WIDTH = 110
 CONTENTS_WIDTH = 150
+APP_WIDTH = 190
 PERSON_WIDTH = 160
 NAME_GAP = 12  # between a phone's name and its buttons
 PHONE_GAP = 18  # between two phones
@@ -145,6 +148,11 @@ class PhoneBox:
         self._list = ctk.CTkFrame(self.phones_box.body, fg_color="transparent")
         self.phones_box.add(self._list, gap=8)
         self._list.grid_columnconfigure(0, weight=1)
+        self.app_dialog: PhoneAppDialog | None = None
+        self.app_button = secondary_button(
+            self.phones_box.body, t(GET_APP_BUTTON), self.show_app_code, width=APP_WIDTH
+        )
+        self.phones_box.add(self.app_button, gap=PHONE_GAP, sticky="w")
 
         self._hide_code()
         self._unsubscribe = phone.subscribe(self.refresh)
@@ -175,6 +183,7 @@ class PhoneBox:
         plex = phone.plex_connected
         _show(self.needs_plex, not plex)
         _show(self.phones_box.frame, plex)
+        _show(self.app_button, plex)  # no Plex, no phone app
         if not plex:
             self._cancel_code()
             self._hide_code()
@@ -411,6 +420,15 @@ class PhoneBox:
             if self.listening:
                 self.switch.configure(state="normal")
                 self.refresh()  # also when saving failed: the switch goes back
+
+    # -- the phone app ---------------------------------------------------------------------------
+
+    def show_app_code(self) -> None:
+        """The Companion app's download code, one window at a time."""
+        if self.app_dialog is not None and self.app_dialog.winfo_exists():
+            self.app_dialog.lift()
+            return
+        self.app_dialog = PhoneAppDialog(self.box.frame.winfo_toplevel(), title=t(GET_APP_TITLE))
 
     # -- the code --------------------------------------------------------------------------------
 
