@@ -96,6 +96,11 @@ _WINDOWS_DEVICE_NAMES = frozenset(
 PROGRAM_IN_TORRENT = N_(
     "This download holds a program ({suffix}) instead of just a video, so it wasn't started."
 )
+PROGRAM_IN_TORRENT_BEFORE = N_(
+    "This download was caught holding a program instead of just a video before, so it wasn't "
+    "started."
+)
+REFUSED_KEEP = 500  # refused releases' info hashes kept (Settings.refused_hashes)
 
 
 class GrabError(Exception):
@@ -104,7 +109,9 @@ class GrabError(Exception):
 
 class ProgramInTorrent(GrabError):
     """A release's .torrent holds a program (app/services/torrent_files.py): malware dressed up as
-    a video. It is never handed on; a one-click download tries the next best release."""
+    a video. It is never handed on; a one-click download tries the next best release. Its info
+    hash is remembered (`Settings.refused_hashes`), so it is refused again later even when its
+    .torrent can't be fetched and only its magnet (which can't be looked into) is at hand."""
 
 
 class DownloadService:
@@ -322,14 +329,37 @@ class DownloadService:
             magnet = download_url
             info_hash = info_hash or _magnet_hash(download_url)
 
+        self._refuse_known(release, info_hash or (_magnet_hash(magnet) if magnet else None))
         if content is None and info_hash:
             content, _ = await self._fetch_torrent(
                 ITORRENTS_URL.format(info_hash.upper()), "itorrents.org", info_hash
             )
         if content is not None and (suffix := program_inside(content)) is not None:
             log.warning("Refused %r: its torrent holds a %s file", release.title, suffix)
+            if info_hash:
+                await self._remember_refused(info_hash)
             raise ProgramInTorrent(t(PROGRAM_IN_TORRENT, suffix=suffix))
         return content, magnet, info_hash
+
+    def _refuse_known(self, release: TorrentRelease, info_hash: str | None) -> None:
+        """Raise ProgramInTorrent for a release caught holding a program before (its hash in
+        `Settings.refused_hashes`): its .torrent may be out of reach now, and a magnet can't be
+        looked into."""
+        if info_hash and info_hash.casefold() in self._settings.current.refused_hashes:
+            log.warning("Refused %r: its torrent held a program before", release.title)
+            raise ProgramInTorrent(t(PROGRAM_IN_TORRENT_BEFORE))
+
+    async def _remember_refused(self, info_hash: str) -> None:
+        """Keep `info_hash` in `Settings.refused_hashes` (newest first). Never raises: a failure
+        only means the release is looked into again next time."""
+        key = info_hash.casefold()
+        kept = self._settings.current.refused_hashes
+        try:
+            await self._settings.update(
+                refused_hashes=(key, *(h for h in kept if h != key))[:REFUSED_KEEP]
+            )
+        except Exception:
+            log.exception("Could not remember a refused release")
 
     async def _grab_to_folder(
         self, release: TorrentRelease, *, movie: bool

@@ -129,6 +129,8 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "recent_searches": ("Reacher",),
     "blocked_groups": ("FAKE",),
     "learned_groups": ("NTb",),
+    # Releases caught holding a program: read at the next grab, nothing on screen shows them.
+    "refused_hashes": ("0" * 40,),
     "auto_wait_hours": 6,
     "stuck_swap_hours": 12,
     "text_size": "larger",

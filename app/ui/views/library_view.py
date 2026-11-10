@@ -4,7 +4,8 @@ Plex is connected; app/services/plex_library.py gives it its contents).
 At the top: "Library", Shows (n) | Films (n), a search box and "From Plex · checked 08:53"; under
 it Sort (Recently added / A–Z / Year) and Show (shows: All / Not followed / With gaps / Ended;
 films: All / 4K / Recently added). The cards follow the card size (Settings › Looks): the poster
-from the Plex server (`posters`: an ImageCache fetching through PlexService.poster), the title,
+from the Plex server (`posters`: an ImageCache fetching through PlexService.poster), the title
+(two lines' room on every card, so a row's cards line up; longer ends in "…"),
 "3 seasons · 34 episodes" or the year and quality, an amber "2 gaps" and, for a show, "✓ Following"
 or "+ Follow". A poster or title opens the show's window or the film's info window. PAGE_SIZE
 cards at first, "Show more" for the next ones: a library of a thousand films stays quick.
@@ -46,6 +47,7 @@ from app.ui import theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.scrollable import ScrollableFrame
 from app.ui.tasks import spawn
+from app.ui.text_fit import SLACK, fit_to_lines
 from app.ui.tooltip import Tooltip
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, MessagePanel, PosterImage
@@ -69,6 +71,7 @@ EMPTY_TEXT = N_("AirGrabber reads Plex every half hour; Settings → Plex → Ch
 NO_MATCH_TEXT = N_("Nothing here with this search or filter.")
 PAGE_SIZE = 60  # cards at first and per "Show more"
 CARD_WIDTH = 176  # units at the XL card size
+TITLE_LINES = 2  # a card's title: longer ones end in "…"
 SEARCH_WAIT_MS = 250
 BAR_HEIGHT = 28
 BAR_RADIUS = 7
@@ -124,12 +127,18 @@ class LibraryCard(ctk.CTkFrame):
         self.poster.grid(row=0, column=0, padx=6, pady=(6, 4))
         self.poster.set_on_click(on_open)
         self.poster.show(posters, poster_url(title))
+        # At most TITLE_LINES lines, and always that tall: a long title neither stretches its card
+        # nor makes it taller than its neighbours (the whole title in a tip when it's cut).
+        title_font = theme.font(scale.font(14, 12), bold=True)
+        shown = fit_to_lines(title.title, width - 20 - SLACK, TITLE_LINES, title_font.measure)
         name = ctk.CTkLabel(
-            self, text=title.title, font=theme.font(scale.font(14, 12), bold=True),
-            text_color=theme.TEXT, wraplength=width - 20, cursor="hand2",
+            self, text=shown, font=title_font, text_color=theme.TEXT, wraplength=width - 20,
+            height=TITLE_LINES * title_font.metrics("linespace"), cursor="hand2",
         )
         name.grid(row=1, column=0, padx=8, sticky="ew")
         name.bind("<Button-1>", lambda _event: on_open())
+        if shown != title.title:
+            Tooltip(name, title.title)
         ctk.CTkLabel(
             self, text=line, font=theme.font(scale.font(12, 10)), text_color=theme.TEXT_MUTED,
             height=scale.text_height(18, scale.font(12, 10)),

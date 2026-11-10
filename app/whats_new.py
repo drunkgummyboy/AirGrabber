@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.13.4": (
+        N_("A download caught hiding a program is never fetched again, not even through its magnet link."),
+        N_("Magnet links now reach Download Station on a Synology NAS."),
+        N_("Library: a long title no longer makes its card taller than the others."),
+    ),
     "3.13.1": (
         N_("Opening AirGrabber while it's still closing now opens it once it has closed, instead of nothing."),
         N_("Quit always quits: if closing gets stuck, AirGrabber ends itself within a minute."),

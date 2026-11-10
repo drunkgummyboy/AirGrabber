@@ -285,6 +285,33 @@ class ViewTests(DialogTestCase):
         await asyncio.sleep(0)
         self.assertEqual(opened, ["Dune"])
 
+    async def test_a_long_title_keeps_its_card_as_tall_as_the_others(self) -> None:
+        from app.ui.card_scale import FULL
+        from app.ui.views.library_view import LibraryCard
+
+        def card(name: str) -> LibraryCard:
+            made = LibraryCard(
+                self.root, title(name, seasons=1, episodes=1), posters=mock.Mock(get=mock.AsyncMock(return_value=None)),
+                scale=FULL, line="1 season · 1 episode", following=True, on_open=lambda: None,
+            )
+            made.pack()
+            self.keep(made)
+            return made
+
+        short, two, long = (
+            card("Reacher"),
+            card("Avatar: The Last Airbender (2024)"),
+            card("Georgie & Mandy's First Marriage and a Much Longer Title Than Fits"),
+        )
+        await self.settle()
+        heights = {made.winfo_reqheight() for made in (short, two, long)}
+        self.assertEqual(len(heights), 1)
+        name = long.grid_slaves(row=1, column=0)[0]
+        shown = name.cget("text")
+        self.assertTrue(shown.endswith("…"))
+        self.assertLessEqual(shown.count("\n"), 1)
+        self.assertEqual(short.grid_slaves(row=1, column=0)[0].cget("text"), "Reacher")
+
 
 def view_kind_films() -> Any:
     from app.services.plex_library import LibraryKindTab

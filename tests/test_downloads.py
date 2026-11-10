@@ -234,6 +234,36 @@ class ProgramInTorrentTests(DownloadTestCase):
         await self.assert_refused()
         self.assertEqual(self.opened, [])
 
+    async def test_caught_once_it_is_never_sent_as_a_magnet_later(self) -> None:
+        # VisionQuest, 2026-11-10: refused at 18:53, then at 20:01 its .torrent was out of reach
+        # (itorrents.org 404) and the same release went to Download Station as a magnet.
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+        station = await self.set_up_remote()
+        await self.assert_refused()
+        self.assertEqual(self.settings.current.refused_hashes, (self.bad_hash.casefold(),))
+        self.web.routes.clear()  # no .torrent anywhere now
+        for again in (
+            release(info_hash=self.bad_hash.upper()),
+            release(info_hash=None, magnet_uri=f"magnet:?xt=urn:btih:{self.bad_hash}&dn=x"),
+        ):
+            with self.assertRaises(ProgramInTorrent) as caught:
+                await self.service.grab(again, EPISODE)
+            self.assertIn("before", str(caught.exception))
+        self.assertEqual(station.calls, 0)
+        self.assertEqual(await self.history(), [])
+        # Other releases still go.
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual(len(station.magnets), 1)
+
+    async def test_the_remembered_ones_are_capped(self) -> None:
+        from app.services.downloads import REFUSED_KEEP
+
+        await self.settings.update(refused_hashes=tuple(f"{n:040x}" for n in range(REFUSED_KEEP)))
+        await self.assert_refused()
+        kept = self.settings.current.refused_hashes
+        self.assertEqual(len(kept), REFUSED_KEEP)
+        self.assertEqual(kept[0], self.bad_hash.casefold())
+
     async def test_the_itorrents_copy_is_read_too(self) -> None:
         self.serve(f"https://itorrents.org/torrent/{self.bad_hash.upper()}.torrent", self.bad)
         with self.assertRaises(ProgramInTorrent):

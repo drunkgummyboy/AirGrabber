@@ -170,8 +170,32 @@ class DiscoveryAndTaskTests(SynologyTestCase):
         self.assertLessEqual({AUTH, TASK2, TASK, DS_INFO}, asked)
 
     async def test_without_a_destination_download_station_picks_its_default(self) -> None:
+        # Sent empty, as for a .torrent: left out, the NAS answered every magnet with 120.
         await self.client.add_magnet(MAGNET)
-        self.assertNotIn("destination", self.dsm.form(TASK2, "create"))
+        self.assertEqual(self.dsm.form(TASK2, "create")["destination"], '""')
+
+    async def test_a_magnet_refused_with_120_goes_through_the_old_api(self) -> None:
+        self.dsm.overrides[(TASK2, "create")] = lambda: failure(120)
+        await self.configure(remote_destination="video/tv")
+        await self.client.add_magnet(MAGNET)
+        self.assertEqual(
+            self.dsm.methods(),
+            [(AUTH, "login"), (TASK2, "create"), (TASK, "create"), (AUTH, "logout")],
+        )
+        old = self.dsm.form(TASK, "create")
+        self.assertEqual((old["uri"], old["destination"]), (MAGNET, "video/tv"))
+
+    async def test_other_refusals_are_not_tried_again(self) -> None:
+        self.dsm.overrides[(TASK2, "create")] = lambda: failure(403)
+        await self.configure(remote_destination="video/tv")
+        await self.error_of(self.client.add_magnet(MAGNET))
+        self.assertNotIn((TASK, "create"), self.dsm.methods())
+
+    async def test_both_refusing_says_so(self) -> None:
+        self.dsm.overrides[(TASK2, "create")] = lambda: failure(120)
+        self.dsm.overrides[(TASK, "create")] = lambda: failure(120)
+        error = await self.error_of(self.client.add_magnet(MAGNET))
+        self.assertIn("120", str(error))
 
     async def test_dsm6_falls_back_to_the_old_task_api(self) -> None:
         self.dsm.info = DSM6_INFO

@@ -498,6 +498,10 @@ class Settings(BaseModel):
     # The groups whose grabs the user kept (app/services/release_groups.py), ranked after the
     # preferred ones; learned again from the download history at every start and grab.
     learned_groups: tuple[str, ...] = ()
+    # The info hashes (lower case, newest first, at most REFUSED_KEEP) of releases whose .torrent
+    # held a program (app/services/downloads.py): never sent again, not even as a magnet when
+    # the .torrent can't be fetched to look inside.
+    refused_hashes: tuple[str, ...] = ()
     prowlarr_url: ServiceUrl = ""
     prowlarr_api_key: StoredSecret = SecretStr("")
     # The Prowlarr on this PC that AirGrabber already added its public sites to (its base URL);

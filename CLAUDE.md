@@ -104,7 +104,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   (`theme.on_mode_change`, or the CTk widget's own `_set_appearance_mode`). Tabs: `widgets.Tabview`.
 - Never call live APIs from tests: use `httpx.MockTransport` and `tests/fixtures/`.
 - A .torrent holding a program (`.exe` and the like) never leaves `DownloadService._obtain`
-  (`app/services/torrent_files.py`, `ProgramInTorrent`): malware dressed up as a video. Magnets can't be read first.
+  (`app/services/torrent_files.py`, `ProgramInTorrent`): malware dressed up as a video. Magnets can't be read first,
+  so a release caught once is remembered by its info hash (`Settings.refused_hashes`) and never sent again.
 - qBittorrent's settings file (`%APPDATA%\qBittorrent\qBittorrent.ini`) is changed only by
   `app/services/qbittorrent_setup.py`: just the "Add new torrent" dialog keys (and its look's and
   Web UI's keys, below), only while qBittorrent isn't running, the original backed up once; never

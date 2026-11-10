@@ -529,6 +529,8 @@ NL: dict[str, str] = {
     "{n} files waiting": "{n} bestanden wachten",
     "This download holds a program ({suffix}) instead of just a video, so it wasn't started.":
         "Deze download bevat een programma ({suffix}) in plaats van alleen een video, dus hij is niet gestart.",
+    "This download was caught holding a program instead of just a video before, so it wasn't started.":
+        "Deze download bleek eerder een programma te bevatten in plaats van alleen een video, dus hij is niet gestart.",
     "✓ In Plex": "✓ In Plex",
     "✓ Downloaded": "✓ Gedownload",
     "✓ downloaded": "✓ gedownload",
@@ -1473,6 +1475,12 @@ NL: dict[str, str] = {
     "Your name": "Je naam",
     "＋ Add another person": "＋ Nog iemand toevoegen",
     # app/whats_new.py
+    "A download caught hiding a program is never fetched again, not even through its magnet link.":
+        "Een download die een verstopt programma bleek te bevatten, wordt nooit meer opgehaald, ook niet via zijn magnetlink.",
+    "Magnet links now reach Download Station on a Synology NAS.":
+        "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
+    "Library: a long title no longer makes its card taller than the others.":
+        "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
     "Opening AirGrabber while it's still closing now opens it once it has closed, instead of nothing.":
         "AirGrabber openen terwijl het nog afsluit, opent het nu zodra het is afgesloten, in plaats van niets.",
     "Quit always quits: if closing gets stuck, AirGrabber ends itself within a minute.":

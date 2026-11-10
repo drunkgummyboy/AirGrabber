@@ -5,8 +5,10 @@ with SYNO.API.Info (`/webapi/query.cgi`), log in with SYNO.API.Auth (`session=Do
 `format=sid`), call the Download Station APIs with `_sid`, then log out. Tasks are created with
 SYNO.DownloadStation2.Task `create` when the NAS offers it (Download Station 3.8+/DSM 7; on
 `entry.cgi` with `requestFormat: JSON`, so every parameter value is JSON-encoded:
-`type="url"`, `url=["magnet:…"]`, `create_list=false`), else with the DSM 6
-SYNO.DownloadStation.Task `create` (`uri=magnet:…`).
+`type="url"`, `url=["magnet:…"]`, `destination` (always, "" = the default folder: without it
+the NAS answers error 120), `create_list=false`), else with the DSM 6
+SYNO.DownloadStation.Task `create` (`uri=magnet:…`), which is also tried when DownloadStation2
+still answers a magnet with 120 ("reserved").
 
 A .torrent file goes up as multipart/form-data: DownloadStation2 `type="file"`,
 `file=["torrent"]` (the name of the file part), `destination` ("" = the default folder) and
@@ -79,6 +81,7 @@ _INFO_API = "SYNO.API.Info"
 _AUTH = "SYNO.API.Auth"
 _TASK2 = "SYNO.DownloadStation2.Task"
 _TASK = "SYNO.DownloadStation.Task"
+_RESERVED = 120  # DSM's "reserved for other purposes": DownloadStation2 refusing a link task
 _DS_INFO = "SYNO.DownloadStation.Info"
 _DSM_INFO = "SYNO.DSM.Info"
 _QUERY = ",".join((_AUTH, _TASK2, _TASK, _DS_INFO, _DSM_INFO))
@@ -256,16 +259,36 @@ class DownloadStationClient:
             destination = session.destination
             errors = _task_errors(destination)
             if session.has(_TASK2) and session.api(_TASK2).supports(2):
-                params: dict[str, object] = {"type": "url", "url": [magnet], "create_list": False}
-                if destination:
-                    params["destination"] = destination
-                await session.call(_TASK2, 2, "create", params, errors=errors)
+                # `destination` always, as for a .torrent ("" = the default folder): without it
+                # this NAS answered every magnet with error 120 (2026-11-10).
+                params: dict[str, object] = {
+                    "type": "url",
+                    "url": [magnet],
+                    "destination": destination,
+                    "create_list": False,
+                }
+                try:
+                    await session.call(_TASK2, 2, "create", params, errors=errors)
+                except _ApiError as exc:
+                    # 120 ("reserved"): some NASes keep DownloadStation2's link tasks to
+                    # themselves; the old Task API takes a magnet still.
+                    if exc.code != _RESERVED or not session.has(_TASK):
+                        raise
+                    log.info("Download Station on %s: error 120, the old API then", session.host)
+                    await self._add_magnet_v1(session, magnet, destination, errors)
             else:
-                params = {"uri": magnet}
-                if destination:
-                    params["destination"] = destination
-                await session.call(_TASK, 3, "create", params, errors=errors)
+                await self._add_magnet_v1(session, magnet, destination, errors)
             log.info("Added a magnet task to Download Station on %s", session.host)
+
+    @staticmethod
+    async def _add_magnet_v1(
+        session: _Session, magnet: str, destination: str, errors: Mapping[int, str]
+    ) -> None:
+        """SYNO.DownloadStation.Task `create` with `uri` (DSM 6's way; still offered on DSM 7)."""
+        params: dict[str, object] = {"uri": magnet}
+        if destination:
+            params["destination"] = destination
+        await session.call(_TASK, 3, "create", params, errors=errors)
 
     async def add_torrent(self, content: bytes, filename: str, *, movie: bool = False) -> None:
         """Log in, upload a .torrent file as a Download Station task (as `add_magnet`), log

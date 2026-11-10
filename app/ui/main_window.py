@@ -214,6 +214,8 @@ _OFF_PAGE_SETTINGS = frozenset(
         # Release groups: read by the next search and pick.
         "blocked_groups",
         "learned_groups",
+        # Releases caught holding a program: read by the next grab (app/services/downloads.py).
+        "refused_hashes",
         # The phone connection: no page shows it, only its own part of Settings.
         "phone_connection_on",
         "phone_devices",
