@@ -4,6 +4,8 @@ No test changes a real window's frame: the pop-ups made borderless (app/ui/borde
 their close button and drag bindings, but the Win32 / DWM side is a stand-in that does
 nothing (`InertNative`), so every window keeps the title bar Tk gave it. Likewise no test hooks a
 real window for Explorer drops (app/forge/ui/file_drops.py) unless it asks for the real one.
+No test starts a video player: ▶ Play's real starts (app/services/playback.py's `_start_process` /
+`_open_with_windows`) raise; tests give PlaybackService a fake `launch` or patch those two.
 
 No window reads its icon from an .ico file either (`wm iconbitmap`). The app reads each icon
 once per root (app/ui/branding.py), but every test makes a root of its own, customtkinter reads
@@ -27,6 +29,7 @@ from typing import Any
 import customtkinter as ctk
 
 from app.forge.ui import file_drops
+from app.services import playback
 from app.ui import borderless
 
 
@@ -45,6 +48,14 @@ class InertNative:
 
 borderless.set_native(InertNative())
 file_drops.set_native(file_drops.InertNative())
+
+
+def _refuse_player(*_args: Any, **_kwargs: Any) -> None:
+    raise AssertionError("tests must never start a video player: fake PlaybackService's launch")
+
+
+playback._start_process = _refuse_player
+playback._open_with_windows = _refuse_player
 
 
 REAL_ICONBITMAP = tk.Wm.wm_iconbitmap

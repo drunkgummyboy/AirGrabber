@@ -88,6 +88,7 @@ class PlexPartReply(_Wire):
     key: str | None = None
     size: int | None = None
     container: str | None = None
+    file: str | None = None  # the file as the server sees it ("/volume1/video/Movies/…"): ▶ Play
 
 
 class PlexMediaReply(_Wire):
@@ -117,6 +118,7 @@ class PlexItemReply(_Wire):
     child_count: _Index = Field(default=None, alias="childCount")
     leaf_count: _Index = Field(default=None, alias="leafCount")
     media: list[PlexMediaReply] = Field(default_factory=list, alias="Media")
+    view_count: _Index = Field(default=None, alias="viewCount")  # watched once or more: above 0
 
     def guid_texts(self) -> tuple[str, ...]:
         """Every guid the item names: its own, then the Guid list."""
@@ -265,6 +267,19 @@ class PlexEpisode(DomainModel):
     season: int | None = None
     episode: int | None = None
     title: str = ""
+
+
+class PlexVideo(DomainModel):
+    """A film's or an episode's file to play (▶ Play, app/services/playback.py): its ratingKey,
+    the file as the Plex server sees it (`file`: a path on the server, never logged), an
+    episode's season, number and title, and whether it was watched."""
+
+    key: str
+    file: str
+    season: int | None = None
+    episode: int | None = None
+    title: str = ""
+    watched: bool = False
 
 
 class PlexTitle(DomainModel):

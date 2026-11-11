@@ -4,7 +4,8 @@ trailer", the poster, title, meta line, genres, synopsis, cast) with a film's ac
 releases right beside the actions, so it has none) (app/ui/row_actions.py); the watchlist button and IMDb, and a quiet ✓
 (tip "In Plex") while Plex is connected and the film is in the user's Plex libraries
 (app/services/plex.py), the only thing that counts as had: a film AirGrabber downloaded gets no
-✓ (owner's decision for 3.1.0). Its releases (app/ui/release_panel.py) are searched as soon as
+✓ (owner's decision for 3.1.0). While it is in Plex, "▶ Play" beside the download row opens its
+file in VLC on this PC (app/ui/play_control.py, app/services/playback.py). Its releases (app/ui/release_panel.py) are searched as soon as
 the window opens: beside the info ("side") or in the Releases tab ("tabs"), which says how many
 there are ("Releases (18)").
 
@@ -30,6 +31,7 @@ import customtkinter as ctk
 
 from app.i18n import t
 from app.models import InfoLayout, Movie, MovieDetails, TitleExtras
+from app.models.plex import PlexTitle
 from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.ui import theme
 from app.ui.download_control import CORNER_RADIUS as CONTROL_RADIUS
@@ -44,6 +46,7 @@ from app.ui.media_cards import (
     tmdb_rating,
 )
 from app.ui.missing_control import HAVE_MARK, PLEX_TIP, mark_label
+from app.ui.play_control import Play, play_button
 from app.ui.release_panel import MovieTarget, PanelServices, ReleasePanel
 from app.ui.row_actions import RowActions
 from app.ui.shelf_filter import MOVIE_GENRES, Genre, genre_name, genres_of
@@ -60,6 +63,8 @@ from app.ui.watchlist_button import WatchlistButton
 
 if TYPE_CHECKING:
     from app.services import DiscoveryService, ImageCache, WatchlistService
+    from app.services.playback import PlaybackService
+    from app.ui.views.base import StatusReporter
 
 log = logging.getLogger(__name__)
 
@@ -133,10 +138,14 @@ class MovieDetailsWindow(TitleInfoWindow):
         layout: InfoLayout = InfoLayout.SIDE,
         releases: PanelServices | None = None,
         in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
+        playback: PlaybackService | None = None,
+        status: StatusReporter | None = None,
     ) -> None:
         """`releases`: what its
         releases panel works with (without it there is none). `in_plex(tmdb_id, imdb_id)`:
-        whether the film is in Plex (the quiet ✓ `plex_mark`, made only then)."""
+        whether the film is in Plex (the quiet ✓ `plex_mark`, made only then). `playback` +
+        `status`: "▶ Play" (`play_button`) while the film is in Plex, its outcome on the status
+        bar."""
         super().__init__(
             master,
             title=movie.title,
@@ -150,6 +159,9 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._today = today
         self._in_plex_lookup = in_plex
         self._is_in_plex = False
+        self._plex_title: PlexTitle | None = None  # the film in Plex: what ▶ Play plays
+        self._playback = playback
+        self._play = Play(playback, status) if playback is not None and status is not None else None
         self._details: MovieDetails | None = None
         self._extras: TitleExtras | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -190,6 +202,8 @@ class MovieDetailsWindow(TitleInfoWindow):
         )
         # In Plex: the quiet ✓ of an episode you have, after the buttons (made only then).
         self.plex_mark: ctk.CTkLabel | None = None
+        # In Plex (and ▶ Play offered): "▶ Play" after the download row (made only then).
+        self.play_button: ctk.CTkButton | None = None
         self._show_buttons()
         self._paint()
 
@@ -211,18 +225,36 @@ class MovieDetailsWindow(TitleInfoWindow):
         return panel
 
     def _show_buttons(self) -> None:
-        """⬇ Auto (+ ☰ Choose… in "tabs"), CC ▾ while it has something to show, the
-        watchlist button, IMDb, and the ✓ while it is in Plex."""
+        """⬇ Auto (+ ☰ Choose… in "tabs"), ▶ Play while it is in Plex, the watchlist button,
+        IMDb, and the ✓ while it is in Plex."""
         if self._is_in_plex and self.plex_mark is None:
             self.plex_mark = mark_label(
                 self.buttons, HAVE_MARK, theme.TEXT_MUTED, dot=False, height=ROW_HEIGHT
             )
             add_tooltip(self.plex_mark, t(PLEX_TIP))
+        playable = self._is_in_plex and self._plex_title is not None and self._play is not None
+        if playable and self.play_button is None:
+            self.play_button = play_button(
+                self.buttons,
+                self.play,
+                height=ROW_HEIGHT,
+                font_size=CONTROL_FONT_SIZE,
+                radius=CONTROL_RADIUS,
+            )
         plex = [self.plex_mark] if self.plex_mark is not None else []
-        self.buttons.set_items([self.download, self.watch_button, self.imdb_button, *plex])
+        play = [self.play_button] if self.play_button is not None and playable else []
+        self.buttons.set_items([self.download, *play, self.watch_button, self.imdb_button, *plex])
         if not self._is_in_plex and self.plex_mark is not None:
             self.plex_mark.destroy()
             self.plex_mark = None
+        if not playable and self.play_button is not None:
+            self.play_button.destroy()
+            self.play_button = None
+
+    def play(self) -> None:
+        """"▶ Play": the film's file in VLC on this PC (the status bar says how it went)."""
+        if self._play is not None and self._plex_title is not None:
+            self._play.film(self._plex_title)
 
     def refresh_state(self) -> None:
         """Ask again whether it is in Plex (Plex connected or disconnected too)."""
@@ -236,12 +268,16 @@ class MovieDetailsWindow(TitleInfoWindow):
 
     async def _load_state(self) -> None:
         in_plex = False
+        plex_title: PlexTitle | None = None
         if self._in_plex_lookup is not None:
             imdb_id = self._details.imdb_id if self._details is not None else None
             in_plex = await self._in_plex_lookup(self._movie.id, imdb_id)
+            if in_plex and self._playback is not None and self._play is not None:
+                plex_title = await self._playback.film(self._movie.id, imdb_id)
         if not self.winfo_exists():
             return
         self._is_in_plex = in_plex
+        self._plex_title = plex_title
         self._show_buttons()
 
     def download_base(self) -> Base:
@@ -318,6 +354,8 @@ class MovieDetailsWindow(TitleInfoWindow):
     def destroy(self) -> None:
         for task in list(self._tasks):
             task.cancel()
+        if self._play is not None:
+            self._play.close()
         super().destroy()
 
 
@@ -336,9 +374,12 @@ class MovieWindows:
         releases: PanelServices | None = None,
         in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
         plex_changed: Subscribe | None = None,
+        playback: PlaybackService | None = None,
+        status: StatusReporter | None = None,
     ) -> None:
         """`releases`: the releases panels' services; its settings say the layout a new window opens in.
-        `in_plex` / `plex_changed`: whether a film is in Plex and when that may have changed."""
+        `in_plex` / `plex_changed`: whether a film is in Plex and when that may have changed.
+        `playback` / `status`: the windows' "▶ Play" (none without them)."""
         self._master = master
         self._images = images
         self._discovery = discovery
@@ -346,6 +387,8 @@ class MovieWindows:
         self._actions = actions
         self._in_plex = in_plex
         self._releases = releases
+        self._playback = playback
+        self._status = status
         self._windows: dict[int, MovieDetailsWindow] = {}
         self._unsubscribe = [
             subscribe(self.refresh_all)
@@ -412,6 +455,8 @@ class MovieWindows:
             layout=self.layout(),
             releases=self._releases,
             in_plex=self._in_plex,
+            playback=self._playback,
+            status=self._status,
         )
 
     def close(self) -> None:

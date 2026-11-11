@@ -1,0 +1,47 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "librarySectionID": 2,
+    "Metadata": [
+      {
+        "ratingKey": "3001",
+        "type": "movie",
+        "title": "Dune: Part Two",
+        "year": 2024,
+        "viewCount": 1,
+        "Media": [
+          {
+            "id": 41,
+            "videoResolution": "4k",
+            "height": 2160,
+            "duration": 9960000,
+            "Part": [
+              {
+                "id": 51,
+                "key": "/library/parts/51/1700000000/file.mkv",
+                "size": 61000000000,
+                "container": "mkv",
+                "file": "/volume1/video/Movies/Dune Part Two (2024)/Dune Part Two (2024).mkv"
+              }
+            ]
+          },
+          {
+            "id": 42,
+            "videoResolution": "1080",
+            "height": 1080,
+            "duration": 9960000,
+            "Part": [
+              {
+                "id": 52,
+                "key": "/library/parts/52/1700000000/file.mkv",
+                "size": 14000000000,
+                "container": "mkv",
+                "file": "/volume1/video/Movies/Dune Part Two (2024)/Dune Part Two (2024) 1080p.mkv"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -90,6 +90,7 @@ from app.ui.missing_control import (
     missing_text,
     progress_texts,
 )
+from app.ui.play_control import Play, play_button
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
 from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
 from app.ui.row_actions import NOTHING_SHORT, NOTHING_TEXT, RowLook
@@ -120,7 +121,9 @@ from app.ui.season_progress import (
 from app.ui.widgets import FlexGrid, LoadingBar
 
 if TYPE_CHECKING:
+    from app.models.plex import PlexTitle
     from app.services import DiscoveryService, ImageCache, LibraryService
+    from app.services.playback import PlaybackService
     from app.ui.views.base import StatusReporter
 
 log = logging.getLogger(__name__)
@@ -862,9 +865,12 @@ class ShowDetailsWindow(TitleInfoWindow):
         layout: InfoLayout = InfoLayout.SIDE,
         releases: PanelServices | None = None,
         on_fix_match: Callable[[TvTarget], None] | None = None,
+        playback: PlaybackService | None = None,
     ) -> None:
         """`profile_id`: the person the window shows the show for (followed or not, its Track
         button and switch; ShowWindows closes it when another person is selected).
+        `playback`: "▶ Play" while the show is in Plex (its Plex title found by
+        `PlaybackService.show`); a click opens the episode picker (app/ui/play_control.py).
         `discovery`: the TMDB extras (backdrop, trailer, cast); without it the window shows only
         what TVMaze knows. `releases`: what the releases panel
         works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
@@ -907,7 +913,12 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._rows_task: asyncio.Task[None] | None = None
         self._season_trailer_task: asyncio.Task[None] | None = None
         self._tracking = False
-        self._buttons_look: tuple[bool, bool, bool, str | None] | None = None
+        self._buttons_look: tuple[bool, bool, bool, str | None, str | None] | None = None
+        self._playback = playback
+        self._play = Play(playback, status) if playback is not None else None
+        self._plex_title: PlexTitle | None = None  # the show in Plex: what ▶ Play picks from
+        self._plex_task: asyncio.Task[None] | None = None
+        self.play_button: ctk.CTkButton | None = None
         self._auto_var = ctk.BooleanVar(value=False)
         self._auto_switch: ctk.CTkSwitch | None = None
         self._buttons = self.buttons
@@ -1029,13 +1040,15 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     def _paint_buttons(self, details: ShowDetails) -> None:
         """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
-        the hover tip says so); then IMDb."""
+        the hover tip says so); ▶ Play while the show is in Plex; then IMDb."""
         imdb_url = details.show.imdb_url
-        look = (details.tracked, details.auto_download, self._tracking, imdb_url)
+        plex_key = self._plex_title.key if self._plex_title is not None else None
+        look = (details.tracked, details.auto_download, self._tracking, imdb_url, plex_key)
         if look == self._buttons_look:
             return
         self._buttons_look = look
         self._auto_switch = None
+        self.play_button = None
         items: list[Any] = []
         if details.tracked:
             following = ctk.CTkButton(
@@ -1070,6 +1083,11 @@ class ShowDetailsWindow(TitleInfoWindow):
             if self._tracking:
                 track.configure(text=t(ADDING_TEXT), state="disabled")
             items.append(track)
+        if plex_key is not None:
+            self.play_button = play_button(
+                self._buttons, self.play, height=dialog_kit.BUTTON_HEIGHT
+            )
+            items.append(self.play_button)
         if imdb_url is not None:
 
             def open_imdb() -> None:
@@ -1078,13 +1096,31 @@ class ShowDetailsWindow(TitleInfoWindow):
             items.append(dialog_kit.secondary_button(self._buttons, "IMDb", open_imdb, width=90))
         self._buttons.set_items(items, destroy_old=True)
 
+    def play(self) -> None:
+        """"▶ Play": the episode picker, then the chosen episode in VLC on this PC."""
+        if self._play is not None and self._plex_title is not None:
+            self._play.pick(self, self._plex_title)
+
     # -- loading -----------------------------------------------------------------------------
 
     def reload(self) -> None:
-        """Fetch the details again (a load still in flight is dropped)."""
+        """Fetch the details again (a load still in flight is dropped), and whether the show is
+        in Plex (▶ Play)."""
         if self._load_task is not None and not self._load_task.done():
             self._load_task.cancel()
         self._load_task = spawn(self._load(), name="ShowDetailsWindow.load")
+        if self._playback is not None:
+            if self._plex_task is not None and not self._plex_task.done():
+                self._plex_task.cancel()
+            self._plex_task = spawn(self._load_plex(self._playback), name="ShowDetailsWindow.plex")
+
+    async def _load_plex(self, playback: PlaybackService) -> None:
+        title = await playback.show(self._show) if playback.available else None
+        if not self.winfo_exists():
+            return
+        self._plex_title = title
+        if self._details is not None:
+            self._paint_buttons(self._details)
 
     async def _load(self) -> None:
         try:
@@ -1470,6 +1506,10 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._extras_task.cancel()
         if self._season_trailer_task is not None:
             self._season_trailer_task.cancel()
+        if self._plex_task is not None:
+            self._plex_task.cancel()
+        if self._play is not None:
+            self._play.close()
         self._cancel_rows()
         super().destroy()
 
@@ -1500,9 +1540,10 @@ class ShowWindows:
         downloads_changed: Subscribe,
         profile: Callable[[], int],
         releases: PanelServices | None = None,
+        playback: PlaybackService | None = None,
     ) -> None:
         """`releases`: the releases panels' services; its settings say the layout a new window
-        opens in."""
+        opens in. `playback`: the windows' "▶ Play" (none without it)."""
         self._master = master
         self._profile = profile
         self._library = library
@@ -1511,6 +1552,7 @@ class ShowWindows:
         self._status = status
         self._episode_actions = episode_actions
         self._releases = releases
+        self._playback = playback
         self._windows: dict[int, ShowDetailsWindow] = {}  # by TVMaze id
         self._resolving: set[int] = set()  # TMDB ids being matched to TVMaze right now
         self._tasks: set[asyncio.Task[None]] = set()
@@ -1552,6 +1594,7 @@ class ShowWindows:
             layout=self.layout(),
             releases=self._releases,
             on_fix_match=self._fix_match,
+            playback=self._playback,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

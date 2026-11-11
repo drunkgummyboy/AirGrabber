@@ -486,6 +486,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             downloads_changed=services.downloads.subscribe,
             profile=lambda: services.profiles.current_id,  # a window is for the person then
             releases=releases,
+            playback=services.playback,  # ▶ Play while the show is in Plex
         )
         # The film info windows (one per film), opened from the film cards and from every
         # film's "☰ Choose…" (on its releases).
@@ -498,6 +499,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             releases=releases,
             in_plex=self._film_in_plex,
             plex_changed=services.library.subscribe,  # a Plex check that changed something
+            playback=services.playback,  # ▶ Play while the film is in Plex
+            status=self.set_status,
         )
 
         self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))

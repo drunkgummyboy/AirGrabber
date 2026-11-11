@@ -39,6 +39,11 @@ folder as Windows sees it is found in a library's own folders by their shared en
 (`plex_folder`: the share video's folder TV/Show is /volume1/video/TV/Show). Nothing is asked when no
 library holds it. app/services/plex_scans.py hears the moves.
 
+▶ Play (app/services/playback.py) asks which file a title is: a film's /library/metadata/{key}
+(`film_video`: its first version's first part), a show's /library/metadata/{key}/allLeaves
+(`show_videos`: each episode's file and whether it was watched), and the libraries' folders
+(`locations`) to find that file from this PC.
+
 Secrets: the token goes in the X-Plex-Token header only, never in a URL, log line, message or
 exception text. Request URLs are never logged, no httpx exception (which may carry a URL) is
 chained to or left as the context of a PlexError, and redirects are never followed (a header
@@ -78,6 +83,7 @@ from app.models.plex import (
     PlexServer,
     PlexTitle,
     PlexStatus,
+    PlexVideo,
 )
 from app.models import Settings
 from app.services.settings import SettingsService
@@ -679,6 +685,12 @@ class PlexClient:
         return response.content
 
 
+def _episode_order(video: PlexVideo) -> tuple[bool, int, bool, int]:
+    """Seasons in order with the specials (season 0, or none) last; within one, by number."""
+    special = not video.season
+    return (special, video.season or 0, video.episode is None, video.episode or 0)
+
+
 def _read[M: BaseModel](model: type[M], data: Any, what: str) -> M:
     try:
         return model.model_validate(data)
@@ -1028,6 +1040,64 @@ class PlexService:
         if not self.connected or not uri:
             raise PlexUnreachable("Plex isn't connected")
         await self._client.fetch(uri, self._token(), film.part_key, write)
+
+    # -- ▶ Play (app/services/playback.py) ------------------------------------------------------
+
+    async def film_video(self, key: str) -> PlexVideo | None:
+        """A film's file as the server sees it: its first version's first part. None without
+        Plex or a known server, when the server doesn't have it, or it names no file. Raises
+        PlexError (PlexUnreachable when it didn't answer)."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri:
+            return None
+        item = await self._client.metadata(uri, self._token(), key)
+        if item is None:
+            return None
+        part = item.media[0].parts[0] if item.media and item.media[0].parts else None
+        if part is None or not part.file:
+            return None
+        return PlexVideo(
+            key=item.rating_key or key,
+            file=part.file,
+            title=item.title.strip(),
+            watched=bool(item.view_count),
+        )
+
+    async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
+        """A show's episodes with their files, by season and number (the specials, season 0,
+        last), from the server the last check reached; none without Plex or a known server.
+        An episode without a file is left out. Raises PlexError (PlexUnreachable when it
+        didn't answer)."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri or show.kind != "show":
+            return []
+        found: list[PlexVideo] = []
+        for reply in await self._client.episodes(uri, self._token(), show.key):
+            media = reply.media[0] if reply.media else None
+            part = media.parts[0] if media is not None and media.parts else None
+            if reply.rating_key is None or part is None or not part.file:
+                continue
+            found.append(
+                PlexVideo(
+                    key=reply.rating_key,
+                    file=part.file,
+                    season=reply.parent_index,
+                    episode=reply.index,
+                    title=reply.title.strip(),
+                    watched=bool(reply.view_count),
+                )
+            )
+        found.sort(key=_episode_order)
+        log.info("Plex: %d episode file(s) of a show read", len(found))
+        return found
+
+    async def locations(self) -> list[tuple[str, str]]:
+        """The show and film libraries' folders as the server sees them (library key, path);
+        none without Plex or a known server. Raises PlexError."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri:
+            return []
+        return await self._client.locations(uri, self._token())
 
     async def scan_folders(self, folders: Iterable[str]) -> int:
         """Ask Plex to scan these folders (where MediaForge just moved files): how many scans

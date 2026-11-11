@@ -1487,6 +1487,12 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
+    "A film's window gets a Play button when the film is in Plex: it opens straight away in VLC.":
+        "Het venster van een film krijgt een Afspelen-knop als de film in Plex staat: hij opent meteen in VLC.",
+    "A show's window gets one too: pick an episode first, the next one you haven't watched already chosen.":
+        "Het venster van een serie ook: kies eerst een aflevering, de volgende die je nog niet zag staat al klaar.",
+    "If the file can't be reached from this PC, the bar at the bottom says why.":
+        "Kan deze pc het bestand niet bereiken, dan zegt de balk onderaan waarom.",
     "Cards look alike everywhere now: one row of buttons, coloured labels on the poster, and Follow instead of Track.": "Kaarten zien er nu overal hetzelfde uit: één rij knoppen, gekleurde labels op de poster, en Volgen in plaats van Track.",
     "Films and shows that are in your Plex library show a small books icon on their cards, also in the search results.": "Films en series die in je Plex-bibliotheek staan, tonen een klein boekenicoon op hun kaart, ook in de zoekresultaten.",
     "Library: a film below 1080p gets an Upgrade button that lists only its 1080p and 4K releases.": "Bibliotheek: een film onder 1080p krijgt een knop Verbeteren die alleen de 1080p- en 4K-releases toont.",
@@ -1904,4 +1910,27 @@ NL: dict[str, str] = {
     "Moved {moved} of {total} files. {reason} Sort out the rest on the PC.":
         "{moved} van {total} bestanden verplaatst. {reason} Los de rest op op de pc.",
     "Nothing needed moving.": "Er hoefde niets verplaatst te worden.",
+    # app/services/playback.py, app/ui/play_control.py (▶ Play in the info windows)
+    "▶ Finding {name}…": "▶ {name} zoeken…",
+    "▶ Playing {name} in VLC.": "▶ {name} speelt af in VLC.",
+    "▶ Playing {name} in your video player.": "▶ {name} speelt af in je videospeler.",
+    "Connect Plex in Settings → Plex first.": "Koppel eerst Plex via Instellingen → Plex.",
+    "Plex didn't answer, so try ▶ Play again in a moment.":
+        "Plex antwoordde niet, dus probeer ▶ Afspelen zo nog eens.",
+    "Plex doesn't say which file {name} is.": "Plex zegt niet welk bestand {name} is.",
+    "MediaForge is off, so AirGrabber doesn't know your Series and Movies folders.":
+        "MediaForge staat uit, dus AirGrabber weet niet waar je mappen Series en Films zijn.",
+    "Choose your Series folder in Settings › Auto-rename, so ▶ Play can find {name}.":
+        "Kies je map Series in Instellingen › Automatisch hernoemen, zodat ▶ Afspelen {name} kan vinden.",
+    "Choose your Movies folder in Settings › Auto-rename, so ▶ Play can find {name}.":
+        "Kies je map Films in Instellingen › Automatisch hernoemen, zodat ▶ Afspelen {name} kan vinden.",
+    "{name} isn't in your Series folder from this PC: check the Series folder in Settings › Auto-rename.":
+        "{name} staat vanaf deze pc niet in je map Series: controleer de map Series in Instellingen › Automatisch hernoemen.",
+    "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Auto-rename.":
+        "{name} staat vanaf deze pc niet in je map Films: controleer de map Films in Instellingen › Automatisch hernoemen.",
+    "AirGrabber couldn't start a video player for {name}.":
+        "AirGrabber kon geen videospeler starten voor {name}.",
+    "▶ Play": "▶ Afspelen",
+    "Play in VLC": "Afspelen in VLC",
+    "Choose an episode to play.": "Kies een aflevering om af te spelen.",
 }

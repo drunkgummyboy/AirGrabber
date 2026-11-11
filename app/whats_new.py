@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.14.1": (
+        N_("A film's window gets a Play button when the film is in Plex: it opens straight away in VLC."),
+        N_("A show's window gets one too: pick an episode first, the next one you haven't watched already chosen."),
+        N_("If the file can't be reached from this PC, the bar at the bottom says why."),
+    ),
     "3.14.0": (
         N_("Cards look alike everywhere now: one row of buttons, coloured labels on the poster, and Follow instead of Track."),
         N_("Films and shows that are in your Plex library show a small books icon on their cards, also in the search results."),
