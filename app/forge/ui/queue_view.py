@@ -1,7 +1,8 @@
 """The queue: what will be renamed, to what, and Forge (ported from MediaForge's ui/queue_view.py;
 its pure part, the rows, is app/forge/ui/queue_rows.py). The owner's design:
 mockups/forge-chosen.html, except its card's Shows | Films switch: since 3.0.1 every band has its
-own preset (the owner's decision of 2026-11-02), set on the card or with the band's chip.
+own preset (the owner's decision of 2026-11-02), set with the band's chip; a change on the card
+(the preset bar) goes for every band not done of its kind (2026-11-11, `_spread_bar`).
 
 The page (app/forge/ui/page.py) puts "+ Files" and "+ Folder ▾" (its menu: choose a folder, "Scan
 subfolders") on the main window's tabs row (`tools_master`; without one they make a row of the
@@ -17,8 +18,9 @@ Tidy up: Clean junk, Empty folders), and "Changed for this item · Save to prese
 the options or the rule differ from the preset.
 
 Then a row with the filter All / Needs you / Ready with their counts at its left and "Clear queue",
-Preview and the big Forge button at its right (which becomes the run's progress bar with Cancel
-next to it while a run goes), and one list of shows and films (`queue_rows`), filtered by that:
+Preview and the big Forge button at its right (gone while a run goes: then the run's dock shows
+centred under the list, its progress with Cancel on it), and one list of shows and films
+(`queue_rows`), filtered by that:
 a band per show with its episodes under it, a band per film; each band's status as a dot
 and a word with its preset chip under it (always shown on a band not done; a click opens the
 presets that fit and sets that band's), its buttons (Ignore, Choose…, Rename, a done band's Undo)
@@ -108,7 +110,7 @@ from app.forge.ui.queue_rows import (
     item_kind,
 )
 from app.forge.ui.subtitle_control import CC_ACTION, CcLook, SubtitleDesk, VideoTarget
-from app.forge.ui.widgets.chips import ForgeProgress, OptionButton, fit_text
+from app.forge.ui.widgets.chips import PROGRESS_PAD, ForgeProgress, OptionButton, fit_text
 from app.forge.ui.widgets.dialogs import ask_choice, ask_text
 from app.forge.ui.widgets.virtual_list import (
     FOLDERS_ACTION,
@@ -135,6 +137,8 @@ from app.forge.ui.queue_parts import (
     EVERYTHING,
     FILE_GONE,
     FILTERS,
+    FOR_ALL_FILMS,
+    FOR_ALL_SHOWS,
     FOR_LINE,
     FOR_NEW,
     IGNORE_FOLDER,
@@ -383,26 +387,43 @@ class QueueView(ctk.CTkFrame):
         self.clear_button = self._tool_button(
             self.actions, "✕ " + t("Clear queue"), self._clear
         )
-        self.cancel_button = self._tool_button(self.actions, t("Cancel"), self._cancel_clicked)
-        self.progress = ForgeProgress(self.actions, look=look, ground=look.BG)
+        # A run's dock, centred under the list (its row, 4, is empty otherwise), Cancel on it.
+        self.progress = ForgeProgress(self, look=look, ground=look.BG)
+        style = self.progress.style()
+        self.cancel_button = ctk.CTkButton(
+            self.progress,
+            text=t("Cancel"),
+            width=86,
+            height=32,
+            corner_radius=16,
+            fg_color=style.badge,
+            hover_color=style.edge,
+            border_width=1,
+            border_color=style.edge,
+            bg_color=style.panel,
+            text_color=style.text,
+            font=theme.font(13, bold=True),
+            command=self._cancel_clicked,
+        )
         self._show_actions(running=False)
 
     def _show_actions(self, *, running: bool, installing: bool = False) -> None:
-        """The filters' row's right end: Clear queue, Preview and Forge; or the progress bar and
-        Cancel (a run), or only the bar (the trailer tools coming in)."""
-        for widget in (
-            self.clear_button,
-            self.preview_button,
-            self.forge_button,
-            self.progress,
-            self.cancel_button,
-        ):
+        """The filters' row's right end: Clear queue, Preview and Forge; or, with nothing there,
+        the dock under the list with Cancel (a run), or only the dock (the trailer tools coming
+        in)."""
+        for widget in (self.clear_button, self.preview_button, self.forge_button):
             widget.pack_forget()
+        self.cancel_button.place_forget()
         if running or installing:
             if running:
-                self.cancel_button.pack(side="right", padx=(10, 0))
-            self.progress.pack(side="right")
+                self.cancel_button.place(
+                    relx=1.0, x=-PROGRESS_PAD - 2, y=ForgeProgress.action_y(), anchor="e"
+                )
+            self.progress.set_action_room(86 + 12 if running else 0)
+            self.progress.grid(row=4, column=0, pady=(12, 14))
+            self.progress.lift()
         else:
+            self.progress.grid_remove()
             self.forge_button.pack(side="right", padx=(10, 0))
             self.preview_button.pack(side="right", padx=(10, 0))
             self.clear_button.pack(side="right")
@@ -900,6 +921,31 @@ class QueueView(ctk.CTkFrame):
         preset = next((p for p in self.presets_for(self.kind) if p.name == name), None)
         if preset is not None:
             self.set_band_preset(self.selected_ids, preset)
+            self._spread_bar()
+
+    def _spread_bar(self) -> None:
+        """A change made in the preset bar goes for every band not done of the bar's kind (the
+        owner's decision, 2026-11-11: unticking Trailer for one show of a whole Series folder
+        left 25 others fetching theirs). Each band gets a copy of its own; a band's chip still
+        changes that band alone (`set_band_preset`)."""
+        ids = self.selected_ids
+        if not ids:
+            return
+        choice, kind = self.choice, self.kind
+        if not choice.fits(kind):
+            return
+        choice.chosen = True
+        for (band_kind, _title, _year), group in self._band_groups().items():
+            if band_kind != kind or ids[0] in group:
+                continue
+            copy = dataclasses.replace(choice)
+            for item_id in group:
+                self._choices[item_id] = copy
+        self._schedule_refresh(0)
+
+    def _kind_bands(self, kind: Kind) -> int:
+        """How many bands not done of `kind` the queue holds."""
+        return sum(1 for band in self._band_groups() if band[0] == kind)
 
     # --- the band's chip and "Use for all" ---------------------------------------------------
 
@@ -1001,11 +1047,17 @@ class QueueView(ctk.CTkFrame):
         self._schedule_refresh(0)
 
     def _show_for_line(self) -> None:
-        """"For: {name}", and "Use for all ▾" while there is more than one band."""
+        """"Only {name}…" or "For all 26 shows…", and "Use for all ▾" while shows and films are
+        both queued."""
         ids = self.selected_ids
         queue = self.services.queue
         items = [i for i in (queue.get(x) for x in ids) if i is not None]
-        full = t(FOR_LINE, name=band_name(items)) if items else t(FOR_NEW)
+        if not items:
+            full = t(FOR_NEW)
+        elif (bands := self._kind_bands(self.kind)) > 1:  # the bar changes them all
+            full = t(FOR_ALL_SHOWS if self.kind == "series" else FOR_ALL_FILMS, n=bands)
+        else:
+            full = t(FOR_LINE, name=band_name(items))
         if full != self._for_full:
             self._for_full = full
             scale = float(self._get_widget_scaling())
@@ -1014,7 +1066,9 @@ class QueueView(ctk.CTkFrame):
                 self._for_font = (scale, tkfont.Font(root=self, font=spec))
             fitted = fit_text(full, self._for_font[1], round(_FOR_MAX * scale)) or full
             _set_text(self.for_label, fitted)
-        several = bool(items) and len(self._band_groups()) > 1
+        # "Use for all ▾" is for the queue's other kind ("Everything"): the bar's own kind
+        # follows every change already.
+        several = bool(items) and len({band[0] for band in self._band_groups()}) > 1
         if several and not self.use_all_link.winfo_manager():
             self.use_all_link.pack(side="left", padx=(14, 0))
         elif not several and self.use_all_link.winfo_manager():
@@ -1085,6 +1139,7 @@ class QueueView(ctk.CTkFrame):
         if key is None:
             return
         self._set_option(self.choice, key, value)
+        self._spread_bar()
         self._schedule_flow()
 
     def _set_option(self, choice: Choice, key: str, value: bool) -> None:
@@ -1206,6 +1261,7 @@ class QueueView(ctk.CTkFrame):
         text = " ".join(self.rule_text.get("1.0", "end-1c").splitlines())
         choice.custom = text
         choice.chosen = True
+        self._spread_bar()
         self._tag_codes()
         self._update_example()
         self._schedule_flow()
@@ -1215,6 +1271,7 @@ class QueueView(ctk.CTkFrame):
         """Custom mode for the band the card shows, with `rule` (None: back to the preset's)."""
         self.choice.custom = rule
         self.choice.chosen = True
+        self._spread_bar()
         self._show_card()
         self._schedule_refresh(_REFRESH_FORMAT_MS)
 
@@ -1246,6 +1303,7 @@ class QueueView(ctk.CTkFrame):
         fresh = Choice(preset=saved, options=saved.options, chosen=True)
         if ids:
             self._assign(ids, fresh)
+            self._spread_bar()
         else:
             self._new_choice = fresh
         await self._load_presets()
@@ -1278,6 +1336,7 @@ class QueueView(ctk.CTkFrame):
         fresh = Choice(preset=preset, options=preset.options, chosen=True)
         if ids:
             self._assign(ids, fresh)
+            self._spread_bar()
         else:
             self._new_choice = fresh
         self._remember(kind, name)

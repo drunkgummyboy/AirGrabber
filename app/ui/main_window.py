@@ -62,6 +62,7 @@ from app.models import (
 )
 from app.models.plex import PlexTitle
 from app.services import Services, UpdateError
+from app.services.search import UPGRADE_KEY
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
 from app.services.stuck_downloads import StuckWatch
@@ -426,6 +427,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # The name button's menu and its dialogs (add, rename or recolour, remove a person).
         self._people = PeopleActions(self, services.profiles)
         self._mode: Mode | None = None
+        self._library_checked_text = ""  # the Library page's "From Plex · checked …" (the footer)
         self._idle_status = ""
         self._status_job: str | None = None
         self._settings_dialog: SettingsDialog | None = None
@@ -767,9 +769,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             status=self.set_status,
             on_open_show=self._open_plex_show,
             on_open_film=self._open_plex_film,
+            on_upgrade_film=self._upgrade_plex_film,
             on_send=self._send_to_phone,
             can_send=self._can_send_to_phone,
             card_scale=self._card_scale,
+            on_checked=self._show_library_checked,
         )
         # MediaForge's page goes in here at its first visit (ForgeHost.open).
         self._forge_holder = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
@@ -787,11 +791,31 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._version_label = ctk.CTkLabel(
             bar, text=f"v{__version__}", font=theme.font(11), text_color=theme.EDGE
         )
-        self._version_label.grid(row=0, column=2, sticky="e")
+        self._version_label.grid(row=0, column=3, sticky="e")
+        # The Library page's "From Plex · checked 08:53", here while that page shows.
+        self._library_checked = ctk.CTkLabel(
+            bar, text=self._library_checked_text, font=theme.font(12), text_color=theme.TEXT_MUTED
+        )
+        self._library_checked.grid(row=0, column=1, sticky="e", padx=(0, 14))
+        self._library_checked.grid_remove()
         self._plex_loader = SyncLoader(bar, t(PLEX_SYNC_TEXT))
-        self._plex_loader.grid(row=0, column=1, sticky="e", padx=(0, 12))
+        self._plex_loader.grid(row=0, column=2, sticky="e", padx=(0, 12))
         self._plex_loader.grid_remove()
         self._version_tip = add_tooltip(self._version_label, "")  # the update badge's
+
+    def _show_library_checked(self, text: str | None = None) -> None:
+        """The footer's "From Plex · checked …": its words (`text`, from the Library page's
+        loads), shown only while that page is on screen."""
+        if text is not None:
+            self._library_checked_text = text
+        label = getattr(self, "_library_checked", None)
+        if label is None:  # the status bar isn't built yet: it starts with the words
+            return
+        label.configure(text=self._library_checked_text)
+        if self._mode is Mode.LIBRARY and self._library_checked_text:
+            label.grid()
+        else:
+            label.grid_remove()
 
     def _pause_auto(self, hours: int | None) -> None:
         """The tray menu: no automatic download starts for `hours` (None: until tomorrow)."""
@@ -919,6 +943,16 @@ class MainWindow(AsyncCTk, ctk.CTk):
             episodes=self._services.plex.episodes,
             on_sent=lambda text: self.set_status(text, clear_after_ms=6000),
         )
+
+    def _upgrade_plex_film(self, title: PlexTitle) -> None:
+        """A Library film's "⬆ Upgrade": its info window on its 1080p and 4K releases."""
+        if title.tmdb_id is not None:
+            spawn(
+                self._movie_windows.open_movie_id(
+                    title.tmdb_id, releases=True, quality=UPGRADE_KEY
+                ),
+                name="library-upgrade",
+            )
 
     def _open_plex_film(self, title: PlexTitle) -> None:
         """A Library film card: its info window (TMDB), else its IMDb page."""
@@ -1156,6 +1190,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             if page_mode is not mode:
                 page.grid_remove()
         pages[mode].grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
+        self._show_library_checked()
         if leaving_forge:
             self._forge.close()
         if forge:

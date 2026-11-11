@@ -10,6 +10,12 @@ one stands in ("⬇", "Finding…"). The main window runs the downloads and keep
 calendar reloads after every grab) picks the run's state up, and a finished run repaints
 whichever cards show the title by then.
 
+The poster cards' films (Movies, search results, the watchlist) pass two options: `more=False`
+(no ⋯: the card's round button sits beside the row instead, and a right-click on the main button
+opens the search window) and `outline_unavailable=True` (a film not out yet, "Digital 17 Nov",
+in the grey outline every card uses for "not yet", `later_look`, instead of the filled grey the
+calendar keeps).
+
 Hovering "⬇ Download" tells what the one-click download looks for, from Settings ("Looks for
 Full HD (1080p), 2.5–4 GB", `looks_for_text`); once a run grabbed something, the button's tip
 tells what it picked ("Picked 1080p · 2.8 GB", `picked_text`).
@@ -62,6 +68,7 @@ DOWNLOAD_TEXT = N_("⬇ Download")
 DOWNLOAD_SHORT = "⬇"  # when the full text doesn't fit (narrow windows)
 MORE_TEXT = "⋯"
 MORE_TIP = N_("Choose a download yourself")
+RIGHT_CLICK_TIP = N_("Right-click to choose a download yourself")  # a row without ⋯
 DOWNLOAD_TIP = N_("Download")  # when the button shows only "⬇" (before what it looks for)
 WORKING_TEXT = N_("Finding the best one…")
 WORKING_SHORT = N_("Finding…")
@@ -138,6 +145,7 @@ BaseKind = Literal["download", "search", "unavailable"]
 class Base:
     kind: BaseKind
     text: str = ""  # "unavailable" only: "Not Aired", "Digital 15 Oct"...
+    short: tuple[str, ...] = ()  # "unavailable" only: shorter texts, for when `text` won't fit
 
 
 Action = Literal["download", "choose"]  # choose = open the search window
@@ -176,11 +184,27 @@ def fit_text(texts: Sequence[str], room: float, measure: Measure) -> str:
     return elide_to_width(texts[-1], room, measure)
 
 
-def control_look(base: Base, state: RunState | None) -> Look:
+def later_look(base: Base) -> Look:
+    """A disabled base ("Digital 17 Nov") as "not yet": a grey outline and muted text, no fill."""
+    return Look(
+        "button",
+        base.text,
+        "transparent",
+        theme.CHIP_HOVER,  # never shown: disabled (CTk takes no "transparent" hover)
+        theme.TEXT_MUTED,
+        short=base.short,
+        border=theme.CHIP_HOVER,
+    )
+
+
+def control_look(
+    base: Base, state: RunState | None, *, outline_unavailable: bool = False
+) -> Look:
     """The row for a card's base look and the title's run state, if any.
 
-    A run working or done (its outcome) wins over everything; then a disabled base; then an
-    earlier "nothing found".
+    A run working or done (its outcome) wins over everything; then a disabled base (filled
+    grey, or with `outline_unavailable` the grey outline of `later_look`); then an earlier
+    "nothing found".
     """
     if state is not None and state.phase is Phase.WORKING:
         return Look(
@@ -191,7 +215,9 @@ def control_look(base: Base, state: RunState | None) -> Look:
     if state is not None and state.phase is Phase.DONE and state.outcome is not None:
         return Look("button", outcome_text(state.outcome), theme.GRABBED, action="choose")
     if base.kind == "unavailable":
-        return Look("button", base.text, theme.NOT_AIRED, theme.NOT_AIRED)
+        if outline_unavailable:
+            return later_look(base)
+        return Look("button", base.text, theme.NOT_AIRED, theme.NOT_AIRED, short=base.short)
     if state is not None and state.phase is Phase.NOTHING:
         return Look(
             "button",
@@ -256,15 +282,30 @@ def picked_text(quality: str | None, size_bytes: int | None) -> str:
     return t("Picked {what}", what=" · ".join(parts)) if parts else ""
 
 
-def control_tip(look: Look, state: RunState | None, looks_for: str, *, shortened: bool) -> str:
+def control_tip(
+    look: Look,
+    state: RunState | None,
+    looks_for: str,
+    *,
+    shortened: bool,
+    right_click: bool = False,
+) -> str:
     """The main button's hover tip ("" = none): what ⬇ Download looks for ("Download · …"
-    when the button shows only "⬇"), what a finished run picked, else nothing."""
+    when the button shows only "⬇"), what a finished run picked, a disabled text in full when
+    the button shows a shorter one, else nothing. `right_click`: a row without ⋯ adds "Right-click
+    to choose a download yourself" to ⬇ Download's tip."""
     if look.action == "download":
         if shortened:
-            return f"{t(DOWNLOAD_TIP)} · {looks_for}" if looks_for else t(DOWNLOAD_TIP)
-        return looks_for
+            tip = f"{t(DOWNLOAD_TIP)} · {looks_for}" if looks_for else t(DOWNLOAD_TIP)
+        else:
+            tip = looks_for
+        if right_click:
+            tip = f"{tip}\n{t(RIGHT_CLICK_TIP)}" if tip else t(RIGHT_CLICK_TIP)
+        return tip
     if state is not None and state.phase is Phase.DONE and state.outcome is not None:
         return picked_text(state.quality, state.size_bytes)
+    if look.action is None and shortened:
+        return look.text
     return ""
 
 
@@ -415,8 +456,13 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         base: Base,
         actions: DownloadActions[T],
         scale: CardScale = FULL,
+        more: bool = True,
+        outline_unavailable: bool = False,
     ) -> None:
-        """`scale`: the card size (poster cards; a share of it on the calendar's full cards)."""
+        """`scale`: the card size (poster cards; a share of it on the calendar's full cards).
+        `more`: the ⋯ beside ⬇ Download (False: none, a right-click on the main button opens
+        the search window). `outline_unavailable`: a disabled base in the grey outline
+        (`later_look`) instead of filled grey."""
         height = scale.px(ROW_HEIGHT)
         super().__init__(master, fg_color="transparent", height=height)
         self.pack_propagate(False)
@@ -424,6 +470,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         self._item = item
         self._base = base
         self._actions = actions
+        self._with_more = more
+        self._outline_unavailable = outline_unavailable
         self._look: Look | None = None
         self._width: float | None = None  # unscaled, once laid out
         self._more_width = scale.px(MORE_WIDTH)
@@ -469,6 +517,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         self.bind("<Configure>", self._on_resize, add="+")
         actions.states.attach(self)
         self.repaint()
+        if not more:  # after the first paint: CTk makes the button's text label only then
+            self._main.bind("<Button-3>", self._right_click, add="+")
 
     def pack_row(self, before: Any | None = None) -> None:
         """Pack as the card's bottom row (before `before`, the card's first other content)."""
@@ -482,7 +532,11 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
 
     def current_look(self) -> Look:
         """How the row looks now (a stack card's row looks at all its episodes)."""
-        return control_look(self._base, self._actions.states.get(self.key))
+        return control_look(
+            self._base,
+            self._actions.states.get(self.key),
+            outline_unavailable=self._outline_unavailable,
+        )
 
     def repaint(self) -> None:
         look = self.current_look()
@@ -495,7 +549,7 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
             if look.layout == "label":
                 self._label.pack(fill="both", expand=True)
             else:
-                if look.layout == "split":
+                if look.layout == "split" and self._with_more:
                     self._more.pack(side="right", padx=(self._gap, 0))
                 self._main.pack(side="left", fill="both", expand=True)
         if look.layout != "label":
@@ -505,6 +559,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
                 text_color=look.text_color or self._default_text_color,
                 border_width=1 if look.border else 0,
                 border_color=look.border or theme.EDGE,
+                # "Not Aired", "Digital 15 Oct": NOT_AIRED_TEXT, or the look's own (`later_look`)
+                text_color_disabled=look.text_color or theme.NOT_AIRED_TEXT,
                 state="normal" if look.action else "disabled",
             )
         self._fit_text()
@@ -527,11 +583,12 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
             self._update_tip()
             return
         if self._width is not None:
-            more = self._more_width + self._gap if look.layout == "split" else 0
+            split = look.layout == "split" and self._with_more
+            more = self._more_width + self._gap if split else 0
             room = self._width - more - 2 * self._corner - SLACK
             text = fit_text(look.texts, room, self._font.measure)
         self._main.configure(text=text)
-        self._shortened = look.action == "download" and text != look.text
+        self._shortened = look.action in ("download", None) and text != look.text
         self._update_tip()
 
     def _update_tip(self, _event: Any = None) -> None:
@@ -542,9 +599,28 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         states = self._actions.states
         self._main_tip.set_text(
             control_tip(
-                look, states.get(self.key), states.looks_for(self.key), shortened=self._shortened
+                look,
+                states.get(self.key),
+                states.looks_for(self.key),
+                shortened=self._shortened,
+                right_click=not self._with_more,
             )
         )
+
+    @property
+    def main_text(self) -> str:
+        """What the main button says now."""
+        return str(self._main.cget("text"))
+
+    @property
+    def has_more(self) -> bool:
+        """The ⋯ beside the main button is shown."""
+        return bool(self._more.winfo_manager())
+
+    def _right_click(self, _event: Any) -> None:
+        look = self._look
+        if look is not None and look.layout != "label" and look.action is not None:
+            self._choose()
 
     def _click(self) -> None:
         look = self._look

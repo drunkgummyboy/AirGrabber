@@ -539,7 +539,7 @@ class ShowWindowTests(SeasonWindowTestCase):
 
 
 class FilmCardTests(TkTestCase):
-    """The quiet ✓ on the watchlist shelf's and the search results' film cards."""
+    """The library mark (books) on the watchlist shelf's, the search results' and Discover's cards."""
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -596,8 +596,9 @@ class FilmCardTests(TkTestCase):
         self.assertIsNone(marks[3])
         mark = marks[1]
         assert mark is not None
-        self.assertEqual((mark.cget("text"), mark.tip.text), (HAVE_MARK, PLEX_TIP))
-        self.films = PlexFilms()  # gone from Plex: the next load takes the ✓ away
+        self.assertEqual(mark.text, PLEX_TIP)
+        self.assertEqual(mark.card.corner_tip, PLEX_TIP)  # the books on its cover, this tip
+        self.films = PlexFilms()  # gone from Plex: the next load takes the mark away
         shelf.start()
         await self.settle()
         self.assertEqual([card.plex_mark for card in shelf.cards.values()], [None, None, None])
@@ -622,9 +623,21 @@ class FilmCardTests(TkTestCase):
             async def movie_details(self, movie_id: int) -> Any:
                 raise TMDBError("no details here")
 
+        from app.models import Show, ShowSearchResult
+        from app.models.plex import PlexShows
+        from app.ui.cards import SearchShowCard
+
+        shows = [
+            ShowSearchResult(show=Show(id=n, name=f"Show {n}", tvdb_id=500 + n), is_tracked=False)
+            for n in (1, 2)
+        ]
+
         class Library:
             async def search(self, query: str, *, profile_id: int, limit: int) -> list[Any]:
-                return []
+                return shows
+
+            async def plex_shows(self) -> PlexShows:
+                return PlexShows(tvdb=frozenset({502}))
 
         window = SearchResultsWindow(
             self.root,
@@ -644,6 +657,37 @@ class FilmCardTests(TkTestCase):
         cards = [w for w in _descendants(window) if isinstance(w, MovieCard)]
         self.assertEqual(len(cards), 2)
         self.assertEqual([card.plex_mark is not None for card in cards], [True, False])
+        show_cards = [w for w in _descendants(window) if isinstance(w, SearchShowCard)]
+        self.assertEqual([card.plex_mark is not None for card in show_cards], [False, True])
+
+
+class DiscoverMarkTests(TkTestCase):
+    async def test_a_discover_show_in_plex_gets_the_mark_once_its_details_name_it(self) -> None:
+        from app.models import DiscoverShow, TVDetails
+        from app.models.plex import PlexShows
+        from app.ui.media_cards import DiscoverShowCard
+        from tests.test_info_window import FakeImages
+
+        async def details(tmdb_id: int) -> TVDetails:
+            return TVDetails(id=tmdb_id, tvdb_id=700 + tmdb_id)
+
+        plex = PlexShows(tvdb=frozenset({701}))
+        cards = [
+            DiscoverShowCard(
+                self.root,
+                DiscoverShow.model_validate({"id": n, "name": f"Show {n}"}),
+                images=cast(Any, FakeImages()),
+                details=details,
+                is_tracked=False,
+                on_track=lambda show: None,
+                plex_shows=plex,
+            )
+            for n in (1, 2)
+        ]
+        for card in cards:
+            self.keep(card)
+        await self.settle()
+        self.assertEqual([card.plex_mark is not None for card in cards], [True, False])
 
 
 def _descendants(widget: Any) -> list[Any]:
@@ -655,13 +699,17 @@ def _descendants(widget: Any) -> list[Any]:
 
 
 class WidgetMarkTests(TkTestCase):
-    async def test_the_film_cards_mark(self) -> None:
-        from app.ui.media_cards import PlexMark
+    async def test_the_books_are_just_an_icon(self) -> None:
+        # No box behind them: see-through around white books on a soft shadow.
+        from app.ui.library_mark import mark_image
 
-        mark = PlexMark(self.root)
-        self.keep(mark)
-        self.assertEqual(mark.cget("text"), HAVE_MARK)
-        self.assertEqual(mark.tip.text, PLEX_TIP)
+        image = mark_image(39)
+        self.assertEqual((image.size, image.mode), ((39, 39), "RGBA"))
+        pixels = [cast(tuple[int, int, int, int], image.getpixel((x, y))) for y in range(39) for x in range(39)]
+        self.assertEqual(pixels[0][3], 0)  # its corner shows the cover
+        self.assertEqual(pixels[38][3], 0)
+        colours = {p[:3] for p in pixels if p[3] == 255}
+        self.assertIn((255, 255, 255), colours)  # white books
 
 
 if __name__ == "__main__":

@@ -571,18 +571,28 @@ class ForgeProgressTests(TkCase):
         await pump(self.root, 0.05)
         bar.show(0.5, "Renaming 6 of 12 · Mind The Gap")
         canvas = bar.canvas
-        self.assertEqual(
-            [cget(canvas, i, "text") for i in canvas.find_withtag("label")],
-            ["Renaming 6 of 12 · Mind The Gap"],
-        )
-        [fill, _line] = canvas.find_withtag("fill")
+
+        def texts(tag: str) -> list[str]:
+            return [cget(canvas, i, "text") for i in canvas.find_withtag(tag)]
+
+        self.assertEqual(texts("title"), ["Renaming 6 of 12"])  # the step in bold
+        self.assertEqual(texts("detail"), ["Mind The Gap"])  # its file beside it
+        self.assertEqual(texts("percent"), ["50%"])
+        [track] = canvas.find_withtag("track")
+        [fill, _head] = canvas.find_withtag("fill")
+        tx0, _y0, tx1, _y1 = canvas.bbox(track)
         x0, _y0, x1, _y1 = canvas.bbox(fill)
-        self.assertAlmostEqual((x1 - x0) / canvas.winfo_width(), 0.5, delta=0.05)
+        self.assertAlmostEqual((x1 - x0) / (tx1 - tx0), 0.5, delta=0.05)
         bar.show(0, "Renaming 1 of 12")
         self.assertEqual(canvas.find_withtag("fill"), ())
+        self.assertEqual(texts("detail"), [])
         bar.show(1, "x" * 200)  # too long: cut to fit
-        [label] = canvas.find_withtag("label")
-        self.assertTrue(cget(canvas, label, "text").endswith("…"))
+        [label] = texts("title")
+        self.assertTrue(label.endswith("…"))
+        # Room kept for a button at its right end: the bar ends before it.
+        bar.set_action_room(100)
+        [track] = canvas.find_withtag("track")
+        self.assertLess(canvas.bbox(track)[2], tx1 - 90 * bar.scale)
 
 
 class SparedWorkTests(TkCase):

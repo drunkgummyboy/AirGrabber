@@ -25,6 +25,7 @@ from app.services.plex_library import (
     LibraryShow,
     LibrarySort,
     PlexLibraryService,
+    checked_text,
     follow_line,
     gaps_text,
     page_slice,
@@ -32,6 +33,7 @@ from app.services.plex_library import (
     shown_films,
     shown_shows,
 )
+from app.ui import theme
 from tests.test_backup_dialog import DialogTestCase
 from tests.test_plex import NOW, TOKEN, PlexTestCase, fixture
 
@@ -78,6 +80,21 @@ class TitleTests(unittest.TestCase):
             ["1080p", "720p", "SD", None, None, None],
         )
         self.assertIsNone(plex_title(PlexItemReply.model_validate({"title": "x"}), "movie"))
+
+
+class UpgradeTests(unittest.TestCase):
+    def test_a_film_below_1080p_can_be_upgraded(self) -> None:
+        from app.services.plex_library import can_upgrade
+
+        def film(resolution: str | None, tmdb_id: int | None = 7) -> PlexTitle:
+            return title("Heat", "movie", resolution=resolution, tmdb_id=tmdb_id)
+
+        self.assertEqual(
+            [can_upgrade(film(r)) for r in ("SD", "720p", "1080p", "4K", None)],
+            [True, True, False, False, False],  # an unknown quality never counts
+        )
+        self.assertFalse(can_upgrade(film("720p", tmdb_id=None)))  # no releases to look up
+        self.assertFalse(can_upgrade(title("Lost", resolution="SD", tmdb_id=7)))  # a show
 
 
 class PureTests(unittest.TestCase):
@@ -237,6 +254,7 @@ class ViewTests(DialogTestCase):
         films = (title("Dune", "movie", year=2021, resolution="4K"),)
         service = FakeService(LibraryContents(shows=shows, films=films, checked_at=NOW))
         opened: list[str] = []
+        checked: list[str] = []
 
         async def open_show(found: PlexTitle) -> bool:
             opened.append(found.title)
@@ -250,18 +268,25 @@ class ViewTests(DialogTestCase):
             status=lambda text, clear_after_ms=None: None,
             on_open_show=open_show,
             on_open_film=lambda found: opened.append(found.title),
+            on_checked=checked.append,
         )
         view.pack(fill="both", expand=True)
         self.keep(view)
         await view.load()
         await self.settle()
+        self.assertEqual(checked, [checked_text(NOW)])  # for the main window's footer
         self.assertEqual(len(view.cards), PAGE_SIZE)
         assert view.more_button is not None
         self.assertEqual(view.more_button.cget("text"), "Show more (5)")
         view.show_more()
         await self.settle()
         self.assertEqual(len(view.cards), PAGE_SIZE + 5)
-        self.assertEqual(view.kind_choice.cget("values"), [f"Shows ({PAGE_SIZE + 5})", "Films (1)"])
+        tabs = [(tab.name.cget("text"), tab.count.cget("text").strip(), tab.selected) for tab in view.kind_tabs.values()]
+        self.assertEqual(tabs, [("Shows", str(PAGE_SIZE + 5), True), ("Films", "1", False)])
+        self.assertEqual(
+            [chip.cget("text") for chip in view.filter_chips.values()],
+            ["All", "Not followed", "With gaps", "Ended"],
+        )
         card = next(c for c in view.cards if c.title.title == "Show 001")
         assert card.follow_button is not None
         self.assertEqual(card.follow_button.cget("text"), "+ Follow")
@@ -273,44 +298,116 @@ class ViewTests(DialogTestCase):
         view._searched()
         await self.settle()
         self.assertEqual([c.title.title for c in view.cards], ["Show 064"])
-        view.set_kind(view_kind_films())
+        self.root.deiconify()  # a generated click reaches only a shown window
+        self.root.attributes("-alpha", 0.0)
         await self.settle()
+        view.kind_tabs[view_kind_films()].name._label.event_generate("<Button-1>")  # its tab
+        await self.settle()
+        self.assertEqual([tab.selected for tab in view.kind_tabs.values()], [False, True])
+        self.assertEqual(
+            [chip.cget("text") for chip in view.filter_chips.values()],
+            ["All", "4K", "Recently added"],
+        )
         self.assertEqual([c.title.title for c in view.cards], [])  # the search still holds
         view.search.delete(0, "end")
         view._searched()
         await self.settle()
         [film] = view.cards
         self.assertIsNone(film.follow_button)
-        film.poster._clicked(None)
+        view.filter_chips[LibraryFilter.UHD].invoke()  # the 4K chip
+        await self.settle()
+        self.assertEqual([c.title.title for c in view.cards], ["Dune"])
+        self.assertEqual(view.filter_chips[LibraryFilter.UHD].cget("fg_color"), theme.ACCENT)
+        view.sort_menu.set("A–Z")
+        view._choose_sort("A–Z")  # as the menu's pick
+        await self.settle()
+        self.assertEqual([c.title.title for c in view.cards], ["Dune"])
+        [film] = view.cards
+        film._clicked(None)
         await asyncio.sleep(0)
         self.assertEqual(opened, ["Dune"])
 
-    async def test_a_long_title_keeps_its_card_as_tall_as_the_others(self) -> None:
+    async def test_a_film_below_1080p_offers_upgrade(self) -> None:
+        from app.ui.views.library_view import LibraryView
+
+        films = (
+            title("Heat", "movie", key="h", year=1995, resolution="720p", tmdb_id=949),
+            title("Dune", "movie", key="d", year=2021, resolution="4K", tmdb_id=438631),
+        )
+        service = FakeService(LibraryContents(films=films, checked_at=NOW))
+        upgraded: list[str] = []
+        sent: list[str] = []
+        view = LibraryView(
+            self.root,
+            service=service,  # type: ignore[arg-type]
+            posters=mock.Mock(get=mock.AsyncMock(return_value=None)),
+            settings=self.settings(),
+            status=lambda text, clear_after_ms=None: None,
+            on_open_show=mock.AsyncMock(return_value=True),
+            on_open_film=lambda found: None,
+            on_upgrade_film=lambda found: upgraded.append(found.title),
+            on_send=lambda found: sent.append(found.title),
+            can_send=lambda: True,
+        )
+        view.pack(fill="both", expand=True)
+        self.keep(view)
+        await view.load()
+        view.set_kind(view_kind_films())
+        await self.settle()
+        cards = {card.title.title: card for card in view.cards}
+        heat, dune = cards["Heat"], cards["Dune"]
+        assert heat.upgrade_button is not None
+        self.assertEqual(heat.upgrade_button.cget("text"), "⬆ Upgrade")
+        self.assertIsNotNone(heat.send_button)  # the round phone beside it
+        self.assertIsNone(dune.upgrade_button)
+        assert dune.send_button is not None
+        self.assertEqual(dune.send_button.cget("text"), "Send to phone")  # no emoji box
+        heat.upgrade_button.invoke()
+        self.assertEqual(upgraded, ["Heat"])
+
+    async def test_a_card_is_the_other_pages_poster_card(self) -> None:
+        # The same size whatever its title or buttons, the gaps as a pill in the corner.
         from app.ui.card_scale import FULL
+        from app.ui.poster_card import PosterCard, card_size
         from app.ui.views.library_view import LibraryCard
 
-        def card(name: str) -> LibraryCard:
+        def card(name: str, **options: Any) -> LibraryCard:
             made = LibraryCard(
-                self.root, title(name, seasons=1, episodes=1), posters=mock.Mock(get=mock.AsyncMock(return_value=None)),
-                scale=FULL, line="1 season · 1 episode", following=True, on_open=lambda: None,
+                self.root, title(name, seasons=1, episodes=1),
+                posters=mock.Mock(get=mock.AsyncMock(return_value=None)),
+                scale=FULL, line="1 season · 1 episode", on_open=lambda: None, **options,
             )
             made.pack()
             self.keep(made)
             return made
 
-        short, two, long = (
-            card("Reacher"),
-            card("Avatar: The Last Airbender (2024)"),
-            card("Georgie & Mandy's First Marriage and a Much Longer Title Than Fits"),
-        )
+        show = card("Reacher", following=False, tag="2 gaps", on_send=lambda: None)
+        long = card("Georgie & Mandy's First Marriage and a Much Longer Title Than Fits", following=True)
+        film = card("Dune")
         await self.settle()
-        heights = {made.winfo_reqheight() for made in (short, two, long)}
-        self.assertEqual(len(heights), 1)
-        name = long.grid_slaves(row=1, column=0)[0]
-        shown = name.cget("text")
-        self.assertTrue(shown.endswith("…"))
-        self.assertLessEqual(shown.count("\n"), 1)
-        self.assertEqual(short.grid_slaves(row=1, column=0)[0].cget("text"), "Reacher")
+        self.assertIsInstance(show, PosterCard)
+        sizes = {(made.winfo_reqwidth(), made.winfo_reqheight()) for made in (show, long, film)}
+        self.assertEqual(len(sizes), 1)
+        width = card_size(FULL)[0] * show._get_widget_scaling()
+        self.assertAlmostEqual(show.winfo_reqwidth(), width, delta=2)
+        self.assertEqual(show.badge_text, "2 gaps")
+        self.assertIsNone(film.badge_text)
+        self.assertTrue(long.title_text.endswith("…"))
+        self.assertEqual(show.meta_text, "1 season · 1 episode")
+        assert long.follow_button is not None
+        self.assertEqual(long.follow_button.cget("text"), "✓ Following")
+        self.assertIsNone(film.follow_button)
+        # The send button: a round one the row's height, with a drawn phone (no emoji: it
+        # showed as a box), and it follows a new Windows scaling with its card.
+        from app.ui.cards import RoundButton, phone_icon
+
+        phone = show.send_button
+        assert isinstance(phone, RoundButton)
+        self.assertEqual((phone.text, phone._icon), ("", phone_icon))
+        self.assertEqual(phone.winfo_reqwidth(), phone.winfo_reqheight())
+        assert show.follow_button is not None
+        self.assertEqual(phone.winfo_reqheight(), show.follow_button.winfo_reqheight())
+        self.assertIn(phone.rescale, show._rescales)
 
 
 def view_kind_films() -> Any:

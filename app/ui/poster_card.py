@@ -1,5 +1,8 @@
 """Tall poster cards: the cover fills a 2:3 card and fades into `theme.BG` at the bottom, where
-the title, a "2024 | ★ 7.8" line and an action row (Download, + Track) sit.
+the title, a "2024 · ★ 7.8" line and the action row sit: one row per card, a wide main button
+(Download, + Follow / ✓ Following) with at most one round button beside it (cards.RoundButton).
+Pills in the cover's top-left corner (`_set_badges`, side by side): amber for something missing,
+blue (`theme.BRAND`) for information such as "Auto".
 
 Tk can't draw a see-through widget over an image, so the cover, the fade, the border and the
 rounded corners are baked into one image at the card's physical size, in a worker thread
@@ -38,6 +41,7 @@ from app.ui.download_control import FONT_SIZE as ROW_FONT_SIZE
 from app.ui.download_control import ROW_HEIGHT, fit_text
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, break_lines, fit_to_lines, title_lines
+from app.ui.tooltip import Tooltip
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
@@ -73,15 +77,18 @@ FADE_STOPS: tuple[tuple[float, float], ...] = (
     (0.75, 0.82),
     (1.0, 1.0),
 )
-# A badge in the cover's top-left corner ("3 missing" on My shows): a pill on `theme.BG`.
+# Badges in the cover's top-left corner ("3 missing", "Auto" on My shows): pills on `theme.BG`,
+# side by side.
 BADGE_INSET = 10  # from the card's outer edge
 BADGE_HEIGHT = 22
 BADGE_PAD = 8  # inside the pill, left and right of the text
 BADGE_FONT = 12
+BADGE_GAP = 6  # between two pills
+CORNER_ICON = 26  # the picture on the cover's top-right corner (`set_corner_icon`), square
 
 # Shown through t() (`track_look`).
 FOLLOWING_TEXT = N_("✓ Following")
-TRACK_TEXT = N_("+ Track")
+TRACK_TEXT = N_("+ Follow")
 MISSING_TEXT = N_("Not on TVMaze")
 
 _SUPERSAMPLE = 4  # the rounded corners are drawn this much larger, then scaled down
@@ -122,13 +129,13 @@ def row_font_size(scale: CardScale = FULL) -> int:
 
 
 def year_rating_line(year: int | None, rating: float | None) -> str:
-    """"2024 | ★ 7.8", leaving out whichever is unknown ("" for neither)."""
+    """"2024 · ★ 7.8", leaving out whichever is unknown ("" for neither)."""
     parts: list[str] = []
     if year:
         parts.append(str(year))
     if rating is not None:
         parts.append(f"★ {number(rating, '.1f')}")
-    return " | ".join(parts)
+    return " · ".join(parts)
 
 
 # -- the baked image -------------------------------------------------------------------------
@@ -333,6 +340,19 @@ def _placeholder_done(face: CardFace, task: asyncio.Task[Image.Image]) -> None:
         _placeholders[face] = task.result()
 
 
+# -- the cover's pills --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Badge:
+    """A pill in the cover's top-left corner: `text` in `color` (its outline too), `tip` under
+    it on hover ("" = none)."""
+
+    text: str
+    color: theme.Color = theme.TEXT
+    tip: str = ""
+
+
 # -- the action row's Track button -----------------------------------------------------------
 
 
@@ -347,7 +367,7 @@ class TrackLook:
 
 
 def track_look(state: TrackState, busy_text: str) -> TrackLook:
-    """idle → "+ Track"; busy → `busy_text`; tracked → "✓ Following" in SUCCESS with a SUCCESS
+    """idle → "+ Follow"; busy → `busy_text`; tracked → "✓ Following" in SUCCESS with a SUCCESS
     border; missing → "Not on TVMaze"."""
     if state == "idle":
         return TrackLook(t(TRACK_TEXT), theme.ACCENT, theme.ACCENT_HOVER, enabled=True)
@@ -368,7 +388,7 @@ def track_look(state: TrackState, busy_text: str) -> TrackLook:
 
 
 class TrackButton(ctk.CTkButton):
-    """A show card's action row: "+ Track", `busy_text` while adding, "✓ Following" once
+    """A show card's action row: "+ Follow", `busy_text` while adding, "✓ Following" once
     tracked (see `track_look`)."""
 
     def __init__(
@@ -417,7 +437,7 @@ def rgb(widget: tk.Misc, color: theme.Color) -> RGB:
 
 
 class PosterCard(ctk.CTkFrame):
-    """A 2:3 card: the cover with the title, the "2024 | ★ 7.8" line (`meta`; left out when
+    """A 2:3 card: the cover with the title, the "2024 · ★ 7.8" line (`meta`; left out when
     empty unless `meta_row`, which keeps its room for `_set_meta`) and an action row on its
     faded bottom.
 
@@ -426,7 +446,10 @@ class PosterCard(ctk.CTkFrame):
     `_set_open` sets what a click on the cover or the text does. A subclass with a row between
     the text and the action row (`_pack_above_action`) passes its height, gap included, as
     `extra_height` (already at `scale`), so the fade turns solid behind that row too.
-    `_set_badge` puts a pill in the cover's top-left corner.
+    `_set_badges` puts pills side by side in the cover's top-left corner (`_set_badge`: one),
+    each with an optional hover tip; `set_corner_icon` a small picture (see-through around it)
+    on its top-right corner, with a hover tip. `_follow_scale(redraw)`: a plain Tk widget on the
+    card (a RoundButton) redrawn with it at a new Windows scaling.
 
     `scale` sizes the whole card (`self.scale`; subclasses size their rows with it).
     """
@@ -495,10 +518,17 @@ class PosterCard(ctk.CTkFrame):
         if with_meta:
             self._meta_item = self._sheet.create_text(0, 0, text="", anchor="n")
             self._set_meta(meta)
-        self._badge: tuple[str, theme.Color] | None = None  # text, colour
+        self._badges: tuple[Badge, ...] = ()
         self._badge_font = theme.font(scale.font(BADGE_FONT, TEXT_MIN), bold=True)
-        self._badge_items: tuple[int, int] | None = None  # pill image, text
-        self._badge_photo: ImageTk.PhotoImage | None = None
+        self._badge_items: list[tuple[int, int]] = []  # per pill: its image, its text
+        self._badge_photos: list[ImageTk.PhotoImage] = []
+        self._badge_tip: Tooltip | None = None
+        self._rescales: list[Callable[[], None]] = []  # `_follow_scale`
+        # The corner picture: how to draw it at a size (physical pixels) and its tip.
+        self._corner: tuple[Callable[[int], Image.Image], str] | None = None
+        self._corner_item: int | None = None
+        self._corner_photo: ImageTk.PhotoImage | None = None
+        self._corner_tip: Tooltip | None = None
         self._sheet.bind("<Button-1>", self._clicked, add="+")
         self._apply_scale()
 
@@ -528,6 +558,9 @@ class PosterCard(ctk.CTkFrame):
         canvas.coords(self._title_item, centre, round(title_bottom * scaling))
         canvas.itemconfigure(self._title_item, font=self.title_font.create_scaled_tuple(scaling))
         self._draw_badge()
+        self._draw_corner()
+        for redraw in self._rescales:
+            redraw()
 
         self._face = card_face(
             scaling,
@@ -543,6 +576,11 @@ class PosterCard(ctk.CTkFrame):
             self._cover_task.cancel()
         url = self._poster(self._face.size[0])
         self._cover_task = spawn(self._load_cover(self._images, url), name="PosterCard.cover")
+
+    def _follow_scale(self, redraw: Callable[[], None]) -> None:
+        """Call `redraw` whenever the card is laid out again at a new scaling (a plain Tk widget
+        on it, such as a RoundButton, which CTk doesn't scale)."""
+        self._rescales.append(redraw)
 
     def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
         """Windows' scaling changed (the window moved to another screen): CTk resizes the
@@ -608,44 +646,137 @@ class PosterCard(ctk.CTkFrame):
 
     @property
     def badge_text(self) -> str | None:
-        return self._badge[0] if self._badge is not None else None
+        """The first pill's text; None without pills."""
+        return self._badges[0].text if self._badges else None
+
+    @property
+    def badges(self) -> tuple[Badge, ...]:
+        """The pills in the cover's corner, left to right."""
+        return self._badges
 
     def _set_badge(self, text: str | None, color: theme.Color = theme.TEXT) -> None:
-        """A pill with `text` in `color` (outline and text, on `theme.BG`) in the cover's
-        top-left corner; None takes it away."""
-        self._badge = (text, color) if text else None
-        self._draw_badge()
+        """One pill with `text` in `color` (outline and text, on `theme.BG`) in the cover's
+        top-left corner; None takes the pills away."""
+        self._set_badges([Badge(text, color)] if text else [])
+
+    def _set_badges(self, badges: Sequence[Badge]) -> None:
+        """Pills side by side in the cover's top-left corner, the first in the corner; none
+        takes them away. Unchanged pills aren't drawn again."""
+        shown = tuple(badge for badge in badges if badge.text)
+        if shown != self._badges:
+            self._badges = shown
+            self._draw_badge()
 
     def _draw_badge(self) -> None:
         canvas = self._sheet
-        if self._badge is None:
-            if self._badge_items is not None:
-                canvas.delete(*self._badge_items)
-            self._badge_items = None
-            self._badge_photo = None
-            return
-        text, color = self._badge
+        badges = self._badges
+        while len(self._badge_items) > len(badges):
+            canvas.delete(*self._badge_items.pop())
+        while len(self._badge_items) < len(badges):
+            index = len(self._badge_items)
+            items = (
+                canvas.create_image(0, 0, anchor="nw"),
+                canvas.create_text(0, 0, anchor="center"),
+            )
+            for item in items:
+                canvas.tag_bind(item, "<Enter>", self._badge_enter(index), add="+")
+                canvas.tag_bind(item, "<Leave>", self._badge_left, add="+")
+            self._badge_items.append(items)
         scaling = self.scaling
         scale = self.scale
         font = self._badge_font
         height = scale.text_height(BADGE_HEIGHT, int(font.cget("size")))
-        width = font.measure(text) + 2 * scale.px(BADGE_PAD)
-        size = (round(width * scaling), round(height * scaling))
         x = y = round(scale.px(BADGE_INSET) * scaling)
-        pill = pill_image(size, max(1, round(scaling)), rgb(self, theme.BG), rgb(self, color))
-        self._badge_photo = ImageTk.PhotoImage(pill, master=canvas)
-        if self._badge_items is None:
-            self._badge_items = (
-                canvas.create_image(0, 0, anchor="nw"),
-                canvas.create_text(0, 0, anchor="center"),
+        gap = round(scale.px(BADGE_GAP) * scaling)
+        border, bg = max(1, round(scaling)), rgb(self, theme.BG)
+        photos: list[ImageTk.PhotoImage] = []
+        for badge, (image_item, text_item) in zip(badges, self._badge_items, strict=True):
+            width = font.measure(badge.text) + 2 * scale.px(BADGE_PAD)
+            size = (round(width * scaling), round(height * scaling))
+            pill = pill_image(size, border, bg, rgb(self, badge.color))
+            photo = ImageTk.PhotoImage(pill, master=canvas)
+            photos.append(photo)
+            canvas.coords(image_item, x, y)
+            canvas.itemconfigure(image_item, image=photo)
+            canvas.coords(text_item, x + size[0] / 2, y + size[1] / 2)
+            canvas.itemconfigure(
+                text_item,
+                text=badge.text,
+                fill=theme.pick(badge.color),
+                font=font.create_scaled_tuple(scaling),
             )
-        image_item, text_item = self._badge_items
-        canvas.coords(image_item, x, y)
-        canvas.itemconfigure(image_item, image=self._badge_photo)
-        canvas.coords(text_item, x + size[0] / 2, y + size[1] / 2)
-        canvas.itemconfigure(
-            text_item, text=text, fill=theme.pick(color), font=font.create_scaled_tuple(scaling)
-        )
+            x += size[0] + gap
+        self._badge_photos = photos
+
+    def _badge_enter(self, index: int) -> Callable[[Any], None]:
+        return lambda _event: self._badge_entered(index)
+
+    def _badge_entered(self, index: int) -> None:
+        if index >= len(self._badges) or not self._badges[index].tip:
+            return
+        canvas = self._sheet
+        if self._badge_tip is None:
+            self._badge_tip = Tooltip(canvas, "")
+        box = canvas.bbox(self._badge_items[index][0])
+        if box is None:
+            return
+        left, top = canvas.winfo_rootx(), canvas.winfo_rooty()
+        area = (left + box[0], top + box[1], left + box[2], top + box[3])
+        self._badge_tip.rest_on(area, self._badges[index].tip)
+
+    def _badge_left(self, _event: Any) -> None:
+        if self._badge_tip is not None:
+            self._badge_tip.rest_on(None, "")
+
+    @property
+    def corner_tip(self) -> str | None:
+        """The corner picture's tip; None without a picture."""
+        return self._corner[1] if self._corner is not None else None
+
+    def set_corner_icon(self, icon: Callable[[int], Image.Image] | None, tip: str = "") -> None:
+        """`icon(px)`: a picture `px` physical pixels square (RGBA: see-through around it) on the
+        cover's top-right corner, `tip` under it on hover; None takes it away."""
+        self._corner = (icon, tip) if icon is not None else None
+        self._draw_corner()
+
+    def _draw_corner(self) -> None:
+        canvas = self._sheet
+        if self._corner is None:
+            if self._corner_item is not None:
+                canvas.delete(self._corner_item)
+            self._corner_item = None
+            self._corner_photo = None
+            return
+        icon, _tip = self._corner
+        scaling, scale = self.scaling, self.scale
+        side = round(scale.px(CORNER_ICON) * scaling)
+        inset = round(scale.px(BADGE_INSET) * scaling)
+        x = round(self._units[0] * scaling) - inset - side + round(2 * scaling)
+        self._corner_photo = ImageTk.PhotoImage(icon(side), master=canvas)
+        if self._corner_item is None:
+            self._corner_item = canvas.create_image(0, 0, anchor="nw")
+            canvas.tag_bind(self._corner_item, "<Enter>", self._corner_entered, add="+")
+            canvas.tag_bind(self._corner_item, "<Leave>", self._corner_left, add="+")
+            canvas.tag_bind(self._corner_item, "<Button-1>", self._clicked, add="+")
+        canvas.coords(self._corner_item, x, inset - round(2 * scaling))
+        canvas.itemconfigure(self._corner_item, image=self._corner_photo)
+
+    def _corner_entered(self, _event: Any) -> None:
+        if self._corner is None or self._corner_item is None:
+            return
+        canvas = self._sheet
+        if self._corner_tip is None:
+            self._corner_tip = Tooltip(canvas, "")
+        box = canvas.bbox(self._corner_item)
+        if box is None:
+            return
+        left, top = canvas.winfo_rootx(), canvas.winfo_rooty()
+        area = (left + box[0], top + box[1], left + box[2], top + box[3])
+        self._corner_tip.rest_on(area, self._corner[1])
+
+    def _corner_left(self, _event: Any) -> None:
+        if self._corner_tip is not None:
+            self._corner_tip.rest_on(None, "")
 
     # -- cover -----------------------------------------------------------------------------------
 

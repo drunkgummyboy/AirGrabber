@@ -15,6 +15,7 @@ from unittest import mock
 
 import customtkinter as ctk
 
+from app.models.plex import PlexShows
 from app.models import DiscoverShow, DiscoverShowEntry, Movie, Settings, TVDashboard, TVDetails
 from app.services import SettingsService
 from app.ui import poster_card, theme
@@ -54,6 +55,9 @@ class _Discovery:
         self.on_air = [_show(4)]
         self.followed: set[int] = set()
         self.fetches = 0
+
+    async def plex_shows(self) -> PlexShows:
+        return PlexShows()
 
     async def tv_dashboard(self, *, profile_id: int, force: bool = False) -> TVDashboard:
         self.fetches += 1
@@ -207,7 +211,7 @@ class DiscoverTests(_PageCase):
         view, discovery = await self.page()
         cards = {show_id: self.card(view, show_id) for show_id in (1, 2, 3, 4)}
         sections = view._body.winfo_children()
-        self.assertEqual(self.label(cards[2]), "+ Track")
+        self.assertEqual(self.label(cards[2]), "+ Follow")
         discovery.followed.add(2)  # tracked from the search window, say
         with mock.patch("app.ui.views.shelves.LoadingBar") as loading:
             await self.quietly(view)
@@ -216,10 +220,10 @@ class DiscoverTests(_PageCase):
         for show_id, card in cards.items():
             self.assertIs(self.card(view, show_id), card)  # the same cards, still there
         self.assertEqual(self.label(cards[2]), "✓ Following")
-        self.assertEqual(self.label(cards[1]), "+ Track")
+        self.assertEqual(self.label(cards[1]), "+ Follow")
         discovery.followed.clear()  # untracked again
         await self.quietly(view)
-        self.assertEqual(self.label(cards[2]), "+ Track")
+        self.assertEqual(self.label(cards[2]), "+ Follow")
 
     async def test_hidden_when_owned_the_card_goes_and_its_shelf_closes_up(self) -> None:
         view, discovery = await self.page(hide_owned_discover=True)
@@ -254,7 +258,7 @@ class DiscoverTests(_PageCase):
     async def test_a_tracked_show_while_its_card_is_busy_keeps_its_own_state(self) -> None:
         view, discovery = await self.page()
         card = self.card(view, 1)
-        view._tracking.add(1)  # this page's own + Track, still running
+        view._tracking.add(1)  # this page's own + Follow, still running
         card.set_track_state("busy")
         discovery.followed.add(1)
         await self.quietly(view)

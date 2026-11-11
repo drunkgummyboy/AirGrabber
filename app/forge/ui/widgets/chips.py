@@ -8,9 +8,11 @@ label muted; on = an accent light with a soft glow, the label in the text colour
 border; under the pointer a slightly different surface. The whole look is decided in one place,
 `option_style`, so another style is one function away.
 
-`ForgeProgress`: the Forge button while a run goes: "Renaming 7 of 12 · Mind The Gap" over a
-accent bar that fills up. It wears the same dark shade in both looks, so its white text stays
-readable over the filled and the empty part alike.
+`ForgeProgress`: a run's dock, centred under the queue's list: a dark rounded panel on a soft
+shadow with a ⚒ badge, the step in bold and its file muted beside it ("Renaming 7 of 12" ·
+"Mind The Gap"), the percentage, and a slim bar under them that fills up with a glowing head.
+Room is kept at its right end for a button placed on it (Cancel, `action_room`). It wears the
+same dark shade in both looks (the dark look's tokens), so its light text stays readable.
 
 Canvas colours are `theme.pick`ed and repainted on a light/dark switch; sizes follow Windows'
 scaling (CTk's `_set_scaling`).
@@ -38,9 +40,15 @@ OPTION_LIGHT = 8  # the light's diameter
 OPTION_GAP = 8  # between the light and the label
 OPTION_FONT = 14
 OPTION_SHADOW = 2  # the inner shadow at the bottom
-PROGRESS_HEIGHT = 38
-PROGRESS_RADIUS = 10
-PROGRESS_FONT = 15
+PROGRESS_WIDTH = 580
+PROGRESS_HEIGHT = 72  # the panel and its shadow under it
+PROGRESS_SHADOW = 6  # how far the shadow reaches below the panel (and half that at its sides)
+PROGRESS_RADIUS = 18
+PROGRESS_PAD = 16
+PROGRESS_BADGE = 36  # the ⚒ badge's diameter
+PROGRESS_TRACK = 6  # the bar's thickness
+PROGRESS_FONT = 14
+PROGRESS_DETAIL_FONT = 13
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,21 +252,62 @@ class OptionButton(_CanvasWidget):
         self._on_toggle(self.value)
 
 
+@dataclass(frozen=True, slots=True)
+class ProgressStyle:
+    """The run dock's colours ("#RRGGBB"): the dark look's in both looks, but the shadow, which
+    falls on the ground around it."""
+
+    panel: str
+    edge: str
+    text: str
+    detail: str
+    glow: str  # the badge's glyph, the percentage and the bar's fill
+    badge: str
+    track: str
+    shadow: tuple[str, ...]  # from the outermost ring in
+
+
+def progress_style(look: theme.Look, ground: Pair) -> ProgressStyle:
+    """The one place the run dock's look is decided."""
+    panel = look.STACK_FAR[1]
+    glow = look.BRAND[1]  # a light tint of the look's colour: it reads on the dark panel
+    under = theme.pick(ground)
+    depth = 0.35 if theme.is_dark() else 0.16  # how dark the shadow's innermost ring gets
+    return ProgressStyle(
+        panel=panel,
+        edge=mix(panel, glow, 0.28),
+        text=theme.ON_COLOR,
+        detail=mix(panel, theme.ON_COLOR, 0.62),
+        glow=glow,
+        badge=mix(panel, glow, 0.16),
+        track=mix(panel, theme.ON_COLOR, 0.10),
+        shadow=tuple(mix(under, "#000000", depth * k) for k in (0.25, 0.5, 0.75, 1.0)),
+    )
+
+
 class ForgeProgress(_CanvasWidget):
-    """The run's progress in the Forge button's place: `show(fraction, text)`."""
+    """A run's dock: `show(fraction, text)`; `text`'s part after its first " · " (the file) is
+    drawn muted beside the step. `action_room`: CTk units kept free at the right end, where the
+    owner places a button (`action_y`: that button's middle, from the widget's top)."""
 
     def __init__(
         self,
         master: Any,
         *,
-        width: int = 340,
+        width: int = PROGRESS_WIDTH,
         look: theme.Look | None = None,
         ground: Pair | None = None,
     ) -> None:
         self.fraction = 0.0
         self.text = ""
+        self.action_room = 0
         super().__init__(master, look=look, ground=ground)
         self.configure(width=width, height=PROGRESS_HEIGHT)
+
+    @staticmethod
+    def action_y() -> float:
+        """Where a button placed on the panel has its middle (CTk units from the top)."""
+        return (PROGRESS_HEIGHT - PROGRESS_SHADOW) / 2
 
     def show(self, fraction: float, text: str) -> None:
         fraction = max(0.0, min(1.0, fraction))
@@ -266,36 +315,112 @@ class ForgeProgress(_CanvasWidget):
             self.fraction, self.text = fraction, text
             self._paint()
 
+    def set_action_room(self, units: int) -> None:
+        if units != self.action_room:
+            self.action_room = units
+            self._paint()
+
+    def style(self) -> ProgressStyle:
+        return progress_style(self.look, self._ground)
+
     def _paint(self) -> None:
         c = self.canvas
         c.delete("all")
         width, height = c.winfo_width(), c.winfo_height()
         if width <= 1 or height <= 1:
             return
-        look = self.look
-        dark = look.STACK_FAR[1]  # the same dark shade in both looks: white text on all of it
-        accent = theme.pick(look.ACCENT)
-        radius = self._px(PROGRESS_RADIUS)
-        round_rect(c, 0, 0, width - 1, height - 1, radius, fill=dark, outline=accent, width=1)
-        filled = round((width - 2) * self.fraction)
-        if filled > 2:
+        style = self.style()
+        px = self._px
+        side, drop = px(PROGRESS_SHADOW / 2), px(PROGRESS_SHADOW)
+        x0, y0, x1, y1 = side, 0, width - 1 - side, height - 1 - drop
+        radius = px(PROGRESS_RADIUS)
+        # The soft shadow: rings growing outward and down, the outermost the faintest.
+        rings = len(style.shadow)
+        for i, colour in enumerate(style.shadow):
+            reach = (rings - i) / rings
             round_rect(
-                c, 1, 1, 1 + filled, height - 2, radius - 1, fill=accent, width=0, tags="fill"
+                c,
+                x0 - side * reach,
+                y0 + drop * 0.3 * reach,
+                x1 + side * reach,
+                y1 + drop * reach,
+                radius + side * reach,
+                fill=colour,
+                width=0,
+                tags="shadow",
             )
+        round_rect(c, x0, y0, x1, y1, radius, fill=style.panel, outline=style.edge, width=1)
+
+        # The ⚒ badge.
+        mid = (y0 + y1) / 2
+        r = px(PROGRESS_BADGE) / 2
+        bx = x0 + px(PROGRESS_PAD) + r
+        c.create_oval(bx - r, mid - r, bx + r, mid + r, fill=style.badge, width=0, tags="badge")
+        c.create_text(
+            bx,
+            mid,
+            text="⚒",
+            fill=style.glow,
+            font=_font(self, 17, self.scale, bold=True),
+            tags="badge",
+        )
+
+        # The words and the percentage on the upper line, the bar on the lower.
+        left = bx + r + px(12)
+        right = x1 - px(PROGRESS_PAD) - px(self.action_room)
+        upper, lower = y0 + (y1 - y0) * 0.38, y0 + (y1 - y0) * 0.72
+        bold = _font(self, PROGRESS_FONT, self.scale, bold=True)
+        percent = c.create_text(
+            right,
+            upper,
+            text=f"{round(self.fraction * 100)}%",
+            anchor="e",
+            fill=style.glow,
+            font=bold,
+            tags="percent",
+        )
+        pbox = c.bbox(percent)
+        room = max(0, round((pbox[0] if pbox else right) - px(14) - left))
+        step, _, detail = self.text.partition(" · ")
+        step = fit_text(step, bold, room)
+        c.create_text(left, upper, text=step, anchor="w", fill=style.text, font=bold, tags="title")
+        if detail and step == self.text.partition(" · ")[0]:
+            light = _font(self, PROGRESS_DETAIL_FONT, self.scale)
+            gap = px(10)
+            rest = room - bold.measure(step) - gap
+            if rest > light.measure("…") * 3:
+                c.create_text(
+                    left + bold.measure(step) + gap,
+                    upper,
+                    text=fit_text(detail, light, rest),
+                    anchor="w",
+                    fill=style.detail,
+                    font=light,
+                    tags="detail",
+                )
+
+        thick = max(2, px(PROGRESS_TRACK))
+        c.create_line(
+            left, lower, right, lower, fill=style.track, width=thick, capstyle="round", tags="track"
+        )
+        head = left + (right - left) * self.fraction
+        if self.fraction > 0:
+            for reach, strength in ((5, 0.18), (3.5, 0.32), (2, 0.55)):  # the head's glow
+                rr = thick / 2 + px(reach)
+                colour = mix(style.panel, style.glow, strength)
+                c.create_oval(
+                    head - rr, lower - rr, head + rr, lower + rr, fill=colour, width=0, tags="glow"
+                )
             c.create_line(
-                1 + radius / 2,
-                2,
-                max(1 + radius / 2, filled - radius / 2),
-                2,
-                fill=theme.pick(look.ACCENT_HOVER),
+                left, lower, head, lower, fill=style.glow, width=thick, capstyle="round", tags="fill"
+            )
+            hr = thick / 2 + px(1)
+            c.create_oval(
+                head - hr,
+                lower - hr,
+                head + hr,
+                lower + hr,
+                fill=mix(style.glow, theme.ON_COLOR, 0.5),
+                width=0,
                 tags="fill",
             )
-        font = _font(self, PROGRESS_FONT, self.scale, bold=True)
-        c.create_text(
-            width / 2,
-            height / 2,
-            text=fit_text(self.text, font, width - 2 * radius),
-            fill=theme.ON_COLOR,
-            font=font,
-            tags="label",
-        )

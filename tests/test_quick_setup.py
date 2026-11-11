@@ -241,7 +241,7 @@ class PreviewWidgetTests(TkTestCase):
         await self.settle()
         assert preview.card is not None
         self.assertEqual(preview.card.title_text, "Nowhere Lane")
-        self.assertEqual(preview.card.meta_text, "2024 | ★ 8.1")
+        self.assertEqual(preview.card.meta_text, "2024 · ★ 8.1")
         self.images.get.assert_awaited()
 
 

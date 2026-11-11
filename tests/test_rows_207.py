@@ -272,7 +272,7 @@ class CalendarCardWidgetTests(WidgetTestCase):
         missing.pack()
         await self.settle()
         assert new.note is not None and missing.note is not None
-        self.assertEqual(str(new.note.cget("text")), "New")
-        self.assertEqual(new.note.cget("text_color"), theme.LINK)
-        self.assertEqual(str(missing.note.cget("text")), "Not downloaded yet")  # missing wins
-        self.assertEqual(missing.note.cget("text_color"), theme.WARNING)
+        self.assertEqual(new.note.text, "New")  # a blue pill
+        self.assertEqual(new.note.color, theme.BRAND)
+        self.assertEqual(missing.note.text, "Not downloaded yet")  # missing wins: amber
+        self.assertEqual(missing.note.color, theme.WARNING)

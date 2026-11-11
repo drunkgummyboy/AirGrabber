@@ -11,6 +11,7 @@ from typing import Any
 
 from app.i18n import N_, t
 from app.models import DiscoverShow, DiscoverShowEntry, TVDetails
+from app.models.plex import PlexShows
 from app.services import DiscoveryService, ImageCache, SettingsService
 from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError
@@ -81,10 +82,12 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
         self._profile_id = settings.current.current_profile
         self._sources: dict[int, tuple[str, ...]] = {}  # TMDB id → where it airs, once known
         self._service: str | None = None  # the service the page is kept to; None = all
+        self._plex_shows = PlexShows()  # the shows in Plex (the cards' library mark)
 
     async def _fetch_shelves(self, *, force: bool) -> list[Shelf[DiscoverShowEntry]]:
         profile_id = self._settings.current.current_profile
         dashboard = await self._discovery.tv_dashboard(profile_id=profile_id, force=force)
+        self._plex_shows = await self._discovery.plex_shows()
         self._profile_id = profile_id
         failed = set(dashboard.failed)
         ids = {
@@ -219,6 +222,7 @@ class DiscoverView(ShelvesView[DiscoverShowEntry]):
             on_track=self._track,
             on_open_show=self._on_open_show,
             scale=self._scale,
+            plex_shows=self._plex_shows,
         )
         if show.id in self._tracking and not item.is_tracked:
             card.set_track_state("busy")

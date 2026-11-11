@@ -444,6 +444,7 @@ class TrackedView(BaseView):
             else {}
         )
         last_downloads = await self._library.last_downloads()
+        in_plex = await self._library.plex_shows()  # the cards' library mark (none without Plex)
         now = datetime.now().astimezone()
         self._profile_id = profile_id
         shown = self._grid
@@ -487,6 +488,7 @@ class TrackedView(BaseView):
                 missing=missing.get(entry.show.id, 0),
                 missing_actions=self._missing_actions,
                 scale=scale,
+                in_plex=in_plex.has(entry.show.tvdb_id, entry.show.imdb_id),
             )
         if quiet:
             # Lay the hidden cards out, then let their covers load before the swap.

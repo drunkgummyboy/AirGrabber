@@ -1387,7 +1387,7 @@ class LookAndLanguageTest(QueueCase):
             [b.cget("text") for b in view.filter_buttons.values()],
             ["Alles 2", "Wacht op jou 0", "Klaar 2"],
         )
-        self.assertEqual(view.for_label.cget("text"), "Alleen Dune (2021). Andere kaarten houden hun eigen voorinstelling.")
+        self.assertEqual(view.for_label.cget("text"), "Voor alle 2 films. De chip van een kaart verandert alleen die ene.")
         self.assertEqual(
             summary_text(RunResult(renamed=2, posters=1, cancelled=True)),
             "Klaar: 2 hernoemd, 0 al goed, 0 mislukt · 1 poster · geannuleerd",
@@ -1705,10 +1705,10 @@ class PresetPerBandTest(QueueCase):
         await self.films_and_show()
         self.view.set_band_preset([self.item("Heat").id], self.preset("Movie (Flat)"))
         self.select_band("Dune")
-        self.assertEqual(self.view.for_label.cget("text"), "Only Dune (2021). Other cards keep their own preset.")
+        self.assertEqual(self.view.for_label.cget("text"), "For all 2 films. A card's chip changes just that one.")
         self.assertEqual(self.view.preset_menu.get(), "Movie (Folder)")
         self.select_band("Heat")
-        self.assertEqual(self.view.for_label.cget("text"), "Only Heat (1995). Other cards keep their own preset.")
+        self.assertEqual(self.view.for_label.cget("text"), "For all 2 films. A card's chip changes just that one.")
         self.assertEqual(self.view.preset_menu.get(), "Movie (Flat)")
         self.select_band("Show")
         self.assertEqual(self.view.for_label.cget("text"), "Only Show · 2 episodes. Other cards keep their own preset.")
@@ -1716,6 +1716,37 @@ class PresetPerBandTest(QueueCase):
         self.view.list.select(None)  # nothing selected: the first band is, at the next refresh
         self.view.refresh()
         self.assertIsNotNone(self.view.list.selected)
+
+    async def test_the_bar_changes_every_show_and_a_chip_one(self) -> None:
+        # The owner unticked Trailer for a whole Series folder and 25 shows still fetched theirs.
+        make_files(
+            self.tmp / "in",
+            ["Alpha.S01E01.mkv", "Bravo.S01E01.mkv", "Charlie.S01E01.mkv", "Dune.2021.mkv"],
+        )
+        await self.add_and_settle(self.tmp / "in")
+        self.view.set_manual(True)
+        self.select_band("Alpha")
+        self.assertEqual(self.view.for_label.cget("text"), "For all 3 shows. A card's chip changes just that one.")
+        trailer = self.view.option_buttons["Trailer"]
+        start = self.view.choice_for(self.item("Bravo")).options.trailer
+        trailer.invoke()
+        for name in ("Alpha", "Bravo", "Charlie"):
+            self.assertEqual(self.view.choice_for(self.item(name)).options.trailer, not start, name)
+        self.assertIsNot(  # each its own copy: a chip later changes one alone
+            self.view.choice_for(self.item("Alpha")), self.view.choice_for(self.item("Bravo"))
+        )
+        dune = self.view.choice_for(self.item("Dune"))
+        self.assertEqual(dune.preset, self.preset("Movie (Folder)"))  # the other kind: left alone
+        self.view._preset_chosen("Series (Flat)")
+        self.view.refresh()
+        for name in ("Alpha", "Bravo", "Charlie"):
+            self.assertEqual(self.preset_name(name), "Series (Flat)")
+        self.view.set_band_preset([self.item("Bravo").id], self.preset("Series (Folder)"))  # a chip
+        self.view.refresh()
+        self.assertEqual(
+            [self.preset_name(n) for n in ("Alpha", "Bravo", "Charlie")],
+            ["Series (Flat)", "Series (Folder)", "Series (Flat)"],
+        )
 
     async def test_the_chip_menu_sets_a_bands_preset(self) -> None:
         await self.films_and_show()
@@ -1735,7 +1766,8 @@ class PresetPerBandTest(QueueCase):
         dict(self.view.chip_choices(ids))["Movie (Flat)"]()
         self.view.refresh()
         self.assertEqual(self.band("Heat").chip, "Movie (Flat) ▾")
-        self.assertEqual(self.view.for_label.cget("text"), "Only Heat (1995). Other cards keep their own preset.")  # selected
+        self.assertEqual(self.view.for_label.cget("text"), "For all 2 films. A card's chip changes just that one.")  # selected
+        self.assertEqual(self.band("Dune").chip, "Movie (Folder) ▾")  # the chip changed Heat alone
         self.view.set_custom("{t}")
         self.view.refresh()
         self.assertEqual(self.band("Heat").chip, "✎ Custom")
@@ -1788,13 +1820,18 @@ class PresetPerBandTest(QueueCase):
         self.view.set_custom("{t}")  # a Custom rule names anything
         self.assertEqual(len(self.view.use_for_all_entries()), 3)
 
-    async def test_use_for_all_is_hidden_with_one_band(self) -> None:
+    async def test_use_for_all_shows_only_with_shows_and_films(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
         await self.add_and_settle(self.tmp / "in")
         await pump(self.root, 0.05)
         self.assertFalse(self.view.use_all_link.winfo_ismapped())
         make_files(self.tmp / "more", ["Heat.1995.mkv"])
         await self.add_and_settle(self.tmp / "more")
+        self.view.refresh()
+        await pump(self.root, 0.05)
+        self.assertFalse(self.view.use_all_link.winfo_ismapped())  # the bar changes both films
+        make_files(self.tmp / "show", ["Show.S01E01.mkv"])
+        await self.add_and_settle(self.tmp / "show")
         self.view.refresh()
         await pump(self.root, 0.05)
         self.assertTrue(self.view.use_all_link.winfo_ismapped())

@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.14.0": (
+        N_("Cards look alike everywhere now: one row of buttons, coloured labels on the poster, and Follow instead of Track."),
+        N_("Films and shows that are in your Plex library show a small books icon on their cards, also in the search results."),
+        N_("Library: a film below 1080p gets an Upgrade button that lists only its 1080p and 4K releases."),
+        N_("Library: tabs and filter buttons at the top, and the time of the last Plex check at the bottom of the window."),
+        N_("MediaForge: a change in the preset bar now goes for every show or film in the queue; a card's chip changes just one."),
+        N_("MediaForge: while forging, the progress shows in a panel at the bottom of the page."),
+    ),
     "3.13.4": (
         N_("A download caught hiding a program is never fetched again, not even through its magnet link."),
         N_("Magnet links now reach Download Station on a Synology NAS."),

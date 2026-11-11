@@ -3,8 +3,8 @@ the selected person's (Settings' `current_profile`, read at every load; app/serv
 
 While Plex is connected (`LibraryService.plex_connected`; without it the page shows nothing of
 what you have or miss, owner's decision for 3.1.0), missing episodes (`missing_between`: aired
-at least a day ago, neither in Plex nor downloaded) get the cards' amber note; new ones
-(`new_between`: aired less than a day ago) a quiet blue "New" note; the stack cards' rows say
+at least a day ago, neither in Plex nor downloaded) get the cards' amber pill; new ones
+(`new_between`: aired less than a day ago) a blue "New" pill; the stack cards' rows say
 which are in Plex (`plex_between`). Several episodes of one show on one day share a
 stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
 unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
@@ -82,7 +82,7 @@ WEEKS_TIP = N_("How many weeks to show")
 SUGGESTIONS_TEXT = N_("💡 Suggestions")
 SUGGESTIONS_TIP = N_(
     "Also show one popular episode a day from a show you don't follow yet. "
-    "Click + Track on it to start following that show."
+    "Click + Follow on it to start following that show."
 )
 
 # The box over the grid while the person follows no shows; shown through t().
@@ -394,7 +394,7 @@ class CalendarView(BaseView):
         self._unfolded: set[FoldKey] = set()  # the stack cards unfolded; this session only
         self._suggestions_shown = settings.current.show_suggestions  # the toggle's state
         # The person whose calendar shows (Settings' `current_profile`, read at every load):
-        # the suggestions' "+ Track" adds to their library.
+        # the suggestions' "+ Follow" adds to their library.
         self._profile_id = settings.current.current_profile
 
         self.grid_columnconfigure(0, weight=1)
@@ -762,7 +762,7 @@ class CalendarView(BaseView):
         """Fill the empty grid `weeks` (`_new_grid`): one cell per day with its tracked
         episodes, a show's episodes of one day on one stack card. `marks`: Plex is connected
         (what you have and miss shows); then `missing`: the ids of the episodes that get the
-        amber note; `new`: those aired less than a day ago, a blue "New" note; `in_plex`:
+        amber pill; `new`: those aired less than a day ago, a blue "New" pill; `in_plex`:
         those in Plex, `downloaded`: those downloaded and not in Plex yet, a ✓. Returns the
         cells.
 

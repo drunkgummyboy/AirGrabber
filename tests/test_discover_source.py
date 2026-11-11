@@ -34,7 +34,7 @@ class PureTests(unittest.TestCase):
     def test_the_cards_lines_longest_first(self) -> None:
         self.assertEqual(
             source_lines(2024, 7.8, "Netflix"),
-            ("2024 | ★ 7.8 | Netflix", "2024 | Netflix", "2024 | ★ 7.8"),
+            ("2024 · ★ 7.8 · Netflix", "2024 · Netflix", "2024 · ★ 7.8"),
         )
         self.assertEqual(source_lines(None, None, "Netflix"), ("Netflix", "Netflix", ""))
 

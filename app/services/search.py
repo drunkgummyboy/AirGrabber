@@ -46,6 +46,9 @@ from app.services.settings import SettingsService
 log = logging.getLogger(__name__)
 
 QUALITY_KEYS = ("2160p", "1080p", "720p", "480p", "x265", "any")
+# Not one of the panel's usual chips: 1080p and 4K together, for a Library film's ⬆ Upgrade
+# (the release panel shows it as an extra first chip only when opened on it).
+UPGRADE_KEY = "1080p+"
 
 _STOPWORDS = frozenset({"the", "a", "an", "of", "and", "&"})
 _APOSTROPHES = re.compile(r"['’`´]")
@@ -435,15 +438,19 @@ def matches_quality(release: TorrentRelease, key: str) -> bool:
         return True
     if key == "x265":
         return release.is_hevc
+    if key == UPGRADE_KEY:
+        return release.resolution in (Resolution.UHD, Resolution.FULL_HD)
     if key not in _RESOLUTION_KEYS:
         raise ValueError(f"unknown quality key {key!r}")
     return release.resolution is _RESOLUTION_KEYS[key]
 
 
-def quality_counts(releases: Iterable[TorrentRelease]) -> dict[str, int]:
-    """How many releases each quality filter would show, for every key in QUALITY_KEYS."""
+def quality_counts(
+    releases: Iterable[TorrentRelease], keys: Iterable[str] = QUALITY_KEYS
+) -> dict[str, int]:
+    """How many releases each quality filter would show, for every key in `keys`."""
     items = list(releases)
-    return {key: sum(matches_quality(release, key) for release in items) for key in QUALITY_KEYS}
+    return {key: sum(matches_quality(release, key) for release in items) for key in keys}
 
 
 def quality_key(profile: QualityProfile) -> str:

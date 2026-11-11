@@ -58,8 +58,8 @@ def noise(size: tuple[int, int], seed: int = 1) -> Image.Image:
 
 class YearRatingLineTests(unittest.TestCase):
     def test_year_and_rating(self) -> None:
-        self.assertEqual(year_rating_line(2024, 7.84), "2024 | ★ 7.8")
-        self.assertEqual(year_rating_line(1999, 10.0), "1999 | ★ 10.0")
+        self.assertEqual(year_rating_line(2024, 7.84), "2024 · ★ 7.8")
+        self.assertEqual(year_rating_line(1999, 10.0), "1999 · ★ 10.0")
 
     def test_unknown_parts_are_left_out(self) -> None:
         self.assertEqual(year_rating_line(None, 8.1), "★ 8.1")
@@ -67,7 +67,7 @@ class YearRatingLineTests(unittest.TestCase):
         self.assertEqual(year_rating_line(None, None), "")
 
     def test_a_zero_rating_is_still_a_rating(self) -> None:
-        self.assertEqual(year_rating_line(2020, 0.0), "2020 | ★ 0.0")
+        self.assertEqual(year_rating_line(2020, 0.0), "2020 · ★ 0.0")
 
 
 class FadeAlphaTests(unittest.TestCase):
@@ -249,7 +249,7 @@ class PillImageTests(unittest.TestCase):
 class TrackLookTests(unittest.TestCase):
     def test_idle(self) -> None:
         look = track_look("idle", "Adding…")
-        self.assertEqual((look.text, look.color, look.enabled), ("+ Track", theme.ACCENT, True))
+        self.assertEqual((look.text, look.color, look.enabled), ("+ Follow", theme.ACCENT, True))
         self.assertIsNone(look.border)
 
     def test_busy(self) -> None:

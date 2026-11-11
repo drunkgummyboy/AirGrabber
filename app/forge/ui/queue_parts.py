@@ -151,6 +151,9 @@ OPTION_GROUPS: tuple[tuple[str, tuple[OptionButtonSpec, ...]], ...] = (
 _KINDS: tuple[Kind, ...] = ("series", "movies")
 
 FOR_LINE = N_("Only {name}. Other cards keep their own preset.")
+# The bar with several bands of its kind: a change goes for all of them (QueueView._spread_bar).
+FOR_ALL_SHOWS = N_("For all {n} shows. A card's chip changes just that one.")
+FOR_ALL_FILMS = N_("For all {n} films. A card's chip changes just that one.")
 
 PRESETS_CAPTION = N_("Presets")
 

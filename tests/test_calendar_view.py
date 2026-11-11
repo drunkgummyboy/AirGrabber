@@ -18,10 +18,12 @@ from app.models import CalendarEntry, CalendarLayout, Episode, LibraryStats, Set
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import calendar_range
 from app.services.tvmaze import TVMazeError
+from app import i18n
 from app.ui import theme
 from app.ui.calendar_cards import CompactEpisodeCard, EpisodeCard, SuggestionCard
 from app.ui.calendar_stack import CompactStackCard, StackCard
 from app.ui.download_control import DownloadActions, DownloadStates
+from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
 from app.ui.text_fit import SLACK
 from app.ui.views.calendar_view import (
     RANGE_FONT_SIZE,
@@ -426,19 +428,21 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         suggestion = self.card_widgets(view, TODAY)[-1]
         self.assertIsInstance(suggestion, SuggestionCard)
         button = suggestion._track_button
+        self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))
         button.invoke()
-        self.assertEqual((button.cget("text"), button.cget("state")), ("…", "disabled"))
+        self.assertEqual((button.cget("text"), button.cget("state")), ("Adding…", "disabled"))
         for _ in range(3):
             await asyncio.sleep(0)
         self.assertEqual(library.tracked_shows, [10])
-        self.assertEqual((button.cget("text"), button.cget("state")), ("✓ Following", "disabled"))
+        following = (i18n.t(FOLLOWING_TEXT), "disabled")
+        self.assertEqual((button.cget("text"), button.cget("state")), following)
         # A failure gives the button back.
         library.track_error = TVMazeError("down")
-        button.configure(text="+ Track", state="normal")
+        button.set_state("idle")
         button.invoke()
         for _ in range(3):
             await asyncio.sleep(0)
-        self.assertEqual((button.cget("text"), button.cget("state")), ("+ Track", "normal"))
+        self.assertEqual((button.cget("text"), button.cget("state")), (i18n.t(TRACK_TEXT), "normal"))
 
     async def test_missing_episodes_get_the_amber_note(self) -> None:
         # Show 1 today (a poster card) and show 3 a week ago (a compact card) are missing.
@@ -515,7 +519,7 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((stack._in_plex, stack._marks), ({403}, True))
         (compact,) = self.card_widgets(view, GRID_START)
         self.assertIsInstance(compact, CompactStackCard)
-        self.assertEqual(compact.badge.cget("text"), "2")
+        self.assertEqual(compact.badge.text, "2 episodes")
         self.assertIsNone(compact.note)
         # An unfolded stack stays unfolded when the page reloads.
         self.assertFalse(stack.unfolded)
@@ -569,7 +573,7 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             opened.clear()
             widget.event_generate("<Button-1>", x=1, y=1)
             self.assertEqual([show.name for show in opened], ["Show 10"], str(widget))
-        # "+ Track" keeps its own action: its parts don't open the show.
+        # "+ Follow" keeps its own action: its parts don't open the show.
         for widget in (track, *_descendants(track)):
             self.assertNotIn("open_show", str(tk.Misc.bind(widget, "<Button-1>")))
         opened.clear()

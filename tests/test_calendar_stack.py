@@ -1,7 +1,7 @@
 """The calendar's stack cards (several episodes of one show on one day): the grouping, the
 range text, the episodes' states and what "Download all" fetches, the bottom row's looks, the
-texts in English and Dutch, the batch run behind "Download all", the baked stack edges and
-pill, and the wide and compact stack cards on a hidden Tk root."""
+texts in English and Dutch, the batch run behind "Download all", the baked stack edges, the
+compact card's pill, and the wide and compact stack cards on a hidden Tk root."""
 
 from __future__ import annotations
 
@@ -22,14 +22,12 @@ from app.i18n import Language
 from app.models import CalendarEntry, CardSize, Episode, GrabOutcome, Show
 from app.services import ImageCache
 from app.ui import theme
-from app.ui.calendar_cards import SLIM_ICON, SLIM_ICON_GAP, IconLook, _rgb
+from app.ui.calendar_cards import SLIM_ICON, SLIM_ICON_GAP, IconLook, PillLabel, RoundIcon, _rgb
 from app.ui.calendar_face import (
     STACK_BEHIND,
     CapFace,
-    PillFace,
     PosterFace,
     compose_cap,
-    compose_pill,
     compose_poster,
     cover_size,
     episode_layout,
@@ -38,12 +36,14 @@ from app.ui.calendar_face import (
 )
 from app.ui.calendar_stack import (
     CODE_BUTTONS_GAP,
+    pill_color,
     ROWS_GAP,
     SLIM_NAME_MIN,
     CompactStackCard,
     Stack,
     StackCard,
     StackControl,
+    badge_texts,
     download_all_texts,
     entry_key,
     menu_label,
@@ -54,12 +54,14 @@ from app.ui.calendar_stack import (
     row_state,
     row_text,
     rows_height,
+    slim_badge,
     slim_stack_rooms,
     stack_entries,
     stack_icon,
     stack_look,
 )
 from app.ui.card_scale import FULL, CardScale, line_height
+from app.ui.poster_card import row_height
 from app.ui.download_control import (
     BatchKey,
     BatchState,
@@ -338,6 +340,15 @@ class SizeTests(unittest.TestCase):
         name, range_room = slim_stack_rooms(40, 50, 16, SLIM_ICON)
         self.assertEqual(range_room, 0)
 
+    def test_the_compact_pill_gives_way_to_the_number(self) -> None:
+        self.assertEqual(badge_texts(3), ("3 episodes", "3"))
+        self.assertEqual(badge_texts(1), ("1 episode", "1"))
+        widths = (60.0, 16.0)
+        self.assertEqual(slim_badge(260, 50, SLIM_ICON, widths), 0)  # "3 episodes"
+        # Narrower: the long pill would cut the range, the number alone doesn't.
+        self.assertEqual(slim_badge(180, 50, SLIM_ICON, widths), 1)
+        self.assertEqual(slim_badge(60, 50, SLIM_ICON, widths), 1)  # neither fits: the last
+
 
 # -- the batch behind "Download all" ------------------------------------------------------------
 
@@ -476,13 +487,15 @@ class StackFaceTests(unittest.TestCase):
         self.assertTrue(close(pixel((22, 84)), FAR_EDGE))
         self.assertTrue(close(pixel((20, 1)), OUTSIDE))  # above the cards behind
 
-    def test_pill(self) -> None:
-        image = compose_pill(PillFace((60, 20), (42, 58, 77)))
-        self.assertEqual((image.mode, image.size), ("RGBA", (60, 20)))
-        alpha = image.getchannel("A").getpixel
-        self.assertEqual(alpha((0, 0)), 0)  # see-through around the round ends
-        self.assertEqual(image.getpixel((30, 10)), (42, 58, 77, 255))
-        self.assertGreater(cast(int, alpha((30, 0))), 200)  # the top edge is solid between
+    def test_a_note_and_the_stack_pill_both_get_room(self) -> None:
+        for size in CardSize:
+            scale = CardScale.of(size)
+            with self.subTest(size=size):
+                stacked = episode_layout(scale, linespace=linespace, stack=True)
+                both = episode_layout(scale, linespace=linespace, stack=True, note=True)
+                self.assertGreaterEqual(
+                    both.height, stacked.height + both.pill_gap + both.pill_height
+                )
 
 
 # -- the cards ----------------------------------------------------------------------------------
@@ -577,12 +590,42 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         control = card._control
         assert isinstance(control, StackControl)
         self.assertEqual(control.current_look().text, "⬇ Download all (2)")
+        self.assertEqual(control.cget("height"), row_height(FULL))  # the poster cards' row
+        self.assertTrue(card.shows_menu)  # with the round ⋯ beside it
+        # The count: a blue pill.
+        self.assertEqual(canvas.itemcget(card._pill_text, "fill"), theme.pick(pill_color()))
+        self.assertEqual(pill_color(), theme.BRAND)
+        pill_box, text_box = canvas.bbox(card._pill), canvas.bbox(card._pill_text)
+        self.assertLessEqual(pill_box[0], text_box[0])
+        self.assertGreaterEqual(pill_box[2], text_box[2])
         control._click()  # as a click on it does
         ((key, entries),) = self.batches
         self.assertEqual(key, stack.keys)
         self.assertEqual([entry.episode.code for entry in entries], ["S01E08", "S01E09"])
         card._open()  # the poster or the name
         self.assertEqual(opened, [stack.show])
+
+    async def test_the_more_button_lists_the_episodes(self) -> None:
+        card = self.card(self.stack(), marks=True)
+        await self.lay_out(card)
+        self.assertEqual(
+            [label for label, _ in card.menu_items()],
+            ["S01E07", "S01E08 · still needed", "S01E09 · still needed"],
+        )
+        assert card.menu_button is not None
+        with mock.patch("app.ui.calendar_stack.popup_menu") as popup:
+            card.menu_button.invoke()
+        ((anchor, items), _kwargs) = popup.call_args
+        self.assertIs(anchor, card.menu_button)
+        items[2][1]()
+        self.assertEqual(self.asked, ["choose S01E09"])
+        # Without Plex too, whatever the main button says (here: nothing).
+        quiet = self.card(self.stack())
+        self.assertTrue(quiet.shows_menu)
+        self.assertEqual([label for label, _ in quiet.menu_items()], ["S01E07", "S01E08", "S01E09"])
+        # Nothing aired: no row, no ⋯.
+        later = self.card(self.stack(ep(7, 1, 1, aired=False), ep(7, 1, 2, aired=False)))
+        self.assertFalse(later.shows_menu)
 
     async def test_without_plex_the_wide_stack_card_says_nothing_of_have_or_missing(self) -> None:
         stack = self.stack()
@@ -696,7 +739,9 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
             marks=True,
             on_open_show=opened.append,
         )
-        self.assertEqual(card.badge.cget("text"), "3")
+        self.assertIsInstance(card.badge, PillLabel)  # the count as a blue pill
+        self.assertEqual((card.badge.text, card.badge.color), ("3 episodes", pill_color()))
+        self.assertIsInstance(card.main, RoundIcon)
         self.assertEqual(card.range_label.cget("text"), "S01E07 – E09")
         assert card.note is not None
         own = getattr(card, "_canvas", None)
@@ -743,6 +788,9 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card.look.text, "")  # no "download all", no ✓
         self.assertFalse(card.main.winfo_manager())
         self.assertEqual([label for label, _ in card.menu_items()], ["S01E07", "S01E08", "S01E09"])
+        # Another screen's scaling: the pill (plain Tk) is drawn again, the same text.
+        ctk.ScalingTracker.update_scaling_callbacks_for_window(self.root)
+        self.assertEqual(card.badge.text, "3 episodes")
 
 
 if __name__ == "__main__":

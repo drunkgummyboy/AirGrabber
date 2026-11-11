@@ -2,15 +2,22 @@
 
 All three are drawn at the page's `CardScale` (Settings → Card size). The full card's sizes and
 baked images are in app/ui/calendar_face.py; the compact and suggestion cards keep their look,
-only their fonts follow the card size (never below the readable minimums).
+only their fonts (and the suggestion's button) follow the card size (never below the readable
+minimums).
+
+The cards share the poster cards' look: one bottom row, a wide main button (filled accent = do
+it, the poster cards' row height and corners) with at most one round button beside it (the
+full card's ⋯, `RoundButton` as on My shows); the compact cards' round buttons (`RoundIcon`);
+notes as pills (`CanvasPill` on the full card's canvas, `PillLabel` on the compact cards: a
+small rounded outline with coloured text on the card's ground, `pill_image`).
 
 While Plex is connected (app/services/plex.py; without it nothing is missing or new, owner's
 decision for 3.1.0), a missing episode (app.services.missing's rule: aired at least a day ago,
 neither in Plex nor downloaded; the view hands the cards `missing`) gets an amber "Not
-downloaded yet" under its code, on the full and the compact cards alike; a new one (aired less
-than a day ago, `new`) a quiet blue "New" there instead; one you have (`have`) a green "✓ In Plex",
-or a muted "✓ Downloaded" while it hasn't reached Plex yet. These come from the database, so
-they outlive a restart, unlike a run's outcome (the ✓ button). Clicking a show's
+downloaded yet" pill under its code, on the full and the compact cards alike; a new one (aired
+less than a day ago, `new`) a blue "New" pill there instead; one you have (`have`) a green
+"✓ In Plex", or a blue "✓ Downloaded" while it hasn't reached Plex yet. These come from the
+database, so they outlive a restart, unlike a run's outcome (the ✓ button). Clicking a show's
 name (full cards: also the poster) opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
@@ -33,6 +40,7 @@ from app.models import CalendarEntry, Show
 from app.services.tvmaze import TVMazeError
 from app.ui import theme
 from app.ui.calendar_face import (
+    PILL_PAD_X,
     STACK_BEHIND,
     TITLE_MAX_LINES,
     EpisodeLayout,
@@ -49,24 +57,27 @@ from app.ui.calendar_face import (
     stack_step_px,
     text_width,
 )
-from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TEXT_MIN, TITLE_MIN, CardScale
+from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TITLE_MIN, CardScale
+from app.ui.cards import MENU_BUTTON_MIN, MENU_BUTTON_SIZE, RoundButton
 from app.ui.download_control import (
     CHOOSE_TEXT,
     DOWNLOAD_SHORT,
     DOWNLOAD_TIP,
+    GAP,
     MORE_TEXT,
     MORE_TIP,
     Action,
     Base,
     DownloadActions,
     DownloadControl,
+    Look,
     RunState,
     control_look,
     episode_key,
     fit_text,
 )
 from app.ui.missing_control import MISSING_COLOR
-from app.ui.poster_card import FOLLOWING_TEXT
+from app.ui.poster_card import TrackButton, pill_image, row_font_size, row_height
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.text_fit import (
@@ -105,7 +116,19 @@ HAVE_TIPS: dict[HaveMark, str] = {
     "plex": N_("This episode is in your Plex."),
     "downloaded": N_("Downloaded by AirGrabber. Plex doesn't have it yet."),
 }
-HAVE_COLORS: dict[HaveMark, theme.Color] = {"plex": theme.SUCCESS, "downloaded": theme.TEXT_MUTED}
+
+
+def have_color(have: HaveMark) -> theme.Color:
+    """A have-mark's pill: green for in Plex (yours), blue for downloaded (information: on its
+    way). Read when shown (the palette is set at startup)."""
+    return theme.SUCCESS if have == "plex" else theme.BRAND
+
+
+def new_color() -> theme.Color:
+    """A new episode's pill: blue, information (not something missing). Read when shown."""
+    return theme.BRAND
+
+
 WORKING_ICON = "…"
 GRABBED_ICON = "✓"
 # A full card's width before its first layout (for where the Download row starts meanwhile).
@@ -114,33 +137,33 @@ REBAKE_MS = 150  # after a column stops changing width, the poster piece is bake
 # TVMaze's "medium" posters are this wide; wider posters come from its "original" ones.
 MEDIUM_POSTER_WIDTH = 210
 
-# Compact cards (older days): one slim line, the name and the code with small buttons at the
-# right; a missing episode adds the amber note under it.
+# Compact cards (older days): one slim line, the name and the code with a round button at the
+# right; a note adds its pill under it.
 SLIM_LINE = 24  # the line's height
-SLIM_ICON = 22  # the square ⬇ / ✓ button and the ⋯ beside it
-SLIM_ICON_GAP = 4  # between the two buttons
+SLIM_ICON = 24  # the round ⬇ / ✓ button (the full cards' round ⋯ at XL), and a row's ⋯
+SLIM_ICON_GAP = 4  # between the two buttons (a stack card's unfolded rows)
 SLIM_PAD_X = 8  # left of the text
 SLIM_PAD_RIGHT = 5  # right of the buttons
 SLIM_PAD_Y = 4
 SLIM_CODE_GAP = 6  # between the name and the code
 SLIM_BUTTONS_GAP = 6  # between the code and the buttons
 SLIM_RADIUS = 8
-NOTE_HEIGHT = 16  # the amber note's line
-_ICON_RADIUS = 6
+NOTE_HEIGHT = 16  # the note pill's line
+SLIM_PILL_PAD_X = 6  # a compact card's pill: its room left and right of its text
+PILL_BORDER = 1  # a pill's outline, in CTk units
 _ICON_SIZE = 13  # bold
-_NOTE_SIZE = 10
+_NOTE_SIZE = 10  # bold
 _COMPACT_NAME_HEIGHT = 20  # the suggestions' name line
 _COMPACT_CODE_HEIGHT = 16  # ... and their code line
 _NAME_SIZE = 11  # bold
 _CODE_SIZE = 9
-# Suggestions: a "Suggested" line (with the source, `with_source`), the name, then the code with
-# the + Track button.
+# Suggestions: a "Suggested" line (with the source, `with_source`), the name, the code, then
+# the + Follow button (the poster cards' row, `row_height`).
 _SUGGESTED_HEIGHT = 16
 _SUGGESTED_SIZE = 11
 _SUGGESTION_PAD_Y = 6
-_SUGGESTION_HEIGHT = (
-    2 * _SUGGESTION_PAD_Y + _SUGGESTED_HEIGHT + _COMPACT_NAME_HEIGHT + 2 + _COMPACT_CODE_HEIGHT
-)
+_SUGGESTION_NAME_GAP = 2  # between the name and the code
+_SUGGESTION_ROW_GAP = 6  # between the code and the button
 
 
 # -- shared parts ----------------------------------------------------------------------------
@@ -174,19 +197,36 @@ def episode_base(entry: CalendarEntry) -> Base:
     return Base("download")
 
 
-def _episode_control(
-    card: ctk.CTkFrame, entry: CalendarEntry, actions: EpisodeActions, scale: CardScale = FULL
-) -> DownloadControl[CalendarEntry]:
-    """The card's Download row (not yet placed)."""
-    episode = entry.episode
-    return DownloadControl(
-        card,
-        item=entry,
-        key=episode_key(entry.show.id, episode.season, episode.number),
-        base=episode_base(entry),
-        actions=actions,
-        scale=scale,
-    )
+class EpisodeControl(DownloadControl[CalendarEntry]):
+    """A full card's Download button: the poster cards' row (its height and corners) without
+    its own ⋯; the card puts its round ⋯ beside it while the row offers one (`more_wanted`: the
+    split look, "⬇ Download" with "Choose a download yourself"; `on_more` hears a change)."""
+
+    def __init__(
+        self, master: Any, entry: CalendarEntry, actions: EpisodeActions, scale: CardScale = FULL
+    ) -> None:
+        # Read by `current_look`, which the set-up already calls.
+        self.more_wanted = False
+        self.on_more: Callable[[], None] | None = None
+        episode = entry.episode
+        super().__init__(
+            master,
+            item=entry,
+            key=episode_key(entry.show.id, episode.season, episode.number),
+            base=episode_base(entry),
+            actions=actions,
+            scale=scale,
+        )
+
+    def current_look(self) -> Look:
+        """The row's look, a split one as one button (the ⋯ is the card's)."""
+        look = super().current_look()
+        wanted = look.layout == "split"
+        if wanted != self.more_wanted:
+            self.more_wanted = wanted
+            if self.on_more is not None:
+                self.on_more()
+        return replace(look, layout="button") if wanted else look
 
 
 def poster_url(show: Show, width_px: int) -> str | None:
@@ -253,8 +293,9 @@ def have_mark(
 
 @dataclass(frozen=True, slots=True)
 class CardNote:
-    """The note under a card's code: the text to start with, how it fits a width, its colour
-    and its tip (not translated yet, like the constants)."""
+    """The note under a card's code (a pill): the text to start with, how it fits a width, its
+    colour (the pill's outline and text) and its tip (not translated yet, like the
+    constants)."""
 
     text: str
     fit: Callable[[float, Measure], str]
@@ -269,21 +310,35 @@ def card_note(
     if missing:
         return CardNote(MISSING_TEXTS[0], missing_note, MISSING_COLOR, MISSING_TIP)
     if new:
-        return CardNote(NEW_NOTE_TEXT, new_note, theme.LINK, NEW_NOTE_TIP)
+        return CardNote(NEW_NOTE_TEXT, new_note, new_color(), NEW_NOTE_TIP)
     if have is not None:
         text = HAVE_TEXTS[have]
         return CardNote(
             text,
             lambda room, measure: elide_to_width(t(text), room, measure),
-            HAVE_COLORS[have],
+            have_color(have),
             HAVE_TIPS[have],
         )
     return None
 
 
 def compact_height(noted: bool) -> int:
-    """A compact card's height: the slim line, and the line of a note."""
+    """A compact card's height: the slim line, and the line of a note's pill."""
     return 2 * SLIM_PAD_Y + SLIM_LINE + (NOTE_HEIGHT if noted else 0)
+
+
+def suggestion_height(scale: CardScale = FULL) -> int:
+    """A suggestion card's height: the "Suggested" line, the name, the code and the poster
+    cards' row for its + Follow button."""
+    return (
+        2 * _SUGGESTION_PAD_Y
+        + _SUGGESTED_HEIGHT
+        + _COMPACT_NAME_HEIGHT
+        + _SUGGESTION_NAME_GAP
+        + _COMPACT_CODE_HEIGHT
+        + _SUGGESTION_ROW_GAP
+        + row_height(scale)
+    )
 
 
 def slim_name_room(row_width: float, code_width: float, buttons_width: float) -> float:
@@ -348,23 +403,291 @@ def _rgb(widget: Any, color: theme.Color) -> RGB:
     return (red >> 8, green >> 8, blue >> 8)
 
 
+def _scaling(widget: tk.Misc) -> float:
+    scaling: float = ctk.ScalingTracker.get_widget_scaling(widget)
+    return scaling
+
+
+# -- pills and round buttons ------------------------------------------------------------------
+
+
+def pill_width(text: str, measure: Measure, pad_x: float = PILL_PAD_X) -> float:
+    """How wide a pill around `text` is, in CTk units."""
+    return measure(text) + 2 * pad_x
+
+
+def _pill_photo(
+    widget: tk.Misc,
+    size: tuple[int, int],
+    scaling: float,
+    color: theme.Color,
+    ground: theme.Color,
+) -> ImageTk.PhotoImage:
+    """A pill's outline in `color` on `ground` (inside too), `size` physical pixels."""
+    border = max(1, round(PILL_BORDER * scaling))
+    image = pill_image(size, border, _rgb(widget, ground), _rgb(widget, color))
+    return ImageTk.PhotoImage(image, master=widget)
+
+
+class CanvasPill:
+    """A pill drawn on a card's canvas (the full cards): the outline (`pill_image`: small, made
+    on the loop) with its text, a canvas item, on top. `draw` places it (each layout, and after a
+    switch between light and dark: the colours are read when drawn)."""
+
+    def __init__(self, canvas: tk.Canvas, *, tags: tuple[str, ...] = ()) -> None:
+        self._canvas = canvas
+        self.image = canvas.create_image(0, 0, anchor="nw", tags=tags)
+        self.text = canvas.create_text(0, 0, anchor="w", text="", tags=tags)
+        self._photo: ImageTk.PhotoImage | None = None
+        self._drawn: tuple[object, ...] | None = None
+
+    def draw(
+        self,
+        x: int,
+        y: int,
+        text: str,
+        *,
+        font: ctk.CTkFont,
+        height: int,
+        scaling: float,
+        color: theme.Color,
+        ground: theme.Color | None = None,
+    ) -> tuple[int, int]:
+        """The pill with `text` at (`x`, `y`) in physical pixels, `height` CTk units tall.
+        Returns its size in physical pixels."""
+        canvas = self._canvas
+        ground = theme.SURFACE if ground is None else ground
+        width = pill_width(text, font.measure)
+        size = (max(1, round(width * scaling)), max(1, round(height * scaling)))
+        drawn = (size, scaling, theme.pick(color), theme.pick(ground))
+        if drawn != self._drawn:
+            self._drawn = drawn
+            self._photo = _pill_photo(canvas, size, scaling, color, ground)
+            canvas.itemconfigure(self.image, image=self._photo)
+        canvas.coords(self.image, x, y)
+        canvas.itemconfigure(
+            self.text,
+            text=text,
+            font=font.create_scaled_tuple(scaling),
+            fill=theme.pick(color),
+        )
+        canvas.coords(self.text, x + round(PILL_PAD_X * scaling), y + size[1] / 2)
+        return size
+
+
+class PillLabel(tk.Canvas):
+    """A pill as a widget of its own (the compact cards' notes and count): the outline
+    (`pill_image`) in `color` on the card's `ground`, the text in `color`; `height` CTk units
+    tall, as wide as its text. Repaints after a switch between light and dark."""
+
+    def __init__(
+        self,
+        master: Any,
+        *,
+        text: str,
+        color: theme.Color,
+        font: ctk.CTkFont,
+        height: int,
+        pad_x: int = SLIM_PILL_PAD_X,
+        ground: theme.Color | None = None,
+    ) -> None:
+        super().__init__(master, highlightthickness=0, borderwidth=0)
+        self._text = text
+        self._color = color
+        self._font = font
+        self._height = height
+        self._pad_x = pad_x
+        self._ground = theme.SURFACE if ground is None else ground  # read now: the accent's
+        self._photo: ImageTk.PhotoImage | None = None
+        self._image = self.create_image(0, 0, anchor="nw")
+        self._label = self.create_text(0, 0, anchor="w", text="")
+        self.redraw()
+        theme.on_mode_change(self, self.redraw)
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+    @property
+    def color(self) -> theme.Color:
+        return self._color
+
+    @property
+    def font(self) -> ctk.CTkFont:
+        return self._font
+
+    def width_of(self, text: str) -> float:
+        """How wide the pill is around `text`, in CTk units."""
+        return pill_width(text, self._font.measure, self._pad_x)
+
+    def set_text(self, text: str) -> None:
+        if text != self._text:
+            self._text = text
+            self.redraw()
+
+    def redraw(self) -> None:
+        """Draw the pill at the current scaling, in the current mode's colours."""
+        scaling = _scaling(self.master)
+        size = (
+            max(1, round(self.width_of(self._text) * scaling)),
+            max(1, round(self._height * scaling)),
+        )
+        self.configure(width=size[0], height=size[1], background=theme.pick(self._ground))
+        self._photo = _pill_photo(self, size, scaling, self._color, self._ground)
+        self.itemconfigure(self._image, image=self._photo)
+        self.itemconfigure(
+            self._label,
+            text=self._text,
+            font=self._font.create_scaled_tuple(scaling),
+            fill=theme.pick(self._color),
+        )
+        self.coords(self._label, round(self._pad_x * scaling), size[1] / 2)
+
+
+class RoundIcon(tk.Canvas):
+    """A small round button on a card's ground (the compact cards' ⬇ / ✓ / …, an unfolded
+    row's ⋯), drawn like the poster cards' round buttons (`pill_image`, a circle): a CTkButton
+    grows wider than it is tall around any text. `set_look` paints it: `fill` ("transparent" =
+    the ground) inside a 1-unit `edge` ring (the fill's own colour without one), `hover` under
+    the pointer, all only while enabled. `size` is its diameter in CTk units. Repaints after a
+    switch between light and dark."""
+
+    def __init__(
+        self,
+        master: Any,
+        *,
+        size: int,
+        font: ctk.CTkFont,
+        command: Callable[[], None],
+        ground: theme.Color | None = None,
+    ) -> None:
+        super().__init__(master, highlightthickness=0, borderwidth=0)
+        self._size = size
+        self._font = font
+        self._command = command
+        self._ground = theme.SURFACE if ground is None else ground  # read now: the accent's
+        self._text = ""
+        self._fill: theme.Color = theme.ACCENT
+        self._hover: theme.Color = theme.ACCENT_HOVER
+        self._edge: theme.Color | None = None
+        self._text_color: theme.Color | None = None
+        self._enabled = True
+        self._hovered = False
+        self._images: tuple[ImageTk.PhotoImage, ImageTk.PhotoImage] | None = None
+        self._ring = self.create_image(0, 0, anchor="nw")
+        self._label = self.create_text(0, 0, anchor="center", text="")
+        self.bind("<Enter>", lambda _event: self._hover_to(True), add="+")
+        self.bind("<Leave>", lambda _event: self._hover_to(False), add="+")
+        self.bind("<Button-1>", lambda _event: self.invoke(), add="+")
+        self.redraw()
+        theme.on_mode_change(self, self.redraw)
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+    @property
+    def fill(self) -> theme.Color:
+        return self._fill
+
+    @property
+    def edge(self) -> theme.Color | None:
+        return self._edge
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set_look(
+        self,
+        text: str,
+        *,
+        fill: theme.Color,
+        hover: theme.Color,
+        text_color: theme.Color | None = None,
+        edge: theme.Color | None = None,
+        enabled: bool = True,
+    ) -> None:
+        """`text_color` None: the text on an accent button (ON_ACCENT); muted while disabled."""
+        look = (text, fill, hover, text_color, edge, enabled)
+        if look == (
+            self._text, self._fill, self._hover, self._text_color, self._edge, self._enabled
+        ):
+            return
+        self._text, self._fill, self._hover, self._text_color, self._edge, self._enabled = look
+        self.redraw()
+
+    def invoke(self) -> None:
+        """What a click does (nothing while disabled)."""
+        if self._enabled:
+            self._command()
+
+    def _colour(self, color: theme.Color) -> theme.Color:
+        return self._ground if color == "transparent" else color
+
+    def redraw(self) -> None:
+        """Draw the button at the current scaling, in the current mode's colours."""
+        scaling = _scaling(self.master)
+        diameter = max(1, round(self._size * scaling))
+        border = max(1, round(scaling))
+        fill = _rgb(self, self._colour(self._fill))
+        hover = _rgb(self, self._colour(self._hover))
+        edge = _rgb(self, self._edge) if self._edge is not None else fill
+        hover_edge = _rgb(self, self._edge) if self._edge is not None else hover
+        size = (diameter, diameter)
+        self._images = (
+            ImageTk.PhotoImage(pill_image(size, border, fill, edge), master=self),
+            ImageTk.PhotoImage(pill_image(size, border, hover, hover_edge), master=self),
+        )
+        if not self._enabled:
+            text_color: theme.Color = self._text_color or theme.TEXT_MUTED
+        else:
+            text_color = self._text_color or theme.ON_ACCENT
+        self.configure(
+            width=diameter,
+            height=diameter,
+            background=theme.pick(self._ground),
+            cursor="hand2" if self._enabled else "",
+        )
+        self.coords(self._label, diameter / 2, diameter / 2)
+        self.itemconfigure(
+            self._label,
+            text=self._text,
+            font=self._font.create_scaled_tuple(scaling),
+            fill=theme.pick(text_color),
+        )
+        self._paint()
+
+    def _hover_to(self, on: bool) -> None:
+        self._hovered = on
+        self._paint()
+
+    def _paint(self) -> None:
+        if self._images is not None:
+            hovered = self._hovered and self._enabled
+            self.itemconfigure(self._ring, image=self._images[1 if hovered else 0])
+
+
 # -- cards -----------------------------------------------------------------------------------
 
 
 class EpisodeCard(ctk.CTkFrame):
     """A tracked episode (recent days and later) as a wide card: the show's poster fills the
     left side and fades into the card; the show's name, the episode code and the bottom row
-    (a muted "Not aired", else the Download row) sit on the right, over the faded part.
-    Clicking the poster or the name opens the show's window (`on_open_show`). A `missing`
-    episode gets the amber note under its code, a `new` one the blue "New" note, one you have
-    `have`'s (all only with Plex: the view passes them).
+    (a muted "Not aired", else the Download row: the poster cards' row, a wide ⬇ Download with
+    the round ⋯ beside it) sit on the right, over the faded part. Clicking the poster or the
+    name opens the show's window (`on_open_show`). A `missing` episode gets the amber "Not
+    downloaded yet" pill under its code, a `new` one the blue "New" pill, one you have `have`'s
+    (all only with Plex: the view passes them).
 
-    Everything but the Download row is drawn on one canvas (see app/ui/calendar_face.py): the
-    baked poster piece and right cap, the stretch between them, and the texts. Switching
-    between light and dark repaints them and bakes the images again (`_set_appearance_mode`).
+    Everything but the bottom row is drawn on one canvas (see app/ui/calendar_face.py): the
+    baked poster piece and right cap, the stretch between them, the texts and the pills.
+    Switching between light and dark repaints them and bakes the images again
+    (`_set_appearance_mode`).
 
     A stack card (app/ui/calendar_stack.py) builds on it: its layout has the cards behind it
-    (`stack_depth`, past the front card's right and bottom edges) and its own bottom row.
+    (`stack_depth`, past the front card's right and bottom edges), its own bottom row and its
+    own ⋯ (`_wants_menu`, `_menu_clicked`).
     """
 
     def __init__(
@@ -397,6 +720,7 @@ class EpisodeCard(ctk.CTkFrame):
         self._layout = layout
         self._scale = scale
         self._actions = actions
+        self._entry = entry
         self._show = entry.show
         self._code_text = with_source(entry.episode.code, entry.show)
         self._images = images
@@ -423,7 +747,9 @@ class EpisodeCard(ctk.CTkFrame):
         self._cap = canvas.create_image(0, 0, anchor="ne")
         self._title = canvas.create_text(0, 0, anchor="nw", text="", tags=("open",))
         self._code = canvas.create_text(0, 0, anchor="nw", text="")
-        self._note = canvas.create_text(0, 0, anchor="nw", text="")
+        self._note_pill = CanvasPill(canvas)
+        self._note = self._note_pill.text
+        self._pill_font = theme.font(layout.pill_size or layout.code_size, bold=True)
         self._status = canvas.create_text(0, 0, anchor="w", text="")
         self._paint_canvas()
 
@@ -432,12 +758,30 @@ class EpisodeCard(ctk.CTkFrame):
             canvas.tag_bind("open", "<Enter>", lambda _event: canvas.configure(cursor="hand2"))
             canvas.tag_bind("open", "<Leave>", lambda _event: canvas.configure(cursor=""))
 
-        # The bottom row: before the episode airs a muted line, else the Download row, a
-        # widget over the canvas (created after it, so it stays on top).
+        # The bottom row: before the episode airs a muted line, else the Download row with the
+        # round ⋯ beside it, widgets over the canvas (made after it, so they stay on top).
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        self._control: DownloadControl[CalendarEntry] | None = self._make_control(entry)
+        self._row = ctk.CTkFrame(self, fg_color="transparent", height=layout.row_height)
+        self._row.pack_propagate(False)
+        self._control: DownloadControl[CalendarEntry] | None = self._make_control(
+            self._row, entry
+        )
+        self.menu_button: RoundButton | None = None
         if self._control is not None:
+            self.menu_button = RoundButton(
+                self._row,
+                text=MORE_TEXT,
+                size=layout.row_scale.px(MENU_BUTTON_SIZE, minimum=MENU_BUTTON_MIN),
+                font=theme.font(row_font_size(layout.row_scale), bold=True),
+                command=self._menu_clicked,
+                bg=theme.SURFACE,
+            )
+            add_tooltip(self.menu_button, self._menu_tip())
+            self._control.pack(side="left", fill="both", expand=True)
+            if isinstance(self._control, EpisodeControl):
+                self._control.on_more = self._sync_menu
+            self._sync_menu()
             self._grid_control()
         else:
             canvas.itemconfigure(self._status, text=self._not_aired)
@@ -453,11 +797,27 @@ class EpisodeCard(ctk.CTkFrame):
         """The card's height in CTk units: the card, and the cards behind a stack card."""
         return layout.height + layout.stack_depth
 
-    def _make_control(self, entry: CalendarEntry) -> DownloadControl[CalendarEntry] | None:
-        """The bottom row (not yet placed); None before the episode airs."""
+    def _make_control(
+        self, master: ctk.CTkFrame, entry: CalendarEntry
+    ) -> DownloadControl[CalendarEntry] | None:
+        """The bottom row's main button in `master` (not yet placed); None before the episode
+        airs."""
         if not entry.episode.has_aired():
             return None
-        return _episode_control(self, entry, self._actions, self._layout.row_scale)
+        return EpisodeControl(master, entry, self._actions, self._layout.row_scale)
+
+    def _wants_menu(self) -> bool:
+        """Whether the round ⋯ shows beside the main button: while the Download row offers
+        a choice of your own."""
+        control = self._control
+        return isinstance(control, EpisodeControl) and control.more_wanted
+
+    def _menu_tip(self) -> str:
+        return t(MORE_TIP)
+
+    def _menu_clicked(self) -> None:
+        """The ⋯: the search window, to choose a download yourself."""
+        self._actions.choose(self._entry)
 
     def _stack_edges(self, scaling: float) -> StackEdges | None:
         """The cards behind a stack card, in physical pixels (None: one episode)."""
@@ -481,29 +841,54 @@ class EpisodeCard(ctk.CTkFrame):
             canvas.itemconfigure(edge, fill=pick(theme.EDGE))
         canvas.itemconfigure(self._title, fill=pick(theme.TEXT))
         canvas.itemconfigure(self._code, fill=pick(theme.TEXT_MUTED))
-        if self._card_note is not None:
-            canvas.itemconfigure(self._note, fill=pick(self._card_note.color))
         canvas.itemconfigure(self._status, fill=pick(theme.TEXT_MUTED))
 
     def _set_appearance_mode(self, mode_string: str) -> None:
-        """Light ↔ dark: CTk repaints the Download row; the canvas and the baked images
-        follow here."""
+        """Light ↔ dark: CTk repaints the Download row (the ⋯ itself); the canvas, its pills
+        and the baked images follow here."""
         super()._set_appearance_mode(mode_string)
         self._outside = self._apply_appearance_mode(self.cget("bg_color"))
         self._paint_canvas()
+        if self._size[0] > 1:
+            self._place_texts()  # the pills, in the new mode's colours
         if self._baked_for is not None:
             self._bake()
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed (another screen): CTk resizes the widgets, the canvas
+        follows at its next layout; the round ⋯ (plain Tk) is drawn again here."""
+        super()._set_scaling(*args, **kwargs)
+        if self.menu_button is not None:
+            self.menu_button.rescale()
 
     def _open(self, _event: Any = None) -> None:
         """A click on the poster or the name: the show's window."""
         if self._on_open_show is not None:
             self._on_open_show(self._show)
 
+    def _sync_menu(self) -> None:
+        """Show the round ⋯ beside the main button, or not (`_wants_menu`)."""
+        button, control = self.menu_button, self._control
+        if button is None or control is None:
+            return
+        if self._wants_menu():
+            if not button.winfo_manager():
+                button.pack(side="right", before=control)  # its room first
+            control.pack(side="left", fill="both", expand=True, padx=(0, self._scale.px(GAP)))
+        elif button.winfo_manager():
+            button.pack_forget()
+            control.pack(side="left", fill="both", expand=True, padx=0)
+
+    @property
+    def shows_menu(self) -> bool:
+        """Whether the round ⋯ is showing."""
+        return self.menu_button is not None and bool(self.menu_button.winfo_manager())
+
     def _grid_control(self) -> None:
-        """The Download row along the bottom, from where the text starts."""
+        """The bottom row along the bottom, from where the text starts."""
         if self._control is not None:
             depth = self._layout.stack_depth
-            self._control.grid(
+            self._row.grid(
                 row=0,
                 column=0,
                 sticky="sew",
@@ -573,9 +958,9 @@ class EpisodeCard(ctk.CTkFrame):
         return text_width(self._layout, self._area, front_width / self._scaling) - SLACK
 
     def _place_texts(self) -> None:
-        """The name (fitted to the room left of the card's right edge), the code under it, a
-        missing episode's note under that and "Not aired" in the bottom row, at the canvas's
-        current size and scaling."""
+        """The name (fitted to the room left of the card's right edge), the code under it, the
+        note's pill under that and "Not aired" in the bottom row, at the canvas's current size
+        and scaling."""
         layout, canvas, scaling = self._layout, self._art, self._scaling
         height = self._front_size()[1]
         room = self._text_room()
@@ -599,12 +984,16 @@ class EpisodeCard(ctk.CTkFrame):
         if self._card_note is not None:
             box = canvas.bbox(self._code)
             code_bottom = box[3] if box else code_y
-            canvas.itemconfigure(
-                self._note,
-                text=self._card_note.fit(room, self._code_font.measure),
-                font=self._code_font.create_scaled_tuple(scaling),
+            note = self._card_note
+            self._note_pill.draw(
+                x,
+                code_bottom + round(layout.pill_gap * scaling),
+                note.fit(room - 2 * PILL_PAD_X, self._pill_font.measure),
+                font=self._pill_font,
+                height=layout.pill_height,
+                scaling=scaling,
+                color=note.color,
             )
-            canvas.coords(self._note, x, code_bottom + round(layout.code_gap * scaling))
         if self._control is None:
             row_middle = layout.pad_bottom + layout.row_height / 2
             canvas.itemconfigure(
@@ -655,6 +1044,13 @@ class EpisodeCard(ctk.CTkFrame):
         self._art.itemconfigure(item, image=photo)
         self._photos[name] = photo
 
+    def note_bottom(self) -> int | None:
+        """Where the note's pill ends on the canvas, in physical pixels (None: no note)."""
+        if self._card_note is None:
+            return None
+        box = self._art.bbox(self._note_pill.image)
+        return int(box[3]) if box else None
+
     def destroy(self) -> None:
         self._cancel_rebake()
         if self._art_task is not None:
@@ -704,9 +1100,11 @@ def _as_control(widget: SlimDownload) -> DownloadControl[Any]:
 
 
 class SlimDownload(ctk.CTkFrame):
-    """A compact card's download buttons (`icon_look`): a small ⬇ with a small ⋯ beside it,
-    ✓ once a run grabbed it, … while a run works. Follows the title's run state like the Download row
-    (it attaches to the same DownloadStates)."""
+    """A compact card's download buttons (`icon_look`), round (`RoundIcon`): ⬇ (filled
+    accent) with a ⋯ ring beside it (a stack card's unfolded rows, where there is room; the
+    compact card has none: its right-click), ✓ once a run grabbed it, … while a run works.
+    Follows the title's run state like the Download row (it attaches to the same
+    DownloadStates)."""
 
     def __init__(self, master: Any, entry: CalendarEntry, actions: EpisodeActions) -> None:
         super().__init__(master, fg_color="transparent", width=SLIM_ICON, height=SLIM_ICON)
@@ -716,37 +1114,20 @@ class SlimDownload(ctk.CTkFrame):
         self._base = episode_base(entry)
         self._actions = actions
         self._look: IconLook | None = None
-        self._allow_more = True  # the ⋯ may show (a stack card's narrow row: right-click only)
+        self._allow_more = True  # the ⋯ may show (a narrow row, the compact card: right-click)
         self.on_change: Callable[[], None] | None = None  # after the buttons change
         font = theme.font(_ICON_SIZE, bold=True)
-        self._more = ctk.CTkButton(
-            self,
-            text=MORE_TEXT,
-            width=SLIM_ICON,
-            height=SLIM_ICON,
-            corner_radius=_ICON_RADIUS,
-            font=font,
-            fg_color="transparent",
-            hover_color=theme.HOVER,
+        self._more = RoundIcon(self, size=SLIM_ICON, font=font, command=self.choose)
+        self._more.set_look(
+            MORE_TEXT,
+            fill="transparent",
+            hover=theme.HOVER,
             text_color=theme.BUTTON_TEXT,
-            border_width=1,
-            border_color=theme.EDGE,
-            command=self.choose,
+            edge=theme.EDGE,
         )
-        self.main = ctk.CTkButton(
-            self,
-            text="",
-            width=SLIM_ICON,
-            height=SLIM_ICON,
-            corner_radius=_ICON_RADIUS,
-            font=font,
-            border_width=0,
-            text_color_disabled=theme.TEXT_MUTED,
-            command=self._click,
-        )
-        add_tooltip(self._more, MORE_TIP)
+        self.main = RoundIcon(self, size=SLIM_ICON, font=font, command=self._click)
+        add_tooltip(self._more, t(MORE_TIP))
         self._main_tip = add_tooltip(self.main, "")
-        self._default_text_color = self.main.cget("text_color")
         actions.states.attach(_as_control(self))
         self.repaint()
 
@@ -782,17 +1163,17 @@ class SlimDownload(ctk.CTkFrame):
         self._more.pack_forget()
         self.main.pack_forget()
         if look.more and self._allow_more:
-            self._more.pack(side="right", padx=(SLIM_ICON_GAP, 0))
+            gap = round(SLIM_ICON_GAP * _scaling(self))  # plain Tk: in physical pixels
+            self._more.pack(side="right", padx=(gap, 0))
         if look.text:
             self.main.pack(side="right")
-        self.main.configure(
-            text=look.text,
-            fg_color=look.color,
-            hover_color=look.hover,
-            text_color=look.text_color or self._default_text_color,
-            border_width=1 if look.border else 0,
-            border_color=look.border or theme.EDGE,
-            state="normal" if look.action else "disabled",
+        self.main.set_look(
+            look.text,
+            fill=look.color,
+            hover=look.hover,
+            text_color=look.text_color,
+            edge=look.border,
+            enabled=look.action is not None,
         )
         self._main_tip.set_text(look.tip)
         if self.on_change is not None:
@@ -811,16 +1192,49 @@ class SlimDownload(ctk.CTkFrame):
         """The search window, to choose a download yourself (the ⋯, a right-click)."""
         self._actions.choose(self._item)
 
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed: the round buttons (plain Tk) are drawn again."""
+        super()._set_scaling(*args, **kwargs)
+        self.main.redraw()
+        self._more.redraw()
+        self._look = None  # packed again, with the gap at the new scaling
+        self.repaint()
+
     def destroy(self) -> None:
         self._actions.states.detach(_as_control(self))
         super().destroy()
 
 
+def _note_pill(master: Any, note: CardNote, scale: CardScale) -> PillLabel:
+    """A compact card's note as a small pill (packed by the caller), with its tip."""
+    pill = PillLabel(
+        master,
+        text=t(note.text),
+        color=note.color,
+        font=theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN), bold=True),
+        height=NOTE_HEIGHT,
+    )
+    add_tooltip(pill, t(note.tip))
+    return pill
+
+
+def _pack_note(pill: PillLabel, card: ctk.CTkFrame) -> None:
+    """The note's pill on its line under the slim line, from where the name starts."""
+    pill.pack(side="top", anchor="w", padx=round(SLIM_PAD_X * _scaling(card)))
+
+
+def fit_note(pill: PillLabel, note: CardNote, line_width: float) -> None:
+    """The note's longest text that fits a compact card's line, `line_width` units wide."""
+    room = line_width - 2 * SLIM_PILL_PAD_X - SLACK
+    pill.set_text(note.fit(room, pill.font.measure))
+
+
 class CompactEpisodeCard(ctk.CTkFrame):
     """A tracked episode on one slim line (older days): the show's name and the episode code,
-    then small buttons (SlimDownload). A `missing` episode adds the amber note under the line,
-    a `new` one the blue "New" note, one you have `have`'s. Clicking the name opens the show's window
-    (`on_open_show`); a right-click anywhere opens the search window, as the ⋯ does."""
+    then the round download button (SlimDownload, without the ⋯). A `missing` episode adds the
+    amber "Not downloaded yet" pill under the line, a `new` one the blue "New" pill, one you
+    have `have`'s. Clicking the name opens the show's window (`on_open_show`); a right-click
+    anywhere opens the search window (what the ⋯ does on the other cards)."""
 
     def __init__(
         self,
@@ -850,6 +1264,7 @@ class CompactEpisodeCard(ctk.CTkFrame):
         line.pack(side="top", fill="x", padx=(SLIM_PAD_X, SLIM_PAD_RIGHT), pady=(SLIM_PAD_Y, 0))
         line.pack_propagate(False)
         self.buttons = SlimDownload(line, entry, actions)
+        self.buttons.allow_more(False)  # a slim line: the ⋯'s search window is a right-click
         self.buttons.pack(side="right")
         name_font = theme.font(scale.font(_NAME_SIZE, TITLE_MIN), bold=True)
         code_font = theme.font(scale.font(_CODE_SIZE, SMALL_TEXT_MIN))
@@ -867,19 +1282,10 @@ class CompactEpisodeCard(ctk.CTkFrame):
         )
         code.pack(side="left", padx=(SLIM_CODE_GAP, 0))
 
-        self.note: ctk.CTkLabel | None = None
-        note_font = theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN))
+        self.note: PillLabel | None = None
         if noted is not None:
-            self.note = ctk.CTkLabel(
-                self,
-                text=t(noted.text),
-                font=note_font,
-                text_color=noted.color,
-                height=NOTE_HEIGHT,
-                anchor="w",
-            )
-            self.note.pack(side="top", anchor="w", padx=SLIM_PAD_X)
-            add_tooltip(self.note, t(noted.tip))
+            self.note = _note_pill(self, noted, scale)
+            _pack_note(self.note, self)
 
         line_width: float | None = None  # unscaled, once laid out
 
@@ -890,7 +1296,7 @@ class CompactEpisodeCard(ctk.CTkFrame):
             room = slim_name_room(line_width, code_width, self.buttons.width_units)
             self.name_label.configure(text=elide_to_width(show.name, room, name_font.measure))
             if self.note is not None and noted is not None:
-                self.note.configure(text=noted.fit(line_width - SLACK, note_font.measure))
+                fit_note(self.note, noted, line_width)
 
         def resized(event: Any) -> None:
             nonlocal line_width
@@ -899,13 +1305,19 @@ class CompactEpisodeCard(ctk.CTkFrame):
                 fit()
 
         line.bind("<Configure>", resized)
-        self.buttons.on_change = fit  # ✓ needs less room than ⬇ with ⋯
+        self.buttons.on_change = fit  # ✓ needs other room than ⬇
         widgets: list[tk.Misc] = [self, *_descendants(self)]
         for widget in widgets:
             tk.Misc.bind(widget, "<Button-3>", self._right_click, add="+")
 
     def _right_click(self, _event: Any = None) -> None:
         self.buttons.choose()
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed: the note's pill (plain Tk) is drawn again."""
+        super()._set_scaling(*args, **kwargs)
+        if self.note is not None:
+            self.note.redraw()
 
 
 def _descendants(widget: tk.Misc) -> list[tk.Misc]:
@@ -919,9 +1331,10 @@ def _descendants(widget: tk.Misc) -> list[tk.Misc]:
 
 
 class SuggestionCard(ctk.CTkFrame):
-    """A popular untracked show airing that day, toned down below the tracked episodes, with a
-    button to track it. A click anywhere on it but "+ Track" opens the show's window
-    (`on_open_show`)."""
+    """A popular untracked show airing that day, toned down below the tracked episodes, with
+    the poster cards' + Follow button (`TrackButton`: the row's height and corners, filled
+    accent; "✓ Following" in green once followed) along its bottom. A click anywhere on it but
+    the button opens the show's window (`on_open_show`)."""
 
     def __init__(
         self,
@@ -934,7 +1347,7 @@ class SuggestionCard(ctk.CTkFrame):
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
     ) -> None:
-        """`profile_id`: the person whose calendar suggests the show; "+ Track" adds it to
+        """`profile_id`: the person whose calendar suggests the show; "+ Follow" adds it to
         their library."""
         super().__init__(
             master,
@@ -942,7 +1355,7 @@ class SuggestionCard(ctk.CTkFrame):
             border_color=theme.SUGGESTION_BORDER,
             border_width=1,
             corner_radius=8,
-            height=_SUGGESTION_HEIGHT,
+            height=suggestion_height(scale),
         )
         self.pack_propagate(False)
         self._show = entry.show
@@ -979,34 +1392,23 @@ class SuggestionCard(ctk.CTkFrame):
         self.open_show = _open_on_click(name, entry.show, on_open_show)
         self.name_label = name
 
-        bottom = ctk.CTkFrame(inner, fg_color="transparent", height=_COMPACT_CODE_HEIGHT)
-        bottom.pack(side="bottom", fill="x")
+        self._track_button = TrackButton(
+            inner, busy_text=t("Adding…"), command=self._track, scale=scale
+        )
+        self._track_button.pack(side="bottom", fill="x")
         ctk.CTkLabel(
-            bottom,
+            inner,
             text=entry.episode.code,
             font=code_font,
             text_color=theme.SUGGESTION_TEXT,
+            anchor="w",
             height=_COMPACT_CODE_HEIGHT,
-        ).pack(side="left")
-        self._track_button = ctk.CTkButton(
-            bottom,
-            text=t("+ Track"),
-            height=16,
-            width=45,
-            font=theme.font(scale.font(_CODE_SIZE, TEXT_MIN)),
-            fg_color="transparent",
-            border_width=1,
-            border_color=theme.SUGGESTION_BUTTON_EDGE,
-            text_color=theme.SUGGESTION_BUTTON_TEXT,
-            hover_color=theme.SUGGESTION_BORDER,
-            command=self._track,
-        )
-        self._track_button.pack(side="right")
+        ).pack(side="bottom", anchor="w", pady=(_SUGGESTION_NAME_GAP, _SUGGESTION_ROW_GAP))
         if self.open_show is not None:
             self._open_everywhere(self.open_show)
 
     def _open_everywhere(self, open_show: Callable[[], None]) -> None:
-        """The whole card opens the show, with the hand pointer, except "+ Track" (its own
+        """The whole card opens the show, with the hand pointer, except "+ Follow" (its own
         action). The name already opens it (`_open_on_click`, its own binding)."""
         own = {str(w) for w in (self._track_button, *_descendants(self._track_button))}
         named = {str(w) for w in _descendants(self.name_label)}
@@ -1020,7 +1422,7 @@ class SuggestionCard(ctk.CTkFrame):
                 tk.Misc.bind(widget, "<Button-1>", lambda _event: open_show(), add="+")
 
     def _track(self) -> None:
-        self._track_button.configure(text="…", state="disabled")
+        self._track_button.set_state("busy")
         spawn(self._track_show(), name="SuggestionCard.track")
 
     async def _track_show(self) -> None:
@@ -1031,11 +1433,11 @@ class SuggestionCard(ctk.CTkFrame):
             await self._library.track(self._show.id, profile_id=self._profile_id)
         except TVMazeError as exc:
             if self._track_button.winfo_exists():
-                self._track_button.configure(text=t("+ Track"), state="normal")
+                self._track_button.set_state("idle")
             self._status(
                 t("Couldn't track {name}: {error}", name=self._show.name, error=exc),
                 clear_after_ms=6000,
             )
             return
         if self._track_button.winfo_exists():
-            self._track_button.configure(text=t(FOLLOWING_TEXT))
+            self._track_button.set_state("tracked")

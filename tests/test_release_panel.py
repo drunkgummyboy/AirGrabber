@@ -483,6 +483,27 @@ class PanelTests(TkTestCase):
         state._select_quality("720p")  # unchanged: not told again
         self.assertEqual(counts, [0, 2, 3, 1])
 
+    async def test_an_upgrade_shows_1080p_and_4k_on_a_chip_of_its_own(self) -> None:
+        # A Library film's ⬆ Upgrade opens its releases on "1080P+": 1080p and 4K together.
+        releases = (
+            release("Film.2024.2160p-A", size_bytes=9 * GIB),
+            release("Film.2024.1080p-B", size_bytes=3 * GIB),
+            release("Film.2024.720p-C", size_bytes=GIB),
+        )
+        counts: list[int] = []
+        panel = self.panel(MovieTarget(FILM), search=FakeSearch(releases), on_count=counts.append)
+        state: Any = panel
+        self.assertNotIn("1080p+", state._quality_buttons)  # not a usual chip
+        panel.set_quality("1080p+")
+        panel.start()
+        await self.settle()
+        self.assertEqual(list(state._quality_buttons)[0], "1080p+")  # first
+        self.assertEqual(state._quality_buttons["1080p+"].cget("text"), "1080P+ (2)")
+        self.assertEqual(counts[-1], 2)
+        self.assertEqual(state._results_title.cget("text"), "Releases (2)")
+        panel.set_quality("1080p+")  # again: still one chip
+        self.assertEqual(list(state._quality_buttons).count("1080p+"), 1)
+
     async def test_set_target_and_the_chips(self) -> None:
         search = FakeSearch()
         library = FakeLibrary({1: episodes(1, (1, 1), (1, 2), (1, 3), (2, 1), (2, 2))})

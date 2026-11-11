@@ -460,6 +460,7 @@ NL: dict[str, str] = {
     # app/ui/download_control.py
     "⬇ Download": "⬇ Download",
     "Choose a download yourself": "Kies zelf een download",
+    "Right-click to choose a download yourself": "Rechtsklik om zelf een download te kiezen",
     "Download": "Downloaden",
     "Finding the best one…": "De beste zoeken…",
     "Queued": "In de wachtrij",
@@ -563,12 +564,14 @@ NL: dict[str, str] = {
     "{n} episodes": "{n} afleveringen",
     # app/ui/poster_card.py
     "✓ Following": "✓ Volgend",
-    "+ Track": "+ Volgen",
+    "+ Follow": "+ Volgen",
     "Not on TVMaze": "Niet op TVMaze",
     # app/ui/cards.py
     "Auto": "Auto",
     "Auto-download: new episodes of this show download by themselves, about 2 hours after they air.":
         "Automatisch downloaden: nieuwe afleveringen van deze serie downloaden vanzelf, ongeveer 2 uur na de uitzending.",
+    "Auto-download new episodes": "Nieuwe afleveringen automatisch downloaden",
+    "⬇ Missing ({n})": "⬇ Ontbrekend ({n})",
     "Open on IMDb": "Openen op IMDb",
     "Remove show…": "Serie verwijderen…",
     "Next: {code} · {when}": "Volgende: {code} · {when}",
@@ -609,6 +612,9 @@ NL: dict[str, str] = {
     "{n} day ago": "{n} dag geleden",
     "{n} days ago": "{n} dagen geleden",
     "Out digitally {date}": "Digitaal op {date}",
+    "Out {date}": "Uit {date}",
+    "Not out yet": "Nog niet uit",
+    "Remove from watchlist": "Van je kijklijst halen",
     "In cinemas {date}": "In de bioscoop {date}",
     "Expected {date}": "Verwacht {date}",
     "No good release found in {days} days": "Geen goede release gevonden in {days} dagen",
@@ -870,7 +876,7 @@ NL: dict[str, str] = {
     # app/ui/views/calendar_view.py
     "How many weeks to show": "Hoeveel weken je wilt zien",
     "💡 Suggestions": "💡 Suggesties",
-    "Also show one popular episode a day from a show you don't follow yet. Click + Track on it to start following that show.":
+    "Also show one popular episode a day from a show you don't follow yet. Click + Follow on it to start following that show.":
         "Toon ook elke dag een populaire aflevering van een serie die je nog niet volgt. Klik erop op + Volgen om die serie te volgen.",
     "Today": "Vandaag",
     "Previous week": "Vorige week",
@@ -1005,10 +1011,10 @@ NL: dict[str, str] = {
     "Never": "Nooit",
     "🧩 Find gaps in Plex…": "🧩 Gaten in Plex zoeken…",
     "Library": "Bibliotheek",
-    "Shows ({n})": "Series ({n})",
-    "Films ({n})": "Films ({n})",
+    "Shows": "Series",
+    "Films": "Films",
+    "Sort": "Sorteer",
     "Search your library…": "Zoek in je bibliotheek…",
-    "+ Follow": "+ Volgen",
     "Couldn't follow {name}: TVmaze doesn't know it": "Kon {name} niet volgen: TVmaze kent het niet",
     "Couldn't find {name} on TVmaze": "Kon {name} niet vinden op TVmaze",
     "Show more ({n})": "Meer tonen ({n})",
@@ -1481,6 +1487,12 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
+    "Cards look alike everywhere now: one row of buttons, coloured labels on the poster, and Follow instead of Track.": "Kaarten zien er nu overal hetzelfde uit: één rij knoppen, gekleurde labels op de poster, en Volgen in plaats van Track.",
+    "Films and shows that are in your Plex library show a small books icon on their cards, also in the search results.": "Films en series die in je Plex-bibliotheek staan, tonen een klein boekenicoon op hun kaart, ook in de zoekresultaten.",
+    "Library: a film below 1080p gets an Upgrade button that lists only its 1080p and 4K releases.": "Bibliotheek: een film onder 1080p krijgt een knop Verbeteren die alleen de 1080p- en 4K-releases toont.",
+    "Library: tabs and filter buttons at the top, and the time of the last Plex check at the bottom of the window.": "Bibliotheek: tabbladen en filterknoppen bovenaan, en het tijdstip van de laatste Plex-controle onderaan het venster.",
+    "MediaForge: a change in the preset bar now goes for every show or film in the queue; a card's chip changes just one.": "MediaForge: een wijziging in de voorinstellingenbalk geldt nu voor elke serie of film in de wachtrij; de chip van een kaart verandert er maar één.",
+    "MediaForge: while forging, the progress shows in a panel at the bottom of the page.": "MediaForge: tijdens het smeden staat de voortgang in een paneel onderaan de pagina.",
     "Opening AirGrabber while it's still closing now opens it once it has closed, instead of nothing.":
         "AirGrabber openen terwijl het nog afsluit, opent het nu zodra het is afgesloten, in plaats van niets.",
     "Quit always quits: if closing gets stuck, AirGrabber ends itself within a minute.":
@@ -1848,7 +1860,8 @@ NL: dict[str, str] = {
     "Sent {title} to {phone}.": "{title} naar {phone} gestuurd.",
     "Sent {n} episode to {phone}.": "{n} aflevering naar {phone} gestuurd.",
     "Sent {n} episodes to {phone}.": "{n} afleveringen naar {phone} gestuurd.",
-    "📱 Send to phone": "📱 Naar telefoon",
+    "⬆ Upgrade": "⬆ Verbeteren",
+    "Find a better copy: 1080p or 4K": "Zoek een betere versie: 1080p of 4K",
     "Scan this with the Companion app": "Scan dit met de Companion-app",
     "That code has expired, so click Connect a phone for a new one.":
         "Die code is verlopen, dus klik op Telefoon verbinden voor een nieuwe.",

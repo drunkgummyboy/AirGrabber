@@ -274,14 +274,25 @@ class RowsTests(PageCase):
         self.assertEqual(queue.files_button.cget("state"), "disabled")
         self.assertEqual(queue.folder_button.cget("state"), "disabled")
         self.assertEqual(queue.forge_button.winfo_manager(), "")
-        self.assertEqual(queue.progress.winfo_manager(), "pack")
-        self.assertEqual(queue.cancel_button.winfo_manager(), "pack")
-        # On the filters' row, its middle level with theirs.
-        filters = queue.filter_buttons["all"]
+        self.assertEqual(queue.progress.winfo_manager(), "grid")
+        self.assertEqual(queue.cancel_button.winfo_manager(), "place")
+        # Centred under the list, Cancel on it.
         self.assertAlmostEqual(
-            filters.winfo_rooty() + filters.winfo_height() / 2,
-            queue.progress.winfo_rooty() + queue.progress.winfo_height() / 2,
+            queue.winfo_rootx() + queue.winfo_width() / 2,
+            queue.progress.winfo_rootx() + queue.progress.winfo_width() / 2,
             delta=3,
+        )
+        self.assertGreaterEqual(
+            queue.progress.winfo_rooty(), queue.list.winfo_rooty() + queue.list.winfo_height()
+        )
+        self.assertLessEqual(
+            queue.progress.winfo_rooty() + queue.progress.winfo_height(),
+            queue.winfo_rooty() + queue.winfo_height(),
+        )
+        bar, cancel = queue.progress, queue.cancel_button
+        self.assertLess(bar.winfo_rootx(), cancel.winfo_rootx())
+        self.assertLess(
+            cancel.winfo_rootx() + cancel.winfo_width(), bar.winfo_rootx() + bar.winfo_width()
         )
         queue._set_running(False)
         self.assertEqual(queue.files_button.cget("state"), "normal")
@@ -317,10 +328,9 @@ class FitTests(PageCase):
         await pump(self.root, 0.2)
         last = queue.filter_buttons["ready"]
         self.assertLess(last.winfo_rootx() + last.winfo_width(), queue.actions.winfo_rootx())
-        # A run: the progress bar and Cancel in the same place.
+        # A run: its dock and Cancel fit too.
         queue._set_running(True, 1000)
         await pump(self.root, 0.2)
-        self.assertLess(last.winfo_rootx() + last.winfo_width(), queue.actions.winfo_rootx())
         self.assertLessEqual(
             queue.cancel_button.winfo_rootx() + queue.cancel_button.winfo_width(), edge
         )

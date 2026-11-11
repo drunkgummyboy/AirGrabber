@@ -1,6 +1,7 @@
 """The calendar's cards: the full card's sizes per card size, the baked poster piece and right
-cap (pure Pillow), the amber marks of missing episodes, the compact card's slim line and small
-buttons, and the cards themselves on a hidden Tk root."""
+cap (pure Pillow), the pills of missing / new / had episodes, the compact card's slim line and
+round button, the poster cards' row on the full and suggestion cards, and the cards themselves
+on a hidden Tk root."""
 
 from __future__ import annotations
 
@@ -15,19 +16,24 @@ from typing import Any, cast
 import customtkinter as ctk
 from PIL import Image
 
+from app import i18n
 from app.models import CalendarEntry, CardSize, Episode, GrabOutcome, Show
 from app.services import ImageCache
 from app.ui import theme
 from app.ui.calendar_cards import (
     CHOOSE_TIP,
     MISSING_TEXTS,
+    new_color,
     NOT_AIRED_TEXT,
     SLIM_BUTTONS_GAP,
     SLIM_CODE_GAP,
     SLIM_ICON,
     SLIM_ICON_GAP,
     CompactEpisodeCard,
+    EpisodeControl,
     HaveMark,
+    PillLabel,
+    RoundIcon,
     SuggestionCard,
     EpisodeCard,
     IconLook,
@@ -40,6 +46,7 @@ from app.ui.calendar_cards import (
     missing_note,
     poster_url,
     slim_name_room,
+    suggestion_height,
     with_source,
 )
 from app.ui.calendar_face import (
@@ -47,7 +54,6 @@ from app.ui.calendar_face import (
     FADE_CURVE,
     FADE_START,
     POSTER_SHARE,
-    ROW_MIN_FACTOR,
     CapFace,
     PosterFace,
     compose_cap,
@@ -57,11 +63,11 @@ from app.ui.calendar_face import (
     fade_alpha,
     poster_area,
     poster_face,
-    row_scale,
     text_width,
 )
 from app.ui.card_scale import FULL, CardScale, line_height
 from app.ui.download_control import (
+    CORNER_RADIUS as ROW_CORNER_RADIUS,
     DOWNLOAD_TIP,
     MORE_TIP,
     Base,
@@ -72,6 +78,7 @@ from app.ui.download_control import (
     RunState,
     episode_key,
 )
+from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT, row_height
 from app.ui.text_fit import SLACK
 
 # The poster cards' old cap behind their text (they fade on to solid under it now): the
@@ -110,7 +117,10 @@ def item_text(card: EpisodeCard, item: int) -> str:
 class LayoutTests(unittest.TestCase):
     def test_xl_is_the_designed_card(self) -> None:
         layout = episode_layout(FULL, linespace=linespace)
-        self.assertEqual(layout.height, CARD_HEIGHT)
+        # At least the designed height; taller when the poster cards' row and two name lines
+        # need it (these test fonts do; Segoe UI fits in it).
+        self.assertGreaterEqual(layout.height, CARD_HEIGHT)
+        self.assertLessEqual(layout.height, CARD_HEIGHT + 8)
         area = poster_area(layout, 200)
         self.assertEqual(area.width, 100)  # the left half
         self.assertLess(area.fade_from, area.text_x)
@@ -136,11 +146,14 @@ class LayoutTests(unittest.TestCase):
         widths = {poster_area(layout, width).width for width in range(180, 200)}
         self.assertLessEqual(len(widths), 4)
 
-    def test_download_row_fits_its_full_text_on_the_usual_card(self) -> None:
-        # About 200 units wide at the default window: "⬇ Download" (71 units at 11 pt bold)
-        # + its corners and slack, a gap and "⋯" need 118 at XL.
-        layout = episode_layout(FULL, linespace=linespace)
-        self.assertGreaterEqual(text_width(layout, poster_area(layout, 200), 200), 118)
+    def test_the_bottom_row_is_the_poster_cards_row(self) -> None:
+        # As tall as a poster card's row at the same card size (no smaller share of it).
+        for size in CardSize:
+            scale = CardScale.of(size)
+            with self.subTest(size=size):
+                layout = episode_layout(scale, linespace=linespace)
+                self.assertEqual(layout.row_height, row_height(scale))
+                self.assertEqual(layout.row_scale, scale)
 
     def test_every_size_fits_two_name_lines_the_code_and_the_row(self) -> None:
         for size in CardSize:
@@ -168,12 +181,17 @@ class LayoutTests(unittest.TestCase):
                 needed = (
                     noted.pad_top
                     + 2 * line_height(noted.title_size)
-                    + 2 * (noted.code_gap + line_height(noted.code_size))
+                    + noted.code_gap
+                    + line_height(noted.code_size)
+                    + noted.pill_gap
+                    + noted.pill_height  # the note is a pill
                     + noted.row_height
                     + noted.pad_bottom
                 )
                 self.assertTrue(noted.note)
                 self.assertFalse(plain.note)
+                self.assertEqual((plain.pill_height, plain.pill_gap), (0, 0))
+                self.assertGreater(noted.pill_height, line_height(noted.pill_size))
                 self.assertGreaterEqual(noted.height, needed)
                 self.assertGreater(noted.height, plain.height)
                 # The same poster area: the texts of a day's cards start at one x.
@@ -185,11 +203,6 @@ class LayoutTests(unittest.TestCase):
         ]
         self.assertEqual(heights, sorted(heights))
         self.assertLess(heights[0], heights[-1])
-
-    def test_row_scale(self) -> None:
-        self.assertAlmostEqual(row_scale(FULL).factor, 0.75)
-        self.assertAlmostEqual(row_scale(CardScale.of(CardSize.XS)).factor, ROW_MIN_FACTOR)
-        self.assertEqual(row_scale(CardScale.of(CardSize.XS)).px(36), 24)
 
     def test_cover_size_keeps_the_poster_shape(self) -> None:
         self.assertEqual(cover_size((92, 112)), (92, 138))
@@ -330,6 +343,16 @@ class TextTests(unittest.TestCase):
         self.assertLess(compact_height(False), compact_height(True))
         smallest = episode_layout(CardScale.of(CardSize.XS), linespace=linespace).height
         self.assertLess(compact_height(True), smallest)  # slimmer than any poster card
+
+    def test_a_suggestion_makes_room_for_the_poster_cards_row(self) -> None:
+        for size in CardSize:
+            scale = CardScale.of(size)
+            with self.subTest(size=size):
+                self.assertGreater(suggestion_height(scale), row_height(scale))
+                self.assertEqual(
+                    suggestion_height(scale) - suggestion_height(FULL),
+                    row_height(scale) - row_height(FULL),
+                )
 
     def test_slim_name_room(self) -> None:
         both = buttons_width(IconLook("⬇", more=True))
@@ -483,6 +506,28 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(bare.suggested_label.cget("text"), "Suggested")
 
+    async def test_a_suggestion_has_the_poster_cards_follow_button(self) -> None:
+        for scale in (FULL, CardScale.of(CardSize.XS)):
+            card = SuggestionCard(
+                self.root,
+                calendar_entry(aired=False),
+                library=cast(Any, None),
+                status=cast(Any, None),
+                profile_id=1,
+                scale=scale,
+            )
+            button = card._track_button
+            with self.subTest(scale=scale):
+                self.assertEqual(card.cget("height"), suggestion_height(scale))
+                self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))  # the shared word
+                self.assertEqual(button.cget("height"), row_height(scale))
+                self.assertEqual(button.cget("corner_radius"), scale.px(ROW_CORNER_RADIUS))
+                self.assertEqual(button.cget("fg_color"), theme.ACCENT)  # filled: do it
+                self.assertEqual(button.pack_info()["fill"], "x")  # wide
+        button.set_state("tracked")
+        self.assertEqual(button.cget("text"), i18n.t(FOLLOWING_TEXT))
+        self.assertEqual(button.cget("border_color"), theme.SUCCESS)  # green outline: yours
+
     def actions(self) -> tuple[DownloadActions[CalendarEntry], list[str]]:
         """Actions that record what was asked: "download" / "choose"."""
         asked: list[str] = []
@@ -494,7 +539,13 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         return actions, asked
 
     def controls(self, card: EpisodeCard) -> list[DownloadControl[Any]]:
-        return [child for child in card.winfo_children() if isinstance(child, DownloadControl)]
+        found: list[Any] = []
+        stack: list[Any] = list(card.winfo_children())
+        while stack:
+            child = stack.pop()
+            found.append(child)
+            stack.extend(child.winfo_children())
+        return [child for child in found if isinstance(child, DownloadControl)]
 
     async def test_not_aired_is_a_muted_line(self) -> None:
         card = self.card(calendar_entry(aired=False), FakeImages())
@@ -505,6 +556,42 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         card = self.card(calendar_entry(aired=True), FakeImages())
         self.assertEqual(len(self.controls(card)), 1)
         self.assertEqual(item_text(card, card._status), "")
+
+    async def test_the_download_row_is_the_poster_cards_row_with_a_round_more_button(
+        self,
+    ) -> None:
+        entry = calendar_entry(aired=True)
+        actions, asked = self.actions()
+        for scale in (FULL, CardScale.of(CardSize.XS)):
+            card = EpisodeCard(
+                self.root,
+                entry,
+                images=cast(ImageCache, FakeImages()),
+                actions=actions,
+                scale=scale,
+            )
+            control = card._control
+            assert isinstance(control, EpisodeControl)
+            with self.subTest(scale=scale):
+                # The poster cards' height and corners.
+                self.assertEqual(control.cget("height"), row_height(scale))
+                self.assertEqual(control._main.cget("corner_radius"), scale.px(ROW_CORNER_RADIUS))
+                # One wide button: the row's own square ⋯ never shows; the round one beside it.
+                look = control.current_look()
+                self.assertEqual((look.layout, look.action), ("button", "download"))
+                self.assertFalse(control._more.winfo_manager())
+                self.assertTrue(card.shows_menu)
+        assert card.menu_button is not None
+        card.menu_button.invoke()  # the ⋯: choose one yourself
+        self.assertEqual(asked, ["choose"])
+        # While a run works (one label) and once it grabbed one (✓ Sent): no ⋯.
+        key = episode_key(entry.show.id, entry.episode.season, entry.episode.number)
+        actions.states.set(key, RunState(Phase.WORKING))
+        self.assertFalse(card.shows_menu)
+        actions.states.set(key, RunState(Phase.DONE, GrabOutcome.SENT))
+        self.assertFalse(card.shows_menu)
+        actions.states.set(key, None)
+        self.assertTrue(card.shows_menu)
 
     async def test_follows_the_card_size(self) -> None:
         small = self.card(calendar_entry(aired=True), FakeImages(), CardScale.of(CardSize.XS))
@@ -538,10 +625,14 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(item_text(card, card._note), MISSING_TEXTS)
         canvas: Any = card._art
         self.assertEqual(canvas.itemcget(card._note, "fill"), theme.pick(theme.WARNING))
-        # Under the code, above the Download row.
-        self.assertGreater(card._art.coords(card._note)[1], card._art.coords(card._code)[1])
-        note_box = card._art.bbox(card._note)
-        self.assertLessEqual(note_box[3], height - round(card._layout.row_height * scaling))
+        # A pill under the code, above the Download row: its outline around the text.
+        pill_box = canvas.bbox(card._note_pill.image)
+        text_box = canvas.bbox(card._note)
+        self.assertLessEqual(pill_box[0], text_box[0])
+        self.assertGreaterEqual(pill_box[2], text_box[2])
+        self.assertGreater(pill_box[1], canvas.bbox(card._code)[1])
+        self.assertEqual(card.note_bottom(), pill_box[3])
+        self.assertLessEqual(pill_box[3], height - round(card._layout.row_height * scaling))
         (face_used,) = images.faces
         self.assertEqual(face_used.edge, _rgb(card, theme.EDGE))  # no amber edge: the border
 
@@ -554,6 +645,40 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         assert card._art_task is not None
         await card._art_task
         self.assertEqual(item_text(card, card._note), "")
+        self.assertIsNone(card.note_bottom())
+
+    async def test_the_note_pill_follows_light_and_dark(self) -> None:
+        card = self.card(calendar_entry(aired=True), FakeImages(), missing=True)
+        scaling = ctk.ScalingTracker.get_widget_scaling(card)
+        height = round(card.cget("height") * scaling)
+        card._on_resize(SimpleNamespace(width=round(200 * scaling), height=height))
+        assert card._art_task is not None
+        await card._art_task
+        drawn = card._note_pill._drawn
+        dark = theme.is_dark()
+        try:
+            ctk.set_appearance_mode("light" if dark else "dark")
+            self.root.update_idletasks()
+            # Drawn again on the new mode's ground, its text in the new mode's amber.
+            self.assertNotEqual(card._note_pill._drawn, drawn)
+            canvas: Any = card._art
+            self.assertEqual(canvas.itemcget(card._note, "fill"), theme.pick(theme.WARNING))
+        finally:
+            ctk.set_appearance_mode("dark" if dark else "light")
+
+    async def test_a_scaling_change_draws_the_plain_tk_parts_again(self) -> None:
+        entry = calendar_entry(aired=True)
+        actions, _asked = self.actions()
+        card = self.card(entry, FakeImages())
+        compact = CompactEpisodeCard(self.root, entry, actions=actions, missing=True)
+        assert card.menu_button is not None and compact.note is not None
+        main = compact.buttons.main
+        size = (int(main.cget("width")), int(main.cget("height")))
+        ctk.ScalingTracker.update_scaling_callbacks_for_window(self.root)  # as a new screen does
+        self.assertEqual((int(main.cget("width")), int(main.cget("height"))), size)
+        self.assertEqual(compact.note.text, MISSING_TEXTS[0])
+        self.assertTrue(card.shows_menu)
+        self.assertFalse(compact.buttons.shows_more)
 
     async def test_compact_card_is_slim_and_its_name_opens_the_show_window(self) -> None:
         opened: list[Show] = []
@@ -579,8 +704,9 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(card.cget("height"), compact_height(True))
         assert card.note is not None
-        self.assertEqual(card.note.cget("text"), MISSING_TEXTS[0])
-        self.assertEqual(card.note.cget("text_color"), theme.WARNING)
+        self.assertIsInstance(card.note, PillLabel)  # a pill, not a coloured line
+        self.assertEqual(card.note.text, MISSING_TEXTS[0])
+        self.assertEqual(card.note.color, theme.WARNING)
         self.assertEqual(placed_parts(card), [])  # no amber bar on the left edge
 
     async def test_compact_cards_say_what_you_have(self) -> None:
@@ -588,14 +714,36 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         entry = calendar_entry(aired=True)
         looks: tuple[tuple[HaveMark, str, theme.Color], ...] = (
             ("plex", "✓ In Plex", theme.SUCCESS),
-            ("downloaded", "✓ Downloaded", theme.TEXT_MUTED),
+            ("downloaded", "✓ Downloaded", theme.BRAND),
         )
         for have, text, color in looks:
             card = CompactEpisodeCard(self.root, entry, actions=actions, have=have)
             self.assertEqual(card.cget("height"), compact_height(True))
             assert card.note is not None
-            self.assertEqual(card.note.cget("text"), text)
-            self.assertEqual(card.note.cget("text_color"), color)
+            self.assertEqual(card.note.text, text)
+            self.assertEqual(card.note.color, color)
+        new = CompactEpisodeCard(self.root, entry, actions=actions, new=True)
+        assert new.note is not None
+        self.assertEqual((new.note.text, new.note.color), ("New", new_color()))
+        self.assertEqual(new_color(), theme.BRAND)  # blue: information
+
+    async def test_a_compact_pill_follows_light_and_dark(self) -> None:
+        actions, _asked = self.actions()
+        card = CompactEpisodeCard(
+            self.root, calendar_entry(aired=True), actions=actions, missing=True
+        )
+        assert card.note is not None
+        pill: Any = card.note
+        dark = theme.is_dark()
+        try:
+            ctk.set_appearance_mode("light" if dark else "dark")
+            self.root.update_idletasks()
+            self.assertEqual(str(pill.cget("background")), theme.pick(theme.SURFACE))
+            self.assertEqual(
+                str(pill.itemcget(pill._label, "fill")), theme.pick(theme.WARNING)
+            )
+        finally:
+            ctk.set_appearance_mode("dark" if dark else "light")
 
     async def test_full_card_says_what_you_have(self) -> None:
         plain = self.card(calendar_entry(aired=True), FakeImages())
@@ -625,18 +773,23 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
             return buttons.look.text
 
         self.assertEqual(icon(), "⬇")
-        self.assertTrue(buttons.shows_more)
+        # One round button, filled accent; its ⋯ is the right-click.
+        self.assertIsInstance(buttons.main, RoundIcon)
+        self.assertEqual((buttons.main.text, buttons.main.fill), ("⬇", theme.ACCENT))
+        self.assertEqual(int(buttons.main.cget("width")), int(buttons.main.cget("height")))
+        self.assertFalse(buttons.shows_more)
+        self.assertEqual(buttons.width_units, SLIM_ICON)
         buttons.main.invoke()  # as a click does
         self.assertEqual(asked, ["download"])
         key = episode_key(entry.show.id, entry.episode.season, entry.episode.number)
         actions.states.set(key, RunState(Phase.WORKING))
         self.assertEqual(icon(), "…")
-        self.assertFalse(buttons.shows_more)
+        self.assertFalse(buttons.main.enabled)
         buttons.main.invoke()  # disabled while it works
         self.assertEqual(asked, ["download"])
         actions.states.set(key, RunState(Phase.DONE, GrabOutcome.SENT))
         self.assertEqual(icon(), "✓")
-        self.assertEqual(buttons.main.cget("fg_color"), theme.GRABBED)
+        self.assertEqual(buttons.main.fill, theme.GRABBED)
         self.assertEqual(buttons.width_units, SLIM_ICON)
         buttons.main.invoke()
         self.assertEqual(asked, ["download", "choose"])
@@ -653,7 +806,7 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         card = CompactEpisodeCard(self.root, entry, actions=actions)
         assert card.buttons.look is not None
         self.assertEqual(card.buttons.look.text, "⬇")
-        self.assertTrue(card.buttons.shows_more)
+        self.assertFalse(card.buttons.shows_more)  # the compact card's ⋯ is its right-click
         self.assertIsNone(card.note)  # no note without Plex: the view passes none
 
     async def test_bakes_the_poster_at_physical_size_and_lays_out_the_text(self) -> None:

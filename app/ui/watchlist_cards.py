@@ -5,11 +5,16 @@ cards in place when only their state changed (a switch, release dates, a search)
 its grid when films came or went. Everything it shows is stored data, so it works without a
 TMDB key.
 
-A `WatchlistCard` shows, under the title, the film's status (`watch_status`) beside a narrow
-"✓" watchlist button (a click takes the film off the list), and at the bottom either the
-"Download when it's out" switch or, for a film that is out and not looked for automatically
-(or given up on), the usual ⬇ Download + ⋯ row. Its cover and title open the film's info
-window (`on_open`; on IMDb without one).
+A `WatchlistCard` has one row, like every poster card: the main button and a round ⋯ beside it.
+For a film not out yet the main button is the grey "not yet" outline with the date ("Out 17
+Nov", `WatchStatus.texts`); once the film can be downloaded, the usual ⬇ Download (a right-click
+chooses a download yourself). The ⋯ menu (`watch_menu`): "☑ / ☐ Download when it's out" (while
+the film isn't out yet, or is out and looked for automatically), "Choose a download yourself"
+(once it is out), "Remove from watchlist". While AirGrabber looks for it automatically, a blue
+"Auto" pill sits in the cover's corner. Under the title: the year and rating, or what is going
+on once the film is out ("Out now" / "No good release found in 30 days" in amber, "Waiting
+for a good release (searched 2 h ago)" muted). Its cover and title open the film's info window
+(`on_open`; on IMDb without one).
 
 The cards are drawn at the page's `CardScale` (Settings, Card size); the shelf rebuilds its grid
 when the size changed since it was built.
@@ -31,21 +36,29 @@ from app.models import Movie, WatchlistEntry
 from app.models.plex import PlexFilms
 from app.services.watchlist import GIVE_UP_AFTER, available_on, is_out
 from app.ui import theme
-from app.ui.card_scale import FULL, SMALL_TEXT_MIN, CardScale, grid_item_width
-from app.ui.cards import auto_switch_color
-from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
-from app.ui.media_cards import PlexMark, imdb_search_url, plex_mark, tmdb_poster_size, tmdb_rating
+from app.ui.card_scale import FULL, CardScale, grid_item_width
+from app.ui.cards import MENU_TEXT, MENU_TIP, RoundButton, toggle_text
+from app.ui.download_control import (
+    GAP,
+    MORE_TIP,
+    Base,
+    DownloadActions,
+    DownloadControl,
+    movie_key,
+)
+from app.ui.library_mark import LibraryMark, library_mark
+from app.ui.media_cards import imdb_search_url, tmdb_poster_size, tmdb_rating
+from app.ui.missing_control import MenuItem, popup_menu
 from app.ui.poster_card import (
     POSTER_CARD_WIDTH,
+    Badge,
     PosterCard,
+    row_font_size,
     row_height,
-    text_width,
     year_rating_line,
 )
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, elide_to_width, fit_to_lines
 from app.ui.tooltip import add_tooltip
-from app.ui.watchlist_button import WatchlistButton
 from app.ui.widgets import FlexGrid, destroy_tree
 
 if TYPE_CHECKING:
@@ -55,23 +68,18 @@ if TYPE_CHECKING:
 # Shown through t().
 SHELF_TITLE = N_("📌 My watchlist")
 AUTO_TEXT = N_("Download when it's out")
+AUTO_PILL_TEXT = N_("Auto")  # the cover's blue pill while it is looked for automatically
 OUT_NOW_TEXT = N_("Out now")
 WAITING_TEXT = N_("Waiting for a good release")
 UNKNOWN_TEXT = N_("Release date unknown")
-
-STATUS_SIZE = 12  # font size of the status line
-STATUS_LINES = 2  # the status line's room: "Waiting for a good release / (searched 2 h ago)"
-STATUS_GAP = 6  # between the status line and the bottom row
-CHIP_HEIGHT = 22
-CHIP_PAD = 8  # inside a chip, left and right
-REMOVE_WIDTH = 26  # the narrow "✓" watchlist button beside the status
-REMOVE_HEIGHT = 26
-REMOVE_GAP = 4
-SWITCH_SIZE = (32, 16)  # the "Download when it's out" switch's track
-SWITCH_TEXT_GAP = 6  # CTkSwitch's gap between the track and its text
+GAVE_UP_SHORT = N_("No good release found")
+OUT_ON_TEXT = N_("Out {date}")  # the "not yet" button where "Out digitally 17 Nov" won't fit
+NOT_OUT_TEXT = N_("Not out yet")  # … where "Release date unknown" won't fit
+REMOVE_TEXT = N_("Remove from watchlist")
 
 Tone = Literal["soon", "out", "waiting", "gave_up"]
-BottomRow = Literal["switch", "download"]
+BottomRow = Literal["later", "download"]  # later: the grey "not yet" button with the date
+WatchMenuKey = Literal["auto", "choose", "remove"]
 
 
 # -- text ------------------------------------------------------------------------------------
@@ -100,47 +108,83 @@ def _day(day: date, today: date) -> str:
     return text if day.year == today.year else f"{text} {day:%Y}"
 
 
-def release_text(entry: WatchlistEntry, today: date) -> str:
-    """When a film that isn't out yet comes out: "Out digitally 12 Nov" (TMDB knows the digital
-    release), "In cinemas 12 Nov" (only the cinema release, still ahead), "Expected 31 Dec" (the
-    cinema release has been: AirGrabber's own estimate), or "Release date unknown"."""
+def release_texts(entry: WatchlistEntry, today: date) -> tuple[str, ...]:
+    """When a film that isn't out yet comes out, longest first: "Out digitally 12 Nov", "Out
+    12 Nov", "12 Nov" (TMDB knows the digital release); "In cinemas 12 Nov", "12 Nov" (only the
+    cinema release, still ahead); "Expected 31 Dec", "31 Dec" (the cinema release has been:
+    AirGrabber's own estimate); or "Release date unknown", "Not out yet"."""
     if entry.digital_release is not None:
-        return t("Out digitally {date}", date=_day(entry.digital_release, today))
+        day = _day(entry.digital_release, today)
+        return t("Out digitally {date}", date=day), t(OUT_ON_TEXT, date=day), day
     theatrical = entry.theatrical_release or entry.movie.release_date
     if theatrical is not None and theatrical > today:
-        return t("In cinemas {date}", date=_day(theatrical, today))
+        day = _day(theatrical, today)
+        return t("In cinemas {date}", date=day), day
     expected = available_on(entry)
     if expected is None:
-        return t(UNKNOWN_TEXT)
-    return t("Expected {date}", date=_day(expected, today))
+        return t(UNKNOWN_TEXT), t(NOT_OUT_TEXT)
+    day = _day(expected, today)
+    return t("Expected {date}", date=day), day
+
+
+def release_text(entry: WatchlistEntry, today: date) -> str:
+    """When a film that isn't out yet comes out, in full (`release_texts`' first)."""
+    return release_texts(entry, today)[0]
 
 
 @dataclass(frozen=True, slots=True)
 class WatchStatus:
-    """What a watchlist card says about its film, and what its bottom row offers."""
+    """What a watchlist card says about its film, and what its row offers."""
 
     text: str
     tone: Tone
-    chip: bool  # a rounded chip ("Out digitally 12 Nov", "Out now"), else a line of text
     bottom: BottomRow
+    auto: bool  # the ⋯ menu offers "Download when it's out"
+    short: tuple[str, ...] = ()  # shorter forms of `text`, for where it won't fit
+
+    @property
+    def texts(self) -> tuple[str, ...]:
+        """`text` and its shorter forms, longest first."""
+        return (self.text, *self.short)
 
 
 def watch_status(entry: WatchlistEntry, today: date, now: datetime) -> WatchStatus:
     """Given up → "No good release found in 30 days" + Download; not out yet → when it comes out
-    + the switch; out with the switch on → "Waiting for a good release (searched 2 h ago)" + the
-    switch; out with the switch off → "Out now" + Download."""
+    on the "not yet" button, the menu's toggle; out and looked for automatically → "Waiting for
+    a good release (searched 2 h ago)" + Download, the menu's toggle; out and not looked for →
+    "Out now" + Download."""
     if entry.gave_up:
         text = t("No good release found in {days} days", days=GIVE_UP_AFTER.days)
-        return WatchStatus(text, "gave_up", chip=False, bottom="download")
+        return WatchStatus(text, "gave_up", "download", auto=False, short=(t(GAVE_UP_SHORT),))
     if not is_out(entry, today):
-        return WatchStatus(release_text(entry, today), "soon", chip=True, bottom="switch")
+        full, *short = release_texts(entry, today)
+        return WatchStatus(full, "soon", "later", auto=True, short=tuple(short))
     if entry.auto_download:
         text = t(WAITING_TEXT)
-        if entry.last_try is not None:
-            ago = searched_ago(entry.last_try, now)
-            text = t("{status} (searched {ago})", status=text, ago=ago)
-        return WatchStatus(text, "waiting", chip=False, bottom="switch")
-    return WatchStatus(t(OUT_NOW_TEXT), "out", chip=True, bottom="download")
+        if entry.last_try is None:
+            return WatchStatus(text, "waiting", "download", auto=True)
+        ago = searched_ago(entry.last_try, now)
+        searched = t("{status} (searched {ago})", status=text, ago=ago)
+        return WatchStatus(searched, "waiting", "download", auto=True, short=(text,))
+    return WatchStatus(t(OUT_NOW_TEXT), "out", "download", auto=False)
+
+
+def watch_menu(status: WatchStatus, auto_download: bool) -> list[tuple[str, WatchMenuKey]]:
+    """A watchlist card's ⋯ menu: "☑ / ☐ Download when it's out" (while the status offers it),
+    "Choose a download yourself" (once it can be downloaded), "Remove from watchlist"."""
+    items: list[tuple[str, WatchMenuKey]] = []
+    if status.auto:
+        items.append((toggle_text(t(AUTO_TEXT), auto_download), "auto"))
+    if status.bottom == "download":
+        items.append((t(MORE_TIP), "choose"))
+    items.append((t(REMOVE_TEXT), "remove"))
+    return items
+
+
+def auto_shown(status: WatchStatus, auto_download: bool) -> bool:
+    """The blue "Auto" pill: while AirGrabber looks for the film by itself (not after giving
+    up)."""
+    return auto_download and status.auto
 
 
 def tone_color(tone: Tone) -> theme.Color:
@@ -178,84 +222,54 @@ class WatchlistCard(PosterCard):
         on_open: Callable[[Movie], None] | None = None,
     ) -> None:
         movie = entry.movie
-        self._status_font = theme.font(scale.font(STATUS_SIZE, SMALL_TEXT_MIN))
-        status_height = STATUS_LINES * int(self._status_font.metrics("linespace")) + 2
-        status_gap = scale.px(STATUS_GAP)
+        self._year_rating = year_rating_line(
+            movie.year, tmdb_rating(movie.vote_average, movie.vote_count)
+        )
         super().__init__(
             master,
             title=movie.title,
-            meta=year_rating_line(movie.year, tmdb_rating(movie.vote_average, movie.vote_count)),
+            meta=self._year_rating,
+            meta_row=True,
             poster=lambda width: movie.poster_url(tmdb_poster_size(width)),
             images=images,
-            extra_height=status_height + status_gap,
             scale=scale,
         )
         self.movie_id = movie.id
-        self.plex_mark: PlexMark | None = None  # the quiet ✓ while the film is in Plex
+        self.plex_mark: LibraryMark | None = None  # the books while the film is in Plex
+        self._movie = movie
         self._entry = entry
         self._watchlist = watchlist
+        self._actions = actions
         self._today = today
         self._now = now
         self._status: WatchStatus | None = None
-        status_size = scale.font(STATUS_SIZE, SMALL_TEXT_MIN)
-        self._chip_height = scale.text_height(CHIP_HEIGHT, status_size)
-        self._chip_pad = scale.px(CHIP_PAD)
-        remove_width, remove_gap = scale.px(REMOVE_WIDTH), scale.px(REMOVE_GAP)
-        # The status line's room: the card's text width less the narrow "✓" button.
-        self._status_room = text_width(scale) - remove_width - remove_gap - SLACK
 
-        # The bottom row: the switch or the Download row, one at a time, always the row height.
-        self._bottom = ctk.CTkFrame(self, fg_color="transparent", height=row_height(scale))
-        self._bottom.pack_propagate(False)
-        self._pack_action(self._bottom)
-        self._auto_var = ctk.BooleanVar(value=entry.auto_download)
-        switch_w, switch_h = (scale.px(size) for size in SWITCH_SIZE)
-        switch_room = text_width(scale) - switch_w - SWITCH_TEXT_GAP - SLACK
-        switch_text = elide_to_width(t(AUTO_TEXT), switch_room, self._status_font.measure)
-        self._switch = ctk.CTkSwitch(
-            self._bottom,
-            text=switch_text,
-            variable=self._auto_var,
-            font=self._status_font,
-            switch_width=switch_w,
-            switch_height=switch_h,
-            progress_color=theme.ACCENT,
-            command=self._auto_toggled,
+        # One row: the main button (the Download control: "Out 17 Nov" or ⬇ Download) and ⋯.
+        height = row_height(scale)
+        row = ctk.CTkFrame(self, fg_color="transparent", height=height)
+        row.pack_propagate(False)
+        self._pack_action(row)
+        self.menu_button = RoundButton(
+            row,
+            text=MENU_TEXT,
+            size=height,
+            font=theme.font(row_font_size(scale), bold=True),
+            command=self._open_menu,
         )
-        if switch_text != t(AUTO_TEXT):  # shortened on a small card: the tip says it in full
-            add_tooltip(self._switch, t(AUTO_TEXT))
+        self.menu_button.pack(side="right", padx=(scale.px(GAP), 0))
+        add_tooltip(self.menu_button, t(MENU_TIP))
+        self._follow_scale(self.menu_button.rescale)
         self._control = DownloadControl(
-            self._bottom,
+            row,
             item=movie,
             key=movie_key(movie.id),
             base=Base("download"),
             actions=actions,
             scale=scale,
+            more=False,
+            outline_unavailable=True,
         )
-
-        # The status line, with the narrow "✓" watchlist button on its right.
-        status_row = ctk.CTkFrame(self, fg_color="transparent", height=status_height)
-        status_row.pack_propagate(False)
-        self._pack_above_action(status_row, status_gap)
-        self.watch_button = WatchlistButton(
-            status_row,
-            movie=movie,
-            watchlist=watchlist,
-            width=remove_width,
-            height=scale.px(REMOVE_HEIGHT),
-            scale=scale,
-        )
-        self.watch_button.pack(side="right", anchor="n", padx=(remove_gap, 0))
-        self._status_label = ctk.CTkLabel(
-            status_row,
-            text="",
-            height=self._chip_height,
-            font=self._status_font,
-            corner_radius=self._chip_height // 2,
-            anchor="w",
-            justify="left",
-        )
-        self._status_label.pack(side="left", anchor="nw")
+        self._control.pack(side="left", fill="both", expand=True)
 
         if on_open is not None:
             self._set_open(lambda: on_open(movie))
@@ -267,6 +281,10 @@ class WatchlistCard(PosterCard):
     def status(self) -> WatchStatus | None:
         return self._status
 
+    @property
+    def auto_download(self) -> bool:
+        return self._entry.auto_download
+
     def update_entry(self, entry: WatchlistEntry) -> None:
         """Repaint for `entry`, a newer state of this card's film."""
         self._entry = entry
@@ -277,9 +295,9 @@ class WatchlistCard(PosterCard):
         return self._entry.imdb_id
 
     def set_in_plex(self, in_plex: bool) -> None:
-        """The quiet ✓ "In Plex" on the cover's corner, or not (app/ui/media_cards.py)."""
+        """The library mark ("In Plex") on the cover's corner, or not (app/ui/library_mark.py)."""
         if in_plex and self.plex_mark is None:
-            self.plex_mark = plex_mark(self)
+            self.plex_mark = library_mark(self)
         elif not in_plex and self.plex_mark is not None:
             self.plex_mark.destroy()
             self.plex_mark = None
@@ -287,55 +305,46 @@ class WatchlistCard(PosterCard):
     def _paint(self) -> None:
         entry = self._entry
         status = watch_status(entry, self._today(), self._now())
-        if self._auto_var.get() != entry.auto_download:
-            self._auto_var.set(entry.auto_download)
-        self._switch.configure(text_color=auto_switch_color(entry.auto_download))
+        auto = auto_shown(status, entry.auto_download)
+        self._set_badges([Badge(t(AUTO_PILL_TEXT), theme.BRAND, t(AUTO_TEXT))] if auto else [])
         if status == self._status:
             return
-        previous, self._status = self._status, status
-        room = self._status_room
-        if status.chip:
-            chip_font = self._status_font
-            text = elide_to_width(status.text, room - 2 * self._chip_pad, chip_font.measure)
-            self._status_label.configure(
-                text=text,
-                width=round(chip_font.measure(text)) + 2 * self._chip_pad,
-                corner_radius=self._chip_height // 2,
-                anchor="center",
-                fg_color=theme.SURFACE,
-                text_color=tone_color(status.tone),
-                font=chip_font,
-                wraplength=0,
-            )
+        self._status = status
+        if status.bottom == "later":
+            self._set_meta(self._year_rating)
+            self._control.set_base(Base("unavailable", status.text, status.short))
         else:
-            # "Waiting for a good release" / "(searched 2 h ago)": the aside on a line of its own.
-            text = status.text.replace(" (", "\n(")
-            text = fit_to_lines(text, room, STATUS_LINES, self._status_font.measure)
-            self._status_label.configure(
-                text=text,
-                width=0,
-                corner_radius=0,
-                anchor="w",
-                fg_color="transparent",
-                text_color=tone_color(status.tone),
-                font=self._status_font,
-                wraplength=room,
-            )
-        if previous is None or previous.bottom != status.bottom:
-            for widget in (self._switch, self._control):
-                widget.pack_forget()
-            if status.bottom == "switch":
-                self._switch.pack(side="left")
-            else:
-                self._control.pack(fill="both", expand=True)
+            self._set_meta(status.texts, tone_color(status.tone))
+            self._control.set_base(Base("download"))
 
-    def _auto_toggled(self) -> None:
-        on = bool(self._auto_var.get())
-        self._switch.configure(text_color=auto_switch_color(on))
+    # -- the menu ------------------------------------------------------------------------------
+
+    def menu_items(self) -> list[MenuItem]:
+        """The ⋯ menu as it would open now (`watch_menu`), with its actions."""
+        status = self._status or watch_status(self._entry, self._today(), self._now())
+        doing: dict[WatchMenuKey, Callable[[], None]] = {
+            "auto": self._toggle_auto,
+            "choose": lambda: self._actions.choose(self._movie),
+            "remove": self._remove,
+        }
+        return [(label, doing[key]) for label, key in watch_menu(status, self.auto_download)]
+
+    def _open_menu(self) -> None:
+        popup_menu(self.menu_button, self.menu_items())
+
+    def _toggle_auto(self) -> None:
+        on = not self._entry.auto_download
         watchlist = self._watchlist  # the card shows the list in memory: the selected person's
         spawn(
             watchlist.set_auto_download(self.movie_id, on, profile_id=watchlist.profile_id),
             name="watchlist-auto",
+        )
+
+    def _remove(self) -> None:
+        watchlist = self._watchlist
+        spawn(
+            watchlist.remove(self.movie_id, profile_id=watchlist.profile_id),
+            name="watchlist-remove",
         )
 
     def _open_imdb(self) -> None:
@@ -348,7 +357,7 @@ class WatchlistCard(PosterCard):
 class WatchlistShelf(ctk.CTkFrame):
     """The "📌 My watchlist" section: packed first in its master while the list has films,
     unpacked while it is empty. Starts out unpacked until `start()`, which also reads the films
-    in Plex again (`plex`): their cards get the quiet ✓ "In Plex"."""
+    in Plex again (`plex`): their cards get the library mark ("In Plex")."""
 
     def __init__(
         self,

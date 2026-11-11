@@ -675,6 +675,8 @@ NL: dict[str, str] = {
     "Stop ignoring": "Niet meer negeren",
     # A preset per band (app/forge/ui/queue_view.py)
     "Only {name}. Other cards keep their own preset.": "Alleen {name}. Andere kaarten houden hun eigen voorinstelling.",
+    "For all {n} shows. A card's chip changes just that one.": "Voor alle {n} series. De chip van een kaart verandert alleen die ene.",
+    "For all {n} films. A card's chip changes just that one.": "Voor alle {n} films. De chip van een kaart verandert alleen die ene.",
     "Auto: every show and film gets a preset by itself, and you can change it on its card. Manual: shows the preset bar, with the naming code and the extras.":
         "Auto: elke serie en film krijgt vanzelf een voorinstelling, en die kun je op de kaart wijzigen. Handmatig: toont de voorinstellingenbalk, met de naamcode en de extra's.",
     "For: new files": "Voor: nieuwe bestanden",

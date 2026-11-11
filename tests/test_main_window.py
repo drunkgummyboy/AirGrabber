@@ -794,6 +794,57 @@ class GoHomeTests(unittest.TestCase):
         self.assertEqual(window.calls, [("mode", Mode.SERIES)])
 
 
+class UpgradeFilmTests(unittest.IsolatedAsyncioTestCase):
+    async def test_upgrade_opens_the_films_1080p_and_4k_releases(self) -> None:
+        from app.models.plex import PlexTitle
+
+        asked: list[tuple[int, bool, str | None]] = []
+
+        async def open_movie_id(movie_id: int, *, releases: bool = False, quality: str | None = None) -> bool:
+            asked.append((movie_id, releases, quality))
+            return True
+
+        window: Any = SimpleNamespace(_movie_windows=SimpleNamespace(open_movie_id=open_movie_id))
+        film = PlexTitle(kind="movie", key="h", title="Heat", resolution="720p", tmdb_id=949)
+        MainWindow._upgrade_plex_film(window, film)
+        await asyncio.sleep(0)
+        self.assertEqual(asked, [(949, True, "1080p+")])
+
+
+class LibraryCheckedTests(unittest.TestCase):
+    """The Library page's "From Plex · checked …" in the footer, only while that page shows."""
+
+    def test_its_words_show_only_on_the_library_page(self) -> None:
+        label = SimpleNamespace(text="", shown=False)
+
+        def configure(text: str) -> None:
+            label.text = text
+
+        def grid() -> None:
+            label.shown = True
+
+        def grid_remove() -> None:
+            label.shown = False
+
+        label.configure, label.grid, label.grid_remove = configure, grid, grid_remove
+        window: Any = SimpleNamespace(
+            _mode=Mode.SERIES, _library_checked_text="", _library_checked=label
+        )
+        MainWindow._show_library_checked(window, "From Plex · checked 08:06")
+        self.assertEqual((label.text, label.shown), ("From Plex · checked 08:06", False))
+        window._mode = Mode.LIBRARY
+        MainWindow._show_library_checked(window)
+        self.assertTrue(label.shown)
+        window._mode = Mode.MOVIES
+        MainWindow._show_library_checked(window)
+        self.assertFalse(label.shown)
+
+    def test_words_before_the_footer_is_built_wait_for_it(self) -> None:
+        window: Any = SimpleNamespace(_mode=Mode.LIBRARY, _library_checked_text="")
+        MainWindow._show_library_checked(window, "From Plex · checked 08:06")
+        self.assertEqual(window._library_checked_text, "From Plex · checked 08:06")
+
+
 class _Settings:
     def __init__(self, settings: Settings) -> None:
         self.current = settings

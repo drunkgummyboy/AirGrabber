@@ -14,6 +14,7 @@ from unittest import mock
 import customtkinter as ctk
 
 from app.models import FollowRecord, Episode, ImportResult, LibraryEntry, Settings, Show, ShowActivity
+from app.models.plex import PlexShows
 from app.models.settings import TrackedFilter, TrackedSort
 from app.services import SettingsService
 from app.ui import poster_card
@@ -97,7 +98,7 @@ class ImportSummaryTest(unittest.TestCase):
 
 
 def _show(show_id: int, name: str, *, status: str = "Running") -> Show:
-    return Show(id=show_id, name=name, status=status)
+    return Show(id=show_id, name=name, status=status, tvdb_id=300 + show_id)
 
 
 def _episode(show_id: int, when: datetime | None = None, *, day: date | None = None) -> Episode:
@@ -272,6 +273,10 @@ class _Library:
 
     async def last_downloads(self) -> dict[int, datetime]:
         return {2: NOW - timedelta(days=3), 3: NOW - timedelta(days=1)}
+
+    async def plex_shows(self) -> PlexShows:
+        # As LibraryService answers: none without Plex. Bravo is in Plex by its TheTVDB id.
+        return PlexShows(tvdb=frozenset({303})) if self.plex_connected else PlexShows()
 
     async def untrack(self, show_id: int, *, profile_id: int) -> FollowRecord | None:
         self.untracked.append(show_id)
@@ -470,7 +475,9 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view._filter_choice.cget("values"), ["All", "Auto on", "Ended"])
         self.assertEqual(view._filter_choice.get(), "All")  # the stored choice counts as All
         self.assertEqual(self.shown(view), ["alpha", "Bravo", "Charlie"])
-        self.assertTrue(all(card.badge_text is None for card in view._cards.values()))
+        # No "2 missing" pill (a show downloading by itself still wears its blue "Auto").
+        pills = [badge.text for card in view._cards.values() for badge in card.badges]
+        self.assertFalse([text for text in pills if text != "Auto"])
         labels = [label for label, _ in view._cards[3].menu_items()]
         self.assertNotIn("⬇ Download missing (2)", labels)
         self.assertIs(self.settings.current.tracked_filter, TrackedFilter.MISSING)  # kept
@@ -488,6 +495,14 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         await view.load()
         self.assertEqual(view._filter_choice.cget("values"), ["All", "Auto on", "Ended"])
         self.assertEqual(self.shown(view), ["alpha", "Bravo", "Charlie"])
+
+    async def test_a_show_in_plex_wears_the_library_mark(self) -> None:
+        view = await self.view(missing={})
+        marks = {show_id: card.plex_mark is not None for show_id, card in view._cards.items()}
+        self.assertEqual(marks, {1: False, 2: False, 3: True})
+        self.library.plex_connected = False  # without Plex nothing counts as had
+        await view.load()
+        self.assertFalse(any(card.plex_mark for card in view._cards.values()))
 
     async def test_a_filter_without_shows_says_so(self) -> None:
         view = await self.view(missing={}, tracked_filter="missing")

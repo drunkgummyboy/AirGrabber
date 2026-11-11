@@ -35,7 +35,7 @@ from app.models import (
     TVDetails,
     Video,
 )
-from app.models.plex import PlexFilms
+from app.models.plex import PlexFilms, PlexShows
 from app.services.library import LibraryService
 from app.services.tmdb import TMDBAuthError, TMDBClient, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeClient
@@ -373,9 +373,13 @@ class DiscoveryService:
         return picks
 
     async def plex_films(self) -> PlexFilms:
-        """The films in Plex (the film cards' quiet ✓ "In Plex", app/services/plex.py); none
+        """The films in Plex (the film cards' library mark, app/ui/library_mark.py); none
         without Plex."""
         return await self._library.plex_films()
+
+    async def plex_shows(self) -> PlexShows:
+        """The series in Plex (Discover's show cards' library mark); none without Plex."""
+        return await self._library.plex_shows()
 
     async def movie_dashboard(self, *, force: bool = False) -> MovieDashboard:
         """Films first released digitally in the last 14 days, trending films, and films first

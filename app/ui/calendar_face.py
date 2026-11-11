@@ -10,14 +10,18 @@ without a box behind it, so the poster shows through). The fade is one smooth cu
 no knee, so no hard line; where the text starts it is about 0.84, so the text stays readable.
 Under the Download row, a widget that can't be see-through, the poster fades out completely.
 
-A missing episode (aired, not downloaded, not marked "I already have this") adds an amber line
-under the code (`episode_layout(note=True)` makes room for it).
+The bottom row is the poster cards' row: as tall as theirs at the same card size
+(`row_height` = ROW_HEIGHT at the card's own scale), with the same corners.
+
+A note under the code (missing: amber "Not downloaded yet", new: blue "New", what you have) is
+a pill (`episode_layout(note=True)` makes room for it).
 
 Several episodes of one show on one day share a stack card (app/ui/calendar_stack.py):
 `episode_layout(stack=True)` makes room for the "3 episodes ▾" pill under the code, and two
 card edges peek out behind the card at its bottom right (`StackEdges`, STACK_BEHIND cards each
 `stack_step` further right and down), baked into the poster piece and the right cap; the
-canvas draws their straight stretch along the bottom. The pill is baked too (`PillFace`).
+canvas draws their straight stretch along the bottom. The pills are drawn by the cards
+(`CanvasPill` in app/ui/calendar_cards.py).
 
 Two images are baked in a worker thread at physical pixels (DPI factor x card size): the
 poster piece (`PosterFace`: the border and rounded left corners around the faded cover; also
@@ -54,24 +58,21 @@ PAD_RIGHT = 6
 PAD_TOP = 9
 PAD_BOTTOM = 9
 CODE_GAP = 2  # between the name and the episode code
-ROW_GAP = 6  # at least, between the code (or the amber note under it) and the Download row
+ROW_GAP = 6  # at least, between the code (or the pills under it) and the Download row
 BORDER = 1
 CORNER_RADIUS = 8
 SOLID_MARGIN = 2  # around the Download row, the poster has faded out completely
 ROW_FADE = 16  # over this distance next to the Download row the poster fades out
 TITLE_SIZE = 14  # bold
 TITLE_MAX_LINES = 2
-CODE_SIZE = 12  # the episode code, "Not aired" and a missing episode's amber note
-# The Download row is drawn at this share of the card's scale (36 units tall at XL is too big
-# for a short card); never smaller than ROW_MIN_FACTOR, so its buttons stay easy to click.
-ROW_FACTOR = 0.75
-ROW_MIN_FACTOR = 2 / 3
-# A stack card (several episodes of one show on one day): the "3 episodes ▾" pill under the
-# code, and the cards peeking out behind it.
+CODE_SIZE = 12  # the episode code and "Not aired"
+# The pills under the code: a note ("Not downloaded yet", "New", "✓ In Plex") and a stack
+# card's "3 episodes ▾".
 PILL_SIZE = 11  # bold
 PILL_PAD_X = 7  # the pill's room left and right of its text
 PILL_PAD_Y = 1  # ... and above and below it
-PILL_GAP = 4  # between the code (the episodes' range) and the pill
+PILL_GAP = 4  # between the code (the episodes' range) and a pill, and between two pills
+# A stack card (several episodes of one show on one day): the cards peeking out behind it.
 STACK_STEP = 3  # each card behind sits this much further right and down
 STACK_BEHIND = 2  # how many cards peek out
 
@@ -94,11 +95,6 @@ _SUPERSAMPLE = 4  # the rounded corners are drawn this much larger, then scaled 
 # -- sizes -----------------------------------------------------------------------------------
 
 
-def row_scale(scale: CardScale = FULL) -> CardScale:
-    """The scale the card's Download row is drawn at."""
-    return CardScale(max(ROW_MIN_FACTOR, scale.factor * ROW_FACTOR))
-
-
 def title_size(scale: CardScale = FULL) -> int:
     return scale.font(TITLE_SIZE, TITLE_MIN)
 
@@ -119,14 +115,15 @@ class EpisodeLayout:
     pad_bottom: int
     code_gap: int
     row_height: int
-    row_scale: CardScale
+    row_scale: CardScale  # what the bottom row is drawn at: the card's own, as a poster card's
     border: int
     radius: int
     title_size: int
     code_size: int
-    note: bool = False  # room for the amber note under the code
-    # A stack card: the pill's font size and height and the gap above it (all 0 otherwise),
-    # and how much further right and down each card behind sits (0: not a stack).
+    note: bool = False  # room for the note's pill under the code
+    # With a note or a stack: the pills' font size and height and the gap above each (all 0
+    # otherwise); a stack card: how much further right and down each card behind sits (0: not
+    # a stack).
     pill_size: int = 0
     pill_height: int = 0
     pill_gap: int = 0
@@ -175,15 +172,14 @@ def episode_layout(
     stack: bool = False,
 ) -> EpisodeLayout:
     """The card's sizes at `scale`. `linespace(size, bold)` is a font's line height: the card
-    is tall enough for TITLE_MAX_LINES lines of name, the code and the Download row, with
-    `note` (a missing episode) for the amber note under the code as well, and with `stack`
-    (several episodes) for the pill under the code instead. Neither changes the poster area:
-    the texts of a day's cards start at one x. A stack's cards behind it come on top of
-    `height` (`stack_depth`)."""
-    rows = row_scale(scale)
+    is tall enough for TITLE_MAX_LINES lines of name, the code and the bottom row (the poster
+    cards' row, at `scale` too), with `note` for a note's pill under the code as well, and
+    with `stack` (several episodes) for the "3 episodes ▾" pill (under the note's, with both).
+    Neither changes the poster area: the texts of a day's cards start at one x. A stack's
+    cards behind it come on top of `height` (`stack_depth`)."""
     titles, codes = title_size(scale), code_size(scale)
     pad_top, pad_bottom = scale.px(PAD_TOP), scale.px(PAD_BOTTOM)
-    code_gap, row_height = scale.px(CODE_GAP), rows.px(ROW_HEIGHT)
+    code_gap, row_height = scale.px(CODE_GAP), scale.px(ROW_HEIGHT)
     code_line = code_gap + linespace(codes, False)
     needed = (
         pad_top
@@ -193,13 +189,12 @@ def episode_layout(
         + row_height
         + pad_bottom
     )
-    plain = max(scale.px(CARD_HEIGHT), needed)  # without the note: what sizes the poster
-    height = max(plain, needed + code_line) if note else plain
-    pills = pill_size(scale) if stack else 0
-    pill_height = linespace(pills, True) + 2 * scale.px(PILL_PAD_Y, minimum=1) if stack else 0
-    pill_gap = scale.px(PILL_GAP) if stack else 0
-    if stack:
-        height = max(plain, needed + pill_gap + pill_height + (code_line if note else 0))
+    plain = max(scale.px(CARD_HEIGHT), needed)  # without the pills: what sizes the poster
+    pilled = note or stack
+    pills = pill_size(scale) if pilled else 0
+    pill_height = linespace(pills, True) + 2 * scale.px(PILL_PAD_Y, minimum=1) if pilled else 0
+    pill_gap = scale.px(PILL_GAP) if pilled else 0
+    height = max(plain, needed + (int(note) + int(stack)) * (pill_gap + pill_height))
     return EpisodeLayout(
         height=height,
         poster_min=POSTER_STEP * -(-scale.px(POSTER_MIN) // POSTER_STEP),  # rounded up
@@ -209,7 +204,7 @@ def episode_layout(
         pad_bottom=pad_bottom,
         code_gap=code_gap,
         row_height=row_height,
-        row_scale=rows,
+        row_scale=scale,
         border=scale.px(BORDER, minimum=1),
         radius=scale.px(CORNER_RADIUS),
         title_size=titles,
@@ -315,19 +310,6 @@ class CapFace:
 
     def __call__(self) -> Image.Image:
         return compose_cap(self)
-
-
-@dataclass(frozen=True, slots=True)
-class PillFace:
-    """A stack card's "3 episodes ▾" pill without its text (canvas text goes on top), in
-    physical pixels: fully rounded ends, see-through around them. Hashable; calling it bakes
-    the image."""
-
-    size: tuple[int, int]
-    fill: RGB
-
-    def __call__(self) -> Image.Image:
-        return compose_pill(self)
 
 
 def stack_step_px(layout: EpisodeLayout, scaling: float) -> int:
@@ -442,19 +424,6 @@ def compose_cap(face: CapFace) -> Image.Image:
     if face.stack is not None:
         cap = _stacked(cap, face.border, face.radius, face.outside, face.stack, "left")
     return cap
-
-
-def compose_pill(face: PillFace) -> Image.Image:
-    """The pill in RGBA: `face.fill` with fully rounded ends, see-through around them. Pure."""
-    width, height = face.size
-    scale = _SUPERSAMPLE
-    big = Image.new("L", (width * scale, height * scale), 0)
-    ImageDraw.Draw(big).rounded_rectangle(
-        (0, 0, width * scale - 1, height * scale - 1), radius=height * scale // 2, fill=255
-    )
-    pill = Image.new("RGBA", face.size, (*face.fill, 0))
-    pill.putalpha(big.resize(face.size, Image.Resampling.BOX))
-    return pill
 
 
 def _stacked(

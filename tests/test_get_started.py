@@ -16,6 +16,7 @@ import customtkinter as ctk
 
 from app import i18n
 from app.i18n import Language
+from app.models.plex import PlexShows
 from app.models import (
     CalendarEntry,
     DiscoverShow,
@@ -204,6 +205,9 @@ class FakeDiscovery:
     @property
     def has_tmdb_key(self) -> bool:
         return self.key
+
+    async def plex_shows(self) -> PlexShows:
+        return PlexShows()
 
     async def tv_dashboard(self, *, profile_id: int, force: bool = False) -> TVDashboard:
         self.dashboard_people.append(profile_id)

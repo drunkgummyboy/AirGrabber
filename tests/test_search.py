@@ -661,6 +661,11 @@ class QualityTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             matches_quality(uhd_hevc, "4k")
+        # A Library film's ⬆ Upgrade: 1080p and 4K together.
+        self.assertTrue(matches_quality(uhd_hevc, "1080p+"))
+        self.assertTrue(matches_quality(release("Film 2024 1080p-B"), "1080p+"))
+        self.assertFalse(matches_quality(release("Film 2024 720p-C"), "1080p+"))
+        self.assertEqual(quality_counts([uhd_hevc], ("1080p+", "720p")), {"1080p+": 1, "720p": 0})
 
     def test_quality_key(self) -> None:
         self.assertEqual(QUALITY_KEYS, ("2160p", "1080p", "720p", "480p", "x265", "any"))

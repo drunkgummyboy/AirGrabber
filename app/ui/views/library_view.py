@@ -1,19 +1,23 @@
 """The Library page: what is in Plex, as a grid of posters (the switch's Library part, only while
 Plex is connected; app/services/plex_library.py gives it its contents).
 
-At the top: "Library", Shows (n) | Films (n), a search box and "From Plex · checked 08:53"; under
-it Sort (Recently added / A–Z / Year) and Show (shows: All / Not followed / With gaps / Ended;
-films: All / 4K / Recently added). The cards follow the card size (Settings › Looks): the poster
+At the top (the owner's choice A, mockups/library-filters.html): "Library" with a round search box
+at its right; under them the Shows and Films tabs with their counts, a line under the chosen one;
+then the filters as chips (shows: All / Not followed / With gaps / Ended; films: All / 4K /
+Recently added) and, at the right, Sort ▾ (Recently added / A–Z / Year). "From Plex · checked
+08:53" goes to the main window's footer (`on_checked`). The cards follow the card size (Settings › Looks): the poster
 from the Plex server (`posters`: an ImageCache fetching through PlexService.poster), the title
 (two lines' room on every card, so a row's cards line up; longer ends in "…"),
-"3 seasons · 34 episodes" or the year and quality, an amber "2 gaps" and, for a show, "✓ Following"
-or "+ Follow". A poster or title opens the show's window or the film's info window. PAGE_SIZE
+"3 seasons · 34 episodes" or the year and quality, an amber "2 gaps" pill and, for a show,
+"+ Follow" / "✓ Following" with a round phone button (a drawn phone: an emoji shows as a box
+there) while a phone is connected: the same PosterCard as the other pages' cards. A poster or title opens the show's window or the film's info window. PAGE_SIZE
 cards at first, "Show more" for the next ones: a library of a thousand films stays quick.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -25,6 +29,7 @@ from app.models.plex import PlexTitle
 from app.services import ImageCache, SettingsService
 from app.services.plex import poster_url
 from app.services.plex_library import (
+    can_upgrade,
     FILM_FILTERS,
     FILTER_NAMES,
     SHOW_FILTERS,
@@ -44,25 +49,35 @@ from app.services.plex_library import (
     shown_shows,
 )
 from app.ui import theme
-from app.ui.card_scale import FULL, CardScale
+from app.ui.card_scale import FULL, CardScale, grid_item_width
+from app.ui.cards import RoundButton, phone_icon
+from app.ui.download_control import CORNER_RADIUS as ROW_CORNER_RADIUS
+from app.ui.download_control import GAP as ROW_GAP
+from app.ui.missing_control import MISSING_COLOR
+from app.ui.poster_card import (
+    POSTER_CARD_WIDTH,
+    PosterCard,
+    TrackButton,
+    row_font_size,
+    row_height,
+)
 from app.ui.scrollable import ScrollableFrame
+from app.ui.shelf_filter import CHIP_FONT_SIZE, CHIP_GAP, CHIP_HEIGHT, CHIP_PAD, chip_color
 from app.ui.tasks import spawn
-from app.ui.text_fit import SLACK, fit_to_lines
 from app.ui.tooltip import Tooltip
 from app.ui.views.base import BaseView, StatusReporter
-from app.ui.widgets import FlexGrid, MessagePanel, PosterImage
+from app.ui.widgets import FlexGrid, MessagePanel
 
 TITLE = N_("Library")
-SHOWS_TAB = N_("Shows ({n})")
-FILMS_TAB = N_("Films ({n})")
+SHOWS_TAB = N_("Shows")
+FILMS_TAB = N_("Films")
 SEARCH_TEXT = N_("Search your library…")
-SORT_TEXT = N_("Sort:")
-SHOW_TEXT = N_("Show:")
-FOLLOW_TEXT = N_("+ Follow")
+SORT_TEXT = N_("Sort")
 FOLLOWING_TEXT = N_("✓ Following")
-SEND_TEXT = N_("📱 Send to phone")
+ADDING_TEXT = N_("Adding…")
+UPGRADE_TEXT = N_("⬆ Upgrade")
+UPGRADE_TIP = N_("Find a better copy: 1080p or 4K")
 SEND_TIP = N_("Send to phone")
-SEND_WIDTH = 40  # the 📱 beside a show's Follow
 FOLLOW_FAILED = N_("Couldn't follow {name}: TVmaze doesn't know it")
 OPEN_FAILED = N_("Couldn't find {name} on TVmaze")
 MORE_TEXT = N_("Show more ({n})")
@@ -70,36 +85,68 @@ EMPTY_TITLE = N_("Nothing from Plex yet")
 EMPTY_TEXT = N_("AirGrabber reads Plex every half hour; Settings → Plex → Check now reads it at once.")
 NO_MATCH_TEXT = N_("Nothing here with this search or filter.")
 PAGE_SIZE = 60  # cards at first and per "Show more"
-CARD_WIDTH = 176  # units at the XL card size
-TITLE_LINES = 2  # a card's title: longer ones end in "…"
 SEARCH_WAIT_MS = 250
-BAR_HEIGHT = 28
-BAR_RADIUS = 7
-BAR_FONT_SIZE = 13
+SEARCH_WIDTH = 280
+SEARCH_HEIGHT = 34
+TAB_FONT_SIZE = 15
+COUNT_FONT_SIZE = 12
+UNDERLINE = 3  # the chosen tab's line
 
 
-def _choices(
-    master: Any, values: Sequence[str], command: Callable[[str], None]
-) -> ctk.CTkSegmentedButton:
-    """Compact segmented buttons, as My shows' sort and filter."""
-    return ctk.CTkSegmentedButton(
-        master,
-        values=list(values),
-        height=BAR_HEIGHT,
-        corner_radius=BAR_RADIUS,
-        font=theme.font(BAR_FONT_SIZE),
-        fg_color=theme.SURFACE,
-        selected_color=theme.SELECTED,
-        selected_hover_color=theme.SELECTED_HOVER,
-        unselected_color=theme.SURFACE,
-        unselected_hover_color=theme.CHIP_HOVER,
-        text_color=theme.BUTTON_TEXT,
-        command=command,
-    )
+class KindTab(ctk.CTkFrame):
+    """Shows or Films: its name, its count in a small pill, and a line under it while chosen."""
+
+    def __init__(self, master: Any, name: str, command: Callable[[], None]) -> None:
+        super().__init__(master, fg_color="transparent", cursor="hand2")
+        self.selected = False
+        self._hover = False
+        self.name = ctk.CTkLabel(
+            self, text=name, width=0, font=theme.font(TAB_FONT_SIZE, bold=True), cursor="hand2"
+        )
+        self.name.grid(row=0, column=0, padx=(2, 0), pady=(4, 6))
+        self.count = ctk.CTkLabel(
+            self, text="", width=0, font=theme.font(COUNT_FONT_SIZE, bold=True), height=20,
+            corner_radius=10, cursor="hand2",
+        )
+        self.count.grid(row=0, column=1, padx=(7, 2), pady=(4, 6))
+        self.underline = ctk.CTkFrame(
+            self, width=1, height=UNDERLINE, corner_radius=1, fg_color="transparent"
+        )
+        self.underline.grid(row=1, column=0, columnspan=2, sticky="ew")
+        for widget in (self, self.name, self.count):
+            widget.bind("<Button-1>", lambda _event: command(), add="+")
+            widget.bind("<Enter>", lambda _event: self._set_hover(True), add="+")
+            widget.bind("<Leave>", lambda _event: self._set_hover(False), add="+")
+        self._paint()
+
+    def set_count(self, n: int) -> None:
+        self.count.configure(text=f" {n} ")
+
+    def set_selected(self, selected: bool) -> None:
+        if selected != self.selected:
+            self.selected = selected
+            self._paint()
+
+    def _set_hover(self, inside: bool) -> None:
+        if inside != self._hover:
+            self._hover = inside
+            self._paint()
+
+    def _paint(self) -> None:
+        on = self.selected
+        self.name.configure(text_color=theme.TEXT if on or self._hover else theme.TEXT_MUTED)
+        fill, _hover = chip_color(on)
+        self.count.configure(fg_color=fill, text_color=theme.ON_ACCENT if on else theme.TEXT_MUTED)
+        self.underline.configure(fg_color=theme.BRAND if on else "transparent")
 
 
-class LibraryCard(ctk.CTkFrame):
-    """One show or film: poster, title, its line, a tag, and for a show ✓ Following / + Follow."""
+class LibraryCard(PosterCard):
+    """One show or film, as the other pages' poster cards (the same size, the title and its line
+    on the cover's faded bottom): for a show "2 seasons · 34 episodes", an amber "2 gaps" pill in
+    the corner (as My shows' "2 missing") and the row of a Discover card, + Follow / ✓ Following
+    (TrackButton) with the round phone button beside it; for a film its year and quality, and as
+    its row "⬆ Upgrade" (below 1080p, `on_upgrade`) with the round phone beside it, or "Send to
+    phone" alone, or no row (the text at the bottom, as Get started's cards)."""
 
     def __init__(
         self,
@@ -114,91 +161,96 @@ class LibraryCard(ctk.CTkFrame):
         on_open: Callable[[], object],
         on_follow: Callable[[], object] | None = None,
         on_send: Callable[[], object] | None = None,
+        on_upgrade: Callable[[], object] | None = None,
     ) -> None:
-        """`on_send`: 📱 Send to phone (beside Follow for a show, its own button for a film);
-        None: no phone to send to."""
+        """`on_send`: Send to phone (the round phone beside the main button, or a film's own
+        row); None: no phone to send to. `on_upgrade`: a film below 1080p's "⬆ Upgrade"."""
+        has_row = following is not None or on_send is not None or on_upgrade is not None
+        url = poster_url(title)
         super().__init__(
-            master, fg_color=theme.SURFACE, corner_radius=10, border_width=1,
-            border_color=theme.EDGE,
+            master,
+            title=title.title,
+            meta=line,
+            poster=lambda _width: url,
+            images=posters,
+            extra_height=0 if has_row else -row_height(scale),
+            scale=scale,
+            meta_row=True,
         )
-        width = scale.px(CARD_WIDTH)
         self.title = title
-        self.poster = PosterImage(self, width=width - 12, height=round((width - 12) * 1.5))
-        self.poster.grid(row=0, column=0, padx=6, pady=(6, 4))
-        self.poster.set_on_click(on_open)
-        self.poster.show(posters, poster_url(title))
-        # At most TITLE_LINES lines, and always that tall: a long title neither stretches its card
-        # nor makes it taller than its neighbours (the whole title in a tip when it's cut).
-        title_font = theme.font(scale.font(14, 12), bold=True)
-        shown = fit_to_lines(title.title, width - 20 - SLACK, TITLE_LINES, title_font.measure)
-        name = ctk.CTkLabel(
-            self, text=shown, font=title_font, text_color=theme.TEXT, wraplength=width - 20,
-            height=TITLE_LINES * title_font.metrics("linespace"), cursor="hand2",
-        )
-        name.grid(row=1, column=0, padx=8, sticky="ew")
-        name.bind("<Button-1>", lambda _event: on_open())
-        if shown != title.title:
-            Tooltip(name, title.title)
-        ctk.CTkLabel(
-            self, text=line, font=theme.font(scale.font(12, 10)), text_color=theme.TEXT_MUTED,
-            height=scale.text_height(18, scale.font(12, 10)),
-        ).grid(row=2, column=0, padx=8)
-        self.tag = ctk.CTkLabel(
-            self, text=tag, font=theme.font(scale.font(12, 10), bold=True),
-            text_color=theme.WARNING, height=scale.text_height(18, scale.font(12, 10)),
-        )
-        self.tag.grid(row=3, column=0, padx=8)
-        self.follow_button: ctk.CTkButton | None = None
-        self.send_button: ctk.CTkButton | None = None
-        if following is None and on_send is None:
-            ctk.CTkFrame(self, width=1, height=6, fg_color="transparent").grid(row=4, column=0)
+        self._set_open(on_open)
+        if tag:
+            self._set_badge(tag, MISSING_COLOR)
+        self.follow_button: TrackButton | None = None
+        self.send_button: ctk.CTkButton | RoundButton | None = None
+        self.upgrade_button: ctk.CTkButton | None = None
+        if not has_row:
             return
-        actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=4, column=0, padx=8, pady=(4, 8), sticky="ew")
-        actions.grid_columnconfigure(0, weight=1)
-        height = scale.px(30, minimum=24)
-        font = theme.font(scale.font(13, 11), bold=True)
-        if following is not None:
-            self.follow_button = ctk.CTkButton(
-                actions, height=height, font=font, command=on_follow
-            )
-            self.follow_button.grid(row=0, column=0, sticky="ew")
-            self.set_following(following)
-        if on_send is not None:
-            alone = following is None
+        row = ctk.CTkFrame(self, fg_color="transparent", height=row_height(scale))
+        row.pack_propagate(False)
+        self._pack_action(row)
+
+        def send() -> None:
+            if on_send is not None:
+                on_send()
+
+        def follow() -> None:
+            if on_follow is not None:
+                on_follow()
+
+        def upgrade() -> None:
+            if on_upgrade is not None:
+                on_upgrade()
+
+        if following is not None or on_upgrade is not None:
+            if on_send is not None:
+                phone = RoundButton(
+                    row, icon=phone_icon, size=row_height(scale),
+                    font=theme.font(row_font_size(scale)), command=send,
+                )
+                phone.pack(side="right", padx=(scale.px(ROW_GAP), 0))
+                Tooltip(phone, t(SEND_TIP))
+                self._follow_scale(phone.rescale)
+                self.send_button = phone
+            if following is not None:
+                self.follow_button = TrackButton(
+                    row, busy_text=t(ADDING_TEXT), command=follow, scale=scale
+                )
+                self.follow_button.pack(side="left", fill="both", expand=True)
+                self.set_following(following)
+            else:  # a film below 1080p: "do it", the filled accent like Follow
+                self.upgrade_button = ctk.CTkButton(
+                    row, text=t(UPGRADE_TEXT), height=row_height(scale),
+                    corner_radius=scale.px(ROW_CORNER_RADIUS),
+                    font=theme.font(row_font_size(scale), bold=True), fg_color=theme.ACCENT,
+                    hover_color=theme.ACCENT_HOVER, text_color=theme.ON_ACCENT, command=upgrade,
+                )
+                self.upgrade_button.pack(side="left", fill="both", expand=True)
+                Tooltip(self.upgrade_button, t(UPGRADE_TIP))
+        elif on_send is not None:
             self.send_button = ctk.CTkButton(
-                actions,
-                text=t(SEND_TEXT) if alone else "📱",
-                width=0 if alone else scale.px(SEND_WIDTH, minimum=30),
-                height=height,
-                font=font,
-                fg_color="transparent",
-                border_width=1,
-                border_color=theme.EDGE,
-                hover_color=theme.HOVER,
-                text_color=theme.BUTTON_TEXT,
-                command=on_send,
+                row, text=t(SEND_TIP), height=row_height(scale),
+                corner_radius=scale.px(ROW_CORNER_RADIUS),
+                font=theme.font(row_font_size(scale), bold=True), fg_color="transparent",
+                border_width=1, border_color=theme.EDGE, hover_color=theme.HOVER,
+                text_color=theme.BUTTON_TEXT, command=send,
             )
-            self.send_button.grid(
-                row=0, column=0 if alone else 1, sticky="ew", padx=(0 if alone else 6, 0)
-            )
-            if not alone:
-                Tooltip(self.send_button, t(SEND_TIP))
+            self.send_button.pack(fill="both", expand=True)
 
     def set_following(self, following: bool) -> None:
-        button = self.follow_button
-        if button is None:
-            return
-        if following:
-            button.configure(
-                text=t(FOLLOWING_TEXT), fg_color="transparent", border_width=1,
-                border_color=theme.SUCCESS, text_color=theme.SUCCESS, hover=False, state="normal",
-            )
-        else:
-            button.configure(
-                text=t(FOLLOW_TEXT), fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                border_width=0, text_color=theme.ON_ACCENT, hover=True, state="normal",
-            )
+        if self.follow_button is not None:
+            self.follow_button.set_state("tracked" if following else "idle")
+
+    def set_busy(self) -> None:
+        """While Track looks the show up and adds it."""
+        if self.follow_button is not None:
+            self.follow_button.set_state("busy")
+
+    @property
+    def following(self) -> bool:
+        return self.follow_button is not None and self.follow_button.cget("text") == t(
+            FOLLOWING_TEXT
+        )
 
 
 class LibraryView(BaseView):
@@ -212,14 +264,17 @@ class LibraryView(BaseView):
         status: StatusReporter,
         on_open_show: Callable[[PlexTitle], Awaitable[bool]],
         on_open_film: Callable[[PlexTitle], None],
+        on_upgrade_film: Callable[[PlexTitle], None] | None = None,
         on_send: Callable[[PlexTitle], None] | None = None,
         can_send: Callable[[], bool] = lambda: False,
         card_scale: Callable[[], CardScale] = lambda: FULL,
+        on_checked: Callable[[str], None] = lambda text: None,
         **kwargs: Any,
     ) -> None:
         """`on_open_show(title)`: opens the show's window; False when TVmaze knows none.
         `on_open_film(title)`: the film's info window. `on_send(title)`: the Send to phone
-        window, on the cards while `can_send()` (a phone is connected), read at every render."""
+        window, on the cards while `can_send()` (a phone is connected), read at every render.
+        `on_checked(text)`: "From Plex · checked 08:53" after every load (the footer's)."""
         super().__init__(master, **kwargs)
         self._service = service
         self._posters = posters
@@ -227,9 +282,12 @@ class LibraryView(BaseView):
         self._status = status
         self._on_open_show = on_open_show
         self._on_open_film = on_open_film
+        self._on_upgrade_film = on_upgrade_film
         self._on_send = on_send
         self._can_send = can_send
         self._card_scale = card_scale
+        self._on_checked = on_checked
+        self.checked_text = ""
         self._contents = LibraryContents()
         self._kind = LibraryKindTab.SHOWS
         self._sort = LibrarySort.ADDED
@@ -240,75 +298,117 @@ class LibraryView(BaseView):
         self.cards: list[LibraryCard] = []
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+        # "Library" and the search box.
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=15, pady=5)
-        header.grid_columnconfigure(3, weight=1)
+        header.grid(row=0, column=0, sticky="ew", padx=15, pady=(5, 0))
+        header.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(
-            header, text=t(TITLE), font=theme.font(18, bold=True), text_color=theme.TEXT
-        ).grid(row=0, column=0, padx=(0, 14))
-        self.kind_choice = _choices(header, self._kind_labels(), self._choose_kind)
-        self.kind_choice.grid(row=0, column=1)
-        self.kind_choice.set(self._kind_labels()[0])
+            header, text=t(TITLE), font=theme.font(20, bold=True), text_color=theme.TEXT
+        ).grid(row=0, column=0, sticky="w")
         self.search = ctk.CTkEntry(
-            header, width=240, placeholder_text=t(SEARCH_TEXT), fg_color=theme.SURFACE,
-            border_color=theme.EDGE, text_color=theme.TEXT,
+            header, width=SEARCH_WIDTH, height=SEARCH_HEIGHT, corner_radius=SEARCH_HEIGHT // 2,
+            placeholder_text="🔍  " + t(SEARCH_TEXT), fg_color=theme.SURFACE,
+            border_color=theme.CHIP_HOVER, text_color=theme.TEXT,
         )
-        self.search.grid(row=0, column=2, padx=(14, 0))
+        self.search.grid(row=0, column=2, sticky="e")
         self.search.bind("<KeyRelease>", self._search_typed, add="+")
-        self.checked = ctk.CTkLabel(
-            header, text="", font=theme.font(13), text_color=theme.TEXT_MUTED
-        )
-        self.checked.grid(row=0, column=4, sticky="e")
 
+        # The Shows and Films tabs on a thin line.
+        tabs = ctk.CTkFrame(self, fg_color="transparent")
+        tabs.grid(row=1, column=0, sticky="ew", padx=15, pady=(6, 0))
+        tabs.grid_columnconfigure(2, weight=1)
+        self.kind_tabs: dict[LibraryKindTab, KindTab] = {}
+        kinds = ((LibraryKindTab.SHOWS, SHOWS_TAB), (LibraryKindTab.FILMS, FILMS_TAB))
+        for column, (kind, name) in enumerate(kinds):
+            tab = KindTab(tabs, t(name), functools.partial(self.set_kind, kind))
+            tab.grid(row=0, column=column, sticky="w", padx=(0, 26))
+            self.kind_tabs[kind] = tab
+        ctk.CTkFrame(tabs, height=1, corner_radius=0, fg_color=theme.CHIP_HOVER).grid(
+            row=1, column=0, columnspan=3, sticky="ew"
+        )
+        self._show_kinds()
+
+        # The filters as chips, Sort ▾ at the right.
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=1, column=0, sticky="w", padx=15, pady=(0, 8))
-        self._label(bar, t(SORT_TEXT)).pack(side="left", padx=(0, 6))
-        sorts = [t(name) for name in SORT_NAMES.values()]
-        self.sort_choice = _choices(bar, sorts, self._choose_sort)
-        self.sort_choice.set(t(SORT_NAMES[self._sort]))
-        self.sort_choice.pack(side="left")
-        self._label(bar, t(SHOW_TEXT)).pack(side="left", padx=(20, 6))
-        self._filter_bar = bar
-        self.filter_choice = self._new_filter_choice()
+        bar.grid(row=2, column=0, sticky="ew", padx=15, pady=(12, 10))
+        bar.grid_columnconfigure(0, weight=1)
+        self._chip_font = theme.font(CHIP_FONT_SIZE)
+        self._chip_row = ctk.CTkFrame(bar, fg_color="transparent")
+        self._chip_row.grid(row=0, column=0, sticky="w")
+        self.filter_chips: dict[LibraryFilter, ctk.CTkButton] = {}
+        self._make_chips()
+        sort = ctk.CTkFrame(bar, fg_color="transparent")
+        sort.grid(row=0, column=1, sticky="e")
+        ctk.CTkLabel(
+            sort, text=t(SORT_TEXT), font=self._chip_font, text_color=theme.TEXT_MUTED
+        ).pack(side="left", padx=(0, 8))
+        fill, hover = chip_color(False)
+        self.sort_menu = ctk.CTkOptionMenu(
+            sort, values=[t(name) for name in SORT_NAMES.values()], height=CHIP_HEIGHT,
+            corner_radius=8, font=self._chip_font, dropdown_font=self._chip_font,
+            fg_color=fill, button_color=fill, button_hover_color=hover,
+            text_color=theme.BUTTON_TEXT, command=self._choose_sort,
+        )
+        self.sort_menu.set(t(SORT_NAMES[self._sort]))
+        self.sort_menu.pack(side="left")
 
         self._body = ScrollableFrame(self, fg_color="transparent")
-        self._body.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
+        self._body.grid(row=3, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._body.grid_columnconfigure(0, weight=1)
         self._grid: FlexGrid | None = None
         self.more_button: ctk.CTkButton | None = None
         self._message: MessagePanel | ctk.CTkLabel | None = None
 
-    def _label(self, master: Any, text: str) -> ctk.CTkLabel:
-        return ctk.CTkLabel(
-            master, text=text, font=theme.font(BAR_FONT_SIZE), text_color=theme.TEXT_MUTED
-        )
-
     def _filters(self) -> tuple[LibraryFilter, ...]:
         return SHOW_FILTERS if self._kind is LibraryKindTab.SHOWS else FILM_FILTERS
 
-    def _new_filter_choice(self) -> ctk.CTkSegmentedButton:
-        choice = _choices(
-            self._filter_bar, [t(FILTER_NAMES[f]) for f in self._filters()], self._choose_filter
-        )
-        choice.set(t(FILTER_NAMES[self._filter]))
-        choice.pack(side="left")
-        return choice
+    def _make_chips(self) -> None:
+        """The chips of the chosen tab's filters (shows' and films' differ)."""
+        for chip in self.filter_chips.values():
+            chip.destroy()
+        self.filter_chips = {}
+        for choice in self._filters():
+            text = t(FILTER_NAMES[choice])
+            chip = ctk.CTkButton(
+                self._chip_row, text=text,
+                width=round(self._chip_font.measure(text)) + 2 * CHIP_PAD, height=CHIP_HEIGHT,
+                corner_radius=CHIP_HEIGHT // 2, font=self._chip_font,
+                command=functools.partial(self._choose_filter, choice),
+            )
+            chip.pack(side="left", padx=(0, CHIP_GAP))
+            self.filter_chips[choice] = chip
+        self._paint_chips()
 
-    def _kind_labels(self) -> list[str]:
-        shows, films = len(self._contents.shows), len(self._contents.films)
-        return [t(SHOWS_TAB, n=shows), t(FILMS_TAB, n=films)]
+    def _paint_chips(self) -> None:
+        for choice, chip in self.filter_chips.items():
+            on = choice is self._filter
+            fill, hover = chip_color(on)
+            chip.configure(
+                fg_color=fill, hover_color=hover,
+                text_color=theme.ON_ACCENT if on else theme.BUTTON_TEXT,
+            )
+
+    def _show_kinds(self) -> None:
+        """The tabs' counts and which one is chosen."""
+        counts = {
+            LibraryKindTab.SHOWS: len(self._contents.shows),
+            LibraryKindTab.FILMS: len(self._contents.films),
+        }
+        for kind, tab in self.kind_tabs.items():
+            tab.set_count(counts[kind])
+            tab.set_selected(kind is self._kind)
 
     # -- choices ---------------------------------------------------------------------------
 
-    def _choose_kind(self, label: str) -> None:
-        kind = LibraryKindTab.SHOWS if label == self._kind_labels()[0] else LibraryKindTab.FILMS
+    def set_kind(self, kind: LibraryKindTab) -> None:
+        """Shows or Films, as a click on its tab."""
         if kind is self._kind:
             return
         self._kind = kind
         self._filter = LibraryFilter.ALL
-        self.filter_choice.destroy()
-        self.filter_choice = self._new_filter_choice()
+        self._show_kinds()
+        self._make_chips()
         self._shown = PAGE_SIZE
         self._render()
 
@@ -317,8 +417,11 @@ class LibraryView(BaseView):
         self._shown = PAGE_SIZE
         self._render()
 
-    def _choose_filter(self, label: str) -> None:
-        self._filter = next(f for f in self._filters() if t(FILTER_NAMES[f]) == label)
+    def _choose_filter(self, choice: LibraryFilter) -> None:
+        if choice is self._filter:
+            return
+        self._filter = choice
+        self._paint_chips()
         self._shown = PAGE_SIZE
         self._render()
 
@@ -332,12 +435,6 @@ class LibraryView(BaseView):
         self._shown = PAGE_SIZE
         self._render()
 
-    def set_kind(self, kind: LibraryKindTab) -> None:
-        """Shows or Films, as a click on the tabs."""
-        label = self._kind_labels()[0 if kind is LibraryKindTab.SHOWS else 1]
-        self.kind_choice.set(label)
-        self._choose_kind(label)
-
     # -- loading and showing -------------------------------------------------------------------
 
     async def load(self) -> None:
@@ -345,10 +442,9 @@ class LibraryView(BaseView):
         if not self.winfo_exists():
             return
         self._contents = contents
-        labels = self._kind_labels()
-        self.kind_choice.configure(values=labels)
-        self.kind_choice.set(labels[0 if self._kind is LibraryKindTab.SHOWS else 1])
-        self.checked.configure(text=checked_text(contents.checked_at))
+        self._show_kinds()
+        self.checked_text = checked_text(contents.checked_at)
+        self._on_checked(self.checked_text)
         self._render()
 
     def _clear(self) -> None:
@@ -382,7 +478,8 @@ class LibraryView(BaseView):
             return
         page: Sequence[LibraryShow | PlexTitle]
         page, more = page_slice(items, self._shown)
-        grid = FlexGrid(self._body, item_width=scale.px(CARD_WIDTH), pad_x=8, pad_y=10)
+        item_width = grid_item_width(POSTER_CARD_WIDTH, scale)  # as every page's poster cards
+        grid = FlexGrid(self._body, item_width=item_width, pad_x=8, pad_y=10)
         grid.grid(row=0, column=0, sticky="ew")
         self._grid = grid
         for item in page:
@@ -412,10 +509,12 @@ class LibraryView(BaseView):
         line = film_line(item)
         if item.resolution:
             line = f"{line} · {item.resolution}" if line else item.resolution
+        upgrade = self._on_upgrade_film if can_upgrade(item) else None
         return LibraryCard(
             grid, item, posters=self._posters, scale=scale, line=line,
             on_open=lambda: self._on_open_film(item),
             on_send=(lambda: send(item)) if send is not None else None,
+            on_upgrade=(lambda: upgrade(item)) if upgrade is not None else None,
         )
 
     def show_more(self) -> None:
@@ -439,9 +538,9 @@ class LibraryView(BaseView):
         self._start(run(), "LibraryView.open")
 
     def _follow(self, card: LibraryCard, show: LibraryShow) -> None:
-        if card.follow_button is None or card.follow_button.cget("text") == t(FOLLOWING_TEXT):
+        if card.follow_button is None or card.following:
             return
-        card.follow_button.configure(state="disabled")
+        card.set_busy()
 
         async def run() -> None:
             followed = await self._service.follow(

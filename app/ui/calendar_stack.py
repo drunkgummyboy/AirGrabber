@@ -6,13 +6,14 @@ or more that day gets a stack card: the wide `StackCard` (recent days and later)
 
 `StackCard` is the wide episode card (`EpisodeCard`, app/ui/calendar_cards.py) with two card
 edges peeking out behind it at the bottom right (app/ui/calendar_face.py bakes their corners),
-the episodes' range under the name ("S01E07 – E09", `range_text`), a pill "3 episodes ▾" and the
-bottom row (`stack_look`). Clicking the pill unfolds a row per episode inside the card (the pill
-turns "▴"): its code with the compact cards' small buttons (`SlimDownload`: ⬇ with ⋯, …) and
-under it its state ("not aired"; with Plex "✓ in Plex", amber "still needed", blue "new":
-`row_state`); a right-click on a row opens the search window. Clicking the pill again folds
-them. The view remembers the unfolded stacks for the session (`on_fold`), so a reload keeps
-them open.
+the episodes' range under the name ("S01E07 – E09", `range_text`), a blue pill "3 episodes ▾"
+and the bottom row: the poster cards' row (`stack_look`'s main button) with the round ⋯ beside
+it (a menu of the episodes, each opening its search window: `episode_menu`). Clicking the pill
+unfolds a row per episode inside the card (the pill turns "▴"): its code with the compact
+cards' round buttons (`SlimDownload`: ⬇ with ⋯, …) and under it its state ("not aired"; with
+Plex "✓ in Plex", amber "still needed", blue "new": `row_state`); a right-click on a row opens
+the search window. Clicking the pill again folds them. The view remembers the unfolded stacks
+for the session (`on_fold`), so a reload keeps them open.
 
 What you have and miss shows only while Plex is connected (`marks`; owner's decision for 3.1.0,
 app/services/plex.py), and only Plex counts as had: an episode grabbed by AirGrabber that Plex
@@ -25,15 +26,14 @@ too); meanwhile the row shows "Downloading 2 of 3…" (the batch's `BatchState`,
 rebuilt mid-run picks up as well), afterwards the usual outcome. Otherwise (and always without
 Plex) the row shows only the queue's states and a finished run's outcome, nothing else.
 
-`CompactStackCard` is one slim line: the name, the range and a small "3" badge, then a small ⬇
-(with Plex: download all still needed), … while one works, or a run's ✓. Clicking the name
-opens the show's window; a right-click (or the ✓) opens a small menu of the episodes, each
-opening its search window.
+`CompactStackCard` is one slim line: the name, the range and a blue "3 episodes" pill (just "3"
+on a narrow line, `slim_badge`), then a round ⬇ (with Plex: download all still needed), … while
+one works, or a run's ✓. Clicking the name opens the show's window; a right-click (or the ✓)
+opens the menu of the episodes.
 """
 
 from __future__ import annotations
 
-import asyncio
 import tkinter as tk
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
@@ -47,8 +47,6 @@ from app.models import CalendarEntry, Episode, Show
 from app.ui import theme
 from app.ui.calendar_cards import (
     GRABBED_ICON,
-    HaveMark,
-    NOTE_HEIGHT,
     SLIM_BUTTONS_GAP,
     SLIM_CODE_GAP,
     SLIM_ICON,
@@ -57,34 +55,38 @@ from app.ui.calendar_cards import (
     SLIM_PAD_X,
     SLIM_PAD_Y,
     SLIM_RADIUS,
-    with_source,
     WORKING_ICON,
     _CODE_SIZE,
-    _ICON_RADIUS,
     _ICON_SIZE,
     _NAME_SIZE,
-    _NOTE_SIZE,
+    CanvasPill,
     EpisodeActions,
     EpisodeCard,
+    HaveMark,
     IconLook,
     OpenShow,
+    PillLabel,
+    RoundIcon,
     SlimDownload,
     _descendants,
     _font_linespace,
     _linespace,
+    _note_pill,
     _open_on_click,
+    _pack_note,
     _rgb,
+    _scaling,
     buttons_width,
     card_note,
     compact_height,
+    fit_note,
+    with_source,
 )
 from app.ui.calendar_face import (
     PILL_PAD_X,
     EpisodeLayout,
-    PillFace,
     StackEdges,
     episode_layout,
-    shared_image,
     stack_edges,
     stack_step_px,
 )
@@ -106,8 +108,7 @@ from app.ui.download_control import (
     fit_text,
     outcome_text,
 )
-from app.ui.missing_control import MISSING_COLOR, popup_menu, progress_texts
-from app.ui.tasks import spawn
+from app.ui.missing_control import MISSING_COLOR, SEASON_MENU_TIP, popup_menu, progress_texts
 from app.ui.text_fit import SLACK, elide_to_width, unscaled_width
 from app.ui.tooltip import add_tooltip
 
@@ -133,19 +134,22 @@ ROW_TEXTS: dict[RowState, str] = {
 FOLDED_ARROW = "▾"
 UNFOLDED_ARROW = "▴"
 
-# The "3 episodes ▾" pill and the compact card's "3" badge are ROW_SELECTED (read when drawn).
-PILL_TEXT_COLOR = theme.BUTTON_TEXT
+
+def pill_color() -> theme.Color:
+    """The "3 episodes ▾" pill and the compact card's "3 episodes" pill: blue, information.
+    Read when drawn (the palette is set at startup)."""
+    return theme.BRAND
+
+
 # The unfolded rows (XL units; the buttons keep the compact cards' size): the gap under the pill,
 # then per episode a line with its code and small buttons and a line with its state.
 ROWS_GAP = 6
 EPISODE_LINE = SLIM_ICON
 EPISODE_ROW_GAP = 4  # between two episodes
 CODE_BUTTONS_GAP = 6  # at least, between an episode's code and its buttons
-# The compact card's "3" badge.
-BADGE_GAP = 4  # between the range and the badge
-BADGE_PAD_X = 5
+# The compact card's "3 episodes" pill.
+BADGE_GAP = 4  # between the range and the pill
 BADGE_HEIGHT = 16
-BADGE_RADIUS = 8
 _BADGE_SIZE = 9  # bold
 SLIM_NAME_MIN = 48  # on a narrow compact stack card the range gives way before the name
 
@@ -418,6 +422,53 @@ def slim_stack_rooms(
     return name + give, range_width - give
 
 
+def badge_texts(count: int) -> tuple[str, str]:
+    """The compact stack card's pill: "3 episodes", and "3" for a narrow line."""
+    return tn("{n} episode", "{n} episodes", count), str(count)
+
+
+def slim_badge(
+    row_width: float, range_width: float, icon_width: float, badge_widths: Sequence[float]
+) -> int:
+    """Which of the compact stack card's pills (`badge_widths`, longest first) its line,
+    `row_width` units wide, has room for: the first that leaves the range in full and the name
+    its least room (`slim_stack_rooms`); else the last."""
+    for index, width in enumerate(badge_widths):
+        _name, range_room = slim_stack_rooms(row_width, range_width, width, icon_width)
+        if range_room >= range_width:
+            return index
+    return len(badge_widths) - 1
+
+
+MenuItems = list[tuple[str, Callable[[], None]]]
+
+
+def episode_menu(
+    stack: Stack,
+    actions: EpisodeActions,
+    in_plex: Collection[int],
+    *,
+    marks: bool = False,
+    downloaded: Collection[int] = frozenset(),
+) -> MenuItems:
+    """The stack's episodes as a menu (the wide card's ⋯, the compact card's right-click): one
+    item per episode (`menu_label`), opening its search window."""
+    states, choose = actions.states, actions.choose
+
+    def opener(entry: CalendarEntry) -> Callable[[], None]:
+        return lambda: choose(entry)
+
+    return [
+        (
+            menu_label(
+                entry, states.get(entry_key(entry)), in_plex, marks=marks, downloaded=downloaded
+            ),
+            opener(entry),
+        )
+        for entry in stack.entries
+    ]
+
+
 def start_download_all(
     stack: Stack, actions: EpisodeActions, in_plex: Collection[int]
 ) -> None:
@@ -471,8 +522,9 @@ def _unwatch(watches: Iterable[_Watch], actions: EpisodeActions) -> None:
 
 
 class StackControl(DownloadControl[CalendarEntry]):
-    """A stack card's bottom row (`stack_look`): with Plex "⬇ Download all (2)", the batch's
-    progress, or a run's outcome that unfolds the rows (`on_choose`)."""
+    """A stack card's main button (`stack_look`), the poster cards' row: with Plex "⬇ Download
+    all (2)", the batch's progress, or a run's outcome that unfolds the rows (`on_choose`). The
+    card's round ⋯ sits beside it."""
 
     def __init__(
         self,
@@ -537,8 +589,8 @@ class StackCard(EpisodeCard):
     """Several episodes of one show on one day as one wide card (see the module docstring).
     `marks`: Plex is connected (what you have and miss shows); `in_plex`: the ids of the
     episodes in Plex ("✓ in Plex"), `new`: those aired less than a day ago, `downloaded`: those
-    downloaded and not in Plex yet; `have`: the note when that goes for all of them; `unfolded`:
-    the rows open from the start; `on_fold(open)` hears every fold and unfold."""
+    downloaded and not in Plex yet; `have`: the note's pill when that goes for all of them;
+    `unfolded`: the rows open from the start; `on_fold(open)` hears every fold and unfold."""
 
     def __init__(
         self,
@@ -579,11 +631,8 @@ class StackCard(EpisodeCard):
         )
         self._on_fold = on_fold
         self._code_text = with_source(stack.range, stack.entries[0].show)
-        self._pill_font = theme.font(self._layout.pill_size, bold=True)
         self._row_font = theme.font(self._layout.code_size)
         self._row_code_font = theme.font(self._layout.code_size, bold=True)
-        self._pill_face: PillFace | None = None
-        self._pill_task: asyncio.Task[None] | None = None
 
         canvas = self._art
         # The cards behind it: their straight stretch along the bottom, under everything (the
@@ -591,8 +640,9 @@ class StackCard(EpisodeCard):
         self._behind = [canvas.create_rectangle(0, 0, 0, 0, outline="", width=0) for _ in range(4)]
         for item in reversed(self._behind):
             canvas.tag_lower(item)
-        self._pill = canvas.create_image(0, 0, anchor="nw", tags=("pill",))
-        self._pill_text = canvas.create_text(0, 0, anchor="w", text="", tags=("pill",))
+        self._count_pill = CanvasPill(canvas, tags=("pill",))
+        self._pill = self._count_pill.image
+        self._pill_text = self._count_pill.text
         canvas.tag_bind("pill", "<Button-1>", lambda _event: self.toggle())
         canvas.tag_bind("pill", "<Enter>", lambda _event: canvas.configure(cursor="hand2"))
         canvas.tag_bind("pill", "<Leave>", lambda _event: canvas.configure(cursor=""))
@@ -623,17 +673,39 @@ class StackCard(EpisodeCard):
             height += rows_height(len(self._stack.entries), state_line, self._scale)
         return height
 
-    def _make_control(self, entry: CalendarEntry) -> DownloadControl[CalendarEntry] | None:
+    def _make_control(
+        self, master: ctk.CTkFrame, entry: CalendarEntry
+    ) -> DownloadControl[CalendarEntry] | None:
         if not any(item.episode.has_aired() for item in self._stack.entries):
             return None  # "Not aired" instead
         return StackControl(
-            self,
+            master,
             self._stack,
             in_plex=self._in_plex,
             actions=self._actions,
             scale=self._layout.row_scale,
             on_choose=self.toggle,
             marks=self._marks,
+        )
+
+    def _wants_menu(self) -> bool:
+        return self._control is not None  # the episodes, whatever the main button says
+
+    def _menu_tip(self) -> str:
+        return t(SEASON_MENU_TIP)
+
+    def _menu_clicked(self) -> None:
+        """The ⋯: the menu of the episodes, under it."""
+        popup_menu(self.menu_button or self, self.menu_items())
+
+    def menu_items(self) -> MenuItems:
+        """The ⋯'s menu (`episode_menu`)."""
+        return episode_menu(
+            self._stack,
+            self._actions,
+            self._in_plex,
+            marks=self._marks,
+            downloaded=self._downloaded,
         )
 
     def _stack_edges(self, scaling: float) -> StackEdges | None:
@@ -662,22 +734,18 @@ class StackCard(EpisodeCard):
             canvas.coords(edge, 0, bottom - border, width, bottom)
 
     def _set_appearance_mode(self, mode_string: str) -> None:
+        self._paint_stack()  # before EpisodeCard's, which places the texts and pills again
         super()._set_appearance_mode(mode_string)
-        self._paint_stack()
-        self._pill_face = None  # baked again in the new colour
-        if self._size[0] > 1:
-            self._place_texts()
 
     def _paint_stack(self) -> None:
-        """The stack's canvas colours in the current mode (the rows' state colours: in
-        `_place_texts`)."""
+        """The stack's canvas colours in the current mode (the pill's and the rows' state
+        colours: in `_place_texts`)."""
         canvas, pick = self._art, theme.pick
         far_fill, far_edge, near_fill, near_edge = self._behind
         canvas.itemconfigure(far_fill, fill=pick(theme.STACK_FAR))
         canvas.itemconfigure(far_edge, fill=pick(theme.STACK_FAR_EDGE))
         canvas.itemconfigure(near_fill, fill=pick(theme.STACK_NEAR))
         canvas.itemconfigure(near_edge, fill=pick(theme.STACK_NEAR_EDGE))
-        canvas.itemconfigure(self._pill_text, fill=pick(PILL_TEXT_COLOR))
         for row in self._rows:
             canvas.itemconfigure(row.code, fill=pick(theme.TEXT))
 
@@ -745,30 +813,27 @@ class StackCard(EpisodeCard):
             self._placing = False
 
     def _place_stack(self) -> None:
-        """The pill under the range (and its note), and the unfolded rows under the pill."""
+        """The pill under the range (and its note's pill), and the unfolded rows under it."""
         layout, canvas, scaling = self._layout, self._art, self._scaling
         room = self._text_room()
         x = round(self._area.text_x * scaling)
-        box = canvas.bbox(self._note if layout.note else self._code)
-        top = (box[3] if box else round(layout.pad_top * scaling)) + round(
-            layout.pill_gap * scaling
-        )
+        above = self.note_bottom()
+        if above is None:
+            box = canvas.bbox(self._code)
+            above = box[3] if box else round(layout.pad_top * scaling)
+        top = above + round(layout.pill_gap * scaling)
 
         full, short = pill_texts(len(self._stack.entries), self._unfolded)
         text = fit_text([full, short], room - 2 * PILL_PAD_X, self._pill_font.measure)
-        width = self._pill_font.measure(text) + 2 * PILL_PAD_X
-        size = (round(width * scaling), round(layout.pill_height * scaling))
-        canvas.itemconfigure(
-            self._pill_text, text=text, font=self._pill_font.create_scaled_tuple(scaling)
+        size = self._count_pill.draw(
+            x,
+            top,
+            text,
+            font=self._pill_font,
+            height=layout.pill_height,
+            scaling=scaling,
+            color=pill_color(),
         )
-        canvas.coords(self._pill, x, top)
-        canvas.coords(self._pill_text, x + round(PILL_PAD_X * scaling), top + size[1] / 2)
-        face = PillFace(size, _rgb(self, theme.ROW_SELECTED))
-        if face != self._pill_face:
-            self._pill_face = face
-            if self._pill_task is not None:
-                self._pill_task.cancel()
-            self._pill_task = spawn(self._load_pill(face), name="StackCard.pill")
 
         if not self._rows:
             return
@@ -808,22 +873,18 @@ class StackCard(EpisodeCard):
             canvas.coords(row.state, x, y + round(EPISODE_LINE * scaling))
             row.buttons.place(relx=1.0, x=-right, y=row_top, anchor="ne")
 
-    async def _load_pill(self, face: PillFace) -> None:
-        self._show_image("pill", self._pill, await shared_image(face, face))
-
     def destroy(self) -> None:
         _unwatch(self._watches, self._actions)
-        if self._pill_task is not None:
-            self._pill_task.cancel()
         super().destroy()
 
 
 class CompactStackCard(ctk.CTkFrame):
     """Several episodes of one show on an older day, on one slim line: the name and the range
-    with a small "3" badge, then a small ⬇ (with Plex: download all still needed), … or a run's
-    ✓. Clicking the name opens the show's window; a right-click, or the ✓, opens a menu of the
-    episodes (each opens its search window). `missing` (with Plex): the amber note line under
-    it; `marks`, `in_plex`, `new`, `downloaded`, `have`: as StackCard's."""
+    with a blue "3 episodes" pill (`badge`; "3" on a narrow line), then a round ⬇ (with Plex:
+    download all still needed), … or a run's ✓. Clicking the name opens the show's window; a
+    right-click, or the ✓, opens the menu of the episodes (`episode_menu`). `missing` (with
+    Plex): the amber note's pill under it; `marks`, `in_plex`, `new`, `downloaded`, `have`: as
+    StackCard's."""
 
     def __init__(
         self,
@@ -862,19 +923,10 @@ class CompactStackCard(ctk.CTkFrame):
         line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
         line.pack(side="top", fill="x", padx=(SLIM_PAD_X, SLIM_PAD_RIGHT), pady=(SLIM_PAD_Y, 0))
         line.pack_propagate(False)
-        self.main = ctk.CTkButton(
-            line,
-            text="",
-            width=SLIM_ICON,
-            height=SLIM_ICON,
-            corner_radius=_ICON_RADIUS,
-            font=theme.font(_ICON_SIZE, bold=True),
-            border_width=0,
-            text_color_disabled=theme.TEXT_MUTED,
-            command=self._click,
+        self.main = RoundIcon(
+            line, size=SLIM_ICON, font=theme.font(_ICON_SIZE, bold=True), command=self._click
         )
         self._main_tip = add_tooltip(self.main, "")
-        self._default_text_color = self.main.cget("text_color")
         name_font = theme.font(scale.font(_NAME_SIZE, TITLE_MIN), bold=True)
         code_font = theme.font(scale.font(_CODE_SIZE, SMALL_TEXT_MIN))
         self.name_label = ctk.CTkLabel(
@@ -887,35 +939,21 @@ class CompactStackCard(ctk.CTkFrame):
             line, text=range_label, font=code_font, text_color=theme.TEXT_MUTED, height=SLIM_LINE
         )
         self.range_label.pack(side="left", padx=(SLIM_CODE_GAP, 0))
-        count = str(len(stack.entries))
-        badge_font = theme.font(_BADGE_SIZE, bold=True)
-        badge_width = max(BADGE_HEIGHT, round(badge_font.measure(count)) + 2 * BADGE_PAD_X)
-        self.badge = ctk.CTkLabel(
+        badges = badge_texts(len(stack.entries))
+        self.badge = PillLabel(
             line,
-            text=count,
-            font=badge_font,
-            fg_color=theme.ROW_SELECTED,
-            text_color=PILL_TEXT_COLOR,
-            corner_radius=BADGE_RADIUS,
-            width=badge_width,
+            text=badges[0],
+            color=pill_color(),
+            font=theme.font(_BADGE_SIZE, bold=True),
             height=BADGE_HEIGHT,
         )
-        self.badge.pack(side="left", padx=(BADGE_GAP, 0))
-        add_tooltip(self.badge, tn("{n} episode", "{n} episodes", len(stack.entries)))
+        self.badge.pack(side="left", padx=(round(BADGE_GAP * _scaling(line)), 0))  # plain Tk
+        add_tooltip(self.badge, badges[0])
 
-        self.note: ctk.CTkLabel | None = None
-        note_font = theme.font(scale.font(_NOTE_SIZE, SMALL_TEXT_MIN))
+        self.note: PillLabel | None = None
         if noted is not None:
-            self.note = ctk.CTkLabel(
-                self,
-                text=t(noted.text),
-                font=note_font,
-                text_color=noted.color,
-                height=NOTE_HEIGHT,
-                anchor="w",
-            )
-            self.note.pack(side="top", anchor="w", padx=SLIM_PAD_X)
-            add_tooltip(self.note, t(noted.tip))
+            self.note = _note_pill(self, noted, scale)
+            _pack_note(self.note, self)
 
         line_width: float | None = None  # unscaled, once laid out
 
@@ -923,9 +961,11 @@ class CompactStackCard(ctk.CTkFrame):
             if line_width is None:
                 return
             icon = SLIM_ICON if self._look is not None and self._look.text else 0
-            name_room, range_room = slim_stack_rooms(
-                line_width, code_font.measure(range_label), badge_width, icon
-            )
+            range_width = code_font.measure(range_label)
+            widths = [self.badge.width_of(text) for text in badges]
+            badge = slim_badge(line_width, range_width, icon, widths)
+            self.badge.set_text(badges[badge])
+            name_room, range_room = slim_stack_rooms(line_width, range_width, widths[badge], icon)
             self.name_label.configure(
                 text=elide_to_width(show.name, name_room, name_font.measure)
             )
@@ -933,7 +973,7 @@ class CompactStackCard(ctk.CTkFrame):
                 text=elide_to_width(range_label, range_room, code_font.measure)
             )
             if self.note is not None and noted is not None:
-                self.note.configure(text=noted.fit(line_width - SLACK, note_font.measure))
+                fit_note(self.note, noted, line_width)
 
         def resized(event: Any) -> None:
             nonlocal line_width
@@ -970,38 +1010,26 @@ class CompactStackCard(ctk.CTkFrame):
         self.main.pack_forget()
         if look.text:
             self.main.pack(side="right", before=self.name_label)
-        self.main.configure(
-            text=look.text,
-            fg_color=look.color,
-            hover_color=look.hover,
-            text_color=look.text_color or self._default_text_color,
-            border_width=1 if look.border else 0,
-            border_color=look.border or theme.EDGE,
-            state="normal" if look.action else "disabled",
+        self.main.set_look(
+            look.text,
+            fill=look.color,
+            hover=look.hover,
+            text_color=look.text_color,
+            edge=look.border,
+            enabled=look.action is not None,
         )
         self._main_tip.set_text(look.tip)
         self._fit()
 
-    def menu_items(self) -> list[tuple[str, Callable[[], None]]]:
-        """The episodes' menu: one item per episode, opening its search window."""
-        states, choose = self._actions.states, self._actions.choose
-
-        def opener(entry: CalendarEntry) -> Callable[[], None]:
-            return lambda: choose(entry)
-
-        return [
-            (
-                menu_label(
-                    entry,
-                    states.get(entry_key(entry)),
-                    self._in_plex,
-                    marks=self._marks,
-                    downloaded=self._downloaded,
-                ),
-                opener(entry),
-            )
-            for entry in self._stack.entries
-        ]
+    def menu_items(self) -> MenuItems:
+        """The episodes' menu (`episode_menu`)."""
+        return episode_menu(
+            self._stack,
+            self._actions,
+            self._in_plex,
+            marks=self._marks,
+            downloaded=self._downloaded,
+        )
 
     def _click(self) -> None:
         look = self._look
@@ -1014,6 +1042,14 @@ class CompactStackCard(ctk.CTkFrame):
 
     def _right_click(self, _event: Any = None) -> None:
         popup_menu(self, self.menu_items())
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed: the pills and the round button (plain Tk) are drawn
+        again."""
+        super()._set_scaling(*args, **kwargs)
+        for part in (self.badge, self.note, self.main):
+            if part is not None:
+                part.redraw()
 
     def destroy(self) -> None:
         _unwatch(self._watches, self._actions)

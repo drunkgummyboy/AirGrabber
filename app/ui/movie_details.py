@@ -200,10 +200,13 @@ class MovieDetailsWindow(TitleInfoWindow):
         # Its releases are searched right away.
         self.open_releases(MovieTarget(movie), reveal=False)
 
-    def show_releases(self) -> ReleasePanel | None:
-        """On its releases ("☰ Choose…"): "tabs" chooses the Releases tab and scrolls to it."""
+    def show_releases(self, quality: str | None = None) -> ReleasePanel | None:
+        """On its releases ("☰ Choose…"): "tabs" chooses the Releases tab and scrolls to it.
+        `quality`: the VERSION chip to show (a Library film's ⬆ Upgrade: UPGRADE_KEY)."""
         panel = self.open_releases(MovieTarget(self._movie))
         if panel is not None:
+            if quality is not None:
+                panel.set_quality(quality)
             panel.focus_table()
         return panel
 
@@ -362,15 +365,18 @@ class MovieWindows:
         layout: InfoLayout = self._releases.settings.current.info_layout
         return layout
 
-    async def open_movie_id(self, movie_id: int, *, releases: bool = False) -> bool:
+    async def open_movie_id(
+        self, movie_id: int, *, releases: bool = False, quality: str | None = None
+    ) -> bool:
         """Open (or raise) the window of a film known only by its TMDB id (a grab on the
         Downloads page), once TMDB has described it; `releases`: on its releases. False when
-        TMDB can't (no key, offline, too slow): the caller falls back to IMDb or says so."""
+        TMDB can't (no key, offline, too slow): the caller falls back to IMDb or says so.
+        `quality`: the releases' VERSION chip (with `releases`)."""
         window = self._live().get(movie_id)
         if window is not None:
             window.raise_window()
             if releases:
-                window.show_releases()
+                window.show_releases(quality)
             return True
         try:
             async with asyncio.timeout(OPEN_WAIT_S):
@@ -379,18 +385,21 @@ class MovieWindows:
             log.info("Film %d: no TMDB description to open its window: %s", movie_id, exc)
             return False
         if exists(self._master):
-            self.open_movie(movie, releases=releases)
+            self.open_movie(movie, releases=releases, quality=quality)
         return True
 
-    def open_movie(self, movie: Movie, *, releases: bool = False) -> None:
-        """Open the film's window, or raise it; `releases`: on its releases ("☰ Choose…")."""
+    def open_movie(
+        self, movie: Movie, *, releases: bool = False, quality: str | None = None
+    ) -> None:
+        """Open the film's window, or raise it; `releases`: on its releases ("☰ Choose…"),
+        `quality`: on that VERSION chip."""
         window = self._live().get(movie.id)
         if window is None:
             window = self._windows[movie.id] = self._new_window(movie)
         else:
             window.raise_window()
         if releases:
-            window.show_releases()
+            window.show_releases(quality)
 
     def _new_window(self, movie: Movie) -> MovieDetailsWindow:
         return MovieDetailsWindow(

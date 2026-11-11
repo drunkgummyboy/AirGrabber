@@ -168,6 +168,16 @@ def film_line(title: PlexTitle) -> str:
     return str(title.year) if title.year else ""
 
 
+# A Library film below 1080p gets "⬆ Upgrade" (the owner's line, 2026-11-11): Plex's 720p and SD.
+UPGRADABLE = frozenset({"720p", "SD"})
+
+
+def can_upgrade(title: PlexTitle) -> bool:
+    """A film Plex has only below 1080p, that its releases can be looked up for (a TMDB id);
+    an unknown quality never counts."""
+    return title.kind == "movie" and title.resolution in UPGRADABLE and title.tmdb_id is not None
+
+
 def gaps_text(count: int) -> str:
     return tn("{n} gap", "{n} gaps", count) if count else ""
 

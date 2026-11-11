@@ -252,7 +252,14 @@ class CardWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.root.update()
         self.assertIn(small_row._main.cget("text"), (DOWNLOAD_TEXT, DOWNLOAD_SHORT))
         self.assertEqual(big_row._main.cget("text"), DOWNLOAD_TEXT)
-        self.assertTrue(small.watch_button.cget("text"))
+        # One row: the round ★ beside the Download button, both the row's height.
+        for card in (small, big):
+            star, row = card.watch_button, card._control
+            self.assertEqual(star.winfo_reqwidth(), star.winfo_reqheight())
+            self.assertEqual(star.winfo_reqheight(), row.winfo_reqheight())
+            self.assertIs(star.master, row.master)
+            self.assertFalse(row.has_more)  # no ⋯: the ★ is the row's one round button
+        self.assertLess(small.watch_button.winfo_reqwidth(), big.watch_button.winfo_reqwidth())
 
     async def test_the_grid_reflows_at_the_scaled_width(self) -> None:
         columns = {}
@@ -311,9 +318,11 @@ class CardWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(xs.cget("width"), card_size(CardScale.of(CardSize.XS))[0])
         self.assertLess(xs.cget("height"), xl.cget("height"))
         self.assertLess(xs.menu_button.winfo_reqwidth(), xl.menu_button.winfo_reqwidth())
-        assert xs._auto_switch is not None and xl._auto_switch is not None
-        self.assertEqual(xl._auto_switch.cget("text"), AUTO_SWITCH_TEXT)
-        self.assertEqual(xs._auto_switch.cget("text"), AUTO_SWITCH_TEXT)  # short: never cut
+        self.assertEqual(xs.menu_button.winfo_reqheight(), xs.main_button.winfo_reqheight())
+        self.assertEqual(xs.main_text, "✓ Following")  # fits the smallest card whole
+        for card in cards.values():
+            card.set_auto_download(True)
+            self.assertEqual(card.badge_text, AUTO_SWITCH_TEXT)  # short: never cut
         self.assertEqual((xs.meta_text, xl.meta_text), ("✓ S02E08 · yesterday",) * 2)
 
 

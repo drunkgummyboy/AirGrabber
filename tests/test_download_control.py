@@ -31,6 +31,7 @@ from app.ui.download_control import (
     DOWNLOAD_TEXT,
     DOWNLOAD_TIP,
     LOOKS_FOR_QUALITY,
+    RIGHT_CLICK_TIP,
     WORKING_SHORT,
     WORKING_TEXT,
     Base,
@@ -47,6 +48,7 @@ from app.ui.download_control import (
     fit_text,
     gb_text,
     grabbed_state,
+    later_look,
     looks_for_text,
     movie_key,
     nothing_found_text,
@@ -122,6 +124,20 @@ class ControlLookTests(unittest.TestCase):
             self.assertEqual((look.layout, look.text, look.action), ("button", "Not Aired", None))
             self.assertEqual((look.color, look.hover), (theme.NOT_AIRED, theme.NOT_AIRED))
 
+    def test_unavailable_in_the_grey_outline_for_the_poster_cards(self) -> None:
+        base = Base("unavailable", "Digital 15 Oct", ("15 Oct",))
+        look = control_look(base, None, outline_unavailable=True)
+        self.assertEqual(look, later_look(base))
+        self.assertEqual((look.layout, look.texts, look.action), ("button", ("Digital 15 Oct", "15 Oct"), None))
+        self.assertEqual(
+            (look.color, look.border, look.text_color),
+            ("transparent", theme.CHIP_HOVER, theme.TEXT_MUTED),
+        )
+        # A run's state still wins, as on every card.
+        self.assertEqual(control_look(base, WORKING, outline_unavailable=True).layout, "label")
+        # The calendar's stays filled grey.
+        self.assertEqual(control_look(base, None).color, theme.NOT_AIRED)
+
     def test_search_base(self) -> None:
         look = control_look(Base("search"), None)
         self.assertEqual((look.layout, look.text, look.action), ("button", "Search", "choose"))
@@ -166,7 +182,9 @@ class BaseTests(unittest.TestCase):
         out = Movie(id=1, title="Dune", release_date=date(2026, 1, 1))
         self.assertEqual(movie_base(out, None, today), Base("download"))
         later = MovieDetails(id=1, digital_release=date(2026, 10, 15))
-        self.assertEqual(movie_base(out, later, today), Base("unavailable", "Digital 15 Oct"))
+        self.assertEqual(
+            movie_base(out, later, today), Base("unavailable", "Digital 15 Oct", ("15 Oct",))
+        )
         unreleased = Movie(id=2, title="Dune 3")
         self.assertEqual(movie_base(unreleased, None, today), Base("unavailable", "Not Released"))
 
@@ -301,6 +319,15 @@ class HoverTipTests(unittest.TestCase):
             control_tip(control_look(DOWNLOAD, picked), picked, looks_for, shortened=False),
             "Picked 720p · 1 GB",
         )
+        # A row without ⋯: right-click chooses, the tip says so.
+        self.assertEqual(
+            control_tip(idle, None, looks_for, shortened=False, right_click=True),
+            f"{looks_for}\n{RIGHT_CLICK_TIP}",
+        )
+        self.assertEqual(control_tip(idle, None, "", shortened=False, right_click=True), RIGHT_CLICK_TIP)
+        # A disabled text shown shorter: in full under the pointer.
+        later = control_look(Base("unavailable", "Digital 15 Oct", ("15 Oct",)), None)
+        self.assertEqual(control_tip(later, None, looks_for, shortened=True), "Digital 15 Oct")
         # Nothing found, working, a disabled button: no tip.
         for base, state in (
             (DOWNLOAD, NOTHING),
@@ -370,6 +397,45 @@ class HoverTipWidgetTests(unittest.TestCase):
         states.set(key, RunState(Phase.DONE, GrabOutcome.OPENED, quality="2160p", size_bytes=None))
         self.assertEqual(tip.text, "Picked 2160p")
         tip.hide()
+
+    def test_a_row_without_more_chooses_on_a_right_click(self) -> None:
+        chosen: list[int] = []
+        actions: DownloadActions[int] = DownloadActions(
+            download=lambda _item: None, choose=chosen.append, states=DownloadStates()
+        )
+        control = DownloadControl(
+            self.root, item=5, key=movie_key(5), base=DOWNLOAD, actions=actions, more=False
+        )
+        control.pack(fill="x")
+        self.root.update()
+        self.assertFalse(control.has_more)
+        self.assertEqual(control.main_text, DOWNLOAD_TEXT)
+        self.assertIn(RIGHT_CLICK_TIP, control._main_tip.text)
+        control._main._canvas.event_generate("<Button-3>")
+        self.assertEqual(chosen, [5])
+        control.set_base(Base("unavailable", "Digital 15 Oct"))  # not out: nothing to choose
+        control._main._canvas.event_generate("<Button-3>")
+        self.assertEqual(chosen, [5])
+        # The calendar's row keeps its ⋯.
+        split = DownloadControl(self.root, item=6, key=movie_key(6), base=DOWNLOAD, actions=actions)
+        split.pack(fill="x")
+        self.root.update()
+        self.assertTrue(split.has_more)
+        self.assertNotIn(RIGHT_CLICK_TIP, split._main_tip.text)
+
+    def test_the_grey_outline_keeps_its_muted_text_while_disabled(self) -> None:
+        actions: DownloadActions[int] = DownloadActions(
+            download=lambda _item: None, choose=lambda _item: None, states=DownloadStates()
+        )
+        base = Base("unavailable", "Digital 15 Oct")
+        later = DownloadControl(
+            self.root, item=5, key=movie_key(5), base=base, actions=actions, outline_unavailable=True
+        )
+        filled = DownloadControl(self.root, item=6, key=movie_key(6), base=base, actions=actions)
+        self.assertEqual(later._main.cget("text_color_disabled"), theme.TEXT_MUTED)
+        self.assertEqual(later._main.cget("border_width"), 1)
+        self.assertEqual(filled._main.cget("text_color_disabled"), theme.NOT_AIRED_TEXT)
+        self.assertEqual(filled._main.cget("fg_color"), theme.NOT_AIRED)
 
 
 if __name__ == "__main__":

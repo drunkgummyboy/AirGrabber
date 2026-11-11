@@ -1,12 +1,14 @@
 """Cards for TMDB titles: films on the Movies page and in search results, shows on the Discover
 tab. Both are tall poster cards (`PosterCard`): films with the one-click Download row, shows with
-"+ Track". Clicking a film's cover or title calls `on_open` (its info window), or opens it on
+"+ Follow". Clicking a film's cover or title calls `on_open` (its info window), or opens it on
 IMDb without one; a show's calls `on_open_show`, or opens the show on IMDb without one.
 
-A film's card also carries the watchlist button (`WatchlistButton`); the watchlist shelf's own
-cards are in `watchlist_cards`. A film in the user's Plex libraries (`in_plex`) gets the quiet ✓
-of an episode they have in the cover's top-right corner, its tip "In Plex" (`PlexMark`,
-`plex_mark`; the watchlist shelf's cards and the search results' get it too).
+A film's card has one row: the Download control (without its ⋯: a right-click on it chooses a
+download yourself; a film not out yet, "Digital 17 Nov", in the grey "not yet" outline) and the
+round watchlist ★ beside it (`WatchlistStar`: filled while on the list); the watchlist shelf's
+own cards are in `watchlist_cards`. A film in the user's Plex libraries (`in_plex`) gets the library mark, a small
+shelf of books, in the cover's top-right corner, its tip "In Plex" (app/ui/library_mark.py; the
+watchlist shelf's cards, the search results' and Discover's shows get it too).
 
 Each card fetches its title's TMDB details itself through an injected loader: a film's decide
 whether it can be downloaded yet, and both name the title's IMDb page.
@@ -27,15 +29,15 @@ import customtkinter as ctk
 
 from app.i18n import month_short, t
 from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
+from app.models.plex import PlexShows
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.card_scale import FULL, CardScale
-from app.ui.download_control import Base, DownloadActions, DownloadControl, movie_key
-from app.ui.missing_control import HAVE_MARK, MARK_FONT_SIZE, PLEX_TIP
-from app.ui.poster_card import PosterCard, TrackButton, TrackState, year_rating_line
+from app.ui.download_control import GAP, Base, DownloadActions, DownloadControl, movie_key
+from app.ui.library_mark import LibraryMark, library_mark
+from app.ui.poster_card import PosterCard, TrackButton, TrackState, row_height, year_rating_line
 from app.ui.tasks import spawn
-from app.ui.tooltip import add_tooltip
-from app.ui.watchlist_button import WATCH_ROW_GAP, WATCH_ROW_HEIGHT, WatchlistButton
+from app.ui.watchlist_button import WatchlistStar
 
 if TYPE_CHECKING:
     from app.services.images import ImageCache
@@ -46,11 +48,6 @@ log = logging.getLogger(__name__)
 D = TypeVar("D")
 
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
-# A film in Plex: the quiet ✓ in a small square on the cover's top-right corner (CTk units at
-# the card's scale).
-PLEX_MARK_SIDE = 24
-PLEX_MARK_RADIUS = 7
-PLEX_MARK_INSET = 8
 # TMDB's poster widths, smallest first ("original" beyond them).
 TMDB_POSTER_WIDTHS = (92, 154, 185, 342, 500, 780)
 
@@ -141,44 +138,21 @@ class _TmdbCard(PosterCard):
 
 def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
     """The Download control once the film is out digitally (`movie_action`), else a disabled
-    "Digital 15 Oct" / "Not Released"."""
+    "Digital 15 Oct" / "Not Released" (on the film cards in the grey "not yet" outline)."""
     label, can_grab = movie_action(movie, details, today)
-    return Base("download") if can_grab else Base("unavailable", label)
-
-
-class PlexMark(ctk.CTkLabel):
-    """The quiet ✓ of a film in Plex, on a small square of the card's ground so it reads on
-    any cover; its tip says "In Plex"."""
-
-    def __init__(self, master: Any, *, scale: CardScale = FULL) -> None:
-        side = scale.px(PLEX_MARK_SIDE)
-        super().__init__(
-            master,
-            text=HAVE_MARK,
-            width=side,
-            height=side,
-            corner_radius=scale.px(PLEX_MARK_RADIUS),
-            fg_color=theme.BG,
-            text_color=theme.TEXT_MUTED,
-            font=theme.font(scale.font(MARK_FONT_SIZE, MARK_FONT_SIZE - 2), bold=True),
-        )
-        self.tip = add_tooltip(self, t(PLEX_TIP))
-
-
-def plex_mark(card: PosterCard) -> PlexMark:
-    """A film card's PlexMark, placed on its cover's top-right corner (at the card's scale)."""
-    inset = card.scale.px(PLEX_MARK_INSET)
-    mark = PlexMark(card, scale=card.scale)
-    mark.place(relx=1.0, x=-inset, y=inset, anchor="ne")
-    return mark
+    if can_grab:
+        return Base("download")
+    digital = details.digital_release if details else None
+    # Where "Digital 15 Oct" doesn't fit: the date alone (its tip says it in full).
+    short = (f"{digital:%d} {month_short(digital)}",) if digital is not None else ()
+    return Base("unavailable", label, short)
 
 
 class MovieCard(_TmdbCard):
-    """A film: year and rating, the watchlist button ("+ Watchlist" / "✓ On watchlist") and a
-    Download row ("⬇ Download" and "⋯" for the search window) that unlocks once the film is out
-    digitally. Clicking the cover or the title calls `on_open(movie)` (the film's info window);
+    """A film: year and rating, and one row: "⬇ Download" (a right-click: the search window),
+    which unlocks once the film is out digitally, with the round watchlist ★ beside it. Clicking the cover or the title calls `on_open(movie)` (the film's info window);
     without it, it opens the film on IMDb: its own page once the details name it, IMDb's search
-    until then. `in_plex`: the film is in the user's Plex libraries (`plex_mark`, a quiet ✓)."""
+    until then. `in_plex`: the film is in the user's Plex libraries (`plex_mark`, the books)."""
 
     def __init__(
         self,
@@ -193,30 +167,37 @@ class MovieCard(_TmdbCard):
         on_open: Callable[[Movie], None] | None = None,
         in_plex: bool = False,
     ) -> None:
-        gap = scale.px(WATCH_ROW_GAP)
         super().__init__(
             master,
             title=movie.title,
             meta=year_rating_line(movie.year, tmdb_rating(movie.vote_average, movie.vote_count)),
             poster=lambda width: movie.poster_url(tmdb_poster_size(width)),
             images=images,
-            extra_height=scale.px(WATCH_ROW_HEIGHT) + gap,
             scale=scale,
         )
         self._movie = movie
         self._imdb_url = imdb_search_url(movie)
+        height = row_height(scale)
+        row = ctk.CTkFrame(self, fg_color="transparent", height=height)
+        row.pack_propagate(False)
+        self._pack_action(row)
+        self.watch_button = WatchlistStar(
+            row, movie=movie, watchlist=watchlist, scale=scale, size=height
+        )
+        self.watch_button.pack(side="right", padx=(scale.px(GAP), 0))
+        self._follow_scale(self.watch_button.rescale)
         self._control = DownloadControl(
-            self,
+            row,
             item=movie,
             key=movie_key(movie.id),
             base=movie_base(movie, None, date.today()),
             actions=actions,
             scale=scale,
+            more=False,
+            outline_unavailable=True,
         )
-        self._pack_action(self._control)
-        self.watch_button = WatchlistButton(self, movie=movie, watchlist=watchlist, scale=scale)
-        self._pack_above_action(self.watch_button, gap)
-        self.plex_mark: PlexMark | None = plex_mark(self) if in_plex else None
+        self._control.pack(side="left", fill="both", expand=True)
+        self.plex_mark: LibraryMark | None = library_mark(self) if in_plex else None
         if on_open is not None:
             self._set_open(lambda: on_open(movie))
         else:
@@ -237,16 +218,17 @@ def source_lines(year: int | None, rating: float | None, source: str) -> tuple[s
     doesn't fit, and as it was when the source doesn't fit at all."""
     line = year_rating_line(year, rating)
     return (
-        f"{line} | {source}" if line else source,
-        f"{year} | {source}" if year else source,
+        f"{line} · {source}" if line else source,
+        f"{year} · {source}" if year else source,
         line,
     )
 
 
 class DiscoverShowCard(_TmdbCard):
-    """A TMDB show: first-air year, rating and (once the details are in) where it airs, and a Track
-    button. Clicking the cover calls `on_open_show(show)`; without it, it opens the show on IMDb
-    once the details name it."""
+    """A TMDB show: first-air year, rating and (once the details are in) where it airs, and
+    + Follow. Clicking the cover calls `on_open_show(show)`; without it, it opens the show on IMDb
+    once the details name it. `plex_shows`: the shows in Plex; the details' ids put the library
+    mark on the card when it is one of them."""
 
     def __init__(
         self,
@@ -259,6 +241,7 @@ class DiscoverShowCard(_TmdbCard):
         on_track: Callable[[DiscoverShow], None],
         on_open_show: Callable[[DiscoverShow], None] | None = None,
         scale: CardScale = FULL,
+        plex_shows: PlexShows | None = None,
     ) -> None:
         super().__init__(
             master,
@@ -272,6 +255,8 @@ class DiscoverShowCard(_TmdbCard):
         self._show = show
         self._on_track = on_track
         self._on_open_show = on_open_show
+        self._plex_shows = plex_shows
+        self.plex_mark: LibraryMark | None = None
         self._track_button = TrackButton(
             self, busy_text=t("Finding…"), command=self._track, scale=scale
         )
@@ -282,11 +267,14 @@ class DiscoverShowCard(_TmdbCard):
         self._load_details(details, show.id, self._show_details)
 
     def set_track_state(self, state: TrackState) -> None:
-        """idle → "+ Track"; busy → "Finding…"; tracked → "✓ Following"; missing → "Not on
+        """idle → "+ Follow"; busy → "Finding…"; tracked → "✓ Following"; missing → "Not on
         TVMaze"."""
         self._track_button.set_state(state)
 
     def _show_details(self, details: TVDetails) -> None:
+        plex = self._plex_shows
+        if plex is not None and self.plex_mark is None and plex.has(details.tvdb_id, details.imdb_id):
+            self.plex_mark = library_mark(self)
         if self._on_open_show is None and (url := show_imdb_url(details)) is not None:
             self._set_open(lambda: webbrowser.open(url))
         if details.networks:

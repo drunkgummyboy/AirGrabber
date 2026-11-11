@@ -1,8 +1,12 @@
-"""The movie cards' watchlist button: "+ Watchlist", and "✓ On watchlist" (green) once the film
-is on the list; a click puts it on or takes it off again. Every button follows the watchlist,
-so a film added or removed anywhere (another card, the watchlist shelf, a download) repaints
-each card showing it. Where the full text doesn't fit, the button shows only "+" / "✓"; its
-hover tip always says what a click does.
+"""The watchlist buttons: a click puts the film on the watchlist or takes it off again, and every
+button follows the watchlist, so a film added or removed anywhere (another card, the watchlist
+shelf, a download) repaints each one showing it; the hover tip always says what a click does.
+
+`WatchlistStar`, the film cards' round ★ beside their Download row (a RoundButton): a filled
+star in the accent colour while the film is on the list, an outlined one while it isn't
+(`star_look`). `WatchlistButton`, the film window's wide button: "+ Watchlist", and "✓ On
+watchlist" (green) once the film is on the list; where the full text doesn't fit, only
+"+" / "✓".
 """
 
 from __future__ import annotations
@@ -17,7 +21,9 @@ from app.i18n import N_, t
 from app.models import Movie
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
+from app.ui.cards import IconPainter, RoundButton, star_icon
 from app.ui.download_control import CORNER_RADIUS
+from app.ui.download_control import ROW_HEIGHT as STAR_SIZE
 from app.ui.tasks import spawn
 from app.ui.text_fit import SLACK, Measure, unscaled_width
 from app.ui.tooltip import add_tooltip
@@ -25,8 +31,7 @@ from app.ui.tooltip import add_tooltip
 if TYPE_CHECKING:
     from app.services.watchlist import WatchlistService
 
-WATCH_ROW_HEIGHT = 30  # a little lower than the Download row, so the cover keeps its room
-WATCH_ROW_GAP = 8  # between the watchlist row and the Download row under it
+WATCH_ROW_HEIGHT = 30  # WatchlistButton's height when none is given
 FONT_SIZE = 13
 
 # Shown through t() (`watch_look`).
@@ -53,14 +58,105 @@ def watch_look(on_watchlist: bool) -> WatchLook:
     return WatchLook((t(ADD_TEXT), ADD_SHORT), theme.ACCENT, theme.ACCENT_HOVER, t(ADD_TIP))
 
 
+@dataclass(frozen=True, slots=True)
+class StarLook:
+    filled: bool
+    color: theme.Color  # the star, and the ring around it
+    tip: str
+
+
+def star_look(on_watchlist: bool) -> StarLook:
+    """A filled star in green, "already yours" as every card's (a click takes the film off), or
+    an outlined one in the text colour (a click puts it on)."""
+    if on_watchlist:
+        return StarLook(True, theme.SUCCESS, t(ON_TIP))
+    return StarLook(False, theme.TEXT, t(ADD_TIP))
+
+
 def watch_text(texts: tuple[str, ...], room: float, measure: Measure) -> str:
     """The first of `texts` that fits in `room`; the shortest (a single sign) when none does,
     never elided."""
     return next((text for text in texts if measure(text) <= room), texts[-1])
 
 
+def _toggle(movie: Movie, watchlist: WatchlistService) -> None:
+    """Put `movie` on the watchlist, or take it off. The list the buttons show (and repaint
+    with): the one in memory, the selected person's. Not cancelled with the button: the shelf
+    may rebuild it mid-change, and the change itself touches no widget."""
+    person = watchlist.profile_id
+    if watchlist.contains(movie.id):
+        spawn(watchlist.remove(movie.id, profile_id=person), name="watchlist-remove")
+    else:
+        spawn(watchlist.add(movie, profile_id=person), name="watchlist-add")
+
+
+class WatchlistStar(RoundButton):
+    """The film cards' round ★: puts `movie` on the watchlist or takes it off; repaints on
+    every watchlist change. `size` (CTk units): the row's height at `scale` when not given."""
+
+    def __init__(
+        self,
+        master: Any,
+        *,
+        movie: Movie,
+        watchlist: WatchlistService,
+        scale: CardScale = FULL,
+        size: int | None = None,
+    ) -> None:
+        self._movie = movie
+        self._watchlist = watchlist
+        self._look: StarLook | None = None
+        look = star_look(watchlist.contains(movie.id))
+        super().__init__(
+            master,
+            size=size if size is not None else scale.px(STAR_SIZE),
+            font=theme.font(scale.font(FONT_SIZE, TEXT_MIN), bold=True),
+            command=self._click,
+            icon=self._painter(look),
+            text_color=look.color,
+            edge=look.color if look.filled else None,
+        )
+        self._tip = add_tooltip(self, look.tip)
+        self._look = look
+        self._unsubscribe: Callable[[], None] = watchlist.subscribe(self.repaint)
+
+    @staticmethod
+    def _painter(look: StarLook) -> IconPainter:
+        return star_icon(look.filled)
+
+    @property
+    def on_watchlist(self) -> bool:
+        return self._watchlist.contains(self._movie.id)
+
+    @property
+    def look(self) -> StarLook | None:
+        return self._look
+
+    def repaint(self) -> None:
+        if not self.winfo_exists():
+            return
+        look = star_look(self.on_watchlist)
+        if look == self._look:
+            return
+        self._look = look
+        self.set_look(
+            icon=self._painter(look),
+            text_color=look.color,
+            edge=look.color if look.filled else theme.EDGE,
+        )
+        self._tip.set_text(look.tip)
+
+    def _click(self) -> None:
+        _toggle(self._movie, self._watchlist)
+
+    def destroy(self) -> None:
+        self._unsubscribe()
+        super().destroy()
+
+
 class WatchlistButton(ctk.CTkButton):
-    """Puts `movie` on the watchlist or takes it off; repaints on every watchlist change."""
+    """The film window's wide button: puts `movie` on the watchlist or takes it off; repaints
+    on every watchlist change."""
 
     def __init__(
         self,
@@ -127,15 +223,7 @@ class WatchlistButton(ctk.CTkButton):
         self.configure(text=text)
 
     def _click(self) -> None:
-        movie, watchlist = self._movie, self._watchlist
-        # The list the button shows (and repaints with): the one in memory, the selected
-        # person's. Not cancelled with the button: the shelf may rebuild it mid-change, and the
-        # change itself touches no widget.
-        person = watchlist.profile_id
-        if watchlist.contains(movie.id):
-            spawn(watchlist.remove(movie.id, profile_id=person), name="watchlist-remove")
-        else:
-            spawn(watchlist.add(movie, profile_id=person), name="watchlist-add")
+        _toggle(self._movie, self._watchlist)
 
     def destroy(self) -> None:
         self._unsubscribe()

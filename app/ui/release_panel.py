@@ -102,6 +102,7 @@ from app.services.picking import Recommendation, SeedNote, SizeNote, Speed, reco
 from app.services.remote import RemoteError
 from app.services.search import (
     QUALITY_KEYS,
+    UPGRADE_KEY,
     is_preferred,
     matches_quality,
     quality_counts,
@@ -173,6 +174,7 @@ QUALITY_LABELS = {
     "480p": "480P",
     "x265": "x265",
     "any": N_("ANY"),  # shown through t(), as the other labels (which stay as they are)
+    UPGRADE_KEY: "1080P+",  # only on a panel opened by a Library film's ⬆ Upgrade
 }
 # Columns whose first click sorts biggest first; the others start A→Z / newest first.
 _DESCENDING_FIRST: frozenset[str] = frozenset({"size", "seeds", "leech"})
@@ -670,6 +672,7 @@ class ReleasePanel(ctk.CTkFrame):
         self._chip_urls: dict[str, str | None] = {}
         self._chip_tips: dict[str, Tooltip] = {}
         self._quality_buttons: dict[str, ctk.CTkButton] = {}
+        self._quality_keys: tuple[str, ...] = QUALITY_KEYS  # + UPGRADE_KEY first once asked for
         self._quality_painted: dict[str, tuple[str, bool]] = {}
         self._season_buttons: dict[int, ctk.CTkButton] = {}
         self._episode_buttons: dict[int | None, ctk.CTkButton] = {}  # None = the Pack button
@@ -758,20 +761,33 @@ class ReleasePanel(ctk.CTkFrame):
             frame, 0, t("SEASON"), fix_match=self._on_fix_match is not None
         )
         self._episode_row, self._episode_chips = self._selector_row(frame, 1, t("EPISODE"))
-        versions = self._selector_row(frame, 2, t("VERSION"))[1]
+        self._versions = versions = self._selector_row(frame, 2, t("VERSION"))[1]
         for key in QUALITY_KEYS:
-            button = ctk.CTkButton(
-                versions,
-                text=t(QUALITY_LABELS[key]),
-                width=80,
-                height=30,
-                corner_radius=4,
-                font=theme.font(11, bold=True),
-                command=lambda k=key: self._select_quality(k),
-            )
-            button.pack(side="left", padx=3)
-            self._quality_buttons[key] = button
+            self._quality_buttons[key] = self._quality_button(versions, key)
+            self._quality_buttons[key].pack(side="left", padx=3)
         self._paint_quality({})
+
+    def _quality_button(self, master: Any, key: str) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            master,
+            text=t(QUALITY_LABELS[key]),
+            width=80,
+            height=30,
+            corner_radius=4,
+            font=theme.font(11, bold=True),
+            command=lambda k=key: self._select_quality(k),
+        )
+
+    def set_quality(self, key: str) -> None:
+        """Show only `key`'s releases (one of QUALITY_KEYS, or UPGRADE_KEY: 1080p and 4K, which
+        then gets a chip of its own, first)."""
+        if key == UPGRADE_KEY and UPGRADE_KEY not in self._quality_buttons:
+            self._quality_keys = (UPGRADE_KEY, *QUALITY_KEYS)
+            button = self._quality_button(self._versions, UPGRADE_KEY)
+            first = self._quality_buttons[QUALITY_KEYS[0]]
+            button.pack(side="left", padx=3, before=first)
+            self._quality_buttons = {UPGRADE_KEY: button, **self._quality_buttons}
+        self._select_quality(key)
 
     def _layout_selectors(self) -> None:
         """The SEASON and EPISODE rows are there for a series only."""
@@ -1489,7 +1505,7 @@ class ReleasePanel(ctk.CTkFrame):
         """Quality counts, results title, rows, hidden hint and empty state, from the latest
         update and the current filters."""
         update = self._update
-        counts = quality_counts(update.releases if update else ())
+        counts = quality_counts(update.releases if update else (), self._quality_keys)
         self._paint_quality(counts)
         found = counts[self._quality]
         self._results_title.configure(
