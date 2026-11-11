@@ -613,6 +613,8 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
             ["S01E07", "S01E08 · still needed", "S01E09 · still needed"],
         )
         assert card.menu_button is not None
+        # Beside "Download all", level with its middle.
+        self.assertEqual(card.menu_button.pack_info()["anchor"], "center")
         with mock.patch("app.ui.calendar_stack.popup_menu") as popup:
             card.menu_button.invoke()
         ((anchor, items), _kwargs) = popup.call_args
@@ -622,6 +624,9 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         # Without Plex too, whatever the main button says (here: nothing).
         quiet = self.card(self.stack())
         self.assertTrue(quiet.shows_menu)
+        # Alone (the main button says nothing): in the bottom corner, where the row ends.
+        assert quiet.menu_button is not None
+        self.assertEqual(quiet.menu_button.pack_info()["anchor"], "s")
         self.assertEqual([label for label, _ in quiet.menu_items()], ["S01E07", "S01E08", "S01E09"])
         # Nothing aired: no row, no ⋯.
         later = self.card(self.stack(ep(7, 1, 1, aired=False), ep(7, 1, 2, aired=False)))

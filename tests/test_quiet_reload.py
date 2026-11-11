@@ -16,7 +16,16 @@ from unittest import mock
 import customtkinter as ctk
 
 from app.models.plex import PlexShows
-from app.models import DiscoverShow, DiscoverShowEntry, Movie, Settings, TVDashboard, TVDetails
+from app.models import (
+    DiscoverShow,
+    DiscoverShowEntry,
+    GrabTarget,
+    MediaType,
+    Movie,
+    Settings,
+    TVDashboard,
+    TVDetails,
+)
 from app.services import SettingsService
 from app.ui import poster_card, theme
 from app.ui.main_window import MainWindow
@@ -291,6 +300,29 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window.calls, [{"quiet": True}])
         spawn.assert_called_once()
         spawn.call_args.args[0].close()  # the summary coroutine, never run here
+
+
+    def test_a_grab_updates_the_page_on_screen_in_place_when_it_can(self) -> None:
+        visible = mock.Mock()
+        visible.take_grab.return_value = True
+        other = mock.Mock()
+        window: Any = SimpleNamespace(
+            _series_views={"calendar": visible, "tracked": other},
+            _movie_view=mock.Mock(),
+            _library_view=mock.Mock(),
+            _visible_view=lambda: visible,
+            _band=mock.Mock(),
+        )
+        target = GrabTarget(media_type=MediaType.TV, media_id=1, season=1, episode=1)
+        MainWindow._on_grab(window, target)
+        visible.take_grab.assert_called_once_with(target)
+        visible.refresh.assert_not_called()
+        visible.invalidate.assert_not_called()
+        other.invalidate.assert_called_once_with()
+        window._band.reload.assert_called_once_with()
+        visible.take_grab.return_value = False  # a page that can't: reloaded
+        MainWindow._on_grab(window, target)
+        visible.refresh.assert_called_once_with()
 
 
 if __name__ == "__main__":

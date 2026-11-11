@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 import customtkinter as ctk
 
+from app.models import GrabTarget
 from app.ui.tasks import spawn
 from app.ui.widgets import MessagePanel
 
@@ -66,6 +67,11 @@ class BaseView(ctk.CTkFrame, ABC):
         """Load again now (F5 in the main window). Pages that cache what they fetch override it
         to fetch afresh."""
         self.refresh()
+
+    def take_grab(self, target: GrabTarget) -> bool:
+        """A download was just grabbed while this page is on screen: update what the page shows
+        of it in place and return True, or return False to be reloaded instead (the default)."""
+        return False
 
     def invalidate(self) -> None:
         """The data behind this view changed: the next `refresh_if_stale()` reloads it."""

@@ -22,6 +22,8 @@ A library change (a show tracked from a suggestion, say) reloads the page on scr
 `refresh_quietly`: the new grid is built hidden under the one on screen and swapped in when
 it is complete, so the page doesn't blank, rebuild day by day or lose its scroll position.
 Other loads (another week, the week count, the card size, the first load) build in view.
+A grab doesn't reload the page: only the cards of the grabbed episodes are built anew in their
+place (`take_grab`, MainWindow's `_on_grab`), with their ✓ / missing pills as they are now.
 
 While the selected person follows no shows (`LibraryService.stats`, read at every load), a
 box sits over the grid: "You don't follow any shows yet" with "Pick shows to follow…", which
@@ -50,7 +52,7 @@ from typing import Any, Literal, NamedTuple
 import customtkinter as ctk
 
 from app.i18n import N_, day_short, month_short, t
-from app.models import CalendarEntry, CalendarLayout, Settings
+from app.models import CalendarEntry, CalendarLayout, GrabTarget, MediaType, Settings
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import RECENT_DAYS, calendar_range, rolling_range
 from app.ui import theme
@@ -285,6 +287,26 @@ class _Shown(NamedTuple):
     suggestions: bool
 
 
+class _Placed(NamedTuple):
+    """A tracked card in the grid on screen: what a grab rebuilds it from."""
+
+    cell: ctk.CTkFrame
+    group: tuple[CalendarEntry, ...]
+    style: CardStyle
+    card: ctk.CTkFrame
+
+
+def grabbed(entry: CalendarEntry, target: GrabTarget) -> bool:
+    """Whether the grab of `target` (an episode, or a season's pack) holds `entry`'s episode."""
+    episode = entry.episode
+    return (
+        target.media_type is MediaType.TV
+        and target.media_id == entry.show.id
+        and target.season == episode.season
+        and target.episode in (None, episode.number)
+    )
+
+
 def _days(start: date, end: date) -> list[date]:
     return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
@@ -389,6 +411,9 @@ class CalendarView(BaseView):
         self._weeks: ctk.CTkFrame | None = None  # the grid of day cells, rebuilt on every load
         self._pending: ctk.CTkFrame | None = None  # a quiet load's grid, hidden until complete
         self._shown: _Shown | None = None  # what the complete grid on screen shows
+        self._placed: list[_Placed] = []  # its tracked cards (`take_grab`)
+        self._grabs: list[GrabTarget] = []  # grabs waiting for their cards' rebuild
+        self._grab_task: asyncio.Task[None] | None = None
         self._rendered_for: date | None = None  # the "today" of the last load
         self._offset = 0  # weeks from the current one; this session only
         self._unfolded: set[FoldKey] = set()  # the stack cards unfolded; this session only
@@ -555,6 +580,7 @@ class CalendarView(BaseView):
         # Quietly only over a complete grid of the same weeks; else built in view.
         quiet = quiet and self._weeks is not None and self._shown == shown
         self._drop_pending()
+        self._grabs = []  # the load shows them all
         if not quiet:
             self._shown = None
             self._note.configure(text="")
@@ -575,8 +601,10 @@ class CalendarView(BaseView):
         self.show_empty_box(follows_none)
         self._profile_id = profile_id
         weeks = self._new_grid(hidden=quiet)
+        placed: list[_Placed] = []
         cells = await self._render_tracked(
             weeks,
+            placed,
             _days(start, end),
             by_day(entries),
             today=today,
@@ -619,6 +647,7 @@ class CalendarView(BaseView):
             return
         if quiet:
             await self._swap_in(weeks)
+        self._placed = placed
         self._shown = shown
         self._note.configure(text=t("Couldn't load suggestions") if failed else "")
 
@@ -748,6 +777,7 @@ class CalendarView(BaseView):
     async def _render_tracked(
         self,
         weeks: ctk.CTkFrame,
+        placed: list[_Placed],
         days: Sequence[date],
         tracked: Mapping[date, Sequence[CalendarEntry]],
         *,
@@ -764,7 +794,7 @@ class CalendarView(BaseView):
         (what you have and miss shows); then `missing`: the ids of the episodes that get the
         amber pill; `new`: those aired less than a day ago, a blue "New" pill; `in_plex`:
         those in Plex, `downloaded`: those downloaded and not in Plex yet, a ✓. Returns the
-        cells.
+        cells; each card goes into `placed`.
 
         Yields to the event loop after each day: a whole week of poster cards takes Tk ~250 ms
         to draw. Cancelled at a yield, it leaves a partial grid for the next load to destroy.
@@ -800,8 +830,70 @@ class CalendarView(BaseView):
                     downloaded=downloaded,
                 )
                 card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP))
+                placed.append(_Placed(cell, tuple(group), style, card))
             await _yield_to_ui()
         return cells
+
+    # -- a grab: just its cards ------------------------------------------------------------------
+
+    def take_grab(self, target: GrabTarget) -> bool:
+        """Rebuild only the cards of the grabbed episodes (their ✓ and missing pills), not the
+        whole grid; while the grid isn't complete (a load running) the page reloads instead.
+        Without Plex the cards say nothing of what you have: nothing to rebuild (their
+        Download buttons follow the grab themselves)."""
+        if self._shown is None or self._loading():
+            return False
+        if target.media_type is not MediaType.TV or not self._library.plex_connected:
+            return True
+        self._grabs.append(target)
+        if self._grab_task is None or self._grab_task.done():
+            self._grab_task = spawn(self._rebuild_grabbed(), name="CalendarView.grabs")
+        return True
+
+    def _loading(self) -> bool:
+        task = self._load_task
+        return task is not None and not task.done()
+
+    async def _rebuild_grabbed(self) -> None:
+        """The waiting grabs' cards, built anew in their place with what is missing and had
+        now. Grabs that come in meanwhile (a stack's "Download all") are taken in the next
+        round. A load started meanwhile shows them all: this one stops."""
+        while self._grabs:
+            targets, self._grabs = self._grabs, []
+            shown = self._shown
+            if shown is None:
+                return
+            start, end, profile_id = shown.start, shown.end, shown.profile_id
+            missing = await self._library.missing_between(start, end, profile_id=profile_id)
+            new = await self._library.new_between(start, end, profile_id=profile_id)
+            in_plex = await self._library.plex_between(start, end)
+            downloaded = await self._library.downloaded_between(start, end)
+            if not self.winfo_exists() or self._shown is not shown or self._loading():
+                return
+            for index, placed in enumerate(self._placed):
+                if not placed.card.winfo_exists() or not any(
+                    grabbed(entry, target) for entry in placed.group for target in targets
+                ):
+                    continue
+                card = self._episode_card(
+                    placed.cell,
+                    placed.group,
+                    style=placed.style,
+                    scale=shown.scale,
+                    marks=True,
+                    missing=missing,
+                    new=new,
+                    in_plex=in_plex,
+                    downloaded=downloaded,
+                )
+                card.pack(fill="x", padx=CELL_PAD_X, pady=(0, CARD_GAP), before=placed.card)
+                destroy_tree(placed.card)
+                self._placed[index] = placed._replace(card=card)
+
+    def destroy(self) -> None:
+        if self._grab_task is not None:
+            self._grab_task.cancel()
+        super().destroy()
 
     def _episode_card(
         self,

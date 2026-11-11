@@ -14,7 +14,16 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.models import CalendarEntry, CalendarLayout, Episode, LibraryStats, Settings, Show
+from app.models import (
+    CalendarEntry,
+    CalendarLayout,
+    Episode,
+    GrabTarget,
+    LibraryStats,
+    MediaType,
+    Settings,
+    Show,
+)
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.library import calendar_range
 from app.services.tvmaze import TVMazeError
@@ -31,6 +40,7 @@ from app.ui.views.calendar_view import (
     SUGGESTION_POOL,
     CalendarView,
     coming_up_date,
+    grabbed,
     range_label,
     kept_scroll,
     range_slot_width,
@@ -456,6 +466,48 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(first.cget("height"), second.cget("height"))
         (compact,) = self.card_widgets(view, GRID_START)
         self.assertIsNotNone(compact.note)
+
+    async def test_a_grab_rebuilds_only_its_episodes_card(self) -> None:
+        library = self.library(missing=frozenset({100, 300}))
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        await view.load()
+        first, second, suggestion = self.card_widgets(view, TODAY)
+        (compact,) = self.card_widgets(view, GRID_START)
+        self.assertEqual(first._card_note.text, "Not downloaded yet")
+        # Show 1's episode is grabbed: downloaded now, no longer missing.
+        library._missing, library._downloaded = frozenset({300}), frozenset({100})
+        target = GrabTarget(media_type=MediaType.TV, media_id=1, season=1, episode=1)
+        self.assertTrue(view.take_grab(target))
+        assert view._grab_task is not None
+        await view._grab_task
+        rebuilt, *others = self.card_widgets(view, TODAY)
+        self.assertEqual(others, [second, suggestion])  # the same widgets, untouched
+        self.assertEqual(self.card_widgets(view, GRID_START), [compact])
+        self.assertFalse(first.winfo_exists())
+        self.assertEqual(rebuilt._card_note.text, "✓ Downloaded")
+        # A season's pack holds the episode too; another season's doesn't.
+        self.assertTrue(grabbed(rebuilt._entry, target.model_copy(update={"episode": None})))
+        self.assertFalse(grabbed(rebuilt._entry, target.model_copy(update={"season": 2})))
+
+    async def test_a_grab_the_page_cant_take_in_place(self) -> None:
+        library = self.library()
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        target = GrabTarget(media_type=MediaType.TV, media_id=1, season=1, episode=1)
+        self.assertFalse(view.take_grab(target))  # no complete grid yet: reload
+        await view.load()
+        cards = self.card_widgets(view, TODAY)
+        # A film, or no Plex (the cards say nothing of what you have): nothing to rebuild.
+        self.assertTrue(view.take_grab(GrabTarget(media_type=MediaType.MOVIE, media_id=5)))
+        library.plex_connected = False
+        self.assertTrue(view.take_grab(target))
+        self.assertIsNone(view._grab_task)
+        self.assertEqual(self.card_widgets(view, TODAY), cards)
+        # While a load runs: reload (the load would show the old state).
+        library.plex_connected = True
+        running = asyncio.get_running_loop().create_future()
+        view._load_task = running  # type: ignore[assignment]
+        self.assertFalse(view.take_grab(target))
+        running.cancel()
 
     async def test_without_plex_no_notes_and_connecting_brings_them(self) -> None:
         library = self.library(missing=frozenset({100, 300}))

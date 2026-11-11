@@ -1487,6 +1487,12 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
+    "Calendar: a download no longer redraws the whole calendar; only that episode's card changes.":
+        "Kalender: een download tekent niet meer de hele kalender opnieuw; alleen de kaart van die aflevering verandert.",
+    "Calendar: the page stays where you scrolled to while downloads finish.":
+        "Kalender: de pagina blijft staan waar je naartoe scrolde terwijl downloads klaar zijn.",
+    "Calendar: a show's card with every episode downloaded has its ⋯ button neatly in the corner.":
+        "Kalender: bij een kaart waarvan elke aflevering gedownload is, staat de ⋯-knop netjes in de hoek.",
     "A film's window gets a Play button when the film is in Plex: it opens straight away in VLC.":
         "Het venster van een film krijgt een Afspelen-knop als de film in Plex staat: hij opent meteen in VLC.",
     "A show's window gets one too: pick an episode first, the next one you haven't watched already chosen.":

@@ -523,7 +523,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_settings = services.settings.subscribe(self._on_settings_changed)
         self._unsubscribe_library = services.library.subscribe(self._on_library_changed)
         # A grab changes what is still missing (with Plex).
-        self._unsubscribe_downloads = services.downloads.subscribe(self._reload_pages)
+        self._unsubscribe_downloads = services.downloads.subscribe_grabs(self._on_grab)
         # The footer's loader while Plex is being read.
         self._unsubscribe_plex = services.plex.subscribe(self._show_plex_sync)
         # The tray menu's line of downloads in progress.
@@ -1329,6 +1329,18 @@ class MainWindow(AsyncCTk, ctk.CTk):
             else:
                 view.refresh()
         self._band.reload()  # tonight's episodes, a new TMDB key's pictures
+
+    def _on_grab(self, target: GrabTarget) -> None:
+        """A grab changes what is still missing (with Plex): the page on screen updates just
+        what it shows of it where it knows how (the calendar: that episode's card,
+        `BaseView.take_grab`), else reloads; the other pages reload when next shown."""
+        view = self._visible_view()
+        for page in (*self._series_views.values(), self._movie_view, self._library_view):
+            if page is not view:
+                page.invalidate()
+        if view is not None and not view.take_grab(target):
+            view.refresh()
+        self._band.reload()  # tonight's episodes
 
     def _close_info_panels(self, _event: object = None) -> None:
         """A click outside an info panel (a film's or show's, with its torrents) closes it."""

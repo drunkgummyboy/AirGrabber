@@ -815,6 +815,11 @@ class EpisodeCard(ctk.CTkFrame):
     def _menu_tip(self) -> str:
         return t(MORE_TIP)
 
+    def _menu_alone(self) -> bool:
+        """Whether the main button beside the round ⋯ shows nothing (a stack whose episodes
+        are all had): the ⋯ then sits in the bottom corner, where the row's bottom is."""
+        return False
+
     def _menu_clicked(self) -> None:
         """The ⋯: the search window, to choose a download yourself."""
         self._actions.choose(self._entry)
@@ -872,8 +877,12 @@ class EpisodeCard(ctk.CTkFrame):
         if button is None or control is None:
             return
         if self._wants_menu():
-            if not button.winfo_manager():
-                button.pack(side="right", before=control)  # its room first
+            # Its room first. Alone, at the row's bottom, as the main button's bottom would be;
+            # else level with the main button's middle.
+            if self._menu_alone():
+                button.pack(side="right", anchor="s", before=control)
+            else:
+                button.pack(side="right", anchor="center", before=control)
             control.pack(side="left", fill="both", expand=True, padx=(0, self._scale.px(GAP)))
         elif button.winfo_manager():
             button.pack_forget()

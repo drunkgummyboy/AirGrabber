@@ -541,6 +541,9 @@ class StackControl(DownloadControl[CalendarEntry]):
         self._in_plex = in_plex
         self._marks = marks
         self._on_choose = on_choose
+        # Whether it shows nothing (QUIET_LOOK_TEXT); `on_blank` hears a change (the card's ⋯).
+        self.blank = False
+        self.on_blank: Callable[[], None] | None = None
         super().__init__(
             master,
             item=stack.entries[0],
@@ -552,13 +555,19 @@ class StackControl(DownloadControl[CalendarEntry]):
 
     def current_look(self) -> Look:
         states = self._actions.states
-        return stack_look(
+        look = stack_look(
             self._stack.entries,
             states.get,
             states.batch(self._stack.keys),
             self._in_plex,
             marks=self._marks,
         )
+        blank = look.layout == "label" and look.text == QUIET_LOOK_TEXT
+        if blank != self.blank:
+            self.blank = blank
+            if self.on_blank is not None:
+                self.on_blank()
+        return look
 
     def _click(self) -> None:
         look = self._look
@@ -647,6 +656,9 @@ class StackCard(EpisodeCard):
         canvas.tag_bind("pill", "<Enter>", lambda _event: canvas.configure(cursor="hand2"))
         canvas.tag_bind("pill", "<Leave>", lambda _event: canvas.configure(cursor=""))
         self._watches = _watch(stack, actions, self)
+        if isinstance(self._control, StackControl):
+            self._control.on_blank = self._sync_menu
+            self._sync_menu()
         self._ready = True
         if unfolded:
             self._make_rows()
@@ -690,6 +702,10 @@ class StackCard(EpisodeCard):
 
     def _wants_menu(self) -> bool:
         return self._control is not None  # the episodes, whatever the main button says
+
+    def _menu_alone(self) -> bool:
+        control = self._control
+        return isinstance(control, StackControl) and control.blank
 
     def _menu_tip(self) -> str:
         return t(SEASON_MENU_TIP)

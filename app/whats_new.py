@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.14.2": (
+        N_("Calendar: a download no longer redraws the whole calendar; only that episode's card changes."),
+        N_("Calendar: the page stays where you scrolled to while downloads finish."),
+        N_("Calendar: a show's card with every episode downloaded has its ⋯ button neatly in the corner."),
+    ),
     "3.14.1": (
         N_("A film's window gets a Play button when the film is in Plex: it opens straight away in VLC."),
         N_("A show's window gets one too: pick an episode first, the next one you haven't watched already chosen."),
