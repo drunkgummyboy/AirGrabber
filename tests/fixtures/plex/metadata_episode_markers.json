@@ -1,0 +1,50 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "librarySectionID": 1,
+    "Metadata": [
+      {
+        "ratingKey": "42",
+        "type": "episode",
+        "title": "Woe's Hollow",
+        "grandparentRatingKey": "1001",
+        "grandparentTitle": "The Ark",
+        "parentIndex": 2,
+        "index": 2,
+        "viewOffset": 1200000,
+        "duration": 2700000,
+        "Media": [
+          {
+            "id": 2122,
+            "videoResolution": "1080",
+            "duration": 2700000,
+            "Part": [
+              {
+                "id": 2122,
+                "key": "/library/parts/2122/1700000000/file.mkv",
+                "size": 2100000000,
+                "container": "mkv",
+                "file": "/volume1/video/TV/The Ark (2023)/Season 02/The Ark - S02E02 - Woe's Hollow.mkv"
+              }
+            ]
+          }
+        ],
+        "Marker": [
+          {
+            "id": 901,
+            "type": "intro",
+            "startTimeOffset": 61000,
+            "endTimeOffset": 142000
+          },
+          {
+            "id": 902,
+            "type": "credits",
+            "startTimeOffset": 2550000,
+            "endTimeOffset": 2700000,
+            "final": true
+          }
+        ]
+      }
+    ]
+  }
+}

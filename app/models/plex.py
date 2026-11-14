@@ -100,6 +100,15 @@ class PlexMediaReply(_Wire):
     parts: list[PlexPartReply] = Field(default_factory=list, alias="Part")
 
 
+class PlexMarkerReply(_Wire):
+    """One of an item's markers (/library/metadata/{key}?includeMarkers=1): "intro" or
+    "credits", its start and end in milliseconds."""
+
+    type: str = ""
+    start_ms: _Index = Field(default=None, alias="startTimeOffset")
+    end_ms: _Index = Field(default=None, alias="endTimeOffset")
+
+
 class PlexItemReply(_Wire):
     """A show, a film or an episode of /library/sections/{id}/all."""
 
@@ -119,6 +128,10 @@ class PlexItemReply(_Wire):
     leaf_count: _Index = Field(default=None, alias="leafCount")
     media: list[PlexMediaReply] = Field(default_factory=list, alias="Media")
     view_count: _Index = Field(default=None, alias="viewCount")  # watched once or more: above 0
+    # Playing: where it was left and how long it is (milliseconds), its intro / credits markers.
+    view_offset: _Index = Field(default=None, alias="viewOffset")
+    duration: _Index = None
+    markers: list[PlexMarkerReply] = Field(default_factory=list, alias="Marker")
 
     def guid_texts(self) -> tuple[str, ...]:
         """Every guid the item names: its own, then the Guid list."""
@@ -272,7 +285,9 @@ class PlexEpisode(DomainModel):
 class PlexVideo(DomainModel):
     """A film's or an episode's file to play (▶ Play, app/services/playback.py): its ratingKey,
     the file as the Plex server sees it (`file`: a path on the server, never logged), an
-    episode's season, number and title, and whether it was watched."""
+    episode's season, number and title, and whether it was watched. For the player: where Plex
+    says it was left (`view_offset_ms`, 0: from the start) and its length, in milliseconds; the
+    intro's (start, end) and the credits' start when Plex has those markers."""
 
     key: str
     file: str
@@ -280,6 +295,10 @@ class PlexVideo(DomainModel):
     episode: int | None = None
     title: str = ""
     watched: bool = False
+    view_offset_ms: int = 0
+    duration_ms: int = 0
+    intro: tuple[int, int] | None = None
+    credits_ms: int | None = None
 
 
 class PlexTitle(DomainModel):

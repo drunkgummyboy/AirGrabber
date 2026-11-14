@@ -42,7 +42,10 @@ library holds it. app/services/plex_scans.py hears the moves.
 ▶ Play (app/services/playback.py) asks which file a title is: a film's /library/metadata/{key}
 (`film_video`: its first version's first part), a show's /library/metadata/{key}/allLeaves
 (`show_videos`: each episode's file and whether it was watched), and the libraries' folders
-(`locations`) to find that file from this PC.
+(`locations`) to find that file from this PC. Each video carries where Plex says it was left
+(viewOffset) and its length. AirGrabber's own player asks for a title's intro / credits markers
+(`markers`: …?includeMarkers=1), reports where it is playing to /:/timeline (`report`: playing /
+paused / stopped) and marks it watched with /:/scrobble (`mark_watched`).
 
 Secrets: the token goes in the X-Plex-Token header only, never in a URL, log line, message or
 exception text. Request URLs are never logged, no httpx exception (which may carry a URL) is
@@ -60,7 +63,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import PurePosixPath, PureWindowsPath
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -100,6 +103,8 @@ PAGE_SIZE = 500  # items per library page
 MAX_PAGES = 400  # 200,000 items: a stop for a server that keeps sending pages
 IDENTITY_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # trying a connection
 LIBRARY_TIMEOUT = httpx.Timeout(30.0, connect=5.0)  # a page of a big library
+REPORT_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # a position report or the watched mark
+LIBRARY_IDENTIFIER = "com.plexapp.plugins.library"  # /:/scrobble's identifier
 # The library types of /library/sections/{key}/all?type=…
 TYPE_MOVIE = 1
 TYPE_SHOW = 2
@@ -108,6 +113,9 @@ TYPE_EPISODE = 4
 _RESOURCES = TypeAdapter(list[PlexResourceReply])
 _SECTION_KEY = re.compile(r"\d{1,9}")
 _ITEM_KEY = re.compile(r"\d{1,12}")  # a show's, an episode's or a film's ratingKey
+
+PlayState = Literal["playing", "paused", "stopped"]  # /:/timeline's state
+Markers = tuple[tuple[int, int] | None, int | None]  # the intro's (start, end), the credits' start
 
 
 class PlexError(Exception):
@@ -611,13 +619,17 @@ class PlexClient:
         )
         return list(_read(PlexReply, data, "episodes").container.metadata)
 
-    async def metadata(self, uri: str, token: str, key: str) -> PlexItemReply | None:
-        """One title with its versions and their files; None when the server doesn't have it."""
+    async def metadata(
+        self, uri: str, token: str, key: str, *, markers: bool = False
+    ) -> PlexItemReply | None:
+        """One title with its versions and their files (and its intro / credits markers with
+        `markers`); None when the server doesn't have it."""
         if not _ITEM_KEY.fullmatch(key):
             raise PlexError("A title's key that doesn't read")
         try:
             data = await self._request(
                 "GET", f"{uri}/library/metadata/{key}", what="title", token=token,
+                params={"includeMarkers": 1} if markers else None,
                 timeout=LIBRARY_TIMEOUT,
             )
         except PlexError as exc:
@@ -626,6 +638,42 @@ class PlexClient:
             raise
         found = _read(PlexReply, data, "title").container.metadata
         return found[0] if found else None
+
+    async def timeline(
+        self, uri: str, token: str, key: str, state: PlayState, time_ms: int, duration_ms: int
+    ) -> None:
+        """Tell the server where a title is being played (Continue watching on every device)."""
+        if not _ITEM_KEY.fullmatch(key):
+            raise PlexError("A title's key that doesn't read")
+        await self._request(
+            "GET",
+            f"{uri}/:/timeline",
+            what="timeline",
+            token=token,
+            params={
+                "ratingKey": key,
+                "key": f"/library/metadata/{key}",
+                "state": state,
+                "time": max(0, int(time_ms)),
+                "duration": max(0, int(duration_ms)),
+            },
+            timeout=REPORT_TIMEOUT,
+            answer=False,
+        )
+
+    async def scrobble(self, uri: str, token: str, key: str) -> None:
+        """Mark a title watched."""
+        if not _ITEM_KEY.fullmatch(key):
+            raise PlexError("A title's key that doesn't read")
+        await self._request(
+            "GET",
+            f"{uri}/:/scrobble",
+            what="scrobble",
+            token=token,
+            params={"identifier": LIBRARY_IDENTIFIER, "key": key},
+            timeout=REPORT_TIMEOUT,
+            answer=False,
+        )
 
     async def fetch(
         self,
@@ -685,10 +733,51 @@ class PlexClient:
         return response.content
 
 
-def _episode_order(video: PlexVideo) -> tuple[bool, int, bool, int]:
+def episode_order(video: PlexVideo) -> tuple[bool, int, bool, int]:
     """Seasons in order with the specials (season 0, or none) last; within one, by number."""
     special = not video.season
     return (special, video.season or 0, video.episode is None, video.episode or 0)
+
+
+def item_markers(item: PlexItemReply) -> Markers:
+    """An item's intro (start, end) and the earliest credits marker's start, from its `Marker`
+    list; None for one Plex doesn't have (or that doesn't read). A credits marker before half
+    the item's length (opening credits, or a wrong one) is passed over, and so is every one
+    while that length is unknown: the next episode countdown starts there."""
+    intro: tuple[int, int] | None = None
+    credits_ms: int | None = None
+    half = (item.duration or 0) / 2
+    for marker in item.markers:
+        start, end = marker.start_ms, marker.end_ms
+        if start is None or start < 0:
+            continue
+        if marker.type == "intro" and intro is None and end is not None and end > start:
+            intro = (start, end)
+        elif (
+            marker.type == "credits"
+            and half > 0
+            and start >= half
+            and (credits_ms is None or start < credits_ms)
+        ):
+            credits_ms = start
+    return intro, credits_ms
+
+
+def _video(item: PlexItemReply, key: str, file: str, *, episode: bool = False) -> PlexVideo:
+    """▶ Play's video of a film's or (`episode`) an episode's reply."""
+    intro, credits_ms = item_markers(item)
+    return PlexVideo(
+        key=key,
+        file=file,
+        season=item.parent_index if episode else None,
+        episode=item.index if episode else None,
+        title=item.title.strip(),
+        watched=bool(item.view_count),
+        view_offset_ms=max(0, item.view_offset or 0),
+        duration_ms=max(0, item.duration or 0),
+        intro=intro,
+        credits_ms=credits_ms,
+    )
 
 
 def _read[M: BaseModel](model: type[M], data: Any, what: str) -> M:
@@ -1056,12 +1145,7 @@ class PlexService:
         part = item.media[0].parts[0] if item.media and item.media[0].parts else None
         if part is None or not part.file:
             return None
-        return PlexVideo(
-            key=item.rating_key or key,
-            file=part.file,
-            title=item.title.strip(),
-            watched=bool(item.view_count),
-        )
+        return _video(item, item.rating_key or key, part.file)
 
     async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
         """A show's episodes with their files, by season and number (the specials, season 0,
@@ -1077,19 +1161,45 @@ class PlexService:
             part = media.parts[0] if media is not None and media.parts else None
             if reply.rating_key is None or part is None or not part.file:
                 continue
-            found.append(
-                PlexVideo(
-                    key=reply.rating_key,
-                    file=part.file,
-                    season=reply.parent_index,
-                    episode=reply.index,
-                    title=reply.title.strip(),
-                    watched=bool(reply.view_count),
-                )
-            )
-        found.sort(key=_episode_order)
+            found.append(_video(reply, reply.rating_key, part.file, episode=True))
+        found.sort(key=episode_order)
         log.info("Plex: %d episode file(s) of a show read", len(found))
         return found
+
+    # -- AirGrabber's player: Plex in sync -------------------------------------------------------
+
+    async def markers(self, key: str) -> Markers:
+        """A film's or an episode's intro (start, end) and credits start in milliseconds, from
+        the server the last check reached; (None, None) when Plex has none, doesn't have the
+        title, or isn't connected. Raises PlexError (PlexUnreachable when it didn't answer)."""
+        uri = self._settings.current.plex_server_uri
+        if not _ITEM_KEY.fullmatch(key):
+            raise PlexError("A title's key that doesn't read")
+        if not self.connected or not uri:
+            return None, None
+        item = await self._client.metadata(uri, self._token(), key, markers=True)
+        return (None, None) if item is None else item_markers(item)
+
+    async def report(
+        self, key: str, state: PlayState, position_ms: int, duration_ms: int
+    ) -> None:
+        """Tell Plex where `key` is being played (its timeline: Continue watching on the TV and
+        the phone). Raises PlexError (PlexUnreachable when it didn't answer or isn't
+        connected)."""
+        uri = self._connected_uri()
+        await self._client.timeline(uri, self._token(), key, state, position_ms, duration_ms)
+
+    async def mark_watched(self, key: str) -> None:
+        """Mark `key` watched in Plex (a scrobble). Raises PlexError (PlexUnreachable when it
+        didn't answer or isn't connected)."""
+        uri = self._connected_uri()
+        await self._client.scrobble(uri, self._token(), key)
+
+    def _connected_uri(self) -> str:
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri:
+            raise PlexUnreachable("Plex isn't connected")
+        return uri
 
     async def locations(self) -> list[tuple[str, str]]:
         """The show and film libraries' folders as the server sees them (library key, path);

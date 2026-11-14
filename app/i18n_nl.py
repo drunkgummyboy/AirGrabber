@@ -1362,6 +1362,13 @@ NL: dict[str, str] = {
     "Disconnect": "Verbinding verbreken",
     "Libraries:": "Bibliotheken:",
     "Server:": "Server:",
+    "Play in": "Afspelen in",
+    "AirGrabber's player": "De speler van AirGrabber",
+    "AirGrabber player": "AirGrabber-speler",
+    "Offer AirGrabber's player in Explorer's \"Open with\" for any video":
+        "Bied de speler van AirGrabber aan bij \"Openen met\" in Verkenner, voor elke video",
+    "That video isn't there any more.": "Die video is er niet meer.",
+    "VLC": "VLC",
     "Not checked yet": "Nog niet gecontroleerd",
     "No show or film libraries found on this server":
         "Geen serie- of filmbibliotheken gevonden op deze server",
@@ -1487,6 +1494,21 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
+    "Your own player": "Je eigen speler",
+    "▶ Play now opens a film or episode in AirGrabber itself, in a window or full screen, with the keys you know from VLC.":
+        "▶ Afspelen opent een film of aflevering nu in AirGrabber zelf, in een venster of op volledig scherm, met de toetsen van VLC.",
+    "Plex keeps up: carry on where you stopped, find it in Continue watching, and it counts as watched at the end.":
+        "Plex blijft bij: kijk verder waar je stopte, vind het bij Verder kijken, en aan het eind telt het als gezien.",
+    "Skip intro shows when Plex knows where the intro is, and the next episode starts after a short countdown.":
+        "Intro overslaan verschijnt als Plex weet waar de intro zit, en na een korte aftelling start de volgende aflevering.",
+    "Find subtitles right from the player, and Always pick gives you your audio and subtitle language every time.":
+        "Vind ondertitels vanuit de speler; met Altijd kiezen krijg je elke keer je eigen taal voor geluid en ondertitels.",
+    "Rather keep VLC? Choose it at \"Play in\" in Settings → Plex.":
+        "Liever VLC houden? Kies het bij \"Afspelen in\" onder Instellingen → Plex.",
+    "The player gets a mini player that stays on top (Ctrl+H, as in VLC), and plays any video from Explorer's Open with.":
+        "De speler krijgt een minispeler die bovenaan blijft (Ctrl+H, als in VLC) en speelt elke video via Verkenners Openen met.",
+    "The episode list shows a thin line under an episode you stopped partway through.":
+        "De afleveringenlijst toont een dun lijntje onder een aflevering waarmee je halverwege stopte.",
     "Calendar: a download no longer redraws the whole calendar; only that episode's card changes.":
         "Kalender: een download tekent niet meer de hele kalender opnieuw; alleen de kaart van die aflevering verandert.",
     "Calendar: the page stays where you scrolled to while downloads finish.":
@@ -1527,9 +1549,8 @@ NL: dict[str, str] = {
         "Een seizoenstrailer wordt gezocht met het seizoen erbij, zodat seizoen 4 niet de eerste trailer van de serie krijgt.",
     "A folder holding several seasons gets the show's own trailer.":
         "Een map met meerdere seizoenen krijgt de trailer van de serie zelf.",
-    "A Library page for what's in Plex": "Een bibliotheekpagina voor wat er in Plex staat",
-    "Your shows and films from Plex as posters: follow a show from there, or see which ones have gaps.":
-        "Je series en films uit Plex als posters: volg er een serie vanaf, of zie welke gaten hebben.",
+    "A Library page shows your shows and films from Plex as posters: follow a show there, or see its gaps.":
+        "Een bibliotheekpagina toont je series en films uit Plex als posters: volg daar een serie of zie waar gaten zitten.",
     "MediaForge: a file it isn't sure about joins the other files of the same show.":
         "MediaForge: een bestand waar het niet zeker van is, sluit aan bij de andere bestanden van dezelfde serie.",
     "An episode's new name always says which episode it is, whatever preset names it.":
@@ -1937,6 +1958,49 @@ NL: dict[str, str] = {
     "AirGrabber couldn't start a video player for {name}.":
         "AirGrabber kon geen videospeler starten voor {name}.",
     "▶ Play": "▶ Afspelen",
-    "Play in VLC": "Afspelen in VLC",
+    "Play it on this PC": "Afspelen op deze pc",
     "Choose an episode to play.": "Kies een aflevering om af te spelen.",
+    # app/media_player.py (AirGrabber's own video player: the app passes these on its command line)
+    "Play (Space)": "Afspelen (spatie)",
+    "Pause (Space)": "Pauzeren (spatie)",
+    "Back 10 seconds (←)": "10 seconden terug (←)",
+    "Forward 30 seconds (→)": "30 seconden vooruit (→)",
+    "Mute (M)": "Geluid uit (M)",
+    "Sound on (M)": "Geluid aan (M)",
+    "Full screen (F)": "Volledig scherm (F)",
+    "Leave full screen (Esc)": "Volledig scherm verlaten (Esc)",
+    "Stay on top": "Altijd bovenaan",
+    "Mini player (Ctrl+H)": "Minispeler (Ctrl+H)",
+    "Back to the window (Ctrl+H)": "Terug naar het venster (Ctrl+H)",
+    "Audio": "Audio",
+    "Find subtitles…": "Ondertitels vinden…",
+    "Always pick: {language}": "Altijd kiezen: {language}",
+    "The video's own": "Zoals in de video",
+    "Track {number}": "Spoor {number}",
+    "Resume from {time}": "Verder kijken vanaf {time}",
+    "Start over": "Opnieuw beginnen",
+    "Skip intro": "Intro overslaan",
+    "Next episode {label} in {n}…": "Volgende aflevering {label} over {n}…",
+    "Play now": "Nu afspelen",
+    # app/ui/media_player.py (▶ Play in AirGrabber's own player: the app's side)
+    "▶ Playing {name}.": "▶ {name} speelt af.",
+    "Plex didn't answer, so your place isn't saved there right now.":
+        "Plex antwoordde niet, dus waar je bent wordt daar nu niet bewaard.",
+    "AirGrabber's player needs VLC installed (64-bit), so this opens in VLC.":
+        "De speler van AirGrabber heeft VLC (64-bit) nodig, dus dit opent in VLC.",
+    "AirGrabber's player needs VLC installed (64-bit), so this opens in your video player.":
+        "De speler van AirGrabber heeft VLC (64-bit) nodig, dus dit opent in je videospeler.",
+    "AirGrabber's player didn't start, so this opens in VLC.":
+        "De speler van AirGrabber startte niet, dus dit opent in VLC.",
+    "AirGrabber's player didn't start, so this opens in your video player.":
+        "De speler van AirGrabber startte niet, dus dit opent in je videospeler.",
+    "MediaForge is off, so subtitles can't be found.":
+        "MediaForge staat uit, dus er kunnen geen ondertitels worden gevonden.",
+    "OpenSubtitles has no subtitles in that language for this video.":
+        "OpenSubtitles heeft geen ondertitels in die taal voor deze video.",
+    "The video isn't there any more, so no subtitles were saved.":
+        "De video staat er niet meer, dus er zijn geen ondertitels bewaard.",
+    "Finding subtitles isn't available in this version.":
+        "Ondertitels vinden kan nog niet in deze versie.",
+    "The subtitles couldn't be fetched.": "De ondertitels konden niet worden opgehaald.",
 }

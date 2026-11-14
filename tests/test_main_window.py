@@ -7,11 +7,12 @@ from __future__ import annotations
 import asyncio
 import tkinter as tk
 import unittest
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 from app.models import (
     AutoDownloaded,
@@ -123,6 +124,11 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "plex_server_name": "Alex-NAS",
     "plex_server_uri": "http://192.168.1.20:32400",
     "plex_sections_off": ("3",),
+    # The PC player's settings: read when something is played.
+    "play_in": "vlc",
+    "always_audio": "nl",
+    "always_subtitles": "off",
+    "open_with_player": False,
     "phone_connection_on": True,
     "phone_pc_id": "a1b2",
     "phone_fingerprint": "c3d4",
@@ -572,7 +578,14 @@ class FakeHost:
 
 
 class QuitGateTests(unittest.IsolatedAsyncioTestCase):
-    def gate(self, host: FakeHost, *, close_s: float = 0.0, timeout_s: float = 5.0) -> QuitGate:
+    def gate(
+        self,
+        host: FakeHost,
+        *,
+        close_s: float = 0.0,
+        timeout_s: float = 5.0,
+        close_player: Callable[[], Awaitable[None]] | None = None,
+    ) -> QuitGate:
         self.host = host
         self.finished = asyncio.Event()
 
@@ -592,6 +605,7 @@ class QuitGateTests(unittest.IsolatedAsyncioTestCase):
             on_asked=lambda: host.events.append("asked"),
             on_leaving=lambda: host.events.append("leaving"),
             timeout_s=timeout_s,
+            close_player=close_player,
         )
 
     async def test_quits_at_once_when_forge_may_close(self) -> None:
@@ -627,6 +641,38 @@ class QuitGateTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.finished.wait(), 2.0)
         self.assertEqual(self.host.events, ["asked", "leaving", "windows", "forge", "finish"])
         self.assertEqual(len(logs.records), 2)
+
+    async def test_quit_closes_the_player_after_reporting(self) -> None:
+        """AirGrabber's player first (Plex hears "stopped", then its window closes), before
+        MediaForge and before the window goes (main.py cancels every task after that)."""
+        host = FakeHost()
+
+        async def close_player() -> None:
+            host.events.append("player")
+            await asyncio.sleep(0.01)  # the report to Plex
+            host.events.append("player closed")
+
+        gate = self.gate(host, close_player=close_player)
+        gate.request()
+        await asyncio.wait_for(self.finished.wait(), 2.0)
+        self.assertEqual(
+            self.host.events,
+            ["asked", "leaving", "player", "player closed", "windows", "forge", "forge closed",
+             "finish"],
+        )
+
+    async def test_a_player_that_hangs_cannot_hold_quitting_up(self) -> None:
+        async def hangs() -> None:
+            await asyncio.sleep(10)
+
+        gate = self.gate(FakeHost(), close_player=hangs)
+        with (
+            mock.patch("app.ui.forge_link.PLAYER_CLOSE_S", 0.05),
+            self.assertLogs("app.ui.forge_link", "WARNING"),
+        ):
+            gate.request()
+            await asyncio.wait_for(self.finished.wait(), 2.0)
+        self.assertEqual(self.host.events[-1], "finish")
 
     async def test_a_failing_shutdown_still_quits(self) -> None:
         host = FakeHost()
@@ -670,6 +716,54 @@ class QuitsAfterForgeTests(unittest.TestCase):
         ):
             with self.subTest(name):
                 self.assertFalse(self.quits(**{name: value}))
+
+
+class PlayWiringTests(unittest.TestCase):
+    """A file from Explorer's "Open with" (main.py --play): to the player; a start for it leaves
+    once the player has closed, unless it stays in the tray (D5's rule)."""
+
+    def window(
+        self, *, started_for_play: bool = True, hidden: bool = True, keep_in_tray: bool = False
+    ) -> Any:
+        calls: list[Any] = []
+        settings = SimpleNamespace(current=Settings(keep_in_tray=keep_in_tray))
+        window: Any = SimpleNamespace(
+            calls=calls,
+            _started_for_play=started_for_play,
+            _services=SimpleNamespace(settings=settings),
+            _forge=SimpleNamespace(
+                windows_open=False, handle=lambda request: calls.append(("forge", request))
+            ),
+            _quit_gate=SimpleNamespace(asked=False, request=lambda: calls.append("quit")),
+            player=SimpleNamespace(play_file=lambda path: calls.append(("play", path))),
+            tray=SimpleNamespace(running=True),
+            state=lambda: "withdrawn" if hidden else "normal",
+        )
+        window.quit_app = lambda: MainWindow.quit_app(window)
+        return window
+
+    def test_requests_go_where_they_belong(self) -> None:
+        window = self.window()
+        play = ForgeRequest(paths=("C:\\Videos\\Holiday 2025.mp4",), forge=False, play=True)
+        forge = ForgeRequest(paths=("C:\\Videos\\a.mkv",), confirm=True)
+        MainWindow._take_request(window, play)
+        MainWindow._take_request(window, forge)
+        MainWindow._take_request(window, ForgeRequest(forge=False, play=True))  # no file
+        self.assertEqual(
+            window.calls, [("play", "C:\\Videos\\Holiday 2025.mp4"), ("forge", forge)]
+        )
+
+    def test_a_start_for_a_play_leaves_when_the_player_closes(self) -> None:
+        window = self.window()
+        MainWindow._on_player_idle(window)
+        self.assertEqual(window.calls, ["quit"])
+
+    def test_it_stays_otherwise(self) -> None:
+        for changes in ({"started_for_play": False}, {"hidden": False}, {"keep_in_tray": True}):
+            with self.subTest(**changes):
+                window = self.window(**changes)
+                MainWindow._on_player_idle(window)
+                self.assertEqual(window.calls, [])
 
 
 class ForgeWiringTests(unittest.TestCase):

@@ -1739,10 +1739,10 @@ class SettingsDialog(ctk.CTkToplevel):
     # -- Plex ----------------------------------------------------------------------------------
 
     def _build_plex(self, plex: PlexService) -> _Page:
-        """The Plex box (app/ui/plex_settings.py), which acts at once, not on Save; under it what
-        AirGrabber does with and without Plex (app/ui/plex_compare.py)."""
+        """The Plex box (app/ui/plex_settings.py, with "Play in"), which acts at once, not on Save;
+        under it what AirGrabber does with and without Plex (app/ui/plex_compare.py)."""
         page = self._new_page(SECTION_PLEX)
-        self.plex_box = PlexBox(page, plex)
+        self.plex_box = PlexBox(page, plex, settings=self._settings)
         phone = self._phone is not None and self._phone.available
         self.plex_compare = PlexCompareBox(page, phone=phone)
         return page

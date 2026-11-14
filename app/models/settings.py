@@ -256,6 +256,14 @@ class InfoLayout(StrEnum):
     TABS = "tabs"  # the info on top, then tabs: (Episodes,) Releases, Cast
 
 
+class PlayIn(StrEnum):
+    """Settings → Plex → Play in: what Play opens a film or episode from Plex in
+    (docs/player/2026-11-13-pc-player-design.md)."""
+
+    AIRGRABBER = "airgrabber"  # AirGrabber's own player (app/media_player.py)
+    VLC = "vlc"  # VLC, as before
+
+
 def _known[E: StrEnum](kind: type[E], default: E) -> Any:
     """A before-validator: a stored value this version doesn't know (a newer version's) is
     `default`."""
@@ -578,6 +586,14 @@ class Settings(BaseModel):
     plex_server_name: str = ""
     plex_server_uri: str = ""  # the server's connection that answered last
     plex_sections_off: tuple[str, ...] = ()  # the libraries (section keys) switched off
+    # The PC player (docs/player/2026-11-13-pc-player-design.md): what Play opens in (Settings →
+    # Plex), and the always-this-language rules its menus set. `always_audio`: a language code
+    # ("nl"), "" = no rule; `always_subtitles`: "" = no rule, "off" = subtitles off, else a code.
+    play_in: Annotated[PlayIn, _known(PlayIn, PlayIn.AIRGRABBER)] = PlayIn.AIRGRABBER
+    always_audio: str = ""
+    always_subtitles: str = ""
+    # Explorer's "Open with" offers AirGrabber's player for video files (app/services/open_with.py).
+    open_with_player: bool = True
     # The phone connection (app/services/phone): off until turned on. This PC's own, never in a
     # backup (app/services/backup.py).
     phone_connection_on: bool = False

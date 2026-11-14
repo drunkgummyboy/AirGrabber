@@ -4,8 +4,8 @@ trailer", the poster, title, meta line, genres, synopsis, cast) with a film's ac
 releases right beside the actions, so it has none) (app/ui/row_actions.py); the watchlist button and IMDb, and a quiet ✓
 (tip "In Plex") while Plex is connected and the film is in the user's Plex libraries
 (app/services/plex.py), the only thing that counts as had: a film AirGrabber downloaded gets no
-✓ (owner's decision for 3.1.0). While it is in Plex, "▶ Play" beside the download row opens its
-file in VLC on this PC (app/ui/play_control.py, app/services/playback.py). Its releases (app/ui/release_panel.py) are searched as soon as
+✓ (owner's decision for 3.1.0). While it is in Plex, "▶ Play" beside the download row plays its
+file in AirGrabber's own player on this PC (app/ui/play_control.py, app/ui/media_player.py). Its releases (app/ui/release_panel.py) are searched as soon as
 the window opens: beside the info ("side") or in the Releases tab ("tabs"), which says how many
 there are ("Releases (18)").
 
@@ -64,6 +64,7 @@ from app.ui.watchlist_button import WatchlistButton
 if TYPE_CHECKING:
     from app.services import DiscoveryService, ImageCache, WatchlistService
     from app.services.playback import PlaybackService
+    from app.ui.play_control import PlayerHost
     from app.ui.views.base import StatusReporter
 
 log = logging.getLogger(__name__)
@@ -139,13 +140,14 @@ class MovieDetailsWindow(TitleInfoWindow):
         releases: PanelServices | None = None,
         in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
         playback: PlaybackService | None = None,
+        player: PlayerHost | None = None,
         status: StatusReporter | None = None,
     ) -> None:
         """`releases`: what its
         releases panel works with (without it there is none). `in_plex(tmdb_id, imdb_id)`:
         whether the film is in Plex (the quiet ✓ `plex_mark`, made only then). `playback` +
-        `status`: "▶ Play" (`play_button`) while the film is in Plex, its outcome on the status
-        bar."""
+        `player` + `status`: "▶ Play" (`play_button`) while the film is in Plex, played in the
+        app's player, which says on the status bar how it went."""
         super().__init__(
             master,
             title=movie.title,
@@ -161,7 +163,11 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._is_in_plex = False
         self._plex_title: PlexTitle | None = None  # the film in Plex: what ▶ Play plays
         self._playback = playback
-        self._play = Play(playback, status) if playback is not None and status is not None else None
+        self._play = (
+            Play(playback, player, status)
+            if playback is not None and player is not None and status is not None
+            else None
+        )
         self._details: MovieDetails | None = None
         self._extras: TitleExtras | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -252,7 +258,7 @@ class MovieDetailsWindow(TitleInfoWindow):
             self.play_button = None
 
     def play(self) -> None:
-        """"▶ Play": the film's file in VLC on this PC (the status bar says how it went)."""
+        """"▶ Play": the film in the app's player (the status bar says how it went)."""
         if self._play is not None and self._plex_title is not None:
             self._play.film(self._plex_title)
 
@@ -375,11 +381,13 @@ class MovieWindows:
         in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
         plex_changed: Subscribe | None = None,
         playback: PlaybackService | None = None,
+        player: PlayerHost | None = None,
         status: StatusReporter | None = None,
     ) -> None:
         """`releases`: the releases panels' services; its settings say the layout a new window opens in.
         `in_plex` / `plex_changed`: whether a film is in Plex and when that may have changed.
-        `playback` / `status`: the windows' "▶ Play" (none without them)."""
+        `playback` / `player` / `status`: the windows' "▶ Play" (none without them; `player` is
+        the app's one MediaPlayerHost)."""
         self._master = master
         self._images = images
         self._discovery = discovery
@@ -388,6 +396,7 @@ class MovieWindows:
         self._in_plex = in_plex
         self._releases = releases
         self._playback = playback
+        self._player = player
         self._status = status
         self._windows: dict[int, MovieDetailsWindow] = {}
         self._unsubscribe = [
@@ -456,6 +465,7 @@ class MovieWindows:
             releases=self._releases,
             in_plex=self._in_plex,
             playback=self._playback,
+            player=self._player,
             status=self._status,
         )
 

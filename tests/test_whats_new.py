@@ -43,8 +43,8 @@ FAKE_NOTES = {
 # tools/ is not a package; importing by name keeps mypy from seeing the module twice.
 PICTURES = importlib.import_module("tools.whats_new_art").PICTURES
 
-FAKE_FEATURE = Feature("Big thing", "It does a lot.", "library.png")
-OTHER_FEATURE = Feature("Other thing", "It does more.", "library.png")
+FAKE_FEATURE = Feature("Big thing", "It does a lot.", "player.png")
+OTHER_FEATURE = Feature("Other thing", "It does more.", "player.png")
 # Pictures that aren't there or don't read (the release has one real picture).
 MISSING_FEATURE = Feature("Big thing", "It does a lot.", "missing.png")
 BROKEN_FEATURE = Feature("Other thing", "It does more.", "broken.png")

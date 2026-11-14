@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from app.database import Database, SettingsRepository
-from app.models import QualityProfile, Settings, Weekday
+from app.models import PlayIn, QualityProfile, Settings, Weekday
 from app.services import SettingsService
 
 
@@ -64,6 +64,33 @@ class ConcurrentUpdateTests(unittest.IsolatedAsyncioTestCase):
         await service.update(setup_done=True)
         self.assertTrue(service.current.setup_done)
         self.assertEqual(service.current.weeks_to_show, Settings().weeks_to_show)
+
+
+class PlayerSettingsTests(unittest.IsolatedAsyncioTestCase):
+    """The PC player's settings (docs/player/2026-11-13-pc-player-design.md): where Play opens
+    and the always-this-language rules."""
+
+    def test_player_settings_defaults(self) -> None:
+        settings = Settings()
+        self.assertIs(settings.play_in, PlayIn.AIRGRABBER)
+        self.assertEqual(settings.always_audio, "")
+        self.assertEqual(settings.always_subtitles, "")
+
+    def test_unknown_play_in_reads_as_default(self) -> None:
+        self.assertIs(Settings.model_validate({"play_in": "mpv"}).play_in, PlayIn.AIRGRABBER)
+        self.assertIs(Settings.model_validate({"play_in": " VLC "}).play_in, PlayIn.VLC)
+
+    async def test_round_trip(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        db = await Database.open(Path(tmp.name) / "settings.db")
+        self.addAsyncCleanup(db.close)
+        service = await SettingsService.load(SettingsRepository(db))
+        await service.update(play_in=PlayIn.VLC, always_audio="nl", always_subtitles="off")
+        loaded = await SettingsRepository(db).load()
+        self.assertIs(loaded.play_in, PlayIn.VLC)
+        self.assertEqual(loaded.always_audio, "nl")
+        self.assertEqual(loaded.always_subtitles, "off")
 
 
 if __name__ == "__main__":

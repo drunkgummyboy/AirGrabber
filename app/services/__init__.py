@@ -33,6 +33,7 @@ from app.services.phone.server import Route
 from app.services.phone.service import PhoneService
 from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
+from app.services.local_files import PLACES_FILE, LocalPlaces
 from app.services.playback import PlaybackService, forge_folders
 from app.services.plex import PlexClient, PlexService
 from app.services.plex_library import PlexLibraryService
@@ -71,6 +72,7 @@ class Services:
 
     __slots__ = (
         "playback",
+        "local_places",
         "plex_scans",
         "plex_library",
         "plex_posters",
@@ -186,6 +188,8 @@ class Services:
         # ▶ Play in the info windows: Plex's file found through MediaForge's Series / Movies
         # folders (read from the Forge runtime when asked) and opened in VLC.
         self.playback = PlaybackService(self.plex, forge_folders(forge))
+        # Where videos opened from Explorer's "Open with" were left (app/services/local_files.py).
+        self.local_places = LocalPlaces(paths.root / PLACES_FILE)
         # Import Shows → From Sonarr (a one-off read; nothing of it is stored).
         self.sonarr = SonarrClient(http)
         # What MediaForge moves into a library folder, Plex scans soon after (once Forge runs).

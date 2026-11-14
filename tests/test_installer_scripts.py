@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -295,6 +296,18 @@ foreach ($code in @(0, 1, 2)) {
         for result in results:
             self.assertEqual(result["log"], [rf"python {_INSTALL_DIR}\main.py --forge-menu on"])
         self.assertEqual([result["host"] for result in results], [[step], [step, failed], [step, failed]])
+
+    def test_the_uninstaller_knows_open_withs_keys(self) -> None:
+        from app.services.local_files import VIDEO_SUFFIXES
+        from app.services.open_with import PROG_ID, PROG_KEY
+
+        source = UNINSTALLER.read_text(encoding="utf-8")
+        suffixes = re.search(r"\$VideoSuffixes = @\(([^)]*)\)", source)
+        assert suffixes is not None
+        self.assertEqual(set(re.findall(r"'([^']+)'", suffixes.group(1))), set(VIDEO_SUFFIXES))
+        self.assertIn(f"$OpenWithProgId = '{PROG_ID}'", source)
+        self.assertIn(f"$OpenWithKey = 'HKCU:\\{PROG_KEY}'", source)
+        self.assertIn("    Remove-OpenWith $mainPy\n", source)
 
     def test_only_a_new_install_turns_the_menu_on(self) -> None:
         source = INSTALLER.read_text(encoding="ascii")

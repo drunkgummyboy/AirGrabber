@@ -467,6 +467,14 @@ class ForgeHost:
         auto.notify = self._renamer_notify
         self._imported_from = services.settings.current.imported_from
         services.settings.subscribe(self._settings_saved)
+        services.presets.subscribe(self._presets_changed)
+
+    def _presets_changed(self) -> None:
+        """A preset was made, changed or deleted (Settings › Naming, the queue's own Save):
+        the queue's preset bar and cards offer the presets as they are now."""
+        page = self.page
+        if page is not None and page.queue is not None:
+            page.queue.reload_presets()
 
     def _renamer_status(self, status: WatchStatus) -> None:
         self._status = status

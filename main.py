@@ -15,6 +15,9 @@ runs, the request is handed over (app/single_instance.py's mailbox) before loggi
 check, so many starts stay cheap; a first start keeps it in `Options.forge_request` and starts with
 the main window hidden: a plain request then shows it on MediaForge's page, a confirm request only
 its confirm window (app/ui/forge_link.py: when that closes it stays in the tray or quits, D5).
+`--play FILE` (Explorer's "Open with" AirGrabber player, app/services/open_with.py) is handed over
+the same way: the running AirGrabber plays the file in its player; a first start starts hidden,
+plays it and leaves once the player closes, unless it stays in the tray (D5's rule).
 `--forge-menu on|off` only turns this copy's Explorer right-click menu on or off (D8: install.ps1
 turns it on for a new install; app/forge/context_menu.py, which leaves another program's menu
 alone) and exits: no window, no single-instance lock; the exit code says how it went (`EXIT_*`
@@ -60,6 +63,7 @@ class Options:
     preset: str | None = None  # the naming preset to use (the right-click menu's entry)
     paths: tuple[str, ...] = ()  # files and folders, as given
     forge_menu: str | None = None  # "on" / "off": only change the right-click menu, then exit
+    play: str | None = None  # a video to play in AirGrabber's player (Explorer's "Open with")
 
     @property
     def forge_request(self) -> ForgeRequest | None:
@@ -73,6 +77,15 @@ class Options:
             confirm=self.confirm,
         )
 
+    @property
+    def request(self) -> ForgeRequest | None:
+        """What this start hands to AirGrabber: its Forge request, else the file it plays
+        (`--play`, made absolute too), else None."""
+        forge = self.forge_request
+        if forge is not None or self.play is None:
+            return forge
+        return ForgeRequest(paths=(os.path.abspath(self.play),), forge=False, play=True)
+
 
 def parse_options(argv: Sequence[str]) -> Options:
     """The command line; anything unknown is ignored (pythonw.exe has no console to complain on)."""
@@ -83,6 +96,7 @@ def parse_options(argv: Sequence[str]) -> Options:
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--preset")
     parser.add_argument("--forge-menu", nargs="?", const="")  # alone: "" (not on / off)
+    parser.add_argument("--play", nargs="?", const="")  # alone: nothing to play
     parser.add_argument("paths", nargs="*")
     namespace, _unknown = parser.parse_known_intermixed_args(_joined_preset(argv))
     preset = namespace.preset
@@ -94,6 +108,7 @@ def parse_options(argv: Sequence[str]) -> Options:
         preset=preset if preset else None,
         paths=tuple(str(path) for path in namespace.paths),
         forge_menu=namespace.forge_menu,
+        play=namespace.play or None,
     )
 
 
@@ -117,7 +132,7 @@ def main() -> int:
     paths = AppPaths.default()
     instance: InstanceLock | None = None
     only_setup = options.setup_qbittorrent or options.forge_menu is not None
-    request = None if only_setup else options.forge_request
+    request = None if only_setup else options.request
     if request is not None:
         # Before logging and the package check: Explorer starts one process per selected file.
         try:
@@ -224,6 +239,10 @@ def _run(
             # Forge first, before every task is cancelled: its renamer finishes the file it is
             # renaming (bounded). Quit has normally closed it already; then this does nothing.
             loop.run_until_complete(_close_forge(services))
+        if window is not None:
+            # The player likewise (Quit has normally closed it; then this does nothing): Plex
+            # hears where it stopped, and the player saves its window's place before it ends.
+            loop.run_until_complete(_close_player(window))
         loop.run_until_complete(tasks.cancel_all())
         if services is not None:
             # Must run: aiosqlite's worker thread is not a daemon and would keep the process alive.
@@ -239,6 +258,20 @@ def _run(
         if restart:
             instance.release()  # else the new copy would find this one still running
             _relaunch()
+
+
+async def _close_player(window: MainWindow) -> None:
+    """Close AirGrabber's player within PLAYER_CLOSE_S (its last report to Plex, then its
+    window). Never raises."""
+    from app.ui.forge_link import PLAYER_CLOSE_S
+
+    try:
+        async with asyncio.timeout(PLAYER_CLOSE_S):
+            await window.player.aclose()
+    except TimeoutError:
+        log.warning("AirGrabber's player didn't close within %.0f s: quitting anyway", PLAYER_CLOSE_S)
+    except Exception:
+        log.exception("Closing AirGrabber's player failed")
 
 
 async def _close_forge(services: Services) -> None:

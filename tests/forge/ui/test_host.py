@@ -127,6 +127,25 @@ class OpenTests(HostCase):
         self.assertIs(await self.host.open(), page)  # built once
         self.assertIs(page.queue, queue)
 
+    async def test_a_preset_made_in_settings_reaches_the_preset_bar(self) -> None:
+        """Settings › Naming stores its presets with replace_all: the open queue's preset bar
+        (and every card's menu) offers the new one without the page being built again."""
+        page = await self.open()
+        queue = page.queue
+        assert queue is not None
+        services = self.services()
+        presets = await services.presets.list()
+        made = presets[0].model_copy(update={"name": "My own preset"})
+        await services.presets.replace_all([*presets, made])
+        await pump_until(
+            self.root,
+            lambda: "My own preset" in [p.name for p in queue.presets_for(queue.kind)],
+        )
+        await services.presets.delete("My own preset")  # a delete is heard too
+        await pump_until(
+            self.root, lambda: "My own preset" not in [p.name for p in queue.presets]
+        )
+
     async def test_files_that_need_you_before_the_first_visit_light_its_count(self) -> None:
         told: list[int] = []
         self.host.on_needs = told.append

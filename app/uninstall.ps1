@@ -6,7 +6,7 @@ UninstallString that install.ps1 registers:
 
 It removes the install folder it lives in (this file's parent's parent), this install's Start menu
 (AirGrabber and MediaForge), desktop and Startup-folder (start with Windows) shortcuts, its Explorer right-click menu ("MediaForge",
-only when it starts this install) and its "Installed apps" entry, and, when the user agrees, the
+only when it starts this install), its place in Explorer's "Open with" (AirGrabber player, likewise) and its "Installed apps" entry, and, when the user agrees, the
 library and settings in %LOCALAPPDATA%\AirGrabber (or $env:AIRGRABBER_DATA_DIR).
 
 -Quiet: no dialogs, and the library and settings are kept (testing and QuietUninstallString).
@@ -26,6 +26,12 @@ $MenuKeys = @(
     'HKCU:\Software\Classes\*\shell\MediaForge',
     'HKCU:\Software\Classes\Directory\shell\MediaForge'
 )
+
+# Explorer's "Open with" AirGrabber player (app/services/open_with.py), under HKEY_CURRENT_USER:
+# the ProgID and its value in each video extension's OpenWithProgids (local_files.VIDEO_SUFFIXES).
+$OpenWithProgId = 'AirGrabber.Video'
+$OpenWithKey = 'HKCU:\Software\Classes\AirGrabber.Video'
+$VideoSuffixes = @('.avi', '.flv', '.m2ts', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.ts', '.webm', '.wmv')
 
 function Normalize-Path([string]$Path) {
     return [IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -153,6 +159,22 @@ function Remove-Menu([string]$MainPy, [string[]]$Keys) {
     }
 }
 
+function Remove-OpenWith([string]$MainPy) {
+    # Only when its command starts this install (a development copy's, or another install's, stays).
+    $command = ''
+    try {
+        $command = [string](Get-ItemProperty -LiteralPath ($OpenWithKey + '\shell\open\command') -ErrorAction Stop).'(default)'
+    } catch {
+        $command = ''
+    }
+    if (-not (Test-MenuOwned $command $MainPy)) { return }
+    Remove-Item -LiteralPath $OpenWithKey -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($suffix in $VideoSuffixes) {
+        $key = 'HKCU:\Software\Classes\' + $suffix + '\OpenWithProgids'
+        Remove-ItemProperty -LiteralPath $key -Name $OpenWithProgId -ErrorAction SilentlyContinue
+    }
+}
+
 function Uninstall-AirGrabber {
     $ErrorActionPreference = 'Stop'
     if (-not $Quiet) { Add-Type -AssemblyName System.Windows.Forms }
@@ -194,6 +216,7 @@ function Uninstall-AirGrabber {
     # MediaForge (D8): "<install>\main.py" --forge; the old MediaForge's own MediaForge.lnk stays.
     Remove-Shortcut (Join-Path ([Environment]::GetFolderPath('Programs')) 'MediaForge.lnk') $mainPy
     Remove-Menu $mainPy $MenuKeys
+    Remove-OpenWith $mainPy
 
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     $leftOver = Test-Path -LiteralPath $installDir

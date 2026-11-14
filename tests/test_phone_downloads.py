@@ -81,6 +81,7 @@ class DownloadsCase(PhoneCase):
             self.suggestions,
             timeout=timeout,
             clock=lambda: self.seconds,
+            now=lambda: NOW,  # the fixtures' day: what is out is never today's real date's call
         )
 
     async def post(

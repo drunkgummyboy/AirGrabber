@@ -24,6 +24,9 @@ tests never call plex.tv or a real server. Every name, address, id and token in 
 - `metadata_movie.json`: `GET /library/metadata/3001`: the film Dune: Part Two with two versions
   (4K first, then 1080p), each with its Part's `file` as the server sees it (▶ Play plays the
   first) and `viewCount`
+- `metadata_episode_markers.json`: `GET /library/metadata/42?includeMarkers=1`: an episode of
+  The Ark (S02E02) left at 20:00 (`viewOffset`), 45 minutes long (`duration`), with an intro
+  `Marker` (1:01–2:22) and a credits one from 42:30, times in milliseconds
 - `all_leaves.json`: `GET /library/metadata/1001/allLeaves`: The Ark's episodes in Plex's own
   order (a special first; season 1 watched; season 2: E01 watched, E02 and E03 not; E04 without
   a file), each with its Part's `file` under `/volume1/video/TV/The Ark (2023)/Season NN/`

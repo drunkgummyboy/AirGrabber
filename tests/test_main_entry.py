@@ -50,6 +50,10 @@ class ParseOptionsTests(unittest.TestCase):
             ("--forge-menu", "on"): Options(forge_menu="on"),
             ("--forge-menu=off",): Options(forge_menu="off"),
             ("--forge-menu",): Options(forge_menu=""),  # no word: refused by the action itself
+            # Explorer's "Open with" AirGrabber player (app/services/open_with.py).
+            ("--play", FILE): Options(play=FILE),
+            ("--play",): Options(),  # nothing to play
+            ("--play", FILE, "--tray"): Options(tray=True, play=FILE),
         }
         for argv, expected in cases.items():
             with self.subTest(argv=argv):
@@ -63,6 +67,22 @@ class ParseOptionsTests(unittest.TestCase):
             ForgeRequest(paths=(os.path.abspath(FILE),), preset="Plex", confirm=True),
         )
         self.assertEqual(parse_options(("--forge",)).forge_request, ForgeRequest())
+
+    def test_the_play_request(self) -> None:
+        self.assertIsNone(parse_options(()).request)
+        self.assertEqual(
+            parse_options(("--play", FILE)).request,
+            ForgeRequest(paths=(os.path.abspath(FILE),), forge=False, play=True),
+        )
+        self.assertEqual(
+            parse_options(("--play", "Holiday 2025.mp4")).request,
+            ForgeRequest(
+                paths=(os.path.join(os.getcwd(), "Holiday 2025.mp4"),), forge=False, play=True
+            ),
+        )
+        self.assertEqual(  # the Forge request as before
+            parse_options(("--forge", FILE)).request, parse_options(("--forge", FILE)).forge_request
+        )
 
     def test_paths_are_made_absolute(self) -> None:
         # The running copy that takes the request has another working folder.
@@ -206,6 +226,26 @@ class MainTests(unittest.TestCase):
             {"start_hidden": False, "forge_request": ForgeRequest((FILE,), None, True)},
         )
 
+    def test_a_play_is_handed_over_like_a_forge_request(self) -> None:
+        with mock.patch.object(main, "hand_over", return_value=None) as handed:
+            self.assertEqual(self.main("--play", FILE), 0)
+        self.assertEqual(
+            handed.call_args.args, (self.data_dir, ForgeRequest((FILE,), forge=False, play=True))
+        )
+        self.logging.assert_not_called()
+
+    def test_a_first_start_for_a_play_keeps_it(self) -> None:
+        lock = _FakeLock(acquired=True)
+        self.requirements.return_value = True
+        self.run_app.side_effect = None
+        self.run_app.return_value = 0
+        with mock.patch.object(main, "hand_over", return_value=lock):
+            self.assertEqual(self.main("--play", FILE), 0)
+        self.assertEqual(
+            self.run_app.call_args.kwargs,
+            {"start_hidden": False, "forge_request": ForgeRequest((FILE,), forge=False, play=True)},
+        )
+
     def test_a_plain_start_carries_no_request(self) -> None:
         lock = _FakeLock(acquired=True)
         self.requirements.return_value = True
@@ -281,6 +321,32 @@ class MainTests(unittest.TestCase):
         action.side_effect = OSError("broken")
         with mock.patch("app.forge.context_menu.menu_action", action), self.assertLogs("airgrabber", "ERROR"):
             self.assertEqual(self.main("--forge-menu", "on"), 1)
+
+
+class ClosePlayerTests(unittest.IsolatedAsyncioTestCase):
+    """main.py's shutdown closes AirGrabber's player too (when Quit didn't), bounded."""
+
+    def window(self, aclose: Any) -> Any:
+        return SimpleNamespace(player=SimpleNamespace(aclose=aclose))
+
+    async def test_closes_the_player(self) -> None:
+        aclose = mock.AsyncMock()
+        await main._close_player(self.window(aclose))
+        aclose.assert_awaited_once()
+
+    async def test_a_slow_player_is_given_up_on(self) -> None:
+        async def slow() -> None:
+            await asyncio.sleep(10)
+
+        with (
+            mock.patch("app.ui.forge_link.PLAYER_CLOSE_S", 0.05),
+            self.assertLogs("airgrabber", "WARNING"),
+        ):
+            await asyncio.wait_for(main._close_player(self.window(slow)), 2.0)
+
+    async def test_a_failing_close_never_raises(self) -> None:
+        with self.assertLogs("airgrabber", "ERROR"):
+            await main._close_player(self.window(mock.AsyncMock(side_effect=OSError("pipe"))))
 
 
 class CloseForgeTests(unittest.IsolatedAsyncioTestCase):

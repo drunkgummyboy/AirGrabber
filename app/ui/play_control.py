@@ -1,13 +1,18 @@
 """▶ Play in the info windows (app/ui/movie_details.py, app/ui/show_details.py): a title that is
-in Plex opens in VLC on this PC (app/services/playback.py finds its file through MediaForge's
-Series / Movies folders).
+in Plex plays in AirGrabber's own player (`MediaPlayerHost`, app/ui/media_player.py, one per
+app), which finds its file through MediaForge's Series / Movies folders (app/services/playback.py)
+and falls back to VLC itself.
 
-`play_button` is the buttons row's outlined "▶ Play" (tip "Play in VLC"); `Play` runs a play and
-says on the status bar how it went (one at a time per window). A film plays at once; a show first
-opens the EpisodePicker: borderless in AirGrabber's dialog look, its seasons as chips and the
-season's episodes as rows ("E03 · Title", a muted ✓ on a watched one), the next unwatched one
-(`playback.next_episode`) selected and scrolled into view. A click on a row, or Enter on the
-selection, plays it and closes the window; Up / Down move the selection; Escape and ✕ close it.
+`play_button` is the buttons row's outlined "▶ Play" (tip "Play it on this PC"); `Play` hands a play to
+the player and says "▶ Finding …" on the status bar; how it went the player says there itself.
+A film plays at once (its video read from Plex first, `PlaybackService.film_video`: a problem
+there is said instead; one look at a time per window); a show first opens the EpisodePicker:
+borderless in AirGrabber's dialog look, its seasons as chips and the season's episodes as rows
+("E03 · Title", a muted ✓ on a watched one, a thin progress line under one Plex has a place in:
+`0 < view_offset_ms < 90 %` of its length), the next unwatched one (`playback.next_episode`)
+selected and scrolled into view. Each picker reads the episodes from Plex again. A click on a
+row, or Enter on the selection, plays it with the whole list (the player's next episode) and
+closes the window; Up / Down move the selection; Escape and ✕ close it.
 """
 
 from __future__ import annotations
@@ -15,8 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import tkinter as tk
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Protocol
 
 import customtkinter as ctk
 
@@ -38,6 +43,7 @@ from app.ui.dialog_kit import (
     place_over,
     text_label,
 )
+from app.ui.media_player import WATCHED_SHARE  # the player marks it watched there: no line
 from app.ui.scrollable import ScrollableFrame
 from app.ui.send_to_phone import (
     LOADING_TEXT,
@@ -55,7 +61,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 PLAY_TEXT = N_("▶ Play")
-PLAY_TIP = N_("Play in VLC")
+PLAY_TIP = N_("Play it on this PC")
 PICK_TEXT = N_("Choose an episode to play.")
 WATCHED_MARK = "✓"
 PLAY_WIDTH = 100
@@ -66,6 +72,15 @@ ROW_HEIGHT = 32
 CHIP_WIDTH = 92
 CHIP_HEIGHT = 30
 CHIPS_PER_ROW = 4
+PROGRESS_HEIGHT = 3  # the progress line under a row Plex has a place in
+
+
+class PlayerHost(Protocol):
+    """MediaPlayerHost's `play` (app/ui/media_player.py; tests pass fakes)."""
+
+    def play(
+        self, title: PlexTitle, video: PlexVideo, *, episodes: Sequence[PlexVideo] = ()
+    ) -> None: ...
 
 
 def play_button(
@@ -97,25 +112,50 @@ def episode_line(video: PlexVideo) -> str:
     return " · ".join(part for part in (code, video.title) if part)
 
 
-class Play:
-    """One window's ▶ Play: plays through `playback`, the outcome on the status bar."""
+def watched_share(video: PlexVideo) -> float | None:
+    """How far Plex says `video` was watched (0-1) when the picker draws its progress line:
+    begun and below WATCHED_SHARE of a known length; else None."""
+    duration = video.duration_ms
+    if duration <= 0 or not 0 < video.view_offset_ms < duration * WATCHED_SHARE:
+        return None
+    return video.view_offset_ms / duration
 
-    def __init__(self, playback: PlaybackService, status: StatusReporter) -> None:
+
+class Play:
+    """One window's ▶ Play: hands a play to the app's player (see the module docstring)."""
+
+    def __init__(
+        self, playback: PlaybackService, player: PlayerHost, status: StatusReporter
+    ) -> None:
         self._playback = playback
+        self._player = player
         self._status = status
         self._task: asyncio.Task[None] | None = None
         self.picker: EpisodePicker | None = None
 
     @property
     def busy(self) -> bool:
+        """A film's video is still being read from Plex."""
         return self._task is not None and not self._task.done()
 
     def film(self, title: PlexTitle) -> None:
-        """Play a film at once."""
-        self._run(lambda: self._playback.play_film(title), title.title)
+        """Play a film at once (a second click while Plex is asked does nothing)."""
+        if self.busy:
+            return
+        self._report(t(FINDING_TEXT, name=title.title), None)
+        self._task = spawn(self._film(title), name="play")
 
-    def episode(self, title: PlexTitle, video: PlexVideo) -> None:
-        self._run(lambda: self._playback.play(title, video), episode_name(title.title, video))
+    async def _film(self, title: PlexTitle) -> None:
+        found = await self._playback.film_video(title)
+        if isinstance(found, PlayOutcome):
+            self._report(found.text, STATUS_MS)
+            return
+        self._player.play(title, found)
+
+    def episode(self, title: PlexTitle, video: PlexVideo, episodes: Sequence[PlexVideo]) -> None:
+        """Play an episode of the show whose `episodes` (all of them, in order) give the next."""
+        self._report(t(FINDING_TEXT, name=episode_name(title.title, video)), None)
+        self._player.play(title, video, episodes=episodes)
 
     def pick(self, master: Any, title: PlexTitle) -> EpisodePicker:
         """A show: the episode picker (one per window; an open one is raised)."""
@@ -128,19 +168,9 @@ class Play:
             master,
             title,
             episodes=self._playback.episodes,
-            on_play=lambda video: self.episode(title, video),
+            on_play=lambda video, episodes: self.episode(title, video, episodes),
         )
         return self.picker
-
-    def _run(self, play: Callable[[], Awaitable[PlayOutcome]], name: str) -> None:
-        if self.busy:  # one at a time: a second click while it looks does nothing
-            return
-        self._report(t(FINDING_TEXT, name=name), None)
-        self._task = spawn(self._play(play), name="play")
-
-    async def _play(self, play: Callable[[], Awaitable[PlayOutcome]]) -> None:
-        outcome = await play()
-        self._report(outcome.text, STATUS_MS)
 
     def _report(self, text: str, clear_after_ms: int | None) -> None:
         try:  # the status bar belongs to the main window, which may be gone by now
@@ -149,12 +179,12 @@ class Play:
             pass
 
     async def settled(self) -> None:
-        """Wait for a play (tests)."""
+        """Wait for a film's look at Plex (tests)."""
         if self._task is not None and not self._task.done():
             await asyncio.wait({self._task})
 
     def close(self) -> None:
-        """The window closes: its picker goes too; a play under way finishes."""
+        """The window closes: its picker goes too; a play under way goes on in the player."""
         if self.picker is not None and self.picker.winfo_exists():
             self.picker.close()
         self.picker = None
@@ -169,8 +199,9 @@ class EpisodePicker(ctk.CTkToplevel):
         title: PlexTitle,
         *,
         episodes: Callable[[PlexTitle], Awaitable[list[PlexVideo]]],
-        on_play: Callable[[PlexVideo], None],
+        on_play: Callable[[PlexVideo, Sequence[PlexVideo]], None],
     ) -> None:
+        """`on_play(video, episodes)`: the episode chosen, with every episode of the show."""
         super().__init__(master, fg_color=theme.BG)
         self.title(title.title)
         set_window_icon(self)
@@ -185,6 +216,7 @@ class EpisodePicker(ctk.CTkToplevel):
         self.selected: PlexVideo | None = None
         self.chips: dict[int | None, ctk.CTkButton] = {}
         self.rows: dict[str, ctk.CTkButton] = {}  # by an episode's key
+        self.progress: dict[str, ctk.CTkProgressBar] = {}  # the rows with a progress line
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         ctk.CTkFrame(body, width=WIDTH, height=1, fg_color="transparent").pack()
@@ -271,6 +303,7 @@ class EpisodePicker(ctk.CTkToplevel):
         for row in self.rows.values():
             row.master.destroy()
         self.rows = {}
+        self.progress = {}
         shown = self._shown()
         for index, video in enumerate(shown):
             self._row(index, video)
@@ -304,6 +337,19 @@ class EpisodePicker(ctk.CTkToplevel):
             text_color=theme.TEXT_MUTED,
         ).grid(row=0, column=1, padx=(4, 0))
         self.rows[video.key] = button
+        share = watched_share(video)
+        if share is not None:  # under the row's text, as wide as its button
+            bar = ctk.CTkProgressBar(
+                row,
+                height=PROGRESS_HEIGHT,
+                corner_radius=1,
+                border_width=0,
+                fg_color=theme.PLACEHOLDER,
+                progress_color=theme.ACCENT,
+            )
+            bar.set(share)
+            bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
+            self.progress[video.key] = bar
 
     # -- choosing ----------------------------------------------------------------------------
 
@@ -351,8 +397,9 @@ class EpisodePicker(ctk.CTkToplevel):
 
     def play(self, video: PlexVideo) -> None:
         """Play `video` and close the picker."""
+        videos = list(self._videos)
         self.close()
-        self._on_play(video)
+        self._on_play(video, videos)
 
     def close(self) -> None:
         if self._task is not None:

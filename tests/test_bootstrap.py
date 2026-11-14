@@ -79,7 +79,8 @@ class ParseRequirementsTests(unittest.TestCase):
         requirements = parse_requirements(REQUIREMENTS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(
             [r.name for r in requirements if r.optional],
-            ["pywebview", "guessit", "cryptography", "segno"],  # the last two: the phone connection
+            # cryptography, segno: the phone connection; python-vlc: AirGrabber's own player
+            ["pywebview", "guessit", "cryptography", "segno", "python-vlc"],
         )
         self.assertIn("customtkinter", [r.name for r in requirements if not r.optional])
 

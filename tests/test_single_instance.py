@@ -218,6 +218,20 @@ class MailboxTests(_TempDataDir):
         self.assertEqual(data["created"], 1_000.0)
         self.assertEqual(self.files(), [file.name])  # no .part left behind
 
+    def test_a_play_request_comes_out_as_one(self) -> None:
+        # main.py --play FILE ("Open with" AirGrabber player): no Forge, a file to play.
+        play = ForgeRequest(paths=("\\NAS\Vidéo\Holiday 2025.mp4",), forge=False, play=True)
+        file = send_request(self.data_dir, play, event_name=None)
+        self.assertIs(json.loads(file.read_text(encoding="utf-8"))["play"], True)
+        self.assertEqual(take_requests(self.data_dir), [play])
+
+    def test_a_file_from_before_has_no_play(self) -> None:
+        file = send_request(self.data_dir, REQUEST, event_name=None)
+        data = json.loads(file.read_text(encoding="utf-8"))
+        del data["play"]
+        file.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(take_requests(self.data_dir), [REQUEST])
+
     def test_oldest_first(self) -> None:
         now = time.time()
         requests = [ForgeRequest(paths=(f"C:\\Media\\{n}.mkv",)) for n in range(5)]

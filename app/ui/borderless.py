@@ -130,6 +130,13 @@ def set_native(native: Native | None) -> Native | None:
     return previous
 
 
+def current_native() -> Native | None:
+    """The Native in use (None: windows keep their title bar), for a window that takes its title
+    bar off without `make_borderless`'s close button (the video player's controls carry their
+    own ✕, app/media_player_window.py)."""
+    return _native
+
+
 # -- making a window borderless ----------------------------------------------------------------
 
 

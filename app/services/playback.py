@@ -17,6 +17,11 @@ across the databases, Forge's types only under TYPE_CHECKING).
    (x86), then the PATH), else Windows' own player (`os.startfile`). The real starts are only
    `_start_process` / `_open_with_windows`, which tests/__init__.py refuses.
 
+`play` is `locate` (steps 1-2: a `Located` file, or the PlayOutcome saying why not) and then
+`launch` (step 3). ▶ Play (app/ui/play_control.py) reads a film's video with `film_video` and a
+show's with `episodes`, and hands it to AirGrabber's own player (app/ui/media_player.py), which
+uses `locate` alone and `launch` only when it falls back to VLC.
+
 What goes wrong comes back as a PlayOutcome whose `text` says so in plain words for the status
 bar: Plex didn't answer, MediaForge is off or its folder isn't set, the file isn't in that folder
 from this PC. Logs give ids and counts only: never a path, file name or title.
@@ -38,7 +43,7 @@ from typing import TYPE_CHECKING, Literal
 from app.i18n import N_, t
 from app.models import Show
 from app.models.plex import LibraryKind, PlexTitle, PlexVideo
-from app.services.plex import PlexError, PlexService, PlexUnreachable
+from app.services.plex import PlexError, PlexService, PlexUnreachable, episode_order
 
 if TYPE_CHECKING:  # Forge's runtime: only typed here, nothing of Forge is imported
     from app.forge.runtime import ForgeRuntime
@@ -120,6 +125,16 @@ class PlayOutcome:
             case PlayProblem.NO_PLAYER:
                 text = NO_PLAYER_TEXT
         return t(text, name=self.name)
+
+
+@dataclass(frozen=True, slots=True)
+class Located:
+    """Where `locate` found a video's file from this PC (`path`: never logged), with the status
+    bar's `name` ("Dune", "The Ark S02E03") and the library `kind` that counted."""
+
+    name: str
+    kind: LibraryKind
+    path: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +318,18 @@ def _first_existing(paths: Sequence[str], exists: Callable[[str], bool]) -> int 
 # -- the service -----------------------------------------------------------------------------------
 
 
+def same_show(one: PlexTitle, other: PlexTitle) -> bool:
+    """Two Plex titles of one show: the same TVMaze id, TheTVDB id or IMDb id."""
+    return any(
+        mine is not None and mine == theirs
+        for mine, theirs in (
+            (one.show_id, other.show_id),
+            (one.tvdb_id, other.tvdb_id),
+            (one.imdb_id, other.imdb_id),
+        )
+    )
+
+
 class PlaybackService:
     """`services.playback`: which Plex title an info window shows, and ▶ Play."""
 
@@ -347,14 +374,37 @@ class PlaybackService:
         by_tvdb = [one for one in shows if show.tvdb_id is not None and one.tvdb_id == show.tvdb_id]
         by_imdb = [one for one in shows if show.imdb_id is not None and one.imdb_id == show.imdb_id]
         found = by_id or by_tvdb or by_imdb
-        return found[0] if found else None
+        # Plex may keep one show as two titles (files it matched apart): the one with most.
+        return max(found, key=lambda title: title.episodes or 0) if found else None
 
     async def episodes(self, title: PlexTitle) -> list[PlexVideo]:
-        """A show's episodes with their files (the picker). Raises PlexError."""
-        return await self._plex.show_videos(title)
+        """A show's episodes with their files (the picker), in order: those of every title Plex
+        keeps the show as (`same_show`; it splits one when some files got matched apart), an
+        episode in two of them once: the copy of the title with the most. Raises PlexError."""
+        titles = [title] + [
+            other
+            for other in await self._plex.titles()
+            if other.kind == "show" and other.key != title.key and same_show(other, title)
+        ]
+        titles.sort(key=lambda one: one.episodes or 0, reverse=True)
+        videos: list[PlexVideo] = []
+        seen: set[tuple[int, int]] = set()
+        for one in titles:
+            for video in await self._plex.show_videos(one):
+                spot = (video.season, video.episode)
+                if spot[0] is not None and spot[1] is not None:
+                    if (spot[0], spot[1]) in seen:
+                        continue
+                    seen.add((spot[0], spot[1]))
+                videos.append(video)
+        if len(titles) > 1:
+            log.info("Play: a show kept as %d titles in Plex", len(titles))
+            videos.sort(key=episode_order)
+        return videos
 
-    async def play_film(self, title: PlexTitle) -> PlayOutcome:
-        """Play a film: Plex says its file, then as `play`."""
+    async def film_video(self, title: PlexTitle) -> PlexVideo | PlayOutcome:
+        """A film's video as Plex has it now (its file, where it was left, its length); the
+        PlayOutcome saying why not when Plex can't say."""
         if not self._plex.connected:
             return PlayOutcome(title.title, "movie", problem=PlayProblem.NOT_CONNECTED)
         try:
@@ -365,10 +415,25 @@ class PlaybackService:
         if video is None:
             log.info("Play: Plex names no file for film %s", title.key)
             return PlayOutcome(title.title, "movie", problem=PlayProblem.NO_FILE)
+        return video
+
+    async def play_film(self, title: PlexTitle) -> PlayOutcome:
+        """Play a film: Plex says its file (`film_video`), then as `play`."""
+        video = await self.film_video(title)
+        if isinstance(video, PlayOutcome):
+            return video
         return await self.play(title, video)
 
     async def play(self, title: PlexTitle, video: PlexVideo) -> PlayOutcome:
         """Find `video`'s file from this PC in the title's library folder and open it."""
+        found = await self.locate(title, video)
+        if isinstance(found, PlayOutcome):
+            return found
+        return await self.launch(found)
+
+    async def locate(self, title: PlexTitle, video: PlexVideo) -> Located | PlayOutcome:
+        """Where `video`'s file is from this PC, in the title's library folder; the PlayOutcome
+        saying why not when it can't be found."""
         kind = title.kind
         name = title.title if kind == "movie" else episode_name(title.title, video)
         if not self._plex.connected:
@@ -399,10 +464,15 @@ class PlaybackService:
                 kind, video.key, len(candidates),
             )
             return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND)
+        log.info("Play: %s %s found (place %d)", kind, video.key, index + 1)
+        return Located(name, kind, candidates[index])
+
+    async def launch(self, located: Located) -> PlayOutcome:
+        """Open a located file in VLC or Windows' own player (3.14.1's ▶ Play)."""
         try:
-            player = await self._launch(candidates[index])
+            player = await self._launch(located.path)
         except OSError as exc:
             log.warning("Play: the player didn't start (%s)", type(exc).__name__)
-            return PlayOutcome(name, kind, problem=PlayProblem.NO_PLAYER)
-        log.info("Play: %s %s opened (%s, place %d)", kind, video.key, player, index + 1)
-        return PlayOutcome(name, kind, player=player)
+            return PlayOutcome(located.name, located.kind, problem=PlayProblem.NO_PLAYER)
+        log.info("Play: the %s opened (%s)", located.kind, player)
+        return PlayOutcome(located.name, located.kind, player=player)

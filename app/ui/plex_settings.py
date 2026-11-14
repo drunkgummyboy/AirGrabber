@@ -8,6 +8,10 @@ the last list from 2 h ago is used", "Plex asks to connect again" with the Conne
 again), what was found ("812 episodes of 24 of your series · 146 films · checked 3 min ago"),
 the server menu while the account has several, a tick box per show and film library, "↻ Check
 now" and "Disconnect" (after a confirm it forgets the token, the server and what was read).
+Under them, while connected and given the settings, "Play in: AirGrabber's player / VLC"
+(`Settings.play_in`, docs/player/2026-11-13-pc-player-design.md), saved at once; and, connected
+or not, the tick for Explorer's "Open with" (`Settings.open_with_player`, app/services/open_with.py,
+docs/player/2026-11-14-open-with-design.md), saved and applied at once.
 
 Everything acts at once (like Backup's buttons), not on Save: Plex's settings are its own. The
 box follows the service (`PlexService.subscribe`) and stops when it goes.
@@ -17,13 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import tkinter as tk
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
 from app.i18n import N_, t, tn
+from app.models import PlayIn
 from app.models.plex import PlexCounts, PlexLibrary, PlexProblem, PlexServer, PlexStatus
 from app.ui import theme
 from app.ui.confirm_dialog import ConfirmDialog
@@ -32,10 +37,12 @@ from app.ui.missing_control import mark_dot
 from app.ui.plex_connect import PlexConnectWindow
 from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
 from app.ui.tasks import spawn
+from app.services import open_with
 from app.ui.watchlist_cards import searched_ago
 
 if TYPE_CHECKING:
     from app.services.plex import PlexService
+    from app.services.settings import SettingsService
 
 TITLE_TEXT = N_("Plex")
 INTRO_TEXT = N_(
@@ -56,6 +63,12 @@ SIGNED_OUT_TEXT = N_("Plex asks to connect again")
 NO_SERVER_TEXT = N_("Your Plex account has no server AirGrabber can read")
 CHOOSE_SERVER_TEXT = N_("Choose which Plex server AirGrabber reads")
 FAILED_TEXT = N_("Plex's answer didn't read")
+PLAY_IN_TEXT = N_("Play in")
+PLAYER_TEXT = N_("AirGrabber's player")
+VLC_TEXT = N_("VLC")
+OPEN_WITH_TEXT = N_("Offer AirGrabber's player in Explorer's \"Open with\" for any video")
+# Settings.play_in's choices, in the control's order (shown through t()).
+PLAY_IN_NAMES = {PlayIn.AIRGRABBER: PLAYER_TEXT, PlayIn.VLC: VLC_TEXT}
 CONFIRM_TITLE = N_("Disconnect from Plex?")
 CONFIRM_TEXT = N_(
     "AirGrabber forgets its Plex sign-in and what it read from Plex. Nothing changes in Plex "
@@ -68,6 +81,7 @@ CONNECT_WIDTH = 170
 CHECK_WIDTH = 140
 DISCONNECT_WIDTH = 130
 SERVER_MENU_WIDTH = 260
+PLAY_IN_WIDTH = 300
 
 
 # -- texts (pure) -------------------------------------------------------------------------------
@@ -144,9 +158,15 @@ class PlexBox:
         page: SettingsPage,
         plex: PlexService,
         *,
+        settings: SettingsService | None = None,
         clock: Callable[[], datetime] = _now,
+        apply_open_with: Callable[[bool], Awaitable[None]] | None = None,
     ) -> None:
+        """`apply_open_with`: writes or removes Explorer's "Open with" registration
+        (None: app/services/open_with.py's `apply`)."""
         self._plex = plex
+        self._settings = settings
+        self._apply_open_with = apply_open_with
         self._clock = clock
         self._tasks: set[asyncio.Task[None]] = set()
         self._load_task: asyncio.Task[None] | None = None
@@ -171,6 +191,32 @@ class PlexBox:
         ).pack(side="left")
         self.content = ctk.CTkFrame(self.box.body, fg_color="transparent")
         self.box.add(self.content, gap=6)
+        # "Play in", under the box's own controls: shown while connected (`show`).
+        self.player_line: ctk.CTkFrame | None = None
+        self.play_in_control: ctk.CTkSegmentedButton | None = None
+        self._play_in = ctk.StringVar(master=self.content)
+        self.open_with_box: ctk.CTkCheckBox | None = None
+        self._open_with = ctk.BooleanVar(master=self.content)
+        if settings is not None:
+            self.player_line = self._player_line()
+            self.box.add(self.player_line, gap=14, sticky="w")
+            self.player_line.grid_remove()
+            self._open_with.set(settings.current.open_with_player)
+            self.open_with_box = ctk.CTkCheckBox(
+                self.box.body,
+                text=t(OPEN_WITH_TEXT),
+                variable=self._open_with,
+                height=BUTTON_HEIGHT - 8,
+                checkbox_width=22,
+                checkbox_height=22,
+                corner_radius=6,
+                font=theme.font(DETAIL_SIZE),
+                fg_color=theme.ACCENT,
+                hover_color=theme.ACCENT_HOVER,
+                border_color=theme.EDGE,
+                command=lambda: self.set_open_with(self._open_with.get()),
+            )
+            self.box.add(self.open_with_box, gap=10, sticky="w")
         # Filled by `show`.
         self.connect_button: ctk.CTkButton | None = None
         self.check_button: ctk.CTkButton | None = None
@@ -229,6 +275,7 @@ class PlexBox:
         self.server_menu = None
         self.library_boxes = {}
         self.content.grid_columnconfigure(0, weight=1)
+        self._show_player_line(status.connected)
         row = 0
 
         def place(widget: Any, *, gap: int = 8) -> None:
@@ -333,6 +380,42 @@ class PlexBox:
         self.server_menu.pack(side="left")
         return line
 
+    def _player_line(self) -> ctk.CTkFrame:
+        line = ctk.CTkFrame(self.box.body, fg_color="transparent")
+        ctk.CTkLabel(
+            line, text=t(PLAY_IN_TEXT), font=theme.font(TEXT_SIZE), text_color=theme.TEXT_MUTED
+        ).pack(side="left", padx=(0, 10))
+        self.play_in_control = ctk.CTkSegmentedButton(
+            line,
+            values=[t(name) for name in PLAY_IN_NAMES.values()],
+            variable=self._play_in,
+            command=self.choose_play_in,
+            width=PLAY_IN_WIDTH,
+            height=BUTTON_HEIGHT,
+            corner_radius=BUTTON_RADIUS,
+            font=theme.font(DETAIL_SIZE, bold=True),
+            fg_color=theme.SURFACE,
+            selected_color=theme.SELECTED,
+            selected_hover_color=theme.SELECTED_HOVER,
+            unselected_color=theme.SURFACE,
+            unselected_hover_color=theme.CHIP_HOVER,
+            text_color=theme.BUTTON_TEXT,
+            dynamic_resizing=False,
+        )
+        self.play_in_control.pack(side="left")
+        return line
+
+    def _show_player_line(self, connected: bool) -> None:
+        """The "Play in" line while connected (showing the saved choice), else hidden."""
+        line = self.player_line
+        if line is None or self._settings is None:
+            return
+        if not connected:
+            line.grid_remove()
+            return
+        self._play_in.set(t(PLAY_IN_NAMES[self._settings.current.play_in]))
+        line.grid()
+
     def _library_row(self, libraries: tuple[PlexLibrary, ...]) -> ctk.CTkFrame:
         line = ctk.CTkFrame(self.content, fg_color="transparent")
         ctk.CTkLabel(
@@ -386,6 +469,26 @@ class PlexBox:
 
     def set_library(self, key: str, on: bool) -> None:
         spawn(self._plex.set_library(key, on), name="plex-library")
+
+    def choose_play_in(self, name: str) -> None:
+        """Save the "Play in" choice at once (`name` as the control shows it)."""
+        settings = self._settings
+        chosen = next((key for key, text in PLAY_IN_NAMES.items() if t(text) == name), None)
+        if settings is None or chosen is None or chosen is settings.current.play_in:
+            return
+        spawn(settings.update(play_in=chosen), name="plex-play-in")
+
+    def set_open_with(self, on: bool) -> None:
+        """Save the "Open with" tick and write or remove the registration at once."""
+        settings = self._settings
+        if settings is None:
+            return
+
+        async def save() -> None:
+            await settings.update(open_with_player=on)
+            await (self._apply_open_with or open_with.apply)(on)
+
+        self._run(save(), "plex-open-with")
 
     def ask_disconnect(self) -> None:
         dialog = self.confirm

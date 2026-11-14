@@ -8,7 +8,8 @@ new start then waits for it to let go of the lock and becomes AirGrabber itself 
 exited and nothing opened).
 
 A second start that carries a Forge request (`main.py --forge [--confirm] [--preset NAME] PATH…`,
-the Explorer right-click menu starts one process per selected file) hands it over instead: it
+the Explorer right-click menu starts one process per selected file), or a file to play
+(`main.py --play FILE`, Explorer's "Open with" AirGrabber player), hands it over instead: it
 writes the request as a small JSON file into `<data folder>\\handover\\` (as `.part`, then renamed
 into place), sets the second auto-reset event `Local\\AirGrabber-forge` (`send_request`) and exits.
 The running copy polls that event (`forge_requested`) and, every few seconds, the folder too (an
@@ -69,6 +70,7 @@ class ForgeRequest:
     preset: str | None = None
     confirm: bool = False
     forge: bool = True  # `--forge` was given; the file carries it so other hand-overs can follow
+    play: bool = False  # `--play FILE` (Explorer's "Open with" AirGrabber player): forge False
 
 
 class InstanceLock:
@@ -214,6 +216,7 @@ def send_request(
         "preset": request.preset,
         "confirm": request.confirm,
         "forge": request.forge,
+        "play": request.play,
     }
     try:
         with part.open("x", encoding="utf-8") as out:
@@ -366,6 +369,7 @@ def _decode(text: str) -> tuple[ForgeRequest, float] | None:
     created = data.get("created")
     confirm = data.get("confirm", False)
     forge = data.get("forge", True)
+    play = data.get("play", False)
     if (
         not isinstance(paths, list)
         or not all(isinstance(path, str) for path in paths)
@@ -374,9 +378,12 @@ def _decode(text: str) -> tuple[ForgeRequest, float] | None:
         or not isinstance(created, (int, float))
         or not isinstance(confirm, bool)
         or not isinstance(forge, bool)
+        or not isinstance(play, bool)
     ):
         return None
-    request = ForgeRequest(paths=tuple(paths), preset=preset, confirm=confirm, forge=forge)
+    request = ForgeRequest(
+        paths=tuple(paths), preset=preset, confirm=confirm, forge=forge, play=play
+    )
     return request, float(created)
 
 

@@ -19,7 +19,7 @@ from unittest import mock
 
 import customtkinter as ctk
 
-from app.models import Episode, Settings, Show, ShowDetails
+from app.models import Episode, PlayIn, Settings, Show, ShowDetails
 from app.models.plex import (
     PlexCounts,
     PlexFilms,
@@ -45,6 +45,10 @@ from app.ui.plex_settings import (
     DISCONNECT_TEXT,
     INTRO_TEXT,
     NOT_CHECKED_TEXT,
+    OPEN_WITH_TEXT,
+    PLAY_IN_TEXT,
+    PLAYER_TEXT,
+    VLC_TEXT,
     PlexBox,
     counts_text,
     problem_text,
@@ -124,6 +128,19 @@ class FakePlex:
             raise
 
 
+class FakeSettings:
+    """SettingsService's face for the Plex box: the current settings and what was saved."""
+
+    def __init__(self, current: Settings | None = None) -> None:
+        self.current = current or Settings()
+        self.changes: list[dict[str, Any]] = []
+
+    async def update(self, **changes: Any) -> Settings:
+        self.changes.append(changes)
+        self.current = self.current.model_copy(update=changes)
+        return self.current
+
+
 # -- texts (pure) -----------------------------------------------------------------------------------
 
 
@@ -197,14 +214,78 @@ class TkTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class BoxTests(TkTestCase):
-    async def box(self, fake: FakePlex) -> PlexBox:
+    async def box(self, fake: FakePlex, settings: FakeSettings | None = None) -> PlexBox:
         frame = ctk.CTkFrame(self.root)
         self.keep(frame)
         page = SettingsPage(frame, "Plex", "A note")
         page.frame.pack()
-        box = PlexBox(page, fake, clock=lambda: NOW)  # type: ignore[arg-type]
+        self.applied: list[bool] = []
+
+        async def apply(on: bool) -> None:
+            self.applied.append(on)
+
+        box = PlexBox(
+            page, fake, settings=settings, clock=lambda: NOW, apply_open_with=apply  # type: ignore[arg-type]
+        )
         await box.loaded()
         return box
+
+    async def test_open_with_with_or_without_plex(self) -> None:
+        settings = FakeSettings()
+        box = await self.box(FakePlex(), settings)  # not connected: still there
+        check = box.open_with_box
+        assert check is not None
+        self.assertEqual(check.cget("text"), OPEN_WITH_TEXT)
+        self.assertEqual(check.get(), 1)  # on to start with
+        check.toggle()  # the user's click: off
+        await self.settle()
+        self.assertEqual(settings.changes, [{"open_with_player": False}])
+        self.assertEqual(self.applied, [False])
+        check.toggle()
+        await self.settle()
+        self.assertEqual(self.applied, [False, True])
+
+    async def test_open_with_shows_the_saved_choice(self) -> None:
+        box = await self.box(FakePlex(CONNECTED), FakeSettings(Settings(open_with_player=False)))
+        assert box.open_with_box is not None
+        self.assertEqual(box.open_with_box.get(), 0)
+        without = await self.box(FakePlex(CONNECTED))  # no settings given: no switch
+        self.assertIsNone(without.open_with_box)
+
+    async def test_play_in(self) -> None:
+        settings = FakeSettings()
+        box = await self.box(FakePlex(CONNECTED), settings)
+        control = box.play_in_control
+        assert control is not None and box.player_line is not None
+        self.assertEqual(box.player_line.winfo_manager(), "grid")
+        self.assertIn(PLAY_IN_TEXT, texts(box.player_line))
+        self.assertEqual(control.cget("values"), [PLAYER_TEXT, VLC_TEXT])
+        self.assertEqual(control.get(), PLAYER_TEXT)  # AirGrabber's player by default
+        control._buttons_dict[VLC_TEXT].invoke()  # the user's click
+        await self.settle()
+        self.assertEqual(settings.changes, [{"play_in": PlayIn.VLC}])
+        self.assertIs(settings.current.play_in, PlayIn.VLC)
+        self.assertEqual(set(buttons(box.content)), {CHECK_NOW_TEXT, DISCONNECT_TEXT})
+
+    async def test_play_in_shows_the_saved_choice(self) -> None:
+        box = await self.box(FakePlex(CONNECTED), FakeSettings(Settings(play_in=PlayIn.VLC)))
+        assert box.play_in_control is not None
+        self.assertEqual(box.play_in_control.get(), VLC_TEXT)
+
+    async def test_play_in_only_while_connected(self) -> None:
+        fake = FakePlex()
+        box = await self.box(fake, FakeSettings())
+        assert box.player_line is not None
+        self.assertEqual(box.player_line.winfo_manager(), "")  # not connected: hidden
+        fake.set(CONNECTED)
+        await box.loaded()
+        self.assertEqual(box.player_line.winfo_manager(), "grid")
+        fake.set(PlexStatus())
+        await box.loaded()
+        self.assertEqual(box.player_line.winfo_manager(), "")
+        without = await self.box(FakePlex(CONNECTED))  # no settings given: no line
+        self.assertIsNone(without.player_line)
+        self.assertIsNone(without.play_in_control)
 
     async def test_not_connected(self) -> None:
         box = await self.box(FakePlex())

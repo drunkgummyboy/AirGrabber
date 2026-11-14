@@ -464,6 +464,101 @@ def draw_library() -> Image.Image:
     return layer.image
 
 
+def _jump(layer: Layer, x: float, y: float, clockwise: bool) -> None:
+    """The player's jump back / forward button: three quarters of a circle, ending at the top in
+    an arrow head that points the way it turns."""
+    sign = 1 if clockwise else -1
+    points = [
+        (x + 8 * math.sin(math.radians(sign * degrees)), y - 8 * math.cos(math.radians(sign * degrees)))
+        for degrees in range(90, 361, 10)
+    ]
+    layer.paint(solid(ON_ACCENT), Mask().line(points, 2, round_ends=True).done())
+    head = ((x - sign * 0.5, y - 13), (x + sign * 5, y - 8), (x - sign * 0.5, y - 3))
+    layer.paint(solid(ON_ACCENT), Mask().add(head).done())
+
+
+def draw_player() -> Image.Image:
+    """AirGrabber's own player: a window playing a film (a sunset over hills), its seek bar with
+    the played part lit, the controls under it, and a Skip intro pill over the video."""
+    layer = _background()
+    layer.paint(glow(STEEL, (0.5, 0.45), 0.55, 0.36))
+    layer.paint(glow("#e58a5f", (0.5, 0.35), 0.3, 0.16))
+
+    # The window and the film in it.
+    layer.rect(120, 14, 480, 212, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(120, 14, 480, 212, 14, 1.5))
+    box: Box = (128, 22, 464, 196)
+    film = Layer()
+    film.rect(*box, 0, down(box, ((0, "#e58a5f", 1), (0.55, "#7a5a86", 1), (1, "#2c3d5c", 1))))
+    film.paint(solid("#ffe2b0"), Mask().add(circle(360, 104, 26)).done())
+    film.paint(
+        solid("#46396a"),
+        Mask()
+        .add(((128, 140), (220, 98), (300, 134), (380, 92), (470, 128), (592, 86), (592, 218), (128, 218)))
+        .done(),
+    )
+    film.paint(
+        solid("#2a2748"),
+        Mask()
+        .add(((128, 176), (240, 132), (340, 164), (450, 126), (592, 160), (592, 218), (128, 218)))
+        .done(),
+    )
+    # The controls' shade over the film's bottom and top.
+    film.rect(*box, 0, down(box, ((0.5, "#000000", 0), (1, "#000000", 0.78))))
+    film.rect(*box, 0, down(box, ((0, "#000000", 0.5), (0.2, "#000000", 0))))
+    layer.over(film, clip=rect_mask(*box, 8))
+
+    # The top band: a title, and full screen and close at the right.
+    layer.rect(144, 34, 120, 8, 4, WHITE)
+    layer.rect(144, 47, 70, 5, 2.5, MUTED)
+    corners = Mask()
+    for (cx, cy), (dx, dy) in (
+        ((542, 35), (1, 1)), ((556, 35), (-1, 1)), ((542, 49), (1, -1)), ((556, 49), (-1, -1))
+    ):
+        corners.line(((cx, cy + 5 * dy), (cx, cy), (cx + 5 * dx, cy)), 2)
+    layer.paint(solid(ON_ACCENT), corners.done())
+    layer.paint(
+        solid(ON_ACCENT),
+        Mask()
+        .line(((570, 36), (582, 48)), 2, round_ends=True)
+        .line(((582, 36), (570, 48)), 2, round_ends=True)
+        .done(),
+    )
+
+    # Skip intro: a pill over the film's lower right, a skip mark (two arrow heads and a bar).
+    layer.rect(484, 134, 92, 28, 14, "#f2f2f2", opacity=0.95)
+    layer.paint(
+        solid(WINDOW),
+        Mask().add(((498, 141), (507, 148), (498, 155)), ((507, 141), (516, 148), (507, 155))).done(),
+    )
+    layer.rect(517, 141, 3, 14, 1, WINDOW)
+    layer.rect(530, 145, 34, 6, 3, "#5a5a5a")
+
+    # The seek bar: played up to the knob, the rest dim.
+    layer.rect(144, 178, 30, 5, 2.5, MUTED)
+    layer.rect(546, 178, 30, 5, 2.5, MUTED)
+    layer.rect(184, 179, 352, 3.5, 1.75, MUTED, opacity=0.4)
+    layer.rect(184, 179, 128, 3.5, 1.75, STEEL)
+    layer.paint(solid(WHITE), Mask().add(circle(312, 180.75, 6)).done())
+
+    # The controls: jump back, pause, jump forward in the middle; sound at the left, subtitles
+    # at the right.
+    _jump(layer, 330, 202, clockwise=False)
+    layer.rect(352, 194, 5, 16, 1.5, WHITE)
+    layer.rect(363, 194, 5, 16, 1.5, WHITE)
+    _jump(layer, 390, 202, clockwise=True)
+    layer.paint(
+        solid(ON_ACCENT),
+        Mask().add(((146, 198), (151, 198), (158, 192), (158, 212), (151, 206), (146, 206))).done(),
+    )
+    layer.rect(166, 200, 34, 4, 2, ON_ACCENT, opacity=0.5)
+    layer.rect(166, 200, 22, 4, 2, ON_ACCENT)
+    layer.paint(solid(ON_ACCENT), border_mask(554, 194, 22, 16, 3, 1.6))
+    layer.rect(558, 203, 6, 2.5, 1.25, ON_ACCENT)
+    layer.rect(566, 203, 6, 2.5, 1.25, ON_ACCENT)
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -481,7 +576,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "library.png": draw_library,
+    "player.png": draw_player,
 }
 
 

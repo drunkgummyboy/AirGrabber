@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.15.0": (
+        N_("Plex keeps up: carry on where you stopped, find it in Continue watching, and it counts as watched at the end."),
+        N_("Skip intro shows when Plex knows where the intro is, and the next episode starts after a short countdown."),
+        N_("Find subtitles right from the player, and Always pick gives you your audio and subtitle language every time."),
+        N_("Rather keep VLC? Choose it at \"Play in\" in Settings → Plex."),
+        N_("The player gets a mini player that stays on top (Ctrl+H, as in VLC), and plays any video from Explorer's Open with."),
+        N_("The episode list shows a thin line under an episode you stopped partway through."),
+    ),
     "3.14.2": (
         N_("Calendar: a download no longer redraws the whole calendar; only that episode's card changes."),
         N_("Calendar: the page stays where you scrolled to while downloads finish."),
@@ -61,6 +69,7 @@ NOTES: dict[str, tuple[str, ...]] = {
         N_("Settings: reinstall qBittorrent, as a repair that keeps everything or as a clean start."),
     ),
     "3.11.0": (
+        N_("A Library page shows your shows and films from Plex as posters: follow a show there, or see its gaps."),
         N_("MediaForge: a file it isn't sure about joins the other files of the same show."),
         N_("An episode's new name always says which episode it is, whatever preset names it."),
     ),
@@ -263,14 +272,14 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.11.0": (
+    "3.15.0": (
         Feature(
-            N_("A Library page for what's in Plex"),
+            N_("Your own player"),
             N_(
-                "Your shows and films from Plex as posters: follow a show from there, or see "
-                "which ones have gaps."
+                "▶ Play now opens a film or episode in AirGrabber itself, in a window or full "
+                "screen, with the keys you know from VLC."
             ),
-            "library.png",
+            "player.png",
         ),
     ),
 }

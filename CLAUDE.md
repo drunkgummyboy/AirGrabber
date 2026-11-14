@@ -39,6 +39,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   thread. Its callbacks may only hand work to the loop with `loop.call_soon_threadsafe` and never touch Tk.
   And the quit watchdog (`app/ui/quit_watchdog.py`, 2026-11-09): armed once quitting starts, it logs every
   thread's stack and ends the process if closing takes over a minute; it touches neither Tk nor the loop.
+- The player (`app/media_player.py`, `app/media_player_window.py`) is a separate process, so it may use threads and
+  libVLC while the app's side (`app/ui/media_player.py`) keeps the one loop. The Plex token never reaches the player
+  (command line, stdin or log); it gets a file path (often a share), never a URL, and makes no requests of its own; it
+  logs no paths, file names or titles. python-vlc is optional (below `# optional`); without it ▶ Play falls back to
+  VLC / Windows' player.
 - A plain second start waits for the running copy's answer (`single_instance.show_running`); a copy that
   is quitting gives none, and the new start waits for it to close, then runs (before, nothing opened).
 - GC guard (D6, adopted 2026-11-08 after F-28's soaks had said no): `app/ui/gc_guard.py`, started in `main._run`: automatic GC off,
@@ -84,6 +89,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - The old MediaForge's project folder (`…\scripts\MediaForge`) is read-only reference, like `airgrabber.py`.
   Its install and data (`%APPDATA%\MediaForge`) are only read by `app/forge/migration.py` (a snapshot)
   and its uninstaller only started by `app/forge/old_install.py` on the user's click; tests hide both.
+- Explorer's "Open with" AirGrabber player (`main.py --play FILE`, handed over like `--forge`; a first start
+  stays hidden and leaves when the player closes, D5's rule) is written only by `app/services/open_with.py`, under
+  HKCU\Software\Classes only (ProgID `AirGrabber.Video` + each video extension's OpenWithProgids), never a default,
+  UserChoice or another copy's; tests/__init__.py refuses the real writers. Such a file never reaches Plex; its
+  place is kept by a hash of its path only (`app/services/local_files.py`).
 - Right-click hand-over: `main.py --forge [--confirm] …` hands its request to a running AirGrabber
   (`app/single_instance.py`) before logging and the package check, so that path stays stdlib-only. A plain
   request shows the main window on MediaForge's page; a confirm request only its confirm window, and a start for

@@ -124,6 +124,7 @@ if TYPE_CHECKING:
     from app.models.plex import PlexTitle
     from app.services import DiscoveryService, ImageCache, LibraryService
     from app.services.playback import PlaybackService
+    from app.ui.play_control import PlayerHost
     from app.ui.views.base import StatusReporter
 
 log = logging.getLogger(__name__)
@@ -866,11 +867,13 @@ class ShowDetailsWindow(TitleInfoWindow):
         releases: PanelServices | None = None,
         on_fix_match: Callable[[TvTarget], None] | None = None,
         playback: PlaybackService | None = None,
+        player: PlayerHost | None = None,
     ) -> None:
         """`profile_id`: the person the window shows the show for (followed or not, its Track
         button and switch; ShowWindows closes it when another person is selected).
-        `playback`: "▶ Play" while the show is in Plex (its Plex title found by
-        `PlaybackService.show`); a click opens the episode picker (app/ui/play_control.py).
+        `playback` + `player`: "▶ Play" while the show is in Plex (its Plex title found by
+        `PlaybackService.show`); a click opens the episode picker (app/ui/play_control.py), the
+        episode plays in the app's player.
         `discovery`: the TMDB extras (backdrop, trailer, cast); without it the window shows only
         what TVMaze knows. `releases`: what the releases panel
         works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
@@ -915,7 +918,9 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._tracking = False
         self._buttons_look: tuple[bool, bool, bool, str | None, str | None] | None = None
         self._playback = playback
-        self._play = Play(playback, status) if playback is not None else None
+        self._play = (
+            Play(playback, player, status) if playback is not None and player is not None else None
+        )
         self._plex_title: PlexTitle | None = None  # the show in Plex: what ▶ Play picks from
         self._plex_task: asyncio.Task[None] | None = None
         self.play_button: ctk.CTkButton | None = None
@@ -1097,7 +1102,7 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._buttons.set_items(items, destroy_old=True)
 
     def play(self) -> None:
-        """"▶ Play": the episode picker, then the chosen episode in VLC on this PC."""
+        """"▶ Play": the episode picker, then the chosen episode in the app's player."""
         if self._play is not None and self._plex_title is not None:
             self._play.pick(self, self._plex_title)
 
@@ -1541,9 +1546,11 @@ class ShowWindows:
         profile: Callable[[], int],
         releases: PanelServices | None = None,
         playback: PlaybackService | None = None,
+        player: PlayerHost | None = None,
     ) -> None:
         """`releases`: the releases panels' services; its settings say the layout a new window
-        opens in. `playback`: the windows' "▶ Play" (none without it)."""
+        opens in. `playback` / `player`: the windows' "▶ Play" (none without them; `player`
+        is the app's one MediaPlayerHost)."""
         self._master = master
         self._profile = profile
         self._library = library
@@ -1553,6 +1560,7 @@ class ShowWindows:
         self._episode_actions = episode_actions
         self._releases = releases
         self._playback = playback
+        self._player = player
         self._windows: dict[int, ShowDetailsWindow] = {}  # by TVMaze id
         self._resolving: set[int] = set()  # TMDB ids being matched to TVMaze right now
         self._tasks: set[asyncio.Task[None]] = set()
@@ -1595,6 +1603,7 @@ class ShowWindows:
             releases=self._releases,
             on_fix_match=self._fix_match,
             playback=self._playback,
+            player=self._player,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

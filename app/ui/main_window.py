@@ -61,7 +61,7 @@ from app.models import (
     UpdateInfo,
 )
 from app.models.plex import PlexTitle
-from app.services import Services, UpdateError
+from app.services import Services, UpdateError, open_with
 from app.services.search import UPGRADE_KEY
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
@@ -97,6 +97,8 @@ from app.ui.release_panel import PanelServices, TvTarget
 from app.forge.ui.host import ForgeHost
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
+from app.ui.media_player import MediaPlayerHost, forge_subtitles
+from app.ui.play_control import STATUS_MS as _PLAY_STATUS_MS
 from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_search
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
@@ -206,6 +208,12 @@ _OFF_PAGE_SETTINGS = frozenset(
         "plex_server_name",
         "plex_server_uri",
         "plex_sections_off",
+        # The PC player's settings: read when something is played.
+        "play_in",
+        "always_audio",
+        "always_subtitles",
+        # Explorer's "Open with" AirGrabber player: Windows' registration, no page shows it.
+        "open_with_player",
         # The automatic downloads' wait after airing, and their pause: read at their next run.
         "auto_wait_hours",
         "auto_paused_until",
@@ -474,6 +482,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
             settings=services.settings,
             status=self.set_status,
         )
+        # ▶ Play's player (one for the app): AirGrabber's own window, Plex kept in sync; it
+        # says on the status bar how a play went. Closed on quitting (`_quit_gate`).
+        self.player = MediaPlayerHost(
+            services.playback,
+            services.plex,
+            services.settings,
+            forge_subtitles(services.forge),
+            places=services.local_places,
+        )
+        self.player.on_status = lambda text: self._report(text, _PLAY_STATUS_MS)
+        self.player.on_idle = self._on_player_idle
         # The show details windows (one per show), opened from the show cards and from every
         # episode's "☰ Choose…" (on its releases).
         self._show_windows = ShowWindows(
@@ -487,6 +506,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             profile=lambda: services.profiles.current_id,  # a window is for the person then
             releases=releases,
             playback=services.playback,  # ▶ Play while the show is in Plex
+            player=self.player,
         )
         # The film info windows (one per film), opened from the film cards and from every
         # film's "☰ Choose…" (on its releases).
@@ -500,6 +520,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             in_plex=self._film_in_plex,
             plex_changed=services.library.subscribe,  # a Plex check that changed something
             playback=services.playback,  # ▶ Play while the film is in Plex
+            player=self.player,
             status=self.set_status,
         )
 
@@ -564,13 +585,18 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._old_remover = remover_for(services.forge)
         self._forge.on_remove_old = self._remove_old_mediaforge
         self._unsubscribe_old_remover = self._old_remover.subscribe(self._on_old_removal)
-        self._started_for_forge = forge_request is not None
-        self._forge_pump = RequestPump(forge_mailbox, self._forge.handle, start_request=forge_request)
+        self._started_for_forge = forge_request is not None and not forge_request.play
+        # A file from Explorer's "Open with" (main.py --play): the window stays hidden, the
+        # player shows; AirGrabber leaves again when it closes (`_on_player_idle`).
+        self._started_for_play = forge_request is not None and forge_request.play
+        self._forge_pump = RequestPump(forge_mailbox, self._take_request, start_request=forge_request)
         # The right-click menu is rewritten at every Forge start (presets, language, this copy).
         services.forge.when_ready(self._on_forge_ready)
-        # Quit and restart first wait for a Forge run to finish its file, then close Forge.
+        # Quit and restart first wait for a Forge run to finish its file, then close the player
+        # (its last report to Plex, before main.py cancels the tasks) and Forge.
         self._quit_gate = QuitGate(
             self._forge,
+            close_player=self.player.aclose,
             close_forge=services.forge.aclose,
             finish=self._destroy_for_good,
             on_asked=self._forge_pump.stop,  # what arrives from now on waits in the folder
@@ -594,8 +620,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._tray_today = ""
         self._tray_downloads = ""
         self.protocol("WM_DELETE_WINDOW", self._close_window)
-        if start_hidden or self._started_for_forge:
-            # main.py --tray: only the tray icon shows; a start for Forge: what its request shows.
+        if start_hidden or self._started_for_forge or self._started_for_play:
+            # main.py --tray: only the tray icon shows; a start for Forge: what its request shows;
+            # a start for a file to play: only the player.
             self.withdraw()
 
     def async_mainloop(self, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -987,6 +1014,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._band.start()  # its titles, its pictures and their turning
         spawn(self._note_version(), name="version-notice")
         spawn(self._services.updates.register_install(), name="installed-apps-entry")
+        # Explorer's "Open with" AirGrabber player, as Settings says (its name in this language).
+        spawn(
+            open_with.apply(self._services.settings.current.open_with_player), name="open-with"
+        )
         spawn(self._check_for_update(), name="update-check")
         spawn(self._set_up_prowlarr(), name="prowlarr-setup")
         spawn(self._first_run(), name="first-run")
@@ -1096,6 +1127,35 @@ class MainWindow(AsyncCTk, ctk.CTk):
             tray_running=self.tray.running,
         ):
             log.info("The MediaForge confirm window this start was for closed: quitting")
+            self.quit_app()
+
+    def _take_request(self, request: ForgeRequest) -> None:
+        """A request a start handed over: a file to play to the player, the rest to Forge."""
+        if request.play:
+            if request.paths:
+                self.player.play_file(request.paths[0])
+            return
+        self._forge.handle(request)
+
+    def _on_player_idle(self) -> None:
+        """No player window open any more. A start for a file to play whose main window never
+        showed leaves now, unless it stays in the tray (D5's rule, as for MediaForge's confirm
+        window)."""
+        if self._quit_gate.asked:
+            return
+        current = self._services.settings.current
+        try:
+            hidden = self.state() == "withdrawn"
+        except tk.TclError:
+            return  # the window is gone already
+        if quits_after_forge(
+            started_for_forge=self._started_for_play,
+            forge_windows_open=self._forge.windows_open,
+            main_hidden=hidden,
+            keep_in_tray=current.keep_in_tray,
+            tray_running=self.tray.running,
+        ):
+            log.info("The player this start was for closed: quitting")
             self.quit_app()
 
     def _close_window(self) -> None:

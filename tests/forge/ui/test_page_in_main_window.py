@@ -35,6 +35,7 @@ from app.services import Services
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import quits_after_forge
 from app.ui.main_window import MainWindow, Mode, settings_affect_pages
+from app.ui.media_player import MediaPlayerHost
 from app.ui.spotlight import BAND_HEIGHT, COMPACT_HEIGHT, SwitchPart
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.tk import pump, pump_until, press
@@ -798,3 +799,13 @@ class ClosingTests(MainWindowCase):
             self.assertFalse(window._quit_gate.leaving)
         window._quit_gate._asked = False
         window._forge_pump._stopped = False
+
+    async def test_one_player_for_the_info_windows_closed_on_quitting(self) -> None:
+        window = self.window
+        player = window.player
+        self.assertIsInstance(player, MediaPlayerHost)
+        self.assertIs(window._show_windows._player, player)
+        self.assertIs(window._movie_windows._player, player)
+        self.assertEqual(window._quit_gate._close_player, player.aclose)
+        player.on_status("▶ Playing Dune.")  # what the player says goes to the status bar
+        self.assertEqual(window._status.cget("text"), "▶ Playing Dune.")

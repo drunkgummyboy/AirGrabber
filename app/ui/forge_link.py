@@ -7,8 +7,10 @@
   request file starts AirGrabber anyway, so that first look drops one copy of the start's own
   request. It stops taking once AirGrabber begins to quit: what waits then stays in the folder.
 - `QuitGate`: quitting and restarting wait for Forge (`ForgeHost.may_close(retry)`: a Forge run
-  stops after its current file, an undo finishes), then close the page, the confirm windows and Forge itself,
-  bounded (a slow TMDB look by the renamer can't hold quitting up), then let the window go.
+  stops after its current file, an undo finishes), then close AirGrabber's player (Plex hears
+  where it stopped, app/ui/media_player.py), the page, the confirm windows and Forge itself,
+  each bounded (a slow TMDB look by the renamer can't hold quitting up), then let the window go
+  (main.py cancels every task after that).
 - `quits_after_forge`: D5. A start for Forge with a confirm request (the right-click menu) shows
   only the confirm window (a plain request shows the main window on MediaForge's page); when the
   last confirm window closes while the main window is still hidden,
@@ -33,6 +35,7 @@ log = logging.getLogger(__name__)
 POLL_S = 0.15  # how often the hand-over event is checked
 FOLDER_POLL_S = 3.0  # how often the folder is read without the event
 FORGE_CLOSE_S = 5.0  # at most this long for Forge to close when AirGrabber quits
+PLAYER_CLOSE_S = 8.0  # the player's last report to Plex (4 s), then its window's end (3 s)
 
 
 class Mailbox(Protocol):
@@ -119,9 +122,9 @@ class ClosingHost(Protocol):
 class QuitGate:
     """Quit and restart through Forge: `request()` (again and again is fine) calls `on_asked()`
     once (the pump stops taking requests) and asks the host `may_close(request)`; once it may,
-    `on_leaving()` (the window hides), then the host's `shutdown()` and `close_forge()`, each
-    within `timeout_s`, then `finish()` (the main window destroyed: main.py's shutdown
-    follows)."""
+    `on_leaving()` (the window hides), then `close_player()` (within PLAYER_CLOSE_S), the
+    host's `shutdown()` and `close_forge()` (each within `timeout_s`), then `finish()` (the main
+    window destroyed: main.py's shutdown follows, which cancels every task)."""
 
     def __init__(
         self,
@@ -132,8 +135,10 @@ class QuitGate:
         on_asked: Callable[[], None] = lambda: None,
         on_leaving: Callable[[], None] = lambda: None,
         timeout_s: float = FORGE_CLOSE_S,
+        close_player: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._host = host
+        self._close_player = close_player
         self._close_forge = close_forge
         self._finish = finish
         self._on_asked = on_asked
@@ -167,7 +172,11 @@ class QuitGate:
 
     async def _shut_down(self) -> None:
         try:
-            # Each within its own bound: the windows first (they may still save their size).
+            # Each within its own bound. The player first: its last report must reach Plex
+            # before the tasks are cancelled, and its window shouldn't play on meanwhile.
+            if self._close_player is not None:
+                await _bounded(self._close_player, PLAYER_CLOSE_S, "AirGrabber's player")
+            # Forge's windows before Forge (they may still save their size).
             await _bounded(self._host.shutdown, self._timeout_s, "MediaForge's windows")
             await _bounded(self._close_forge, self._timeout_s, "MediaForge")
         finally:
