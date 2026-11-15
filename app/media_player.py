@@ -3,7 +3,8 @@
 The app (app/ui/media_player.py) starts it on ▶ Play and keeps it for later videos. The player
 is a view only: it reads JSON lines on stdin (app/media_protocol.py: `Play`, `LoadSubtitle`,
 `Notice`) and writes event lines on stdout (`Ready` once the window and the engine are up, then
-`Position`, `Stopped`, `Ended`, `WantNext`, `FindSubtitles`, `Tracks`, `AlwaysPick`). Plex, the
+`Position`, `Stopped`, `Ended`, `WantNext`, `WantPrevious`, `FindSubtitles`, `Tracks`,
+`AlwaysPick`, `OpenFile`). Plex, the
 network and AirGrabber's settings stay in the app; nothing secret ever reaches this process.
 When stdin ends (the app closing it, or the app ending) the window closes.
 
@@ -40,8 +41,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias
 
-from app.i18n import N_
-from app.media_player_logic import Track
+from app.i18n import N_, number
+from app.media_player_logic import Track, fill_aspect
 from app.media_protocol import Message, decode
 
 EXIT_CLOSED = 0  # shown, then closed
@@ -66,7 +67,7 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 # command line (`text_arguments`). Placeholders are filled by name (`Look.text`).
 TEXTS: Mapping[str, str] = MappingProxyType(
     {
-        "close_tip": N_("Close (Esc)"),
+        "close_tip": N_("Close (Ctrl+W)"),
         "play_tip": N_("Play (Space)"),
         "pause_tip": N_("Pause (Space)"),
         "back_tip": N_("Back 10 seconds (←)"),
@@ -79,6 +80,17 @@ TEXTS: Mapping[str, str] = MappingProxyType(
         "mini_tip": N_("Mini player (Ctrl+H)"),
         "back_to_window_tip": N_("Back to the window (Ctrl+H)"),
         "close_mini_tip": N_("Close"),
+        "previous_tip": N_("Previous episode (P)"),
+        "next_tip": N_("Next episode (N)"),
+        "subtitle_delay": N_("Subtitles {delay} ms"),
+        "audio_delay": N_("Audio {delay} ms"),
+        "speed": N_("Speed {speed}×"),
+        "fill": N_("Fill the window"),
+        "fit": N_("Show the whole picture"),
+        "sync": N_("Sync… ({keys})"),
+        "sync_earlier": N_("{ms} ms earlier ({key})"),
+        "sync_later": N_("{ms} ms later ({key})"),
+        "sync_reset": N_("Back to 0 ms"),
         "audio": N_("Audio"),
         "subtitles": N_("Subtitles"),
         "subtitles_off": N_("Off"),
@@ -124,6 +136,7 @@ class Look:
     muted: str = "#A4B2C6"  # theme.TEXT_MUTED
     title: str = "AirGrabber"  # the window's title before the first video
     texts: Mapping[str, str] = field(default_factory=lambda: dict(TEXTS))
+    decimal_mark: str = "."  # the app's language's (app.i18n.number): "1.25×", Dutch "1,25×"
 
     def text(self, name: str, **values: object) -> str:
         """The text `name` with its placeholders filled ("{time}" → values["time"]); braces
@@ -151,11 +164,12 @@ def _option(name: str) -> str:
 
 
 def text_arguments(translate: Callable[[str], str]) -> list[str]:
-    """The texts' options in the app's language (`translate`: the app's `t`)."""
+    """The texts' options in the app's language (`translate`: the app's `t`), and its decimal
+    mark (`--decimal-mark`, from app.i18n.number: the speed's notice)."""
     arguments: list[str] = []
     for name, english in TEXTS.items():
         arguments += [_option(name), translate(english)]
-    return arguments
+    return [*arguments, "--decimal-mark", number(0.5)[1]]
 
 
 def parse_options(argv: Sequence[str]) -> Options | None:
@@ -167,6 +181,7 @@ def parse_options(argv: Sequence[str]) -> Options | None:
     for name in TEXTS:
         parser.add_argument(_option(name), dest="text_" + name, default=None)
     parser.add_argument("--engine", dest="engine", default=None)
+    parser.add_argument("--decimal-mark", dest="decimal_mark", default=defaults.decimal_mark)
     try:
         namespace, _unknown = parser.parse_known_args(list(argv))
     except (argparse.ArgumentError, SystemExit):
@@ -180,7 +195,9 @@ def parse_options(argv: Sequence[str]) -> Options | None:
         value = getattr(namespace, "text_" + name)
         if isinstance(value, str) and value.strip():
             texts[name] = value
-    look = Look(**colours, title=str(namespace.title), texts=texts)
+    mark = namespace.decimal_mark
+    mark = mark if mark in (".", ",") else defaults.decimal_mark
+    look = Look(**colours, title=str(namespace.title), texts=texts, decimal_mark=mark)
     engine = namespace.engine if isinstance(namespace.engine, str) and namespace.engine else None
     return Options(look=look, engine_folder=engine)
 
@@ -231,6 +248,24 @@ class EngineSeam(Protocol):
         ...
 
     def mute(self, on: bool) -> None: ...
+
+    def set_spu_delay(self, us: int) -> None:
+        """The subtitles' delay in microseconds (later when positive; 0 in sync). Only while
+        a video plays (libVLC has no input otherwise); a new video starts at 0."""
+        ...
+
+    def set_audio_delay(self, us: int) -> None:
+        """The sound's delay in microseconds, as `set_spu_delay`."""
+        ...
+
+    def set_rate(self, rate: float) -> None:
+        """The speed (1.0 normal). libVLC keeps it for the next video."""
+        ...
+
+    def set_fill(self, on: bool, width: int, height: int) -> None:
+        """Fill: the picture cropped to the video window's shape (`width` × `height`, its
+        pixels) and scaled to fit it; off: Fit, the whole picture."""
+        ...
 
     def attach(self, hwnd: int) -> None:
         """Draw the video into window `hwnd` (Tk's `winfo_id()`)."""
@@ -335,6 +370,23 @@ class VlcEngine:
     def mute(self, on: bool) -> None:
         self._player.audio_set_mute(on)
 
+    def set_spu_delay(self, us: int) -> None:
+        self._player.video_set_spu_delay(us)
+
+    def set_audio_delay(self, us: int) -> None:
+        self._player.audio_set_delay(us)
+
+    def set_rate(self, rate: float) -> None:
+        self._player.set_rate(rate)
+
+    def set_fill(self, on: bool, width: int, height: int) -> None:
+        # Cropped to the window's shape, then fitted (scale 0): the window filled, nothing
+        # stretched. Fit: no crop, scale 0. The aspect stays the video's own.
+        crop = fill_aspect(width, height) if on else None
+        self._player.video_set_aspect_ratio(None)
+        self._player.video_set_crop_geometry(crop)
+        self._player.video_set_scale(0)
+
     def attach(self, hwnd: int) -> None:
         self._player.set_hwnd(hwnd)
         # The window gets the mouse (double-click, the pointer that shows the controls) and
@@ -409,7 +461,14 @@ class VideoEnded:
     generation: int
 
 
-Event: TypeAlias = Incoming | InputEnded | Tick | TrackLists | VideoEnded
+@dataclass(frozen=True, slots=True)
+class Dropped:
+    """Files dropped from Explorer on the window (queued by its window procedure, no Tk there)."""
+
+    paths: tuple[str, ...]
+
+
+Event: TypeAlias = Incoming | InputEnded | Tick | TrackLists | VideoEnded | Dropped
 
 
 def read_input(stdin: Any, events: queue.Queue[Event]) -> None:
@@ -618,9 +677,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         engine = VlcEngine.start(options.engine_folder)
     except Exception:
         return EXIT_NO_ENGINE
-    from app.identity import set_process_app_id
+    from app.identity import PLAYER_APP_USER_MODEL_ID, set_process_app_id
 
-    set_process_app_id()  # AirGrabber's taskbar group, not Python's
+    set_process_app_id(PLAYER_APP_USER_MODEL_ID)  # its own taskbar button, not AirGrabber's
     try:
         import customtkinter as ctk
 
@@ -639,6 +698,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         gc_guard.start(root)
         set_window_icon(root)
+        from app.forge.ui.file_drops import windows_native  # stdlib + ctypes: Explorer drops
+
         code = run_player(
             root,
             engine,
@@ -648,6 +709,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings_path=settings_path(),
             work_area=work_area_under_pointer,
             on_screen=on_screen,
+            drops=windows_native(),
         )
     except Exception:
         return EXIT_FAILED

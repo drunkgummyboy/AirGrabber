@@ -7,12 +7,15 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import httpx
 
 from app.database import Database, SettingsRepository
 from app.forge.models.media import MediaKind
@@ -518,13 +521,136 @@ class FreeSpaceTests(ServiceTestCase):
 
         self.service._disk_usage = hang
         await self.settings.update(subtitles_folder=r"\\nas\slow")
-        with mock.patch.object(ds, "SPACE_TIMEOUT_S", 0.05):
+        with mock.patch.object(ds, "SPACE_LIMIT_S", 0.05):
             overview = await self.service.check()
             self.assertIsNone(overview.space)
             self.clock += ds.SPACE_INTERVAL_S
             await self.service.check()  # the first one still hangs: no second thread
         self.assertEqual(calls, [r"\\nas\slow"])
         release.set()
+
+
+class SilentProgramTests(ServiceTestCase):
+    async def test_from_history_lists_the_grabs_without_asking_anyone(self) -> None:
+        # `from_history`: what the page shows while the program is asked (the NAS may be slow).
+        await self.settings.update(subtitles_folder=r"\\nas\video")
+        await self.add(record("Fallout.S02E03.1080p.WEB", info_hash=HASH_A))
+        await self.add(
+            record(
+                "Gladiator.II.2024.1080p",
+                media_type=MediaType.MOVIE,
+                media_id=558449,
+                when=NOW - timedelta(days=2),
+            )
+        )
+        await self.add(record("Too.Old.S01E01", episode=6, when=NOW - timedelta(days=31)))
+        first = await self.service.from_history()
+        self.assertEqual(self.station.asked, [])  # nobody asked: the database only
+        self.assertEqual(self.usage_calls, [])
+        self.assertEqual(self.overviews, [])  # nor told to the listeners
+        self.assertTrue(first.checking)
+        self.assertFalse(first.synced)
+        self.assertEqual(first.program, "Download Station")
+        self.assertEqual(
+            [(entry.title, entry.state) for entry in first.entries],
+            [
+                ("Fallout S02E03", DownloadState.UNKNOWN),
+                ("Gladiator II (2024)", DownloadState.UNKNOWN),
+            ],
+        )
+        self.assertEqual(first.entries[0].show, FALLOUT)
+        # The check itself is never "checking"; without a program to ask nothing is checked.
+        overview = await self.service.check()
+        self.assertFalse(overview.checking)
+        await self.settings.update(download_mode=DownloadMode.APP)
+        self.assertFalse((await self.service.from_history()).checking)
+
+    async def test_a_silent_program_gives_up_within_the_limit(self) -> None:
+        # The NAS hangs: Download Station never answers, its share neither.
+        timeouts: list[dict[str, float]] = []
+
+        def silent(request: httpx.Request) -> httpx.Response:
+            timeouts.append(request.extensions["timeout"])
+            raise httpx.ConnectTimeout("no answer", request=request)
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def hang(path: str) -> DiskUsage:
+            release.wait(5)
+            return DiskUsage(100 * GB, 0, 100 * GB)
+
+        service = DownloadStatusService(
+            self.db.history,
+            self.settings,
+            RemoteDownloads(self.settings, transport=httpx.MockTransport(silent)),
+            show=self.db.library.get_show,
+            disk_usage=hang,
+            clock=lambda: self.clock,
+            now=lambda: NOW,
+        )
+        await self.settings.update(subtitles_folder=r"\\nas\video")
+        await self.add(record("A.S01E01"))
+        with mock.patch.object(ds, "SPACE_LIMIT_S", 0.05):
+            async with asyncio.timeout(2):
+                overview = await service.check()
+        self.assertIsNone(overview.space)
+        self.assertIsNotNone(overview.problem)
+        self.assertIn("192.168.1.20:5000", overview.problem or "")
+        self.assertIn("in time", overview.problem or "")
+        self.assertTrue(timeouts)
+        self.assertTrue(all(limit["connect"] == 3.0 for limit in timeouts), timeouts)
+        self.assertTrue(all(limit["read"] == 8.0 for limit in timeouts), timeouts)
+        self.assertEqual(ds.SPACE_LIMIT_S, 8.0)
+        release.set()
+
+
+    async def test_a_slow_program_and_a_slow_share_cost_one_wait(self) -> None:
+        # Both hang: the check waits about the longer of the two limits, not their sum.
+        limit = 0.4
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def hang(path: str) -> DiskUsage:
+            release.wait(5)
+            return DiskUsage(100 * GB, 0, 100 * GB)
+
+        async def slow_status(hashes: Collection[str] = ()) -> RemoteStatus:
+            await asyncio.sleep(limit)  # as long as a status call's own limit
+            raise RemoteError("Download Station at 192.168.1.20:5000 didn't answer in time.")
+
+        self.service._disk_usage = hang
+        self.station.status = slow_status  # type: ignore[method-assign]
+        await self.settings.update(subtitles_folder=r"\\nas\video")
+        await self.add(record("A.S01E01"))
+        started = time.monotonic()
+        with mock.patch.object(ds, "SPACE_LIMIT_S", limit):
+            overview = await self.service.check()
+        elapsed = time.monotonic() - started
+        self.assertIsNone(overview.space)
+        self.assertIsNotNone(overview.problem)
+        self.assertGreaterEqual(elapsed, limit)
+        self.assertLess(elapsed, 2 * limit - 0.1, elapsed)  # not one after the other
+        release.set()
+
+    async def test_the_programs_late_free_space_is_its_own_log_line(self) -> None:
+        await self.settings.update(remote_kind=RemoteKind.QBITTORRENT)  # no folder: it reports
+        never = asyncio.Event()
+
+        async def silent_space() -> DiskSpace | None:
+            await never.wait()
+            return None
+
+        self.clients[RemoteKind.QBITTORRENT].free_space = silent_space  # type: ignore[method-assign]
+        with (
+            mock.patch.object(ds, "SPACE_LIMIT_S", 0.05),
+            self.assertLogs(ds.log, "INFO") as logs,
+        ):
+            overview = await self.service.check()
+        self.assertIsNone(overview.space)
+        lines = [entry.getMessage() for entry in logs.records]
+        self.assertIn("The torrent program didn't report free space in time", lines)
+        self.assertFalse(any("downloads folder" in line for line in lines), lines)
 
 
 class TimingTests(ServiceTestCase):

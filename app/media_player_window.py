@@ -1,8 +1,8 @@
 """The video player's window (app/media_player.py's process; `start_player` / `run_player`).
 
-A borderless window in AirGrabber's dark look, like the trailer window: the video in a thin
-frame (MARGIN; none in full screen), libVLC drawing into `video` (`EngineSeam.attach`), and
-the controls floating over the picture.
+A borderless window in AirGrabber's dark look, like the trailer window: the video filling it
+edge to edge (no frame, the owner's wish), libVLC drawing into `video` (`EngineSeam.attach`),
+and the controls floating over the picture.
 
 How the controls float: libVLC draws with Direct3D into a child window of its own inside
 `video`, and Tk widgets placed over that child aren't reliably drawn above it (VLC's own
@@ -10,8 +10,10 @@ interface keeps its full-screen controls in a separate window for the same reaso
 controls live in `overlay`, a borderless top-level window owned by this one (above it, hidden
 and shown with it, stay-on-top with it) that always covers the video exactly (`_follow`). Its
 background is a colour key (KEY_COLOUR): Windows shows the video through it and passes clicks
-there on to the video, so only the bands, buttons and cards show, at OVERLAY_ALPHA. It hides
-while the window is dragged, then comes back where the video went. libVLC leaves the mouse
+there on to the video, so only the bands, buttons and cards show, at OVERLAY_ALPHA. The top
+band (the title) is in a window of its own, `title_layer`, laid over the video's top edge at
+TITLE_ALPHA so the picture shows through it (one window has one see-through-ness). Both hide
+while the window is dragged, then come back where the video went. libVLC leaves the mouse
 and keys to us (`VlcEngine.attach`), so the pointer moving over the picture and a double click
 reach `video`.
 
@@ -19,10 +21,18 @@ What shows (the spec's "The window"): the top band (title line, stay on top in w
 full screen, ✕), the bottom band (the seek bar with elapsed / remaining time, a time under the
 pointer, play / pause, back 10 s / forward 30 s, mute and volume, the Audio and Subtitles
 menus with Find subtitles… and Always pick: …), shown on any movement or key and hidden after
-IDLE_S without (`controls_shown`: not while paused or with the pointer on them). Floating on
+IDLE_S without, AWAY_S once the pointer left the player (`controls_shown`: not while paused
+or with the pointer on them). Floating on
 their own: the resume prompt (when the app asks and the video doesn't start at the
 beginning), Skip intro (inside Plex's intro marker), the next episode countdown (from
 `countdown_from`, counted in video time, so it waits while paused) and a Notice line.
+
+VLC's keys (KEYS; round 2): G / H the subtitles and J / K the sound SYNC_STEP_MS earlier / later
+(also the menus' "Sync… (G / H)"), [ / ] the speed through SPEEDS and = back to 1×, each with a
+QUICK_NOTICE_S notice; they last for the video only. N / P (and ⏮ / ⏭, shown only when the app
+gave an episode before or after it) ask for the next (`WantNext(by_hand=True)`) or the previous
+episode (`WantPrevious`), A switches Fit ↔ Fill (cropped to the window's shape, made again on a
+resize, kept across videos). Esc only leaves full screen or the mini player; Ctrl+W closes.
 
 libVLC's end event counts as the end only near it (`played_to_the_end`): it also comes when a
 read fails part-way (a share or Wi-Fi gone, a cut-off file), and that video pauses where it
@@ -57,12 +67,13 @@ import tkinter as tk
 import tkinter.font as tkfont
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import customtkinter as ctk
 
 from app.media_player import (
     EXIT_CLOSED,
+    Dropped,
     LANGUAGES,
     RELEASE_WAIT_S,
     EngineSeam,
@@ -88,6 +99,7 @@ from app.media_player_logic import (
     MINI_LEAST,
     OFF,
     SUBTITLES_OFF,
+    SYNC_STEP_MS,
     Track,
     clock,
     controls_shown,
@@ -95,11 +107,15 @@ from app.media_player_logic import (
     first_geometry,
     first_mini,
     intro_button,
+    is_close_key,
     is_mini_key,
     language_key,
     mini_shape,
+    next_speed,
     pick_track,
     played_to_the_end,
+    signed_ms,
+    speed_text,
     tucked,
 )
 from app.media_protocol import (
@@ -109,17 +125,19 @@ from app.media_protocol import (
     LoadSubtitle,
     Message,
     Notice,
+    OpenFile,
     Play,
     Position,
     Ready,
     Stopped,
     Tracks,
     WantNext,
+    WantPrevious,
     encode,
 )
 from app.ui import borderless, theme
 from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM, CloseButton
-from app.ui.branding import set_window_icon
+from app.ui.branding import PLAYER_ICON_FILE, set_own_icon
 from app.ui.missing_control import MenuEntry, PopupMenu
 from app.ui.tooltip import Tooltip, add_tooltip
 
@@ -127,19 +145,22 @@ DRAIN_MS = 50  # how often the queue from the other threads is emptied
 REFRESH_MS = 250  # how often the controls' fading and the notice are checked
 REPORT_S = 10.0  # a Position this often while playing (and on every pause and seek)
 NOTICE_S = 5.0  # a notice shows this long
+QUICK_NOTICE_S = 1.5  # a sync, speed or Fit / Fill change's notice: this long
+FILL_MS = 150  # Fill: the crop made again this long after the window's last resize
 LOOKING_S = 60.0  # "Looking for subtitles…" until the app answers, at most this long
 VOLUME_STEP = 5
 END_ROOM_MS = 1_000  # a jump forward stops this far before the end
 MIN_WIDTH, MIN_HEIGHT = 480, 270
 SHAPE_MS = 300  # the mini player's shape put back this long after its last resize
 DRAG_START_PX = 4  # a press on the mini player's picture moved this far: a drag
+CLICK_WAIT_MS = 250  # a click on the picture: play / pause once no second click (full screen) came
 
 # CTk units (scaled by Windows' scaling, like the rest of the app).
-MARGIN = 12  # the frame around the video in a window
 BAND_PAD = 16
 FLOAT_INSET = 24  # Skip intro and the countdown from the video's right and bottom edges
 MINI_INSET = 8  # the mini player's controls from its edges
 OVERLAY_ALPHA = 0.92
+TITLE_ALPHA = 0.6  # the title band: the picture shows through it
 KEY_COLOUR = "#010203"  # the overlay's see-through colour (nothing else uses it)
 
 # Segoe Fluent Icons (Windows 11) / Segoe MDL2 Assets (Windows 10): the media glyphs.
@@ -148,6 +169,8 @@ PLAY_GLYPH = ""
 PAUSE_GLYPH = ""
 BACK_GLYPH = ""  # SkipBack10
 FORWARD_GLYPH = ""  # SkipForward30
+PREVIOUS_GLYPH = ""  # Previous: the episode before
+NEXT_GLYPH = ""  # Next: the episode after
 VOLUME_GLYPH = ""
 MUTED_GLYPH = ""
 FULL_SCREEN_GLYPH = ""
@@ -162,6 +185,15 @@ MINUS = "−"
 
 _GEOMETRY = re.compile(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
 TrackKind = Literal["audio", "subtitles"]
+# KEYS' sync and speed actions: (whose delay, how much) and the speed's step (0: back to 1×).
+_SYNC_KEYS: dict[str, tuple[TrackKind, int]] = {
+    "subtitles_earlier": ("subtitles", -SYNC_STEP_MS),
+    "subtitles_later": ("subtitles", SYNC_STEP_MS),
+    "audio_earlier": ("audio", -SYNC_STEP_MS),
+    "audio_later": ("audio", SYNC_STEP_MS),
+}
+_SPEED_KEYS = {"slower": -1, "faster": 1, "normal_speed": 0}
+_SYNC_LETTERS: dict[TrackKind, tuple[str, str]] = {"subtitles": ("G", "H"), "audio": ("J", "K")}
 
 
 def _mix(first: str, second: str, share: float) -> str:
@@ -309,6 +341,15 @@ class _Overlay(tk.Toplevel):
     attributes = wm_attributes
 
 
+class DropSeam(Protocol):
+    """Explorer drops on a window (app/forge/ui/file_drops.py's `WindowsNative`; tests: a fake).
+    `deliver` runs inside the window's procedure: it only queues."""
+
+    def attach(self, window_id: int, deliver: Callable[[list[str]], None]) -> bool: ...
+
+    def detach(self, window_id: int) -> None: ...
+
+
 class PlayerWindow(ctk.CTkToplevel):
     """The player's window (see the module's notes). Driven by `handle` (the queue's events),
     the keys (`press`) and its controls; it says what happens through `send` (one line each)."""
@@ -326,8 +367,12 @@ class PlayerWindow(ctk.CTkToplevel):
         pointer: Callable[[], tuple[int, int]] | None = None,
         now: Callable[[], float] = time.monotonic,
         button_down: Callable[[], bool] = _left_button_down,
+        drops: DropSeam | None = None,
     ) -> None:
         super().__init__(master, fg_color=look.background)
+        self._drops = drops
+        self._drop_ids: list[int] = []
+        self._click_from: tuple[int, int] | None = None
         self.look = look
         self.events: queue.Queue[Event] = queue.Queue()
         self.worker = EngineWorker(engine, self.events)
@@ -373,6 +418,11 @@ class PlayerWindow(ctk.CTkToplevel):
         self._skip = False
         self._countdown = False
         self._dragging_seek: float | None = None
+        # VLC's sync and speed keys: for this video only (a new one starts in sync, at 1×).
+        self._delays: dict[TrackKind, int] = {"audio": 0, "subtitles": 0}  # ms, later when > 0
+        self._rate = 1.0
+        self._previous_sent = False  # WantPrevious said for this video
+        self._fill = False  # A: Fill (cropped to the window) instead of Fit; kept across videos
 
         settings = load_settings(settings_path)
         volume = settings.get("volume")
@@ -401,7 +451,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self._win32 = False  # the real borderless window (tests' stand-in: no Win32 calls here)
 
         self.title(look.title)
-        set_window_icon(self)  # AirGrabber's, not customtkinter's
+        set_own_icon(self, PLAYER_ICON_FILE)  # the player's, not AirGrabber's or customtkinter's
         self.minsize(MIN_WIDTH, MIN_HEIGHT)
         self._place_window(settings.get("geometry"), work_area, on_screen)
         self.video = tk.Frame(self, bg="#000000", highlightthickness=0, takefocus=0)
@@ -410,21 +460,24 @@ class PlayerWindow(ctk.CTkToplevel):
         self._go_borderless()
         if self._on_top:
             self.attributes("-topmost", True)
-            self.overlay.attributes("-topmost", True)
+            for layer in self._layers():
+                layer.attributes("-topmost", True)
 
         self.protocol("WM_DELETE_WINDOW", self.close)
         # Alt+F4 with the controls active closes the player, not just its controls; the overlay
         # gone some other way does too (`_on_overlay_destroy`).
-        self.overlay.protocol("WM_DELETE_WINDOW", self.close)
-        self.overlay.bind("<Destroy>", self._on_overlay_destroy, add="+")
-        for target in (self, self.overlay):
+        for layer in self._layers():
+            layer.protocol("WM_DELETE_WINDOW", self.close)
+            layer.bind("<Destroy>", self._on_overlay_destroy, add="+")
+        for target in (self, *self._layers()):
             target.bind("<KeyPress>", self._on_key, add="+")
             target.bind("<Motion>", self._on_motion, add="+")
             target.bind("<MouseWheel>", self._on_wheel, add="+")
         self.video.bind("<Double-Button-1>", self._on_double)
         self.video.bind("<ButtonPress-1>", self._on_video_press, add="+")
         self.video.bind("<B1-Motion>", self._on_video_drag, add="+")
-        self.bind("<ButtonPress-1>", self._on_press_frame, add="+")
+        self.video.bind("<ButtonRelease-1>", self._on_video_release, add="+")
+        self._accept_drops()
         self.bind("<Configure>", self._on_configure, add="+")
         self.bind("<Unmap>", self._on_unmap, add="+")
         self.bind("<Map>", self._on_map, add="+")
@@ -509,10 +562,11 @@ class PlayerWindow(ctk.CTkToplevel):
         self.geometry(f"{round(width / scale)}x{round(height / scale)}+{x}+{y}")
 
     def _place_video(self) -> None:
-        margin = 0 if self._full_screen or self._mini else self._px(MARGIN)
-        self.video.place(
-            x=margin, y=margin, relwidth=1.0, relheight=1.0, width=-2 * margin, height=-2 * margin
-        )
+        self.video.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+
+    def _layers(self) -> tuple[_Overlay, _Overlay]:
+        """The controls' windows over the video: the overlay and the title band's."""
+        return self.overlay, self.title_layer
 
     def _go_borderless(self) -> None:
         """Windows' title bar off (borderless.py's way, without its close button: the ✕ is in
@@ -542,6 +596,13 @@ class PlayerWindow(ctk.CTkToplevel):
             overlay.see_through(OVERLAY_ALPHA)
         except tk.TclError:
             pass  # not on Windows: the overlay is opaque
+        title = self.title_layer = _Overlay(self, bg=look.surface, highlightthickness=0)
+        title.withdraw()
+        title.overrideredirect(True)  # owned by this window in `_follow`, like the overlay
+        try:
+            title.see_through(TITLE_ALPHA)
+        except tk.TclError:
+            pass
         self._build_top_band()
         self._build_bottom_band()
         self._build_mini_controls()
@@ -583,7 +644,10 @@ class PlayerWindow(ctk.CTkToplevel):
 
     def _build_top_band(self) -> None:
         look = self.look
-        band = self.top_band = ctk.CTkFrame(self.overlay, fg_color=look.surface, corner_radius=0)
+        band = self.top_band = ctk.CTkFrame(
+            self.title_layer, fg_color=look.surface, corner_radius=0
+        )
+        band.pack(fill="both", expand=True)  # the layer is shown or hidden, not the band
         self.close_button = CloseButton(band, command=self.close)
         add_tooltip(self.close_button, look.text("close_tip"))
         buttons = ctk.CTkFrame(band, fg_color="transparent")
@@ -650,6 +714,16 @@ class PlayerWindow(ctk.CTkToplevel):
             row, FORWARD_GLYPH, lambda: self.jump(JUMP_FORWARD_MS), look.text("forward_tip")
         )
         self.forward_button.pack(side="left")
+        # ⏮ / ⏭ around them, only for an episode (`_show_episode_buttons`).
+        dimmed = _mix(look.surface, look.foreground, 0.35)
+        self.previous_button, _tip = self._icon_button(
+            row, PREVIOUS_GLYPH, self.previous_episode, look.text("previous_tip")
+        )
+        self.next_button, _tip = self._icon_button(
+            row, NEXT_GLYPH, self.next_episode, look.text("next_tip")
+        )
+        for button in (self.previous_button, self.next_button):
+            button.configure(text_color_disabled=dimmed)
         self.mute_button, self._mute_tip = self._icon_button(
             row, VOLUME_GLYPH, self.toggle_mute, look.text("mute_tip")
         )
@@ -811,13 +885,26 @@ class PlayerWindow(ctk.CTkToplevel):
                 return
             video = self.video
             width, height = max(1, video.winfo_width()), max(1, video.winfo_height())
+            x, y = video.winfo_rootx(), video.winfo_rooty()
+            title = self.title_layer
             if self._win32:  # first: put above its owner after the move, it undid the move
+                _own(title, self)
                 _own(self.overlay, self)
-            self.overlay.geometry(f"{width}x{height}+{video.winfo_rootx()}+{video.winfo_rooty()}")
+            self.overlay.geometry(f"{width}x{height}+{x}+{y}")
             if self.overlay.state() == "withdrawn":
                 self.overlay.deiconify()
+            if self._title_shown():
+                title.geometry(f"{width}x{max(1, self.top_band.winfo_reqheight())}+{x}+{y}")
+                if title.state() == "withdrawn":
+                    title.deiconify()
+            elif title.state() != "withdrawn":
+                title.withdraw()
         except tk.TclError:
             pass
+
+    def _title_shown(self) -> bool:
+        """Whether the title band shows: with the controls, in the window or full screen."""
+        return self._controls_visible and not self._mini
 
     def _on_map(self, event: Any) -> None:
         if event.widget is self:
@@ -826,14 +913,10 @@ class PlayerWindow(ctk.CTkToplevel):
     def _on_unmap(self, event: Any) -> None:
         if event.widget is self and not self._closed:
             try:
-                self.overlay.withdraw()
+                for layer in self._layers():
+                    layer.withdraw()
             except tk.TclError:
                 pass
-
-    def _on_press_frame(self, event: Any) -> None:
-        """A press on the frame around the video (the window's own background) drags it."""
-        if event.widget is self:
-            self._drag()
 
     def _on_press_band(self, _event: Any) -> None:
         self._drag()
@@ -841,7 +924,8 @@ class PlayerWindow(ctk.CTkToplevel):
     def _drag(self) -> None:
         if self._native is None or self._full_screen:
             return
-        self.overlay.withdraw()  # it would lag behind: back once the window is let go
+        for layer in self._layers():
+            layer.withdraw()  # it would lag behind: back once the window is let go
         try:
             self._native.start_drag(self.winfo_id())
         finally:
@@ -849,6 +933,9 @@ class PlayerWindow(ctk.CTkToplevel):
 
     def _on_configure(self, event: Any) -> None:
         self._follow_later()
+        if event.widget is self.video and self._fill:
+            self._unschedule("fill")  # the crop to the new shape once the resize settles
+            self._schedule("fill", FILL_MS, self._apply_fill)
         if event.widget is self and self._mini:
             job = self._jobs.pop("shape", None)
             if job is not None:
@@ -857,17 +944,47 @@ class PlayerWindow(ctk.CTkToplevel):
 
     def _on_double(self, _event: Any) -> None:
         """A double click on the picture: the mini player back to the window; else full screen."""
+        self._unschedule("click")  # its first click doesn't play / pause
+        self._click_from = None
         if self._mini:
             self.toggle_mini()
         else:
             self.toggle_full_screen()
 
     def _on_video_press(self, event: Any) -> None:
-        self._press = (int(event.x_root), int(event.y_root)) if self._mini else None
+        where = (int(event.x_root), int(event.y_root))
+        self._click_from = where
+        self._press = where if self._mini else None
+
+    def _on_video_release(self, _event: Any) -> None:
+        """The picture clicked (pressed and let go where it was): play / pause, after CLICK_WAIT_MS
+        so a double click (full screen, `_on_double`) doesn't pause and play first."""
+        clicked, self._click_from = self._click_from is not None, None
+        if clicked and self._started and not self._prompt:
+            self._unschedule("click")
+            self._schedule("click", CLICK_WAIT_MS, self._on_click)
+
+    def _on_click(self) -> None:
+        self._jobs.pop("click", None)
+        if self._started and not self._prompt:
+            self.press("space")
+
+    def _unschedule(self, name: str) -> None:
+        job = self._jobs.pop(name, None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
 
     def _on_video_drag(self, event: Any) -> None:
         """The mini player's picture pressed and moved: the window follows (Windows' own move),
         then tucks into a corner it was let go near (`tuck`). A press alone stays a click."""
+        start = self._click_from
+        if start is not None:
+            moved = max(abs(int(event.x_root) - start[0]), abs(int(event.y_root) - start[1]))
+            if moved >= DRAG_START_PX:
+                self._click_from = None  # a drag, not a click
         if self._press is None or not self._mini:
             return
         x, y = self._press
@@ -950,6 +1067,46 @@ class PlayerWindow(ctk.CTkToplevel):
             self._on_tracks(event)
         elif isinstance(event, VideoEnded):
             self._on_ended(event.generation)
+        elif isinstance(event, Dropped):
+            self._on_drop(event.paths)
+
+    # -- files dropped from Explorer -------------------------------------------------------------
+
+    def _accept_drops(self) -> None:
+        """Explorer drops on the picture and the controls: the window and its layers."""
+        drops = self._drops
+        if drops is None:
+            return
+        events = self.events
+
+        def deliver(paths: list[str]) -> None:  # inside a window procedure: only queue
+            if paths:
+                events.put(Dropped(tuple(paths)))
+
+        for window in (self, *self._layers()):
+            try:
+                window_id = window.winfo_id()
+            except tk.TclError:
+                continue
+            if drops.attach(window_id, deliver):
+                self._drop_ids.append(window_id)
+
+    def _let_go_of_drops(self) -> None:
+        drops, ids, self._drop_ids = self._drops, self._drop_ids, []
+        if drops is not None:
+            for window_id in ids:
+                drops.detach(window_id)
+
+    def _on_drop(self, paths: tuple[str, ...]) -> None:
+        """A file dropped on the player: the app plays it (the first of a drop), as a file from
+        Explorer's "Open with", or says it isn't a video."""
+        self.activity()
+        try:
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+        self._say(OpenFile(file=paths[0]))
 
     def _say(self, message: Message) -> None:
         self._send(encode(message))
@@ -993,6 +1150,15 @@ class PlayerWindow(ctk.CTkToplevel):
         self.line_label.configure(text=message.line)
         path, generation = message.file, self._generation
         self.worker.submit(lambda engine: engine.load(path))
+        # The delays and the speed were for the video before: in sync and at 1× again. libVLC
+        # keeps the speed for the next video; the delays start at 0 with its new input, and
+        # `_apply_picture` gives only this video's own (none yet) after its play.
+        if self._rate != 1.0:
+            self.worker.submit(lambda engine: engine.set_rate(1.0))
+        self._rate = 1.0
+        self._delays = {"audio": 0, "subtitles": 0}
+        self._previous_sent = False
+        self._show_episode_buttons()
         self.worker.watch(generation)
         self._show_skip(False)
         self._show_countdown(False)
@@ -1024,6 +1190,7 @@ class PlayerWindow(ctk.CTkToplevel):
         if seek:
             self.worker.submit(lambda engine: engine.seek(start_ms))
         self._pending = self.worker.submit(lambda engine: engine.play())
+        self._apply_picture()
         self._started = True
         self._paused = False
         self._position = start_ms
@@ -1031,6 +1198,16 @@ class PlayerWindow(ctk.CTkToplevel):
         self._update_play_button()
         self._apply_tracks()
         self.activity()
+
+    def _apply_picture(self) -> None:
+        """Right after a play: the delays set again (libVLC drops them with a new input: a video
+        opened again, one played again after its end, keys pressed at the resume prompt) and
+        Fill kept on."""
+        for kind, ms in self._delays.items():
+            if ms:
+                self._send_delay(kind, ms)
+        if self._fill:
+            self._apply_fill()
 
     def _report_stopped(self) -> None:
         if self._play is not None and not self._ended:
@@ -1147,6 +1324,8 @@ class PlayerWindow(ctk.CTkToplevel):
                 self._position = 0
                 self._countdown_at = None
                 self._want_sent = False
+                self._previous_sent = False
+                self._apply_picture()  # a new input: the delays again
             self._paused = False
         else:
             self.worker.submit(lambda engine: engine.pause())
@@ -1226,6 +1405,7 @@ class PlayerWindow(ctk.CTkToplevel):
             or self._duration <= 0
             or self._countdown_cancelled
             or self._want_sent
+            or self._previous_sent  # P / ⏮: the episode before is on its way
         ):
             self._show_countdown(False)
             return
@@ -1245,17 +1425,121 @@ class PlayerWindow(ctk.CTkToplevel):
         )
         self._show_countdown(True)
 
-    def want_next(self) -> None:
-        """The countdown reached 0, or Play now: the app sends the next episode."""
-        if self._want_sent or self._play is None:
+    def want_next(self, *, by_hand: bool = False) -> None:
+        """The countdown reached 0, or Play now (or N / ⏭: `by_hand`): the app sends the next
+        episode."""
+        if self._want_sent or self._previous_sent or self._play is None:
             return
         self._want_sent = True
-        self._say(WantNext())
+        self._say(WantNext(by_hand=by_hand))
         self._show_countdown(False)
 
     def cancel_countdown(self) -> None:
         self._countdown_cancelled = True
         self._show_countdown(False)
+
+    # -- next / previous episode, sync, speed, Fit / Fill ----------------------------------------
+
+    def _has_episodes(self) -> bool:
+        """Whether the app gave this video an episode list (an episode before or after it)."""
+        message = self._play
+        return message is not None and (
+            message.next_label is not None or message.previous_label is not None
+        )
+
+    def _show_episode_buttons(self) -> None:
+        """⏮ / ⏭ beside the jumps for an episode (the one without a neighbour greyed out);
+        none for a film or a file alone."""
+        message = self._play
+        if message is None or not self._has_episodes():
+            self.previous_button.pack_forget()
+            self.next_button.pack_forget()
+            return
+        if not self.previous_button.winfo_manager():
+            self.previous_button.pack(side="left", before=self.back_button)
+            self.next_button.pack(side="left", after=self.forward_button)
+        for button, label in (
+            (self.previous_button, message.previous_label),
+            (self.next_button, message.next_label),
+        ):
+            button.configure(state="normal" if label is not None else "disabled")
+
+    def next_episode(self) -> None:
+        """N or ⏭: the next episode (nothing without one, or once one was asked for). In the
+        credits (where the countdown starts, shown or cancelled) it counts as Play now, so the
+        app marks this one watched; before them it is a skip (`by_hand`)."""
+        message = self._play
+        if message is None or message.next_label is None:
+            return
+        in_credits = self._duration > 0 and self._position >= countdown_from(
+            self._duration, message.credits_ms
+        )
+        self.want_next(by_hand=not in_credits)
+
+    def previous_episode(self) -> None:
+        """P or ⏮: the episode before (WantPrevious, once per video)."""
+        message = self._play
+        if message is None or message.previous_label is None:
+            return
+        if self._previous_sent or self._want_sent:
+            return
+        self._previous_sent = True
+        self._say(WantPrevious())
+        self._show_countdown(False)
+
+    def shift_sync(self, kind: TrackKind, ms: int) -> None:
+        """G / H (the subtitles), J / K (the sound): `ms` later (earlier when negative)."""
+        self._set_delay(kind, self._delays[kind] + ms)
+
+    def reset_sync(self, kind: TrackKind) -> None:
+        self._set_delay(kind, 0)
+
+    def _set_delay(self, kind: TrackKind, ms: int) -> None:
+        if self._play is None:
+            return
+        self._delays[kind] = ms
+        self._send_delay(kind, ms)
+        name = "subtitle_delay" if kind == "subtitles" else "audio_delay"
+        self.show_notice(self.look.text(name, delay=signed_ms(ms)), seconds=QUICK_NOTICE_S)
+        self.activity()
+
+    def _send_delay(self, kind: TrackKind, ms: int) -> None:
+        us = ms * 1000  # libVLC's delays are in microseconds
+        if kind == "subtitles":
+            self.worker.submit(lambda engine: engine.set_spu_delay(us))
+        else:
+            self.worker.submit(lambda engine: engine.set_audio_delay(us))
+
+    def change_speed(self, step: int) -> None:
+        """[ / ] (`step` -1 / 1) through SPEEDS; = (`step` 0) back to 1×."""
+        if self._play is None:
+            return
+        rate = 1.0 if step == 0 else next_speed(self._rate, step)
+        self._rate = rate
+        self.worker.submit(lambda engine: engine.set_rate(rate))
+        speed = speed_text(rate, self.look.decimal_mark)
+        self.show_notice(self.look.text("speed", speed=speed), seconds=QUICK_NOTICE_S)
+        self.activity()
+
+    def toggle_fill(self) -> None:
+        """A: Fit (the whole picture, at first) ↔ Fill (cropped to the window's shape)."""
+        self._fill = not self._fill
+        self._apply_fill()
+        self.show_notice(
+            self.look.text("fill" if self._fill else "fit"), seconds=QUICK_NOTICE_S
+        )
+        self.activity()
+
+    def _apply_fill(self) -> None:
+        self._jobs.pop("fill", None)
+        if self._closed:
+            return
+        try:
+            width, height = self.video.winfo_width(), self.video.winfo_height()
+        except tk.TclError:
+            return
+        on = self._fill
+        self.worker.submit(lambda engine: engine.set_fill(on, width, height))
 
     # -- tracks ----------------------------------------------------------------------------------
 
@@ -1429,6 +1713,7 @@ class PlayerWindow(ctk.CTkToplevel):
         ]
         if entries:
             entries.append(MenuEntry("", None, separator=True))
+        entries.append(self._sync_entry("audio"))
         entries.append(self._always_entry("audio"))
         return entries
 
@@ -1452,8 +1737,37 @@ class PlayerWindow(ctk.CTkToplevel):
         entries.append(MenuEntry("", None, separator=True))
         if self._play is None or self._play.find_subtitles:  # not for a file from Explorer
             entries.append(MenuEntry(self.look.text("find_subtitles"), self._open_find_menu))
+        entries.append(self._sync_entry("subtitles"))
         entries.append(self._always_entry("subtitles"))
         return entries
+
+    def _sync_entry(self, kind: TrackKind) -> MenuEntry:
+        """"Sync… (G / H)": its keys on the line, the steps in the menu it opens."""
+        keys = " / ".join(_SYNC_LETTERS[kind])
+        return MenuEntry(self.look.text("sync", keys=keys), lambda: self._open_sync_menu(kind))
+
+    def sync_menu_entries(self, kind: TrackKind) -> list[MenuEntry]:
+        earlier, later = _SYNC_LETTERS[kind]
+        look = self.look
+        return [
+            MenuEntry(
+                look.text("sync_earlier", ms=SYNC_STEP_MS, key=earlier),
+                functools.partial(self.shift_sync, kind, -SYNC_STEP_MS),
+            ),
+            MenuEntry(
+                look.text("sync_later", ms=SYNC_STEP_MS, key=later),
+                functools.partial(self.shift_sync, kind, SYNC_STEP_MS),
+            ),
+            MenuEntry(
+                look.text("sync_reset"),
+                functools.partial(self.reset_sync, kind),
+                checked=self._delays[kind] == 0,
+            ),
+        ]
+
+    def _open_sync_menu(self, kind: TrackKind) -> None:
+        anchor = self.audio_button if kind == "audio" else self.subtitles_button
+        self._open_menu(anchor, self.sync_menu_entries(kind))
 
     def _always_entry(self, kind: TrackKind) -> MenuEntry:
         name = self._language_name(self._always[kind], kind)
@@ -1508,7 +1822,9 @@ class PlayerWindow(ctk.CTkToplevel):
 
     def _open_menu(self, anchor: tk.Misc, entries: list[MenuEntry]) -> None:
         self.activity()
-        self._menu = PopupMenu(anchor, entries)
+        # Upwards first, kept on the screen: the controls are a strip at the video's bottom,
+        # often the screen's (a long list of subtitles went off it, downwards).
+        self._menu = PopupMenu(anchor, entries, bounds=self._work_area(), above=True)
 
     def _menu_open(self) -> bool:
         return self._menu is not None and self._menu.is_open
@@ -1523,7 +1839,8 @@ class PlayerWindow(ctk.CTkToplevel):
             self._window_geometry = self.geometry()
         self._full_screen = not self._full_screen
         if self._win32:
-            _own(self.overlay, None)  # Tk makes a new wrapper: Windows would take the overlay along
+            for layer in self._layers():
+                _own(layer, None)  # Tk makes a new wrapper: Windows would take the layer along
         try:
             self.attributes("-fullscreen", self._full_screen)
         except tk.TclError:
@@ -1551,7 +1868,8 @@ class PlayerWindow(ctk.CTkToplevel):
     def _topmost(self, on: bool) -> None:
         try:
             self.attributes("-topmost", on)
-            self.overlay.attributes("-topmost", on)
+            for layer in self._layers():
+                layer.attributes("-topmost", on)
         except tk.TclError:
             pass
 
@@ -1608,12 +1926,12 @@ class PlayerWindow(ctk.CTkToplevel):
         elif action == "fullscreen":
             self.toggle_full_screen()
         elif action == "escape":
+            # As in VLC: only out of full screen (the mini player: back to the window). In a
+            # window nothing; ✕, Alt+F4 and Ctrl+W close it.
             if self._full_screen:
                 self.toggle_full_screen()
             elif self._mini:
                 self.toggle_mini()
-            else:
-                self.close()
         elif action == "back":
             self.jump(-JUMP_BACK_MS)
         elif action == "forward":
@@ -1628,12 +1946,27 @@ class PlayerWindow(ctk.CTkToplevel):
             self.next_subtitle()
         elif action == "audio_track":
             self.next_audio()
+        elif action in _SYNC_KEYS:
+            kind, ms = _SYNC_KEYS[action]
+            self.shift_sync(kind, ms)
+        elif action in _SPEED_KEYS:
+            self.change_speed(_SPEED_KEYS[action])
+        elif action == "next":
+            self.next_episode()
+        elif action == "previous":
+            self.previous_episode()
+        elif action == "aspect":
+            self.toggle_fill()
 
     def _on_key(self, event: Any) -> str | None:
         state = getattr(event, "state", 0)
-        if is_mini_key(str(event.keysym), state if isinstance(state, int) else 0):
+        keysym, held = str(event.keysym), state if isinstance(state, int) else 0
+        if is_mini_key(keysym, held):  # before KEYS: plain H is the subtitles' delay
             self.activity()
             self.toggle_mini()
+            return "break"
+        if is_close_key(keysym, held):
+            self.close()
             return "break"
         if event.keysym in KEYS:
             self.press(event.keysym)
@@ -1668,7 +2001,8 @@ class PlayerWindow(ctk.CTkToplevel):
         idle = self._now() - self._last_activity
         paused = self._paused or not self._started or self._prompt
         on_them = self._pointer_on_controls() or self._menu_open()
-        self._show_controls(controls_shown(idle, paused, on_them))
+        away = not self._pointer_on_player()
+        self._show_controls(controls_shown(idle, paused, on_them, away))
         if self._notice and self._now() >= self._notice_until:
             self.hide_notice()
 
@@ -1676,6 +2010,16 @@ class PlayerWindow(ctk.CTkToplevel):
         self._jobs.pop("refresh", None)
         self.refresh_controls()
         self._schedule("refresh", REFRESH_MS, self._refresh_loop)
+
+    def _pointer_on_player(self) -> bool:
+        """Whether the pointer is over the player's window (the video and its controls)."""
+        try:
+            x, y = self._pointer()
+            left, top = self.winfo_rootx(), self.winfo_rooty()
+            width, height = self.winfo_width(), self.winfo_height()
+        except tk.TclError:
+            return True  # not known: the usual wait
+        return bool(left <= x < left + width and top <= y < top + height)
 
     def _pointer_on_controls(self) -> bool:
         if not self._controls_visible:
@@ -1716,7 +2060,6 @@ class PlayerWindow(ctk.CTkToplevel):
         """The current controls placed while they show (the others never), then the floating
         ones clear of them."""
         for widget in (
-            self.top_band,
             self.bottom_band,
             self.mini_play_button,
             self.mini_window_button,
@@ -1733,8 +2076,14 @@ class PlayerWindow(ctk.CTkToplevel):
             )
             self.mini_strip.place(relx=0, rely=1.0, relwidth=1.0, anchor="sw")
         elif self._controls_visible:
-            self.top_band.place(relx=0, rely=0, relwidth=1.0, anchor="nw")
             self.bottom_band.place(relx=0, rely=1.0, relwidth=1.0, anchor="sw")
+        if self._title_shown():
+            self._follow_later()  # the title layer, over the video's top edge
+        else:
+            try:
+                self.title_layer.withdraw()
+            except tk.TclError:
+                pass
         self._place_floating()
 
     def _place_floating(self) -> None:
@@ -1876,7 +2225,7 @@ class PlayerWindow(ctk.CTkToplevel):
             self._menu = None
 
     def close(self) -> None:
-        """✕, Escape in a window, or stdin's end: Stopped for the video, the settings saved,
+        """✕, Ctrl+W, Alt+F4, or stdin's end: Stopped for the video, the settings saved,
         the window gone. Never waits for the engine."""
         if self._closed:
             return
@@ -1884,6 +2233,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self._save()
         self._closed = True
         self._close_menu()
+        self._let_go_of_drops()
         for job in self._jobs.values():
             try:
                 self.after_cancel(job)
@@ -1892,10 +2242,11 @@ class PlayerWindow(ctk.CTkToplevel):
         self._jobs.clear()
         self.worker.stop()
         self._cancel_own_jobs()
-        try:
-            self.overlay.destroy()
-        except tk.TclError:
-            pass
+        for layer in self._layers():
+            try:
+                layer.destroy()
+            except tk.TclError:
+                pass
         try:
             self.destroy()
         except tk.TclError:
@@ -1935,7 +2286,7 @@ class PlayerWindow(ctk.CTkToplevel):
         """The controls' window gone without `close` (closed on its own): the player closes
         too, once Tk is done destroying (when the whole window is going, `_on_destroy` comes
         first and this finds it closed)."""
-        if event.widget is self.overlay and not self._closed and "overlay" not in self._jobs:
+        if event.widget in self._layers() and not self._closed and "overlay" not in self._jobs:
             self._jobs["overlay"] = self.after_idle(self._overlay_gone)
 
     def _overlay_gone(self) -> None:
@@ -1976,6 +2327,7 @@ def start_player(
     pointer: Callable[[], tuple[int, int]] | None = None,
     now: Callable[[], float] = time.monotonic,
     button_down: Callable[[], bool] = _left_button_down,
+    drops: DropSeam | None = None,
 ) -> PlayerWindow:
     """The window, its engine thread and its stdin reader running; Ready said."""
     window = PlayerWindow(
@@ -1989,6 +2341,7 @@ def start_player(
         pointer=pointer,
         now=now,
         button_down=button_down,
+        drops=drops,
     )
     worker, events = window.worker, window.events
     engine.on_end(lambda: events.put(VideoEnded(worker.generation)))
@@ -2014,6 +2367,7 @@ def run_player(
     work_area: Callable[[], Rect] = work_area_under_pointer,
     on_screen: Callable[[Rect], bool] = lambda _rect: True,
     pointer: Callable[[], tuple[int, int]] | None = None,
+    drops: DropSeam | None = None,
 ) -> int:
     """The player until its window closes; the exit code. libVLC gets RELEASE_WAIT_S to let
     go; one stuck on a stalled share is left behind (the process ends anyway)."""
@@ -2027,6 +2381,7 @@ def run_player(
         work_area=work_area,
         on_screen=on_screen,
         pointer=pointer,
+        drops=drops,
     )
     worker = window.worker
     window.wait_window()

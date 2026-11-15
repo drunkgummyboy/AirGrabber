@@ -4,11 +4,11 @@ mockups/forge-as-a-page.html). AirGrabber's main window (`Mode.FORGE`) shows it;
 
 Top to bottom, under the band's top row:
 1. The main window's tabs row, whose left part is the page's (`tabs_row`; the switch stays at its
-   right end). With the queue: + Files, + Folder (the queue's own `toolbar`) and the status line,
-   the renamer's light and words (`WatchStatus`, a quiet "Auto-rename off" while off; cut to fit; a
-   click opens Settings at Auto-rename, `on_settings`). With History: the heading, its muted line
-   and the Activity button.
-2. The queue (QueueView: the preset card, the filters with Clear queue, Preview and Forge, the
+   right end). With the queue: + Files, + Folder, Library (the queue's own `toolbar`) and the
+   status line, the renamer's light and words (`WatchStatus`, a quiet "Auto-rename off" while off;
+   cut to fit; a click opens Settings at Auto-rename, `on_settings`). With History: the heading,
+   its muted line and the Activity button.
+2. The queue (QueueView: the preset card, the filters with Clear ▾, Preview and Forge, the
    cards) or History (HistoryView) in the same place; 🕘 in the band switches them
    (`toggle_history`), MediaForge in the switch goes back to the queue (`show_view`).
 
@@ -227,6 +227,7 @@ class ForgePage(ctk.CTkFrame):
         self.set_watch_status(status or services.auto.status([]))
         self.show_view("queue")
         self._build_later(self._build_history)
+        queue.forget_yesterdays()  # the first visit too (`set_shown` came before the queue)
 
     def _build_later(self, *steps: Callable[[], None]) -> None:
         self._later.extend(steps)
@@ -325,11 +326,14 @@ class ForgePage(ctk.CTkFrame):
 
     def set_shown(self, shown: bool) -> None:
         """The main window shows this page, or another one: the tabs row's left part comes or
-        goes, Activity closes with the page, and opening it looks for new downloads."""
+        goes, Activity closes with the page, and opening it clears yesterday's done bands (also
+        with Auto-rename off) and looks for new downloads."""
         opened = shown and not self.shown
         self.shown = shown
         if not shown:
             self.hide_activity()
+        if opened and self.queue is not None:
+            self.queue.forget_yesterdays()
         self._place_tools()
         if opened and time.monotonic() - self._scanned_at >= OPEN_SCAN_EVERY_S:
             self._start_scan(tell=False)
@@ -458,12 +462,15 @@ class ForgePage(ctk.CTkFrame):
                 button.configure(text=SCAN_ICON, state="normal")
         if not tell or result is None or not self.winfo_exists():
             return
+        from app.forge.core.auto import settling_message
+
         if result.unreachable:
             self.on_message(t("Can't reach {folder}", folder=result.unreachable[0]))
         elif result.added:
             self.on_message(tn("Found {n} new file", "Found {n} new files", result.added))
-        else:
-            self.on_message(t("No new files found"))
+        else:  # downloads on their way: when the first one is ready
+            settling = settling_message(result.settling, time.time())
+            self.on_message(settling or t("No new files found"))
 
     def _place_scan(self, state: str) -> None:
         """The ↻ shows while folders are being watched."""

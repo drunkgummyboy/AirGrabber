@@ -7,9 +7,12 @@ network, no player starts, no real folder is looked at."""
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import time
 import unittest
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Any, cast
 from unittest import mock
 
@@ -30,7 +33,9 @@ from app.services.playback import (
     local_candidates,
     next_episode,
 )
-from app.services.plex import PlexError, PlexUnreachable
+from app.services.playback import EPISODES_TTL_S
+from app.services import plex as plex_module
+from app.services.plex import FAIL_FAST_S, PlexError, PlexUnreachable
 from app.ui import play_control, theme
 from app.ui.download_control import DownloadActions, DownloadStates
 from app.ui.movie_details import MovieDetailsWindow, MovieWindows
@@ -40,7 +45,7 @@ from tests.test_backup_dialog import DialogTestCase
 from tests.test_info_layouts import SHOW, WindowDiscovery, cast_to, no_subscribe
 from tests.test_info_polish import MarkedLibrary
 from tests.test_info_window import INFO, FILM, FakeDiscovery, FakeImages, FakeWatchlist
-from tests.test_plex import LOCAL_HTTPS, TOKEN, FakePlex, PlexTestCase, fixture
+from tests.test_plex import LOCAL_HTTP, LOCAL_HTTPS, TOKEN, FakePlex, PlexTestCase, fixture
 
 SERIES = r"\\Alex-NAS\video\TV"
 MOVIES = r"\\Alex-NAS\video\Movies"
@@ -54,11 +59,13 @@ PRIVATE = ("Dune", "Ark", "volume1", "Alex-NAS", ".mkv")  # never in a log line
 class PlayingPlex(FakePlex):
     """FakePlex that also answers /library/metadata/{key} and …/allLeaves."""
 
+    films_page: Any = None  # /library/metadata/3001 instead of the fixture
+
     def _server(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.startswith("/library/metadata/") and self._authorised(request):
             if path == "/library/metadata/3001":
-                return httpx.Response(200, json=fixture("metadata_movie.json"))
+                return httpx.Response(200, json=self.films_page or fixture("metadata_movie.json"))
             if path == "/library/metadata/1001/allLeaves":
                 return httpx.Response(200, json=fixture("all_leaves.json"))
             return httpx.Response(404)
@@ -117,6 +124,119 @@ class PlexFileTests(PlexPlayTestCase):
     async def test_a_key_that_doesnt_read_is_never_asked(self) -> None:
         with self.assertRaises(PlexError):
             await self.plex.film_video("1/../2")
+        self.assertEqual(self.fake.requests, [])
+
+    async def test_play_picks_the_4k_version_over_1080p(self) -> None:
+        film = fixture("metadata_movie.json")
+        item = film["MediaContainer"]["Metadata"][0]
+        item["Media"].reverse()  # the 1080p version first
+        # Two 4K versions: the bigger file; a version in two parts plays its first.
+        small = copy.deepcopy(item["Media"][1])
+        small["Part"][0].update(size=30000000000, file="/volume1/video/Movies/Dune small.mkv")
+        split = copy.deepcopy(item["Media"][1])
+        split["Part"] = [
+            {**split["Part"][0], "size": 70000000000, "file": "/volume1/video/Movies/Dune cd1.mkv"},
+            {**split["Part"][0], "size": 1000, "file": "/volume1/video/Movies/Dune cd2.mkv"},
+        ]
+        assert isinstance(self.fake, PlayingPlex)
+        self.fake.films_page = film
+        video = await self.plex.film_video("3001")
+        assert video is not None
+        self.assertEqual(video.file, DUNE_FILE)  # the 4K one, though Plex names 1080p first
+        small["Part"][0]["key"] = "/library/parts/53/1700000000/file.mkv"
+        item["Media"].insert(1, small)  # 1080p, the small 4K, the big 4K
+        self.assertEqual((await self.plex.film_video("3001") or video).file, DUNE_FILE)
+        # The phone-sized copy keeps Plex's first of equally tall versions.
+        copy_file = await self.plex.film_file("3001")
+        assert copy_file is not None
+        self.assertEqual(copy_file.part_key, "/library/parts/53/1700000000/file.mkv")
+        # A version in one file beats a bigger one in two parts of the same height.
+        item["Media"].append(split)
+        self.assertEqual((await self.plex.film_video("3001") or video).file, DUNE_FILE)
+        # The only 4K version in two parts: its first part plays, the parts logged.
+        item["Media"] = [item["Media"][0], split]
+        with self.assertLogs("app.services.plex", "INFO") as logs:
+            found = await self.plex.film_video("3001")
+        assert found is not None
+        self.assertEqual(found.file, "/volume1/video/Movies/Dune cd1.mkv")
+        self.assertIn("film has 2 parts", "\n".join(logs.output))
+        self.assertFalse([line for line in logs.output if "Dune" in line or "volume1" in line])
+
+    async def test_unreachable_last_check_fails_at_once(self) -> None:
+        self.fake.answering = set()
+        self.fake.plex_tv_down = True
+        await self.plex.check()  # Plex unreachable
+        self.fake.answering = {LOCAL_HTTPS}
+        self.fake.plex_tv_down = False
+        self.fake.requests.clear()
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.film_video("3001")
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.show_videos(PlexTitle(kind="show", key="1001", title="The Ark"))
+        self.assertEqual(self.fake.requests, [])  # not even asked: it said so a moment ago
+        self.clock.now += timedelta(seconds=FAIL_FAST_S + 1)
+        self.assertIsNotNone(await self.plex.film_video("3001"))
+
+    async def test_a_server_that_answers_but_hangs_on_reads_fails_fast(self) -> None:
+        await self.plex.check()
+        real = self.fake._server
+
+        def stuck(request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/library/metadata/"):
+                return httpx.Response(503)  # /identity answers, the library doesn't
+            return real(request)
+
+        self.fake._server = stuck  # type: ignore[method-assign]
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.film_video("3001")
+        self.fake.requests.clear()
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.film_video("3001")
+        self.assertEqual(self.fake.requests, [])  # not another wait
+
+    async def test_a_hung_nas_ends_within_the_screen_timeout_and_the_reach(self) -> None:
+        # The owner's case: every address (and plex.tv) takes the connection and never
+        # answers. The mock waits out the request's own read timeout, as httpcore would.
+        await self.plex.check()
+
+        async def never(request: httpx.Request) -> httpx.Response:
+            timeout = request.extensions.get("timeout", {})
+            await asyncio.sleep(timeout.get("read") or 5.0)
+            raise httpx.ReadTimeout("no answer", request=request)
+
+        self.http._transport = httpx.MockTransport(never)
+        screen = httpx.Timeout(0.2, connect=0.1)
+        with (
+            mock.patch.object(plex_module, "SCREEN_TIMEOUT", screen),
+            mock.patch.object(plex_module, "IDENTITY_TIMEOUT", httpx.Timeout(0.1)),
+            mock.patch.object(plex_module, "SCREEN_REACH_S", 0.2),
+        ):
+            started = time.monotonic()
+            with self.assertRaises(PlexUnreachable):
+                await self.plex.film_video("3001")
+            took = time.monotonic() - started
+            self.assertLess(took, 0.2 + 0.2 + 0.3)
+            started = time.monotonic()
+            with self.assertRaises(PlexUnreachable):
+                await self.plex.show_videos(PlexTitle(kind="show", key="1001", title="The Ark"))
+            self.assertLess(time.monotonic() - started, 0.05)  # said at once now
+        self.assertEqual(plex_module.SCREEN_REACH_S, 2.0)  # 8 s + 2 s: about 10 s
+
+    async def test_a_screen_call_finds_the_server_again_once(self) -> None:
+        await self.plex.check()
+        self.assertEqual(self.settings.current.plex_server_uri, LOCAL_HTTPS)
+        self.fake.answering = {LOCAL_HTTP}  # the address changed
+        video = await self.plex.film_video("3001")
+        assert video is not None
+        self.assertEqual(self.settings.current.plex_server_uri, LOCAL_HTTP)  # stored
+        # Nowhere to be found: it gives up, and the next screen call fails at once.
+        self.fake.answering = set()
+        self.fake.plex_tv_down = True
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.film_video("3001")
+        self.fake.requests.clear()
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.film_video("3001")
         self.assertEqual(self.fake.requests, [])
 
 
@@ -450,6 +570,31 @@ class ServiceTests(PlexPlayTestCase):
         outcome = await self.service.play_film(dune)
         self.assertEqual(outcome.problem, PlayProblem.NOT_CONNECTED)
 
+    async def test_the_libraries_folders_are_kept_from_the_check(self) -> None:
+        self.fake.requests.clear()
+        dune = await self.dune()
+        for _ in range(2):
+            self.assertTrue((await self.service.play_film(dune)).played)
+        sections = [r for r in self.fake.requests if r.url.path == "/library/sections"]
+        self.assertEqual(sections, [])  # the 30-minute check's answer, kept for the run
+        await self.plex.check()  # and refreshed by it
+        sections = [r for r in self.fake.requests if r.url.path == "/library/sections"]
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(len(self.launch.paths), 2)
+
+    async def test_a_shows_episodes_are_kept_for_five_minutes(self) -> None:
+        now = [1000.0]
+        service = self.make(clock=lambda: now[0])
+        ark = await service.show(Show(id=101, name="The Ark", tvdb_id=412345))
+        assert ark is not None
+        self.assertIsNone(service.kept_episodes(ark))
+        videos = await service.episodes(ark)
+        self.assertTrue(videos)
+        now[0] += EPISODES_TTL_S - 1
+        self.assertEqual(service.kept_episodes(ark), videos)
+        now[0] += 2
+        self.assertIsNone(service.kept_episodes(ark))  # too old to show
+
     async def test_a_films_video_for_the_player(self) -> None:
         dune = await self.dune()
         video = await self.service.film_video(dune)
@@ -520,6 +665,9 @@ class FakePlayback:
             raise PlexUnreachable("away")
         return list(self._videos) if self._videos is not None else leaves()
 
+    def kept_episodes(self, title: PlexTitle) -> list[PlexVideo] | None:
+        return None
+
     async def film_video(self, title: PlexTitle) -> PlexVideo | PlayOutcome:
         if self.film_problem is not None:
             return PlayOutcome(title.title, "movie", problem=self.film_problem)
@@ -533,7 +681,12 @@ class FakePlayer:
         self.played: list[tuple[str, str, tuple[str, ...]]] = []
 
     def play(
-        self, title: PlexTitle, video: PlexVideo, *, episodes: Sequence[PlexVideo] = ()
+        self,
+        title: PlexTitle,
+        video: PlexVideo,
+        *,
+        episodes: Sequence[PlexVideo] = (),
+        ask_resume: bool = True,
     ) -> None:
         self.played.append((title.key, video.key, tuple(one.key for one in episodes)))
 
@@ -634,6 +787,62 @@ class PickerTests(DialogTestCase):
             picker, _chosen = await self.open(fake)
         self.assertEqual(picker.note.cget("text"), "Plex didn't answer, so try again in a moment.")
         self.assertEqual(picker.rows, {})
+
+    async def test_the_picker_shows_a_kept_list_at_once(self) -> None:
+        kept = half_watched()
+        fresh = [v.model_copy(update={"view_offset_ms": 0}) for v in kept]
+        gate = asyncio.Event()
+        fail = False
+
+        async def episodes(title: PlexTitle) -> list[PlexVideo]:
+            await gate.wait()  # Plex takes its time
+            if fail:
+                raise PlexUnreachable("away")
+            return fresh
+
+        picker = EpisodePicker(
+            self.root, ARK, episodes=episodes, kept=lambda title: kept, on_play=lambda v, e: None
+        )
+        self.keep(picker)
+        await self.settle()
+        self.assertEqual(list(picker.progress), ["2122"])  # the kept list, before Plex answers
+        self.assertEqual(picker.note.cget("text"), "Choose an episode to play.")
+        assert picker.selected is not None
+        self.assertEqual(picker.selected.key, "2121")
+        gate.set()
+        await picker.loaded()
+        await self.settle()
+        self.assertEqual(picker.progress, {})  # refreshed behind the scenes
+        self.assertEqual(len(picker.rows), 4)
+        picker.close()
+
+        # A refresh that fails keeps the list on screen.
+        fail = True
+        with self.assertLogs("app.ui.play_control", "INFO"):
+            second = EpisodePicker(
+                self.root, ARK, episodes=episodes, kept=lambda title: kept,
+                on_play=lambda v, e: None,
+            )
+            self.keep(second)
+            await second.loaded()
+            await self.settle()
+        self.assertEqual(list(second.progress), ["2122"])
+        self.assertEqual(second.note.cget("text"), "Choose an episode to play.")
+
+    async def test_a_kept_list_plex_now_has_empty_leaves_no_gap(self) -> None:
+        async def none_now(title: PlexTitle) -> list[PlexVideo]:
+            return []
+
+        picker = EpisodePicker(
+            self.root, ARK, episodes=none_now, kept=lambda title: leaves(),
+            on_play=lambda v, e: None,
+        )
+        self.keep(picker)
+        await picker.loaded()
+        await self.settle()
+        self.assertEqual((picker.rows, picker.chips), ({}, {}))
+        self.assertEqual(picker._chip_row.winfo_manager(), "")  # the chip row is gone too
+        self.assertNotEqual(picker.note.cget("text"), "Choose an episode to play.")
 
     async def test_episode_play_passes_the_season_list(self) -> None:
         fake, player, status = FakePlayback(), FakePlayer(), Status()

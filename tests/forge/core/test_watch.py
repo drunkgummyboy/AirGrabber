@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from app.forge.core.watch import QUIET_S, Watcher, candidates, is_sample
+from app.forge.core.watch import QUIET_S, Settling, Watcher, candidates, is_sample
 from tests.forge.base import ForgeTestCase
 
 
@@ -162,3 +162,37 @@ class WatchTest(ForgeTestCase):
         w.finished([empty, real])
         clock.now += 300
         assert w.finished([empty, real]) == [real]
+
+    def test_settling_files_are_counted_with_when_the_first_is_ready(self) -> None:
+        clock = Clock(1_000_000)
+        young = video(self.tmp / "a.mkv", age_s=120, clock=clock)  # written 2 minutes ago
+        younger = video(self.tmp / "b.mkv", age_s=30, clock=clock)
+        old = video(self.tmp / "c.mkv", clock=clock)  # quiet long since, but first seen now
+        stalled = video(self.tmp / "d.mkv", clock=clock)
+        w = watcher(clock, locked={stalled})
+        assert w.settling == Settling()
+        assert w.finished([young, younger, old, stalled]) == []
+        assert w.settling == Settling()  # first seen: nobody knows yet whether they still grow
+        clock.now += 60
+        assert w.finished([young, younger, old, stalled]) == [old]
+        # Unchanged for one look: settling, the first quiet 10 minutes after it was last
+        # written. The held one isn't (nobody knows when it lets go).
+        assert w.settling == Settling(2, 1_000_000 - 120 + QUIET_S)
+        clock.now += QUIET_S
+        assert w.finished([young, younger, old, stalled]) == [young, younger, old]
+        assert w.settling == Settling()
+
+    def test_a_growing_file_is_never_settling(self) -> None:
+        # qBittorrent writes under the final name: still coming in is not "finishing".
+        clock = Clock(1_000_000)
+        file = video(self.tmp / "ep.mkv", size=10, age_s=5, clock=clock)
+        w = watcher(clock)
+        w.finished([file])
+        for size in (20, 30, 40):
+            clock.now += 300
+            video(file, size=size, age_s=5, clock=clock)  # more arrived since the last look
+            assert w.finished([file]) == []
+            assert w.settling == Settling()
+        clock.now += 300  # it stopped: written 305 s ago, unchanged since the last look
+        assert w.finished([file]) == []
+        assert w.settling == Settling(1, clock.now - 305 + QUIET_S)

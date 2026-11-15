@@ -142,6 +142,10 @@ class MainWindowCase(ForgeAsyncTestCase):
 
 
 class SwitchTests(MainWindowCase):
+    async def test_a_plain_start_opens_full_size(self) -> None:
+        self.window.update()
+        self.assertEqual(self.window.state(), "zoomed")  # the owner's wish, 2026-11-15
+
     async def test_three_parts_lead_to_their_pages(self) -> None:
         window = self.window
         self.assertIs(window._mode, Mode.SERIES)
@@ -584,7 +588,7 @@ class RequestTests(MainWindowCase):
                 self.set_state(state)
                 video = self.video(f"Film.{state}.2020.mkv")
                 self.host.handle(ForgeRequest(paths=(str(video),)))
-                await pump_until(window, lambda: window.state() == "normal", within=3)
+                await pump_until(window, lambda: window.state() == "zoomed", within=3)
                 self.assertIs(window._mode, Mode.FORGE)
                 await pump_until(
                     window,
@@ -598,7 +602,7 @@ class RequestTests(MainWindowCase):
         self.set_state("hidden")
         window.open_forge()  # the tray's Open MediaForge; the shortcut's plain `--forge` likewise
         await pump_until(window, self.page_ready)
-        self.assertEqual(window.state(), "normal")
+        self.assertEqual(window.state(), "zoomed")  # always full-size
         self.assertIs(window._mode, Mode.FORGE)
 
     async def test_trays_open_airgrabber_still_goes_home(self) -> None:
@@ -607,7 +611,7 @@ class RequestTests(MainWindowCase):
         window.withdraw()
         window.update()
         window.tray.open_window()
-        self.assertEqual(window.state(), "normal")
+        self.assertEqual(window.state(), "zoomed")  # always full-size
         self.assertIs(window._mode, Mode.SERIES)
 
     async def test_a_confirm_request_shows_only_its_window(self) -> None:
@@ -641,7 +645,7 @@ class RequestTests(MainWindowCase):
         with mock.patch.object(window, "quit_app") as quits:
             confirm.open_in_forge()
             await pump_until(window, lambda: self.item_count() == 1)
-        self.assertEqual(window.state(), "normal")
+        self.assertEqual(window.state(), "zoomed")  # always full-size
         self.assertIs(window._mode, Mode.FORGE)
         quits.assert_not_called()  # it stays: the window shows now
 
@@ -706,7 +710,7 @@ class PlainStartTests(MainWindowCase):
         window.update()
         await window._forge_pump.run()  # the request this start carries (no mailbox: it ends)
         await pump_until(window, self.page_ready)
-        self.assertEqual(window.state(), "normal")
+        self.assertEqual(window.state(), "zoomed")  # always full-size
         self.assertIs(window._mode, Mode.FORGE)
         self.assertFalse(
             quits_after_forge(

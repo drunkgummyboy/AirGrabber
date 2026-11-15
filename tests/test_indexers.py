@@ -27,6 +27,7 @@ from app.indexers import (
     YtsIndexer,
     default_indexers,
 )
+from app.indexers.base import IndexerUnavailable
 from app.models import Resolution, SearchKind, SearchRequest, TorrentRelease
 
 FIXTURES = Path(__file__).parent / "fixtures" / "indexers"
@@ -249,7 +250,10 @@ class HttpBehaviourTests(IndexerTestCase):
 
     async def test_persistent_429_gives_up_after_4_attempts(self) -> None:
         server = FakeServer(httpx.Response(429))
-        with self.assertLogs(LOGGER, "WARNING") as logs, self.assertRaises(IndexerError) as caught:
+        with (
+            self.assertLogs(LOGGER, "WARNING") as logs,
+            self.assertRaises(IndexerUnavailable) as caught,  # the search service may rest it
+        ):
             await self.search(server)
         self.assertEqual(len(server.requests), 4)
         self.assertEqual(len(logs.output), 3)
@@ -257,7 +261,10 @@ class HttpBehaviourTests(IndexerTestCase):
 
     async def test_persistent_500_gives_up_after_3_attempts(self) -> None:
         server = FakeServer(httpx.Response(500))
-        with self.assertLogs(LOGGER, "WARNING") as logs, self.assertRaises(IndexerError) as caught:
+        with (
+            self.assertLogs(LOGGER, "WARNING") as logs,
+            self.assertRaises(IndexerUnavailable) as caught,
+        ):
             await self.search(server)
         self.assertEqual(len(server.requests), 3)
         self.assertEqual(len(logs.output), 2)
@@ -283,7 +290,7 @@ class HttpBehaviourTests(IndexerTestCase):
 
     async def test_persistent_transport_error_gives_up_after_3_attempts(self) -> None:
         server = FakeServer(httpx.ConnectTimeout("timed out"))
-        with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(IndexerError) as caught:
+        with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(IndexerUnavailable) as caught:
             await self.search(server)
         self.assertEqual(len(server.requests), 3)
         self.assertEqual(
@@ -299,6 +306,7 @@ class HttpBehaviourTests(IndexerTestCase):
             await self.search(server)
         self.assertEqual(len(server.requests), 1)
         self.assertEqual(str(caught.exception), "APIBay: /q.php answered HTTP 403")
+        self.assertNotIsInstance(caught.exception, IndexerUnavailable)  # no reason to rest
 
     async def test_non_transport_request_error_is_not_retried(self) -> None:
         server = FakeServer(httpx.DecodingError("bad gzip"))

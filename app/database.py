@@ -501,9 +501,11 @@ _SUGGESTIONS_SQL = f"""
 # of a show anyone follows with the switch on, aired after the earliest moment one of them
 # switched it on, never grabbed (an episode or its season pack), not in Plex (empty without Plex)
 # and not given up: everyone's lists at once, each episode once (its tries are the episode's,
-# not a person's). Instants are compared through julianday(), which reads both the 'Z' and the
-# '+00:00' spelling of UTC.
-_AUTO_ELIGIBLE = f"""
+# not a person's). A give-up without a try (written before 2026-11-15, when an episode missed
+# while the PC was off was given up unsearched) doesn't count: such an episode is open again.
+# Instants are compared through julianday(), which reads both the 'Z' and the '+00:00'
+# spelling of UTC. `_AUTO_LOOKED_AFTER` is the same without the give-up's condition.
+_AUTO_LOOKED_AFTER = f"""
     FROM episodes AS e
     JOIN (
         SELECT show_id, MIN(julianday(auto_since)) AS since FROM tracked_shows
@@ -514,26 +516,60 @@ _AUTO_ELIGIBLE = f"""
     LEFT JOIN auto_attempts AS a ON a.episode_id = e.id
     WHERE e.season > 0 AND e.number IS NOT NULL AND e.airstamp IS NOT NULL
       AND julianday(e.airstamp) > t.since
-      AND COALESCE(a.gave_up, 0) = 0
       AND NOT {_IS_DOWNLOADED}
       AND NOT {_IN_PLEX}
 """
+_AUTO_ELIGIBLE = f"""{_AUTO_LOOKED_AFTER}
+      AND (COALESCE(a.gave_up, 0) = 0 OR a.tries = 0)
+"""
 _AUTO_ORDER = "ORDER BY julianday(e.airstamp), s.name COLLATE NOCASE, e.season, e.number"
 
-# Untried and least-tried episodes first (then the one tried longest ago), so episodes that keep
-# coming back with nothing found can't crowd newer ones out of a run.
-_AUTO_DUE_SQL = f"""
-    SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded
-    {_AUTO_ELIGIBLE}
-      AND julianday(e.airstamp) BETWEEN julianday(:aired_from) AND julianday(:aired_until)
-    ORDER BY COALESCE(a.tries, 0), COALESCE(a.last_try, ''),
-             julianday(e.airstamp), s.name COLLATE NOCASE, e.season, e.number
+# The episodes the automatic downloads gave up on after trying (the Downloads page's
+# "Couldn't find automatically"): still looked after, still not grabbed nor in Plex; the
+# latest give-up (its last try) first, at most :limit.
+_AUTO_GIVEN_UP_SQL = f"""
+    SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded, a.last_try AS given_up_try
+    {_AUTO_LOOKED_AFTER}
+      AND a.gave_up = 1 AND a.tries >= 1
+    ORDER BY julianday(a.last_try) DESC, julianday(e.airstamp) DESC, e.id DESC
     LIMIT :limit
 """
 
+# Those aired within [aired_from, aired_until], and those aired before it never tried (missed
+# while the PC was off, or while the torrent program or NAS couldn't be reached): the backlog,
+# at most :backlog of them (the oldest; NULL: no cap). Untried and least-tried episodes first,
+# so episodes that keep coming back with nothing found can't crowd newer ones out of a run;
+# among the untried the backlog waits behind the new ones; then the one tried (or stopped at,
+# `stamp_auto_attempt`) longest ago, then oldest first.
+_AUTO_DUE_SQL = f"""
+    SELECT * FROM (
+        SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded,
+               COALESCE(a.tries, 0) AS due_tries,
+               COALESCE(a.last_try, '') AS due_last_try,
+               julianday(e.airstamp) < julianday(:aired_from) AS due_backlog,
+               julianday(e.airstamp) AS due_aired,
+               s.name AS due_show, e.season AS due_season, e.number AS due_number,
+               ROW_NUMBER() OVER (
+                   PARTITION BY julianday(e.airstamp) < julianday(:aired_from)
+                   ORDER BY COALESCE(a.last_try, ''), julianday(e.airstamp),
+                            s.name COLLATE NOCASE, e.season, e.number
+               ) AS due_nth
+        {_AUTO_ELIGIBLE}
+          AND julianday(e.airstamp) <= julianday(:aired_until)
+          AND (julianday(e.airstamp) >= julianday(:aired_from) OR COALESCE(a.tries, 0) = 0)
+    )
+    WHERE NOT due_backlog OR :backlog IS NULL OR due_nth <= :backlog
+    -- A stamp (stamp_auto_attempt) only reorders within the same try count, on purpose.
+    ORDER BY due_tries, due_backlog, due_last_try, due_aired, due_show COLLATE NOCASE,
+             due_season, due_number
+    LIMIT :limit
+"""
+
+# Only episodes tried at least once: one never tried stays open until it has been.
 _AUTO_OVERDUE_SQL = f"""
     SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded
     {_AUTO_ELIGIBLE}
+      AND a.tries >= 1
       AND julianday(e.airstamp) < julianday(:aired_before)
     {_AUTO_ORDER}
 """
@@ -922,40 +958,67 @@ class LibraryRepository:
                 )
 
     async def auto_due(
-        self, *, aired_from: datetime, aired_until: datetime, limit: int
+        self,
+        *,
+        aired_from: datetime,
+        aired_until: datetime,
+        limit: int,
+        backlog: int | None = None,
     ) -> list[CalendarEntry]:
         """Episodes the automatic downloads should fetch now, at most `limit`: least tried
-        first, then the one tried longest ago, then oldest first.
+        first, those aired within the window before the older ones never tried (the backlog),
+        then the one tried (or stopped at) longest ago, then oldest first.
 
         Those of a show anyone follows with the switch on, numbered and not specials (season
         0), with an airstamp after the earliest moment one of them switched it on and within
-        [aired_from, aired_until], not in the download history (nor their season pack), not
-        marked "I already have this", not in Plex and not given up. Each episode once, however
-        many people follow its show.
+        [aired_from, aired_until] (or before `aired_from` and never tried: at most `backlog` of
+        those, None = no cap), not in the download history (nor their season pack), not in
+        Plex and not given up. Each episode once, however many people follow its show.
         """
         rows = await self._db.fetch_all(
             _AUTO_DUE_SQL,
-            {"aired_from": _utc(aired_from), "aired_until": _utc(aired_until), "limit": limit},
+            {
+                "aired_from": _utc(aired_from),
+                "aired_until": _utc(aired_until),
+                "limit": limit,
+                "backlog": backlog,
+            },
         )
         return [_calendar_entry(row, is_tracked=True) for row in rows]
 
     async def record_auto_attempt(self, episode_id: int, when: datetime) -> None:
-        """Count one more automatic try at an episode (ignored if the episode is gone)."""
+        """Count one more automatic try at an episode (ignored if the episode is gone). A
+        give-up without a try (from before 2026-11-15) is undone by it, so the episode can be
+        given up again, as tried."""
         async with self._db.transaction() as conn:
             await conn.execute(
                 "INSERT INTO auto_attempts (episode_id, tries, last_try) "
                 "SELECT id, 1, :when FROM episodes WHERE id = :id "
                 "ON CONFLICT (episode_id) DO UPDATE SET "
-                "tries = auto_attempts.tries + 1, last_try = excluded.last_try",
+                "tries = auto_attempts.tries + 1, last_try = excluded.last_try, "
+                "gave_up = CASE WHEN auto_attempts.tries = 0 THEN 0 ELSE auto_attempts.gave_up END",
                 {"id": episode_id, "when": _utc(when)},
             )
 
-    async def auto_give_up(self, *, aired_before: datetime, when: datetime) -> list[CalendarEntry]:
-        """Mark as given up every episode the automatic downloads look after that aired before
-        `aired_before` and still isn't downloaded; returns them, oldest first.
+    async def stamp_auto_attempt(self, episode_id: int, when: datetime) -> None:
+        """A run stopped at this episode for the program's or the NAS's sake: stamp its last
+        try without counting one, so the next run puts it behind the others (ignored if the
+        episode is gone)."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO auto_attempts (episode_id, tries, last_try) "
+                "SELECT id, 0, :when FROM episodes WHERE id = :id "
+                "ON CONFLICT (episode_id) DO UPDATE SET last_try = excluded.last_try",
+                {"id": episode_id, "when": _utc(when)},
+            )
 
-        Each episode is given up once: later calls skip it. An episode never tried gets an
-        attempts row with no tries, stamped `when`.
+    async def auto_give_up(self, *, aired_before: datetime) -> list[CalendarEntry]:
+        """Mark as given up every episode the automatic downloads look after that was tried at
+        least once, aired before `aired_before` and still isn't downloaded; returns them,
+        oldest first.
+
+        Each episode is given up once: later calls skip it. One never tried is left open (it is
+        due until tried: `auto_due`). The row keeps its last try.
         """
         async with self._db.transaction() as conn:
             rows = await conn.execute_fetchall(
@@ -963,11 +1026,31 @@ class LibraryRepository:
             )
             entries = [_calendar_entry(row, is_tracked=True) for row in rows]
             await conn.executemany(
-                "INSERT INTO auto_attempts (episode_id, tries, last_try, gave_up) "
-                "VALUES (?, 0, ?, 1) ON CONFLICT (episode_id) DO UPDATE SET gave_up = 1",
-                [(entry.episode.id, _utc(when)) for entry in entries],
+                "UPDATE auto_attempts SET gave_up = 1 WHERE episode_id = ?",
+                [(entry.episode.id,) for entry in entries],
             )
         return entries
+
+    async def auto_given_up(self, *, limit: int) -> list[tuple[CalendarEntry, datetime]]:
+        """The episodes the automatic downloads gave up on after trying, with their last try,
+        the latest first, at most `limit` (see _AUTO_GIVEN_UP_SQL)."""
+        rows = await self._db.fetch_all(_AUTO_GIVEN_UP_SQL, {"limit": limit})
+        return [
+            (
+                _calendar_entry(row, is_tracked=True),
+                datetime.fromisoformat(row["given_up_try"]).astimezone(UTC),
+            )
+            for row in rows
+        ]
+
+    async def auto_try_again(self, episode_id: int) -> None:
+        """Forget an episode's give-up and its tries (the Downloads page's "Try again"): the
+        next automatic run includes it, as one never tried. Its last try stays."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE auto_attempts SET gave_up = 0, tries = 0 WHERE episode_id = ?",
+                (episode_id,),
+            )
 
     async def untrack(self, show_id: int, *, profile_id: int) -> FollowRecord | None:
         """Take a show off a person's library: the follow as it was (for Undo), or None when
@@ -1558,6 +1641,14 @@ _ADD_FILM_SQL = """
 """
 
 
+# A film's automatic tries and its give-up forgotten (on every list that has it): it starts
+# afresh (a switch turned on again, "Try again").
+_FORGET_TRIES_SQL = (
+    "UPDATE watchlist SET tries = 0, first_try = NULL, last_try = NULL, gave_up = 0 "
+    "WHERE movie_id = ?"
+)
+
+
 def _watchlist_entry(row: sqlite3.Row) -> WatchlistEntry:
     return WatchlistEntry(
         movie=Movie.model_validate_json(row["movie"]),
@@ -1662,16 +1753,22 @@ class WatchlistRepository:
                     (profile_id, movie_id),
                 )
                 if cursor.rowcount > 0:
-                    await conn.execute(
-                        "UPDATE watchlist SET tries = 0, first_try = NULL, last_try = NULL, "
-                        "gave_up = 0 WHERE movie_id = ?",
-                        (movie_id,),
-                    )
+                    await conn.execute(_FORGET_TRIES_SQL, (movie_id,))
             else:
                 await conn.execute(
                     "UPDATE watchlist SET auto_download = 0 WHERE profile_id = ? AND movie_id = ?",
                     (profile_id, movie_id),
                 )
+
+    async def try_again(self, movie_id: int) -> None:
+        """The Downloads page's "Try again" on a film given up: its switch on again on every
+        list that has it (giving up turned them all off) and its tries forgotten, as switching
+        it on does; the next automatic run includes it."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE watchlist SET auto_download = 1 WHERE movie_id = ?", (movie_id,)
+            )
+            await conn.execute(_FORGET_TRIES_SQL, (movie_id,))
 
     async def switch_off(self, movie_id: int) -> None:
         """Switch "Download when it's out" off on every list that has the film (the automatic
@@ -1817,6 +1914,32 @@ class PlexRepository:
                 found.append(PlexTitle.model_validate(values))
             except ValidationError:
                 continue  # a row a newer version wrote differently
+        return found
+
+    async def titles_by_key(
+        self, keys: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], PlexTitle]:
+        """The stored shows and films among `keys` ((kind, Plex key): Continue watching's few),
+        by those keys; the others (and rows that don't read) left out."""
+        wanted = set(keys)
+        if not wanted:
+            return {}
+        rating_keys = sorted({key for _kind, key in wanted})
+        rows = await self._db.fetch_all(
+            f"SELECT {', '.join(_TITLE_COLUMNS)} FROM plex_titles "
+            f"WHERE rating_key IN ({', '.join('?' for _ in rating_keys)})",
+            tuple(rating_keys),
+        )
+        found: dict[tuple[str, str], PlexTitle] = {}
+        for row in rows:
+            values = dict(zip(_TITLE_FIELDS, tuple(row), strict=True))
+            if (values["kind"], values["key"]) not in wanted:
+                continue
+            try:
+                title = PlexTitle.model_validate(values)
+            except ValidationError:
+                continue  # a row a newer version wrote differently
+            found[(title.kind, title.key)] = title
         return found
 
     async def clear(self) -> None:

@@ -400,6 +400,17 @@ class ChooseTest(ForgeOverPhoneCase):
             [{"file_name": SHOW_NAME_2, "reason": "Put back by an undo."}],
         )
 
+    async def test_a_held_file_in_the_library_keeps_its_replace(self) -> None:
+        # Held because the episode is in the library already: its band offers "Replace the
+        # one in the library", and a tap on another episode mustn't take that away.
+        item, held = await self.watched(SHOW_NAME, SHOW_NAME_2)
+        self.queue.hold(held.id, "In the library already.", in_library=True)
+        reply = await self.choose(item)
+        self.assertEqual(reply.body["moved"], 1)
+        self.assertIs(held.status, ItemStatus.HELD)
+        self.assertEqual(held.message, "In the library already.")
+        self.assertTrue(held.in_library)
+
     async def test_a_same_show_file_without_a_number_stays_where_it_is(self) -> None:
         item, pack = await self.watched(SHOW_NAME, "VisionQuest.S01.Complete.1080p.mkv")
         where = pack.path

@@ -13,8 +13,8 @@ import httpx
 
 from app.forge.models.media import MediaKind
 from app.forge.models.moves import MoveRecord
-from app.services.plex import plex_folder
-from app.services.plex_scans import PlexScansAfterMoves
+from app.services.plex import PlexError, PlexUnreachable, plex_folder
+from app.services.plex_scans import AFTER_SCAN_CHECK_S, PlexScansAfterMoves
 from tests.test_plex import LOCAL_HTTP, TOKEN, FakePlex, PlexTestCase
 
 SERIES = "\\\\Alex-NAS\\video\\TV"
@@ -74,16 +74,20 @@ class ScanFoldersTests(PlexTestCase):
         self.assertEqual(scan.headers["X-Plex-Token"], TOKEN)
         self.assertNotIn(TOKEN, str(scan.url))
 
-    async def test_nothing_without_plex_or_its_address(self) -> None:
-        await self.settings.update(plex_server_uri="")
-        self.assertEqual(await self.plex.scan_folders(["\\\\Alex-NAS\\video\\TV\\Show"]), 0)
+    async def test_nothing_without_plex(self) -> None:
         await self.settings.update(plex_server_uri=LOCAL_HTTP, plex_token="")
         self.assertEqual(await self.plex.scan_folders(["\\\\Alex-NAS\\video\\TV\\Show"]), 0)
         self.assertEqual(self.fake.requests, [])
 
-    async def test_a_server_that_doesnt_answer_is_no_error(self) -> None:
+    async def test_a_server_that_doesnt_answer_says_so(self) -> None:
+        # So the scan is asked again with the next move (PlexScansAfterMoves).
         self.fake.answering = set()
-        self.assertEqual(await self.plex.scan_folders(["\\\\Alex-NAS\\video\\TV\\Show"]), 0)
+        with self.assertRaises(PlexError):
+            await self.plex.scan_folders(["\\\\Alex-NAS\\video\\TV\\Show"])
+        # Plex connected but no address found yet: not done either.
+        await self.settings.update(plex_server_uri="")
+        with self.assertRaises(PlexUnreachable):
+            await self.plex.scan_folders(["\\\\Alex-NAS\\video\\TV\\Show"])
 
 
 def record(target: str, when: float) -> MoveRecord:
@@ -120,10 +124,20 @@ class FakeMoves:
 class FakeScanner:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.checks: list[float] = []
+        self.fail = False
+        self.gate: asyncio.Event | None = None  # a scan waits for it
 
     async def scan_folders(self, folders: Iterable[str]) -> int:
         self.calls.append(sorted(folders))
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.fail:
+            raise PlexUnreachable("Plex didn't answer (scan)")
         return len(self.calls[-1])
+
+    def check_later(self, delay_s: float) -> None:
+        self.checks.append(delay_s)
 
 
 class AfterMovesTests(unittest.IsolatedAsyncioTestCase):
@@ -147,6 +161,37 @@ class AfterMovesTests(unittest.IsolatedAsyncioTestCase):
         self.moves.moved("D:/TV/Late/e1.mkv", when=self.now + 3)
         await self.settle()
         self.assertEqual(self.scanner.calls[-1], [str(Path("D:/TV/Late"))])  # only what's new
+        # Each scan that went through has Plex checked a while later (the Library page, ✓).
+        self.assertEqual(self.scanner.checks, [AFTER_SCAN_CHECK_S] * 2)
+        self.assertEqual(AFTER_SCAN_CHECK_S, 120)
+
+    async def test_a_failed_scan_is_tried_again_with_the_next_move(self) -> None:
+        self.scans.attach(self.moves)
+        self.scanner.fail = True
+        with self.assertLogs("app.services.plex_scans", "WARNING"):
+            self.moves.moved("D:/TV/Show/e1.mkv", when=self.now + 1)
+            await self.settle()
+        self.scanner.fail = False
+        self.moves.moved("D:/TV/Other/e1.mkv", when=self.now + 2)
+        await self.settle()
+        self.assertEqual(
+            self.scanner.calls[-1], [str(Path("D:/TV/Other")), str(Path("D:/TV/Show"))]
+        )
+        self.assertEqual(self.scanner.checks, [AFTER_SCAN_CHECK_S])  # only after the one that worked
+
+    async def test_a_move_during_a_scan_gets_its_own_scan(self) -> None:
+        self.scanner.gate = asyncio.Event()
+        self.scans.attach(self.moves)
+        self.moves.moved("D:/TV/Show/e1.mkv", when=self.now + 1)
+        await self.settle()
+        self.assertEqual(len(self.scanner.calls), 1)  # the scan is under way
+        self.moves.moved("D:/TV/Other/e1.mkv", when=self.now + 2)
+        await self.settle()
+        self.scanner.gate.set()
+        await self.settle()
+        self.assertEqual(
+            self.scanner.calls, [[str(Path("D:/TV/Show"))], [str(Path("D:/TV/Other"))]]
+        )
 
     async def test_what_was_moved_before_is_left_to_plex(self) -> None:
         self.moves.records.append(record("D:/TV/Old/e1.mkv", self.now - 100))
@@ -164,6 +209,9 @@ class AfterMovesTests(unittest.IsolatedAsyncioTestCase):
         class Broken:
             async def scan_folders(self, folders: Iterable[str]) -> int:
                 raise OSError("NAS")
+
+            def check_later(self, delay_s: float) -> None:
+                raise AssertionError("no check after a failed scan")
 
         scans = PlexScansAfterMoves(Broken(), gather_s=0.01, clock=lambda: self.now)
         self.addAsyncCleanup(scans.aclose)

@@ -237,6 +237,17 @@ class WatchlistService:
         await self._repository.set_auto_download(movie_id, on, profile_id=profile_id)
         await self._reload(movie_id)
 
+    async def given_up(self) -> list[WatchlistEntry]:
+        """The films the automatic downloads gave up on, on anyone's list (each once)."""
+        return [film for film in await self._repository.films() if film.gave_up]
+
+    async def try_again(self, movie_id: int) -> None:
+        """A film given up starts afresh: its switch on again on every list that has it, its
+        tries forgotten; the next automatic run includes it."""
+        await self._repository.try_again(movie_id)
+        log.info("Watchlist: TMDB id %d is searched for again", movie_id)
+        await self._reload(movie_id)
+
     async def switch_off(self, movie_id: int) -> None:
         """Switch "Download when it's out" off on every list that has the film."""
         await self._repository.switch_off(movie_id)

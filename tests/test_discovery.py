@@ -576,6 +576,82 @@ class DigitalShelfTests(DiscoveryTestCase):
         self.assertEqual(len(self.server.requests), requests + 5)
 
 
+class ReleaseDateFileTests(DiscoveryTestCase):
+    """The digital shelves' first digital release dates, kept across starts in a small file."""
+
+    def start(self) -> DiscoveryService:
+        """A new start of the app: a new service, the same data folder."""
+        tmdb = TMDBClient(self.http, lambda: self.key, retry_delay=0)
+        tvmaze = TVMazeClient(self.http, retry_delay=0)
+        return DiscoveryService(
+            tmdb, tvmaze, self.library, clock=lambda: self.now, release_dates=self.file
+        )
+
+    def details_asked(self) -> int:
+        return sum(1 for r in self.server.requests if r.url.path.startswith("/3/movie/"))
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.file = Path(self.tmp.name) / "release-dates.json"
+        days = (self.today + timedelta(days=offset) for offset in (-400,))
+        self.server.movie_details[933260] = digital_details(933260, *days)
+
+    async def test_release_dates_are_read_once_a_day(self) -> None:
+        first = await self.start().movie_dashboard()
+        asked = self.details_asked()
+        self.assertGreater(asked, 30)  # every film on both digital shelves
+        self.assertNotIn(933260, [m.id for m in first.just_dropped])
+        kept = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual(kept["933260"]["digital"], (self.today - timedelta(days=400)).isoformat())
+        unknown = next(
+            i for i in ids(self.server.just_dropped["results"]) if i not in (SPIDER_MAN, 933260)
+        )
+        self.assertIsNone(kept[str(unknown)]["digital"])  # no digital date known: kept too
+        self.assertEqual(kept[str(unknown)]["at"], self.now.timestamp())
+        self.assertNotIn("title", json.dumps(kept))  # ids, dates and times only
+
+        self.now += timedelta(hours=23, minutes=59)
+        again = await self.start().movie_dashboard()  # the next start, the same day
+        self.assertEqual(self.details_asked(), asked)  # no film's details asked again
+        self.assertEqual(again.just_dropped, first.just_dropped)
+        self.assertEqual(again.upcoming, first.upcoming)
+
+        self.now += timedelta(minutes=1)  # 24 hours on: read again
+        await self.start().movie_dashboard()
+        self.assertEqual(self.details_asked(), 2 * asked)
+
+    async def test_a_broken_cache_file_is_ignored(self) -> None:
+        for broken in ("{not json", '["a list"]', '{"933260": "soon", "x": {"digital": 5}}'):
+            with self.subTest(broken=broken):
+                self.file.write_text(broken, encoding="utf-8")
+                before = self.details_asked()
+                dashboard = await self.start().movie_dashboard()
+                self.assertGreater(self.details_asked(), before + 30)  # all read anew
+                self.assertNotIn(933260, [m.id for m in dashboard.just_dropped])
+                kept = json.loads(self.file.read_text(encoding="utf-8"))
+                self.assertIn("933260", kept)  # written afresh
+                self.assertNotIn("x", kept)
+
+    async def test_an_unwritable_file_is_no_failure(self) -> None:
+        self.file.mkdir()  # a folder where the file should be: neither readable nor writable
+        dashboard = await self.start().movie_dashboard()
+        self.assertEqual(dashboard.failed, ())
+        self.assertNotIn(933260, [m.id for m in dashboard.just_dropped])
+
+    async def test_a_date_from_details_kept_in_memory_keeps_their_age(self) -> None:
+        service = self.start()
+        read = self.now
+        await service.movie_details(933260)  # e.g. a card's, 23 hours before the page
+        self.now += timedelta(hours=23)
+        await service.movie_dashboard()
+        kept = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual(kept["933260"]["at"], read.timestamp())  # not the page's time
+        self.now += timedelta(hours=1)  # 24 hours after the details were read
+        before = self.server.count("/3/movie/933260")
+        await self.start().movie_dashboard()
+        self.assertEqual(self.server.count("/3/movie/933260"), before + 1)  # read again
+
+
 class DetailsTests(DiscoveryTestCase):
     MOVIE_PATH = f"/3/movie/{SPIDER_MAN}"
 
@@ -682,7 +758,8 @@ class ClearCacheTests(DiscoveryTestCase):
         await self.service.tv_details(LINK_CLICK_TMDB)
         self.assertEqual(self.server.count(*TV_PATHS), 6)
         self.assertEqual(self.server.count(*MOVIE_PATHS), 10)
-        # Fetched by each movie dashboard (Spider-Man is just dropped); the calls hit the cache.
+        # Fetched by the first movie dashboard (Spider-Man is just dropped), the first call hits
+        # the cache; after the clear the dashboard keeps its release date, the call fetches.
         self.assertEqual(self.server.count(f"/3/movie/{SPIDER_MAN}"), 2)
         self.assertEqual(self.server.count(f"/3/tv/{LINK_CLICK_TMDB}"), 2)
 

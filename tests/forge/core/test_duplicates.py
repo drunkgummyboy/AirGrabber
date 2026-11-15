@@ -5,12 +5,18 @@ from __future__ import annotations
 import asyncio
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from app.forge.core import duplicates as duplicates_module
 from app.forge.core.duplicates import (
     QUARANTINE,
+    Copy,
+    Duplicate,
     episode_key,
     film_key,
     find_duplicates,
+    needs_a_place,
+    place_problem,
     quarantine_plan,
     quarantine_target,
 )
@@ -100,6 +106,71 @@ class FindTests(HistoryTestCase):
             Path("S:/Media/Duplicates/Series/Lost/x.mkv"),
         )
         self.assertIsNone(quarantine_target(Path("D:/other/x.mkv"), [root]))
+
+    def test_a_share_root_never_gets_its_copies_inside_itself(self) -> None:
+        share, drive, beside = Path("//NAS/Movies/"), Path("M:/"), Path("//NAS/Media/Series")
+        extra = Copy(share / "Old" / "Dune (2021) 720p.mkv", 400)
+        found = [Duplicate("Dune (2021)", Copy(share / "Dune (2021).mkv", 900), (extra,))]
+        # No folder beside a share or drive root: one has to be chosen first.
+        self.assertTrue(needs_a_place([beside, share]))
+        self.assertTrue(needs_a_place([drive]))
+        self.assertFalse(needs_a_place([beside]))
+        self.assertIsNone(quarantine_target(extra.path, [share]))
+        self.assertEqual(quarantine_plan(found, [share]).files, ())
+        # Inside either library folder is refused; elsewhere they go there, under the share's name.
+        for inner in (share, share / "Duplicates", beside / "Aside"):
+            self.assertIsNotNone(place_problem(inner, [beside, share]), inner)
+        self.assertIsNone(place_problem(Path("//NAS/Backup"), [beside, share]))
+        plan = quarantine_plan(found, [beside, share], place=Path("//NAS/Backup"))
+        [moved] = plan.files
+        self.assertEqual(moved.target, Path("//NAS/Backup/Movies/Old/Dune (2021) 720p.mkv"))
+        self.assertEqual(
+            quarantine_target(drive / "Lost" / "x.mkv", [drive], place=Path("D:/Aside")),
+            Path("D:/Aside/M/Lost/x.mkv"),
+        )
+
+    def test_a_duplicates_folder_is_not_scanned(self) -> None:
+        movies = self.tmp / "Movies"
+        video(movies / "Dune (2021)" / "Dune (2021).mkv", 900)
+        video(movies / QUARANTINE / "Movies" / "Old" / "Dune (2021) 720p.mkv", 400)
+        video(movies / "duplicates" / "Dune (2021) 480p.mkv", 100)
+        video(movies / "Heat (1995)" / "Duplicates" / "Heat (1995).mkv", 500)  # not at the top
+        video(movies / "Heat (1995)" / "Heat (1995) 720p.mkv", 300)
+        self.assertEqual([d.label for d in find_duplicates(None, movies)], ["Heat (1995)"])
+
+    def test_a_share_root_and_a_normal_library_folder_together(self) -> None:
+        # Review fix 1: the chosen place is only for the share root; the other folder keeps its
+        # Duplicates beside it, and its parent can't be the place (its copies would land on
+        # their own paths).
+        series, movies = Path("D:/Media/Series"), Path("//NAS/Movies/")
+        roots = [series, movies]
+        episode = Copy(series / "Lost" / "Season 01" / "Lost.S01E01.720p.mkv", 100)
+        film = Copy(movies / "Old" / "Dune (2021) 720p.mkv", 400)
+        found = [
+            Duplicate("Dune (2021)", Copy(movies / "Dune (2021).mkv", 900), (film,)),
+            Duplicate("Lost S01E01", Copy(series / "Lost" / "Season 01" / "Pilot.mkv", 300), (episode,)),
+        ]
+        self.assertTrue(needs_a_place(roots))
+        self.assertIsNotNone(place_problem(Path("D:/Media"), roots))  # D:/Media/Series is one
+        self.assertIsNotNone(place_problem(Path("//NAS/Movies/Aside"), roots))
+        self.assertIsNone(place_problem(Path("E:/Aside"), roots))
+        plan = quarantine_plan(found, roots, place=Path("E:/Aside"))
+        self.assertEqual(
+            {(f.source, f.target) for f in plan.files},
+            {
+                (film.path, Path("E:/Aside/Movies/Old/Dune (2021) 720p.mkv")),
+                (episode.path, Path("D:/Media/Duplicates/Series/Lost/Season 01/Lost.S01E01.720p.mkv")),
+            },
+        )
+        # Even if a place slipped through, a move onto its own path is never planned.
+        plan = quarantine_plan(found, roots, place=Path("D:/Media"))
+        self.assertTrue(all(f.source != f.target for f in plan.files))
+
+    def test_a_move_onto_itself_is_never_planned(self) -> None:
+        extra = Copy(Path("//NAS/Movies/Old/Dune (2021) 720p.mkv"), 400)
+        found = [Duplicate("Dune (2021)", Copy(Path("//NAS/Movies/Dune (2021).mkv"), 900), (extra,))]
+        with mock.patch.object(duplicates_module, "quarantine_target", lambda *_a: extra.path):
+            self.assertEqual(quarantine_plan(found, [Path("//NAS/Movies/")]).files, ())
 
 
 if __name__ == "__main__":

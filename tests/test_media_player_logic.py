@@ -6,6 +6,7 @@ import unittest
 
 from app.media_player_logic import (
     KEYS,
+    SPEEDS,
     Track,
     clock,
     controls_shown,
@@ -13,10 +14,15 @@ from app.media_player_logic import (
     first_geometry,
     first_mini,
     intro_button,
+    fill_aspect,
+    is_close_key,
     is_mini_key,
     mini_shape,
+    next_speed,
     pick_track,
     played_to_the_end,
+    signed_ms,
+    speed_text,
     tucked,
 )
 
@@ -37,11 +43,17 @@ class ClockTests(unittest.TestCase):
 
 class ControlsShownTests(unittest.TestCase):
     def test_hidden_only_when_idle_playing_and_off_the_controls(self) -> None:
-        self.assertFalse(controls_shown(3.0, paused=False, pointer_on_controls=False))
+        self.assertFalse(controls_shown(1.5, paused=False, pointer_on_controls=False))
         self.assertFalse(controls_shown(10.0, paused=False, pointer_on_controls=False))
 
+    def test_sooner_with_the_pointer_off_the_player(self) -> None:
+        self.assertTrue(controls_shown(0.4, False, False, pointer_away=True))
+        self.assertFalse(controls_shown(0.5, False, False, pointer_away=True))
+        self.assertTrue(controls_shown(1.4, False, False, pointer_away=False))
+        self.assertTrue(controls_shown(30.0, True, False, pointer_away=True))  # paused: they stay
+
     def test_shown_otherwise(self) -> None:
-        self.assertTrue(controls_shown(2.9, paused=False, pointer_on_controls=False))
+        self.assertTrue(controls_shown(1.4, paused=False, pointer_on_controls=False))
         self.assertTrue(controls_shown(0.0, paused=False, pointer_on_controls=False))
         self.assertTrue(controls_shown(30.0, paused=True, pointer_on_controls=False))
         self.assertTrue(controls_shown(30.0, paused=False, pointer_on_controls=True))
@@ -195,13 +207,23 @@ class KeysTests(unittest.TestCase):
             "m": "mute",
             "v": "subtitle_track",
             "b": "audio_track",
+            "g": "subtitles_earlier",
+            "h": "subtitles_later",
+            "j": "audio_earlier",
+            "k": "audio_later",
+            "bracketleft": "slower",
+            "bracketright": "faster",
+            "equal": "normal_speed",
+            "n": "next",
+            "p": "previous",
+            "a": "aspect",
         }
         for keysym, action in expected.items():
             with self.subTest(keysym=keysym):
                 self.assertEqual(KEYS[keysym], action)
 
     def test_capital_letters_act_the_same(self) -> None:
-        for letter in "fmvb":
+        for letter in "fmvbghjknpa":
             with self.subTest(letter=letter):
                 self.assertEqual(KEYS[letter.upper()], KEYS[letter])
 
@@ -259,6 +281,40 @@ class MiniTests(unittest.TestCase):
         self.assertTrue(is_mini_key("H", 0x4 | 0x1))
         self.assertFalse(is_mini_key("h", 0))
         self.assertFalse(is_mini_key("j", 0x4))
+
+    def test_ctrl_w(self) -> None:
+        self.assertTrue(is_close_key("w", 0x4))
+        self.assertTrue(is_close_key("W", 0x4 | 0x1))
+        self.assertFalse(is_close_key("w", 0))
+        self.assertFalse(is_close_key("h", 0x4))
+
+
+class SyncAndSpeedTests(unittest.TestCase):
+    def test_signed_ms(self) -> None:
+        self.assertEqual(signed_ms(150), "+150")
+        self.assertEqual(signed_ms(-50), "−50")
+        self.assertEqual(signed_ms(0), "0")
+
+    def test_speeds_step_through_the_list_and_stop_at_its_ends(self) -> None:
+        self.assertEqual(SPEEDS, (0.5, 0.75, 1.0, 1.25, 1.5, 2.0))
+        self.assertEqual(next_speed(1.0, 1), 1.25)
+        self.assertEqual(next_speed(1.25, -1), 1.0)
+        self.assertEqual(next_speed(2.0, 1), 2.0)
+        self.assertEqual(next_speed(0.5, -1), 0.5)
+        self.assertEqual(next_speed(1.1, 1), 1.25)  # between two: the next one up
+        self.assertEqual(next_speed(1.1, -1), 1.0)
+
+    def test_speed_text(self) -> None:
+        self.assertEqual(speed_text(1.25), "1.25")
+        self.assertEqual(speed_text(1.0), "1")
+        self.assertEqual(speed_text(0.5, ","), "0,5")
+        self.assertEqual(speed_text(2.0, ","), "2")
+
+    def test_fill_aspect_is_the_window_shape(self) -> None:
+        self.assertEqual(fill_aspect(1920, 1080), "16:9")
+        self.assertEqual(fill_aspect(1000, 1000), "1:1")
+        self.assertEqual(fill_aspect(1366, 768), "683:384")
+        self.assertIsNone(fill_aspect(0, 768))
 
 
 if __name__ == "__main__":

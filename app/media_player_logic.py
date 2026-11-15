@@ -1,23 +1,29 @@
 """The video player's pure logic (`app/media_player.py`): no Tk, no VLC, stdlib only.
 
 Times are in milliseconds. The spec's values (docs/player/2026-11-13-pc-player-design.md): the
-controls fade after IDLE_S idle (not while paused or with the pointer on them), jumps of
+controls fade after IDLE_S idle, AWAY_S with the pointer off the player (owner, 2026-11-15: quicker
+than the first 3 s; not while paused or with the pointer on them), jumps of
 JUMP_BACK_MS / JUMP_FORWARD_MS, the next episode countdown COUNTDOWN_S long, starting at Plex's
 credits marker or NO_CREDITS_MS before the end; libVLC's end event only counts as the end
 within END_SLACK_MS / END_SLACK_SHARE of it (`played_to_the_end`); the first window
 WIDTH_SHARE of the work area, 16:9, centred, at most MAX_HEIGHT_SHARE tall. The mini player
 (owner, 2026-11-14): MINI_SIZE in the bottom-right corner at first, tucked into a corner it is
-dropped near, kept 16:9, never below MINI_LEAST; Ctrl+H (`is_mini_key`).
+dropped near, kept 16:9, never below MINI_LEAST; Ctrl+H (`is_mini_key`). VLC's sync and speed
+keys (round 2, item 20): G / H the subtitles, J / K the sound SYNC_STEP_MS earlier / later,
+[ / ] through SPEEDS, = back to 1×; N / P the next / previous episode, A Fit / Fill, Ctrl+W
+closes (`is_close_key`; Esc only leaves full screen or the mini player).
 """
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
-IDLE_S = 3.0
+IDLE_S = 1.5
+AWAY_S = 0.5  # the pointer off the player's window: the controls go sooner
 JUMP_BACK_MS = 10_000
 JUMP_FORWARD_MS = 30_000
 COUNTDOWN_S = 10
@@ -44,9 +50,13 @@ def clock(ms: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def controls_shown(idle_s: float, paused: bool, pointer_on_controls: bool) -> bool:
-    """Whether the controls show: hidden only after IDLE_S idle while playing, pointer elsewhere."""
-    return idle_s < IDLE_S or paused or pointer_on_controls
+def controls_shown(
+    idle_s: float, paused: bool, pointer_on_controls: bool, pointer_away: bool = False
+) -> bool:
+    """Whether the controls show: hidden after IDLE_S idle while playing (AWAY_S with the pointer
+    off the player), never with the pointer on them."""
+    limit = AWAY_S if pointer_away else IDLE_S
+    return idle_s < limit or paused or pointer_on_controls
 
 
 # -- tracks --------------------------------------------------------------------------------------
@@ -185,11 +195,55 @@ _KEYS = {
     "m": "mute",
     "v": "subtitle_track",
     "b": "audio_track",
+    "g": "subtitles_earlier",
+    "h": "subtitles_later",  # Ctrl+H is the mini player (`is_mini_key`, checked first)
+    "j": "audio_earlier",
+    "k": "audio_later",
+    "bracketleft": "slower",
+    "bracketright": "faster",
+    "equal": "normal_speed",
+    "n": "next",
+    "p": "previous",
+    "a": "aspect",
 }
 KEYS: Mapping[str, str] = MappingProxyType(
     _KEYS | {keysym.upper(): action for keysym, action in _KEYS.items() if len(keysym) == 1}
 )
 """Tk keysym → action, as in VLC (a letter with Shift or Caps Lock acts the same)."""
+
+
+SYNC_STEP_MS = 50  # G / H, J / K: the subtitles' or the sound's delay changes this much
+SPEEDS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)  # [ / ] step through these; = back to 1.0
+
+
+def signed_ms(ms: int) -> str:
+    """A delay as its notice shows it: "+150", "−50" (a real minus), "0"."""
+    if ms > 0:
+        return f"+{ms}"
+    if ms < 0:
+        return f"−{-ms}"
+    return "0"
+
+
+def next_speed(rate: float, step: int) -> float:
+    """The speed after `rate` in SPEEDS (`step` 1 up, -1 down); the last / first stays."""
+    if step > 0:
+        return next((speed for speed in SPEEDS if speed > rate + 1e-9), SPEEDS[-1])
+    return next((speed for speed in reversed(SPEEDS) if speed < rate - 1e-9), SPEEDS[0])
+
+
+def speed_text(rate: float, mark: str = ".") -> str:
+    """A speed as its notice shows it ("1.25", "1", "0,5" with `mark` ",")."""
+    return f"{rate:g}".replace(".", mark)
+
+
+def fill_aspect(width: int, height: int) -> str | None:
+    """The window's shape as libVLC's crop takes it ("16:9" for 1920×1080); None while it has
+    no size."""
+    if width <= 0 or height <= 0:
+        return None
+    common = math.gcd(width, height)
+    return f"{width // common}:{height // common}"
 
 
 def first_geometry(work: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -259,3 +313,8 @@ def mini_shape(
 def is_mini_key(keysym: str, state: int) -> bool:
     """Ctrl+H: VLC's minimal interface, here the mini player."""
     return bool(state & _CONTROL) and keysym in ("h", "H")
+
+
+def is_close_key(keysym: str, state: int) -> bool:
+    """Ctrl+W: closes the player (Esc doesn't, as in VLC)."""
+    return bool(state & _CONTROL) and keysym in ("w", "W")

@@ -1,8 +1,8 @@
 """The Downloads page's models: what the torrent program on a NAS or another computer says about
 its tasks (RemoteTask, RemoteStatus), the recent grabs with their state and where MediaForge
 moved them (DownloadEntry, MovedTo, DownloadsOverview), the tasks added in the torrent program
-itself (TaskEntry, with what AirGrabber recognised them as: Recognised) and the free space of the
-folder downloads end up in (FreeSpace).
+itself (TaskEntry, with what AirGrabber recognised them as: Recognised), the free space of the
+folder downloads end up in (FreeSpace) and what the automatic downloads couldn't find (GivenUp).
 The download queue's states and events (QueueState, QueueEvent, QueuedItem)."""
 
 from __future__ import annotations
@@ -13,10 +13,12 @@ from enum import StrEnum
 from pydantic import Field
 
 from app.models.domain import (
+    CalendarEntry,
     DomainModel,
     DownloadRecord,
     GrabOutcome,
     MediaType,
+    Movie,
     QuickDownloadResult,
     Show,
 )
@@ -56,6 +58,10 @@ class RemoteTask(DomainModel):
     task_id: str | None = None
     size: int | None = Field(default=None, ge=0)  # bytes, when the program says
     added_at: UtcDatetime | None = None  # when it was added to the program
+    # Its download speed (bytes per second) and the seconds it has left, when the program says
+    # (Download Station gives no time left: worked out from its size, downloaded and speed).
+    speed_bps: int | None = Field(default=None, ge=0)
+    eta_s: int | None = Field(default=None, ge=0)
 
 
 class RemoteStatus(DomainModel):
@@ -156,6 +162,9 @@ class DownloadsOverview(DomainModel):
     on_this_pc: bool = False  # the program runs on this PC (what it downloads stays here)
     # Removing an unfinished task deletes what it downloaded so far (Download Station).
     removes_partial: bool = False
+    # The grabs the history knows, shown while the program is asked for the first time
+    # (`DownloadStatusService.from_history`): progress and free space follow.
+    checking: bool = False
 
     @property
     def progress_available(self) -> bool:
@@ -172,6 +181,24 @@ class DownloadsOverview(DomainModel):
         listed: list[ListedDownload] = [*self.entries, *self.tasks]
         listed.sort(key=lambda item: item.listed_at, reverse=True)
         return tuple(listed)
+
+
+class GivenUp(DomainModel):
+    """An episode or a watchlist film the automatic downloads gave up on: a row of the
+    Downloads page's "Couldn't find automatically" (app/services/given_up.py)."""
+
+    label: str  # "Severance S02E04", "Dune (2021)"
+    tried_at: UtcDatetime | None = None  # its last automatic search
+    episode: CalendarEntry | None = None  # an episode's show and episode
+    movie: Movie | None = None  # a film's
+
+    @property
+    def key(self) -> tuple[MediaType, int]:
+        """The row's title: the episode's id, or the film's TMDB id."""
+        if self.episode is not None:
+            return (MediaType.TV, self.episode.episode.id)
+        assert self.movie is not None
+        return (MediaType.MOVIE, self.movie.id)
 
 
 # -- the download queue (app/services/download_queue.py) -----------------------------------------

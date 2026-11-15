@@ -18,6 +18,7 @@ from app.models import (
     AutoDownloaded,
     AutoError,
     AutoGaveUp,
+    AutoMovieGaveUp,
     LibraryStats,
     PairedPhone,
     PhoneContents,
@@ -356,6 +357,7 @@ class AutoEventRoutingTests(unittest.TestCase):
     def window(self, *, tray_running: bool) -> Any:
         notes: list[tuple[str, str]] = []
         status: list[tuple[str, int]] = []
+        given_up: list[str] = []  # status lines with "Show" (the Downloads page's section)
         tray = SimpleNamespace(
             running=tray_running, notify=lambda title, body: notes.append((title, body))
         )
@@ -363,8 +365,10 @@ class AutoEventRoutingTests(unittest.TestCase):
             _auto_throttle=AutoNoticeThrottle(clock=lambda: 0.0),
             tray=tray,
             _report=lambda text, ms: status.append((text, ms)),
+            _report_given_up=given_up.append,
             notes=notes,
             status=status,
+            given_up=given_up,
         )
 
     def test_with_the_tray(self) -> None:
@@ -387,12 +391,23 @@ class AutoEventRoutingTests(unittest.TestCase):
         self.assertEqual(
             window.status, [("Dune S01E01 · downloading (picked automatically)", 10_000)]
         )
+        # A give-up also in the status bar, with "Show" (a notification can't have a button).
+        self.assertEqual(
+            window.given_up,
+            [
+                "Couldn't find Dune S01E02. No good download turned up in 3 days. Choose one "
+                "yourself from the calendar."
+            ],
+        )
 
     def test_without_the_tray_only_the_status_bar(self) -> None:
         window = self.window(tray_running=False)
         MainWindow._on_auto_event(window, AutoDownloaded(label="Dune S01E01", quality="720p"))
         MainWindow._on_auto_event(window, AutoError(message="Broken"))
+        MainWindow._on_auto_event(window, AutoMovieGaveUp(title="Dune (2021)"))
         self.assertEqual(window.notes, [])
+        self.assertEqual(len(window.given_up), 1)
+        self.assertTrue(window.given_up[0].startswith("Couldn't find Dune (2021). "))
         self.assertEqual(
             [text for text, _ms in window.status],
             [

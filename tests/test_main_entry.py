@@ -9,6 +9,7 @@ import functools
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -321,6 +322,42 @@ class MainTests(unittest.TestCase):
         action.side_effect = OSError("broken")
         with mock.patch("app.forge.context_menu.menu_action", action), self.assertLogs("airgrabber", "ERROR"):
             self.assertEqual(self.main("--forge-menu", "on"), 1)
+
+
+class ExitIfStuckTests(unittest.TestCase):
+    """After Quit, a thread that never ends (no daemon) mustn't keep a hidden python process
+    alive: the process then ends with main's exit code. Seams only: nothing really exits."""
+
+    @staticmethod
+    def thread(*, daemon: bool = False, alive: bool = True) -> Any:
+        fake = mock.Mock(spec=threading.Thread)
+        fake.daemon = daemon
+        fake.is_alive.return_value = alive
+        return fake
+
+    def test_only_the_main_thread_returns_the_code(self) -> None:
+        exit_now = mock.Mock()
+        code = main._exit_if_stuck(3, threads=lambda: [threading.main_thread()], exit_now=exit_now)
+        self.assertEqual(code, 3)
+        exit_now.assert_not_called()
+
+    def test_daemon_and_finished_threads_dont_count(self) -> None:
+        exit_now = mock.Mock()
+        others = [threading.main_thread(), self.thread(daemon=True), self.thread(alive=False)]
+        self.assertEqual(main._exit_if_stuck(0, threads=lambda: others, exit_now=exit_now), 0)
+        exit_now.assert_not_called()
+
+    def test_a_stuck_thread_ends_the_process_with_the_same_code(self) -> None:
+        exit_now = mock.Mock()
+        stuck = [threading.main_thread(), self.thread(), self.thread()]
+        with (
+            mock.patch("logging.shutdown") as shutdown,
+            self.assertLogs("airgrabber", "WARNING") as logs,
+        ):
+            main._exit_if_stuck(1, threads=lambda: stuck, exit_now=exit_now)
+        exit_now.assert_called_once_with(1)
+        shutdown.assert_called_once_with()
+        self.assertIn("2 thread(s)", logs.output[0])
 
 
 class ClosePlayerTests(unittest.IsolatedAsyncioTestCase):

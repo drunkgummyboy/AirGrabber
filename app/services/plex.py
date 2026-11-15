@@ -14,8 +14,9 @@ Finding the server: plex.tv's resources (`includeHttps=1&includeRelay=0`) list t
 account owns. With one it is picked; with several the user picks one in Settings
 (`choose_server`). Its connections are tried in `connection_order` (local https, the
 plex.direct addresses, first; then the other local ones; then the remote ones) and the first
-whose /identity names the server is kept (`plex_server_uri`); the next check tries it first and
-the others only when it stops answering.
+whose /identity names the server is kept (`plex_server_uri`). The next check asks that address
+and plex.tv at the same time; only when it doesn't answer do the others race (all asked at once,
+the first to answer wins; of several answering together, the one first in that order).
 
 Reading (`check`): /library/sections lists the libraries; the show and film libraries count
 unless switched off in Settings (`plex_sections_off`). Shows (`type=2&includeGuids=1`), their
@@ -40,12 +41,21 @@ folder as Windows sees it is found in a library's own folders by their shared en
 library holds it. app/services/plex_scans.py hears the moves.
 
 ▶ Play (app/services/playback.py) asks which file a title is: a film's /library/metadata/{key}
-(`film_video`: its first version's first part), a show's /library/metadata/{key}/allLeaves
-(`show_videos`: each episode's file and whether it was watched), and the libraries' folders
-(`locations`) to find that file from this PC. Each video carries where Plex says it was left
-(viewOffset) and its length. AirGrabber's own player asks for a title's intro / credits markers
-(`markers`: …?includeMarkers=1), reports where it is playing to /:/timeline (`report`: playing /
-paused / stopped) and marks it watched with /:/scrobble (`mark_watched`).
+with its markers (`film_video`: the tallest version, then the biggest, its first part), a show's
+/library/metadata/{key}/allLeaves (`show_videos`: each episode's file and whether it was
+watched), and the libraries' folders (`locations`, kept from the last check) to find that file
+from this PC. Each video carries where Plex says it was left (viewOffset) and its length.
+AirGrabber's own player asks for an episode's intro / credits markers (`markers`:
+…?includeMarkers=1), reports where it is playing to /:/timeline (`report`: playing / paused /
+stopped) and marks it watched with /:/scrobble (`mark_watched`). The Library page's Continue
+watching row reads Plex's /hubs/continueWatching (a server without it: /library/onDeck), at most
+CONTINUE_SIZE episodes and films in Plex's order (`continue_watching`, `continue_item`).
+
+Calls a person waits on (`film_video`, `show_videos`, `episodes`, `markers`,
+`continue_watching`, `locations` when not kept) take SCREEN_TIMEOUT instead of the check's LIBRARY_TIMEOUT, fail at once while Plex
+was found away less than FAIL_FAST_S ago, and after a call Plex didn't answer look for the
+server once (`_reach` within SCREEN_REACH_S; asked again only at a new address) before saying
+Plex is away (`_on_screen`).
 
 Secrets: the token goes in the X-Plex-Token header only, never in a URL, log line, message or
 exception text. Request URLs are never logged, no httpx exception (which may carry a URL) is
@@ -60,7 +70,7 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from pathlib import PurePosixPath, PureWindowsPath
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -73,10 +83,13 @@ from app.database import PlexRepository
 from app.models.plex import (
     LibraryKind,
     PlexConnection,
+    PlexContinue,
     PlexEpisode,
     PlexFilmFile,
     PlexItemReply,
     PlexLibrary,
+    PlexMediaReply,
+    PlexPartReply,
     PlexPin,
     PlexPinReply,
     PlexProblem,
@@ -103,7 +116,13 @@ PAGE_SIZE = 500  # items per library page
 MAX_PAGES = 400  # 200,000 items: a stop for a server that keeps sending pages
 IDENTITY_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # trying a connection
 LIBRARY_TIMEOUT = httpx.Timeout(30.0, connect=5.0)  # a page of a big library
+# What a person waits on (▶ Play's film, the episode pickers, the player's markers): an answer
+# within this, or Plex is said to be away.
+SCREEN_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
+SCREEN_REACH_S = 2.0  # after a failed screen call: the server found again by then, or given up
+FAIL_FAST_S = 60.0  # Plex found unreachable this recently: a screen call says so at once
 REPORT_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # a position report or the watched mark
+CONTINUE_SIZE = 12  # the Library page's Continue watching: at most this many, in Plex's order
 LIBRARY_IDENTIFIER = "com.plexapp.plugins.library"  # /:/scrobble's identifier
 # The library types of /library/sections/{key}/all?type=…
 TYPE_MOVIE = 1
@@ -530,30 +549,33 @@ class PlexClient:
         )
         return _read(PlexReply, data, "identity").container.machine_identifier
 
-    async def sections(self, uri: str, token: str) -> list[PlexLibrary]:
-        """The server's show and film libraries (all on)."""
+    async def libraries(
+        self, uri: str, token: str, *, timeout: httpx.Timeout | None = None
+    ) -> tuple[list[PlexLibrary], list[tuple[str, str]]]:
+        """One /library/sections: the server's show and film libraries (all on) and their
+        folders as the server sees them, (library key, path)."""
         data = await self._request(
-            "GET", f"{uri}/library/sections", what="libraries", token=token
+            "GET", f"{uri}/library/sections", what="libraries", token=token, timeout=timeout
         )
         libraries: list[PlexLibrary] = []
+        folders: list[tuple[str, str]] = []
         for directory in _read(PlexReply, data, "libraries").container.directories:
             kind = library_kind(directory.type)
-            if kind is not None and _SECTION_KEY.fullmatch(directory.key):
-                libraries.append(PlexLibrary(key=directory.key, title=directory.title, kind=kind))
-        return libraries
+            if kind is None or not _SECTION_KEY.fullmatch(directory.key):
+                continue
+            libraries.append(PlexLibrary(key=directory.key, title=directory.title, kind=kind))
+            folders += [(directory.key, where.path) for where in directory.locations if where.path]
+        return libraries, folders
 
-    async def locations(self, uri: str, token: str) -> list[tuple[str, str]]:
+    async def sections(self, uri: str, token: str) -> list[PlexLibrary]:
+        """The server's show and film libraries (all on)."""
+        return (await self.libraries(uri, token))[0]
+
+    async def locations(
+        self, uri: str, token: str, *, timeout: httpx.Timeout | None = None
+    ) -> list[tuple[str, str]]:
         """The show and film libraries' folders as the server sees them: (library key, path)."""
-        data = await self._request(
-            "GET", f"{uri}/library/sections", what="libraries", token=token
-        )
-        return [
-            (directory.key, location.path)
-            for directory in _read(PlexReply, data, "libraries").container.directories
-            if library_kind(directory.type) is not None and _SECTION_KEY.fullmatch(directory.key)
-            for location in directory.locations
-            if location.path
-        ]
+        return (await self.libraries(uri, token, timeout=timeout))[1]
 
     async def scan(self, uri: str, token: str, section: str, path: str) -> None:
         """Ask the server to scan one folder of a library."""
@@ -606,7 +628,9 @@ class PlexClient:
         return found
 
 
-    async def episodes(self, uri: str, token: str, show_key: str) -> list[PlexItemReply]:
+    async def episodes(
+        self, uri: str, token: str, show_key: str, *, timeout: httpx.Timeout = LIBRARY_TIMEOUT
+    ) -> list[PlexItemReply]:
         """Every episode of a show (its `allLeaves`), specials included."""
         if not _ITEM_KEY.fullmatch(show_key):
             raise PlexError("A show's key that doesn't read")
@@ -615,12 +639,18 @@ class PlexClient:
             f"{uri}/library/metadata/{show_key}/allLeaves",
             what="episodes",
             token=token,
-            timeout=LIBRARY_TIMEOUT,
+            timeout=timeout,
         )
         return list(_read(PlexReply, data, "episodes").container.metadata)
 
     async def metadata(
-        self, uri: str, token: str, key: str, *, markers: bool = False
+        self,
+        uri: str,
+        token: str,
+        key: str,
+        *,
+        markers: bool = False,
+        timeout: httpx.Timeout = LIBRARY_TIMEOUT,
     ) -> PlexItemReply | None:
         """One title with its versions and their files (and its intro / credits markers with
         `markers`); None when the server doesn't have it."""
@@ -630,7 +660,7 @@ class PlexClient:
             data = await self._request(
                 "GET", f"{uri}/library/metadata/{key}", what="title", token=token,
                 params={"includeMarkers": 1} if markers else None,
-                timeout=LIBRARY_TIMEOUT,
+                timeout=timeout,
             )
         except PlexError as exc:
             if "HTTP 404" in str(exc):
@@ -638,6 +668,34 @@ class PlexClient:
             raise
         found = _read(PlexReply, data, "title").container.metadata
         return found[0] if found else None
+
+    async def continue_watching(
+        self, uri: str, token: str, *, timeout: httpx.Timeout = LIBRARY_TIMEOUT
+    ) -> list[PlexItemReply]:
+        """What Plex says to go on with: its Continue Watching hub (/hubs/continueWatching),
+        else, on a server without it (404), its On Deck (/library/onDeck); at most
+        CONTINUE_SIZE asked."""
+        size = {"X-Plex-Container-Start": "0", "X-Plex-Container-Size": str(CONTINUE_SIZE)}
+        try:
+            data = await self._request(
+                "GET", f"{uri}/hubs/continueWatching", what="continue watching", token=token,
+                headers=size, timeout=timeout,
+            )
+        except PlexError as exc:
+            if type(exc) is not PlexError or "HTTP 404" not in str(exc):
+                raise
+            log.info("Plex continue watching: no such hub, On Deck instead")
+            data = await self._request(
+                "GET", f"{uri}/library/onDeck", what="on deck", token=token, headers=size,
+                timeout=timeout,
+            )
+            return list(_read(PlexReply, data, "on deck").container.metadata)
+        container = _read(PlexReply, data, "continue watching").container
+        hub = next(
+            (one for one in container.hubs if "continue" in one.hub_identifier.casefold()),
+            container.hubs[0] if container.hubs else None,
+        )
+        return list(hub.metadata if hub is not None else container.metadata)
 
     async def timeline(
         self, uri: str, token: str, key: str, state: PlayState, time_ms: int, duration_ms: int
@@ -763,8 +821,49 @@ def item_markers(item: PlexItemReply) -> Markers:
     return intro, credits_ms
 
 
-def _video(item: PlexItemReply, key: str, file: str, *, episode: bool = False) -> PlexVideo:
-    """▶ Play's video of a film's or (`episode`) an episode's reply."""
+def play_rank(media: PlexMediaReply) -> tuple[int, ...]:
+    """▶ Play's order of a film's versions: the tallest picture, then a version in one file
+    over one in several parts, then the biggest file (all its parts)."""
+    return (
+        media.height or 0,
+        int(len(media.parts) == 1),
+        sum(one.size or 0 for one in media.parts),
+    )
+
+
+def height_rank(media: PlexMediaReply) -> tuple[int, ...]:
+    """The tallest picture only: of equally tall versions, Plex's first (phone-sized copies)."""
+    return (media.height or 0,)
+
+
+def best_version(
+    item: PlexItemReply,
+    usable: Callable[[PlexPartReply], bool],
+    rank: Callable[[PlexMediaReply], tuple[int, ...]] = play_rank,
+) -> tuple[PlexMediaReply, PlexPartReply] | None:
+    """The version of a film to play or copy: of those whose first part is `usable`, the
+    highest by `rank` (of equal ones, the first); None when none is."""
+    best: tuple[tuple[int, ...], PlexMediaReply, PlexPartReply] | None = None
+    for media in item.media:
+        part = media.parts[0] if media.parts else None
+        if part is None or not usable(part):
+            continue
+        ranked = rank(media)
+        if best is None or ranked > best[0]:
+            best = (ranked, media, part)
+    return None if best is None else (best[1], best[2])
+
+
+def _video(
+    item: PlexItemReply,
+    key: str,
+    file: str,
+    *,
+    episode: bool = False,
+    markers_known: bool = False,
+) -> PlexVideo:
+    """▶ Play's video of a film's or (`episode`) an episode's reply (`markers_known`: asked
+    with includeMarkers)."""
     intro, credits_ms = item_markers(item)
     return PlexVideo(
         key=key,
@@ -777,7 +876,67 @@ def _video(item: PlexItemReply, key: str, file: str, *, episode: bool = False) -
         duration_ms=max(0, item.duration or 0),
         intro=intro,
         credits_ms=credits_ms,
+        markers_known=markers_known,
     )
+
+
+def continue_keys(items: Iterable[PlexItemReply]) -> set[tuple[str, str]]:
+    """The (kind, key) of the show or film each of Continue watching's items belongs to: what
+    `continue_item` looks up among the stored titles."""
+    keys: set[tuple[str, str]] = set()
+    for item in items:
+        if item.type == "movie" and item.rating_key and _ITEM_KEY.fullmatch(item.rating_key):
+            keys.add(("movie", item.rating_key))
+        elif item.type == "episode":
+            show = item.grandparent_rating_key
+            if show and _ITEM_KEY.fullmatch(show):
+                keys.add(("show", show))
+    return keys
+
+
+def continue_item(
+    item: PlexItemReply, stored: Mapping[tuple[str, str], PlexTitle]
+) -> PlexContinue | None:
+    """One of Continue watching's items as the Library page's card: an episode with its show,
+    a film with the version ▶ Play picks (`best_version`, `play_rank`); the show or film from
+    `stored` (the last check's, by (kind, key)) when it knows it. None for anything else (a
+    clip, a track) or an item without a key that reads."""
+    key = item.rating_key
+    if key is None or not _ITEM_KEY.fullmatch(key):
+        return None
+    if item.type == "movie":
+        title = stored.get(("movie", key)) or plex_title(item, "movie")
+        best = best_version(item, lambda part: bool(part.file))
+        file = (best[1].file or "") if best is not None else ""
+        if title is None:
+            return None
+        return PlexContinue(title=title, video=_video(item, key, file))
+    if item.type != "episode":
+        return None
+    show_key = item.grandparent_rating_key
+    if show_key is None or not _ITEM_KEY.fullmatch(show_key):
+        return None
+    show = stored.get(("show", show_key))
+    if show is None:
+        name = item.grandparent_title.strip()
+        if not name:
+            return None
+        thumb = item.grandparent_thumb
+        show = PlexTitle(
+            kind="show",
+            key=show_key,
+            title=name,
+            thumb=thumb if thumb and _THUMB.fullmatch(thumb) else None,
+        )
+    media = item.media[0] if item.media else None
+    part = media.parts[0] if media is not None and media.parts else None
+    file = (part.file or "") if part is not None else ""
+    return PlexContinue(title=show, video=_video(item, key, file, episode=True))
+
+
+def _answered(task: asyncio.Task[bool] | None) -> bool:
+    """A connection try that is done and found the server."""
+    return task is not None and task.done() and not task.cancelled() and task.result()
 
 
 def _read[M: BaseModel](model: type[M], data: Any, what: str) -> M:
@@ -827,6 +986,10 @@ class PlexService:
         self._problem: PlexProblem | None = None
         self._run: asyncio.Task[None] | None = None
         self._listeners: list[StatusListener] = []
+        self._unreachable_at: datetime | None = None  # when Plex was last found away
+        self._locations: list[tuple[str, str]] | None = None  # the libraries' folders, kept
+        self._later: asyncio.Task[None] | None = None  # `check_later`'s
+        self._behind: set[asyncio.Task[None]] = set()  # plex.tv's answer after a quick reach
 
     # -- listeners -----------------------------------------------------------------------------
 
@@ -942,6 +1105,7 @@ class PlexService:
         server = next((s for s in self._servers if s.machine_id == machine_id), None)
         if server is None:
             return
+        self._stop_behind()  # an older server's list must not land on this one
         await self._settings.update(
             plex_server_id=server.machine_id,
             plex_server_name=server.name,
@@ -950,6 +1114,8 @@ class PlexService:
         )
         log.info("Plex: server chosen (%d connections)", len(server.connections))
         self._problem = None
+        self._unreachable_at = None
+        self._locations = None
         self._notify()
         await self.check(again=True)
 
@@ -964,6 +1130,7 @@ class PlexService:
 
     async def disconnect(self) -> None:
         """Forget the token, the server and everything read from Plex."""
+        self._stop_behind()
         run = self._run
         if run is not None and not run.done():
             run.cancel()
@@ -979,6 +1146,8 @@ class PlexService:
         await self._repository.clear()
         self._servers = ()
         self._problem = None
+        self._unreachable_at = None
+        self._locations = None
         log.info("Plex: disconnected, its lists forgotten")
         self._notify()
         self._changed()
@@ -994,6 +1163,23 @@ class PlexService:
                 except Exception:
                     log.exception("Plex check failed")
             await self._sleep(interval_s)
+
+    def check_later(self, delay_s: float) -> None:
+        """One check about `delay_s` seconds from now (after a scan: the Library page and the
+        marks catch up with what Plex just took in). One waiting at a time: asking again
+        meanwhile changes nothing."""
+        if self._later is not None and not self._later.done():
+            return
+        self._later = asyncio.get_running_loop().create_task(
+            self._check_after(delay_s), name="plex-check-later"
+        )
+
+    async def _check_after(self, delay_s: float) -> None:
+        await self._sleep(delay_s)
+        try:
+            await self.check(again=True)
+        except Exception:
+            log.exception("Plex check failed")
 
     async def check(self, *, again: bool = False) -> None:
         """Read Plex's libraries and store what matches (see the module docstring). One at a
@@ -1030,12 +1216,14 @@ class PlexService:
             log.warning("Plex check: the sign-in was refused, the last list stays")
         except PlexUnreachable:
             self._problem = PlexProblem.UNREACHABLE
+            self._unreachable_at = self._clock()
             log.warning("Plex check: Plex didn't answer, the last list stays")
         except PlexError as exc:
             self._problem = PlexProblem.FAILED
             log.warning("Plex check failed (%s), the last list stays", type(exc).__name__)
         else:
             self._problem = None
+            self._unreachable_at = None
             log.info(
                 "Plex check: %d shows read (%d not known to AirGrabber), %d episodes, "
                 "%d films (%d without an id)",
@@ -1080,7 +1268,10 @@ class PlexService:
         uri = self._settings.current.plex_server_uri
         if not self.connected or not uri or show.kind != "show":
             return []
-        replies = await self._client.episodes(uri, self._token(), show.key)
+        replies = await self._on_screen(
+            "episodes",
+            lambda at, token: self._client.episodes(at, token, show.key, timeout=SCREEN_TIMEOUT),
+        )
         found = [
             PlexEpisode(
                 key=reply.rating_key,
@@ -1096,7 +1287,8 @@ class PlexService:
         return found
 
     async def film_file(self, key: str) -> PlexFilmFile | None:
-        """A film's tallest version's file (its first part), from the server the last check
+        """A film's tallest version's file (its first part; of equally tall ones Plex's first:
+        `best_version` with `height_rank`), from the server the last check
         reached; None when Plex isn't connected, the server doesn't have it, or it has no file
         to hand out. Raises PlexError (PlexUnreachable when it didn't answer)."""
         uri = self._settings.current.plex_server_uri
@@ -1105,21 +1297,17 @@ class PlexService:
         item = await self._client.metadata(uri, self._token(), key)
         if item is None:
             return None
-        best: PlexFilmFile | None = None
-        for media in item.media:
-            part = media.parts[0] if media.parts else None
-            if part is None or not part.key or not part.size:
-                continue
-            found = PlexFilmFile(
-                part_key=part.key,
-                size=part.size,
-                height=media.height or 0,
-                duration_s=(media.duration or 0) / 1000,
-                container=part.container or "",
-            )
-            if best is None or found.height > best.height:
-                best = found
-        return best
+        best = best_version(item, lambda part: bool(part.key and part.size), height_rank)
+        if best is None:
+            return None
+        media, part = best
+        return PlexFilmFile(
+            part_key=part.key or "",
+            size=part.size or 0,
+            height=media.height or 0,
+            duration_s=(media.duration or 0) / 1000,
+            container=part.container or "",
+        )
 
     async def fetch_film(
         self, film: PlexFilmFile, write: Callable[[bytes], Awaitable[None]]
@@ -1133,19 +1321,31 @@ class PlexService:
     # -- ▶ Play (app/services/playback.py) ------------------------------------------------------
 
     async def film_video(self, key: str) -> PlexVideo | None:
-        """A film's file as the server sees it: its first version's first part. None without
-        Plex or a known server, when the server doesn't have it, or it names no file. Raises
-        PlexError (PlexUnreachable when it didn't answer)."""
+        """A film's file as the server sees it, with its intro / credits markers (asked at
+        once: the player needn't ask again): the version `best_version` picks (the tallest,
+        then the biggest), its first part (a version in several parts plays its first). None
+        without Plex or a known server, when the server doesn't have it, or it names no file.
+        Raises PlexError (PlexUnreachable when it didn't answer)."""
         uri = self._settings.current.plex_server_uri
+        if not _ITEM_KEY.fullmatch(key):
+            raise PlexError("A title's key that doesn't read")
         if not self.connected or not uri:
             return None
-        item = await self._client.metadata(uri, self._token(), key)
+        item = await self._on_screen(
+            "title",
+            lambda at, token: self._client.metadata(
+                at, token, key, markers=True, timeout=SCREEN_TIMEOUT
+            ),
+        )
         if item is None:
             return None
-        part = item.media[0].parts[0] if item.media and item.media[0].parts else None
-        if part is None or not part.file:
+        best = best_version(item, lambda part: bool(part.file))
+        if best is None:
             return None
-        return _video(item, item.rating_key or key, part.file)
+        media, part = best
+        if len(media.parts) > 1:
+            log.info("Play: film has %d parts (%s), the first plays", len(media.parts), key)
+        return _video(item, item.rating_key or key, part.file or "", markers_known=True)
 
     async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
         """A show's episodes with their files, by season and number (the specials, season 0,
@@ -1156,7 +1356,11 @@ class PlexService:
         if not self.connected or not uri or show.kind != "show":
             return []
         found: list[PlexVideo] = []
-        for reply in await self._client.episodes(uri, self._token(), show.key):
+        replies = await self._on_screen(
+            "episodes",
+            lambda at, token: self._client.episodes(at, token, show.key, timeout=SCREEN_TIMEOUT),
+        )
+        for reply in replies:
             media = reply.media[0] if reply.media else None
             part = media.parts[0] if media is not None and media.parts else None
             if reply.rating_key is None or part is None or not part.file:
@@ -1164,6 +1368,29 @@ class PlexService:
             found.append(_video(reply, reply.rating_key, part.file, episode=True))
         found.sort(key=episode_order)
         log.info("Plex: %d episode file(s) of a show read", len(found))
+        return found
+
+    async def continue_watching(self) -> list[PlexContinue]:
+        """The Library page's Continue watching: what Plex says to go on with, in its order, at
+        most CONTINUE_SIZE (`continue_item`: episodes and films only), from the server the last
+        check reached; none without Plex or a known server. A call a person waits on
+        (`_on_screen`). Raises PlexError (PlexUnreachable when it didn't answer)."""
+        uri = self._settings.current.plex_server_uri
+        if not self.connected or not uri:
+            return []
+        replies = await self._on_screen(
+            "continue watching",
+            lambda at, token: self._client.continue_watching(at, token, timeout=SCREEN_TIMEOUT),
+        )
+        stored = await self._repository.titles_by_key(continue_keys(replies))
+        found: list[PlexContinue] = []
+        for reply in replies:
+            chosen = continue_item(reply, stored)
+            if chosen is not None:
+                found.append(chosen)
+            if len(found) == CONTINUE_SIZE:
+                break
+        log.info("Plex: %d to continue watching", len(found))
         return found
 
     # -- AirGrabber's player: Plex in sync -------------------------------------------------------
@@ -1177,7 +1404,12 @@ class PlexService:
             raise PlexError("A title's key that doesn't read")
         if not self.connected or not uri:
             return None, None
-        item = await self._client.metadata(uri, self._token(), key, markers=True)
+        item = await self._on_screen(
+            "markers",
+            lambda at, token: self._client.metadata(
+                at, token, key, markers=True, timeout=SCREEN_TIMEOUT
+            ),
+        )
         return (None, None) if item is None else item_markers(item)
 
     async def report(
@@ -1203,34 +1435,47 @@ class PlexService:
 
     async def locations(self) -> list[tuple[str, str]]:
         """The show and film libraries' folders as the server sees them (library key, path);
-        none without Plex or a known server. Raises PlexError."""
+        none without Plex or a known server. Kept for the run from the last check (which
+        refreshes them) or the first time they were asked. Raises PlexError."""
         uri = self._settings.current.plex_server_uri
         if not self.connected or not uri:
             return []
-        return await self._client.locations(uri, self._token())
+        if self._locations is None:
+            self._locations = await self._on_screen(
+                "libraries",
+                lambda at, token: self._client.locations(at, token, timeout=SCREEN_TIMEOUT),
+            )
+        return list(self._locations)
 
     async def scan_folders(self, folders: Iterable[str]) -> int:
         """Ask Plex to scan these folders (where MediaForge just moved files): how many scans
-        were asked for. Only with Plex connected and its address known (a check found it);
-        a folder no library holds is left alone. Never raises: a failure is logged (counts and
-        the error's kind only)."""
+        were asked for (0 without Plex connected or folders; a folder no library holds is left
+        alone). Raises PlexError when it couldn't all be asked: the libraries didn't read, a
+        scan failed (the others are still asked), or no check has found the server yet
+        (PlexUnreachable), so the caller asks again later. Logs counts and the error's kind
+        only."""
         uri = self._settings.current.plex_server_uri
         wanted = sorted(set(folders))
-        if not self.connected or not uri or not wanted:
+        if not self.connected or not wanted:
             return 0
+        if not uri:
+            raise PlexUnreachable("Plex's address isn't known yet")
         token = self._token()
         try:
             locations = await self._client.locations(uri, token)
         except PlexError as exc:
             log.info("Plex scan: the libraries didn't read (%s)", type(exc).__name__)
-            return 0
+            raise
+        self._locations = locations
         scans = {found for folder in wanted if (found := plex_folder(folder, locations))}
         asked = 0
+        failed: PlexError | None = None
         for key, path in sorted(scans):
             try:
                 await self._client.scan(uri, token, key, path)
             except PlexError as exc:
                 log.info("Plex scan of library %s failed (%s)", key, type(exc).__name__)
+                failed = exc
                 continue
             asked += 1
         log.info(
@@ -1239,49 +1484,157 @@ class PlexService:
             len(wanted) - len({folder for folder in wanted if plex_folder(folder, locations)}),
             len(wanted),
         )
+        if failed is not None:
+            raise failed
         return asked
 
     async def _reach(self, token: str) -> str:
-        """The address of the chosen server that answers (see the module docstring)."""
+        """The address of the chosen server that answers (see the module docstring): the
+        stored address and plex.tv's list are asked at the same time; the stored one answering
+        is used at once (plex.tv's list still lands, behind); else the server's other
+        addresses race (with the stored one still in it), the first that answers wins and is
+        stored, the rest are cancelled."""
         current = self._settings.current
-        servers: list[PlexServer] | None
+        stored, chosen = current.plex_server_uri, current.plex_server_id
+        listing = asyncio.create_task(self._listing(token), name="plex-servers")
+        tries: dict[str, asyncio.Task[bool]] = {}
+        handed = False
         try:
-            servers = await self._client.servers(token)
-        except PlexUnreachable:
-            servers = None  # plex.tv is away: the server's own address may still answer
-        chosen = current.plex_server_id
-        server: PlexServer | None = None
-        if servers is not None:
-            self._servers = tuple(servers)
+            if stored and chosen:
+                tries[stored] = asyncio.create_task(self._answers(stored, chosen, token))
+                await asyncio.wait({tries[stored], listing}, return_when=asyncio.FIRST_COMPLETED)
+                if tries[stored].done() and tries[stored].result():
+                    self._finish_behind(listing, chosen)
+                    handed = True
+                    return stored
+            servers = await listing
+            server = await self._take_listing(servers, chosen)
+            chosen = server.machine_id if server is not None else chosen
             if not chosen:
-                if not servers:
-                    raise _NoServer(PlexProblem.NO_SERVER)
-                if len(servers) > 1:
-                    raise _NoServer(PlexProblem.CHOOSE_SERVER)
-                chosen = servers[0].machine_id
-            server = next((s for s in servers if s.machine_id == chosen), None)
-            if server is None:
-                raise _NoServer(PlexProblem.NO_SERVER)
-            if (server.machine_id, server.name) != (
-                current.plex_server_id,
-                current.plex_server_name,
-            ):
-                await self._settings.update(
-                    plex_server_id=server.machine_id, plex_server_name=server.name
+                raise PlexUnreachable("plex.tv didn't answer")
+            candidates = [stored] if stored else []
+            if server is not None:
+                candidates += [c.uri for c in connection_order(server) if c.uri != stored]
+            for uri in candidates:
+                if uri not in tries:
+                    tries[uri] = asyncio.create_task(self._answers(uri, chosen, token))
+            pending = set(tries.values())
+            while pending:
+                _done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                found = next(
+                    (uri for uri in candidates if _answered(tries.get(uri))), None
                 )
-        elif not chosen:
-            raise PlexUnreachable("plex.tv didn't answer")
-        stored = current.plex_server_uri
-        candidates = [stored] if stored else []
-        if server is not None:
-            candidates += [c.uri for c in connection_order(server) if c.uri != stored]
-        for uri in candidates:
-            if await self._answers(uri, chosen, token):
-                if uri != stored:
-                    await self._settings.update(plex_server_uri=uri)
-                    log.info("Plex: the server answered on connection %d", candidates.index(uri) + 1)
-                return uri
-        raise PlexUnreachable("The server didn't answer")
+                if found is not None:
+                    if found != stored:
+                        await self._settings.update(plex_server_uri=found)
+                        log.info(
+                            "Plex: the server answered on connection %d",
+                            candidates.index(found) + 1,
+                        )
+                    return found
+            raise PlexUnreachable("The server didn't answer")
+        finally:
+            for task in tries.values():
+                task.cancel()
+            if not handed:
+                listing.cancel()
+
+    async def _listing(self, token: str) -> list[PlexServer] | None:
+        """plex.tv's list of the account's servers; None while plex.tv is away (the server's
+        own address may still answer). Raises PlexAuthError."""
+        try:
+            return await self._client.servers(token)
+        except PlexUnreachable:
+            return None
+
+    async def _take_listing(
+        self, servers: list[PlexServer] | None, chosen: str
+    ) -> PlexServer | None:
+        """The chosen server in plex.tv's list (the only one when none was chosen yet), its
+        name and id stored; None while plex.tv is away. Raises _NoServer."""
+        if servers is None:
+            return None
+        self._servers = tuple(servers)
+        if not chosen:
+            if not servers:
+                raise _NoServer(PlexProblem.NO_SERVER)
+            if len(servers) > 1:
+                raise _NoServer(PlexProblem.CHOOSE_SERVER)
+            chosen = servers[0].machine_id
+        server = next((s for s in servers if s.machine_id == chosen), None)
+        if server is None:
+            raise _NoServer(PlexProblem.NO_SERVER)
+        current = self._settings.current
+        if (server.machine_id, server.name) != (current.plex_server_id, current.plex_server_name):
+            await self._settings.update(
+                plex_server_id=server.machine_id, plex_server_name=server.name
+            )
+        return server
+
+    def _stop_behind(self) -> None:
+        """Disconnect or another server chosen: plex.tv's lists still on their way, and a check
+        waiting to happen, are dropped (they would write the old server back)."""
+        later, self._later = self._later, None
+        if later is not None:
+            later.cancel()
+        for task in list(self._behind):
+            task.cancel()
+        self._behind.clear()
+
+    def _finish_behind(self, listing: asyncio.Task[list[PlexServer] | None], chosen: str) -> None:
+        """The stored address answered first: plex.tv's list is taken in when it comes (the
+        Settings box's servers, a renamed server), only while Plex is still connected to
+        `chosen`; the account no longer having it sets `problem`, other failures change
+        nothing."""
+
+        async def finish() -> None:
+            try:
+                servers = await listing
+                if not self.connected or self._settings.current.plex_server_id != chosen:
+                    return  # disconnected or another server chosen meanwhile
+                await self._take_listing(servers, chosen)
+            except _NoServer as exc:
+                self._problem = exc.problem
+                log.info("Plex: plex.tv's list: %s", exc.problem.value)
+                self._notify()
+            except PlexError as exc:
+                log.info("Plex: plex.tv's list didn't come (%s)", type(exc).__name__)
+            finally:
+                if not listing.done():
+                    listing.cancel()
+
+        task = asyncio.create_task(finish(), name="plex-servers-behind")
+        self._behind.add(task)
+        task.add_done_callback(self._behind.discard)
+
+    async def _on_screen[T](self, what: str, call: Callable[[str, str], Awaitable[T]]) -> T:
+        """A call a person waits on, at the stored address (SCREEN_TIMEOUT is the call's own):
+        at once PlexUnreachable when Plex was found away less than FAIL_FAST_S ago; after a
+        call Plex didn't answer, the server is looked for once (`_reach`, at most
+        SCREEN_REACH_S) and the call made again only when it answered somewhere else (that
+        address is stored); else PlexUnreachable."""
+        if self._unreachable_at is not None and (
+            self._clock() - self._unreachable_at < timedelta(seconds=FAIL_FAST_S)
+        ):
+            raise PlexUnreachable(f"Plex didn't answer a moment ago ({what})")
+        uri, token = self._settings.current.plex_server_uri, self._token()
+        try:
+            return await call(uri, token)
+        except PlexUnreachable:
+            log.info("Plex %s: looking for the server again", what)
+        try:
+            async with asyncio.timeout(SCREEN_REACH_S):
+                found = await self._reach(token)
+        except PlexAuthError:
+            raise
+        except (PlexError, TimeoutError):  # away, or no server to be found
+            self._unreachable_at = self._clock()
+            log.info("Plex %s: the server wasn't found", what)
+            raise PlexUnreachable(f"Plex didn't answer ({what})") from None
+        if found == uri:  # it answers, but not this in time: no second wait, nor for a while
+            self._unreachable_at = self._clock()
+            raise PlexUnreachable(f"Plex didn't answer in time ({what})")
+        return await call(found, token)
 
     async def _answers(self, uri: str, machine_id: str, token: str) -> bool:
         try:
@@ -1292,10 +1645,8 @@ class PlexService:
 
     async def _read(self, uri: str, token: str) -> PlexScan:
         off = set(self._settings.current.plex_sections_off)
-        libraries = [
-            library.model_copy(update={"on": library.key not in off})
-            for library in await self._client.sections(uri, token)
-        ]
+        found, self._locations = await self._client.libraries(uri, token)
+        libraries = [library.model_copy(update={"on": library.key not in off}) for library in found]
         shows: list[PlexItemReply] = []
         episodes: list[PlexItemReply] = []
         films: list[PlexItemReply] = []

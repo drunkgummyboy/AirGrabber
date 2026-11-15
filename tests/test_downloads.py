@@ -31,10 +31,12 @@ from app.models import (
 )
 from app.services import Services
 from app.services.downloads import (
+    ITORRENTS_TIMEOUT,
     NO_REMOTE_FALLBACK,
     NO_TORRENT_APP,
     DownloadService,
     GrabError,
+    ReleaseError,
     prune_torrent_cache,
     safe_filename,
     watch_folder,
@@ -134,11 +136,13 @@ class FakeWeb:
         self.routes: dict[str, Any] = {}
         self.requests: Counter[str] = Counter()
         self.user_agents: list[str] = []
+        self.timeouts: dict[str, object] = {}  # URL -> the request's timeout extension
         self.gate: asyncio.Event | None = None
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         self.requests[url] += 1
+        self.timeouts[url] = request.extensions.get("timeout")
         self.user_agents.append(request.headers.get("User-Agent", ""))
         if self.gate is not None:
             await self.gate.wait()
@@ -318,6 +322,17 @@ class TorrentFileTests(DownloadTestCase):
         self.assertIs(result.outcome, GrabOutcome.SAVED)
         self.assertEqual(list(self.web.requests), [ITORRENTS])
 
+    async def test_itorrents_gets_a_short_timeout_of_its_own(self) -> None:
+        self.serve(DIRECT_URL, b"", status=500)
+        self.serve(ITORRENTS, CACHED)
+        await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(
+            self.web.timeouts[ITORRENTS], ITORRENTS_TIMEOUT.as_dict()
+        )
+        self.assertEqual(ITORRENTS_TIMEOUT, httpx.Timeout(4.0, connect=3.0))
+        # The indexer's own link keeps the shared client's timeouts.
+        self.assertEqual(self.web.timeouts[DIRECT_URL], self.http.timeout.as_dict())
+
     async def test_gzipped_cache_reply_is_unpacked(self) -> None:
         self.serve(ITORRENTS, gzip.compress(CACHED))
         result = await self.service.grab(release(), EPISODE)
@@ -391,7 +406,7 @@ class BrokenTorrentTests(DownloadTestCase):
     async def test_folder_mode_without_a_remote_program_fails(self) -> None:
         self.serve(DIRECT_URL, OTHER_TORRENT)
         self.serve(ITORRENTS, OTHER_TORRENT)
-        with self.assertRaises(GrabError) as caught:
+        with self.assertRaises(ReleaseError) as caught:
             await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
         self.assertEqual(str(caught.exception), NO_REMOTE_FALLBACK)
         self.assertEqual(self.watch_files(), [])
@@ -479,7 +494,7 @@ class RemoteFallbackTests(DownloadTestCase):
     async def test_nothing_cached_and_no_remote_program(self) -> None:
         # Download Station without an account doesn't count as set up.
         await self.settings.update(remote_url="http://192.168.1.20:5000")
-        with self.assertRaises(GrabError) as caught:
+        with self.assertRaises(ReleaseError) as caught:
             await self.service.grab(release(), EPISODE)
         self.assertEqual(str(caught.exception), NO_REMOTE_FALLBACK)
         self.assertEqual(await self.history(), [])
@@ -554,6 +569,7 @@ class FileNameTests(DownloadTestCase):
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(), EPISODE)
         self.assertIn(f"Can't write to the download folder {blocker}", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, ReleaseError)  # the folder's: no next pick
         self.assertIsNone(caught.exception.__context__)
         self.assertEqual(await self.history(), [])
         self.assertEqual(self.notifications, 0)
@@ -725,6 +741,7 @@ class AppModeTests(DownloadTestCase):
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
         self.assertEqual(str(caught.exception), NO_TORRENT_APP)
+        self.assertNotIsInstance(caught.exception, ReleaseError)
         self.assertIn('under "Where downloads go" in Settings.', NO_TORRENT_APP)
         self.assertEqual(sum(self.web.requests.values()), 0)
         self.assertEqual(self.opened, [])
@@ -867,7 +884,7 @@ class RemoteModeTests(DownloadTestCase):
     async def test_nothing_at_all_to_send(self) -> None:
         await self.set_up_remote()
         self.serve(DIRECT_URL, b"<html></html>")
-        with self.assertRaises(GrabError) as caught:
+        with self.assertRaises(ReleaseError) as caught:
             await self.service.grab(release(info_hash=None, download_url=DIRECT_URL), EPISODE)
         self.assertIn("No .torrent file or magnet link", str(caught.exception))
 

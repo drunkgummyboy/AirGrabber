@@ -28,12 +28,22 @@ from app.i18n import N_, t
 from app.models import RemoteKind, RemoteStatus, Settings
 
 USER_AGENT = f"{APP_NAME}/{__version__}"
+# The Downloads page's status calls (`RemoteStatusClient`): a NAS that hangs is given up on
+# soon, and the page says so (adding a grab keeps HttpClients' own, longer limit).
+STATUS_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
 # The Settings checkbox, for messages (through t(), as every message here).
 CERTIFICATE_SETTING = N_("Verify the certificate (https)")
 
 
 class RemoteError(Exception):
     """The remote torrent program isn't set up, can't be reached, or refused (user-facing)."""
+
+
+class ReleaseRefused(RemoteError):
+    """The remote program works but turned down this one release (qBittorrent's "Fails." /
+    409 / 415 on torrents/add, Transmission's torrent-add result): another release may go. A
+    one-click download tries its next pick; the automatic downloads move on to the next
+    episode, as for a ReleaseError (app/services/downloads.py)."""
 
 
 class RemoteClient(Protocol):
@@ -121,6 +131,7 @@ class HttpClients:
 
     No redirects: a redirected POST would lose its body, so a redirect is reported instead.
     SSL contexts are cached per setting and made off the loop (loading the CA bundle blocks).
+    `client(timeout=…)` overrides the time limit for one operation (STATUS_TIMEOUT).
     """
 
     def __init__(
@@ -139,12 +150,14 @@ class HttpClients:
         *,
         headers: Mapping[str, str] | None = None,
         auth: httpx.Auth | None = None,
+        timeout: httpx.Timeout | float | None = None,
     ) -> httpx.AsyncClient:
         all_headers = {"User-Agent": USER_AGENT, **(headers or {})}
+        limit = timeout if timeout is not None else self._timeout
         if self._transport is not None:
             return httpx.AsyncClient(
                 transport=self._transport,
-                timeout=self._timeout,
+                timeout=limit,
                 follow_redirects=False,
                 headers=all_headers,
                 auth=auth,
@@ -155,7 +168,7 @@ class HttpClients:
             self._ssl_contexts[verify] = context
         return httpx.AsyncClient(
             verify=context,
-            timeout=self._timeout,
+            timeout=limit,
             follow_redirects=False,
             headers=all_headers,
             auth=auth,
@@ -314,6 +327,18 @@ def byte_count(value: object) -> int | None:
     """A task's size in bytes (a number or a number in a string); None when unknown."""
     found = number(value)
     if found is None or found < 0 or found != found:  # NaN
+        return None
+    return int(found)
+
+
+NO_ETA = 8_640_000  # qBittorrent's "infinity" (100 days): a time left this long isn't known
+
+
+def seconds_left(value: object) -> int | None:
+    """A task's time left in seconds (qBittorrent's and Transmission's `eta`); None when not
+    known: negative (Transmission's -1 "not available", -2 "unknown") or NO_ETA and over."""
+    found = number(value)
+    if found is None or found < 0 or found != found or found >= NO_ETA:  # NaN
         return None
     return int(found)
 

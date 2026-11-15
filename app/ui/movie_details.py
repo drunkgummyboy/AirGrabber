@@ -214,8 +214,10 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._paint()
 
         self.masthead.reserve_hero(discovery.has_tmdb_key)
-        self._start(self._load_details(), "MovieDetailsWindow.details")
+        # The extras first: their one TMDB request then brings the details (and the release
+        # panel's) too, unless those are known already.
         self._start(self._load_extras(), "MovieDetailsWindow.extras")
+        self._start(self._load_details(), "MovieDetailsWindow.details")
         self.refresh_state()
         # Its releases are searched right away.
         self.open_releases(MovieTarget(movie), reveal=False)

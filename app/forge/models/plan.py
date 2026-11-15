@@ -58,6 +58,15 @@ class PlannedSubtitles(BaseModel, frozen=True):
     identity: SubtitleIdentity
 
 
+class PlannedAside(BaseModel, frozen=True):
+    """A copy in the library that file `item_id` replaces: moved aside (`target`, never inside
+    the library) right before that file's rename, with its subtitles; never deleted."""
+
+    item_id: int
+    source: Path
+    target: Path
+
+
 class PlannedLeftovers(BaseModel, frozen=True):
     """A download's folder to clear once all of these files have moved out of it."""
 
@@ -74,4 +83,5 @@ class Plan(BaseModel, frozen=True):
     clean_roots: tuple[Path, ...] = ()
     prune_dirs: tuple[Path, ...] = ()
     leftovers: tuple[PlannedLeftovers, ...] = ()
+    aside: tuple[PlannedAside, ...] = ()  # "Replace the one in the library": the copies there
     options: PresetOptions = PresetOptions()

@@ -16,7 +16,13 @@ import httpx
 
 from app.database import Database
 from app.models.plex import PlexTitle
-from app.services.plex import PlexClient, PlexError, PlexService, PlexUnreachable
+from app.services.plex import (
+    SCREEN_TIMEOUT,
+    PlexClient,
+    PlexError,
+    PlexService,
+    PlexUnreachable,
+)
 from tests.plex_link import TOKEN, plex_settings
 
 FIXTURES = Path(__file__).parent / "fixtures" / "plex"
@@ -90,11 +96,31 @@ class PositionTests(PlayingTestCase):
         self.assertEqual(video.duration_ms, 9000000)
         self.assertIsNone(video.intro)
         self.assertIsNone(video.credits_ms)
+        # Asked with its markers: the player needn't ask again (none here).
+        self.assertTrue(video.markers_known)
+        self.assertEqual(self.last().url.params["includeMarkers"], "1")
 
     async def test_episodes_without_a_position_start_at_zero(self) -> None:
         videos = await self.plex.show_videos(PlexTitle(kind="show", key="1001", title="The Ark"))
         self.assertTrue(videos)
         self.assertEqual({v.view_offset_ms for v in videos}, {0})
+
+
+class ScreenTests(PlayingTestCase):
+    async def test_a_screen_call_gives_up_after_eight_seconds(self) -> None:
+        # The calls a person waits on (▶ Play, the picker, the player's markers): 8 s, not 30.
+        self.assertEqual(SCREEN_TIMEOUT, httpx.Timeout(8.0, connect=3.0))
+        ark = PlexTitle(kind="show", key="1001", title="The Ark")
+        await self.plex.film_video("3001")
+        await self.plex.show_videos(ark)
+        await self.plex.episodes(ark)
+        await self.plex.markers("42")
+        asked = {
+            request.url.path: request.extensions["timeout"] for request in self.server.requests
+        }
+        for path in ("/library/metadata/3001", "/library/metadata/1001/allLeaves",
+                     "/library/metadata/42"):
+            self.assertEqual((asked[path]["read"], asked[path]["connect"]), (8.0, 3.0), path)
 
 
 class MarkerTests(PlayingTestCase):

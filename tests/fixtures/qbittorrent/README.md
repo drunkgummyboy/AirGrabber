@@ -11,7 +11,9 @@ server was called):
   failure_count, pending_count, added_torrent_ids; nothing added = HTTP 409 Conflict)
 - `torrents_info.json`: `GET /api/v2/torrents/info` (wiki "Get torrent list": a JSON array with
   `hash`, `infohash_v1` (v4.4+), `name`, `progress` 0…1 and `state`, e.g. downloading, queuedDL,
-  pausedDL, stoppedUP (v5 renamed paused* to stopped*), missingFiles), trimmed to a few keys
+  pausedDL, stoppedUP (v5 renamed paused* to stopped*), missingFiles), trimmed to a few keys; `dlspeed`
+  (bytes/s) and `eta` (seconds, 8640000 = infinity: not known) for the Downloads page's speed and
+  time left
 - `sync_maindata.json`: `GET /api/v2/sync/maindata` (wiki "Get main data": `server_state` with
   `free_space_on_disk` in bytes), trimmed
 

@@ -696,6 +696,16 @@ class MenuPositionTests(unittest.TestCase):
         # No room above either: below it stays.
         self.assertEqual(menu_position((500, 60, 40, 30), (200, 2000), self.WINDOW), (340, 92))
 
+    def test_above_first_for_a_player(self) -> None:
+        # Room above: above, though there is room below too.
+        self.assertEqual(menu_position((500, 600, 40, 30), (200, 80), self.WINDOW, above=True), (340, 518))
+        # No room above: below.
+        self.assertEqual(menu_position((500, 60, 40, 30), (200, 80), self.WINDOW, above=True), (340, 92))
+        # Room on neither side: pulled up until its bottom is within the bounds.
+        self.assertEqual(menu_position((500, 400, 40, 30), (200, 800), self.WINDOW, above=True), (340, 250))
+        # Taller than the bounds: from their top.
+        self.assertEqual(menu_position((500, 400, 40, 30), (200, 2000), self.WINDOW, above=True), (340, 50))
+
 
 class WidgetTests(unittest.TestCase):
     def setUp(self) -> None:

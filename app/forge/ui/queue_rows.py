@@ -24,6 +24,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
+from app.forge.core.auto import held_in_library
 from app.forge.core.formatter import name_file
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MediaKind
@@ -51,6 +52,10 @@ IGNORE = N_("Ignore")  # a band's menu: Auto-rename leaves the file (or its fold
 EXPLORER_ACTION = "explorer"  # every band's first button, a glyph with this tip
 EXPLORER_LABEL = "📂"
 OPEN_IN_EXPLORER = N_("Open in Explorer")
+# A band held as already in the library: the download takes the library copy's place, which
+# moves aside (QueueView.replace_band).
+REPLACE_ACTION = "replace"
+REPLACE_LABEL = N_("Replace the one in the library")
 STATE_WORDS: dict[State, str] = {
     "needs": NEEDS_YOU,
     "ready": READY,
@@ -358,6 +363,8 @@ def build_queue_rows(
             # before them all, below. Choose… on every band: any match can turn out wrong, also a
             # remembered one that looks settled.
             actions = (("ignore", t(IGNORE)), ("choose", t("Choose…")), ("rename", t("Rename")))
+            if any(held_in_library(i) for i in group):
+                actions = (*actions[:-1], (REPLACE_ACTION, t(REPLACE_LABEL)), actions[-1])
         actions = ((EXPLORER_ACTION, EXPLORER_LABEL), *actions)
         dest, dest_look = _destination(
             state,

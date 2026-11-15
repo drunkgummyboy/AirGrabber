@@ -299,6 +299,20 @@ class ActionTests(ConfirmCase):
         await task
         self.assertEqual(self.names(self.tmp / "m"), ["Dune (2021).mkv"])
 
+    async def test_a_run_waiting_for_the_lock_says_so(self) -> None:
+        set_language(Language.NL)
+        files = make_files(self.tmp / "m", ["Dune.2021.mkv"])
+        win = await self.open_window(files)
+        async with self.services.run_lock:  # the renamer's run
+            task = asyncio.create_task(win.rename())
+            await asyncio.sleep(0.2)
+            self.assertEqual(
+                win.result_label.cget("text"), "Wachten tot Automatisch hernoemen klaar is…"
+            )
+            self.assertTrue(win.result_label.winfo_manager())
+        await task
+        self.assertIn("1 hernoemd", win.result_label.cget("text"))
+
     async def test_clicking_a_tick_box_unticks_that_file(self) -> None:
         files = make_files(self.tmp / "m", ["Dune.2021.mkv", "Heat.1995.mkv"])
         win = await self.open_window(files)

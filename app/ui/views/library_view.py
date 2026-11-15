@@ -11,23 +11,33 @@ from the Plex server (`posters`: an ImageCache fetching through PlexService.post
 "3 seasons · 34 episodes" or the year and quality, an amber "2 gaps" pill and, for a show,
 "+ Follow" / "✓ Following" with a round phone button (a drawn phone: an emoji shows as a box
 there) while a phone is connected: the same PosterCard as the other pages' cards. A poster or title opens the show's window or the film's info window. PAGE_SIZE
-cards at first, "Show more" for the next ones: a library of a thousand films stays quick.
+cards at first, "Show more" adds the next ones below those shown (made once; a search, filter,
+sort or tab change makes them anew): a library of a thousand films stays quick.
+
+Above the tabs, "Continue watching" (app/ui/continue_watching.py): what Plex says to go on with
+(`continue_watching`, read at every load and whenever the page is shown again, and after the
+player stopped: `refresh_continue`), a click playing it where Plex left it (`play.resume`).
+Hidden when it is empty, when Plex isn't connected or when Plex didn't answer (one quiet log
+line). With a `play`, a card also offers "▶ Play" on hover (an accent pill drawn on its cover):
+a film plays at once, a show opens the episode picker.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 import customtkinter as ctk
+from PIL import ImageTk
 
 from app.i18n import N_, t
-from app.models.plex import PlexTitle
+from app.models.plex import PlexContinue, PlexTitle
 from app.services import ImageCache, SettingsService
-from app.services.plex import poster_url
+from app.services.plex import PlexError, poster_url
 from app.services.plex_library import (
     can_upgrade,
     FILM_FILTERS,
@@ -51,13 +61,17 @@ from app.services.plex_library import (
 from app.ui import theme
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import RoundButton, phone_icon
+from app.ui.continue_watching import ContinueRow
 from app.ui.download_control import CORNER_RADIUS as ROW_CORNER_RADIUS
 from app.ui.download_control import GAP as ROW_GAP
 from app.ui.missing_control import MISSING_COLOR
+from app.ui.play_control import PLAY_TEXT
 from app.ui.poster_card import (
     POSTER_CARD_WIDTH,
     PosterCard,
     TrackButton,
+    pill_image,
+    rgb,
     row_font_size,
     row_height,
 )
@@ -67,6 +81,8 @@ from app.ui.tasks import spawn
 from app.ui.tooltip import Tooltip
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, MessagePanel
+
+log = logging.getLogger(__name__)
 
 TITLE = N_("Library")
 SHOWS_TAB = N_("Shows")
@@ -91,6 +107,25 @@ SEARCH_HEIGHT = 34
 TAB_FONT_SIZE = 15
 COUNT_FONT_SIZE = 12
 UNDERLINE = 3  # the chosen tab's line
+HOVER_CHECK_MS = 60  # the pointer left the card or one of its parts: still on it by then?
+PLAY_AT = 0.42  # ▶ Play's place on the cover, from the card's top
+PLAY_PAD_X = 16  # ▶ Play's pill: its room left and right of the text (at the card's scale)
+PLAY_TAG = "play"  # ▶ Play's canvas items
+
+
+class LibraryPlay(Protocol):
+    """play_control's Play as the page uses it (tests pass fakes)."""
+
+    def resume(self, item: PlexContinue) -> None: ...
+
+    def film(self, title: PlexTitle) -> None: ...
+
+    def pick(self, master: Any, title: PlexTitle) -> object: ...
+
+    def close(self) -> None: ...
+
+
+ContinueSource = Callable[[], Awaitable[Sequence[PlexContinue]]]
 
 
 class KindTab(ctk.CTkFrame):
@@ -162,9 +197,11 @@ class LibraryCard(PosterCard):
         on_follow: Callable[[], object] | None = None,
         on_send: Callable[[], object] | None = None,
         on_upgrade: Callable[[], object] | None = None,
+        on_play: Callable[[], object] | None = None,
     ) -> None:
         """`on_send`: Send to phone (the round phone beside the main button, or a film's own
-        row); None: no phone to send to. `on_upgrade`: a film below 1080p's "⬆ Upgrade"."""
+        row); None: no phone to send to. `on_upgrade`: a film below 1080p's "⬆ Upgrade".
+        `on_play`: "▶ Play" over the cover while the pointer is on the card."""
         has_row = following is not None or on_send is not None or on_upgrade is not None
         url = poster_url(title)
         super().__init__(
@@ -181,6 +218,14 @@ class LibraryCard(PosterCard):
         self._set_open(on_open)
         if tag:
             self._set_badge(tag, MISSING_COLOR)
+        self._on_play: Callable[[], object] | None = None
+        self.play_items: tuple[int, int] | None = None  # ▶ Play's pill and text on the sheet
+        self._play_photo: ImageTk.PhotoImage | None = None
+        self._play_hot = False  # the pointer is on the pill
+        self._play_cursor = ""
+        self._play_on = False  # shown (its items' state)
+        if on_play is not None:
+            self._hover_play(on_play)
         self.follow_button: TrackButton | None = None
         self.send_button: ctk.CTkButton | RoundButton | None = None
         self.upgrade_button: ctk.CTkButton | None = None
@@ -237,6 +282,110 @@ class LibraryCard(PosterCard):
             )
             self.send_button.pack(fill="both", expand=True)
 
+    def _hover_play(self, on_play: Callable[[], object]) -> None:
+        """"▶ Play" drawn on the cover (an accent pill, as the Download row's filled buttons),
+        shown while the pointer is on the card; a click on it plays, not opens."""
+        self._on_play = on_play
+        canvas = self._sheet
+        self._play_font = theme.font(row_font_size(self.scale), bold=True)
+        self.play_items = (
+            canvas.create_image(0, 0, anchor="center", state="hidden", tags=(PLAY_TAG,)),
+            canvas.create_text(
+                0, 0, anchor="center", text=t(PLAY_TEXT), state="hidden", tags=(PLAY_TAG,)
+            ),
+        )
+        canvas.tag_bind(PLAY_TAG, "<Button-1>", self._play_pressed)
+        canvas.tag_bind(PLAY_TAG, "<Enter>", lambda _event: self._set_play_hot(True))
+        canvas.tag_bind(PLAY_TAG, "<Leave>", lambda _event: self._set_play_hot(False))
+        self._follow_scale(self._draw_play)  # a new scaling, light ↔ dark
+        self._draw_play()
+        # The card's own frame: leaving through the action row, or the page scrolled under the
+        # pointer, reaches it too.
+        tk.Misc.bind(self, "<Enter>", lambda _event: self.hover(True), "+")
+        tk.Misc.bind(self, "<Leave>", lambda _event: self.after(HOVER_CHECK_MS, self._left), "+")
+        canvas.bind("<Enter>", lambda _event: self.hover(True), add="+")
+
+    def _draw_play(self) -> None:
+        """The pill at the card's scaling and in the current light / dark colours."""
+        if self.play_items is None:
+            return
+        canvas, scaling, scale = self._sheet, self.scaling, self.scale
+        text = t(PLAY_TEXT)
+        width = self._play_font.measure(text) + 2 * scale.px(PLAY_PAD_X)
+        size = (max(1, round(width * scaling)), max(1, round(row_height(scale) * scaling)))
+        fill = rgb(self, theme.ACCENT_HOVER if self._play_hot else theme.ACCENT)
+        self._play_photo = ImageTk.PhotoImage(pill_image(size, 1, fill, fill), master=canvas)
+        x = round(self._units[0] * scaling) / 2
+        y = round(self._units[1] * scaling * PLAY_AT)
+        image, label = self.play_items
+        canvas.coords(image, x, y)
+        canvas.itemconfigure(image, image=self._play_photo)
+        canvas.coords(label, x, y)
+        canvas.itemconfigure(
+            label, font=self._play_font.create_scaled_tuple(scaling),
+            fill=theme.pick(theme.ON_ACCENT),
+        )
+
+    @property
+    def play_shown(self) -> bool:
+        """▶ Play is on the cover (the pointer is on the card)."""
+        return self._play_on
+
+    def hover(self, inside: bool) -> None:
+        """Show or hide "▶ Play" (the pointer came onto the card or left it)."""
+        items = self.play_items
+        if items is None:
+            return
+        if not inside:
+            self._set_play_hot(False)
+        self._play_on = inside
+        for item in items:
+            self._sheet.itemconfigure(item, state="normal" if inside else "hidden")
+        if inside:
+            self._sheet.tag_raise(PLAY_TAG)
+
+    def _set_play_hot(self, hot: bool) -> None:
+        """The pointer on the pill: the hand and the accent's hover colour."""
+        if hot == self._play_hot:
+            return
+        self._play_hot = hot
+        canvas = self._sheet
+        if hot:
+            self._play_cursor = str(canvas.cget("cursor"))
+            canvas.configure(cursor="hand2")
+        else:
+            canvas.configure(cursor=self._play_cursor)
+        self._draw_play()
+
+    def _over_play(self) -> bool:
+        items = self.play_items
+        if items is None or not self.play_shown:
+            return False
+        return bool(set(self._sheet.find_withtag("current")) & set(items))
+
+    def _play_pressed(self, _event: Any = None) -> None:
+        if self._on_play is not None and self.play_shown:
+            self._on_play()
+
+    def _clicked(self, event: Any) -> None:
+        """A click on the cover opens the title, except on ▶ Play (its own tag binding)."""
+        if self._over_play():
+            return
+        super()._clicked(event)
+
+    def _left(self) -> None:
+        """The pointer left the card or one of its parts: ▶ Play goes once it is off the card."""
+        try:
+            if not self.winfo_exists():
+                return
+            x, y = self.winfo_pointerxy()
+            left, top = self.winfo_rootx(), self.winfo_rooty()
+            inside = left <= x < left + self.winfo_width() and top <= y < top + self.winfo_height()
+        except tk.TclError:
+            return
+        if not inside:
+            self.hover(False)
+
     def set_following(self, following: bool) -> None:
         if self.follow_button is not None:
             self.follow_button.set_state("tracked" if following else "idle")
@@ -269,12 +418,16 @@ class LibraryView(BaseView):
         can_send: Callable[[], bool] = lambda: False,
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_checked: Callable[[str], None] = lambda text: None,
+        continue_watching: ContinueSource | None = None,
+        play: LibraryPlay | None = None,
         **kwargs: Any,
     ) -> None:
         """`on_open_show(title)`: opens the show's window; False when TVmaze knows none.
         `on_open_film(title)`: the film's info window. `on_send(title)`: the Send to phone
         window, on the cards while `can_send()` (a phone is connected), read at every render.
-        `on_checked(text)`: "From Plex · checked 08:53" after every load (the footer's)."""
+        `on_checked(text)`: "From Plex · checked 08:53" after every load (the footer's).
+        `continue_watching()`: the Continue watching row's items (None: no row; raises
+        PlexError); `play`: ▶ Play (the row's cards, the cards' hover button; None: neither)."""
         super().__init__(master, **kwargs)
         self._service = service
         self._posters = posters
@@ -287,6 +440,9 @@ class LibraryView(BaseView):
         self._can_send = can_send
         self._card_scale = card_scale
         self._on_checked = on_checked
+        self._continue_watching = continue_watching
+        self._play = play
+        self._continue_task: asyncio.Task[None] | None = None
         self.checked_text = ""
         self._contents = LibraryContents()
         self._kind = LibraryKindTab.SHOWS
@@ -298,7 +454,7 @@ class LibraryView(BaseView):
         self.cards: list[LibraryCard] = []
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(4, weight=1)
         # "Library" and the search box.
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=15, pady=(5, 0))
@@ -314,9 +470,15 @@ class LibraryView(BaseView):
         self.search.grid(row=0, column=2, sticky="e")
         self.search.bind("<KeyRelease>", self._search_typed, add="+")
 
+        # Continue watching, above the tabs: hidden until Plex names something.
+        self.continue_row = ContinueRow(self, posters=posters, on_play=self._resume)
+        self.continue_row.grid(row=1, column=0, sticky="ew", padx=15, pady=(8, 0))
+        self.continue_row.grid_remove()
+
         # The Shows and Films tabs on a thin line.
         tabs = ctk.CTkFrame(self, fg_color="transparent")
-        tabs.grid(row=1, column=0, sticky="ew", padx=15, pady=(6, 0))
+        tabs.grid(row=2, column=0, sticky="ew", padx=15, pady=(6, 0))
+        self.kind_tabs_row = tabs
         tabs.grid_columnconfigure(2, weight=1)
         self.kind_tabs: dict[LibraryKindTab, KindTab] = {}
         kinds = ((LibraryKindTab.SHOWS, SHOWS_TAB), (LibraryKindTab.FILMS, FILMS_TAB))
@@ -331,7 +493,7 @@ class LibraryView(BaseView):
 
         # The filters as chips, Sort ▾ at the right.
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=2, column=0, sticky="ew", padx=15, pady=(12, 10))
+        bar.grid(row=3, column=0, sticky="ew", padx=15, pady=(12, 10))
         bar.grid_columnconfigure(0, weight=1)
         self._chip_font = theme.font(CHIP_FONT_SIZE)
         self._chip_row = ctk.CTkFrame(bar, fg_color="transparent")
@@ -354,9 +516,12 @@ class LibraryView(BaseView):
         self.sort_menu.pack(side="left")
 
         self._body = ScrollableFrame(self, fg_color="transparent")
-        self._body.grid(row=3, column=0, sticky="nsew", padx=15, pady=(0, 5))
+        self._body.grid(row=4, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._body.grid_columnconfigure(0, weight=1)
         self._grid: FlexGrid | None = None
+        # What the grid shows from (the last render's search, filter and sort) and its size.
+        self._items: Sequence[LibraryShow | PlexTitle] = ()
+        self._scale = FULL
         self.more_button: ctk.CTkButton | None = None
         self._message: MessagePanel | ctk.CTkLabel | None = None
 
@@ -446,12 +611,45 @@ class LibraryView(BaseView):
         self.checked_text = checked_text(contents.checked_at)
         self._on_checked(self.checked_text)
         self._render()
+        self.refresh_continue()
+
+    def refresh_if_stale(self) -> None:
+        """The page is shown: loaded when stale (the row with it), else only the row read
+        again (what was watched elsewhere meanwhile)."""
+        if self.is_stale():
+            super().refresh_if_stale()
+        else:
+            self.refresh_continue()
+
+    def refresh_continue(self) -> None:
+        """Read Continue watching again (a read under way is dropped for this one)."""
+        if self._continue_task is not None:
+            self._continue_task.cancel()
+        source = self._continue_watching
+        if source is None:
+            self.continue_row.show(())
+            return
+        self._continue_task = spawn(self._load_continue(source), name="LibraryView.continue")
+
+    async def _load_continue(self, source: ContinueSource) -> None:
+        try:
+            items: Sequence[PlexContinue] = await source()
+        except PlexError as exc:
+            log.info("Library: Continue watching didn't read (%s)", type(exc).__name__)
+            items = ()
+        if self.winfo_exists():
+            self.continue_row.show(items)
+
+    def _resume(self, item: PlexContinue) -> None:
+        if self._play is not None:
+            self._play.resume(item)
 
     def _clear(self) -> None:
         for child in self._body.winfo_children():
             child.destroy()
         self.cards = []
         self._grid = None
+        self._items = ()
         self.more_button = None
         self._message = None
 
@@ -476,16 +674,32 @@ class LibraryView(BaseView):
             )
             self._message.grid(row=0, column=0, pady=40)
             return
-        page: Sequence[LibraryShow | PlexTitle]
-        page, more = page_slice(items, self._shown)
         item_width = grid_item_width(POSTER_CARD_WIDTH, scale)  # as every page's poster cards
         grid = FlexGrid(self._body, item_width=item_width, pad_x=8, pad_y=10)
         grid.grid(row=0, column=0, sticky="ew")
         self._grid = grid
-        for item in page:
-            self.cards.append(self._card(grid, item, scale))
-        grid.relayout()
-        if more:
+        self._items = items
+        self._scale = scale
+        self._add_cards(0)
+
+    def _add_cards(self, start: int) -> None:
+        """Cards for the shown items from `start` on, into the grid as it is, and "Show more"
+        for the rest (gone when nothing is left)."""
+        grid = self._grid
+        if grid is None:
+            return
+        page: Sequence[LibraryShow | PlexTitle]
+        page, more = page_slice(self._items, self._shown)
+        for item in page[start:]:
+            self.cards.append(self._card(grid, item, self._scale))
+        grid.relayout()  # re-grids the cards already there, never makes them again
+        if not more:
+            if self.more_button is not None:
+                self.more_button.destroy()
+                self.more_button = None
+        elif self.more_button is not None:
+            self.more_button.configure(text=t(MORE_TEXT, n=more))
+        else:
             self.more_button = ctk.CTkButton(
                 self._body, text=t(MORE_TEXT, n=more), width=200, fg_color="transparent",
                 border_width=1, border_color=theme.EDGE, hover_color=theme.HOVER,
@@ -495,6 +709,7 @@ class LibraryView(BaseView):
 
     def _card(self, grid: FlexGrid, item: LibraryShow | PlexTitle, scale: CardScale) -> LibraryCard:
         send = self._on_send if self._on_send is not None and self._can_send() else None
+        play = self._play
         if isinstance(item, LibraryShow):
             title = item.title
             card = LibraryCard(
@@ -502,6 +717,7 @@ class LibraryView(BaseView):
                 tag=gaps_text(item.gaps), following=item.following,
                 on_open=lambda: self._open_show(title),
                 on_send=(lambda: send(title)) if send is not None else None,
+                on_play=(lambda: play.pick(self.winfo_toplevel(), title)) if play else None,
             )
             if card.follow_button is not None:
                 card.follow_button.configure(command=lambda: self._follow(card, item))
@@ -515,13 +731,15 @@ class LibraryView(BaseView):
             on_open=lambda: self._on_open_film(item),
             on_send=(lambda: send(item)) if send is not None else None,
             on_upgrade=(lambda: upgrade(item)) if upgrade is not None else None,
+            on_play=(lambda: play.film(item)) if play is not None else None,
         )
 
     def show_more(self) -> None:
-        self._shown += PAGE_SIZE
-        top = self._body._parent_canvas.yview()[0]  # noqa: SLF001 - keep the place
-        self._render()
-        self.after_idle(lambda: self._body._parent_canvas.yview_moveto(top))  # noqa: SLF001
+        """The next PAGE_SIZE cards below those shown, which stay as they are (and so does the
+        scrolled place). A search, filter, sort or tab change starts over (`_render`)."""
+        start = len(self.cards)
+        self._shown = start + PAGE_SIZE
+        self._add_cards(start)
 
     # -- actions -------------------------------------------------------------------------------
 
@@ -563,6 +781,10 @@ class LibraryView(BaseView):
     def destroy(self) -> None:
         for task in list(self._tasks):
             task.cancel()
+        if self._continue_task is not None:
+            self._continue_task.cancel()
+        if self._play is not None:
+            self._play.close()
         if self._search_job is not None:
             self.after_cancel(self._search_job)
             self._search_job = None

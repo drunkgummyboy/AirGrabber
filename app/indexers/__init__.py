@@ -7,7 +7,7 @@ from collections.abc import Callable
 import httpx
 
 from app.indexers.apibay import ApibayIndexer
-from app.indexers.base import USER_AGENT, BaseIndexer, IndexerError
+from app.indexers.base import USER_AGENT, BaseIndexer, IndexerError, IndexerUnavailable
 from app.indexers.bitsearch import BitsearchIndexer
 from app.indexers.eztv import EztvIndexer
 from app.indexers.prowlarr import ProwlarrIndexer
@@ -37,6 +37,7 @@ __all__ = [
     "BitsearchIndexer",
     "EztvIndexer",
     "IndexerError",
+    "IndexerUnavailable",
     "ProwlarrIndexer",
     "YtsIndexer",
     "default_indexers",

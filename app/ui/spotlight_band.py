@@ -73,6 +73,7 @@ from app.ui.backdrop import (
 from app.ui.branding import load_logo
 from app.ui.icons import phone_icon, sliders_icon
 from app.ui.people import avatar_image
+from app.ui.plain_popup import PlainPopup
 from app.ui.poster_card import rgb
 from app.ui.spotlight import (
     BADGE_HEIGHT,
@@ -1429,7 +1430,7 @@ class _Tip:
 
     def _build(self) -> None:
         bg = theme.pick(theme.BG)
-        top = tk.Toplevel(self._owner, bg=bg, takefocus=False)
+        top = PlainPopup(self._owner, bg=bg, takefocus=False)
         top.withdraw()
         top.overrideredirect(True)
         try:

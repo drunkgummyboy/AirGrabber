@@ -45,6 +45,7 @@ from app.models import (
     AutoMovieGaveUp,
     CalendarEntry,
     DownloadEntry,
+    GivenUp,
     GrabTarget,
     MediaType,
     Movie,
@@ -99,6 +100,7 @@ from app.single_instance import ForgeRequest
 from app.ui.forge_link import Mailbox, QuitGate, RequestPump, quits_after_forge
 from app.ui.media_player import MediaPlayerHost, forge_subtitles
 from app.ui.play_control import STATUS_MS as _PLAY_STATUS_MS
+from app.ui.play_control import Play
 from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_search
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
@@ -291,6 +293,7 @@ def update_notice(last_run_version: str, running: str) -> str | None:
 
 _SWITCHED_STATUS_MS = 6_000  # "Now showing …'s list" after a switch
 _AUTO_STATUS_MS = 10_000  # how long an automatic download's line stays in the status bar
+_GIVEN_UP_STATUS_MS = 60_000  # a give-up's line, with its "Show"
 _OLD_FORGE_STATUS_MS = 15_000  # the old MediaForge's notice and its removal's outcome
 _FORGE_STATUS_MS = 10_000  # what MediaForge's queue says (a run's summary, "Put back 1 file")
 AUTO_ERROR_INTERVAL_S = 3600.0  # at most one "Automatic download didn't work" per hour
@@ -624,6 +627,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             # main.py --tray: only the tray icon shows; a start for Forge: what its request shows;
             # a start for a file to play: only the player.
             self.withdraw()
+        else:
+            # Always full-size (the owner's wish, 2026-11-15); `_place`'s size is what Windows'
+            # Restore button gives. Not yet mapped: Tk keeps it for the first showing.
+            self.state("zoomed")
 
     def async_mainloop(self, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
         loop = event_loop or asyncio.new_event_loop()
@@ -787,8 +794,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
             discovery=discovery,
             on_open_show=self._show_windows.open_show,
             on_open_film=self._movie_windows.open_movie_id,
-            actions=PageActions(again=self._download_entry_again),
+            actions=PageActions(again=self._download_entry_again, choose=self._choose_given_up),
             queue=self._services.download_queue,  # its waiting downloads at the top
+            given_up=self._services.given_up,  # "Couldn't find automatically" at the bottom
         )
         # What is in Plex (the switch's Library part, only while Plex is connected).
         self._library_view = LibraryView(
@@ -804,7 +812,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
             can_send=self._can_send_to_phone,
             card_scale=self._card_scale,
             on_checked=self._show_library_checked,
+            # Continue watching above the tabs, and ▶ Play on its cards and on hover.
+            continue_watching=self._services.plex_library.continue_watching,
+            play=Play(self._services.playback, self.player, self.set_status),
         )
+        # A video stopped (or was marked watched) in the player: Plex's row changes.
+        self.player.on_stopped = self._on_player_stopped
         # MediaForge's page goes in here at its first visit (ForgeHost.open).
         self._forge_holder = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
 
@@ -816,8 +829,24 @@ class MainWindow(AsyncCTk, ctk.CTk):
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 6))
         bar.grid_columnconfigure(0, weight=1)
-        self._status = ctk.CTkLabel(bar, text="", font=theme.font(12), text_color=theme.TEXT_MUTED)
-        self._status.grid(row=0, column=0)
+        line = ctk.CTkFrame(bar, fg_color="transparent")  # the message and its action
+        line.grid(row=0, column=0)
+        self._status = ctk.CTkLabel(line, text="", font=theme.font(12), text_color=theme.TEXT_MUTED)
+        self._status.pack(side="left")
+        # A message's action ("Show", `set_status(action=)`), while that message shows.
+        self._status_action = ctk.CTkButton(
+            line,
+            text="",
+            width=0,
+            height=22,
+            corner_radius=6,
+            font=theme.font(12, bold=True),
+            fg_color="transparent",
+            hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
+            border_width=1,
+            border_color=theme.EDGE,
+        )
         self._version_label = ctk.CTkLabel(
             bar, text=f"v{__version__}", font=theme.font(11), text_color=theme.EDGE
         )
@@ -832,6 +861,12 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._plex_loader.grid(row=0, column=2, sticky="e", padx=(0, 12))
         self._plex_loader.grid_remove()
         self._version_tip = add_tooltip(self._version_label, "")  # the update badge's
+
+    def _on_player_stopped(self) -> None:
+        """Plex took a stopped video: the Library page's Continue watching read again while it
+        is on screen (else it is read when the page shows)."""
+        if self._mode is Mode.LIBRARY:
+            self._library_view.refresh_continue()
 
     def _show_library_checked(self, text: str | None = None) -> None:
         """The footer's "From Plex · checked …": its words (`text`, from the Library page's
@@ -1002,6 +1037,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self._services.library.run_periodic_sync(progress=self._on_sync_progress),
             name="library-sync",
         )
+        # The downloads that waited at the last quit (an update's restart too) queue again.
+        spawn(self._services.download_queue.restore(), name="download-queue-restore")
         # Its events arrive in _on_auto_event.
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
         # What is in Plex: checked now, then every 30 minutes (a change reloads the pages).
@@ -1207,8 +1244,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _on_auto_event(self, event: AutoEvent) -> None:
         """Tell the user what the automatic downloads did: a tray notification, plus the status
-        bar for a download (an episode or a watchlist film); only the status bar when there is
-        no tray icon."""
+        bar for a download (an episode or a watchlist film) and for a give-up (with "Show": the
+        Downloads page's "Couldn't find automatically"); only the status bar when there is no
+        tray icon."""
         if not self._auto_throttle.allow(event):
             log.info("Automatic-download error not shown again within the hour")
             return
@@ -1216,8 +1254,31 @@ class MainWindow(AsyncCTk, ctk.CTk):
         tray_running = self.tray.running
         if tray_running:
             self.tray.notify(notice.title, notice.body)
-        if not tray_running or isinstance(event, (AutoDownloaded, AutoMovieDownloaded)):
+        if isinstance(event, (AutoGaveUp, AutoMovieGaveUp)):
+            self._report_given_up(notice.status)
+        elif not tray_running or isinstance(event, (AutoDownloaded, AutoMovieDownloaded)):
             self._report(notice.status, _AUTO_STATUS_MS)
+
+    def _report_given_up(self, text: str) -> None:
+        """A give-up's line in the status bar, with "Show"."""
+        try:
+            self.set_status(
+                text, clear_after_ms=_GIVEN_UP_STATUS_MS, action=(t("Show"), self._show_given_up)
+            )
+        except tk.TclError:
+            pass  # window already destroyed
+
+    def _show_given_up(self) -> None:
+        """The Downloads page at "Couldn't find automatically"."""
+        self._select_mode(Mode.DOWNLOADS)
+        self._downloads_view.show_given_up()
+
+    def _choose_given_up(self, item: GivenUp) -> None:
+        """"Couldn't find automatically"'s Choose…: the episode's or film's releases."""
+        if item.episode is not None:
+            self._search_episode(item.episode)
+        elif item.movie is not None:
+            self._grab_movie(item.movie)
 
     async def _film_in_plex(self, movie_id: int, imdb_id: str | None) -> bool:
         """Whether a film is in Plex (its window's quiet ✓)."""
@@ -1949,14 +2010,38 @@ class MainWindow(AsyncCTk, ctk.CTk):
         if self._status_job is None:
             self._status.configure(text=self._idle_status)
 
-    def set_status(self, text: str, *, clear_after_ms: int | None = None) -> None:
-        """Show a message; with `clear_after_ms`, fall back to the library summary afterwards."""
+    def set_status(
+        self,
+        text: str,
+        *,
+        clear_after_ms: int | None = None,
+        action: tuple[str, Callable[[], None]] | None = None,
+    ) -> None:
+        """Show a message; with `clear_after_ms`, fall back to the library summary afterwards.
+        `action`: a button beside it (its text, what it does), until the next message."""
         if self._status_job is not None:
             self.after_cancel(self._status_job)
             self._status_job = None
         self._status.configure(text=text)
+        self._show_status_action(action)
         if clear_after_ms is not None:
             self._status_job = self.after(clear_after_ms, self._restore_status)
+
+    def _show_status_action(self, action: tuple[str, Callable[[], None]] | None) -> None:
+        button = self._status_action
+        if action is None:
+            button.pack_forget()
+            return
+        text, command = action
+
+        def clicked() -> None:
+            if self._status_job is not None:
+                self.after_cancel(self._status_job)
+            self._restore_status()  # the message has done its job
+            command()
+
+        button.configure(text=text, command=clicked)
+        button.pack(side="left", padx=(10, 0))
 
     def _on_sync_progress(self, p: SyncProgress) -> None:
         try:
@@ -1970,6 +2055,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     def _restore_status(self) -> None:
         self._status_job = None
         self._status.configure(text=self._idle_status)
+        self._status_action.pack_forget()
 
     # -- error reporting ---------------------------------------------------------------------
 

@@ -23,15 +23,18 @@ NOT_FOUND ("never picked it up"). The ⋯ menu's pause / resume / remove and "Cl
 (`pause`, `resume`, `remove`, `clear_finished`) show at once (`_Pending` over the last check)
 and are confirmed by the next check; a failure puts the rows back and returns the plain reason.
 AirGrabber's qBittorrent on this PC isn't asked by a background check that has nothing to ask
-about (asking starts it).
+about (asking starts it). Before the first check is done the page lists what the history knows
+(`from_history`: the grabs without progress, `DownloadsOverview.checking`), so a program that is
+slow to answer never keeps the page empty; its status calls have remote.py's STATUS_TIMEOUT.
 
 Free space: `shutil.disk_usage` of "Where finished downloads end up" (`subtitles_folder`), else
 of the watch folder in FOLDER mode (with a films folder of its own, the fuller of the two), in a
-worker thread with a time limit (a share that doesn't
-answer never blocks the loop, and no second check starts while one hangs); else what
-qBittorrent / Transmission report. Below LOW_SPACE_BYTES, or below LOW_SPACE_FRACTION while
-also below LOW_SPACE_CAP_BYTES (a big disk with plenty of room never warns), the space is
-low: the page shows a banner and `subscribe_space` listeners hear it at most once a day.
+worker thread (a share that doesn't answer never blocks the loop, and no second check starts
+while one hangs); else what qBittorrent / Transmission report; all of it within SPACE_LIMIT_S,
+measured while the program is asked for its tasks (a check waits for the slower of the two).
+Below LOW_SPACE_BYTES, or below LOW_SPACE_FRACTION while also below LOW_SPACE_CAP_BYTES (a big
+disk with plenty of room never warns), the space is low: the page shows a banner and
+`subscribe_space` listeners hear it at most once a day.
 
 The page can take grabs off its list ("Clear finished", "Remove from list": `clear`): marked in
 the database (HistoryRepository.clear), never deleted from the history and never their files.
@@ -119,7 +122,8 @@ AFTER_GRAB_S = 5.0  # a grab: look again this soon (the program has the task by 
 START_DELAY_S = 20.0  # the first check, once the pages have loaded
 SPACE_INTERVAL_S = 6 * 3600.0  # free space while the page is hidden
 SPACE_VISIBLE_INTERVAL_S = 5 * 60.0  # free space while the page shows
-SPACE_TIMEOUT_S = 20.0  # a share that takes longer counts as out of reach this time
+SPACE_LIMIT_S = 8.0  # free space, share and program together: unknown this time if longer
+SPACE_TIMEOUT_S = 20.0  # a scan of the finished-downloads folder ("Open the folder") at most
 NOTICE_INTERVAL_S = 24 * 3600.0  # the status-bar notice about low space: once a day
 LOW_SPACE_FRACTION = 0.05
 GIB = 1024**3
@@ -700,6 +704,7 @@ class DownloadStatusService:
         self._space: FreeSpace | None = None
         self._space_at: float | None = None
         self._disk_job: asyncio.Future[tuple[DiskUsage, bool]] | None = None
+        self._asking_program = False  # the free space being measured is the program's report
         self._noticed_at: float | None = None
 
     # -- listeners ---------------------------------------------------------------------------
@@ -763,80 +768,117 @@ class DownloadStatusService:
             self._check_task = task
         return await asyncio.shield(task)
 
-    async def _check(self) -> DownloadsOverview:
-        self._check_seq += 1
-        seq = self._check_seq
-        settings = self._settings.current  # one snapshot for the whole check
-        now = self._now()
+    async def from_history(self) -> DownloadsOverview:
+        """What the page lists before the first check is done: the recent grabs as the history
+        has them (titles, where MediaForge moved them), without progress and without asking
+        the program or a share; `checking` while a program is being asked. Not told to the
+        listeners (the check that follows is)."""
+        settings = self._settings.current
+        records = await self._recent(self._now())
+        shows = await self._shows(
+            record.media_id for record in records if record.media_type is MediaType.TV
+        )
+        moved = await self._moved(records, (), settings, shows)
+        unknown = entry_state(None, expected=False, asked=False)
+        entries = []
+        for record in records:
+            outcome, via = grab_outcome(record.saved_path, settings.download_mode)
+            entries.append(self._entry(record, outcome, via, unknown, None, shows, moved))
+        program = progress_program(settings)
+        return DownloadsOverview(
+            entries=tuple(entries),
+            program=program,
+            space=self._space,
+            checked_at=self._now(),
+            checking=bool(program),
+        )
+
+    async def _recent(self, now: datetime) -> list[DownloadRecord]:
+        """The grabs the page lists: of the last 30 days, at most RECENT_LIMIT, none taken off."""
         since = now - RECENT
-        records = [
+        return [
             record
             for record in await self._history.listed(RECENT_LIMIT)
             if record.downloaded_at >= since
             and record.id is not None
             and record.id not in self._cleared
         ]
+
+    async def _check(self) -> DownloadsOverview:
+        self._check_seq += 1
+        seq = self._check_seq
+        settings = self._settings.current  # one snapshot for the whole check
+        now = self._now()
+        records = await self._recent(now)
         outcomes = [grab_outcome(record.saved_path, settings.download_mode) for record in records]
         expected = [
             expected_in_program(outcome, program, settings) for outcome, program in outcomes
         ]
         program = progress_program(settings)
         asked = [index for index, wanted in enumerate(expected) if wanted]
-        status, problem = await self._status(program, expected=bool(asked))
-        synced = status is not None
-        matches: dict[int, RemoteTask] = {}
-        older: list[tuple[DownloadRecord, RemoteTask]] = []
-        added: list[RemoteTask] = []
-        if status is not None:
-            found = match_tasks([records[index] for index in asked], status.tasks)
-            matches = {asked[position]: task for position, task in found.items()}
-            older, added = await self._match_older(records, status.tasks, matches.values())
-        pickup, hidden = await self._sync_marks(records, asked, matches, older, now, synced)
-        shown = [(index, record) for index, record in enumerate(records) if record.id not in hidden]
-        everything = [record for _, record in shown] + [record for record, _ in older]
-        shows = await self._shows(
-            record.media_id for record in everything if record.media_type is MediaType.TV
-        )
-        moved = await self._moved([record for _, record in shown], older, settings, shows)
-        entries = []
-        for index, record in shown:
-            outcome, via = outcomes[index]
-            task = matches.get(index)
-            if task is None and record.id in pickup:
-                base: tuple[DownloadState, float | None] = (pickup[record.id], None)
-            else:
-                base = entry_state(task, expected=expected[index], asked=synced)
-            entries.append(self._entry(record, outcome, via, base, task, shows, moved))
-        for record, task in older:
-            outcome, via = grab_outcome(record.saved_path, settings.download_mode)
-            base = (task.state, task.progress)
-            entries.append(self._entry(record, outcome, via, base, task, shows, moved))
-        tasks = await self._added_tasks(added, shows)
-        space, fresh = await self._free_space(settings)
-        overview = DownloadsOverview(
-            entries=tuple(entries),
-            tasks=tasks,
-            program=program,
-            problem=problem,
-            space=space,
-            checked_at=self._now(),
-            synced=synced,
-            on_this_pc=synced and self._remote.on_this_pc,
-            removes_partial=synced and settings.remote_kind is RemoteKind.SYNOLOGY,
-        )
-        # An action confirmed by a check that started after it finished: the program's word.
-        for task_id, pending in list(self._pending.items()):
-            if pending.done_seq is not None and seq > pending.done_seq:
-                del self._pending[task_id]
-        self._raw = overview
-        self._publish()
-        if fresh and space is not None and space.low:
-            clock = self._clock()
-            if self._noticed_at is None or clock - self._noticed_at >= NOTICE_INTERVAL_S:
-                self._noticed_at = clock
-                _tell(self._space_listeners, space)
-        assert self.latest is not None
-        return self.latest
+        # Free space alongside the program's answer: a hanging NAS and share cost one wait.
+        space_job = asyncio.ensure_future(self._free_space(settings))
+        try:
+            status, problem = await self._status(program, expected=bool(asked))
+            synced = status is not None
+            matches: dict[int, RemoteTask] = {}
+            older: list[tuple[DownloadRecord, RemoteTask]] = []
+            added: list[RemoteTask] = []
+            if status is not None:
+                found = match_tasks([records[index] for index in asked], status.tasks)
+                matches = {asked[position]: task for position, task in found.items()}
+                older, added = await self._match_older(records, status.tasks, matches.values())
+            pickup, hidden = await self._sync_marks(records, asked, matches, older, now, synced)
+            shown = [
+                (index, record) for index, record in enumerate(records) if record.id not in hidden
+            ]
+            everything = [record for _, record in shown] + [record for record, _ in older]
+            shows = await self._shows(
+                record.media_id for record in everything if record.media_type is MediaType.TV
+            )
+            moved = await self._moved([record for _, record in shown], older, settings, shows)
+            entries = []
+            for index, record in shown:
+                outcome, via = outcomes[index]
+                task = matches.get(index)
+                if task is None and record.id in pickup:
+                    base: tuple[DownloadState, float | None] = (pickup[record.id], None)
+                else:
+                    base = entry_state(task, expected=expected[index], asked=synced)
+                entries.append(self._entry(record, outcome, via, base, task, shows, moved))
+            for record, task in older:
+                outcome, via = grab_outcome(record.saved_path, settings.download_mode)
+                base = (task.state, task.progress)
+                entries.append(self._entry(record, outcome, via, base, task, shows, moved))
+            tasks = await self._added_tasks(added, shows)
+            space, fresh = await space_job
+            overview = DownloadsOverview(
+                entries=tuple(entries),
+                tasks=tasks,
+                program=program,
+                problem=problem,
+                space=space,
+                checked_at=self._now(),
+                synced=synced,
+                on_this_pc=synced and self._remote.on_this_pc,
+                removes_partial=synced and settings.remote_kind is RemoteKind.SYNOLOGY,
+            )
+            # An action confirmed by a check that started after it finished: the program's word.
+            for task_id, pending in list(self._pending.items()):
+                if pending.done_seq is not None and seq > pending.done_seq:
+                    del self._pending[task_id]
+            self._raw = overview
+            self._publish()
+            if fresh and space is not None and space.low:
+                clock = self._clock()
+                if self._noticed_at is None or clock - self._noticed_at >= NOTICE_INTERVAL_S:
+                    self._noticed_at = clock
+                    _tell(self._space_listeners, space)
+            assert self.latest is not None
+            return self.latest
+        finally:
+            if not space_job.done():
+                space_job.cancel()
 
     def _entry(
         self,
@@ -1268,13 +1310,26 @@ class DownloadStatusService:
     # -- free space --------------------------------------------------------------------------
 
     async def _free_space(self, settings: Settings) -> tuple[FreeSpace | None, bool]:
-        """The free space (measured again when due); and whether it was measured just now."""
+        """The free space (measured again when due, within SPACE_LIMIT_S); and whether it was
+        measured just now."""
         interval = SPACE_VISIBLE_INTERVAL_S if self._visible else SPACE_INTERVAL_S
         now = self._clock()
         if self._space_at is not None and now - self._space_at < interval:
             return self._space, False
-        self._space_at = now
-        self._space = await self._measure(settings)
+        before, self._space_at = self._space_at, now
+        self._asking_program = False
+        try:
+            async with asyncio.timeout(SPACE_LIMIT_S):
+                self._space = await self._measure(settings)
+        except asyncio.CancelledError:  # the check failed or was cancelled: due again next time
+            self._space_at = before
+            raise
+        except TimeoutError:
+            if self._asking_program:
+                log.info("The torrent program didn't report free space in time")
+            else:
+                log.info("The downloads folder didn't answer in time; free space unknown")
+            self._space = None
         return self._space, True
 
     async def _measure(self, settings: Settings) -> FreeSpace | None:
@@ -1291,6 +1346,7 @@ class DownloadStatusService:
                 )
         if not progress_program(settings):
             return None
+        self._asking_program = True  # for `_free_space`'s log line
         try:
             disk = await self._remote.free_space()
         except RemoteError as exc:
@@ -1306,18 +1362,15 @@ class DownloadStatusService:
         )
 
     async def _folder_space(self, folders: Sequence[str]) -> tuple[DiskUsage, bool] | None:
-        """disk_usage in a worker thread, with a time limit; None when the folders are out of
-        reach (or a check of them still hangs)."""
+        """disk_usage in a worker thread (`_free_space` limits the wait); None when the folders
+        are out of reach (or a check of them still hangs)."""
         if self._disk_job is not None and not self._disk_job.done():
             return None
         job = asyncio.ensure_future(asyncio.to_thread(self._read_folders, folders))
         job.add_done_callback(_retrieve)
         self._disk_job = job
         try:
-            async with asyncio.timeout(SPACE_TIMEOUT_S):
-                return await asyncio.shield(job)
-        except TimeoutError:
-            log.info("The downloads folder didn't answer in time; free space unknown")
+            return await asyncio.shield(job)  # the thread runs on when the wait is given up
         except (OSError, ValueError) as exc:
             log.info("No free space for the downloads folder (%s)", type(exc).__name__)
         return None

@@ -41,7 +41,7 @@ from app.models import (
 from app.services import Services, SettingsService
 from app.services.auto_download import MAX_MOVIES_PER_RUN, AutoDownloadService
 from app.services.discovery import DiscoveryService
-from app.services.downloads import DownloadService, GrabError
+from app.services.downloads import DownloadService, GrabError, ReleaseError
 from app.services.quick_download import Progress, QuickDownloadService
 from app.services.remote_downloads import RemoteDownloads
 from app.services.search import movie_request
@@ -626,8 +626,25 @@ class AutoRunTests(WatchlistTestCase):
             self.events, [AutoError(message="No torrent program is set up on this PC.")]
         )
         self.assertEqual(len(self.quick.calls), 1)
+        # The program's fault, not the film's: no try counted (never given up for it).
         tried = [e for e in self.service.entries() if e.tries]
-        self.assertEqual(len(tried), 1)
+        self.assertEqual(len(tried), 0)
+
+    async def test_a_film_whose_release_cant_be_grabbed_counts_a_try_and_the_run_goes_on(
+        self,
+    ) -> None:
+        await self.add(1, "A")
+        await self.add(2, "B")
+        self.quick.outcomes["A"] = ReleaseError("No .torrent file or magnet link is available.")
+        with self.assertLogs(AUTO_LOGGER, "WARNING"):
+            report = await self.auto.run_once()
+        self.assertIsNone(report.error)
+        self.assertEqual(sorted(self.quick.titles), ["A", "B"])
+        self.assertEqual(report.movies_not_found, ("A",))
+        self.assertEqual([d.title for d in report.movies_downloaded], ["B"])
+        stored = self.service.entry(1)
+        assert stored is not None
+        self.assertEqual(stored.tries, 1)
 
     async def test_a_failed_episode_grab_skips_the_films(self) -> None:
         await self.db.library.save_show(

@@ -15,6 +15,7 @@ import logging
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from typing import TypeVar
 
@@ -59,6 +60,8 @@ _FAILED_ATTEMPTS = 3
 # v4 "API Read Access Tokens" are JWTs; anything else is a v3 API key.
 _V4_TOKEN_PREFIX = "eyJ"
 _IMDB_ID = re.compile(r"tt\d{1,10}")
+# What `film_page` appends to a film's /movie/{id}.
+FILM_PAGE_PARTS = "credits,videos,release_dates,external_ids"
 
 
 class TMDBError(Exception):
@@ -79,6 +82,16 @@ class TMDBNotFound(TMDBError):
 
 class TMDBBadReply(TMDBError):
     """TMDB answered, but the body isn't JSON or doesn't have the expected shape."""
+
+
+@dataclass(frozen=True, slots=True)
+class FilmPage:
+    """All a film's info window needs from TMDB, from one request (`TMDBClient.film_page`)."""
+
+    details: MovieDetails
+    info: TitleInfo
+    cast: tuple[CastMember, ...]
+    videos: tuple[Video, ...]
 
 
 class TMDBClient:
@@ -213,6 +226,29 @@ class TMDBClient:
         path = f"/movie/{movie_id}"
         payload = await self._get_json(path, {}, language=language)
         return _parse_one(path, payload, lambda raw: TMDBMovieInfo.model_validate(raw).to_info())
+
+    async def film_page(
+        self, movie_id: int, *, language: str | None = None, video_languages: Sequence[str] = ()
+    ) -> FilmPage:
+        """A film's details (as `movie_details`), its info in `language` (as `movie_info`), its
+        cast (as `cast`) and its videos in `video_languages` and none (as `videos`), in one
+        request: /movie/{id} with the others appended. A broken cast or videos part only leaves
+        that out (logged); broken details or info raise TMDBBadReply."""
+        path = f"/movie/{movie_id}"
+        params = {"append_to_response": FILM_PAGE_PARTS}
+        params["include_video_language"] = ",".join(dict.fromkeys((*video_languages, "null")))
+        payload = await self._get_json(path, params, language=language)
+        region = self._region
+        details = _parse_one(path, payload, lambda raw: _movie_details(raw, region))
+        info = _parse_one(path, payload, lambda raw: TMDBMovieInfo.model_validate(raw).to_info())
+        raw = payload if isinstance(payload, dict) else {}
+        cast = _parse_part(
+            path, "credits", raw, lambda part: TMDBCredits.model_validate(part).to_cast()
+        )
+        videos = _parse_part(
+            path, "videos", raw, lambda part: TMDBVideos.model_validate(part).to_videos()
+        )
+        return FilmPage(details, info, tuple(cast), tuple(videos))
 
     async def tv_info(self, tv_id: int, *, language: str | None = None) -> TitleInfo:
         """A show's overview, genres, images, seasons, status and rating in `language`."""
@@ -474,6 +510,20 @@ def _parse_one(path: str, payload: object, convert: Callable[[object], T]) -> T:
         problem = _summarize(exc)
     # Deliberately not chained: a ValidationError's str() quotes the input payload.
     raise TMDBBadReply(t("TMDB {path}: unexpected payload ({problem})", path=path, problem=problem))
+
+
+def _parse_part(
+    path: str, name: str, payload: Mapping[str, object], convert: Callable[[object], list[T]]
+) -> list[T]:
+    """An appended part (`append_to_response`) of `payload`; none when it is missing or broken
+    (logged by its problem only: a ValidationError's str() quotes the payload)."""
+    if name not in payload:
+        return []
+    try:
+        return convert(payload[name])
+    except ValidationError as exc:
+        log.info("TMDB %s: no %s: %s", path, name, _summarize(exc))
+        return []
 
 
 def _parse_results(

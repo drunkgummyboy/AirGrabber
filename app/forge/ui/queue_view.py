@@ -4,9 +4,9 @@ mockups/forge-chosen.html, except its card's Shows | Films switch: since 3.0.1 e
 own preset (the owner's decision of 2026-11-02), set with the band's chip; a change on the card
 (the preset bar) goes for every band not done of its kind (2026-11-11, `_spread_bar`).
 
-The page (app/forge/ui/page.py) puts "+ Files" and "+ Folder ▾" (its menu: choose a folder, "Scan
-subfolders") on the main window's tabs row (`tools_master`; without one they make a row of the
-view's own at its top). The view's top is the preset card, for the band selected in the list
+The page (app/forge/ui/page.py) puts "+ Files", "+ Folder ▾" (its menu: choose a folder, "Scan
+subfolders") and "Library ▾" (Fix my library, Find duplicates…) on the main window's tabs row
+(`tools_master`; without one they make a row of the view's own at its top). The view's top is the preset card, for the band selected in the list
 (every band has its own preset; with nothing selected the first band is, with an empty queue
 the card shows the films' default "For: new files"): "For: {name}" (a show with its episode
 count, a film with its year) and "Use for all ▾" (its menu copies the band's choice to all films,
@@ -17,8 +17,9 @@ example name; one line of option buttons (Extras: Poster, Season posters for sho
 Tidy up: Clean junk, Empty folders), and "Changed for this item · Save to preset" at its end while
 the options or the rule differ from the preset.
 
-Then a row with the filter All / Needs you / Ready with their counts at its left and "Clear queue",
-Preview and the big Forge button at its right (gone while a run goes: then the run's dock shows
+Then a row with the filter All / Needs you / Ready with their counts at its left and "Clear ▾"
+(Clear what's done, Clear everything, and the Settings tick "Remove files from the queue after
+they're forged", `remove_after_forge`, saved at once), Preview and the big Forge button at its right (gone while a run goes: then the run's dock shows
 centred under the list, its progress with Cancel on it), and one list of shows and films
 (`queue_rows`), filtered by that:
 a band per show with its episodes under it, a band per film; each band's status as a dot
@@ -43,7 +44,8 @@ fits), a watched download with its library's preset; presets read again keep eac
 by name, else its default. Choosing a preset for a band remembers it as its kind's last. A
 right-click request's preset (`add_paths(paths, preset=)`) names the files it added;
 `select_preset(name)` alone names every band not done that it fits. Forge runs one at a time
-with the renamer (`services.run_lock`); closing the window while a run goes (`request_close`)
+with the renamer (`services.run_lock`, taken through `taking`: while it waits for another run the
+dock says "Waiting for Auto-rename to finish…"); closing the window while a run goes (`request_close`)
 stops it after its current file. Keys, bound on the main window: Enter = Preview, Ctrl+Enter =
 Forge, Ctrl+Z = undo the last run, Up / Down = the selection; only while the queue shows (nothing
 on AirGrabber's other pages or on History), never while typing in a text field (`shortcut`).
@@ -71,7 +73,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import field
-from datetime import date
+from datetime import date, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from tkinter import filedialog
 from typing import TYPE_CHECKING, Any, Concatenate
@@ -81,7 +84,16 @@ import customtkinter as ctk
 from app.forge.clients.trailers import ToolInstallError
 from app.forge.core import fsops
 from app.forge.core.airgrabber_folders import watched_folders
-from app.forge.core.auto import TOOLS_NOT_THERE, NamingChoice, library_naming
+from app.forge.core.auto import (
+    TOOLS_NOT_THERE,
+    WAITING_FOR_AUTO,
+    NamingChoice,
+    held_in_library,
+    library_naming,
+    settling_message,
+    taking,
+)
+from app.forge.core.duplicates import aside_folder
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.formatter import name_file
 from app.forge.core.ignored import top_folder
@@ -90,7 +102,7 @@ from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import PlanPart, build_mixed_plan, describe, identity_of
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
 from app.forge.models.history import OpKind, RunSource
-from app.forge.models.media import TypeHint
+from app.forge.models.media import MediaKind, TypeHint
 from app.forge.models.preset import Preset, PresetOptions, has_quality, without_quality
 from app.forge.ui.file_drops import attach_file_drops
 from app.forge.ui.file_browser import explorer_target, open_explorer
@@ -102,11 +114,14 @@ from app.forge.ui.queue_rows import (
     EXPLORER_ACTION,
     FINISHED,
     NEEDS_OWNER,
+    REPLACE_ACTION,
+    REPLACE_LABEL,
     Kind,
     QueueRows,
     Show,
     build_queue_rows,
     empty_texts,
+    episode_code,
     item_kind,
 )
 from app.forge.ui.subtitle_control import CC_ACTION, CcLook, SubtitleDesk, VideoTarget
@@ -194,7 +209,21 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 FIX_LIBRARY_TEXT = N_("🧰 Fix my library")  # the Series and Movies folders into the queue
 FIND_DUPLICATES_TEXT = N_("🔁 Find duplicates…")
+LIBRARY_TEXT = N_("Library")  # its menu: Fix my library, Find duplicates…
+CLEAR_TEXT = N_("Clear")  # its menu: what's done, everything, the remove-after-forge tick
+CLEAR_DONE_TEXT = N_("Clear what's done")
+CLEAR_ALL_TEXT = N_("Clear everything")
+REMOVE_AFTER_TEXT = N_("Remove files from the queue after they're forged")
+SETTLING_TICK_MS = 30_000  # the empty queue's "ready in about 8 min" counts down this often
 LOOKING_TEXT = N_("Looking for duplicates in your library…")
+# A band's "Replace the one in the library" (`replace_band`): the question, and the folder picker
+# for a library folder at a share or drive root.
+REPLACE_QUESTION = N_("Replace {name} in the library? The one there now moves to {folder}.")
+REPLACE_QUESTION_MORE = N_(
+    "Replace these {n} files in the library? The ones there now move to {folder}."
+)
+REPLACE_BUTTON = N_("Replace")
+WHERE_REPLACED_GO = N_("Where should the copies you replace go?")
 
 def _one_at_a_time[**P](
     method: Callable[Concatenate[QueueView, P], Awaitable[None]],
@@ -264,7 +293,9 @@ class QueueView(ctk.CTkFrame):
         self._close_after_run: Callable[[], None] | None = None
         # Right-click presets asked before the presets were read: (name, the files it added).
         self._requests: list[tuple[str, list[int] | None]] = []
-        self.duplicates_window: DuplicatesWindow | None = None  # "+ Folder ▾" → Find duplicates…
+        self.duplicates_window: DuplicatesWindow | None = None  # "Library ▾" → Find duplicates…
+        self._settling_id: str | None = None  # the empty queue's settling line, said again
+        self._settling_shown: str | None = None  # … as it shows now (None: not shown)
         self._refresh_id: str | None = None  # a refresh coming (after a queue event, typing …)
         self._show_id: str | None = None  # its rows, built, shown when Tk is idle next
         self._flow_id: str | None = None  # the option line laid out again
@@ -275,6 +306,8 @@ class QueueView(ctk.CTkFrame):
         self._run_done: set[int] = set()
         self._run_name = ""
         self._run_step: tuple[str, float] | None = None  # a step after the renames: words, how far
+        self._run_copy: tuple[str, float] | None = None  # a copy between shares: words, how far
+        self._waiting_for_lock = False  # the run waits for another one (`taking`)
         self._setting_rule = False  # the rule's box is being filled, not typed in
         self._example_font: tuple[float, tkfont.Font] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -282,6 +315,7 @@ class QueueView(ctk.CTkFrame):
         self._bindings: list[tuple[str, str]] = []
         self.on_choose_folders: Callable[[], object] = lambda: None  # the page: Settings' spot
         self.ask: AskFn = self._ask  # the questions, replaceable in tests
+        self.ask_folder: Callable[[], str] = self._ask_folder  # the folder picker, the same
         self.ask_name: AskTextFn = self._ask_name
 
         self.grid_columnconfigure(0, weight=1)
@@ -294,6 +328,7 @@ class QueueView(ctk.CTkFrame):
         theme.on_mode_change(self, self._repaint)
 
         self._unsubscribe = services.queue_events.subscribe(self._on_queue_event)
+        self._unwatch = services.auto.watch_status(self._watch_status)  # after each look
         self.drops = attach_file_drops(self, self.add_paths)  # False: the buttons only
         self.spawn(self._load_presets())
         self._bind_keys()
@@ -343,6 +378,8 @@ class QueueView(ctk.CTkFrame):
             bar, t("+ Folder") + " ▾", self._folder_menu, edge=look.ACCENT
         )
         self.folder_button.pack(side="left", padx=(10, 0))
+        self.library_button = self._tool_button(bar, t(LIBRARY_TEXT) + " ▾", self._library_menu)
+        self.library_button.pack(side="left", padx=(10, 0))
         caption = ctk.CTkLabel(
             bar, text=t(PRESETS_CAPTION), font=theme.font(13), text_color=theme.TEXT_MUTED
         )
@@ -366,7 +403,7 @@ class QueueView(ctk.CTkFrame):
         add_tooltip(self.mode_switch, t(MODE_TIP))
 
     def _build_actions(self, row: Any) -> None:
-        """Clear queue, Preview and Forge at the right end of the filters' row."""
+        """Clear ▾, Preview and Forge at the right end of the filters' row."""
         look = self.look
         self.actions = ctk.CTkFrame(row, fg_color="transparent")
         self.actions.pack(side="right")
@@ -385,7 +422,7 @@ class QueueView(ctk.CTkFrame):
         )
         self.preview_button = self._tool_button(self.actions, t("Preview"), self._preview_clicked)
         self.clear_button = self._tool_button(
-            self.actions, "✕ " + t("Clear queue"), self._clear
+            self.actions, t(CLEAR_TEXT) + " ▾", self._clear_menu
         )
         # A run's dock, centred under the list (its row, 4, is empty otherwise), Cancel on it.
         self.progress = ForgeProgress(self, look=look, ground=look.BG)
@@ -408,7 +445,7 @@ class QueueView(ctk.CTkFrame):
         self._show_actions(running=False)
 
     def _show_actions(self, *, running: bool, installing: bool = False) -> None:
-        """The filters' row's right end: Clear queue, Preview and Forge; or, with nothing there,
+        """The filters' row's right end: Clear ▾, Preview and Forge; or, with nothing there,
         the dock under the list with Cancel (a run), or only the dock (the trailer tools coming
         in)."""
         for widget in (self.clear_button, self.preview_button, self.forge_button):
@@ -687,6 +724,10 @@ class QueueView(ctk.CTkFrame):
 
     async def _ask(self, title: str, message: str, choices: Sequence[str]) -> str | None:
         return await ask_choice(self, title, message, choices, look=self.look)
+
+    def _ask_folder(self) -> str:
+        """Where replaced copies go (native and modal: the loop waits, as Settings' Browse)."""
+        return filedialog.askdirectory(parent=self, title=t(WHERE_REPLACED_GO), mustexist=True)
 
     async def _ask_name(self, title: str, message: str, ok: str) -> str | None:
         return await ask_text(self, title, message, ok, look=self.look)
@@ -1342,7 +1383,7 @@ class QueueView(ctk.CTkFrame):
         self._remember(kind, name)
         await self._load_presets()
 
-    # --- the folder menu -------------------------------------------------------------------
+    # --- the folder and library menus -------------------------------------------------------
 
     def _folder_menu(self) -> None:
         scan = self.services.settings.current.scan_subfolders
@@ -1351,10 +1392,15 @@ class QueueView(ctk.CTkFrame):
             (t("Choose a folder…"), self._browse_folder),
             (f"{box}  {t('Scan subfolders')}", lambda: self.set_scan_subfolders(not scan)),
         ]
+        popup_menu(self.folder_button, items, look=self.look)
+
+    def _library_menu(self) -> None:
+        """"Library ▾": Fix my library (with library folders chosen) and Find duplicates…"""
+        items: list[tuple[str, Callable[[], None]]] = []
         if self.services.library_folders():
             items.append((t(FIX_LIBRARY_TEXT), self.fix_library))
         items.append((t(FIND_DUPLICATES_TEXT), self.find_duplicates))
-        popup_menu(self.folder_button, items, look=self.look)
+        popup_menu(self.library_button, items, look=self.look)
 
     def fix_library(self) -> None:
         """"🧰 Fix my library": the Series and Movies folders into the queue, every subfolder
@@ -1384,6 +1430,8 @@ class QueueView(ctk.CTkFrame):
             found,
             on_move=services.move_duplicates,
             has_folders=bool(folders),
+            needs_place=services.duplicates_need_a_place(),
+            place_problem=services.duplicates_place_problem,
         )
 
     # --- the filter --------------------------------------------------------------------------
@@ -1425,13 +1473,41 @@ class QueueView(ctk.CTkFrame):
         self._refresh_id = self.after(delay_ms, self._refresh_in_turns)
 
     def _cancel_refresh(self) -> None:
-        for job in (self._refresh_id, self._show_id, self._flow_id):
+        for job in (self._refresh_id, self._show_id, self._flow_id, self._settling_id):
             if job is not None:
                 try:
                     self.after_cancel(job)
                 except tk.TclError:
                     pass  # the window is going
-        self._refresh_id = self._show_id = self._flow_id = None
+        self._refresh_id = self._show_id = self._flow_id = self._settling_id = None
+
+    # --- downloads on their way (the empty queue says when the first one is ready) ----------
+
+    def _settling_text(self) -> str | None:
+        """What the empty queue says of downloads on their way (None: a queue with files)."""
+        if self.services.queue.items:
+            return None
+        return settling_message(self.services.auto.settling, time.time())
+
+    def _watch_status(self, _status: object) -> None:
+        """A look ended: the empty queue's settling line again, if it changed. Read when Tk is
+        idle next, once the renamer has planned its next look (the line counts to that one)."""
+        if self.winfo_exists():
+            self.after_idle(self._settling_check)
+
+    def _settling_check(self) -> None:
+        if self.winfo_exists() and self._settling_text() != self._settling_shown:
+            self.refresh()
+
+    def _settling_tick(self) -> None:
+        """The settling line counts down while it shows."""
+        self._settling_id = None
+        if self._settling_shown is None or not self.winfo_exists():
+            return
+        if self._settling_text() != self._settling_shown:
+            self.refresh()
+        else:
+            self._settling_id = self.after(SETTLING_TICK_MS, self._settling_tick)
 
     def refresh(self) -> None:
         """Show the queue as it is now, at once."""
@@ -1490,6 +1566,7 @@ class QueueView(ctk.CTkFrame):
         self._targets, self._bands = built.targets, built.bands
         self.list.set_rows(built.rows)
         if built.rows:
+            self._settling_shown = None  # files there: the settling line isn't shown
             if self.empty_state.winfo_manager():
                 self.empty_state.pack_forget()
             if not self.list.winfo_manager():
@@ -1500,6 +1577,12 @@ class QueueView(ctk.CTkFrame):
             title, hint = empty_texts(self.show, others=bool(items))
             if not items and not self.drops:
                 title, hint = t(NO_DROPS_TITLE), t(NO_DROPS_HINT)
+            settling = self._settling_text()
+            if settling is not None:
+                hint = settling  # downloads on their way: when the first one comes in
+                if self._settling_id is None:
+                    self._settling_id = self.after(SETTLING_TICK_MS, self._settling_tick)
+            self._settling_shown = settling
             _set_text(self.empty_title, title)
             _set_text(self.empty_hint, hint)
             if not self.empty_state.winfo_manager():
@@ -1645,6 +1728,8 @@ class QueueView(ctk.CTkFrame):
             self.spawn(self.forge(only=ids))
         elif action == "undo":
             self.spawn(self.undo_band(ids))
+        elif action == REPLACE_ACTION:
+            self.spawn(self.replace_band(ids))
         elif action == CC_ACTION:
             self.cc_menu(ids, key)
         elif action == "ignore":
@@ -1824,9 +1909,36 @@ class QueueView(ctk.CTkFrame):
     def _remove(self, key: int) -> None:
         self.services.queue.remove(key)
 
+    def _clear_menu(self) -> None:
+        """"Clear ▾": what's done, everything, and the Settings tick (`remove_after_forge`)."""
+        remove = self.services.settings.current.remove_after_forge
+        box = "☑" if remove else "☐"
+        items: list[tuple[str, Callable[[], None]]] = [
+            (t(CLEAR_DONE_TEXT), self.clear_done),
+            (t(CLEAR_ALL_TEXT), self._clear),
+            (f"{box}  {t(REMOVE_AFTER_TEXT)}", lambda: self.set_remove_after_forge(not remove)),
+        ]
+        popup_menu(self.clear_button, items, look=self.look)
+
+    def clear_done(self) -> None:
+        """"Clear what's done": the done bands go (History keeps them); what needs you and what
+        is ready stay."""
+        if not self.running:
+            self.services.queue.forget_finished()
+
     def _clear(self) -> None:
+        """"Clear everything"."""
         if not self.running:
             self.services.queue.clear()
+
+    def set_remove_after_forge(self, value: bool) -> None:
+        """Clear ▾'s tick: the same setting as Settings › Auto-rename's, saved at once."""
+        self.spawn(self.services.settings.update(remove_after_forge=value))
+
+    def forget_yesterdays(self) -> None:
+        """Yesterday's done bands go (the page opening; a look does it too)."""
+        midnight = datetime.combine(date.today(), dt_time.min)
+        self.services.queue.purge_finished(midnight.timestamp())
 
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(
@@ -1967,6 +2079,8 @@ class QueueView(ctk.CTkFrame):
         self.running = running
         self._run_total, self._run_done, self._run_name = total, set(), ""
         self._run_step = None
+        self._run_copy = None
+        self._waiting_for_lock = False
         if not self.winfo_exists():
             return
         state = "disabled" if running else "normal"
@@ -1978,10 +2092,24 @@ class QueueView(ctk.CTkFrame):
         else:
             self.refresh()
 
+    def _on_lock_wait(self, waiting: bool) -> None:
+        """The run waits for another one (an automatic run, say) before it can start, or no
+        longer does: the dock says so."""
+        self._waiting_for_lock = waiting
+        if self.winfo_exists() and self.running:
+            self._show_progress()
+
     def _show_progress(self) -> None:
+        if self._waiting_for_lock:
+            self.progress.show(0, t(WAITING_FOR_AUTO))
+            return
         if self._run_step is not None:  # the renames are done: a trailer download, say
             text, fraction = self._run_step
             self.progress.show(fraction, text)
+            return
+        if self._run_copy is not None:  # "Copying 4.2 of 20 GB · Dune (2021)"
+            text, fraction = self._run_copy
+            self.progress.show(fraction, f"{text} · {self._run_name}" if self._run_name else text)
             return
         total = max(self._run_total, 1)
         done = len(self._run_done)
@@ -1999,7 +2127,11 @@ class QueueView(ctk.CTkFrame):
     def _heard_progress(self, event: ProgressEvent) -> None:
         """A step of the run (dropped files or downloads): the bar and its words."""
         item = self.services.queue.get(event.item_id) if event.item_id is not None else None
-        if event.item_id is None and event.status == "working":
+        if event.item_id is not None and not event.copying:
+            self._run_copy = None  # a file's own step: its copy (if any) is over
+        if event.copying:  # how far the file's copy between shares is
+            self._run_copy = (event.message, event.fraction)
+        elif event.item_id is None and event.status == "working":
             self._run_step = (event.message, event.fraction)  # already in the interface language
         elif event.status == "working" and item is not None:
             self._run_name = display_name(item)
@@ -2010,6 +2142,8 @@ class QueueView(ctk.CTkFrame):
 
     def _on_progress(self, event: ProgressEvent) -> None:
         self._heard_progress(event)
+        if event.copying:  # only the dock: the list stays as it is
+            return
         queue = self.services.queue
         if event.item_id is not None:
             if event.status == "done":
@@ -2024,17 +2158,18 @@ class QueueView(ctk.CTkFrame):
 
     def _on_watched_progress(self, event: ProgressEvent) -> None:
         self._heard_progress(event)
-        if self.winfo_exists():
+        if self.winfo_exists() and not event.copying:
             self._schedule_refresh(_REFRESH_PROGRESS_MS)
 
     def request_close(self, close: Callable[[], None]) -> bool:
-        """True if the window may close now; otherwise the run stops after its current file and
-        `close` is called once it has finished and been recorded."""
+        """True if the window may close now; otherwise the run stops after its current file (a
+        copy between shares stops at once, leaving the file where it was) and `close` is called
+        once it has finished and been recorded."""
         if not self.running:
             return True
         self._close_after_run = close
         self._cancel.set()
-        log.warning("Stopping after the current file, then closing")
+        log.warning("Stopping after the current file (a copy between shares at once), then closing")
         self._say(t("Stopping after the current file, then closing…"), level=logging.WARNING)
         return False
 
@@ -2157,21 +2292,15 @@ class QueueView(ctk.CTkFrame):
                     on_progress=self._on_watched_progress,
                     cancel=self._cancel,
                     naming=self._library_naming([i for i in items if i.watched is not None]),
+                    on_wait=self._on_lock_wait,
                 )
             dropped = [i for i in items if i.watched is None]
             if dropped:
-                async with self.services.run_lock:  # never alongside an automatic run
+                # Never alongside an automatic run; the dock says when it waits for one.
+                async with taking(self.services.run_lock, self._on_lock_wait):
                     result = _merge(result, await self._forge_dropped(dropped, trailers))
         finally:
-            if self.services.settings.current.remove_after_forge:
-                self.services.queue.forget_finished()
-            self._set_running(False)
-            close, self._close_after_run = self._close_after_run, None
-            if close is not None:
-                if self.winfo_exists():
-                    self.after(10, close)
-                else:
-                    close()
+            self._run_ended()
         log.info(
             "Forged: %d renamed, %d already right, %d failed, %d poster(s), %d trailer(s)%s",
             result.renamed,
@@ -2191,6 +2320,19 @@ class QueueView(ctk.CTkFrame):
             self._say(summary_text(result, moved), level=logging.WARNING)
         else:
             self._say(summary_text(result, moved), success=True)
+
+    def _run_ended(self) -> None:
+        """After Forge or Replace, whatever happened: done files leave the queue when Settings
+        say so, the dock goes, and a close asked for meanwhile happens."""
+        if self.services.settings.current.remove_after_forge:
+            self.services.queue.forget_finished()
+        self._set_running(False)
+        close, self._close_after_run = self._close_after_run, None
+        if close is not None:
+            if self.winfo_exists():
+                self.after(10, close)
+            else:
+                close()
 
     def _preset_name(self, items: Sequence[QueueItem]) -> str | None:
         """The run's preset, as History shows it: each band's preset in it."""
@@ -2219,34 +2361,110 @@ class QueueView(ctk.CTkFrame):
         for item in items:  # a Done band's Undo needs the run
             if item.status is ItemStatus.DONE and item.run_id is None:
                 item.run_id = result.run_id
+            elif item.status is ItemStatus.WORKING:  # its copy between shares was stopped
+                item.status, item.message = ItemStatus.READY, ""
         return result
 
+    def _aside_place(self, libraries: Sequence[Path]) -> tuple[bool, Path | None]:
+        """Whether a replace may go on, and the place the copies go when a library folder is a
+        share or drive root: the one chosen this session, else asked now (`ask_folder`) and kept
+        once it is outside the library folders."""
+        services = self.services
+        if all(aside_folder(library, None) is not None for library in libraries):
+            return True, None
+        if services.aside_place is not None:
+            return True, services.aside_place
+        chosen = self.ask_folder()
+        if not chosen or not self.winfo_exists():
+            return False, None
+        place = Path(chosen)
+        problem = services.duplicates_place_problem(place)
+        if problem is not None:
+            self._say(t(problem), level=logging.WARNING)
+            return False, None
+        services.aside_place = place
+        return True, place
+
+    @_one_at_a_time
+    async def replace_band(self, ids: Sequence[int]) -> None:
+        """A band's "Replace the one in the library", for its downloads held because the film or
+        episode is there already: asked first ("… The one there now moves to Duplicates."), then
+        the copy there moves aside and the download takes its place, in one run
+        (`services.auto.replace`): its Undo (the card's or History's) puts both back."""
+        queue, settings = self.services.queue, self.services.settings.current
+        items = [
+            i
+            for i in (queue.get(n) for n in ids)
+            if i is not None and i.watched is not None and held_in_library(i)
+        ]
+        libraries = [library_folder(i.media.kind, settings) for i in items]
+        if not items or None in libraries:
+            return
+        go, place = self._aside_place([lib for lib in libraries if lib is not None])
+        if not go:
+            return
+        # A band is one show or film: one library folder. Its name only, never the full path.
+        folder = aside_folder(libraries[0] or Path(), place) or Path()
+        where = folder.name or folder.anchor
+        if len(items) == 1:
+            first = items[0]
+            media = first.media
+            code = episode_code(first) if media.kind is MediaKind.EPISODE else ""
+            name = f"{media.title} {code}" if code else media.ny
+            question = t(REPLACE_QUESTION, name=name, folder=where)
+        else:
+            question = t(REPLACE_QUESTION_MORE, n=len(items), folder=where)
+        replace = t(REPLACE_BUTTON)
+        if await self.ask(t(REPLACE_LABEL), question, [replace, t("Cancel")]) != replace:
+            return
+        self._cancel = asyncio.Event()
+        self._set_running(True, len(items))
+        try:
+            result = await self.services.auto.replace(
+                [i.id for i in items],
+                source=RunSource.APP,
+                place=place,
+                on_progress=self._on_watched_progress,
+                cancel=self._cancel,
+                naming=self._library_naming(items),
+                on_wait=self._on_lock_wait,
+            )
+        finally:
+            self._run_ended()
+        log.info("Replaced %d copy(ies) in the library, %d failed", result.replaced, result.failed)
+        moved = sum(1 for item in items if item.status is ItemStatus.DONE)
+        level = logging.WARNING if result.failed else logging.INFO
+        self._say(summary_text(result, moved), level=level, success=not result.failed)
+
     async def undo_band(self, ids: Sequence[int]) -> None:
-        """A Done band's Undo: put those files back; they leave the queue."""
+        """A Done band's Undo: put those files back, with what their run made for them alone
+        (the film's folder, poster, backdrop, NFO, trailer: `UndoService.undo_card`; all of a
+        run's files: the whole run, as History's "Undo run"); they leave the queue."""
         queue, history = self.services.queue, self.services.history
         items = [i for i in (queue.get(n) for n in ids) if i is not None and i.run_id is not None]
-        op_ids: list[int] = []
+        by_run: dict[int, list[int]] = {}  # run id → the card's renames in it
         put_back: list[Path] = []  # downloads that return to their folder
         async with self.services.run_lock:
             for item in items:
                 for op in await history.operations(item.run_id or 0):
                     if op.kind is OpKind.RENAME and op.dst == str(item.path) and op.undoable:
-                        op_ids.append(op.id)
+                        by_run.setdefault(op.run_id, []).append(op.id)
                         if item.watched is not None and op.src:
                             put_back.append(Path(op.src))
-            if not op_ids:
+            if not by_run:
                 log.info("Nothing to undo for these files")
                 self._say(t("Nothing to undo for these files."))
                 return
-            result = await self.services.undo.undo_operations(op_ids)
+            files = 0
+            for run_id, renames in by_run.items():
+                result = await self.services.undo.undo_card(run_id, renames)
+                files += len(set(renames).intersection(result.undone_ids))
         if put_back:  # never moved on their own again; Rename moves them when wanted
             await self.services.auto.keep_back(put_back)
         for item in items:
             queue.remove(item.id)
-        log.info("Put back %d file(s)", result.undone)
-        self._say(
-            tn("Put back {n} file", "Put back {n} files", result.undone), success=True
-        )
+        log.info("Put back %d file(s)", files)
+        self._say(tn("Put back {n} file", "Put back {n} files", files), success=True)
 
     @_one_at_a_time
     async def undo_latest(self) -> None:
@@ -2286,6 +2504,7 @@ class QueueView(ctk.CTkFrame):
 
     def destroy(self) -> None:
         self._unsubscribe()
+        self._unwatch()
         self._cancel_refresh()
         try:
             top = self.winfo_toplevel()

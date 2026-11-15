@@ -1341,8 +1341,9 @@ def _descendants(widget: tk.Misc) -> list[tk.Misc]:
 
 class SuggestionCard(ctk.CTkFrame):
     """A popular untracked show airing that day, toned down below the tracked episodes, with
-    the poster cards' + Follow button (`TrackButton`: the row's height and corners, filled
-    accent; "✓ Following" in green once followed) along its bottom. A click anywhere on it but
+    the poster cards' + Follow button (`TrackButton`: the row's height and corners; `quiet`:
+    outlined, not filled like a Download button, its edge in the accent on hover; "✓ Following"
+    in green once followed) along its bottom. A click anywhere on it but
     the button opens the show's window (`on_open_show`)."""
 
     def __init__(
@@ -1402,7 +1403,7 @@ class SuggestionCard(ctk.CTkFrame):
         self.name_label = name
 
         self._track_button = TrackButton(
-            inner, busy_text=t("Adding…"), command=self._track, scale=scale
+            inner, busy_text=t("Adding…"), command=self._track, scale=scale, quiet=True
         )
         self._track_button.pack(side="bottom", fill="x")
         ctk.CTkLabel(

@@ -446,6 +446,8 @@ class TrayHost:
         if not _alive(window):
             return
         window.deiconify()
+        if window.state() != "zoomed":  # the owner's wish: the main window always full-size
+            window.state("zoomed")
         window.lift()
         window.focus_force()
 

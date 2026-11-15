@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 # with install.ps1's $AppId.
 APP_USER_MODEL_ID = "drunkgummyboy.AirGrabber"
 
+# The video player's process (app/media_player.py): a taskbar button of its own, with the
+# player's icon (app/assets/player.ico), so it isn't taken for AirGrabber (owner, 2026-11-15).
+PLAYER_APP_USER_MODEL_ID = "drunkgummyboy.AirGrabber.Player"
+
 
 def set_process_app_id(app_id: str = APP_USER_MODEL_ID) -> bool:
     """Give this process `app_id`. Call it before the first window or tray icon exists.

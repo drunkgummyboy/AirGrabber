@@ -8,9 +8,11 @@ JSON gives None. Fields a newer side adds are ignored.
 App → player: `Play` (a video, in the window that is open or a new one), `LoadSubtitle` (a file
 Find subtitles fetched), `Notice` (a line shown over the video for a few seconds, already
 translated). Player → app: `Ready`, `Position` (while playing), `Stopped` (closed or replaced),
-`Ended`, `WantNext` (the countdown reached 0 or Play now), `FindSubtitles`, `Tracks` (the
+`Ended`, `WantNext` (the countdown reached 0 or Play now; `by_hand`: N or ⏭), `WantPrevious`
+(P or ⏮: the episode before), `FindSubtitles`, `Tracks` (the
 languages picked by hand, for the next episode: "" none, "off"), `AlwaysPick` (the viewer chose
-Always pick in a track menu: the app stores it in Settings).
+Always pick in a track menu: the app stores it in Settings), `OpenFile` (a file dropped from
+Explorer on the player: the app plays it as one from "Open with", or says it isn't a video).
 
 Nothing secret travels here: `Play` has a local file and texts, never a token or a URL.
 """
@@ -34,6 +36,8 @@ class Play:
     Always pick ("" none, a language code, "off" for subtitles); `carry_*` the language picked by
     hand in the episode before ("" none). `find_subtitles`: whether the Subtitles menu offers
     Find subtitles (not for a file from Explorer's "Open with"; a line without it: True).
+    `previous_label` the episode before ("S01E02"; None: none, or a line from before). With
+    either label the window shows ⏮ / ⏭ and takes N / P.
     """
 
     file: str
@@ -49,6 +53,7 @@ class Play:
     carry_audio: str
     carry_subtitles: str
     find_subtitles: bool = True
+    previous_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,7 +96,15 @@ class Ended:
 
 @dataclass(frozen=True)
 class WantNext:
-    pass
+    """The next episode, please: the countdown or Play now, or by hand (N, ⏭: `by_hand`, so
+    the one playing isn't marked watched for it)."""
+
+    by_hand: bool = False
+
+
+@dataclass(frozen=True)
+class WantPrevious:
+    """The episode before, please (P, ⏮)."""
 
 
 @dataclass(frozen=True)
@@ -113,6 +126,13 @@ class AlwaysPick:
     language: str
 
 
+@dataclass(frozen=True)
+class OpenFile:
+    """A file dropped on the player's window (the first of a drop)."""
+
+    file: str
+
+
 Message: TypeAlias = (
     Play
     | LoadSubtitle
@@ -122,9 +142,11 @@ Message: TypeAlias = (
     | Stopped
     | Ended
     | WantNext
+    | WantPrevious
     | FindSubtitles
     | Tracks
     | AlwaysPick
+    | OpenFile
 )
 
 TYPES: Mapping[type[Any], str] = {
@@ -136,9 +158,11 @@ TYPES: Mapping[type[Any], str] = {
     Stopped: "stopped",
     Ended: "ended",
     WantNext: "want_next",
+    WantPrevious: "want_previous",
     FindSubtitles: "find_subtitles",
     Tracks: "tracks",
     AlwaysPick: "always_pick",
+    OpenFile: "open_file",
 }
 _BY_NAME: Mapping[str, type[Any]] = {name: kind for kind, name in TYPES.items()}
 

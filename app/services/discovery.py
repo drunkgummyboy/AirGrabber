@@ -2,9 +2,11 @@
 in the app's language, the trailer and the cast), and tracking TMDB shows via TVMaze.
 
 Everything is cached in memory only: TMDB's lists for DASHBOARD_TTL, details and extras for
-DETAILS_TTL. A TMDB show is tracked through its TVMaze counterpart, found by IMDb id, then
-TheTVDB id, then by name + first-air year; a TVMaze show's TMDB counterpart (for its extras) is
-the one it was matched from, else TMDB's by its IMDb id.
+DETAILS_TTL; but the digital shelves' first digital release dates, which are also kept a day
+across starts (app/services/release_dates.py). A film's info window takes one TMDB request
+(`TMDBClient.film_page`) for its extras and details. A TMDB show is tracked through its TVMaze
+counterpart, found by IMDb id, then TheTVDB id, then by name + first-air year; a TVMaze show's
+TMDB counterpart (for its extras) is the one it was matched from, else TMDB's by its IMDb id.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Generic, TypeVar
 
 from app.i18n import is_dutch, t
@@ -37,6 +40,7 @@ from app.models import (
 )
 from app.models.plex import PlexFilms, PlexShows
 from app.services.library import LibraryService
+from app.services.release_dates import ReleaseDates
 from app.services.tmdb import TMDBAuthError, TMDBClient, TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeClient
 
@@ -162,6 +166,14 @@ class _Entry(Generic[T]):
 
 
 @dataclass(frozen=True, slots=True)
+class _Film:
+    """A film's info window's TMDB request, made once for both."""
+
+    details: MovieDetails
+    extras: TitleExtras
+
+
+@dataclass(frozen=True, slots=True)
 class _Shelves(Generic[T]):
     """One dashboard's TMDB lists, by shelf name."""
 
@@ -201,6 +213,25 @@ class _DetailsCache(Generic[T]):
             self._in_flight[item_id] = task
             task.add_done_callback(functools.partial(self._forget, item_id))
         return await self._join(task)
+
+    def has(self, item_id: int) -> bool:
+        """Whether a `get` now would need no new fetch: a fresh entry, or one on its way."""
+        entry = self._entries.get(item_id)
+        if entry is not None and _is_fresh(entry.stored_at, self._clock(), self._ttl):
+            return True
+        task = self._in_flight.get(item_id)
+        return task is not None and not task.cancelling()
+
+    def stored_at(self, item_id: int) -> datetime | None:
+        """When the fresh entry for `item_id` was fetched; None without one."""
+        entry = self._entries.get(item_id)
+        if entry is None or not _is_fresh(entry.stored_at, self._clock(), self._ttl):
+            return None
+        return entry.stored_at
+
+    def put(self, item_id: int, value: T) -> None:
+        """Keep `value` for `item_id` as a fetch would (a fetch on its way still stores its own)."""
+        self._entries[item_id] = _Entry(value, self._clock())
 
     def clear(self) -> None:
         """Forget every entry. Fetches still in flight finish for their callers but store
@@ -244,7 +275,10 @@ class DiscoveryService:
         library: LibraryService,
         *,
         clock: Clock = _utc_now,
+        release_dates: Path | None = None,
     ) -> None:
+        """`release_dates`: the file the digital shelves' dates are kept in across starts
+        (app/services/release_dates.py); None keeps them for this run only."""
         self._tmdb = tmdb
         self._tvmaze = tvmaze
         self._library = library
@@ -254,6 +288,8 @@ class DiscoveryService:
         # Bumped by clear_cache(), so dashboards fetched across a clear aren't stored.
         self._generation = 0
         self._movie_details = _DetailsCache("tmdb-movie", tmdb.movie_details, DETAILS_TTL, clock)
+        # Not cleared by clear_cache: a film's release dates don't depend on the key.
+        self._release_dates = ReleaseDates(release_dates, clock)
         self._season_trailers: dict[tuple[int, int], _Entry[Video | None]] = {}
         self._tv_details = _DetailsCache("tmdb-tv", tmdb.tv_details, DETAILS_TTL, clock)
         # The info window's extras by TMDB id (in the app's language, which is fixed per run).
@@ -262,9 +298,8 @@ class DiscoveryService:
             "tmdb-film-series", lambda id: _as_tuple(tmdb.collection_of(id)), DETAILS_TTL, clock
         )
         self._shows = _DetailsCache("tmdb-tv-item", lambda id: tmdb.tv(id), DETAILS_TTL, clock)
-        self._movie_extras = _DetailsCache(
-            "tmdb-movie-extras", self._fetch_movie_extras, DETAILS_TTL, clock
-        )
+        # A film's info window: its extras and its details from one TMDB request.
+        self._films = _DetailsCache("tmdb-film", self._fetch_film, DETAILS_TTL, clock)
         self._tv_extras = _DetailsCache("tmdb-tv-extras", self._fetch_tv_extras, DETAILS_TTL, clock)
         # TVMaze id → its TMDB id by IMDb id (None: TMDB knows none), for a show's extras.
         self._tmdb_ids: dict[int, _Entry[int | None]] = {}
@@ -286,7 +321,7 @@ class DiscoveryService:
         self._movies.clear()
         self._film_series.clear()
         self._shows.clear()
-        self._movie_extras.clear()
+        self._films.clear()
         self._tv_extras.clear()
         self._tmdb_ids.clear()
         self._genre_names.clear()
@@ -423,12 +458,14 @@ class DiscoveryService:
         first.
 
         TMDB lists a film when any of its digital releases falls in the window, so re-releases
-        show up there too. The first DIGITAL_PAGES pages are fetched and every film's details
-        (through the shared details cache) decide: a film is dropped only when its first
-        digital release is known and outside the window. Films without a known digital date,
-        or whose details fail to load, are kept. A failing page fails the shelf; a missing or
+        show up there too. The first DIGITAL_PAGES pages are fetched and every film's first
+        digital release decides: a film is dropped only when it is known and outside the
+        window. Films without a known digital date, or whose details fail to load, are kept.
+        The dates come from the films' details (through the shared details cache) and are kept
+        a day, across starts too (`ReleaseDates`). A failing page fails the shelf; a missing or
         rejected key propagates, also from the details.
         """
+        await self._release_dates.load()
         pages = await asyncio.gather(
             *(self._tmdb.digital_releases(start, end, page=n) for n in range(1, DIGITAL_PAGES + 1)),
             return_exceptions=True,
@@ -442,23 +479,31 @@ class DiscoveryService:
             *(self._first_digital_in(movie, start, end) for movie in candidates.values()),
             return_exceptions=True,
         )
+        await self._release_dates.save()
         if (error := _first_failure(keep)) is not None:
             raise error  # only fatal errors get here: _first_digital_in keeps the film otherwise
         return [movie for movie, kept in zip(candidates.values(), keep, strict=True) if kept is True]
 
     async def _first_digital_in(self, movie: Movie, start: date, end: date) -> bool:
         """False only when the film's first digital release is known and outside [start, end]."""
-        try:
-            details = await self.movie_details(movie.id)
-        except TMDBError as exc:
-            if _is_fatal(exc):
-                raise
-            log.debug(
-                "Keeping %s (TMDB id %d) unfiltered; its details are unavailable: %s",
-                movie.title, movie.id, exc,
-            )
-            return True
-        first = details.digital_release
+        known = self._release_dates.lookup(movie.id)
+        if known is not None:
+            first = known.digital
+        else:
+            try:
+                details = await self.movie_details(movie.id)
+            except TMDBError as exc:
+                if _is_fatal(exc):
+                    raise
+                log.debug(
+                    "Keeping %s (TMDB id %d) unfiltered; its details are unavailable: %s",
+                    movie.title, movie.id, exc,
+                )
+                return True
+            first = details.digital_release
+            # Dated by when the details were fetched: a date lives about a day, never two.
+            read_at = self._movie_details.stored_at(movie.id)
+            self._release_dates.remember(movie.id, first, read_at)
         return first is None or start <= first <= end
 
     def _today(self) -> date:
@@ -518,7 +563,11 @@ class DiscoveryService:
     # -- details and search --------------------------------------------------------------------
 
     async def movie_details(self, movie_id: int) -> MovieDetails:
-        """TMDB's details of a film; cached for DETAILS_TTL, concurrent calls share one fetch."""
+        """TMDB's details of a film; cached for DETAILS_TTL, concurrent calls share one fetch.
+        While the film's info window's request (`movie_extras`) is on its way, they come from
+        that one."""
+        if not self._movie_details.has(movie_id) and self._films.has(movie_id):
+            return (await self._films.get(movie_id)).details
         return await self._movie_details.get(movie_id)
 
     async def tv_details(self, tv_id: int) -> TVDetails:
@@ -550,12 +599,13 @@ class DiscoveryService:
     async def movie_extras(self, movie_id: int) -> TitleExtras:
         """A film's details in the app's language (the overview in English where TMDB has none
         in it), its trailer (`pick_trailer`) and its first CAST_LIMIT actors; cached for
-        DETAILS_TTL, concurrent calls share one fetch.
+        DETAILS_TTL, concurrent calls share one fetch. One TMDB request (`film_page`, which
+        also brings `movie_details`' details), and a second only for the English overview.
 
         Raises TMDBNotConfigured without a key and TMDBAuthError for a rejected one; another
-        TMDBError when the details can't be read (a failing trailer or cast request only leaves
+        TMDBError when the details can't be read (a broken trailer or cast part only leaves
         those out)."""
-        return await self._movie_extras.get(movie_id)
+        return (await self._films.get(movie_id)).extras
 
     async def show_extras(self, show: Show) -> TitleExtras | None:
         """A TVMaze show's extras (see `movie_extras`) from its TMDB counterpart: the one it was
@@ -611,15 +661,47 @@ class DiscoveryService:
             self._tmdb_ids[show.id] = _Entry(tmdb_id, self._clock())
         return tmdb_id
 
-    async def _fetch_movie_extras(self, movie_id: int) -> TitleExtras:
-        return await self._fetch_extras(MediaType.MOVIE, movie_id)
+    async def _fetch_film(self, movie_id: int) -> _Film:
+        """One request for the details, the info, the cast and the videos (in the preferred
+        languages); the overview again in English when the app's language has none, and the
+        videos again with the film's own language when the preferred ones hold no trailer. The
+        details are kept for `movie_details` too."""
+        generation = self._generation
+        language = tmdb_language()
+        preferred = trailer_languages()
+        page = await self._tmdb.film_page(movie_id, language=language, video_languages=preferred)
+        if generation == self._generation:  # not cleared meanwhile
+            self._movie_details.put(movie_id, page.details)
+        info = await self._english_overview(MediaType.MOVIE, movie_id, page.info, language)
+        trailer = pick_trailer(page.videos, preferred)
+        own = page.info.original_language
+        if trailer is None and own and own not in preferred:
+            # None in the preferred languages: one more call, the film's own language too.
+            videos = await _optional_call(
+                self._tmdb.videos(MediaType.MOVIE, movie_id, languages=(*preferred, own)),
+                MediaType.MOVIE, movie_id, "videos",
+            )
+            trailer = pick_trailer(videos or (), preferred)
+        extras = TitleExtras(info=info, trailer=trailer, cast=page.cast[:CAST_LIMIT])
+        return _Film(page.details, extras)
+
+    async def _english_overview(
+        self, kind: MediaType, item_id: int, info: TitleInfo, language: str
+    ) -> TitleInfo:
+        """`info` with TMDB's English overview when it has none in the app's language."""
+        if info.overview or language == ENGLISH:
+            return info
+        english = await _optional_call(
+            self._info(kind, item_id, ENGLISH), kind, item_id, "English overview"
+        )
+        if english is not None and english.overview:
+            return info.model_copy(update={"overview": english.overview})
+        return info
 
     async def _fetch_tv_extras(self, tv_id: int) -> TitleExtras:
-        return await self._fetch_extras(MediaType.TV, tv_id)
-
-    async def _fetch_extras(self, kind: MediaType, item_id: int) -> TitleExtras:
-        """The details and the cast at once, then the videos (in the preferred languages and
-        the title's own); the overview again in English when the app's language has none."""
+        """A show's details and cast at once, then its videos (in the preferred languages and
+        the show's own); the overview again in English when the app's language has none."""
+        kind, item_id = MediaType.TV, tv_id
         language = tmdb_language()
         info_result, cast_result = await asyncio.gather(
             self._info(kind, item_id, language),
@@ -628,14 +710,8 @@ class DiscoveryService:
         )
         if isinstance(info_result, BaseException):
             raise info_result
-        info = info_result
         cast = _optional(cast_result, kind, item_id, "cast")
-        if not info.overview and language != ENGLISH:
-            english = await _optional_call(
-                self._info(kind, item_id, ENGLISH), kind, item_id, "English overview"
-            )
-            if english is not None and english.overview:
-                info = info.model_copy(update={"overview": english.overview})
+        info = await self._english_overview(kind, item_id, info_result, language)
         preferred = trailer_languages()
         asked = [code for code in dict.fromkeys((*preferred, info.original_language or "")) if code]
         videos = await _optional_call(

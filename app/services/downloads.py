@@ -50,6 +50,7 @@ from app.models import (
     TorrentApp,
     TorrentRelease,
 )
+from app.services.remote import ReleaseRefused
 from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
 from app.services.torrent_app import find_torrent_app
@@ -63,6 +64,9 @@ GrabListener = Callable[[GrabTarget], None]
 Opener = Callable[[str], None]  # opens a file path or magnet link with its Windows handler
 
 ITORRENTS_URL = "https://itorrents.org/torrent/{}.torrent"  # hash in UPPERCASE hex
+# itorrents.org often has no copy of a new release, or is slow to say so: a short wait of its own
+# (instead of the shared client's 10 s) before the grab goes on with the magnet.
+ITORRENTS_TIMEOUT = httpx.Timeout(4.0, connect=3.0)
 MAX_TORRENT_BYTES = 10 * 1024 * 1024
 MAX_NAME_LENGTH = 120
 TORRENT_CACHE_KEEP = 50  # .torrent files kept in the APP-mode cache folder
@@ -104,10 +108,24 @@ REFUSED_KEEP = 500  # refused releases' info hashes kept (Settings.refused_hashe
 
 
 class GrabError(Exception):
-    """A release could not be grabbed (user-facing text)."""
+    """A release could not be grabbed (user-facing text). A plain GrabError is the torrent
+    program's or the folder's (none set up, can't be opened or written): another release would
+    fail the same way. A `ReleaseError` belongs to the one release."""
 
 
-class ProgramInTorrent(GrabError):
+class ReleaseError(GrabError):
+    """A failure of this one release, not of the program or folder: no link at all, or no
+    .torrent to be had (none from its link nor itorrents.org, or one that fails the strict check)
+    and nothing to send its magnet to. A one-click download tries its next pick; the automatic
+    downloads move on to the next episode."""
+
+
+# What belongs to the one release, whoever noticed: AirGrabber (ReleaseError) or the remote
+# program turning it down (ReleaseRefused, a RemoteError).
+RELEASE_FAILURES: tuple[type[Exception], ...] = (ReleaseError, ReleaseRefused)
+
+
+class ProgramInTorrent(ReleaseError):
     """A release's .torrent holds a program (app/services/torrent_files.py): malware dressed up as
     a video. It is never handed on; a one-click download tries the next best release. Its info
     hash is remembered (`Settings.refused_hashes`), so it is refused again later even when its
@@ -273,7 +291,7 @@ class DownloadService:
         if magnet is None and info_hash:
             magnet = build_magnet(info_hash, release.title)
         if magnet is None:
-            raise GrabError(t(NO_LINK))
+            raise ReleaseError(t(NO_LINK))
         await self._open(magnet, app)
         log.info("Grabbed %r: magnet opened in %s", release.title, app.name)
         return GrabResult(outcome=GrabOutcome.OPENED, message=message), app.name, info_hash
@@ -303,7 +321,7 @@ class DownloadService:
             if magnet is None and info_hash:
                 magnet = build_magnet(info_hash, release.title)
             if magnet is None:
-                raise GrabError(t(NO_LINK))
+                raise ReleaseError(t(NO_LINK))
             await client.add_magnet(magnet, movie=movie)
             log.info("Grabbed %r: magnet sent to %s", release.title, name)
         sent = GrabResult(outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=name))
@@ -332,7 +350,10 @@ class DownloadService:
         self._refuse_known(release, info_hash or (_magnet_hash(magnet) if magnet else None))
         if content is None and info_hash:
             content, _ = await self._fetch_torrent(
-                ITORRENTS_URL.format(info_hash.upper()), "itorrents.org", info_hash
+                ITORRENTS_URL.format(info_hash.upper()),
+                "itorrents.org",
+                info_hash,
+                timeout=ITORRENTS_TIMEOUT,
             )
         if content is not None and (suffix := program_inside(content)) is not None:
             log.warning("Refused %r: its torrent holds a %s file", release.title, suffix)
@@ -382,9 +403,9 @@ class DownloadService:
             )
             log.info("Grabbed %r: saved %s", release.title, path)
         elif not self._remote.configured:
-            raise GrabError(t(NO_REMOTE_FALLBACK))
+            raise ReleaseError(t(NO_REMOTE_FALLBACK))
         elif magnet is None:
-            raise GrabError(
+            raise ReleaseError(
                 t(
                     "No .torrent file is available for this release, and it has no magnet "
                     "link to send to {program}.",
@@ -428,15 +449,22 @@ class DownloadService:
             log.warning("Could not prune the torrent cache folder", exc_info=True)
 
     async def _fetch_torrent(
-        self, url: str, label: str, info_hash: str | None
+        self,
+        url: str,
+        label: str,
+        info_hash: str | None,
+        *,
+        timeout: httpx.Timeout | None = None,
     ) -> tuple[bytes | None, str | None]:
         """GET a .torrent file, following up to five redirects by hand.
 
         Returns (torrent bytes, None), or (None, magnet) when the link redirects to a magnet
         link, or (None, None). The file must pass `torrent_problem` (for `info_hash` when it is
         known): a damaged file or one for another torrent counts as no file. Failures are
-        logged by `label` and reason only: the URL may hold an API key.
+        logged by `label` and reason only: the URL may hold an API key. `timeout` replaces the
+        shared client's timeouts for each of these requests.
         """
+        request_timeout = httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
             body = bytearray()
@@ -444,7 +472,11 @@ class DownloadService:
             next_url: str | None = None
             try:
                 async with self._http.stream(
-                    "GET", current, headers=BROWSER_HEADERS, follow_redirects=False
+                    "GET",
+                    current,
+                    headers=BROWSER_HEADERS,
+                    follow_redirects=False,
+                    timeout=request_timeout,
                 ) as response:
                     if response.is_redirect:
                         location = response.headers.get("Location", "").strip()

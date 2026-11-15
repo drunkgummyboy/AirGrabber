@@ -21,7 +21,7 @@ import httpx
 from app.database import SettingsRepository
 from app.models import RemoteKind, Settings
 from app.services.qbittorrent import QBittorrentClient
-from app.services.remote import RemoteError
+from app.services.remote import ReleaseRefused, RemoteError
 from app.services.settings import SettingsService
 from tests.multipart import parse_multipart
 
@@ -250,12 +250,14 @@ class AddTests(QBittorrentTestCase):
         self.qbt.add_answer = lambda: httpx.Response(200, text="Fails.")
         error = await self.error_of(self.client.add_magnet(MAGNET))
         self.assertIn("qBittorrent didn't add the torrent", str(error))
+        self.assertIsInstance(error, ReleaseRefused)  # this release: the next one may go
         self.assertEqual(self.qbt.calls[-1], "auth/logout")
 
     async def test_invalid_torrent_file(self) -> None:
         self.qbt.add_answer = lambda: httpx.Response(415, text="'x' is not a valid torrent file.")
         error = await self.error_of(self.client.add_torrent(b"junk", "x.torrent"))
         self.assertEqual(str(error), "qBittorrent says this .torrent file isn't valid.")
+        self.assertIsInstance(error, ReleaseRefused)
 
     async def test_newer_json_answers(self) -> None:
         added = json.loads(fixture("torrents_add_json.json"))
@@ -267,6 +269,7 @@ class AddTests(QBittorrentTestCase):
         self.qbt.add_answer = lambda: httpx.Response(409)
         error = await self.error_of(self.client.add_magnet(MAGNET))
         self.assertIn("It may have it already", str(error))
+        self.assertIsInstance(error, ReleaseRefused)
 
     async def test_rejects_non_magnet_links(self) -> None:
         with self.assertRaises(ValueError):

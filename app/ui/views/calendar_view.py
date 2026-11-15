@@ -21,7 +21,10 @@ shape midweek.
 A library change (a show tracked from a suggestion, say) reloads the page on screen through
 `refresh_quietly`: the new grid is built hidden under the one on screen and swapped in when
 it is complete, so the page doesn't blank, rebuild day by day or lose its scroll position.
-Other loads (another week, the week count, the card size, the first load) build in view.
+The suggestions are fetched while the episodes are built; when they take longer than
+SUGGESTIONS_WAIT_S after that (a slow TVMaze), the grid goes in with its episodes and they
+follow into it as they arrive. Other loads (another week, the week count, the card size, the
+first load) build in view.
 A grab doesn't reload the page: only the cards of the grabbed episodes are built anew in their
 place (`take_grab`, MainWindow's `_on_grab`), with their ✓ / missing pills as they are now.
 
@@ -125,6 +128,9 @@ SUGGESTION_CAP = 8
 # Suggestions fetched a day: more than a day shows, so a day keeps enough once the shows already
 # suggested on another day of its week row are left out (`take_new`).
 SUGGESTION_POOL = 2 * SUGGESTION_CAP
+# A quiet reload waits this long for the suggestions once its episodes are built: in time, the
+# grid goes in complete; else with its episodes, the suggestions following into it.
+SUGGESTIONS_WAIT_S = 1.0
 TODAY_BORDER_WIDTH = 2
 PILL_PAD_X = 10  # the "Today" pill's padding around its text
 PILL_PAD_Y = 2
@@ -276,8 +282,8 @@ def kept_scroll(
 
 
 class _Shown(NamedTuple):
-    """What a complete grid shows; a quiet reload of the same keeps it on screen until the
-    new one is built."""
+    """What a grid on screen with its episodes shows; a quiet reload of the same keeps it on
+    screen until the new one has its episodes."""
 
     start: date
     end: date
@@ -410,10 +416,12 @@ class CalendarView(BaseView):
         self._empty_box: ctk.CTkFrame | None = None  # made the first time it shows
         self._weeks: ctk.CTkFrame | None = None  # the grid of day cells, rebuilt on every load
         self._pending: ctk.CTkFrame | None = None  # a quiet load's grid, hidden until complete
-        self._shown: _Shown | None = None  # what the complete grid on screen shows
+        self._shown: _Shown | None = None  # what the grid on screen shows (its episodes all in)
         self._placed: list[_Placed] = []  # its tracked cards (`take_grab`)
         self._grabs: list[GrabTarget] = []  # grabs waiting for their cards' rebuild
         self._grab_task: asyncio.Task[None] | None = None
+        # The load whose grid is on screen with its episodes (its suggestions may still come).
+        self._ready_load: asyncio.Task[Any] | None = None
         self._rendered_for: date | None = None  # the "today" of the last load
         self._offset = 0  # weeks from the current one; this session only
         self._unfolded: set[FoldKey] = set()  # the stack cards unfolded; this session only
@@ -577,79 +585,113 @@ class CalendarView(BaseView):
         self._range.configure(text=range_label(start, end))
         profile_id = prefs.current_profile
         shown = _Shown(start, end, today, profile_id, scale, prefs.show_suggestions)
-        # Quietly only over a complete grid of the same weeks; else built in view.
+        # Quietly only over a grid of the same weeks with its episodes in; else built in view.
         quiet = quiet and self._weeks is not None and self._shown == shown
         self._drop_pending()
         self._grabs = []  # the load shows them all
         if not quiet:
             self._shown = None
             self._note.configure(text="")
-
-        entries = await self._library.calendar(start, end, profile_id=profile_id)
-        # What you have and miss: with Plex only (the calls answer "nothing" without it).
-        marks = self._library.plex_connected
-        missing = await self._library.missing_between(start, end, profile_id=profile_id)
-        new = await self._library.new_between(start, end, profile_id=profile_id)
-        in_plex = await self._library.plex_between(start, end)
-        downloaded = await self._library.downloaded_between(start, end)
-        follows_none = (
-            self._on_pick_shows is not None
-            and (await self._library.stats(profile_id=profile_id)).tracked_shows == 0
-        )
-        if not self.winfo_exists():
-            return
-        self.show_empty_box(follows_none)
-        self._profile_id = profile_id
-        weeks = self._new_grid(hidden=quiet)
-        placed: list[_Placed] = []
-        cells = await self._render_tracked(
-            weeks,
-            placed,
-            _days(start, end),
-            by_day(entries),
-            today=today,
-            scale=scale,
-            marks=marks,
-            missing=missing,
-            new=new,
-            in_plex=in_plex,
-            downloaded=downloaded,
-        )
-        if prefs.calendar_layout is CalendarLayout.ROLLING:
-            coming = await self._library.coming_up(
-                max(end, today), profile_id=profile_id, limit=COMING_UP_COUNT
+        # The suggestions (TVMaze, maybe slow) are fetched while the episodes are built.
+        first = suggestion_start(start, end, today=today) if prefs.show_suggestions else None
+        fetch: asyncio.Future[list[CalendarEntry]] | None = None
+        if first is not None:
+            fetch = asyncio.ensure_future(
+                self._library.suggestions(
+                    first, end, profile_id=profile_id, per_day=SUGGESTION_POOL
+                )
+            )
+        try:
+            entries = await self._library.calendar(start, end, profile_id=profile_id)
+            # What you have and miss: with Plex only (the calls answer "nothing" without it).
+            marks = self._library.plex_connected
+            missing = await self._library.missing_between(start, end, profile_id=profile_id)
+            new = await self._library.new_between(start, end, profile_id=profile_id)
+            in_plex = await self._library.plex_between(start, end)
+            downloaded = await self._library.downloaded_between(start, end)
+            follows_none = (
+                self._on_pick_shows is not None
+                and (await self._library.stats(profile_id=profile_id)).tracked_shows == 0
             )
             if not self.winfo_exists():
                 return
-            self._render_coming_up(weeks, coming, scale=scale)
-
-        failed = False
-        first = suggestion_start(start, end, today=today) if prefs.show_suggestions else None
-        if first is not None:
-            if not quiet:
-                self._note.configure(text=t("Finding suggestions…"))
-            try:
-                suggestions = await self._library.suggestions(
-                    first, end, profile_id=profile_id, per_day=SUGGESTION_POOL
+            self.show_empty_box(follows_none)
+            self._profile_id = profile_id
+            weeks = self._new_grid(hidden=quiet)
+            placed: list[_Placed] = []
+            cells = await self._render_tracked(
+                weeks,
+                placed,
+                _days(start, end),
+                by_day(entries),
+                today=today,
+                scale=scale,
+                marks=marks,
+                missing=missing,
+                new=new,
+                in_plex=in_plex,
+                downloaded=downloaded,
+            )
+            if prefs.calendar_layout is CalendarLayout.ROLLING:
+                coming = await self._library.coming_up(
+                    max(end, today), profile_id=profile_id, limit=COMING_UP_COUNT
                 )
-            except Exception:
-                log.exception("Couldn't load calendar suggestions for %s – %s", first, end)
-                failed = True
-            else:
                 if not self.winfo_exists():
                     return
-                await self._render_suggestions(
-                    {day: cell for day, cell in cells.items() if day >= first},
-                    day_suggestions(suggestions, cap=SUGGESTION_POOL),
-                    scale=scale,
-                )
-        if not self.winfo_exists():
-            return
-        if quiet:
-            await self._swap_in(weeks)
-        self._placed = placed
-        self._shown = shown
-        self._note.configure(text=t("Couldn't load suggestions") if failed else "")
+                self._render_coming_up(weeks, coming, scale=scale)
+
+            failed = False
+            if quiet:
+                if fetch is not None:  # a little longer for them, then the grid goes in anyway
+                    await asyncio.wait({fetch}, timeout=SUGGESTIONS_WAIT_S)
+                if first is not None and fetch is not None and fetch.done():  # complete, hidden
+                    failed = not await self._add_suggestions(cells, first, end, fetch, scale)
+                    fetch = None
+                    if not self.winfo_exists():
+                        return
+                await self._swap_in(weeks)
+                if not self.winfo_exists() or not weeks.winfo_exists():
+                    return
+            # The grid on screen has its episodes: a grab updates its cards from here on.
+            self._placed = placed
+            self._shown = shown
+            self._ready_load = asyncio.current_task()
+
+            if first is not None and fetch is not None:  # into the grid on screen as they arrive
+                if not quiet:
+                    self._note.configure(text=t("Finding suggestions…"))
+                failed = not await self._add_suggestions(cells, first, end, fetch, scale)
+            if not self.winfo_exists():
+                return
+            self._note.configure(text=t("Couldn't load suggestions") if failed else "")
+        finally:
+            if fetch is not None and not fetch.done():
+                fetch.cancel()
+            elif fetch is not None and not fetch.cancelled():
+                fetch.exception()  # retrieved: a failure is logged where it is used
+
+    async def _add_suggestions(
+        self,
+        cells: Mapping[date, ctk.CTkFrame],
+        first: date,
+        end: date,
+        fetch: asyncio.Future[list[CalendarEntry]],
+        scale: CardScale,
+    ) -> bool:
+        """The suggestions `fetch` brings, into `cells` from `first` on; False when they
+        couldn't be fetched (logged)."""
+        try:
+            suggestions = await fetch
+        except Exception:
+            log.exception("Couldn't load calendar suggestions for %s – %s", first, end)
+            return False
+        if self.winfo_exists():
+            await self._render_suggestions(
+                {day: cell for day, cell in cells.items() if day >= first},
+                day_suggestions(suggestions, cap=SUGGESTION_POOL),
+                scale=scale,
+            )
+        return True
 
     # -- the box while no show is followed ---------------------------------------------------------
 
@@ -838,7 +880,8 @@ class CalendarView(BaseView):
 
     def take_grab(self, target: GrabTarget) -> bool:
         """Rebuild only the cards of the grabbed episodes (their ✓ and missing pills), not the
-        whole grid; while the grid isn't complete (a load running) the page reloads instead.
+        whole grid; while a load hasn't put its episodes on screen yet the page reloads instead
+        (while its suggestions come the cards are taken in place).
         Without Plex the cards say nothing of what you have: nothing to rebuild (their
         Download buttons follow the grab themselves)."""
         if self._shown is None or self._loading():
@@ -851,8 +894,9 @@ class CalendarView(BaseView):
         return True
 
     def _loading(self) -> bool:
+        """A load runs whose episodes aren't on screen yet."""
         task = self._load_task
-        return task is not None and not task.done()
+        return task is not None and not task.done() and task is not self._ready_load
 
     async def _rebuild_grabbed(self) -> None:
         """The waiting grabs' cards, built anew in their place with what is missing and had

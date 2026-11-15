@@ -17,7 +17,9 @@ the row back with the reason in the problem line. "✓ Clear finished…" asks, 
 finished task (grabs and the program's own) from the program and the page.
 
 The data comes from DownloadStatusService, which checks every 10 s while this page is on screen
-(`<Map>` / `<Unmap>`) and tells the page about every new overview. Rows are kept by what they
+(`<Map>` / `<Unmap>`) and tells the page about every new overview. Before its first check is
+done the page lists the grabs the history knows (`from_history`) under "Checking the torrent
+program…", their states blank and "Clear finished" greyed; the check fills them in. Rows are kept by what they
 show (`row_key`: the grab, or the program's task) and updated in place, each widget only when
 its text or colour changed; a new task makes one new row and moves the others, so a NAS with
 hundreds of finished tasks stays smooth. A row opens the show's window (an episode, also a
@@ -37,6 +39,15 @@ from <program>…" (a task in the program) or "Remove from list" (a row without 
 Above the grabs (3.0.1), while one-click downloads wait in the download queue
 (app/services/download_queue.py), a small "Waiting (3)" group lists them, each with a ✕ that
 takes it out of the queue: closing the window a download was asked for in leaves it here.
+
+A downloading row says how fast it goes and how long it has left, as its program says, under
+its bar ("4.2 MB/s · 12 min left", `transfer_text`); paused or done rows don't.
+
+Below the grabs (item 23), while there is something in it (under All and Problems), "Couldn't
+find automatically" (`GivenUpGroup`) lists what the automatic downloads gave up on
+(app/services/given_up.py), read at every showing of the page: each row has "Try again" (the
+give-up cleared and a download queued now) and "Choose…" (the search window, `PageActions.choose`).
+The "Couldn't find …" notice's "Show" (main window) opens the page there (`show_given_up`).
 """
 
 from __future__ import annotations
@@ -61,6 +72,7 @@ from app.models import (
     DownloadsOverview,
     DownloadState,
     FreeSpace,
+    GivenUp,
     GrabOutcome,
     ListedDownload,
     MediaType,
@@ -74,6 +86,7 @@ from app.models.downloads import MovedTo
 from app.services import DiscoveryService, DownloadStatusService, ImageCache, SettingsService
 from app.services.download_queue import DownloadQueue
 from app.services.download_status import Located
+from app.services.given_up import GivenUpService
 from app.services.release_groups import block_group
 from app.services.search import release_group
 from app.services.tmdb import TMDBError
@@ -97,6 +110,7 @@ PROGRESS_HINT = N_(
     "Progress shows when AirGrabber can reach your torrent program — set it up in "
     "Settings → Where downloads go"
 )
+CHECKING_TEXT = N_("Checking the torrent program…")
 CLEAR_TEXT = N_("✓ Clear finished")
 CLEAR_TIP = N_(
     "Takes finished downloads, and ones your torrent program no longer has, off this list. Your "
@@ -158,6 +172,12 @@ UNREACHABLE_TIP = N_("The folder where finished downloads end up can't be reache
 NO_SHOW_TIP = N_("AirGrabber doesn't know this show any more")
 WAITING_TEXT = N_("Waiting ({n})")
 DROP_TIP = N_("Remove from the queue")
+GIVEN_UP_TITLE = N_("Couldn't find automatically")
+TRIED_TEXT = N_("Last searched {when}")
+TRY_AGAIN_TEXT = N_("Try again")
+TRY_AGAIN_TIP = N_("Searches for it now, and the automatic downloads look for it again")
+CHOOSE_TEXT = N_("Choose…")
+CHOOSE_TIP = N_("Pick a download yourself")
 IMDB_TITLE_URL = "https://www.imdb.com/title/{}/"
 IMDB_FIND_URL = "https://www.imdb.com/find/?q="
 FILE_GLYPH = "📄"  # a task AirGrabber doesn't recognise: in the poster's place, theme-coloured
@@ -173,6 +193,10 @@ _POSTER = (40, 60)
 _STATE_WIDTH = 210
 _WAITING_ROW_HEIGHT = 36
 _DETAILS_WAIT_S = 5.0
+# "Show" waits at most SHOW_WAIT_S (looking every SCROLL_WAIT_S) for the page's rows to be made
+# and the section laid out below them, then scrolls to it.
+SHOW_WAIT_S = 10.0
+SCROLL_WAIT_S = 0.05
 
 _STATE_COLORS: dict[DownloadState, theme.Color] = {
     DownloadState.DOWNLOADING: theme.TEXT,
@@ -276,6 +300,8 @@ class PageActions:
     window)."""
 
     again: Callable[[DownloadEntry, bool], None]
+    # "Couldn't find automatically"'s Choose…: the title's search window (greyed without it).
+    choose: Callable[[GivenUp], None] | None = None
 
 
 def folder_tip(located: Located) -> str:
@@ -471,6 +497,44 @@ def size_text(size: int) -> str:
     return f"{number(gb, '.1f')} GB"
 
 
+def speed_text(bps: int) -> str:
+    """"850 KB/s", "4.2 MB/s", "25 MB/s" (binary units like `size_text` and the torrent
+    programs themselves; a decimal comma in Dutch). Judged by what it would show: 1023.6 KB/s
+    is "1.0 MB/s", not "1024 KB/s"."""
+    kb = bps / 1024
+    if round(kb) < 1024:
+        return f"{kb:.0f} KB/s"
+    mb = kb / 1024
+    if round(mb, 1) >= 10:
+        return f"{mb:.0f} MB/s"
+    return f"{number(mb, '.1f')} MB/s"
+
+
+def time_left_text(seconds: int) -> str:
+    """"under a minute left", "12 min left", "2 h 5 min left", "1 day left", "3 days left"."""
+    if seconds < 60:
+        return t("under a minute left")
+    if seconds < 3600:  # "1 h" only from the hour on: 3599 s is 59 min
+        return t("{n} min left", n=min(round(seconds / 60), 59))
+    if seconds < 86400:  # never "24 h": 86399 s is 23 h 59 min
+        hours, rest = divmod(min(round(seconds / 60), 24 * 60 - 1), 60)
+        if rest:
+            return t("{hours} h {minutes} min left", hours=hours, minutes=rest)
+        return t("{hours} h left", hours=hours)
+    return tn("{n} day left", "{n} days left", seconds // 86400)
+
+
+def transfer_text(speed_bps: int | None, eta_s: int | None) -> str:
+    """A downloading row's "4.2 MB/s · 12 min left", each part when the program says it (no
+    speed: a stalled download says nothing of it)."""
+    parts = []
+    if speed_bps:
+        parts.append(speed_text(speed_bps))
+    if eta_s is not None:
+        parts.append(time_left_text(eta_s))
+    return " · ".join(parts)
+
+
 def space_text(space: FreeSpace) -> str:
     """"Your NAS is almost full: 12 GB free"."""
     free = size_text(space.free_bytes)
@@ -545,6 +609,7 @@ class RowLook:
     state_color: theme.Color
     bar: float | None  # the progress bar's value; None hides it
     bar_paused: bool
+    transfer: str  # a downloading row's "4.2 MB/s · 12 min left" under its bar ("": none)
     poster: str | None
     glyph: bool  # the file glyph instead of a poster
     clickable: bool
@@ -571,14 +636,19 @@ def row_look(item: ListedDownload, overview: DownloadsOverview, now: datetime) -
     bar = None
     if state in (DownloadState.DOWNLOADING, DownloadState.STOPPED):
         bar = progress or 0.0
+    transfer = ""
+    if state is DownloadState.DOWNLOADING and item.task is not None:  # paused or done: neither
+        transfer = transfer_text(item.task.speed_bps, item.task.eta_s)
+    checking = overview.checking and state is DownloadState.UNKNOWN  # no verdict before it's in
     return RowLook(
         title=title,
         tag=tag,
         meta=meta,
-        state=state_text(state, progress, program),
+        state="" if checking else state_text(state, progress, program),
         state_color=state_color(state),
         bar=bar,
         bar_paused=state is DownloadState.STOPPED,
+        transfer=transfer,
         poster=poster_url(item),
         glyph=glyph,
         clickable=clickable,
@@ -611,12 +681,14 @@ class DownloadsView(BaseView):
         on_open_film: Callable[[int], Awaitable[bool]] | None = None,
         actions: PageActions | None = None,
         queue: DownloadQueue | None = None,
+        given_up: GivenUpService | None = None,
         **kwargs: Any,
     ) -> None:
         """`on_open_film(tmdb_id)`: opens a film's info window; False when it couldn't (the
         row then opens the film on IMDb). `actions`: the ⋯ menus' Download again… (greyed out
         without it). `queue`: the download queue, whose waiting
-        downloads show at the top (none without it)."""
+        downloads show at the top (none without it). `given_up`: what the automatic downloads
+        couldn't find, listed at the bottom (none without it)."""
         super().__init__(master, **kwargs)
         self._on_open_film = on_open_film
         self._actions = actions
@@ -708,25 +780,56 @@ class DownloadsView(BaseView):
             self._unsubscribe_queue = queue.subscribe(self._on_queue)
             self._paint_waiting()
 
+        # What the automatic downloads couldn't find, below the grabs.
+        self._given_up = given_up
+        self._given_up_task: asyncio.Task[None] | None = None  # a Try again
+        self._read_task: asyncio.Task[None] | None = None  # reading the section
+        self._scroll_task: asyncio.Task[None] | None = None
+        self._shown_rows = 0  # the rows the filter lists: the section goes below them
+        self.given_up_group: GivenUpGroup | None = None
+        if given_up is not None:
+            self.given_up_group = GivenUpGroup(
+                self._body,
+                on_try_again=self._try_again,
+                on_choose=actions.choose if actions is not None else None,
+            )
+
         self._unsubscribe = downloads.subscribe(self._on_overview)
         # Checks every 10 s only while the page is on screen.
         self.bind("<Map>", lambda _event: self._downloads.set_visible(True), add="+")
         self.bind("<Unmap>", lambda _event: self._downloads.set_visible(False), add="+")
 
     async def load(self) -> None:
+        self.refresh_given_up()  # its own task: it never holds up or breaks the program's check
         latest = self._downloads.latest
         if latest is not None:
             self._render(latest)
-        elif not self._rows and self._loading is None:
-            self._loading = LoadingBar(self._body)
-            self._loading.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        else:
+            if not self._rows and self._loading is None:
+                self._loading = LoadingBar(self._body)
+                self._loading.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+            # The grabs the history knows at once: the program may take a while to answer.
+            first = await self._downloads.from_history()
+            if self._overview is None and self.winfo_exists():  # no check came in meanwhile
+                self._render(first)
         await self._downloads.check()  # the listener renders it
+
+    def refresh_if_stale(self) -> None:
+        """The page is shown: loaded when stale (the section with it), else only "Couldn't find
+        automatically" read again (the page itself stays current through its checks)."""
+        if self.is_stale():
+            super().refresh_if_stale()
+        else:
+            self.refresh_given_up()
 
     def destroy(self) -> None:
         self._unsubscribe()
         self._unsubscribe_queue()
         self._downloads.set_visible(False)
-        for task in (self._open_task, self._menu_task, self._build_task, *self._action_tasks):
+        for task in (
+            self._open_task, self._menu_task, self._build_task, self._given_up_task,
+            self._read_task, self._scroll_task, *self._action_tasks,
+        ):
             if task is not None:
                 task.cancel()
         if self._message_job is not None:
@@ -756,6 +859,80 @@ class DownloadsView(BaseView):
             group.grid(row=0, column=0, sticky="ew", padx=10, pady=(4, 8))
         else:
             group.grid_remove()
+
+    # -- what the automatic downloads couldn't find --------------------------------------------
+
+    def refresh_given_up(self) -> None:
+        """Read "Couldn't find automatically" again (a read under way is dropped for this one)."""
+        if self._given_up is None:
+            return
+        if self._read_task is not None:
+            self._read_task.cancel()
+        self._read_task = spawn(self.load_given_up(), name="DownloadsView.given_up")
+
+    async def load_given_up(self) -> None:
+        """Read "Couldn't find automatically" again and show it (or not)."""
+        service, group = self._given_up, self.given_up_group
+        if service is None or group is None:
+            return
+        items = await service.listing()
+        if self.winfo_exists():
+            group.show_items(items)
+            self._place_given_up()
+
+    def _place_given_up(self) -> None:
+        """Below the rows the filter lists, while it has something (under All and Problems)."""
+        group = self.given_up_group
+        if group is None:
+            return
+        shown = self._filter in (EntryFilter.ALL, EntryFilter.PROBLEMS)
+        if group.labels and shown:
+            group.grid(
+                row=max(self._shown_rows, 1) + 1, column=0, sticky="ew", padx=10, pady=(14, 8)
+            )
+        else:
+            group.grid_remove()
+
+    def _try_again(self, item: GivenUp) -> None:
+        service = self._given_up
+        if service is None:
+            return
+        if self._given_up_task is not None and not self._given_up_task.done():
+            return  # one at a time: the list is read again after each
+
+        async def run() -> None:
+            await service.try_again(item)
+            await self.load_given_up()
+
+        self._given_up_task = spawn(run(), name="DownloadsView.try_again")
+
+    def show_given_up(self) -> None:
+        """The "Couldn't find …" notice's Show: the section read again and scrolled to (the
+        filter back to All when it hides it)."""
+        if self._filter not in (EntryFilter.ALL, EntryFilter.PROBLEMS):
+            self.set_filter(EntryFilter.ALL)
+        if self._scroll_task is not None and not self._scroll_task.done():
+            self._scroll_task.cancel()
+        self._scroll_task = spawn(self._scroll_to_given_up(), name="DownloadsView.show_given_up")
+
+    async def _scroll_to_given_up(self) -> None:
+        """Read the section, wait (at most SHOW_WAIT_S) until the page has its rows (a first
+        visit: the program's answer, then the rows made a few at a time) and the section is
+        laid out below them, then scroll to it."""
+        await self.load_given_up()
+        group = self.given_up_group
+        if group is None:
+            return
+        for _ in range(round(SHOW_WAIT_S / SCROLL_WAIT_S)):
+            if not self.winfo_exists() or not group.winfo_manager():
+                return
+            if self._overview is not None and not self.building:
+                self._body.update_idletasks()
+                total = self._body.winfo_height()
+                if total > 1 and group.winfo_y() > 0:
+                    self._body._parent_canvas.yview_moveto(group.winfo_y() / total)
+                    return
+            await asyncio.sleep(SCROLL_WAIT_S)
 
     # -- the filter and the list ---------------------------------------------------------------
 
@@ -943,14 +1120,23 @@ class DownloadsView(BaseView):
             pass  # the window is closing
 
     def _render(self, overview: DownloadsOverview) -> None:
+        self._render_rows(overview)
+        self._place_given_up()
+
+    def _render_rows(self, overview: DownloadsOverview) -> None:
         self._overview = overview
-        if self._loading is not None:
+        rows = overview.rows
+        self._shown_rows = 0
+        if self._loading is not None and (rows or not overview.checking):
             self._loading.destroy()
             self._loading = None
         self._show_note(overview)
         self._show_banner(overview.space)
         self._show_header(overview)
-        rows = overview.rows
+        if not rows and overview.checking:  # the program may still list some: no "No downloads"
+            self._clear_rows()
+            self._show_no_match(False)
+            return
         if not rows:
             self._clear_rows()
             self._show_no_match(False)
@@ -964,6 +1150,7 @@ class DownloadsView(BaseView):
             self._empty.destroy()
             self._empty = None
         shown = filter_entries(rows, self._filter)
+        self._shown_rows = len(shown)
         self._show_no_match(not shown)
         self._place_rows(shown, overview)
 
@@ -1058,7 +1245,7 @@ class DownloadsView(BaseView):
         if text != str(self.clear_button.cget("text")):
             self.clear_button.configure(text=text)
         self._clear_tip.set_text(tip)
-        state = "normal" if has_finished else "disabled"
+        state = "normal" if has_finished and not overview.checking else "disabled"
         if state != str(self.clear_button.cget("state")):
             self.clear_button.configure(state=state)
 
@@ -1088,6 +1275,8 @@ class DownloadsView(BaseView):
             text, color = f"⚠ {self._message}", theme.WARNING
         elif overview.problem:
             text, color = f"⚠ {overview.problem}", theme.WARNING
+        elif overview.checking:
+            text, color = t(CHECKING_TEXT), theme.TEXT_MUTED
         elif not overview.progress_available and overview.entries:
             text, color = t(PROGRESS_HINT), theme.TEXT_MUTED
         else:
@@ -1203,6 +1392,95 @@ class WaitingGroup(ctk.CTkFrame):
         return tuple(item.label for item in self._shown)
 
 
+class GivenUpGroup(ctk.CTkFrame):
+    """"Couldn't find automatically": a slim row per title (its label, "Last searched …",
+    Try again (`on_try_again`) and Choose… (`on_choose`; greyed without it))."""
+
+    def __init__(
+        self,
+        master: Any,
+        *,
+        on_try_again: Callable[[GivenUp], None],
+        on_choose: Callable[[GivenUp], None] | None,
+    ) -> None:
+        super().__init__(master, fg_color="transparent")
+        self._on_try_again = on_try_again
+        self._on_choose = on_choose
+        self._shown: tuple[GivenUp, ...] = ()
+        self.rows: list[ctk.CTkFrame] = []
+        self.buttons: list[tuple[ctk.CTkButton, ctk.CTkButton]] = []  # each row's two
+        self.grid_columnconfigure(0, weight=1)
+        self.title = ctk.CTkLabel(
+            self, text=t(GIVEN_UP_TITLE), font=theme.font(13, bold=True),
+            text_color=theme.TEXT_MUTED, anchor="w",
+        )
+        self.title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 2))
+
+    def show_items(self, items: Sequence[GivenUp]) -> None:
+        shown = tuple(items)
+        if shown == self._shown:
+            return
+        self._shown = shown
+        for row in self.rows:
+            row.destroy()
+        self.rows, self.buttons = [], []
+        now = datetime.now().astimezone()
+        for index, item in enumerate(shown, start=1):
+            row = ctk.CTkFrame(
+                self, fg_color=theme.SURFACE, corner_radius=8, height=_WAITING_ROW_HEIGHT
+            )
+            row.grid(row=index, column=0, sticky="ew", pady=2)
+            row.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(
+                row, text=item.label, font=theme.font(13), text_color=theme.TEXT, anchor="w"
+            ).grid(row=0, column=0, sticky="w", padx=(14, 8), pady=4)
+            tried = t(TRIED_TEXT, when=when_text(item.tried_at, now)) if item.tried_at else ""
+            ctk.CTkLabel(
+                row, text=tried, font=theme.font(12), text_color=theme.TEXT_MUTED, anchor="w"
+            ).grid(row=0, column=1, sticky="w", pady=4)
+            again = self._button(
+                row, t(TRY_AGAIN_TEXT), functools.partial(self._on_try_again, item)
+            )
+            again.grid(row=0, column=2, padx=(8, 4), pady=4)
+            add_tooltip(again, t(TRY_AGAIN_TIP))
+            on_choose = self._on_choose
+            choose = self._button(
+                row,
+                t(CHOOSE_TEXT),
+                functools.partial(on_choose, item) if on_choose is not None else None,
+            )
+            choose.grid(row=0, column=3, padx=(0, 8), pady=4)
+            add_tooltip(choose, t(CHOOSE_TIP))
+            self.rows.append(row)
+            self.buttons.append((again, choose))
+
+    @staticmethod
+    def _button(
+        row: ctk.CTkFrame, text: str, command: Callable[[], object] | None
+    ) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            row,
+            text=text,
+            width=0,
+            height=28,
+            corner_radius=6,
+            font=theme.font(12, bold=True),
+            fg_color="transparent",
+            hover_color=theme.HOVER,
+            text_color=theme.BUTTON_TEXT,
+            text_color_disabled=theme.TEXT_FAINT,
+            border_width=1,
+            border_color=theme.EDGE,
+            command=command,
+            state="normal" if command is not None else "disabled",
+        )
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """The titles it lists, in order."""
+        return tuple(item.label for item in self._shown)
+
+
 class _Row(ctk.CTkFrame):
     """One row: poster (or a file glyph), name (with "Added in …" for a task added in the
     program), when · where or the task's size,
@@ -1260,6 +1538,7 @@ class _Row(ctk.CTkFrame):
         )
         self._state.pack(anchor="e")
         self._bar: ctk.CTkProgressBar | None = None
+        self._transfer: ctk.CTkLabel | None = None  # "4.2 MB/s · 12 min left", when needed
         self.more = ctk.CTkButton(
             self,
             text="⋯",
@@ -1336,6 +1615,8 @@ class _Row(ctk.CTkFrame):
             self._state.configure(text=look.state, text_color=look.state_color)
         if before is None or (before.bar, before.bar_paused) != (look.bar, look.bar_paused):
             self._show_bar(look.bar, look.bar_paused)
+        if before is None or before.transfer != look.transfer:
+            self._show_transfer(look.transfer)
         if before is None or before.glyph != look.glyph:
             self._show_glyph(look.glyph)
         if before is None or before.clickable != look.clickable:
@@ -1387,6 +1668,26 @@ class _Row(ctk.CTkFrame):
         self._bar.set(value)
         if not self._bar.winfo_manager():
             self._bar.pack(anchor="e", pady=(4, 0))
+
+    def _show_transfer(self, text: str) -> None:
+        """The speed and time left under the bar, in the muted text of the row's details."""
+        if not text:
+            if self._transfer is not None:
+                self._transfer.pack_forget()
+            return
+        if self._transfer is None:
+            self._transfer = ctk.CTkLabel(
+                self._state_box, text="", font=theme.font(12), text_color=theme.TEXT_MUTED,
+                anchor="e", bg_color=theme.SURFACE, height=18,
+            )
+            self._transfer.bind("<Button-1>", lambda _event: self._clicked(), add="+")
+        self._transfer.configure(text=text)
+        if not self._transfer.winfo_manager():
+            bar = self._bar
+            if bar is not None and bar.winfo_manager():
+                self._transfer.pack(anchor="e", after=bar)
+            else:
+                self._transfer.pack(anchor="e")
 
     def _show_glyph(self, show: bool) -> None:
         if show and self._glyph is None:

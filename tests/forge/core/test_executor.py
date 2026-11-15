@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -9,14 +11,14 @@ from unittest import mock
 import httpx
 
 from app.forge.core import executor as executor_module
-from app.forge.core import fsops
+from app.forge.core import fsops, win_copy
 from app.forge.core.executor import NOTHING_DOWNLOADED, Executor, ProgressEvent
 from app.forge.core.planner import ALREADY_NAMED, build_plan
 from app.forge.core.undo import UndoService
 from app.forge.models.history import OpKind, OpState, RunSource
 from app.forge.models.plan import Plan, PlannedLeftovers, PlannedTrailer
 from app.forge.models.preset import PresetOptions
-from app.i18n import Language, current_language, set_language
+from app.i18n import Language, current_language, set_language, t
 from tests.forge.core.journal_base import FakePosters, HistoryTestCase, make_inputs
 
 
@@ -134,7 +136,7 @@ class ExecutorTest(HistoryTestCase):
         plan = build_plan(inputs, "{ny}", PresetOptions())
         real_move = fsops.move_file
 
-        def locked(src: Path, dst: Path) -> None:
+        def locked(src: Path, dst: Path, **_: object) -> None:
             if src.name == "b.mkv":
                 raise PermissionError(32, "The process cannot access the file")
             real_move(src, dst)
@@ -156,7 +158,7 @@ class ExecutorTest(HistoryTestCase):
         real_move = fsops.move_file
         calls = [0]
 
-        def flaky(src: Path, dst: Path) -> None:
+        def flaky(src: Path, dst: Path, **_: object) -> None:
             calls[0] += 1
             if calls[0] > 1:
                 raise OSError(53, "The network path was not found")
@@ -269,7 +271,7 @@ class ExecutorTest(HistoryTestCase):
         plan = build_plan(inputs, "{ny}", PresetOptions())
         real_move = fsops.move_file
 
-        def slow_move(src: Path, dst: Path) -> None:
+        def slow_move(src: Path, dst: Path, **_: object) -> None:
             time.sleep(0.4)
             real_move(src, dst)
 
@@ -283,6 +285,76 @@ class ExecutorTest(HistoryTestCase):
         [summary] = await self.history.list_runs()
         ops = await self.history.operations(summary.id)
         assert [(o.kind, o.state) for o in ops] == [(OpKind.RENAME, OpState.DONE)]
+
+    async def test_a_copy_reports_progress_and_stops_on_cancel(self) -> None:
+        # Review item 16: a 20 GB film copied between shares shows how far it is, and Stop
+        # ends the copy itself (CopyFile2's cancel, faked here), not only the files after it.
+        inputs = make_inputs(self.tmp, {"a.mkv": "Alien", "b.mkv": "Heat"})
+        plan = build_plan(inputs, "{ny}", PresetOptions())
+        gb = 1024**3
+        real_rename = os.rename
+        copied_on: set[int] = set()
+        heard_on: set[int] = set()
+
+        def other_share(a: str, b: str) -> None:
+            if not a.endswith(fsops.PARTIAL_SUFFIX):
+                raise OSError(18, "Invalid cross-device link")
+            real_rename(a, b)
+
+        def copy(src: str, dst: str, progress: fsops.Progress | None, stop: fsops.Stop | None) -> None:
+            assert progress is not None and stop is not None
+            copied_on.add(threading.get_ident())
+            with open(dst, "xb") as half:
+                half.write(b"part")
+            for step in range(1, 34):
+                if stop():
+                    raise fsops.CopyCancelled(errno.ECANCELED, "stopped")
+                progress(int(step * 0.6 * gb), 20 * gb)
+                time.sleep(0.02)
+
+        cancel = asyncio.Event()
+        events: list[ProgressEvent] = []
+
+        def heard(event: ProgressEvent) -> None:
+            heard_on.add(threading.get_ident())
+            events.append(event)
+            if event.message == "Copying 4.2 of 20 GB":
+                cancel.set()
+
+        self.enterContext(mock.patch.object(os, "rename", other_share))
+        self.enterContext(mock.patch.object(fsops, "native_copy", copy))
+        self.enterContext(mock.patch.object(executor_module, "COPY_PROGRESS_EVERY_S", 0))
+        executor = Executor(self.history, FakePosters(), None)
+        result = await executor.run(
+            plan, source=RunSource.APP, preset_name=None, on_progress=heard, cancel=cancel
+        )
+        assert result.cancelled and (result.renamed, result.failed) == (0, 0)
+        assert sorted(p.name for p in self.tmp.glob("*.mkv*")) == ["a.mkv", "b.mkv"]  # no partial
+        copying = [e for e in events if e.copying]
+        assert [e.message for e in copying][:2] == ["Copying 0.6 of 20 GB", "Copying 1.2 of 20 GB"]
+        assert {e.item_id for e in copying} == {1} and {e.status for e in copying} == {"working"}
+        stop_at = next(e for e in copying if e.message == "Copying 4.2 of 20 GB")
+        self.assertAlmostEqual(stop_at.fraction, 4.2 / 20 / 2, places=3)  # 1st of 2 files
+        assert heard_on == {threading.get_ident()} != copied_on  # the copy's thread hands over
+        assert not any(e.item_id == 2 for e in events)  # Heat never started
+        assert result.run_id is None  # nothing changed on disk: no run in History
+        # When a run is kept (a folder made first), its journal says it in English, t() it.
+        stopped = fsops.CopyCancelled(errno.ECANCELED, win_copy.COPY_STOPPED)
+        assert executor_module._journal_text(stopped) == "The copy was stopped"
+        before = current_language()
+        set_language(Language.NL)
+        self.addCleanup(set_language, before)
+        assert t(win_copy.COPY_STOPPED) == "Het kopiëren is gestopt"
+
+    def test_the_copy_text(self) -> None:
+        gb, mb = 1024**3, 1024**2
+        assert executor_module.copy_text(int(4.2 * gb), 20 * gb) == "Copying 4.2 of 20 GB"
+        assert executor_module.copy_text(0, int(1.5 * gb)) == "Copying 0 of 1.5 GB"
+        assert executor_module.copy_text(300 * mb, 700 * mb) == "Copying 300 of 700 MB"
+        before = current_language()
+        set_language(Language.NL)
+        self.addCleanup(set_language, before)
+        assert executor_module.copy_text(int(4.2 * gb), 20 * gb) == "4,2 van 20 GB gekopieerd"
 
 
 class ExecutorTextsTest(HistoryTestCase):
@@ -311,7 +383,7 @@ class ExecutorTextsTest(HistoryTestCase):
         inputs = make_inputs(folder, {"a.mkv": "Alien"})
         plan = build_plan(inputs, "{ny}", PresetOptions())
 
-        def denied(src: Path, dst: Path) -> None:
+        def denied(src: Path, dst: Path, **_: object) -> None:
             raise PermissionError(13, "Access is denied", str(src))
 
         self.enterContext(mock.patch.object(fsops, "move_file", denied))
@@ -443,7 +515,7 @@ class SubtitlesFollowTest(HistoryTestCase):
         plan, release = download(self.tmp, extra=SUBTITLES)
         real_move = fsops.move_file
 
-        def locked(src: Path, dst: Path) -> None:
+        def locked(src: Path, dst: Path, **_: object) -> None:
             if src.name == "heat.1995.en.srt":
                 raise PermissionError(32, "The process cannot access the file")
             real_move(src, dst)

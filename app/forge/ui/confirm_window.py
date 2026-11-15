@@ -11,7 +11,8 @@ title as a heading), resizable by its edges, accent buttons. The list is a Virtu
 hundreds of files stay quick. Never `transient` and never grabbing: it must show on its own
 while AirGrabber's window is in the tray (then it opens on the screen under the mouse pointer),
 and several can be open at once (one per preset). The window has its own Queue, apart from the
-Inbox's; a rename takes Forge's run lock, so it never runs alongside another run.
+Inbox's; a rename takes Forge's run lock, so it never runs alongside another run (while it waits
+for one, the status line says "Waiting for Auto-rename to finish…").
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
+from app.forge.core.auto import WAITING_FOR_AUTO, taking
 from app.forge.core.library import library_folder, route_inputs
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueEvent, QueueItem
@@ -416,7 +418,8 @@ class ConfirmWindow(ctk.CTkToplevel):
             self._set_buttons("normal")
             return
         plan = await asyncio.to_thread(build_plan, inputs, with_options(preset.format, options), options)
-        async with self.services.run_lock:  # never alongside the renamer's or the Inbox's run
+        # Never alongside the renamer's or the Inbox's run; the status says when it waits.
+        async with taking(self.services.run_lock, self._show_waiting):
             result = await self.services.executor.run(
                 plan,
                 source=RunSource.RIGHT_CLICK,
@@ -464,6 +467,17 @@ class ConfirmWindow(ctk.CTkToplevel):
         self.close_button.pack(side="right")
         if self.run_id is not None:
             self.undo_button.pack(side="right", padx=(0, _BUTTON_GAP))
+
+    def _show_waiting(self, waiting: bool) -> None:
+        """While the rename waits for another run, the status line says so."""
+        if self._closed or not self.winfo_exists():
+            return
+        if waiting:
+            self.result_label.configure(text=t(WAITING_FOR_AUTO), text_color=theme.TEXT_MUTED)
+            self.result_label.pack(side="left", fill="x", expand=True)
+        else:
+            self.result_label.configure(text="")
+            self.result_label.pack_forget()
 
     async def undo(self) -> None:
         if self.busy or self.run_id is None:

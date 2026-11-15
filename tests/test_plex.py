@@ -539,7 +539,8 @@ class CheckTests(PlexTestCase):
     ) -> None:
         self.fake.answering = {LOCAL_HTTP, REMOTE}
         await self.plex.check()
-        self.assertEqual(self.fake.identities(), [LOCAL_HTTPS, LOCAL_HTTP])
+        # All raced at once; of those that answered, the one first in line is kept.
+        self.assertEqual(self.fake.identities(), [LOCAL_HTTPS, LOCAL_HTTP, REMOTE])
         self.assertEqual(self.settings.current.plex_server_uri, LOCAL_HTTP)
         library = [r for r in self.fake.requests if r.url.path.startswith("/library")]
         self.assertTrue(all(_base(r.url) == LOCAL_HTTP for r in library))
@@ -553,6 +554,92 @@ class CheckTests(PlexTestCase):
         await self.plex.check()
         self.assertEqual(self.fake.identities(), [LOCAL_HTTP, LOCAL_HTTPS, REMOTE])
         self.assertEqual(self.settings.current.plex_server_uri, REMOTE)
+
+    async def test_reach_races_the_addresses(self) -> None:
+        hang = asyncio.Event()
+        self.addCleanup(hang.set)
+        hanging: set[str] = {LOCAL_HTTPS}  # it takes the connection and never answers
+        fake = self.fake
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            where = "plex.tv" if request.url.host == "plex.tv" else _base(request.url)
+            if where in hanging and request.url.path in ("/identity", "/api/v2/resources"):
+                fake.requests.append(request)
+                await hang.wait()
+            return fake(request)
+
+        self.http._transport = httpx.MockTransport(handler)
+        # The first answer wins: the hung address first in line doesn't hold the others up.
+        await asyncio.wait_for(self.plex.check(), 2)
+        self.assertIsNone((await self.plex.status()).problem)
+        self.assertEqual(self.settings.current.plex_server_uri, LOCAL_HTTP)
+        self.assertIn(LOCAL_HTTPS, self.fake.identities())
+        # The saved address and plex.tv at the same time: a plex.tv that hangs doesn't wait
+        # the saved address out.
+        hanging = {"plex.tv"}
+        self.fake.requests.clear()
+        await asyncio.wait_for(self.plex.check(), 2)
+        self.assertIsNone((await self.plex.status()).problem)
+        self.assertEqual(self.fake.identities(), [LOCAL_HTTP])
+        self.assertEqual(len((await self.db.plex.contents())[0]), 5)
+
+    def hang_plex_tv(self) -> asyncio.Event:
+        """plex.tv's list of servers waits until the returned event is set."""
+        hang = asyncio.Event()
+        self.addCleanup(hang.set)
+        fake = self.fake
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "plex.tv" and request.url.path == "/api/v2/resources":
+                await hang.wait()
+            return fake(request)
+
+        self.http._transport = httpx.MockTransport(handler)
+        return hang
+
+    async def test_disconnect_while_plex_tvs_list_is_on_its_way(self) -> None:
+        await self.plex.check()
+        hang = self.hang_plex_tv()
+        renamed = fixture("resources.json")
+        for resource in renamed:
+            if resource["clientIdentifier"] == SERVER_ID:
+                resource["name"] = "Alex-NAS renamed"
+        self.fake.resources_data = renamed
+        await self.plex.check()  # the stored address answered: plex.tv's list comes behind
+        self.assertTrue(self.plex._behind)
+        await self.plex.disconnect()
+        hang.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        current = self.settings.current
+        self.assertEqual((current.plex_server_id, current.plex_server_name), ("", ""))
+        self.assertEqual((await self.plex.status()).servers, ())
+
+    async def test_choosing_another_server_while_plex_tvs_list_is_on_its_way(self) -> None:
+        self.fake.resources = "resources_two.json"
+        self.fake.answering = {LOCAL_HTTP}
+        await self.plex.check()
+        await self.plex.choose_server(SERVER_ID)
+        hang = self.hang_plex_tv()
+        await self.plex.check()  # Alex-NAS's list still on its way
+        self.assertTrue(self.plex._behind)
+        choosing = asyncio.create_task(self.plex.choose_server(LAPTOP_ID))
+        await until(lambda: self.settings.current.plex_server_id == LAPTOP_ID)
+        hang.set()
+        await asyncio.wait_for(choosing, 2)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        current = self.settings.current
+        self.assertEqual((current.plex_server_id, current.plex_server_name), (LAPTOP_ID, "Alex-Laptop"))
+
+    async def test_one_check_some_time_after_a_scan(self) -> None:
+        self.plex.check_later(120)
+        self.plex.check_later(120)  # asked twice before it ran: still one
+        await until(lambda: not self.plex.checking and self.changes == 1)
+        await until(lambda: self.plex._later is None or self.plex._later.done())
+        self.assertEqual(self.clock.sleeps, [120])
+        sections = [r for r in self.fake.requests if r.url.path == "/library/sections"]
+        self.assertEqual(len(sections), 1)
 
     async def test_paging(self) -> None:
         count = 2 * PAGE_SIZE + 3
@@ -960,7 +1047,9 @@ class AutoDownloadTests(unittest.IsolatedAsyncioTestCase):
             aired_from=NOW - 3 * DAY, aired_until=NOW - timedelta(hours=2), limit=10
         )
         self.assertEqual([entry.episode.id for entry in due], [32])
-        given_up = await self.db.library.auto_give_up(aired_before=NOW, when=NOW)
+        for episode_id in (31, 32):  # only an episode tried is ever given up
+            await self.db.library.record_auto_attempt(episode_id, NOW)
+        given_up = await self.db.library.auto_give_up(aired_before=NOW)
         self.assertEqual([entry.episode.id for entry in given_up], [32])
 
     async def test_a_run_skips_what_is_in_plex(self) -> None:

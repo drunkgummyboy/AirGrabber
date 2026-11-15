@@ -440,6 +440,31 @@ class FilmWindowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("app.ui.movie_details", "INFO"):
             self.assertFalse(await windows.open_movie_id(999))  # TMDB can't: IMDb instead
 
+    async def test_an_uncached_film_takes_one_tmdb_request(self) -> None:
+        # The real DiscoveryService on a MockTransport: the window starts its extras before its
+        # details, so the extras' combined request brings the details (and the release panel's).
+        import httpx
+
+        from app.services.discovery import DiscoveryService
+        from app.services.tmdb import TMDBClient
+
+        requests: list[httpx.Request] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"id": FILM.id, "runtime": 128, "overview": "Ships."})
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        self.addAsyncCleanup(http.aclose)
+        tmdb = TMDBClient(http, lambda: "0123456789abcdef0123456789abcdef", retry_delay=0)
+        discovery = DiscoveryService(tmdb, mock.Mock(), mock.Mock())
+        windows = self.windows(discovery)  # type: ignore[arg-type]
+        windows.open_movie(FILM)
+        await self.settle()
+        film = [r for r in requests if r.url.path.startswith(f"/3/movie/{FILM.id}")]
+        self.assertEqual(len(film), 1)
+        self.assertIn("append_to_response", film[0].url.params)
+
 
 if __name__ == "__main__":
     unittest.main()

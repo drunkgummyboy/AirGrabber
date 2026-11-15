@@ -475,6 +475,12 @@ NL: dict[str, str] = {
         "Download de ontbrekende afleveringen van dit seizoen",
     "Waiting ({n})": "Wachtend ({n})",
     "Remove from the queue": "Uit de wachtrij halen",
+    "Couldn't find automatically": "Niet automatisch gevonden",
+    "Last searched {when}": "Laatst gezocht {when}",
+    "Searches for it now, and the automatic downloads look for it again":
+        "Zoekt er nu naar, en de automatische downloads zoeken er weer naar",
+    "Pick a download yourself": "Kies zelf een download",
+    "Show": "Tonen",
     "✓ Opened": "✓ Geopend",
     "✓ Saved": "✓ Bewaard",
     "✓ Sent": "✓ Verstuurd",
@@ -923,7 +929,14 @@ NL: dict[str, str] = {
         "Afleveringen en films die je downloadt, staan hier 30 dagen.",
     "Progress shows when AirGrabber can reach your torrent program — set it up in Settings → Where downloads go":
         "De voortgang verschijnt als AirGrabber je torrentprogramma kan bereiken — stel het in bij Instellingen → Waar downloads naartoe gaan",
+    "Checking the torrent program…": "Even kijken bij het torrentprogramma…",
     "Downloading {percent} %": "Downloaden {percent} %",
+    "under a minute left": "nog minder dan een minuut",
+    "{n} min left": "nog {n} min",
+    "{hours} h {minutes} min left": "nog {hours} u {minutes} min",
+    "{hours} h left": "nog {hours} u",
+    "{n} day left": "nog {n} dag",
+    "{n} days left": "nog {n} dagen",
     "Waiting": "Wacht",
     "Problem in {program}": "Probleem in {program}",
     "Problem": "Probleem",
@@ -1018,6 +1031,7 @@ NL: dict[str, str] = {
     "Couldn't follow {name}: TVmaze doesn't know it": "Kon {name} niet volgen: TVmaze kent het niet",
     "Couldn't find {name} on TVmaze": "Kon {name} niet vinden op TVmaze",
     "Show more ({n})": "Meer tonen ({n})",
+    "Continue watching": "Verder kijken",
     "Nothing from Plex yet": "Nog niets uit Plex",
     "AirGrabber reads Plex every half hour; Settings → Plex → Check now reads it at once.":
         "AirGrabber leest Plex elk half uur; Instellingen → Plex → Nu controleren leest het meteen.",
@@ -1285,6 +1299,10 @@ NL: dict[str, str] = {
     "Grabbing the best one…": "De beste downloaden…",
     ", {n} source still searching": ", {n} bron zoekt nog",
     ", {n} sources still searching": ", {n} bronnen zoeken nog",
+    "The sources that can search this are resting after repeated failures; "
+    "try again in a few minutes.":
+        "De bronnen die dit kunnen zoeken rusten even na herhaalde fouten; "
+        "probeer het over een paar minuten opnieuw.",
     # app/services/airdates.py
     "That doesn't look like the text from airdates.tv's \"Export your color selection\".":
         "Dat lijkt niet op de tekst van \"Export your color selection\" op airdates.tv.",
@@ -1299,6 +1317,7 @@ NL: dict[str, str] = {
     "not configured": "niet ingesteld",
     "needs an IMDb id": "heeft een IMDb-ID nodig",
     "timed out": "duurde te lang",
+    "resting after failing, back in {minutes} min": "rust na fouten, over {minutes} min terug",
     "unexpected error": "onverwachte fout",
     "Prowlarr is not available": "Prowlarr is niet beschikbaar",
     # app/indexers/base.py
@@ -1368,6 +1387,8 @@ NL: dict[str, str] = {
     "Offer AirGrabber's player in Explorer's \"Open with\" for any video":
         "Bied de speler van AirGrabber aan bij \"Openen met\" in Verkenner, voor elke video",
     "That video isn't there any more.": "Die video is er niet meer.",
+    "Finding the file…": "Het bestand wordt gezocht…",
+    "That isn't a video file.": "Dat is geen videobestand.",
     "VLC": "VLC",
     "Not checked yet": "Nog niet gecontroleerd",
     "No show or film libraries found on this server":
@@ -1497,6 +1518,18 @@ NL: dict[str, str] = {
     "Your own player": "Je eigen speler",
     "▶ Play now opens a film or episode in AirGrabber itself, in a window or full screen, with the keys you know from VLC.":
         "▶ Afspelen opent een film of aflevering nu in AirGrabber zelf, in een venster of op volledig scherm, met de toetsen van VLC.",
+    "Automatic downloads try the next release when one fails, fetch a finished season as one pack, and survive a restart.":
+        "Automatisch downloaden neemt bij een fout de volgende release, haalt een heel seizoen ineens en overleeft een herstart.",
+    "Downloads page: speed and time left per download, and what couldn't be found automatically, with Try again.":
+        "Downloadspagina: snelheid en resterende tijd per download, en wat niet automatisch gevonden werd, met Opnieuw proberen.",
+    "Library: a Continue watching row at the top, and ▶ Play when you point at a card.":
+        "Bibliotheek: een rij Verder kijken bovenaan, en ▶ Afspelen als je over een kaart gaat.",
+    "Player keys: G/H and J/K to sync subtitles and sound, [ and ] for speed, N/P for the next or previous episode.":
+        "Speler: G/H en J/K zetten ondertitels en geluid gelijk, [ en ] de snelheid, N/P de volgende of vorige aflevering.",
+    "MediaForge can replace what's in your library (the old copy is moved aside) and says when a download is ready.":
+        "MediaForge kan vervangen wat in je bibliotheek staat (de oude kopie gaat opzij) en zegt wanneer een download klaar is.",
+    "AirGrabber opens full size, and when Plex or the NAS stops answering, it tells you within seconds.":
+        "AirGrabber opent op volle grootte, en als Plex of de NAS niet meer antwoordt, hoor je dat binnen enkele seconden.",
     "Plex keeps up: carry on where you stopped, find it in Continue watching, and it counts as watched at the end.":
         "Plex blijft bij: kijk verder waar je stopte, vind het bij Verder kijken, en aan het eind telt het als gezien.",
     "Skip intro shows when Plex knows where the intro is, and the next episode starts after a short countdown.":
@@ -1972,6 +2005,16 @@ NL: dict[str, str] = {
     "Stay on top": "Altijd bovenaan",
     "Mini player (Ctrl+H)": "Minispeler (Ctrl+H)",
     "Back to the window (Ctrl+H)": "Terug naar het venster (Ctrl+H)",
+    "Close (Ctrl+W)": "Sluiten (Ctrl+W)",
+    "Previous episode (P)": "Vorige aflevering (P)",
+    "Next episode (N)": "Volgende aflevering (N)",
+    "Subtitles {delay} ms": "Ondertitels {delay} ms",
+    "Audio {delay} ms": "Audio {delay} ms",
+    "Speed {speed}×": "Snelheid {speed}×",
+    "Sync… ({keys})": "Synchroniseren… ({keys})",
+    "{ms} ms earlier ({key})": "{ms} ms eerder ({key})",
+    "{ms} ms later ({key})": "{ms} ms later ({key})",
+    "Back to 0 ms": "Terug naar 0 ms",
     "Audio": "Audio",
     "Find subtitles…": "Ondertitels vinden…",
     "Always pick: {language}": "Altijd kiezen: {language}",

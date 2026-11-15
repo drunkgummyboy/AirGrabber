@@ -17,6 +17,7 @@ from app.forge.core.undo import (
     UndoService,
 )
 from app.forge.models.history import OpKind, UndoState
+from app.forge.models.plan import PlannedTrailer
 from app.forge.models.preset import PresetOptions
 from app.i18n import Language, current_language, set_language, t
 from tests.forge.core.journal_base import FakePosters, HistoryTestCase, make_inputs
@@ -191,3 +192,103 @@ class UndoTextsTest(HistoryTestCase):
         assert op.undo_state is UndoState.SKIPPED and op.undo_note == reason
         assert any("Alien (2024).mkv" in line for line in logs.output)
         assert not any(str(folder) in line for line in logs.output)
+
+
+class CardTrailers:
+    """A trailer download that writes a small file where the planner wants it."""
+
+    async def download(self, trailer: PlannedTrailer) -> Path | None:
+        path = trailer.target_stem.with_name(trailer.target_stem.name + ".mp4")
+        path.write_bytes(b"trailer")
+        return path
+
+
+class CardUndoTest(HistoryTestCase):
+    """A queue card's Undo (`undo_card`) ends where History's "Undo run" does for its film."""
+
+    EXTRAS = PresetOptions(movie_poster=True, backdrop=True, nfo=True, trailer=True)
+
+    async def forge_films(self, names: dict[str, str]) -> int:
+        movies = self.tmp / "Movies"
+        inputs = [
+            i.model_copy(
+                update={
+                    "media": i.media.model_copy(
+                        update={"backdrop_path": "/b.jpg", "tmdb_id": n}
+                    )
+                }
+            )
+            for n, i in enumerate(make_inputs(movies, names), start=1)
+        ]
+        plan = build_plan(inputs, "{ny}/{ny}", self.EXTRAS)
+        result = await self.execute(plan, posters=FakePosters(b"pic"), trailers=CardTrailers())
+        assert result.run_id is not None
+        return result.run_id
+
+    async def renames_to(self, run_id: int, name: str) -> list[int]:
+        return [
+            o.id
+            for o in await self.history.operations(run_id)
+            if o.kind is OpKind.RENAME and o.dst and Path(o.dst).name == name
+        ]
+
+    async def test_undo_on_a_card_takes_the_films_folder_and_extras_along(self) -> None:
+        movies = self.tmp / "Movies"
+        run_id = await self.forge_films({"dune.mkv": "Dune", "heat.mkv": "Heat"})
+        dune = movies / "Dune (2024)"
+        assert sorted(p.name for p in dune.iterdir()) == [
+            "Dune (2024) - Poster.jpg",
+            "Dune (2024)-fanart.jpg",
+            "Dune (2024)-trailer.mp4",
+            "Dune (2024).mkv",
+            "Dune (2024).nfo",
+        ]
+        chosen = await self.renames_to(run_id, "Dune (2024).mkv")
+
+        result = await UndoService(self.history).undo_card(run_id, chosen)
+
+        assert result.skipped == []
+        assert (movies / "dune.mkv").read_bytes() == b"video"
+        assert not dune.exists()  # the folder, poster, backdrop, NFO and trailer went too
+        heat = movies / "Heat (2024)"
+        assert len(list(heat.iterdir())) == 5  # the other film of the run stays as it was
+        assert set(chosen) <= set(result.undone_ids)
+        [summary] = await self.history.list_runs()
+        assert summary.status == "partly-undone"
+
+    async def test_a_card_holding_every_file_of_its_run_undoes_the_run(self) -> None:
+        movies = self.tmp / "Movies"
+        run_id = await self.forge_films({"dune.mkv": "Dune"})
+        chosen = await self.renames_to(run_id, "Dune (2024).mkv")
+        result = await UndoService(self.history).undo_card(run_id, chosen)
+        assert result.skipped == []
+        assert sorted(p.name for p in movies.iterdir()) == ["dune.mkv"]
+        [summary] = await self.history.list_runs()
+        assert summary.status == "undone"
+
+    async def test_a_flat_film_takes_its_own_extras_and_leaves_the_others(self) -> None:
+        movies = self.tmp / "Movies"
+        inputs = make_inputs(movies, {"dune.mkv": "Dune", "heat.mkv": "Heat"})
+        plan = build_plan(inputs, "{ny}", PresetOptions(movie_poster=True))
+        result = await self.execute(plan, posters=FakePosters(b"pic"))
+        assert result.run_id is not None
+        chosen = await self.renames_to(result.run_id, "Dune (2024).mkv")
+        await UndoService(self.history).undo_card(result.run_id, chosen)
+        assert sorted(p.name for p in movies.iterdir()) == [
+            "Heat (2024) - Poster.jpg",
+            "Heat (2024).mkv",
+            "dune.mkv",
+        ]
+
+    async def test_a_flat_film_leaves_a_longer_named_films_extras(self) -> None:
+        # Review fix 2: "Alien (2024)" is not "Alien (2024) Director's Cut".
+        movies = self.tmp / "Movies"
+        names = {"alien.mkv": "Alien", "cut.mkv": "Alien (2024) Director's Cut"}
+        plan = build_plan(make_inputs(movies, names), "{ny}", PresetOptions(movie_poster=True))
+        result = await self.execute(plan, posters=FakePosters(b"pic"))
+        assert result.run_id is not None
+        cut = sorted(p.name for p in movies.iterdir() if "Cut" in p.name)
+        assert len(cut) == 2  # the film and its poster
+        chosen = await self.renames_to(result.run_id, "Alien (2024).mkv")
+        await UndoService(self.history).undo_card(result.run_id, chosen)
+        assert sorted(p.name for p in movies.iterdir()) == sorted([*cut, "alien.mkv"])

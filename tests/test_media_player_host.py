@@ -22,12 +22,14 @@ from app.media_protocol import (
     LoadSubtitle,
     Message,
     Notice,
+    OpenFile,
     Play,
     Position,
     Ready,
     Stopped,
     Tracks,
     WantNext,
+    WantPrevious,
     decode,
     encode,
 )
@@ -38,8 +40,9 @@ from app.services.local_files import LocalPlaces
 from app.services.playback import LibraryFolders, PlaybackService
 from app.services.vlc_engine import Engine
 from app.ui import media_player
-from app.ui.media_player import APP_ROOT, MediaPlayerHost
+from app.ui.media_player import APP_ROOT, MediaPlayerHost, previous_in_show
 from tests.plex_link import TOKEN
+from tests.test_plex import until
 from tests.test_plex_playing import PlayingTestCase
 
 ENGINE = Engine(folder=r"C:\Program Files\VideoLAN\VLC")
@@ -367,13 +370,69 @@ class StartTests(HostTestCase):
         self.assertEqual((sent.intro, sent.credits_ms), (None, None))
         self.assertEqual(self.status, ["▶ Playing The Ark S02E02."])
 
-    async def test_a_file_not_found_says_so_and_starts_nothing(self) -> None:
+    async def test_a_file_not_found_says_so_and_plays_nothing(self) -> None:
         self.dune_here.unlink()
         self.host.play(DUNE, DUNE_VIDEO)
         await self.settle()
-        self.assertEqual(self.starter.commands, [])
+        # The player may have started while the file was looked for: it closes again.
+        for process in self.starter.processes:
+            self.assertTrue(process.stdin.closed)
+            self.assertEqual(process.plays(), [])
+        self.assertFalse(self.host.open)
+        self.assertEqual(self.launch.paths, [])
         self.assertEqual(len(self.status), 1)
         self.assertIn("Movies folder", self.status[0])
+
+    async def test_a_window_opened_for_a_play_that_breaks_closes_again(self) -> None:
+        gate = asyncio.Event()
+
+        async def broken(title: PlexTitle, video: PlexVideo) -> Any:
+            await gate.wait()
+            raise RuntimeError("a bug")
+
+        with mock.patch.object(self.playback, "locate", broken):
+            self.host.play(DUNE, DUNE_VIDEO)
+            await until(lambda: bool(self.starter.processes and self.starter.processes[0].sent()))
+            with self.assertLogs("app.ui.tasks", "ERROR"):
+                gate.set()
+                await self.settle()
+        [process] = self.starter.processes
+        self.assertTrue(process.stdin.closed)
+        self.assertEqual(process.plays(), [])
+        self.assertFalse(self.host.open)
+
+    async def test_the_player_starts_while_the_file_is_found(self) -> None:
+        gate = asyncio.Event()
+        locate = self.playback.locate
+
+        async def slow(title: PlexTitle, video: PlexVideo) -> Any:
+            await gate.wait()  # the NAS waking up
+            return await locate(title, video)
+
+        with mock.patch.object(self.playback, "locate", slow):
+            self.host.play(DUNE, DUNE_VIDEO)
+            await until(lambda: bool(self.starter.processes and self.starter.processes[0].sent()))
+            [process] = self.starter.processes
+            self.assertEqual(process.sent(), [Notice(text="Finding the file…")])
+            gate.set()
+            await self.settle()
+        self.assertEqual([p.file for p in process.plays()], [str(self.dune_here)])
+        self.assertEqual(self.status, ["▶ Playing Dune: Part Two."])
+
+    async def test_playing_a_film_asks_plex_once_for_its_details(self) -> None:
+        page = self.server.pages["/library/metadata/3001"]["MediaContainer"]["Metadata"][0]
+        page["Marker"] = [
+            {"type": "intro", "startTimeOffset": 30000, "endTimeOffset": 90000},
+            {"type": "credits", "startTimeOffset": 8000000},
+        ]
+        video = await self.playback.film_video(DUNE)
+        assert isinstance(video, PlexVideo)
+        process = await self.play(DUNE, video)
+        [sent] = process.plays()
+        self.assertEqual((sent.intro, sent.credits_ms), ((30000, 90000), 8000000))
+        asked = [r for r in self.server.requests if r.url.path == "/library/metadata/3001"]
+        self.assertEqual(len(asked), 1)  # its markers came with it
+        self.assertEqual(asked[0].url.params["includeMarkers"], "1")
 
     async def test_tests_never_start_a_real_player(self) -> None:
         with self.assertRaises(AssertionError):
@@ -659,6 +718,46 @@ class NextEpisodeTests(HostTestCase):
         self.assertEqual(len(process.plays()), 1)
         self.assertEqual(self.launch.paths, [])
 
+    async def test_next_by_hand_doesnt_mark_it_watched(self) -> None:
+        # N or ⏭ halfway: on to the next one, this one not watched for it.
+        process = await self.play(ARK, E2, EPISODES)
+        await self.tell(process, Position(ms=1200000, duration_ms=2700000, state="playing"))
+        await self.tell(process, WantNext(by_hand=True))
+        await self.tell(process, Stopped(ms=1201000, duration_ms=2700000))
+        self.assertEqual(process.plays()[-1].file, str(self.season_here / "The Ark - S02E03.mkv"))
+        self.assertEqual(self.scrobbles(), [])
+        self.assertEqual(self.timeline()[-1], ("42", "stopped", 1201000))
+
+    async def test_the_episode_before_is_named_and_played_on_want_previous(self) -> None:
+        process = await self.play(ARK, E2, EPISODES)
+        [sent] = process.plays()
+        self.assertEqual((sent.previous_label, sent.next_label), ("S02E01", "S02E03"))
+        await self.tell(process, Position(ms=600000, duration_ms=2700000, state="playing"))
+        await self.tell(process, WantPrevious())
+        await self.tell(process, Stopped(ms=601000, duration_ms=2700000))
+        then = process.plays()[-1]
+        self.assertEqual(then.file, str(self.season_here / "The Ark - S02E01.mkv"))
+        self.assertEqual((then.start_ms, then.ask_resume), (0, False))
+        self.assertEqual((then.previous_label, then.next_label), (None, "S02E02"))
+        self.assertEqual(self.scrobbles(), [])  # going back marks nothing watched
+        self.assertEqual(len(self.starter.processes), 1)
+
+    async def test_nothing_before_the_first_episode_or_a_film(self) -> None:
+        process = await self.play(ARK, E1, EPISODES)
+        self.assertIsNone(process.plays()[0].previous_label)
+        await self.tell(process, WantPrevious())
+        self.assertEqual(len(process.plays()), 1)
+        film = await self.play(DUNE, DUNE_VIDEO)
+        self.assertIsNone(film.plays()[-1].previous_label)
+        await self.tell(film, WantPrevious())
+        self.assertEqual(len(film.plays()), 2)
+
+    def test_previous_in_show_keeps_specials_apart(self) -> None:
+        self.assertEqual(previous_in_show(E3, EPISODES), E2)
+        self.assertIsNone(previous_in_show(E1, EPISODES))
+        self.assertIsNone(previous_in_show(SPECIAL, EPISODES))  # no regular one before a special
+        self.assertIsNone(previous_in_show(E2, ()))
+
     async def test_last_episode_want_next_does_nothing(self) -> None:
         process = await self.play(ARK, E3, EPISODES)
         await self.tell(process, Ended(duration_ms=2700000), WantNext())
@@ -808,6 +907,23 @@ class LocalFileTests(HostTestCase):
         self.assertEqual(LocalPlaces(self.root / "played-files.json").place(self.holiday), 700_000)
         self.assertEqual(self.plex_asked(), [])
 
+    async def test_a_video_dropped_on_the_player_plays_there(self) -> None:
+        process = await self.open(self.holiday)
+        await self.tell(process, OpenFile(file=self.e3))
+        await self.settle()
+        self.assertEqual(process.plays()[-1].file, self.e3)
+        self.assertEqual(len(self.starter.processes), 1)  # the same window
+        self.assertEqual(self.plex_asked(), [])
+
+    async def test_something_else_dropped_is_not_a_video(self) -> None:
+        process = await self.open(self.holiday)
+        with self.assertLogs("app.ui.media_player", "INFO") as logs:
+            await self.tell(process, OpenFile(file=str(self.folder)))
+            await self.settle()
+        self.assertEqual(process.sent()[-1], Notice(text="That isn't a video file."))
+        self.assertEqual(len(process.plays()), 1)
+        self.assert_private(logs.output)
+
     async def test_a_file_that_isnt_there(self) -> None:
         self.host.play_file(str(self.folder / "Gone.mkv"))
         await self.settle()
@@ -888,19 +1004,40 @@ class FallbackTests(HostTestCase):
         self.assertEqual(len(self.launch.paths), 2)
         self.assertEqual(self.status[-1], "▶ Playing Dune: Part Two in VLC.")
 
-    async def test_a_start_that_hung_isnt_tried_again(self) -> None:
+    async def test_one_slow_start_still_tries_the_player_next_time(self) -> None:
         self.host = self.make(ready_timeout=0.05)
         self.addAsyncCleanup(self.host.aclose)
         self.starter.ready = False
         self.host.play(DUNE, DUNE_VIDEO)
         await asyncio.sleep(0.1)
         await self.settle()
-        self.assertEqual(len(self.starter.commands), 1)
-        # Later plays this run: VLC at once, without the 10 s wait.
+        self.assertEqual(self.launch.paths, [str(self.dune_here)])  # VLC this once
         self.starter.ready = True
+        process = await self.play(DUNE, DUNE_VIDEO)
+        self.assertEqual(len(self.starter.commands), 2)
+        self.assertEqual(len(process.plays()), 1)  # the player again
+        self.assertEqual(self.launch.paths, [str(self.dune_here)])
+
+    async def test_two_hung_starts_mean_vlc_for_half_an_hour(self) -> None:
+        self.host = self.make(ready_timeout=0.05)
+        self.addAsyncCleanup(self.host.aclose)
+        self.starter.ready = False
         for _ in range(2):
             self.host.play(DUNE, DUNE_VIDEO)
+            await asyncio.sleep(0.1)
             await self.settle()
-        self.assertEqual(len(self.starter.commands), 1)
+        self.assertEqual(len(self.starter.commands), 2)
+        # Later plays: VLC at once, without the 10 s wait.
+        self.starter.ready = True
+        self.now = media_player.START_RETRY_S - 1
+        self.host.play(DUNE, DUNE_VIDEO)
+        await self.settle()
+        self.assertEqual(len(self.starter.commands), 2)
         self.assertEqual(self.launch.paths, [str(self.dune_here)] * 3)
         self.assertEqual(self.status[-1], "▶ Playing Dune: Part Two in VLC.")
+        # Half an hour after the last failure the player is tried again.
+        self.assertEqual(media_player.START_RETRY_S, 1800)
+        self.now = media_player.START_RETRY_S + 1
+        process = await self.play(DUNE, DUNE_VIDEO)
+        self.assertEqual(len(self.starter.commands), 3)
+        self.assertEqual(len(process.plays()), 1)

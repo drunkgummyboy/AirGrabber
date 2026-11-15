@@ -17,6 +17,8 @@ from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedM
 from app.forge.ui import queue_rows
 from app.forge.ui.queue_rows import (
     DONE_TODAY,
+    EXPLORER_ACTION,
+    REPLACE_ACTION,
     QueueRows,
     build_queue_rows,
     build_rows,
@@ -319,6 +321,21 @@ class QueueRowsTests(ForgeTestCase):
         item.message = ""
         [band] = bands(build([item]))
         self.assertTrue(band.subtitle.startswith("Waiting for you · "))
+
+    def test_only_a_band_already_in_the_library_offers_to_replace_it(self) -> None:
+        downloads = self.tmp / "dl"
+        item = movie(downloads, "Dune.2021.mkv", "Dune", 2021, watched=downloads)
+        item.status, item.message = ItemStatus.HELD, "Already in the library."
+        item.in_library = True
+        [band] = bands(build([item]))
+        self.assertEqual(
+            [key for key, _label in band.actions],
+            [EXPLORER_ACTION, "ignore", "choose", REPLACE_ACTION, "rename"],
+        )
+        self.assertIn((REPLACE_ACTION, "Replace the one in the library"), band.actions)
+        item.message, item.in_library = "No year in the name: is it a movie?", False
+        [band] = bands(build([item]))
+        self.assertNotIn(REPLACE_ACTION, [key for key, _label in band.actions])
 
     def test_a_failed_rename_needs_you(self) -> None:
         item = movie(self.folder, "Dune.2021.mkv", "Dune", 2021, status=ItemStatus.ERROR)

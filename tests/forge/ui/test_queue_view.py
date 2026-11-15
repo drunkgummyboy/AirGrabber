@@ -32,20 +32,24 @@ import httpx
 from PIL import Image
 
 from app.config import AppPaths
+from app.forge.core import duplicates as duplicates_module
 from app.forge.core import fsops
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.matcher import Resolution
 from app.forge.core.queue import ItemStatus, QueueItem
+from app.forge.core.watch import Settling
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
 from app.forge.models.settings import ForgeSettings
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.services import ForgeServices
 from app.forge.ui import file_drops
+from app.forge.ui.duplicates_window import DuplicatesWindow
 from app.forge.ui.images import BandImages
 from app.forge.ui.look import app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.queue_rows import Show
 from app.forge.ui.queue_parts import OPTION_LABELS, summary_text
+from app.forge.ui import queue_view as queue_view_module
 from app.forge.ui.queue_view import QueueView
 from app.forge.ui.widgets.virtual_list import Row
 from app.i18n import Language, current_language, set_language
@@ -616,7 +620,7 @@ class QueueTest(QueueCase):
         real_move = fsops.move_file
         moving: list[Path] = []
 
-        def slow_move(src: Path, dst: Path) -> None:
+        def slow_move(src: Path, dst: Path, **_: object) -> None:
             moving.append(src)
             time.sleep(0.3)
             real_move(src, dst)
@@ -655,6 +659,32 @@ class QueueTest(QueueCase):
         self.view._set_running(False)
         self.view._set_running(True, total=2)
         self.assertTrue(self.view.progress.text.startswith("Renaming 1 of 2"))  # a new run
+        self.view._set_running(False)
+
+    async def test_a_copy_between_shares_shows_how_far_it_is_on_the_bar(self) -> None:
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        [item] = self.services.queue.items
+        self.view._set_running(True, total=2)
+        self.view._on_progress(
+            ProgressEvent(item_id=item.id, status="working", message="Renaming", fraction=0.5)
+        )
+        self.view._on_progress(
+            ProgressEvent(
+                item_id=item.id,
+                status="working",
+                message="Copying 4.2 of 20 GB",
+                fraction=0.105,
+                copying=True,
+            )
+        )
+        self.assertTrue(self.view.progress.text.startswith("Copying 4.2 of 20 GB · "))
+        self.assertAlmostEqual(self.view.progress.fraction, 0.105)
+        self.assertEqual(item.message, "Renaming")  # the list stays as it was
+        self.view._on_progress(
+            ProgressEvent(item_id=item.id, status="done", message="Heat (1995).mkv", fraction=0.5)
+        )
+        self.assertTrue(self.view.progress.text.startswith("Renaming 2 of 2"))  # the copy is over
         self.view._set_running(False)
 
     async def test_request_close_while_idle_closes_at_once(self) -> None:
@@ -911,6 +941,31 @@ class QueueTest(QueueCase):
         await task
         self.assertTrue((self.tmp / "in" / "Heat (1995).mkv").exists())
 
+    async def test_a_run_waiting_for_the_lock_says_so(self) -> None:
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        lock = self.services.run_lock
+        await lock.acquire()  # an automatic run is busy
+        shown: list[str] = []
+        show = self.view.progress.show
+
+        def noted(fraction: float, text: str) -> None:
+            shown.append(text)
+            show(fraction, text)
+
+        self.view.progress.show = noted  # type: ignore[method-assign]
+        try:
+            task = asyncio.get_running_loop().create_task(self.view.forge())
+            await pump(self.root, 0.3)
+            self.assertEqual(self.view.progress.text, "Waiting for Auto-rename to finish…")
+        finally:
+            lock.release()
+        await task
+        self.assertTrue((self.tmp / "in" / "Heat (1995).mkv").exists())
+        after = shown[shown.index("Waiting for Auto-rename to finish…") + 1 :]
+        self.assertTrue(after and after[0].startswith("Renaming 1 of 1"))
+
     async def test_trailers_ask_for_their_tools_first(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
         await self.services.settings.update(movies_folder=str(self.tmp / "lib"))
@@ -1104,9 +1159,7 @@ class QueueTest(QueueCase):
         self.view.folder_button.invoke()
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(
-            menu.labels, ("Choose a folder…", "☑  Scan subfolders", "🔁 Find duplicates…")
-        )
+        self.assertEqual(menu.labels, ("Choose a folder…", "☑  Scan subfolders"))
         menu.buttons[1].invoke()  # off
         await pump_until(self.root, lambda: len(self.services.queue.items) == 1)
         self.assertFalse(self.services.settings.current.scan_subfolders)
@@ -1121,12 +1174,38 @@ class QueueTest(QueueCase):
         await self.services.settings.update(scan_subfolders=False)
         make_files(series / "Lost" / "Season 01", ["Lost - S01E01 - Pilot.mkv"])
         make_files(movies / "Heat (1995)", ["Heat (1995).mkv"])
+        self.view.library_button.invoke()
+        menu = PopupMenu._open
+        assert menu is not None
+        self.assertEqual(menu.labels, ("🧰 Fix my library", "🔁 Find duplicates…"))
+        menu.buttons[0].invoke()
+        await pump_until(self.root, lambda: len(self.services.queue.items) == 2)
+
+    async def test_library_tools_moved_to_their_own_menu(self) -> None:
+        # Library ▾ sits right after + Folder ▾; without library folders only Find duplicates…
+        self.view.library_button.invoke()
+        menu = PopupMenu._open
+        assert menu is not None
+        self.assertEqual(menu.labels, ("🔁 Find duplicates…",))
+        menu.close()
+        self.assertEqual(self.view.library_button.cget("text"), "Library ▾")
+        self.assertEqual(
+            self.view.toolbar.pack_slaves()[:3],
+            [self.view.files_button, self.view.folder_button, self.view.library_button],
+        )
+        await self.library(automatic="off")
+        with mock.patch.object(QueueView, "find_duplicates") as find:
+            self.view.library_button.invoke()
+            menu = PopupMenu._open
+            assert menu is not None
+            self.assertEqual(menu.labels, ("🧰 Fix my library", "🔁 Find duplicates…"))
+            menu.buttons[1].invoke()
+        find.assert_called_once()
         self.view.folder_button.invoke()
         menu = PopupMenu._open
         assert menu is not None
-        self.assertEqual(menu.labels[2:], ("🧰 Fix my library", "🔁 Find duplicates…"))
-        menu.buttons[2].invoke()
-        await pump_until(self.root, lambda: len(self.services.queue.items) == 2)
+        self.assertEqual(menu.labels, ("Choose a folder…", "☑  Scan subfolders"))
+        menu.close()
 
     async def test_find_duplicates_opens_its_window(self) -> None:
         _downloads, series, _movies = await self.library(automatic="off")
@@ -1138,13 +1217,144 @@ class QueueTest(QueueCase):
         self.assertEqual(window.move_button.cget("text"), "Move 1 extra copy aside")
         window.close()
 
-    async def test_clear_queue_empties_it(self) -> None:
+    async def test_a_library_at_a_share_root_asks_where_the_copies_go(self) -> None:
+        _downloads, series, _movies = await self.library(automatic="off")
+        make_files(series / "Lost" / "Season 01", ["Lost - S01E01 - Pilot.mkv", "Lost.S01E01.720p.mkv"])
+        (series / "Lost" / "Season 01" / "Lost - S01E01 - Pilot.mkv").write_bytes(b"x" * 100)
+        # As if the Series folder were \\NAS\Series: no folder beside it.
+        self.enterContext(
+            mock.patch.object(duplicates_module, "is_root", lambda folder: folder == series)
+        )
+        answers = [str(series / "Aside"), str(self.tmp / "aside")]
+        self.enterContext(
+            mock.patch.object(DuplicatesWindow, "ask_folder", lambda _self: answers.pop(0))
+        )
+        self.view.find_duplicates()
+        await pump_until(self.root, lambda: self.view.duplicates_window is not None)
+        window = self.view.duplicates_window
+        assert window is not None and window.move_button is not None
+        window.move()  # inside the Series folder: refused, nothing moved
+        self.assertEqual(
+            window.note.cget("text"), "Choose a folder outside your Series and Movies folders."
+        )
+        self.assertTrue((series / "Lost" / "Season 01" / "Lost.S01E01.720p.mkv").exists())
+        self.assertFalse((series / "Aside").exists())
+        window.move()
+        moved = self.tmp / "aside" / "Series" / "Lost" / "Season 01" / "Lost.S01E01.720p.mkv"
+        button = window.move_button
+        await pump_until(self.root, lambda: button.cget("text").startswith("✓"))
+        self.assertEqual(button.cget("text"), "✓ Moved 1 copy to the folder you chose")
+        self.assertTrue(moved.exists())
+        self.assertFalse((series / "Lost" / "Season 01" / "Lost.S01E01.720p.mkv").exists())
+        self.assertFalse((self.tmp / "lib" / "Duplicates").exists())
+        window.close()
+
+    def clear_menu(self) -> PopupMenu:
+        self.view.clear_button.invoke()
+        menu = PopupMenu._open
+        assert menu is not None
+        return menu
+
+    async def test_clear_everything_empties_it(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv"])
         await self.add_and_settle(self.tmp / "in")
-        self.view.clear_button.invoke()
+        self.assertEqual(self.view.clear_button.cget("text"), "Clear ▾")
+        menu = self.clear_menu()
+        self.assertEqual(
+            menu.labels,
+            (
+                "Clear what's done",
+                "Clear everything",
+                "☐  Remove files from the queue after they're forged",
+            ),
+        )
+        menu.buttons[1].invoke()
         await pump(self.root, 0.2)
         self.assertEqual(self.services.queue.items, [])
         self.assertTrue(self.view.empty_state.winfo_ismapped())
+
+    def settle(self, ready_in_s: float | None) -> None:
+        """As if the renamer's look had found a download on its way (None: none)."""
+        auto = self.services.auto
+        seen = Settling() if ready_in_s is None else Settling(1, time.time() + ready_in_s)
+        auto._settling_seen = seen
+        auto._tell_status(auto.status([]))
+
+    async def test_the_settling_line_goes_when_files_arrive(self) -> None:
+        self.settle(600)
+        await pump_until(self.root, lambda: self.view._settling_shown is not None)
+        self.assertEqual(
+            self.view.empty_hint.cget("text"), "1 download finishing, ready in about 10 min"
+        )
+        make_files(self.tmp / "in", ["Dune.2021.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        self.assertFalse(self.view.empty_state.winfo_ismapped())
+        self.assertIsNone(self.view._settling_shown)
+        with mock.patch.object(self.view, "refresh") as refresh:
+            self.settle(300)  # another look: the queue has files, nothing to say again
+            await pump(self.root, 0.1)
+        refresh.assert_not_called()
+
+    async def test_the_settling_line_counts_down(self) -> None:
+        self.enterContext(mock.patch.object(queue_view_module, "SETTLING_TICK_MS", 50))
+        self.settle(125)
+        await pump_until(self.root, lambda: self.view._settling_shown is not None)
+        self.assertEqual(
+            self.view.empty_hint.cget("text"), "1 download finishing, ready in about 3 min"
+        )
+        self.services.auto._settling_seen = Settling(1, time.time() + 30)  # time went by
+        await pump_until(self.root, lambda: "under a minute" in self.view.empty_hint.cget("text"))
+        self.assertIsNotNone(self.view._settling_id)  # and on it goes
+
+    async def test_the_countdown_stops_with_the_view(self) -> None:
+        self.settle(600)
+        await pump_until(self.root, lambda: self.view._settling_id is not None)
+        job = self.view._settling_id
+        self.view.destroy()
+        self.assertNotIn(job, self.root.tk.splitlist(self.root.tk.call("after", "info")))
+
+    async def test_clear_whats_done_keeps_the_rest(self) -> None:
+        make_files(self.tmp / "in", ["Dune.2021.mkv", "Heat.1995.mkv", "Ran.1985.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        queue = self.services.queue
+        dune, heat, ran = self.item("Dune"), self.item("Heat"), self.item("Ran")
+        queue.mark_finished(dune.id, self.tmp / "in" / "Dune (2021).mkv", run_id=1)
+        self.unsure(ran)  # needs you
+        self.view.refresh()
+        await pump(self.root, 0.2)
+        self.clear_menu().buttons[0].invoke()
+        await pump(self.root, 0.2)
+        self.assertEqual([i.id for i in queue.items], [heat.id, ran.id])
+        self.assertEqual(len(self.bands()), 2)
+
+    async def test_the_queue_tick_and_the_settings_tick_are_one_setting(self) -> None:
+        from app.forge.ui.settings_pages import SECTION_LIBRARY, LibrarySection
+        from tests.forge.ui.settings_kit import forge_settings
+        from tests.forge.ui.test_settings_library import FakeForge
+
+        asyncio.get_running_loop().slow_callback_duration = 5.0  # building Settings is slow
+        settings = self.services.settings
+        forge = FakeForge(cast(Any, settings))
+        self.clear_menu().buttons[2].invoke()  # ticked here: saved at once
+        await pump_until(self.root, lambda: settings.current.remove_after_forge)
+        dialog = forge_settings(self.root, forge, section=SECTION_LIBRARY)
+        part = dialog.parts[SECTION_LIBRARY]
+        assert isinstance(part, LibrarySection)
+        self.assertTrue(part._remove.get())  # Settings shows it
+        part._remove.set(False)  # and un-ticked there: saved on Save
+        self.assertTrue(await dialog._save_all())
+        dialog.destroy()
+        self.assertFalse(settings.current.remove_after_forge)
+        menu = self.clear_menu()
+        self.assertEqual(menu.labels[2], "☐  Remove files from the queue after they're forged")
+        menu.close()
+        # Ticked here while Settings is open: its tick follows.
+        dialog = forge_settings(self.root, forge, section=SECTION_LIBRARY)
+        part = dialog.parts[SECTION_LIBRARY]
+        assert isinstance(part, LibrarySection)
+        self.clear_menu().buttons[2].invoke()
+        await pump_until(self.root, lambda: bool(part._remove.get()))
+        dialog.destroy()
 
 
 class PicturesTest(QueueCase):
@@ -1313,6 +1523,110 @@ class WatchedTest(QueueCase):
         kept = self.services.settings.current.kept_back
         self.assertEqual(kept, [os.path.normcase(str(downloads / "Dune.2021.mkv"))])
 
+    async def in_the_library(self) -> tuple[Path, Path, int]:
+        """Dune in the Movies folder already, and its download held for it: (the downloads
+        folder, the library copy, the download's item id)."""
+        downloads, _, movies = await self.library()
+        old = movies / "Dune (2021)" / "Dune (2021).mkv"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old copy")
+        [item_id] = await self.watched(downloads, "Dune.2021.mkv")
+        self.services.queue.hold(item_id, "Already in the library.", in_library=True)
+        self.view.refresh()
+        await pump(self.root, 0.1)
+        return downloads, old, item_id
+
+    async def test_replace_asks_then_puts_the_download_in_the_library_copys_place(self) -> None:
+        _downloads, old, item_id = await self.in_the_library()
+        asked: list[tuple[str, str, list[str]]] = []
+
+        async def replace(title: str, message: str, choices: Sequence[str]) -> str | None:
+            asked.append((title, message, list(choices)))
+            return choices[0]
+
+        self.view.ask = replace
+        [band] = self.rows("band")
+        self.assertIn(("replace", "Replace the one in the library"), band.actions)
+        self.view.list.on_action(band.key, "replace")
+        aside = old.parents[2] / "Duplicates" / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
+        item = self.services.queue.get(item_id)
+        assert item is not None
+        await pump_until(self.root, lambda: aside.exists() and item.status is ItemStatus.DONE)
+        self.assertEqual(
+            asked,
+            [
+                (
+                    "Replace the one in the library",
+                    "Replace Dune (2021) in the library? The one there now moves to Duplicates.",
+                    ["Replace", "Cancel"],
+                )
+            ],
+        )
+        self.assertEqual(old.read_bytes(), b"video")
+        self.assertEqual(aside.read_bytes(), b"old copy")
+
+    async def test_cancel_leaves_the_library_copy_alone(self) -> None:
+        downloads, old, _item_id = await self.in_the_library()
+
+        async def cancel(title: str, message: str, choices: Sequence[str]) -> str | None:
+            return choices[-1]
+
+        self.view.ask = cancel
+        await self.view.replace_band(self.view._bands[self.rows("band")[0].key])
+        self.assertEqual(old.read_bytes(), b"old copy")
+        self.assertTrue((downloads / "Dune.2021.mkv").exists())
+        self.assertFalse((old.parents[2] / "Duplicates").exists())
+
+    async def test_a_share_root_library_asks_once_where_replaced_copies_go(self) -> None:
+        downloads, old, item_id = await self.in_the_library()
+        movies = old.parents[1]
+        self.enterContext(  # as if the Movies folder were \\NAS\Movies: no folder beside it
+            mock.patch.object(duplicates_module, "is_root", lambda folder: folder == movies)
+        )
+        answers = [str(movies / "Aside"), str(self.tmp / "aside")]
+        picked: list[str] = []
+
+        def ask_folder() -> str:
+            picked.append(answers[0])
+            return answers.pop(0)
+
+        self.view.ask_folder = ask_folder
+        asked: list[str] = []
+
+        async def replace(title: str, message: str, choices: Sequence[str]) -> str | None:
+            asked.append(message)
+            return choices[0]
+
+        self.view.ask = replace
+        ids = self.view._bands[self.rows("band")[0].key]
+        await self.view.replace_band(ids)  # inside the Movies folder: refused, nothing moved
+        self.assertEqual(asked, [])
+        self.assertEqual(old.read_bytes(), b"old copy")
+        self.assertIn(
+            "Choose a folder outside your Series and Movies folders.",
+            self.services.activity.lines()[-1].text,
+        )
+        await self.view.replace_band(ids)
+        self.assertEqual(
+            asked, ["Replace Dune (2021) in the library? The one there now moves to aside."]
+        )
+        aside = self.tmp / "aside" / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
+        self.assertEqual(aside.read_bytes(), b"old copy")
+        self.assertEqual(old.read_bytes(), b"video")
+        self.assertEqual(self.services.aside_place, self.tmp / "aside")
+        item = self.services.queue.get(item_id)
+        assert item is not None and item.status is ItemStatus.DONE
+        heat = movies / "Heat (1995)" / "Heat (1995).mkv"
+        heat.parent.mkdir()
+        heat.write_bytes(b"old heat")
+        [heat_id] = await self.watched(downloads, "Heat.1995.mkv")
+        self.services.queue.hold(heat_id, "Already in the library.", in_library=True)
+        await self.view.replace_band([heat_id])
+        self.assertEqual(len(picked), 2)  # remembered for the session: not asked again
+        self.assertEqual(
+            (self.tmp / "aside" / "Movies" / "Heat (1995)" / heat.name).read_bytes(), b"old heat"
+        )
+
 
 class DropsTest(QueueCase):
     async def test_files_dropped_on_the_queue_are_added(self) -> None:
@@ -1376,7 +1690,8 @@ class LookAndLanguageTest(QueueCase):
         self.assertEqual(view.option_buttons["Poster"].text, "Poster")
         self.assertEqual(view.option_buttons["Empty folders"].text, "Lege mappen")
         self.assertEqual(view.preview_button.cget("text"), "Voorbeeld")
-        self.assertEqual(view.clear_button.cget("text"), "✕ Wachtrij leegmaken")
+        self.assertEqual(view.clear_button.cget("text"), "Leegmaken ▾")
+        self.assertEqual(view.library_button.cget("text"), "Bibliotheek ▾")
         self.assertEqual(view.custom_button.cget("text"), "✎ Aangepast")
         self.assertEqual(view.save_as_button.cget("text"), "Opslaan als voorinstelling…")
         self.assertEqual(view.folder_button.cget("text"), "+ Map ▾")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 
@@ -12,14 +13,16 @@ from app.config import AppPaths
 from app.database import BackupRepository, Database
 from app.forge.runtime import ForgeRuntime
 from app.indexers import default_indexers
-from app.models import Movie, Settings, Show
+from app.i18n import t
+from app.models import Movie, SearchRequest, Settings, Show
 from app.services.airdates import AirdatesClient, AirdatesError, AirdatesImportService
 from app.services.auto_download import AutoDownloadService
 from app.services.backup import BackupService
 from app.services.discovery import DiscoveryService
-from app.services.download_queue import DownloadQueue
+from app.services.download_queue import QUEUE_FILE, DownloadQueue
 from app.services.download_status import DownloadStatusService, forge_moves
-from app.services.downloads import DownloadService
+from app.services.given_up import GivenUpService
+from app.services.downloads import DownloadService, GrabError
 from app.services.images import ImageCache
 from app.services.library import LibraryService
 from app.services.phone.collection import FilmSeries
@@ -45,13 +48,14 @@ from app.services.qbittorrent_local import QBittorrentStarter
 from app.services.qbittorrent_setup import QBittorrentSetup
 from app.services.qbittorrent_theme import ThemeFolder
 from app.services.quick_download import QuickDownloadService
+from app.services.release_dates import RELEASE_DATES_FILE
 from app.services.remote import RemoteError
 from app.services.remote_downloads import RemoteDownloads
-from app.services.search import TorrentSearchService
+from app.services.search import TorrentSearchService, movie_request
 from app.services.settings import SettingsService
 from app.services.spotlight import SpotlightService
 from app.services.synology import DownloadStationClient
-from app.services.tmdb import TMDBClient
+from app.services.tmdb import TMDBClient, TMDBError
 from app.services.torrent_app import (
     QBittorrentLinker,
     TorrentAppService,
@@ -87,6 +91,7 @@ class Services:
         "download_status",
         "downloads",
         "forge",
+        "given_up",
         "images",
         "library",
         "phone",
@@ -137,13 +142,26 @@ class Services:
         # One-click Download: search, pick the best release, grab it.
         self.quick_download = QuickDownloadService(search, downloads, settings)
         # Every one-click download the user asks for, a couple at a time; as long as the app
-        # runs (closing a window never cancels one).
-        self.download_queue = DownloadQueue(self.quick_download)
+        # runs (closing a window never cancels one). What waits at a quit is kept in the data
+        # folder and queued again at the next start (`restore` from MainWindow._start).
+        self.download_queue = DownloadQueue(
+            self.quick_download,
+            file=paths.root / QUEUE_FILE,
+            film_request=functools.partial(_film_request, discovery),
+        )
         # The film watchlists (the selected person's in memory once `load`ed: profiles.load).
         self.watchlist = WatchlistService(db.watchlist, discovery, downloads)
         # The people sharing AirGrabber and who is selected (Services.create `load`s them):
         # each has their own followed series, watchlist and calendar.
         self.profiles = ProfileService(db.profiles, settings, self.watchlist)
+        # The Downloads page's "Couldn't find automatically": what the automatic downloads
+        # gave up on, and its Try again (the give-up cleared, a download queued now).
+        self.given_up = GivenUpService(
+            library,
+            self.watchlist,
+            self.download_queue,
+            film_request=functools.partial(_film_request, discovery),
+        )
         # Settings → Backup: people, shows, watchlists, download history and settings in one
         # file.
         self.backup = BackupService(BackupRepository(db), settings, self.profiles)
@@ -263,7 +281,9 @@ class Services:
             tmdb = TMDBClient(
                 http, api_key=lambda: settings.current.tmdb_api_key.get_secret_value()
             )
-            discovery = DiscoveryService(tmdb, tvmaze, library)
+            discovery = DiscoveryService(
+                tmdb, tvmaze, library, release_dates=paths.root / RELEASE_DATES_FILE
+            )
             _clear_discovery_on_key_change(settings, discovery)
             images = ImageCache(http, paths.posters)
             # Reads the program, its address and account from the settings on every call; starts
@@ -319,9 +339,9 @@ class Services:
         return self.remote
 
     async def aclose(self) -> None:
-        # The queue is kept in memory only: what still waits is dropped (the log says how many).
-        self.download_queue.close()
         try:
+            # What still waits (or runs) is written down for the next start.
+            await self.download_queue.aclose()
             await self.phone.aclose()  # no phone is answered from here on
         finally:
             try:
@@ -334,6 +354,25 @@ class Services:
                     await self._http.aclose()
                 finally:
                     await self._db.close()
+
+
+FILM_LOOKUP_S = 15.0  # a kept film's TMDB description, at its turn after a restart
+
+
+async def _film_request(discovery: DiscoveryService, movie_id: int, label: str) -> SearchRequest:
+    """The request of a film the download queue kept across a restart, made at its turn as the
+    film's ⬇ makes it (TMDB's description, then its details for the IMDb id)."""
+    try:
+        async with asyncio.timeout(FILM_LOOKUP_S):
+            movie = await discovery.movie(movie_id)
+    except (TMDBError, TimeoutError) as exc:
+        raise GrabError(t("Couldn't look up {title} on TMDB", title=label)) from exc
+    try:
+        async with asyncio.timeout(FILM_LOOKUP_S):
+            details = await discovery.movie_details(movie_id)
+    except (TMDBError, TimeoutError):
+        details = None  # searched by its title and year
+    return movie_request(movie, details)
 
 
 async def _known_titles(db: Database) -> tuple[list[Show], list[Movie]]:

@@ -62,6 +62,7 @@ class QueueItem:
     watched: Path | None = None  # the watched download folder it came from
     run_id: int | None = None  # the run that renamed it
     match_problem: bool = False  # while HELD: held because the match is missing or wrong
+    in_library: bool = False  # while HELD: the film or episode is in the library already
 
     @property
     def root(self) -> Path:
@@ -315,15 +316,19 @@ class Queue:
                 item.message = ""
                 self._start_lookup(item)
 
-    def hold(self, item_id: int, reason: str, *, match_problem: bool = False) -> None:
+    def hold(
+        self, item_id: int, reason: str, *, match_problem: bool = False, in_library: bool = False
+    ) -> None:
         """A watched download waits for the owner, for `reason`. `match_problem`: choosing a
-        match settles it. Every hold says this anew, so a later reason replaces it."""
+        match settles it. `in_library`: it is in the library already (its band offers "Replace
+        the one in the library"). Every hold says this anew, so a later reason replaces it."""
         item = self.get(item_id)
         if item is None:
             return
         item.status = ItemStatus.HELD
         item.message = reason
         item.match_problem = match_problem
+        item.in_library = in_library
         self._on_change(QueueEvent(kind="updated", ids=(item_id,)))
 
     def purge_finished(self, before: float) -> int:

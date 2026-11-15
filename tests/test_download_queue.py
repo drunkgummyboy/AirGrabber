@@ -8,11 +8,18 @@ Fakes and httpx.MockTransport only: no network."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import tempfile
 import unittest
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest import mock
 
 import httpx
 
+from app.config import AppPaths
 from app.indexers import EztvIndexer
 from app.models import (
     GrabOutcome,
@@ -27,11 +34,19 @@ from app.models import (
     SearchRequest,
     Show,
 )
-from app.services.download_queue import WORKERS, DownloadQueue, QueuedDownload, target_key
+from app.services import Services
+from app.services.download_queue import (
+    QUEUE_FILE,
+    WORKERS,
+    DownloadQueue,
+    QueuedDownload,
+    target_key,
+)
 from app.services.downloads import GrabError
 from app.services.quick_download import QuickDownloadService
 from app.services.remote import RemoteError
 from app.services.search import TorrentSearchService, episode_request
+from app.ui.tasks import cancel_all
 from tests.test_quick_download import downloads
 from tests.test_search import settings_service
 
@@ -426,6 +441,233 @@ class SeasonPackTests(QueueTestCase):
         event = queue.event(key(17, None))
         assert event is not None
         self.assertEqual(event.fallback, ())
+
+
+class QueueFileTests(unittest.IsolatedAsyncioTestCase):
+    """Item 25: what waits (and what runs) at a quit is kept in <data>/download-queue.json and
+    queued again at the next start."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.file = Path(tmp.name) / QUEUE_FILE
+        self.now = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+        self.films: list[int] = []
+
+    async def film_request(self, movie_id: int, label: str) -> SearchRequest:
+        self.films.append(movie_id)
+        return SearchRequest(kind=SearchKind.MOVIE, title="Dune", year=2021, queries=("Dune 2021",))
+
+    def file_queue(self, quick: FakeQuick, *, workers: int = 1) -> DownloadQueue:
+        queue = DownloadQueue(
+            quick,  # type: ignore[arg-type]
+            workers=workers,
+            file=self.file,
+            film_request=self.film_request,
+            clock=lambda: self.now,
+        )
+        self.addCleanup(queue.close)
+        return queue
+
+    async def until(self, condition: Callable[[], bool], timeout_s: float = 2.0) -> None:
+        async with asyncio.timeout(timeout_s):
+            while not condition():
+                await asyncio.sleep(0.005)
+
+    def write(self, data: object) -> None:
+        self.file.write_text(json.dumps(data), encoding="utf-8")
+
+    async def test_waiting_downloads_come_back_after_a_restart(self) -> None:
+        quick = FakeQuick()
+        quick.gate(key(17, 1))
+        first = self.file_queue(quick)
+        await first.restore()  # nothing kept from before
+        first.add(item(1))
+        first.add(item(2, again=True))
+
+        async def dune_request() -> SearchRequest:  # made at its turn: never comes this time
+            raise AssertionError("not its turn")
+
+        dune = GrabTarget(media_type=MediaType.MOVIE, media_id=438631)
+        first.add(QueuedDownload(label="Dune (2021)", target=dune, request=dune_request))
+        await self.until(lambda: len(first.running) == 1)
+        await first.aclose()  # the quit (an update's restart too)
+        data = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 1)
+        self.assertEqual(len(data["entries"]), 3)  # the running one counts as waiting
+
+        again = FakeQuick()
+        for one in (key(17, 1), key(17, 2), (MediaType.MOVIE, 438631, None, None)):
+            again.gate(one)
+        second = self.file_queue(again)
+        self.assertEqual(await second.restore(), 3)
+        await self.until(lambda: len(second.running) == 1)
+        listed = [*second.running, *second.waiting]
+        self.assertEqual(
+            [entry.label for entry in listed], ["Gold Rush S17E01", "Gold Rush S17E02", "Dune (2021)"]
+        )
+        self.assertEqual(
+            [entry.key for entry in listed],
+            [key(17, 1), key(17, 2), (MediaType.MOVIE, 438631, None, None)],
+        )
+        for one in list(again.gates):
+            again.open(one)
+        await self.until(lambda: not second.running and not second.waiting)
+        self.assertEqual(again.requests[0], episode_request(GOLD_RUSH, 17, 1))
+        self.assertEqual(again.again, [False, True, False])
+        self.assertEqual(self.films, [438631])  # the film's request made again at its turn
+        await self.until(lambda: not self.file.exists())  # nothing waits: no file
+
+    async def test_a_restored_batch_and_pack_keep_their_ways(self) -> None:
+        quick = FakeQuick()
+        quick.gate(key(17, 9))
+        first = self.file_queue(quick)
+        await first.restore()
+        first.add(item(9))
+        first.add_batch([item(1), item(2)])
+        first.add(pack(18, fallback=(item(1, season=18),)))
+        await self.until(lambda: len(first.running) == 1)
+        await first.aclose()
+
+        again = FakeQuick()
+        again.errors[key(17, 1)] = GrabError("No torrent program")
+        again.results[key(18, None)] = NOTHING
+        second = self.file_queue(again)
+        events: list[QueueEvent] = []
+        second.subscribe(events.append)
+        with self.assertLogs(LOGGER, "INFO"):
+            await second.restore()
+            await self.until(lambda: not second.running and not second.waiting)
+        self.assertEqual(second.state(key(17, 2)), QueueState.DROPPED)  # its batch failed
+        self.assertEqual(second.state(key(18, 1)), QueueState.DONE)  # the pack's fallback
+
+    async def test_a_broken_queue_file_is_set_aside(self) -> None:
+        bad = self.file.with_name(QUEUE_FILE + ".bad")
+        good = {
+            "label": "Gold Rush S17E02",
+            "target": target(17, 2).model_dump(mode="json"),
+            "request": episode_request(GOLD_RUSH, 17, 2).model_dump(mode="json"),
+            "queued_at": self.now.isoformat(),
+        }
+        broken_entry = {"label": "Gold Rush S17E03", "target": {"media_type": "tv"}}
+        cases = {
+            "not JSON": ("{not json", None),
+            "another version": (json.dumps({"version": 2, "entries": []}), None),
+            # One entry that doesn't validate: the whole file is set aside, the good one too.
+            "an entry that doesn't validate": (
+                json.dumps({"version": 1, "entries": [good, broken_entry]}),
+                None,
+            ),
+            "the read failing": (
+                json.dumps({"version": 1, "entries": [good]}),
+                PermissionError("denied"),
+            ),
+        }
+        for name, (content, read_error) in cases.items():
+            with self.subTest(name):
+                self.file.write_text(content, encoding="utf-8")
+                queue = self.file_queue(FakeQuick())
+                reading = (
+                    mock.patch("app.services.download_queue._read", side_effect=read_error)
+                    if read_error is not None
+                    else contextlib.nullcontext()
+                )
+                with reading, self.assertLogs(LOGGER, "WARNING") as logs:
+                    self.assertEqual(await queue.restore(), 0)
+                self.assertIn("set aside", "\n".join(logs.output))
+                self.assertFalse(self.file.exists())
+                self.assertEqual(bad.read_text(encoding="utf-8"), content)
+                self.assertEqual(queue.waiting, ())
+                queue.add(item(1))  # the queue works as ever
+                await self.until(lambda: queue.state(key(17, 1)) is QueueState.DONE)
+                await queue.aclose()
+
+    async def test_old_entries_are_dropped(self) -> None:
+        quick = FakeQuick()
+        quick.gate(key(17, 1))
+        first = self.file_queue(quick)
+        await first.restore()
+        start = self.now
+        self.now = start - timedelta(days=8)
+        first.add(item(1))
+        self.now = start - timedelta(days=6)
+        first.add(item(2))
+        await first.aclose()
+
+        self.now = start
+        again = FakeQuick()
+        again.gate(key(17, 2))
+        second = self.file_queue(again)
+        with self.assertLogs(LOGGER, "INFO") as logs:
+            self.assertEqual(await second.restore(), 1)
+        self.assertIn("1 older than 7 days dropped", "\n".join(logs.output))
+        await self.until(lambda: len(second.running) == 1)
+        self.assertEqual([entry.key for entry in second.running], [key(17, 2)])
+        again.open(key(17, 2))
+
+    async def test_a_running_download_survives_the_quits_cancel_all(self) -> None:
+        quick = FakeQuick()
+        quick.gate(key(17, 1))
+        queue = self.file_queue(quick)
+        await queue.restore()
+        queue.add(item(1))
+        queue.add(item(2))
+        await self.until(lambda: len(queue.running) == 1)
+        await cancel_all()  # main.py: every task cancelled before Services.aclose
+        await queue.aclose()
+        data = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [entry["label"] for entry in data["entries"]],
+            ["Gold Rush S17E01", "Gold Rush S17E02"],
+        )
+
+    async def test_a_quit_before_the_restore_keeps_the_file(self) -> None:
+        quick = FakeQuick()
+        quick.gate(key(17, 1))
+        first = self.file_queue(quick)
+        await first.restore()
+        first.add(item(1))
+        await first.aclose()
+        kept = self.file.read_text(encoding="utf-8")
+        second = self.file_queue(FakeQuick())
+        await second.aclose()  # quit at once: restore() never ran (or comes too late)
+        self.assertEqual(await second.restore(), 0)
+        self.assertEqual(self.file.read_text(encoding="utf-8"), kept)
+
+    async def test_a_queue_without_a_file_keeps_nothing(self) -> None:
+        queue = DownloadQueue(FakeQuick())  # type: ignore[arg-type]
+        self.assertEqual(await queue.restore(), 0)
+        queue.add(item(1))
+        await queue.aclose()
+        self.assertFalse(self.file.exists())
+
+
+class ServicesQueueFileTests(unittest.IsolatedAsyncioTestCase):
+    async def test_services_keep_the_queue_in_the_data_folder(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        kept = root / QUEUE_FILE
+        long_ago = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        entry = {
+            "label": "Gold Rush S17E01",
+            "target": target(17, 1).model_dump(mode="json"),
+            "request": episode_request(GOLD_RUSH, 17, 1).model_dump(mode="json"),
+            "queued_at": long_ago,
+        }
+        kept.write_text(json.dumps({"version": 1, "entries": [entry]}), encoding="utf-8")
+        asyncio.get_running_loop().slow_callback_duration = 1.0  # httpx loads its CA bundle
+        network = AssertionError("no network calls")
+        with mock.patch.object(httpx.AsyncClient, "send", side_effect=network):
+            services = await Services.create(AppPaths(root))
+            try:
+                self.assertTrue(kept.exists())  # untouched until the loop's start restores it
+                with self.assertLogs(LOGGER, "INFO"):
+                    self.assertEqual(await services.download_queue.restore(), 0)  # too old
+                self.assertFalse(kept.exists())
+            finally:
+                await services.aclose()
+        self.assertFalse(kept.exists())  # nothing waited at the quit
 
 
 class LogHygieneTests(QueueTestCase):

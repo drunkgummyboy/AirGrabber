@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 LOGO_FILE = ASSETS_DIR / "logo.png"
 ICON_FILE = ASSETS_DIR / "airgrabber.ico"  # keep in step with install.ps1 (shortcut icon)
+PLAYER_ICON_FILE = ASSETS_DIR / "player.ico"  # the video player's window and taskbar button
 OWN_ICON_MAX = 64  # the largest size Windows shows a window's icon at (taskbar, 200 %)
 
 # Roots whose default icon is AirGrabber's; per root, the Tk images of each icon of its own.

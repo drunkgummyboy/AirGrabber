@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import main
-from app.identity import APP_USER_MODEL_ID, set_process_app_id
+from app.identity import APP_USER_MODEL_ID, PLAYER_APP_USER_MODEL_ID, set_process_app_id
 from app.services import app_identity
 from app.services.app_identity import (
     READ_SCRIPT,
@@ -63,6 +63,22 @@ class ConstantTests(unittest.TestCase):
         default = inspect.signature(set_process_app_id).parameters["app_id"].default
         self.assertEqual(default, APP_USER_MODEL_ID)
         self.assertIn("    set_process_app_id()\n", inspect.getsource(main.main))
+
+    def test_the_player_has_its_own_id_and_icon(self) -> None:
+        import app.media_player
+        import app.media_player_window
+        from app.ui.branding import PLAYER_ICON_FILE
+
+        self.assertNotEqual(PLAYER_APP_USER_MODEL_ID, APP_USER_MODEL_ID)
+        self.assertIn(
+            "set_process_app_id(PLAYER_APP_USER_MODEL_ID)",
+            inspect.getsource(app.media_player.main),
+        )
+        self.assertIn(
+            "set_own_icon(self, PLAYER_ICON_FILE)", inspect.getsource(app.media_player_window)
+        )
+        self.assertTrue(PLAYER_ICON_FILE.is_file())
+        self.assertEqual(PLAYER_ICON_FILE.parent.name, "assets")
 
     def test_install_ps1(self) -> None:
         script = (PROJECT / "install.ps1").read_text(encoding="utf-8")

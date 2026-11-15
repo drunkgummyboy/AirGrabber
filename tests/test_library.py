@@ -20,7 +20,7 @@ from app.database import Database
 from app.models import DownloadRecord, Episode, MediaType, Settings, SyncProgress, SyncReport
 from app.models.tvmaze import TVMazeShow
 from app.services import Services, SettingsService
-from app.services.library import LibraryService, downloaded_ids, next_episode
+from app.services.library import FAILED_DAY_S, LibraryService, downloaded_ids, next_episode
 from app.services.tvmaze import TVMazeClient, TVMazeError, TVMazeNotFound
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tvmaze"
@@ -194,8 +194,12 @@ class LibraryTestCase(unittest.IsolatedAsyncioTestCase):
         self.db = await Database.open(Path(self.tmp.name) / "library.db")
         self.server = FakeTVMaze()
         self.http = httpx.AsyncClient(transport=httpx.MockTransport(self.server))
+        self.library_clock = 1000.0  # the service's clock (FAILED_DAY_S)
         self.service = LibraryService(
-            self.db.library, self.db.history, TVMazeClient(self.http, retry_delay=0)
+            self.db.library,
+            self.db.history,
+            TVMazeClient(self.http, retry_delay=0),
+            clock=lambda: self.library_clock,
         )
         self.notifications = 0
         self.service.subscribe(self.on_change)
@@ -452,6 +456,51 @@ class SuggestionTests(LibraryTestCase):
         self.assertEqual(entries[0].show.network, None)
         self.assertEqual(await self.db.library.schedule_fetches(today, today), {})  # tried again
 
+    async def test_a_failed_day_is_not_fetched_again_for_half_an_hour(self) -> None:
+        service = self.service  # its clock: self.library_clock
+        today, tomorrow = date.today(), date.today() + timedelta(days=1)
+        self.serve_schedule(tomorrow)
+        self.server.failures[f"/schedule?{today.isoformat()}"] = 500
+        with self.assertLogs(LOGGER, "WARNING"):
+            await service.suggestions(today, tomorrow, per_day=3, profile_id=1)
+        failed = self.server.requests[f"/schedule?{today.isoformat()}"]
+        self.assertGreater(failed, 0)
+        # Every load within the half hour: the failed day isn't asked again (nor the good one).
+        self.library_clock += FAILED_DAY_S - 1
+        await service.suggestions(today, tomorrow, per_day=3, profile_id=1)
+        self.assertEqual(self.server.requests[f"/schedule?{today.isoformat()}"], failed)
+        self.assertEqual(self.server.requests[f"/schedule?{tomorrow.isoformat()}"], 1)
+        # After it, it is tried again; once it works it is cached as every other day.
+        del self.server.failures[f"/schedule?{today.isoformat()}"]
+        self.library_clock += 1
+        await service.suggestions(today, tomorrow, per_day=3, profile_id=1)
+        self.assertEqual(self.server.requests[f"/schedule?{today.isoformat()}"], failed + 1)
+        self.assertIn(today, await self.db.library.schedule_fetches(today, today))
+
+    async def test_a_day_delivered_after_a_failure_is_forgotten(self) -> None:
+        today = date.today()
+        self.server.failures[f"/schedule?{today.isoformat()}"] = 500
+        with self.assertLogs(LOGGER, "WARNING"):
+            await self.service._fetch_schedule_day(today)
+        self.assertIn(today, self.service._failed_days)
+        del self.server.failures[f"/schedule?{today.isoformat()}"]
+        await self.service._fetch_schedule_day(today)  # delivered (a fetch already under way)
+        self.assertNotIn(today, self.service._failed_days)
+
+    async def test_a_day_without_its_streaming_schedule_waits_half_an_hour_too(self) -> None:
+        service = self.service  # its clock: self.library_clock
+        today = date.today()
+        self.serve_schedule(today)
+        self.server.failures["/schedule/web"] = 500
+        with self.assertLogs(LOGGER, "WARNING"):
+            entries = await service.suggestions(today, today, per_day=3, profile_id=1)
+        self.assertTrue(entries)  # the regular schedule is kept
+        asked = sum(self.server.streaming_requests.values())
+        again = await service.suggestions(today, today, per_day=3, profile_id=1)
+        self.assertEqual(again, entries)
+        self.assertEqual(sum(self.server.streaming_requests.values()), asked)
+        self.assertEqual(self.server.requests[f"/schedule?{today.isoformat()}"], 1)
+
     async def test_one_episode_on_both_schedules_is_one_suggestion(self) -> None:
         today = date.today()
         self.server.schedules[today] = [schedule_item(9001, 901, today)]
@@ -474,6 +523,7 @@ class SuggestionTests(LibraryTestCase):
 
         del self.server.failures[failing]
         self.server.requests.clear()
+        self.library_clock += FAILED_DAY_S  # not before (test_a_failed_day_is_not_fetched_again_…)
         entries = await self.service.suggestions(days[0], days[-1], per_day=3, profile_id=1)
         self.assertEqual(list(self.server.requests), [failing])
         self.assertEqual([e.episode.air_date for e in entries], days)

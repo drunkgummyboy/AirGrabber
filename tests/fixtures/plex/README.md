@@ -30,3 +30,9 @@ tests never call plex.tv or a real server. Every name, address, id and token in 
 - `all_leaves.json`: `GET /library/metadata/1001/allLeaves`: The Ark's episodes in Plex's own
   order (a special first; season 1 watched; season 2: E01 watched, E02 and E03 not; E04 without
   a file), each with its Part's `file` under `/volume1/video/TV/The Ark (2023)/Season NN/`
+- `continue_watching.json`: `GET /hubs/continueWatching`: the "home.continue" hub (made-up
+  titles): Harbour Lights S02E02 left at 20:00 of 45:00, the film The Glass Orchard (2025) with
+  a 1080p version first and a 4K one second (▶ Play takes the 4K one), Saltmarsh S01E05 (no
+  `Media` length) and a clip (passed over)
+- `on_deck.json`: `GET /library/onDeck` (a server without the hub): Harbour Lights S02E03, not
+  begun

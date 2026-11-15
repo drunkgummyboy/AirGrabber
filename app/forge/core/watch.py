@@ -6,6 +6,11 @@ notifications are not used: over SMB (the NAS) Windows misses them, so a look ev
 the base; right after a start the second look comes soon (SECOND_LOOK_S), so what finished while
 AirGrabber was closed doesn't wait a whole interval. Temporary download names, samples and the NAS's own folders are never candidates, nor
 what the owner ignored (`candidates(root, ignored)`: app/forge/core/ignored.py's IgnoreList).
+A file that looked the same as at the last look (it stopped growing) but hasn't been quiet for
+QUIET_S yet is settling (`Watcher.settling`: how many, and when the first is quiet). A file still
+changing isn't (qBittorrent writes under the final name: a 4-hour download would read "ready in
+about 10 min" for hours), nor one that is quiet but held open or not filled in: nobody knows
+when it lets go.
 """
 
 from __future__ import annotations
@@ -14,9 +19,9 @@ import ctypes
 import os
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from app.forge.core import fsops
 from app.forge.core.parser import is_video
@@ -140,8 +145,31 @@ def looks_filled(path: Path) -> bool:
     return True
 
 
+class Settling(NamedTuple):
+    """Downloads seen but not quiet yet: how many, and when (`time.time()`) the first of them
+    should be ready (None with none)."""
+
+    files: int = 0
+    ready_at: float | None = None
+
+
+def all_settling(parts: Iterable[Settling]) -> Settling:
+    """Several folders' settling files as one: how many together, the earliest time."""
+    files, times = 0, []
+    for part in parts:
+        files += part.files
+        if part.ready_at is not None:
+            times.append(part.ready_at)
+    return Settling(files, min(times) if times else None)
+
+
 class Watcher:
-    """Remembers what each file looked like at the last look."""
+    """Remembers what each file looked like at the last look.
+
+    `finished` stats, opens and reads files (over SMB: slow), so the renamer runs it in a worker
+    thread (app/forge/core/auto.py), one Watcher per watched folder. Nothing here is locked: its
+    state must be touched by one thread at a time. That holds because looks never overlap, and a
+    folder whose check outran the time limit is skipped until that thread has ended."""
 
     def __init__(
         self,
@@ -157,12 +185,15 @@ class Watcher:
         self._filled = filled
         self._seen: dict[str, tuple[int, int]] = {}
         self._filled_at: dict[str, tuple[int, int]] = {}  # read once per version of a file
+        self.settling = Settling()  # what the last `finished` left settling
 
     def finished(self, files: Sequence[Path]) -> list[Path]:
-        """The files among this look's `files` that have finished downloading."""
+        """The files among this look's `files` that have finished downloading (and `settling`
+        set to those that are on their way)."""
         now = self._now()
         seen: dict[str, tuple[int, int]] = {}
         done: list[Path] = []
+        ready: list[float] = []  # when each settling file should be ready
         for file in files:
             key = os.path.normcase(str(file))
             try:
@@ -171,12 +202,15 @@ class Watcher:
                 continue  # gone between listing and now: forgotten
             seen[key] = stamp
             if self._seen.get(key) != stamp:
-                continue  # new, or still changing
-            quiet = now - stamp[1] / 1_000_000_000 >= QUIET_S
-            if quiet and self._can_open(file) and self._is_filled(key, file, stamp):
+                continue  # new, or still changing: not settling yet
+            quiet_at = stamp[1] / 1_000_000_000 + QUIET_S
+            if now < quiet_at:
+                ready.append(quiet_at)  # stopped growing: quiet from then on
+            elif self._can_open(file) and self._is_filled(key, file, stamp):
                 done.append(file)
         self._seen = seen
         self._filled_at = {k: v for k, v in self._filled_at.items() if k in seen}
+        self.settling = Settling(len(ready), min(ready) if ready else None)
         return done
 
     def _is_filled(self, key: str, file: Path, stamp: tuple[int, int]) -> bool:

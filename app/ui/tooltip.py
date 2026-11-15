@@ -20,6 +20,7 @@ from typing import Any
 import customtkinter as ctk
 
 from app.ui import theme
+from app.ui.plain_popup import PlainPopup
 
 DELAY_MS = 500  # hover time before a tip shows
 GAP = 8  # between the widget and the tip (unscaled units)
@@ -211,7 +212,7 @@ class _TipWindow:
         self._dark = theme.is_dark()
         # The window's own colour is keyed out (where supported), leaving the rounded box.
         bg = theme.pick(theme.BG)
-        top = tk.Toplevel(root, bg=bg, takefocus=False)
+        top = PlainPopup(root, bg=bg, takefocus=False)
         top.withdraw()
         top.overrideredirect(True)
         try:

@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.16.0": (
+        N_("Automatic downloads try the next release when one fails, fetch a finished season as one pack, and survive a restart."),
+        N_("Downloads page: speed and time left per download, and what couldn't be found automatically, with Try again."),
+        N_("Library: a Continue watching row at the top, and ▶ Play when you point at a card."),
+        N_("Player keys: G/H and J/K to sync subtitles and sound, [ and ] for speed, N/P for the next or previous episode."),
+        N_("MediaForge can replace what's in your library (the old copy is moved aside) and says when a download is ready."),
+        N_("AirGrabber opens full size, and when Plex or the NAS stops answering, it tells you within seconds."),
+    ),
     "3.15.0": (
         N_("Plex keeps up: carry on where you stopped, find it in Continue watching, and it counts as watched at the end."),
         N_("Skip intro shows when Plex knows where the intro is, and the next episode starts after a short countdown."),

@@ -78,7 +78,7 @@ from app.ui.download_control import (
     RunState,
     episode_key,
 )
-from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT, row_height
+from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT, TrackButton, row_height
 from app.ui.text_fit import SLACK
 
 # The poster cards' old cap behind their text (they fade on to solid under it now): the
@@ -522,11 +522,69 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))  # the shared word
                 self.assertEqual(button.cget("height"), row_height(scale))
                 self.assertEqual(button.cget("corner_radius"), scale.px(ROW_CORNER_RADIUS))
-                self.assertEqual(button.cget("fg_color"), theme.ACCENT)  # filled: do it
                 self.assertEqual(button.pack_info()["fill"], "x")  # wide
         button.set_state("tracked")
         self.assertEqual(button.cget("text"), i18n.t(FOLLOWING_TEXT))
         self.assertEqual(button.cget("border_color"), theme.SUCCESS)  # green outline: yours
+
+    async def test_a_suggestion_cards_follow_button_has_no_fill(self) -> None:
+        card = SuggestionCard(
+            self.root,
+            calendar_entry(aired=False),
+            library=cast(Any, None),
+            status=cast(Any, None),
+            profile_id=1,
+        )
+        button: Any = card._track_button
+
+        def assert_quiet(border: theme.Color) -> None:
+            self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))
+            self.assertEqual(button.cget("fg_color"), "transparent")  # an outline, no fill
+            self.assertEqual(button.cget("border_width"), 1)
+            self.assertEqual(button.cget("border_color"), border)
+            self.assertEqual(button.cget("text_color"), theme.SUGGESTION_BUTTON_TEXT)
+            self.assertFalse(button.cget("hover"))  # CTk's hover is a fill
+            self.assertEqual(button.cget("state"), "normal")
+
+        assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
+        button._on_enter()
+        self.assertEqual(button.cget("border_color"), theme.ACCENT)  # the accent on hover
+        self.assertEqual(button.cget("fg_color"), "transparent")
+        button._on_leave()
+        assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
+        # A switch between light and dark keeps it (the colours are pairs CTk repaints).
+        for index, mode in ((1, "dark"), (0, "light")):
+            button._set_appearance_mode(mode)
+            assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
+            canvas = button._canvas
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    canvas.itemcget("border_parts", "fill"), theme.SUGGESTION_BUTTON_EDGE[index]
+                )
+                inner = canvas.itemcget("inner_parts", "fill")
+                self.assertNotEqual(inner, theme.ACCENT[index])
+                self.assertEqual(inner, button._apply_appearance_mode(button.cget("bg_color")))
+        # "Adding…" and "✓ Following" look as they did.
+        button.set_state("busy")
+        self.assertEqual(button.cget("fg_color"), theme.ACCENT)
+        self.assertTrue(button.cget("hover"))
+        button._on_enter()  # disabled: the outline stays out of it
+        self.assertEqual(button.cget("border_width"), 0)
+        button.set_state("tracked")
+        self.assertEqual(button.cget("fg_color"), "transparent")
+        self.assertEqual(button.cget("border_color"), theme.SUCCESS)
+        self.assertEqual(button.cget("text_color"), theme.SUCCESS)
+        # Back to "+ Follow" (adding failed) with the pointer still on it: the hover look.
+        button.set_state("idle")
+        self.assertEqual(button.cget("border_color"), theme.ACCENT)
+        button._on_leave()
+        assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
+
+    async def test_the_poster_cards_follow_button_stays_filled(self) -> None:
+        button = TrackButton(self.root, busy_text="Adding…", command=lambda: None)
+        self.assertEqual(button.cget("fg_color"), theme.ACCENT)
+        self.assertEqual(button.cget("border_width"), 0)
+        self.assertTrue(button.cget("hover"))
 
     def actions(self) -> tuple[DownloadActions[CalendarEntry], list[str]]:
         """Actions that record what was asked: "download" / "choose"."""

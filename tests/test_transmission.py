@@ -20,7 +20,7 @@ import httpx
 
 from app.database import SettingsRepository
 from app.models import RemoteKind, Settings
-from app.services.remote import RemoteError
+from app.services.remote import ReleaseRefused, RemoteError
 from app.services.settings import SettingsService
 from app.services.transmission import TransmissionClient, rpc_url
 
@@ -201,6 +201,7 @@ class AddTests(TransmissionTestCase):
         self.server.answers["torrent-add"] = lambda body: fixture("torrent_add_failure.json")
         error = await self.error_of(self.client.add_torrent(b"junk", "x.torrent"))
         self.assertEqual(str(error), "Transmission refused it: invalid or corrupt torrent file.")
+        self.assertIsInstance(error, ReleaseRefused)  # this release: the next one may go
 
     async def test_success_without_an_added_torrent(self) -> None:
         self.server.answers["torrent-add"] = lambda body: {"result": "success", "arguments": {}}

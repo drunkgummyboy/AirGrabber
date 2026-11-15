@@ -8,24 +8,29 @@ Plex, the network or AirGrabber's settings happens here, on the loop
   sends it to the player's window: the process is started once (`python -m app.media_player
   <look> --engine <VLC folder>`, the interpreter running AirGrabber, without a console, from the
   folder holding `app/`, like app/ui/trailer.py) and kept for later videos; it must say `Ready`
-  within READY_TIMEOUT_S. Its `Play` line holds the local file, the texts, where to start (Plex's
-  position; Resume / Start over asked when there is one, except for a next episode), Plex's intro
-  and credits markers (`PlexService.markers`; none when that fails), the next episode's label,
-  Settings' Always pick and the languages picked by hand in the episode before (`Tracks`, kept
-  for the same show in the same window).
+  within READY_TIMEOUT_S. A window that isn't open yet starts while the file is being found (it
+  shows "Finding the file…" until then) and closes again when the file isn't found. Its `Play`
+  line holds the local file, the texts, where to start (Plex's position; Resume / Start over
+  asked when there is one, except for a next episode or `ask_resume=False`), Plex's intro and
+  credits markers (a film's came with its video, `markers_known`; else `PlexService.markers`,
+  asked while the file is found; none when that fails), the next episode's label, Settings' Always pick and the
+  languages picked by hand in the episode before (`Tracks`, kept for the same show in the same
+  window).
 - Plex in sync: `Position` → Plex's timeline (`PlexService.report`) on a new state (playing /
   paused), a seek (a position SEEK_SLACK_MS away from where it would be) and otherwise once per
   REPORT_EVERY_S; the first position at WATCHED_SHARE of the length marks it watched once;
   `Ended` and `Stopped` (the player's, when a video is closed or replaced) report "stopped"
-  (an `Ended` without a length: where it was last seen, not watched). A player that ends
-  without a `Stopped` (a crash) has Plex told "stopped" where it was last seen. A PlexError
+  (an `Ended` without a length: where it was last seen, not watched); `on_stopped` hears it
+  once Plex took that (or the watched mark). A player that ends without a `Stopped` (a crash)
+  has Plex told "stopped" where it was last seen. A PlexError
   there says so once per video on the status bar and the video plays on. The calls go one at a
   time, in order; a video's position report still waiting for its turn is replaced by a newer
   one (seeks held down send the newest place, not each).
 - `WantNext` marks the video watched and plays the next episode of `episodes` (same show, the
   specials only after a special) in the same window, where Plex left it, without asking; after
   the last one nothing happens. The window closed while that one is still being found: nothing
-  opens.
+  opens. `WantNext(by_hand=True)` (N, ⏭) skips: not marked watched. `WantPrevious` (P, ⏮)
+  plays the episode before (`previous_in_show`; the Play's `previous_label`) the same way.
 - `play_file(path)`: a video from Explorer's "Open with" (main.py --play, through the
   single-instance mailbox; docs/player/2026-11-14-open-with-design.md). It never reaches Plex:
   no markers, timeline or watched mark. Where it was left is kept on this PC (`places`,
@@ -39,8 +44,8 @@ Plex, the network or AirGrabber's settings happens here, on the loop
 - Falling back (3.14.1's ▶ Play: `PlaybackService.launch`, VLC or Windows' player): when Settings'
   Play in says VLC, when this PC has no engine the player can use (app/services/vlc_engine.py,
   looked up once per run in a thread), or when the player doesn't start or say `Ready` in time
-  (then for the rest of the run too: no 10 s wait on every ▶ Play). The status bar says why
-  once per run.
+  (after two such starts in a row, for START_RETRY_S after the last one too: no 10 s wait on
+  every ▶ Play; one that comes up clears it). The status bar says why once per run.
 
 `close()` closes the player's window (its stdin is closed; the player's own `Stopped` reports the
 place). `aclose()`, on quitting, reports "stopped" at the last known place itself, then closes it
@@ -56,6 +61,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import ntpath
 import os
 import subprocess
 import sys
@@ -75,19 +81,21 @@ from app.media_protocol import (
     LoadSubtitle,
     Message,
     Notice,
+    OpenFile,
     Play,
     Position,
     Ready,
     Stopped,
     Tracks,
     WantNext,
+    WantPrevious,
     decode,
     encode,
 )
 from app.models import PlayIn, Settings
 from app.models.plex import PlexTitle, PlexVideo
 from app.services.local_files import episode_code as file_code
-from app.services.local_files import next_file, video_names
+from app.services.local_files import VIDEO_SUFFIXES, next_file, video_names
 from app.services.playback import Located, PlayOutcome, episode_name
 from app.services.plex import Markers, PlayState, PlexError
 from app.services.vlc_engine import Engine, EngineProblem, engine_problem, find_engine
@@ -105,6 +113,7 @@ APP_ROOT = Path(__file__).resolve().parents[2]  # the folder holding app/ (`-m` 
 READY_TIMEOUT_S = 10.0  # the player's window and engine are up by then, or VLC instead
 END_TIMEOUT_S = 5.0  # a player that didn't come up: this long to learn its exit code
 MARKERS_TIMEOUT_S = 5.0  # Plex's markers by then, or none (the video doesn't wait longer)
+START_RETRY_S = 1800.0  # two starts failed in a row: VLC at once for this long after the last
 QUIT_REPORT_TIMEOUT_S = 4.0  # quitting: the last "stopped" report by then, or not at all
 QUIT_EXIT_TIMEOUT_S = 3.0  # quitting: the player saves its window's place and ends by then, or is
 # ended (both within forge_link's PLAYER_CLOSE_S, 8 s)
@@ -131,6 +140,8 @@ SUBTITLES_NO_VIDEO_TEXT = N_("The video isn't there any more, so no subtitles we
 SUBTITLES_UNAVAILABLE_TEXT = N_("Finding subtitles isn't available in this version.")
 SUBTITLES_FAILED_TEXT = N_("The subtitles couldn't be fetched.")
 FILE_GONE_TEXT = N_("That video isn't there any more.")
+FINDING_FILE_TEXT = N_("Finding the file…")
+NOT_A_VIDEO_TEXT = N_("That isn't a video file.")
 FOLDER_TIMEOUT_S = 10.0  # a file from Explorer: its folder's listing (the next file) by then
 
 Fallback = Literal["no_engine", "not_started"]
@@ -319,6 +330,18 @@ def next_in_show(video: PlexVideo, episodes: Sequence[PlexVideo]) -> PlexVideo |
     return same[index] if index < len(same) else None
 
 
+def previous_in_show(video: PlexVideo, episodes: Sequence[PlexVideo]) -> PlexVideo | None:
+    """The episode before `video` in `episodes`' order, as `next_in_show`; None before the
+    first."""
+    special = not video.season
+    same = [one for one in episodes if (not one.season) == special]
+    keys = [one.key for one in same]
+    if video.key not in keys:
+        return None
+    index = keys.index(video.key) - 1
+    return same[index] if index >= 0 else None
+
+
 def episode_code(video: PlexVideo) -> str:
     """"S02E03" (the player's line and its countdown's label)."""
     return episode_name("", video)
@@ -388,10 +411,13 @@ class MediaPlayerHost:
         """`starter`: None starts the real process (`start_player_process`); `find_engine` and
         `engine_problem` run in a thread, the first once per run. `on_status` hears the status
         bar's lines (it can be set later, too); `on_idle` that no player window is open any more
-        (it closed, or a file from Explorer opened elsewhere or not at all). `places`: where
+        (it closed, or a file from Explorer opened elsewhere or not at all); `on_stopped` that Plex
+        took a video's "stopped" or its watched mark (the Library page's Continue watching is
+        read again). `places`: where
         files from Explorer were left (None: each starts at its beginning)."""
         self.on_status: Callable[[str], None] = on_status or (lambda _text: None)
         self.on_idle: Callable[[], None] = lambda: None
+        self.on_stopped: Callable[[], None] = lambda: None
         self._places = places
         self._playback = playback
         self._plex = plex
@@ -411,7 +437,8 @@ class MediaPlayerHost:
         self._window: _Window | None = None
         self._play_task: asyncio.Task[None] | None = None
         self._next_for: _Window | None = None  # the window a next episode's play is meant for
-        self._start_failed = False  # the player didn't come up once: VLC for the rest of the run
+        self._start_failures = 0  # starts in a row that didn't come up
+        self._failed_at: float | None = None  # the last one's time (`clock`)
         self._jobs: set[asyncio.Task[Any]] = set()
         self._plex_lock = asyncio.Lock()
         self._closed = False
@@ -419,11 +446,18 @@ class MediaPlayerHost:
     # -- what the app calls ------------------------------------------------------------------------
 
     def play(
-        self, title: PlexTitle, video: PlexVideo, *, episodes: Sequence[PlexVideo] = ()
+        self,
+        title: PlexTitle,
+        video: PlexVideo,
+        *,
+        episodes: Sequence[PlexVideo] = (),
+        ask_resume: bool = True,
     ) -> None:
         """Play `video` of `title` (a film, or an episode of the show whose `episodes`, in order,
-        give the next one); a play still looking for its file is dropped. From a Tk callback."""
-        self._start_play(title, video, tuple(episodes), from_next=False)
+        give the next one); a play still looking for its file is dropped. From a Tk callback.
+        `ask_resume=False`: from Plex's place without Resume / Start over (the Library page's
+        Continue watching card said where)."""
+        self._start_play(title, video, tuple(episodes), from_next=False, ask=ask_resume)
 
     def play_file(self, path: str) -> None:
         """Play a video file from Explorer's "Open with" (main.py --play): no Plex; where it was
@@ -499,6 +533,7 @@ class MediaPlayerHost:
         *,
         from_next: bool,
         window: _Window | None = None,
+        ask: bool = True,
     ) -> None:
         """`window`: the one a next episode is for (its end cancels the play: `_read`)."""
         if self._closed:
@@ -506,7 +541,7 @@ class MediaPlayerHost:
         self._cancel_play()
         self._next_for = window if from_next else None
         self._play_task = spawn(
-            self._play(title, video, episodes, from_next=from_next), name="media player"
+            self._play(title, video, episodes, from_next=from_next, ask=ask), name="media player"
         )
 
     def _cancel_play(self) -> None:
@@ -516,32 +551,72 @@ class MediaPlayerHost:
             task.cancel()
 
     async def _play(
-        self, title: PlexTitle, video: PlexVideo, episodes: tuple[PlexVideo, ...], *, from_next: bool
+        self,
+        title: PlexTitle,
+        video: PlexVideo,
+        episodes: tuple[PlexVideo, ...],
+        *,
+        from_next: bool,
+        ask: bool = True,
     ) -> None:
-        found = await self._playback.locate(title, video)
-        if isinstance(found, PlayOutcome):
-            self._say(found.text)
-            return
-        if self._settings.current.play_in == PlayIn.VLC:
-            await self._fall_back(found, None)
-            return
-        engine = await self._engine_here()
+        engine: Engine | None = None
+        if self._settings.current.play_in != PlayIn.VLC:
+            engine = await self._engine_here()
         if engine is None:
-            await self._fall_back(found, "no_engine")
+            located = await self._playback.locate(title, video)
+            if isinstance(located, PlayOutcome):
+                self._say(located.text)
+            elif self._settings.current.play_in == PlayIn.VLC:
+                await self._fall_back(located, None)
+            else:
+                await self._fall_back(located, "no_engine")
             return
-        if self._start_failed and not self._running():
-            await self._fall_back(found, "not_started")  # it didn't come up before this run
-            return
-        markers = self._job(self._markers(video.key), "player markers")
+        markers = (
+            None if video.markers_known else self._job(self._markers(video.key), "player markers")
+        )
+        # A window that isn't open yet starts while the file is found (not for a next episode:
+        # its window closing means nothing opens).
+        early = not from_next and not self._running() and not self._vlc_for_now()
+        starting = self._job(self._window_for(engine), "player start") if early else None
+        finding = True
+        if starting is not None:
+
+            def finding_notice(task: asyncio.Task[_Window | None]) -> None:
+                if finding and not task.cancelled() and task.exception() is None:
+                    started = task.result()
+                    if started is not None:
+                        _send_now(started.process, Notice(text=t(FINDING_FILE_TEXT)))
+
+            starting.add_done_callback(finding_notice)
         try:
-            window = await self._window_for(engine)
+            try:
+                found = await self._playback.locate(title, video)
+            except Exception:  # a bug, logged by `spawn`: a window opened for it closes again
+                finding = False
+                if starting is not None:
+                    self._close_unused(starting)
+                raise
+            finding = False
+            if isinstance(found, PlayOutcome):
+                self._say(found.text)
+                if starting is not None:
+                    self._close_unused(starting)
+                return
+            window = await starting if starting is not None else await self._window_for(engine)
             if window is None:
                 await self._fall_back(found, "not_started")
                 return
-            intro, credits_ms = await markers
+            intro, credits_ms = (
+                (video.intro, video.credits_ms) if markers is None else await markers
+            )
         finally:
-            markers.cancel()
+            finding = False
+            if markers is not None:
+                markers.cancel()
+            if starting is not None and not starting.done():
+                starting.cancel()
         following = next_in_show(video, episodes) if title.kind == "show" else None
+        before = previous_in_show(video, episodes) if title.kind == "show" else None
         carry = window.carry if window.carry and window.carry[0] == title.key else None
         settings = self._settings.current
         message = Play(
@@ -549,7 +624,7 @@ class MediaPlayerHost:
             title=title.title,
             line=_line(title, video),
             start_ms=max(0, video.view_offset_ms),
-            ask_resume=video.view_offset_ms > 0 and not from_next,
+            ask_resume=video.view_offset_ms > 0 and not from_next and ask,
             intro=intro,
             credits_ms=credits_ms,
             next_label=episode_code(following) if following is not None else None,
@@ -557,6 +632,7 @@ class MediaPlayerHost:
             always_subtitles=settings.always_subtitles,
             carry_audio=carry[1] if carry else "",
             carry_subtitles=carry[2] if carry else "",
+            previous_label=episode_code(before) if before is not None else None,
         )
         session = _Session(
             title=title,
@@ -587,18 +663,42 @@ class MediaPlayerHost:
         return not (window is None or window.closing or window.process.returncode is not None)
 
     async def _window_for(self, engine: Engine) -> _Window | None:
-        """The running player's window, else a new one; None when it doesn't start (then not
-        again this run: `_start_failed`)."""
+        """The running player's window, else a new one; None when it doesn't start (after two
+        in a row, not tried again for START_RETRY_S: `_vlc_for_now`)."""
         if self._running():
             return self._window
-        if self._start_failed:
+        if self._vlc_for_now():
             return None
         window = await self._start(engine)
         if window is None:
-            self._start_failed = True
+            self._start_failures += 1
+            self._failed_at = self._clock()
             return None
+        self._start_failures, self._failed_at = 0, None
         self._window = window
         return window
+
+    def _vlc_for_now(self) -> bool:
+        """Two starts in a row didn't come up, the last less than START_RETRY_S ago."""
+        return (
+            self._start_failures >= 2
+            and self._failed_at is not None
+            and self._clock() - self._failed_at < START_RETRY_S
+        )
+
+    def _close_unused(self, starting: asyncio.Task[_Window | None]) -> None:
+        """The file wasn't found: a window started for it meanwhile closes (or never opens)."""
+        if not starting.done():
+            starting.cancel()
+            return
+        if starting.cancelled() or starting.exception() is not None:
+            return
+        window = starting.result()
+        if window is not None and not window.sessions:
+            window.closing = True
+            if self._window is window:
+                self._window = None
+            _close_input(window.process)
 
     # -- a file from Explorer ("Open with") ------------------------------------------------------
 
@@ -816,6 +916,9 @@ class MediaPlayerHost:
         head = window.sessions[0] if window.sessions else None
         if isinstance(message, AlwaysPick):
             self._job(self._always(message), "player always pick")
+        if isinstance(message, OpenFile):
+            self._dropped(window, message.file)
+            return
         if head is None:
             return
         if isinstance(message, Position):
@@ -839,12 +942,24 @@ class MediaPlayerHost:
                 # It ended before the player read the next Play: no Stopped will come for it.
                 window.sessions.pop(0)
         elif isinstance(message, WantNext):
-            self._want_next(window, head)
+            self._want_next(window, head, by_hand=message.by_hand)
+        elif isinstance(message, WantPrevious):
+            self._want_previous(window, head)
         elif isinstance(message, FindSubtitles):
             self._job(self._find_subtitles(window, head, message.language), "player subtitles")
         elif isinstance(message, Tracks):
             if head.carry_key is not None:
                 window.carry = (head.carry_key, message.audio, message.subtitles)
+
+    def _dropped(self, window: _Window, path: str) -> None:
+        """A file dropped on the player: played as one from Explorer's "Open with" (in the open
+        window), or a Notice when it isn't a video (a folder, a picture)."""
+        if ntpath.splitext(path)[1].casefold() not in VIDEO_SUFFIXES:
+            log.info("Player: something that isn't a video was dropped on it")
+            _send_now(window.process, Notice(text=t(NOT_A_VIDEO_TEXT)))
+            return
+        log.info("Player: a file was dropped on it")
+        self._start_local(path, from_next=False)
 
     def _position(self, session: _Session, message: Position) -> None:
         if session.done:
@@ -884,6 +999,8 @@ class MediaPlayerHost:
             report, session.waiting = session.waiting, None
             if report is not None:
                 await self._plex.report(key, *report)
+                if report[0] == "stopped":
+                    self._stopped()
 
         self._to_plex(session, "report", call)
 
@@ -896,7 +1013,18 @@ class MediaPlayerHost:
         session.watched = True
         key = session.video.key
         log.info("Player: %s watched to %d%%", key, round(100 * WATCHED_SHARE))
-        self._to_plex(session, "watched mark", lambda: self._plex.mark_watched(key))
+
+        async def mark() -> None:
+            await self._plex.mark_watched(key)
+            self._stopped()
+
+        self._to_plex(session, "watched mark", mark)
+
+    def _stopped(self) -> None:
+        try:
+            self.on_stopped()
+        except Exception:
+            log.exception("Player: the stopped listener failed")
 
     def _to_plex(
         self, session: _Session, what: str, call: Callable[[], Coroutine[Any, Any, None]]
@@ -916,7 +1044,7 @@ class MediaPlayerHost:
 
         self._job(send(), "player plex")
 
-    def _want_next(self, window: _Window, session: _Session) -> None:
+    def _want_next(self, window: _Window, session: _Session, *, by_hand: bool = False) -> None:
         if session is not window.sessions[-1]:
             return  # another video is on its way already
         if session.local:
@@ -932,11 +1060,24 @@ class MediaPlayerHost:
             return
         log.info("Player: the next episode after %s", session.video.key)
         # The countdown starts at the credits, below WATCHED_SHARE on a short episode or long
-        # credits: moving on means it was watched.
-        self._check_watched(session, session.duration_ms)
+        # credits: moving on means it was watched. Not N / ⏭ (`by_hand`): skipped, not seen.
+        if not by_hand:
+            self._check_watched(session, session.duration_ms)
         self._start_play(
             session.title, following, session.episodes, from_next=True, window=window
         )
+
+    def _want_previous(self, window: _Window, session: _Session) -> None:
+        """P / ⏮: the episode before in the same window, where Plex left it, without asking
+        (nothing marked watched); nothing before the first or for a film or a file."""
+        if session is not window.sessions[-1] or session.local:
+            return
+        before = previous_in_show(session.video, session.episodes)
+        if before is None:
+            log.info("Player: no episode before %s", session.video.key)
+            return
+        log.info("Player: the episode before %s", session.video.key)
+        self._start_play(session.title, before, session.episodes, from_next=True, window=window)
 
     async def _always(self, message: AlwaysPick) -> None:
         name = "always_audio" if message.kind == "audio" else "always_subtitles"
@@ -1042,6 +1183,19 @@ async def _send(process: PlayerProcess, message: Message) -> bool:
     try:
         stdin.write((encode(message) + "\n").encode("ascii"))
         await stdin.drain()
+    except (OSError, RuntimeError):
+        return False
+    return True
+
+
+def _send_now(process: PlayerProcess, message: Message) -> bool:
+    """One line to the player at once, without waiting for it to be taken (a callback's);
+    False when its stdin is gone."""
+    stdin = process.stdin
+    if stdin is None:
+        return False
+    try:
+        stdin.write((encode(message) + "\n").encode("ascii"))
     except (OSError, RuntimeError):
         return False
     return True

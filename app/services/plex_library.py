@@ -5,7 +5,7 @@
 lacks in the seasons it has some of: LibraryService.gaps) and whether it ended. `follow` adds a
 show to My shows (by its TVMaze id when AirGrabber knows it, else looked up by TheTVDB / IMDb id,
 the name last), then has Plex checked again so its episodes count. `show` finds the TVMaze show a
-card opens.
+card opens. `continue_watching` is the row above the tabs (what Plex says to go on with).
 
 The pure part (filters, sort, search, the cards' lines) is here too, tested without Tk. Nothing
 here logs a title.
@@ -21,7 +21,7 @@ from enum import StrEnum
 
 from app.i18n import N_, t, tn
 from app.models import Show
-from app.models.plex import PlexTitle
+from app.models.plex import PlexContinue, PlexTitle
 from app.services.library import LibraryService
 from app.services.plex import PlexService
 
@@ -168,6 +168,19 @@ def film_line(title: PlexTitle) -> str:
     return str(title.year) if title.year else ""
 
 
+def continue_line(item: PlexContinue) -> str:
+    """A Continue watching card's line: an episode's "S02E03 · Title", a film's year."""
+    video = item.video
+    if item.title.kind == "movie":
+        return film_line(item.title)
+    code = ""
+    if video.season is not None:
+        code = f"S{video.season:02d}"
+        if video.episode is not None:
+            code += f"E{video.episode:02d}"
+    return " · ".join(part for part in (code, video.title) if part)
+
+
 # A Library film below 1080p gets "⬆ Upgrade" (the owner's line, 2026-11-11): Plex's 720p and SD.
 UPGRADABLE = frozenset({"720p", "SD"})
 
@@ -239,6 +252,13 @@ class PlexLibraryService:
         )
         films = tuple(title for title in titles if title.kind == "movie")
         return LibraryContents(shows=shows, films=films, checked_at=await self._plex.checked_at())
+
+    async def continue_watching(self) -> list[PlexContinue]:
+        """The page's Continue watching row (PlexService.continue_watching); none without Plex.
+        Raises PlexError."""
+        if not self._plex.connected:
+            return []
+        return await self._plex.continue_watching()
 
     async def follow(self, title: PlexTitle, *, profile_id: int) -> bool:
         """Follow a show from Plex; whether it was added. A show AirGrabber didn't know yet has

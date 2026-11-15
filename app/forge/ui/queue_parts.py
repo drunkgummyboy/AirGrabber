@@ -335,6 +335,7 @@ def _merge(a: RunResult, b: RunResult) -> RunResult:
         nfos=a.nfos + b.nfos,
         trailers=a.trailers + b.trailers,
         subtitles_fetched=a.subtitles_fetched + b.subtitles_fetched,
+        replaced=a.replaced + b.replaced,
         cleaned=a.cleaned + b.cleaned,
         pruned=a.pruned + b.pruned,
         cancelled=a.cancelled or b.cancelled,
@@ -393,6 +394,10 @@ def summary_text(result: RunResult, moved: int = 0) -> str:
         extras.append(tn("{n} trailer", "{n} trailers", result.trailers))
     if result.subtitles_fetched:
         extras.append(tn("{n} subtitle", "{n} subtitles", result.subtitles_fetched))
+    if result.replaced:
+        extras.append(
+            tn("{n} old copy moved aside", "{n} old copies moved aside", result.replaced)
+        )
     if extras:
         text += " · " + ", ".join(extras)
     if result.cancelled:

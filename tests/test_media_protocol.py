@@ -13,12 +13,14 @@ from app.media_protocol import (
     LoadSubtitle,
     Message,
     Notice,
+    OpenFile,
     Play,
     Position,
     Ready,
     Stopped,
     Tracks,
     WantNext,
+    WantPrevious,
     decode,
     encode,
 )
@@ -46,6 +48,7 @@ ALL: tuple[Message, ...] = (
     _play(),
     _play(intro=None, credits_ms=None, next_label=None, ask_resume=False),
     _play(find_subtitles=False),  # a file from Explorer: no Find subtitles
+    _play(previous_label="S01E02"),  # an episode with one before it (⏮, P)
     LoadSubtitle(path="C:\\Films\\Dune.nl.srt"),
     Notice(text="Subtitles not found"),
     Ready(),
@@ -54,10 +57,13 @@ ALL: tuple[Message, ...] = (
     Stopped(ms=5_000, duration_ms=9_300_000),
     Ended(duration_ms=9_300_000),
     WantNext(),
+    WantNext(by_hand=True),  # N or ⏭: not the countdown
+    WantPrevious(),
     FindSubtitles(language="nl"),
     Tracks(audio="en", subtitles="off"),
     AlwaysPick(kind="subtitles", language="off"),
     AlwaysPick(kind="audio", language=""),
+    OpenFile(file="C:\\Downloads\\Holiday 2025.mp4"),
 )
 
 
@@ -124,6 +130,15 @@ class DecodeRefusesTests(unittest.TestCase):
         assert isinstance(decoded, Play)
         self.assertTrue(decoded.find_subtitles)
 
+    def test_lines_from_before_previous_and_by_hand(self) -> None:
+        line = json.loads(encode(_play(previous_label="S01E02")))
+        del line["previous_label"]
+        decoded = decode(json.dumps(line))
+        assert isinstance(decoded, Play)
+        self.assertIsNone(decoded.previous_label)
+        self.assertEqual(decode('{"type": "want_next"}'), WantNext(by_hand=False))
+        self.assertIsNone(decode('{"type": "want_next", "by_hand": 1}'))
+
     def test_missing_field_is_none(self) -> None:
         self.assertIsNone(decode('{"type": "position", "ms": 1, "duration_ms": 2}'))
         self.assertIsNone(decode('{"type": "load_subtitle"}'))
@@ -144,6 +159,7 @@ class DecodeRefusesTests(unittest.TestCase):
             ("intro", "1-2"),
             ("credits_ms", "end"),
             ("next_label", 4),
+            ("previous_label", 4),
             ("always_audio", None),
             ("carry_subtitles", []),
         ):
@@ -182,6 +198,7 @@ class SecurityTests(unittest.TestCase):
                 "carry_audio",
                 "carry_subtitles",
                 "find_subtitles",
+                "previous_label",
             ],
         )
         for name in names:

@@ -43,6 +43,12 @@ class IndexerError(Exception):
     """An indexer was unreachable, answered with an error status, or sent an unparseable payload."""
 
 
+class IndexerUnavailable(IndexerError):
+    """An indexer gave up after its retries: 429, 5xx or no answer every time. It is likely to
+    be down for a while (the search service rests one that keeps doing this); a 4xx or a bad
+    payload is a plain IndexerError."""
+
+
 class WireModel(BaseModel):
     """Base for the private schemas indexers validate raw payload items with."""
 
@@ -209,7 +215,7 @@ class BaseIndexer(ABC):
                     raise self._status_error(path, status)
             if attempt >= max_attempts:
                 attempts = tn("{n} attempt", "{n} attempts", attempt)
-                raise IndexerError(
+                raise IndexerUnavailable(
                     t(
                         "{label}: {reason}; gave up after {attempts}",
                         label=self.label,

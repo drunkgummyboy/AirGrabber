@@ -39,7 +39,13 @@ from app.forge.core.activity import ActivityFeed
 from app.forge.core.airgrabber_folders import AirGrabberFolderSync, watched_folders
 from app.forge.core.auto import AutoRenamer, RenamerParts
 from app.forge.core.file_check import FileCheck
-from app.forge.core.duplicates import Duplicate, find_duplicates, quarantine_plan
+from app.forge.core.duplicates import (
+    Duplicate,
+    find_duplicates,
+    needs_a_place,
+    place_problem,
+    quarantine_plan,
+)
 from app.forge.core.executor import Executor
 from app.forge.core.history_service import HistoryService
 from app.forge.core.matcher import Resolver
@@ -237,6 +243,9 @@ class ForgeServices:
         )
         self.undo = UndoService(history_repo, activity=self.activity)
         self.run_lock = asyncio.Lock()  # one rename run at a time: the owner's or the renamer's
+        # Where the copies the queue's "Replace the one in the library" replaces go while a library
+        # folder is a share or drive root: asked once, kept for this session only (never saved).
+        self.aside_place: Path | None = None
         self.auto = AutoRenamer(
             RenamerParts(
                 queue=self.queue,
@@ -375,10 +384,23 @@ class ForgeServices:
         log.info("Found %d duplicate(s) in the library folders", len(found))
         return found
 
-    async def move_duplicates(self, duplicates: Sequence[Duplicate]) -> int:
-        """Move the extra copies to the Duplicates folder beside their library folder, as one
-        run (History can undo it); how many moved."""
-        plan = quarantine_plan(duplicates, self.library_folders())
+    def duplicates_need_a_place(self) -> bool:
+        """A library folder is a share or drive root: the owner chooses where copies go."""
+        return needs_a_place(self.library_folders())
+
+    def duplicates_place_problem(self, place: Path) -> str | None:
+        """Why `place` can't take the extra copies (English: t() it), else None."""
+        return place_problem(place, self.library_folders())
+
+    async def move_duplicates(
+        self, duplicates: Sequence[Duplicate], place: Path | None = None
+    ) -> int:
+        """Move the extra copies to the Duplicates folder beside their library folder (or to
+        `place`, the owner's choice), as one run (History can undo it); how many moved."""
+        roots = self.library_folders()
+        if place is not None and place_problem(place, roots) is not None:
+            return 0  # never inside the library
+        plan = quarantine_plan(duplicates, roots, place)
         if not plan.files:
             return 0
         async with self.run_lock:  # never alongside another run

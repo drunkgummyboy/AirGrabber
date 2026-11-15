@@ -1,0 +1,38 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "allowSync": false,
+    "identifier": "com.plexapp.plugins.library",
+    "mixedParents": true,
+    "Metadata": [
+      {
+        "ratingKey": "7123",
+        "key": "/library/metadata/7123",
+        "parentRatingKey": "7120",
+        "grandparentRatingKey": "7001",
+        "type": "episode",
+        "title": "Breakwater",
+        "grandparentTitle": "Harbour Lights",
+        "parentTitle": "Season 2",
+        "index": 3,
+        "parentIndex": 2,
+        "duration": 2760000,
+        "thumb": "/library/metadata/7123/thumb/1762000000",
+        "grandparentThumb": "/library/metadata/7001/thumb/1762000000",
+        "Media": [
+          {
+            "id": 9123,
+            "duration": 2760000,
+            "Part": [
+              {
+                "id": 9923,
+                "key": "/library/parts/9923/1762000000/file.mkv",
+                "file": "/volume1/video/TV/Harbour Lights (2024)/Season 02/Harbour Lights - S02E03 - Breakwater.mkv"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

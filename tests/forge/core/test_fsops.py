@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +23,19 @@ from tests.forge.base import ForgeTestCase
 
 
 class FsopsTest(ForgeTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # The copy between shares as it is without Windows' CopyFile2 (shutil, in chunks).
+        self.enterContext(mock.patch.object(fsops, "native_copy", None))
+
+    def test_same_share_renames_never_copy(self) -> None:
+        copier = mock.Mock()
+        self.enterContext(mock.patch.object(fsops, "native_copy", copier))
+        (self.tmp / "a.mkv").write_bytes(b"v")
+        move_file(self.tmp / "a.mkv", self.tmp / "b.mkv", progress=mock.Mock(), stop=lambda: True)
+        assert (self.tmp / "b.mkv").read_bytes() == b"v"
+        copier.assert_not_called()
+
     def test_move_file_moves(self) -> None:
         (self.tmp / "a.mkv").write_bytes(b"v")
         (self.tmp / "sub").mkdir()
@@ -203,3 +217,79 @@ class FsopsTest(ForgeTestCase):
         fsops.move_file(src, dst)
         assert dst.read_bytes() == b"video" and not src.exists()
         assert [p.name for p in dst.parent.iterdir()] == ["a.mkv"]
+
+
+def other_share(a: str, b: str, real_rename: Callable[[str, str], None] = os.rename) -> None:
+    """os.rename as between two shares: only the finished copy gets its name, in place."""
+    if a.endswith(fsops.PARTIAL_SUFFIX):
+        real_rename(a, b)
+        return
+    raise OSError(errno.EXDEV, "not the same device")
+
+
+class WindowsCopyTest(ForgeTestCase):
+    """A move between shares through the native copy (CopyFile2 on Windows), faked here."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.src, self.dst = self.tmp / "dl" / "a.mkv", self.tmp / "lib" / "a.mkv"
+        self.src.parent.mkdir()
+        self.dst.parent.mkdir()
+        self.src.write_bytes(b"video" * 100)
+        self.enterContext(mock.patch.object(os, "rename", other_share))
+
+    def test_a_copy_between_shares_goes_through_the_native_copy(self) -> None:
+        heard: list[tuple[int, int]] = []
+
+        def copy(src: str, dst: str, progress: fsops.Progress | None, stop: fsops.Stop | None) -> None:
+            assert dst.endswith(fsops.PARTIAL_SUFFIX) and dst.startswith("\\\\?\\")
+            assert stop is not None and not stop()
+            shutil.copyfile(src, dst)
+            assert progress is not None
+            progress(250, 500)
+            progress(500, 500)
+
+        self.enterContext(mock.patch.object(fsops, "native_copy", copy))
+        fsops.move_file(self.src, self.dst, progress=lambda *a: heard.append(a), stop=lambda: False)
+        assert self.dst.read_bytes() == b"video" * 100 and not self.src.exists()
+        assert [p.name for p in self.dst.parent.iterdir()] == ["a.mkv"]
+        assert heard == [(250, 500), (500, 500)]
+
+    def test_a_failed_copy_leaves_no_partial_file(self) -> None:
+        def cut_off(src: str, dst: str, progress: object, stop: object) -> None:
+            with open(dst, "xb") as half:
+                half.write(b"half")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        self.enterContext(mock.patch.object(fsops, "native_copy", cut_off))
+        with self.assertRaises(OSError):
+            fsops.move_file(self.src, self.dst)
+        assert self.src.read_bytes() == b"video" * 100
+        assert list(self.dst.parent.iterdir()) == []  # neither a half file nor a partial
+
+        # A partial that was there already isn't this copy's: it stays.
+        theirs = fsops.partial_path(self.dst)
+        theirs.write_bytes(b"someone else's")
+
+        def taken(src: str, dst: str, progress: object, stop: object) -> None:
+            if os.path.exists(dst):  # as CopyFile2 with COPY_FILE_FAIL_IF_EXISTS
+                raise FileExistsError(errno.EEXIST, "The file exists")
+
+        self.enterContext(mock.patch.object(fsops, "native_copy", taken))
+        with self.assertRaises(FileExistsError):
+            fsops.move_file(self.src, self.dst)
+        assert theirs.read_bytes() == b"someone else's"
+        assert self.src.exists() and not self.dst.exists()
+
+    def test_a_stopped_copy_leaves_the_source_and_nothing_else(self) -> None:
+        def stopped(src: str, dst: str, progress: object, stop: fsops.Stop | None) -> None:
+            with open(dst, "xb") as half:
+                half.write(b"half")
+            assert stop is not None and stop()
+            raise fsops.CopyCancelled(errno.ECANCELED, "stopped")
+
+        self.enterContext(mock.patch.object(fsops, "native_copy", stopped))
+        with self.assertRaises(fsops.CopyCancelled):
+            fsops.move_file(self.src, self.dst, stop=lambda: True)
+        assert self.src.read_bytes() == b"video" * 100
+        assert list(self.dst.parent.iterdir()) == []

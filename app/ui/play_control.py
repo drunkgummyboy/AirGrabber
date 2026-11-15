@@ -10,9 +10,15 @@ there is said instead; one look at a time per window); a show first opens the Ep
 borderless in AirGrabber's dialog look, its seasons as chips and the season's episodes as rows
 ("E03 · Title", a muted ✓ on a watched one, a thin progress line under one Plex has a place in:
 `0 < view_offset_ms < 90 %` of its length), the next unwatched one (`playback.next_episode`)
-selected and scrolled into view. Each picker reads the episodes from Plex again. A click on a
-row, or Enter on the selection, plays it with the whole list (the player's next episode) and
-closes the window; Up / Down move the selection; Escape and ✕ close it.
+selected and scrolled into view. Each picker reads the episodes from Plex again; a list read
+less than EPISODES_TTL_S ago (`PlaybackService.kept_episodes`) shows at once meanwhile and is
+redrawn when Plex's answer differs (the season and selection kept once the user chose one), and
+stays when Plex doesn't answer. A click on a row, or Enter on the selection, plays it with the
+whole list (the player's next episode) and closes the window; Up / Down move the selection;
+Escape and ✕ close it.
+
+`Play.resume` is the Library page's Continue watching card: where Plex left it, without the
+Resume prompt (`MediaPlayerHost.play(ask_resume=False)`), an episode with its show's episodes.
 """
 
 from __future__ import annotations
@@ -26,8 +32,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 import customtkinter as ctk
 
 from app.i18n import N_, t
-from app.models.plex import PlexTitle, PlexVideo
-from app.services.playback import FINDING_TEXT, PlayOutcome, episode_name, next_episode
+from app.models.plex import PlexContinue, PlexTitle, PlexVideo
+from app.services.playback import (
+    FINDING_TEXT,
+    PlayOutcome,
+    PlayProblem,
+    episode_name,
+    next_episode,
+)
 from app.services.plex import PlexError
 from app.ui import theme
 from app.ui.borderless import make_borderless
@@ -73,13 +85,19 @@ CHIP_WIDTH = 92
 CHIP_HEIGHT = 30
 CHIPS_PER_ROW = 4
 PROGRESS_HEIGHT = 3  # the progress line under a row Plex has a place in
+NEXT_WAIT_S = 3.0  # Continue watching: the show's episodes (the next one) by then, or played alone
 
 
 class PlayerHost(Protocol):
     """MediaPlayerHost's `play` (app/ui/media_player.py; tests pass fakes)."""
 
     def play(
-        self, title: PlexTitle, video: PlexVideo, *, episodes: Sequence[PlexVideo] = ()
+        self,
+        title: PlexTitle,
+        video: PlexVideo,
+        *,
+        episodes: Sequence[PlexVideo] = (),
+        ask_resume: bool = True,
     ) -> None: ...
 
 
@@ -145,12 +163,48 @@ class Play:
         self._report(t(FINDING_TEXT, name=title.title), None)
         self._task = spawn(self._film(title), name="play")
 
-    async def _film(self, title: PlexTitle) -> None:
+    async def _film(self, title: PlexTitle, *, ask_resume: bool = True) -> None:
         found = await self._playback.film_video(title)
         if isinstance(found, PlayOutcome):
             self._report(found.text, STATUS_MS)
             return
-        self._player.play(title, found)
+        self._player.play(title, found, ask_resume=ask_resume)
+
+    def resume(self, item: PlexContinue) -> None:
+        """A Continue watching card (the Library page): play it where Plex left it, without the
+        Resume prompt (the card says where). A film at once (its file read from Plex first when
+        the card's item names none); an episode with its show's episodes for the next one (kept
+        ones, else read within NEXT_WAIT_S; without them it plays alone). A second click while
+        that is read does nothing."""
+        if self.busy:
+            return
+        title, video = item.title, item.video
+        if title.kind == "movie":
+            self._report(t(FINDING_TEXT, name=title.title), None)
+            if video.file:
+                self._player.play(title, video, ask_resume=False)
+            else:
+                self._task = spawn(self._film(title, ask_resume=False), name="play")
+            return
+        self._report(t(FINDING_TEXT, name=episode_name(title.title, video)), None)
+        self._task = spawn(self._resume_episode(title, video), name="play")
+
+    async def _resume_episode(self, title: PlexTitle, video: PlexVideo) -> None:
+        episodes = self._playback.kept_episodes(title) or []
+        if not episodes:
+            try:
+                async with asyncio.timeout(NEXT_WAIT_S):
+                    episodes = await self._playback.episodes(title)
+            except (PlexError, TimeoutError) as exc:
+                log.info("Play: the show's episodes didn't read (%s)", type(exc).__name__)
+        if not video.file:  # Plex's item named none: the file from the show's list
+            listed = next((one for one in episodes if one.key == video.key), None)
+            if listed is None or not listed.file:
+                name = episode_name(title.title, video)
+                self._report(PlayOutcome(name, "show", problem=PlayProblem.NO_FILE).text, STATUS_MS)
+                return
+            video = video.model_copy(update={"file": listed.file})
+        self._player.play(title, video, episodes=episodes, ask_resume=False)
 
     def episode(self, title: PlexTitle, video: PlexVideo, episodes: Sequence[PlexVideo]) -> None:
         """Play an episode of the show whose `episodes` (all of them, in order) give the next."""
@@ -168,6 +222,7 @@ class Play:
             master,
             title,
             episodes=self._playback.episodes,
+            kept=self._playback.kept_episodes,
             on_play=lambda video, episodes: self.episode(title, video, episodes),
         )
         return self.picker
@@ -200,8 +255,10 @@ class EpisodePicker(ctk.CTkToplevel):
         *,
         episodes: Callable[[PlexTitle], Awaitable[list[PlexVideo]]],
         on_play: Callable[[PlexVideo, Sequence[PlexVideo]], None],
+        kept: Callable[[PlexTitle], list[PlexVideo] | None] | None = None,
     ) -> None:
-        """`on_play(video, episodes)`: the episode chosen, with every episode of the show."""
+        """`on_play(video, episodes)`: the episode chosen, with every episode of the show;
+        `kept`: the list read a moment ago, shown while `episodes` reads it again."""
         super().__init__(master, fg_color=theme.BG)
         self.title(title.title)
         set_window_icon(self)
@@ -212,6 +269,7 @@ class EpisodePicker(ctk.CTkToplevel):
         self._read = episodes
         self._on_play = on_play
         self._videos: list[PlexVideo] = []
+        self._chosen = False  # the user picked a season or moved the selection
         self.season: int | None = None
         self.selected: PlexVideo | None = None
         self.chips: dict[int | None, ctk.CTkButton] = {}
@@ -239,6 +297,9 @@ class EpisodePicker(ctk.CTkToplevel):
         self.borderless = make_borderless(self, drag_widgets=(self, body, heading))
         place_over(self, master)
         activate_later(self)
+        shown = kept(title) if kept is not None else None
+        if shown:
+            self._show(shown)
         self._task: asyncio.Task[None] | None = spawn(self._load(), name="play-episodes")
 
     async def _load(self) -> None:
@@ -246,19 +307,36 @@ class EpisodePicker(ctk.CTkToplevel):
             videos = await self._read(self._item)
         except PlexError as exc:
             log.info("Play: the episodes didn't read (%s)", type(exc).__name__)
-            if self.winfo_exists():
+            if self.winfo_exists() and not self._videos:  # a kept list stays on screen
                 self.note.configure(text=t(PLEX_AWAY_TEXT))
             return
-        if not self.winfo_exists():
+        if not self.winfo_exists() or videos == self._videos:
             return
+        self._show(videos)
+
+    def _show(self, videos: list[PlexVideo]) -> None:
+        """Draw `videos`: the next one's season with it selected, or, when the user chose
+        already, their season and selection where they still are."""
+        season, selected = self.season, self.selected
         self._videos = videos
+        for chip in self.chips.values():
+            chip.destroy()
+        self.chips = {}
         chosen = next_episode(videos)
         if chosen is None:
+            for row in self.rows.values():
+                row.master.destroy()
+            self.rows, self.progress, self.selected = {}, {}, None
+            self._chip_row.pack_forget()  # no chips: no empty gap above the list
             self.note.configure(text=t(NO_EPISODES_TEXT))
             return
         self.note.configure(text=t(PICK_TEXT))
         self._build_chips()
-        self.choose_season(chosen.season, select=chosen)
+        if self._chosen and season in self._seasons():
+            again = next((one for one in videos if selected and one.key == selected.key), None)
+            self.choose_season(season, select=again)
+        else:
+            self.choose_season(chosen.season, select=chosen)
 
     async def loaded(self) -> None:
         """Wait for the episodes (tests)."""
@@ -279,6 +357,8 @@ class EpisodePicker(ctk.CTkToplevel):
         if len(seasons) < 2:
             self._chip_row.pack_forget()  # one season: nothing to choose
             return
+        if not self._chip_row.winfo_manager():  # hidden for a list with one season
+            self._chip_row.pack(fill="x", pady=(LINE_GAP + 4, 0), before=self._list)
         for index, season in enumerate(seasons):
             chip = ctk.CTkButton(
                 self._chip_row,
@@ -287,13 +367,17 @@ class EpisodePicker(ctk.CTkToplevel):
                 height=CHIP_HEIGHT,
                 corner_radius=CHIP_HEIGHT // 2,
                 font=theme.font(13),
-                command=lambda s=season: self.choose_season(s),
+                command=lambda s=season: self._choose(s),
                 **theme.choice_colors(False),
             )
             chip.grid(
                 row=index // CHIPS_PER_ROW, column=index % CHIPS_PER_ROW, padx=(0, 6), pady=(0, 6)
             )
             self.chips[season] = chip
+
+    def _choose(self, season: int | None) -> None:
+        self._chosen = True
+        self.choose_season(season)
 
     def choose_season(self, season: int | None, *, select: PlexVideo | None = None) -> None:
         """Show a season's episodes, `select` (else its next unwatched one) selected."""
@@ -388,6 +472,7 @@ class EpisodePicker(ctk.CTkToplevel):
         shown = self._shown()
         if not shown:
             return
+        self._chosen = True
         index = shown.index(self.selected) if self.selected in shown else -step
         self.select(shown[max(0, min(len(shown) - 1, index + step))])
 

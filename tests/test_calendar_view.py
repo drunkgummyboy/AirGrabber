@@ -363,8 +363,26 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(library.suggestion_calls), calls)
             self.assertEqual(view._note.cget("text"), "")
 
+    def record_steps(self, view: CalendarView) -> list[str]:
+        """The order in which a load adds the suggestions and swaps its grid in."""
+        steps: list[str] = []
+        render, swap = view._render_suggestions, view._swap_in
+
+        async def rendered(*args: Any, **kwargs: Any) -> None:
+            steps.append("suggestions")
+            await render(*args, **kwargs)
+
+        async def swapped(weeks: Any) -> None:
+            steps.append("swap")
+            await swap(weeks)
+
+        view._render_suggestions = rendered  # type: ignore[method-assign]
+        view._swap_in = swapped  # type: ignore[method-assign]
+        return steps
+
     async def test_a_quiet_reload_swaps_in_a_complete_grid(self) -> None:
-        # Show 10 was suggested today and has just been tracked (a library change).
+        # Show 10 was suggested today and has just been tracked (a library change). TVMaze
+        # answers within SUGGESTIONS_WAIT_S: one swap of a grid with its suggestions.
         library = self.library()
         view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
         view.pack(fill="both", expand=True)
@@ -375,26 +393,77 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         library._tracked.append(entry(10, TODAY, tracked=True))
         library._suggestions = [s for s in library._suggestions if s.show.id != 10]
         library.gate = asyncio.Event()
+        steps = self.record_steps(view)
         view.refresh_quietly()
-        await library.reached.wait()  # the new grid's episodes are in, its suggestions not yet
+        async with asyncio.timeout(5):  # the new grid being built, the fetch held
+            while view._pending is None:
+                await asyncio.sleep(0.001)
         pending = view._pending
-        assert pending is not None
         self.assertIs(view._weeks, old)  # still on screen, unchanged
         self.assertEqual(old.winfo_manager(), "pack")
         self.assertEqual(pending.winfo_manager(), "place")
         stacking = [str(w) for w in view._scroll.winfo_children()]  # lowest first
         self.assertLess(stacking.index(str(pending)), stacking.index(str(old)))
         self.assertEqual(view._note.cget("text"), "")  # no "Finding suggestions…"
-        library.gate.set()
+        library.gate.set()  # in time
         assert view._load_task is not None
         await view._load_task
-        self.assertIsNot(view._weeks, old)
+        self.assertEqual(steps, ["suggestions", "swap"])  # complete before it showed
         self.assertIs(view._weeks, pending)
         self.assertFalse(old.winfo_exists())
         self.assertIsNone(view._pending)
         self.assertEqual(pending.winfo_manager(), "pack")
         # Show 10's episode instead of its suggestion; the next best is suggested now.
         self.assertEqual(self.cards(view, TODAY), ["full", "full", "full", "Show 11"])
+        self.assertEqual(len(library.suggestion_calls), 2)
+
+    async def test_a_quiet_load_shows_episodes_before_suggestions_arrive(self) -> None:
+        # TVMaze is slow: after SUGGESTIONS_WAIT_S the episodes go in, the suggestions follow.
+        library = self.library(missing=frozenset({100}))
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
+        view.pack(fill="both", expand=True)
+        await view.load()
+        old = view._weeks
+        assert old is not None
+        library._tracked.append(entry(10, TODAY, tracked=True))
+        library._suggestions = [s for s in library._suggestions if s.show.id != 10]
+        library.gate = asyncio.Event()
+        steps = self.record_steps(view)
+        wait = 0.3
+        with mock.patch("app.ui.views.calendar_view.SUGGESTIONS_WAIT_S", wait):
+            view.refresh_quietly()
+            async with asyncio.timeout(5):
+                while view._pending is None:
+                    await asyncio.sleep(0.001)
+                built = asyncio.get_running_loop().time()
+                while view._weeks is old:
+                    await asyncio.sleep(0.001)
+        waited = asyncio.get_running_loop().time() - built
+        self.assertGreater(waited, wait * 0.5)  # it waited for them a while…
+        self.assertLess(waited, wait + 1.0)  # …not for ever
+        # The new episodes are on screen, without a "Finding suggestions…" note.
+        new = view._weeks
+        assert new is not None and old is not None
+        self.assertFalse(old.winfo_exists())
+        self.assertIsNone(view._pending)
+        self.assertEqual(new.winfo_manager(), "pack")
+        self.assertEqual(self.cards(view, TODAY), ["full", "full", "full"])
+        self.assertEqual(view._note.cget("text"), "")
+        # A grab meanwhile updates its card in place (no reload of the whole page).
+        library._missing, library._downloaded = frozenset(), frozenset({100})
+        target = GrabTarget(media_type=MediaType.TV, media_id=1, season=1, episode=1)
+        self.assertTrue(view.take_grab(target))
+        assert view._grab_task is not None
+        await view._grab_task
+        library.gate.set()
+        assert view._load_task is not None
+        await view._load_task
+        # The suggestions go into the grid on screen: no other grid is built for them.
+        self.assertEqual(steps, ["swap", "suggestions"])
+        self.assertIs(view._weeks, new)
+        self.assertEqual(self.cards(view, TODAY), ["full", "full", "full", "Show 11"])
+        first = self.card_widgets(view, TODAY)[0]
+        self.assertEqual(first._card_note.text, "✓ Downloaded")
 
     async def test_a_quiet_reload_of_other_weeks_builds_in_view(self) -> None:
         library = self.library()
@@ -404,7 +473,10 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         view._offset = 1  # another grid than the one on screen: nothing to keep
         library.gate = asyncio.Event()
         view.refresh_quietly()
-        await library.reached.wait()
+        await library.reached.wait()  # fetched alongside the episodes
+        async with asyncio.timeout(5):
+            while view._weeks is old:
+                await asyncio.sleep(0.001)
         self.assertIsNone(view._pending)
         assert old is not None
         self.assertFalse(old.winfo_exists())
@@ -417,12 +489,11 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         library = self.library()
         view = self.view(library, FakeSettings(Settings(weeks_to_show=1)))
         await view.load()
-        library.gate = asyncio.Event()
         view.refresh_quietly()
-        await library.reached.wait()
+        async with asyncio.timeout(5):  # halfway through building the hidden grid
+            while view._pending is None:
+                await asyncio.sleep(0.001)
         pending = view._pending
-        assert pending is not None
-        library.gate = None
         view.refresh()  # e.g. ◀: cancels the quiet load
         assert view._load_task is not None
         await view._load_task

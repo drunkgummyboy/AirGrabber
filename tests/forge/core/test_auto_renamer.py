@@ -12,10 +12,17 @@ import asyncio
 import dataclasses
 import logging
 import os
+import threading
+import time
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from app.forge.clients.tmdb import TmdbError
+from app.forge.core import auto as auto_module
+from app.forge.core import fsops, watch
+from app.forge.core.watch import QUIET_S, Settling
 from app.forge.core.auto import (
     TOOLS_NOT_THERE,
     AutoRenamer,
@@ -24,8 +31,10 @@ from app.forge.core.auto import (
     RenamerParts,
     WatchStatus,
     needs_message,
+    settling_message,
     summary_due,
     summary_message,
+    taking,
 )
 from app.forge.core.executor import Executor
 from app.forge.core.matcher import Resolver
@@ -620,6 +629,269 @@ class RenamerTest(RenamerTestCase):
         clock.now += 300
         await auto.look()
         assert (self.folders.movies / "Dune (2021)" / "Dune (2021).mkv").exists()
+
+
+class SettlingTest(RenamerTestCase):
+    """Downloads seen but not quiet yet: how many, and when the first should be ready (item 29)."""
+
+    async def test_a_look_counts_the_downloads_still_settling(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv", age_s=120)  # written 2 minutes ago
+        self.folders.download("Heat.1995.1080p.mkv", age_s=60)
+        clock = Clock()
+        auto = self.renamer(clock)
+        assert (await auto.look()).settling == Settling()  # first seen: may still be growing
+        clock.now += 60
+        result = await auto.look()
+        assert result.settling == Settling(2, NOON - 120 + QUIET_S)
+        assert auto.settling == result.settling  # not running: no look planned
+        clock.now += QUIET_S
+        await auto.look()
+        assert auto.settling == Settling()  # both renamed
+        assert len(self.queue.items) == 2
+
+    async def test_the_time_counts_to_the_look_that_takes_it_in(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv", age_s=120)  # quiet at NOON + 480
+        clock = Clock()  # stands still: the looks come by the real clock, the times by this one
+        auto = AutoRenamer(
+            self.parts, now=clock, interval_s=300, second_look_s=300, scan_look_s=0.05
+        )
+        self.addAsyncCleanup(auto.stop)
+        auto.start()
+        result = await auto.scan_now()  # two looks; the next timed one at NOON + 300
+        assert result is not None
+        # Quiet between two looks: it comes in at the one after, NOON + 600.
+        assert result.settling == Settling(1, NOON + 600) and auto.settling == result.settling
+        self.assertEqual(
+            settling_message(result.settling, NOON), "1 download finishing, ready in about 10 min"
+        )
+        auto._settling_seen = Settling(1, NOON + 200)  # as if one were quiet at NOON + 200
+        # Quiet before the next look: that look takes it in, not "under a minute" for 5.
+        self.assertEqual(auto.settling, Settling(1, NOON + 300))
+        self.assertEqual(
+            settling_message(auto.settling, NOON + 199),
+            "1 download finishing, ready in about 2 min",
+        )
+        await auto.stop()
+        assert auto.settling == Settling()
+
+    async def test_nothing_settles_while_off_or_unreachable(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv", age_s=120)
+        auto = self.renamer(Clock())
+        await auto.look()
+        await auto.look()  # unchanged since: settling
+        assert auto.settling.files == 1
+        await self.settings.update(automatic="off")
+        assert (await auto.look()).settling == Settling() and auto.settling == Settling()
+        await self.settings.update(automatic="on", watch_folders=[str(self.tmp / "gone")])
+        assert (await auto.look()).settling == Settling()
+
+    def test_the_message_rounds_up_to_whole_minutes(self) -> None:
+        set_language(Language.EN)
+        self.assertIsNone(settling_message(Settling(), NOON))
+        self.assertEqual(
+            settling_message(Settling(1, NOON + 480), NOON),
+            "1 download finishing, ready in about 8 min",
+        )
+        self.assertEqual(
+            settling_message(Settling(2, NOON + 481), NOON),
+            "2 downloads finishing, ready in about 9 min",
+        )
+        self.assertEqual(
+            settling_message(Settling(1, NOON + 59), NOON),
+            "1 download finishing, ready in under a minute",
+        )
+        self.assertEqual(  # due already: the next look takes it
+            settling_message(Settling(3, NOON - 30), NOON),
+            "3 downloads finishing, ready in under a minute",
+        )
+        set_language(Language.NL)
+        self.addCleanup(set_language, Language.EN)
+        self.assertEqual(
+            settling_message(Settling(1, NOON + 480), NOON),
+            "1 download bijna binnen, klaar over ongeveer 8 min",
+        )
+
+
+class ThreadWatcher:
+    """A watcher that notes which thread asks it, and can be made to hang until `free` is set."""
+
+    settling = Settling()
+
+    def __init__(self, hang: threading.Event | None = None) -> None:
+        self.threads: list[int] = []
+        self.hang = hang
+        self.at_once = 0  # how many of its checks run right now
+        self.most_at_once = 0
+
+    def finished(self, files: Sequence[Path]) -> list[Path]:
+        self.threads.append(threading.get_ident())
+        self.at_once += 1
+        self.most_at_once = max(self.most_at_once, self.at_once)
+        try:
+            if self.hang is not None:
+                self.hang.wait(10)
+            return []
+        finally:
+            self.at_once -= 1
+
+
+class SilentFolderTest(RenamerTestCase):
+    """A NAS that takes the connection but never answers (2026-11-14): a look still ends."""
+
+    LIMIT_S = 0.3
+
+    def hanging(self) -> threading.Event:
+        free = threading.Event()
+        self.addCleanup(free.set)  # the abandoned thread ends with the test
+        return free
+
+    async def test_the_finished_check_runs_off_the_loop(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        watcher = ThreadWatcher()
+        auto = AutoRenamer(self.parts, now=Clock(), new_watcher=lambda: watcher)
+        self.addAsyncCleanup(auto.stop)
+        await auto.look()
+        assert watcher.threads and threading.get_ident() not in watcher.threads
+
+    async def test_a_silent_folder_counts_as_unreachable_after_the_limit(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        free = self.hanging()
+        calls: list[Path] = []
+        real = watch.candidates
+
+        def silent(root: Path, ignored: object = None) -> list[Path]:
+            calls.append(root)
+            if not free.is_set():
+                free.wait(10)  # the share took the connection, and says nothing
+            return real(root, None)
+
+        clock = Clock()
+        auto = AutoRenamer(self.parts, now=clock, step_timeout_s=self.LIMIT_S)
+        self.addAsyncCleanup(auto.stop)
+        statuses: list[tuple[str, str]] = []
+        auto.on_status = lambda status: statuses.append((status.state, status.text))
+        with mock.patch.object(auto_module, "candidates", silent), self.assertLogs(
+            "app.forge.core.auto", logging.INFO
+        ) as logs:
+            began = time.monotonic()
+            result = await auto.look()
+            assert time.monotonic() - began < self.LIMIT_S + 2
+            assert result.unreachable == [self.folders.downloads]
+            assert statuses[-1] == ("unreachable", f"Can't reach {self.folders.downloads}")
+            began = time.monotonic()
+            result = await auto.look()  # its thread still hangs: the folder is skipped at once
+            assert time.monotonic() - began < self.LIMIT_S + 2  # slack for a slow disk; hang: 10 s
+            assert result.unreachable == [self.folders.downloads] and len(calls) == 1
+            free.set()  # the NAS answers again
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                result = await auto.look()
+                if not result.unreachable:
+                    break
+            assert result.unreachable == [] and statuses[-1][0] == "watching"
+        assert sum("Can't reach the folder Downloads" in line for line in logs.output) == 1
+        assert sum("Can reach the folder Downloads again" in line for line in logs.output) == 1
+
+    async def test_a_silent_finished_check_never_runs_twice_at_once(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        free = self.hanging()
+        watcher = ThreadWatcher(hang=free)
+        auto = AutoRenamer(
+            self.parts, now=Clock(), new_watcher=lambda: watcher, step_timeout_s=self.LIMIT_S
+        )
+        self.addAsyncCleanup(auto.stop)
+        for _ in range(3):
+            result = await auto.look()
+            assert result.unreachable == [self.folders.downloads]
+        assert len(watcher.threads) == 1 and watcher.most_at_once == 1
+
+    async def test_a_silent_forget_gone_is_limited_and_skipped_while_it_hangs(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        free = asyncio.Event()
+        self.addCleanup(free.set)
+        calls: list[list[Path]] = []
+
+        class NothingIgnored:
+            def ignored(self, path: Path | str) -> bool:
+                return False
+
+            def folder_ignored(self, folder: Path | str) -> bool:
+                return False
+
+        class SilentIgnores:
+            def snapshot(self) -> NothingIgnored:
+                return NothingIgnored()
+
+            async def forget_gone(self, watched: Iterable[Path]) -> int:
+                calls.append(list(watched))
+                await free.wait()  # it asks the share, which says nothing
+                return 0
+
+        parts = dataclasses.replace(self.parts, ignored=SilentIgnores())
+        auto = AutoRenamer(parts, now=Clock(), step_timeout_s=self.LIMIT_S)
+        self.addAsyncCleanup(auto.stop)
+        # Slack for a slow disk or guessit's first load; the hang itself never ends, so a look
+        # that waited for it (the limit ignored) runs into this bound and fails.
+        bound = self.LIMIT_S + 2.0
+        result = await asyncio.wait_for(auto.look(), bound)
+        assert result.unreachable == []  # the folders themselves answered
+        await asyncio.wait_for(auto.look(), bound)  # the earlier one still hangs: not asked again
+        assert len(calls) == 1  # (asked again, it would have waited the limit once more)
+        free.set()
+        await asyncio.sleep(0.05)
+        await auto.look()  # it ended: asked again
+        assert len(calls) == 2
+
+    async def test_a_silent_library_folder_counts_as_unreachable(self) -> None:
+        await self.use()
+        free = self.hanging()
+        real = fsops.is_dir
+        movies = str(self.folders.movies)
+
+        def silent(path: Path) -> bool:
+            if str(path) == movies:
+                free.wait(10)
+            return real(path)
+
+        auto = AutoRenamer(self.parts, now=Clock(), step_timeout_s=self.LIMIT_S)
+        self.addAsyncCleanup(auto.stop)
+        statuses: list[tuple[str, str]] = []
+        auto.on_status = lambda status: statuses.append((status.state, status.text))
+        with mock.patch.object(fsops, "is_dir", silent):
+            await auto.look()
+        assert statuses[-1] == ("unreachable", f"Can't reach {self.folders.movies}")
+
+    async def test_the_owners_rename_says_when_it_waits_for_the_lock(self) -> None:
+        await self.use(automatic="off")
+        file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        ids = await self.queue.add_watched([(file, self.folders.downloads)])
+        await self.queue.wait_idle()
+        auto = self.renamer(Clock())
+        heard: list[bool] = []
+        await self.run_lock.acquire()  # an automatic run is busy
+        try:
+            task = asyncio.get_running_loop().create_task(
+                auto.rename(ids, source=RunSource.APP, on_wait=heard.append)
+            )
+            await asyncio.sleep(0.1)
+            assert heard == [True] and file.exists()
+        finally:
+            self.run_lock.release()
+        result = await task
+        assert heard == [True, False] and result.renamed == 1
+
+    async def test_a_rename_that_never_waits_says_nothing(self) -> None:
+        heard: list[bool] = []
+        async with taking(self.run_lock, heard.append):
+            pass
+        assert heard == [] and not self.run_lock.locked()
 
 
 class MessagesTest(RenamerTestCase):

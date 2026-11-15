@@ -14,8 +14,8 @@ original ones, which Transmission 4.1's JSON-RPC 2.0 still accepts):
   `download-dir` (a film's own destination when Settings has one); the answer holds
   `torrent-added`, or `torrent-duplicate` (also a success);
 - the Downloads page (read-only): `torrent-get` with `fields` (hashString, name, percentDone,
-  status 0–6, error 0–3, isFinished, totalSize, addedDate) and, when every grab asked about
-  has one, `ids` = their hashes; `free-space` with `path` (the destination in Settings, else
+  status 0–6, error 0–3, isFinished, totalSize, addedDate, rateDownload, eta (-1 / -2: not
+  known)) and, when every grab asked about has one, `ids` = their hashes; `free-space` with `path` (the destination in Settings, else
   `session-get`'s `download-dir`; the films destination too) → `size-bytes` and, from 4.0,
   `total_size`;
 - the page's ⋯ menu: `torrent-stop`, `torrent-start` and `torrent-remove` with `ids` = the
@@ -39,8 +39,10 @@ import httpx
 from app.i18n import t
 from app.models import DownloadState, RemoteKind, RemoteStatus, RemoteTask
 from app.services.remote import (
+    STATUS_TIMEOUT,
     DiskSpace,
     HttpClients,
+    ReleaseRefused,
     RemoteError,
     byte_count,
     clamp_progress,
@@ -49,6 +51,7 @@ from app.services.remote import (
     failure_text,
     host_of,
     normal_hash,
+    seconds_left,
     number,
     redirect_text,
 )
@@ -61,7 +64,8 @@ SESSION_HEADER = "X-Transmission-Session-Id"
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 _MAX_RESULT = 200  # characters of Transmission's own error text shown
 _FIELDS = (
-    "hashString", "name", "percentDone", "status", "error", "isFinished", "totalSize", "addedDate"
+    "hashString", "name", "percentDone", "status", "error", "isFinished", "totalSize", "addedDate",
+    "rateDownload", "eta",
 )
 _LOCAL_ERROR = 3  # torrent "error" 3 = a local error (disk full, files gone); 1/2 = tracker's
 # torrent "status": 0 stopped, 1 check-wait, 2 checking, 3 download-wait, 4 downloading,
@@ -123,7 +127,7 @@ class TransmissionClient:
         arguments: dict[str, object] = {"fields": list(_FIELDS)}
         if hashes:
             arguments["ids"] = sorted(hashes)
-        async with self._session(keep_id=True) as session:
+        async with self._session(keep_id=True, timeout=STATUS_TIMEOUT) as session:
             answer = await session.call("torrent-get", arguments)
         torrents = answer.get("torrents")
         if not isinstance(torrents, list):
@@ -161,7 +165,7 @@ class TransmissionClient:
         settings = self._settings.current
         films = settings.movie_remote_destination.strip()
         spaces: list[DiskSpace | None] = []
-        async with self._session(keep_id=True) as session:
+        async with self._session(keep_id=True, timeout=STATUS_TIMEOUT) as session:
             path = settings.remote_destination.strip()
             if not path:
                 answer = await session.call("session-get", {"fields": ["download-dir"]})
@@ -179,11 +183,15 @@ class TransmissionClient:
 
     @contextlib.asynccontextmanager
     async def _session(
-        self, *, keep_id: bool = False, movie: bool = False
+        self,
+        *,
+        keep_id: bool = False,
+        movie: bool = False,
+        timeout: httpx.Timeout | None = None,
     ) -> AsyncIterator[_Session]:
         """One operation's session; `keep_id`: start with (and keep) the session id of the
         status calls before, so they skip the 409 handshake. A film's (`movie`) adds go to the
-        films destination."""
+        films destination. `timeout`: instead of the clients' own (STATUS_TIMEOUT)."""
         settings = self._settings.current  # one snapshot for the whole operation
         if not settings.remote_url:
             raise RemoteError(t("Transmission isn't set up: enter its address in Settings."))
@@ -194,7 +202,9 @@ class TransmissionClient:
             )
         url = rpc_url(settings.remote_url)
         kept = self._kept_id
-        async with await self._http.client(settings.remote_verify_tls, auth=auth) as http:
+        async with await self._http.client(
+            settings.remote_verify_tls, auth=auth, timeout=timeout
+        ) as http:
             session = _Session(
                 http,
                 url,
@@ -236,12 +246,21 @@ class _Session:
     async def add(self, arguments: dict[str, object]) -> None:
         if self._destination:
             arguments["download-dir"] = self._destination
-        added = await self.call("torrent-add", arguments)
+        # A non-success result of torrent-add (e.g. "invalid or corrupt torrent file") is this
+        # release's: the program answered.
+        added = await self.call("torrent-add", arguments, refusal=ReleaseRefused)
         if "torrent-added" not in added and "torrent-duplicate" not in added:
             raise RemoteError(self._unexpected())
 
-    async def call(self, method: str, arguments: Mapping[str, object]) -> dict[str, object]:
-        """Call one RPC method; returns its `arguments`."""
+    async def call(
+        self,
+        method: str,
+        arguments: Mapping[str, object],
+        *,
+        refusal: type[RemoteError] = RemoteError,
+    ) -> dict[str, object]:
+        """Call one RPC method; returns its `arguments`. A non-success `result` raises
+        `refusal`."""
         self._tag += 1
         body = {"method": method, "arguments": dict(arguments), "tag": self._tag}
         response = await self._post(body)
@@ -259,7 +278,7 @@ class _Session:
         result = payload.get("result")
         if result != "success":
             reason = result.strip()[:_MAX_RESULT] if isinstance(result, str) else ""
-            raise RemoteError(
+            raise (refusal if reason else RemoteError)(
                 t("Transmission refused it: {reason}.", reason=reason)
                 if reason
                 else self._unexpected()
@@ -348,6 +367,8 @@ def _remote_task(raw: object) -> RemoteTask | None:
         task_id=info_hash,  # the hash: Transmission's own ids change when it restarts
         size=byte_count(_field(raw, "totalSize", "total_size")),
         added_at=epoch_time(_field(raw, "addedDate", "added_date")),
+        speed_bps=byte_count(_field(raw, "rateDownload", "rate_download")),
+        eta_s=seconds_left(raw.get("eta")),  # -1 / -2: not known
     )
 
 

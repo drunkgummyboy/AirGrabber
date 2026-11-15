@@ -24,6 +24,7 @@ from app.indexers import (
     ProwlarrIndexer,
     default_indexers,
 )
+from app.indexers.base import IndexerUnavailable
 from app.models import (
     IndexerState,
     IndexerStatus,
@@ -39,6 +40,7 @@ from app.models import (
 )
 from app.services import Services
 from app.services.search import (
+    INDEXER_REST_S,
     QUALITY_KEYS,
     TorrentSearchService,
     build_queries,
@@ -915,6 +917,85 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(slow.cancelled)
         self.assertIn("SLOW search timed out", "\n".join(logs.output))
         self.assertEqual(len(updates[-1].releases), 1)
+
+    # An indexer that keeps failing rests (INDEXER_REST_S), so it doesn't slow every search.
+
+    async def search_once(self, service: TorrentSearchService) -> SearchUpdate:
+        updates = [update async for update in service.search(EPISODE)]
+        return updates[-1]
+
+    async def test_an_indexer_failing_twice_rests_for_fifteen_minutes(self) -> None:
+        now = [1000.0]
+        gave_up = IndexerUnavailable("BIT: /api/v1/search answered HTTP 520; gave up after 3 attempts")
+        bit = fake("bit", error=gave_up)
+        fine = fake("fine", result=[release("Severance S02E01 720p-X")])
+        service = TorrentSearchService([bit, fine], settings_service(), clock=lambda: now[0])
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            first = await self.search_once(service)
+            second = await self.search_once(service)
+        self.assertEqual([first.statuses[0].state, second.statuses[0].state], [IndexerState.FAILED] * 2)
+        rests = [line for line in logs.output if "skipped for" in line]
+        self.assertEqual(len(rests), 1)
+        self.assertIn("BIT skipped for 15 min after 2 failures", rests[0])
+
+        now[0] += INDEXER_REST_S - 1
+        resting = await self.search_once(service)
+        self.assertEqual(
+            summary(resting)[0], ("bit", IndexerState.SKIPPED, 0, "resting after failing, back in 1 min")
+        )
+        self.assertTrue(resting.statuses[0].resting)
+        self.assertFalse(resting.statuses[1].resting)
+        self.assertEqual(len(bit.requests), 2)
+        self.assertEqual(len(fine.requests), 3)
+
+        now[0] += 1  # the rest is over: it searches again, counting afresh
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            again = await self.search_once(service)
+        self.assertEqual(again.statuses[0].state, IndexerState.FAILED)
+        self.assertEqual(len(bit.requests), 3)
+        self.assertFalse(any("skipped for" in line for line in logs.output))
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            self.assertFalse((await self.search_once(service)).statuses[0].resting)
+        self.assertTrue(any("BIT skipped for 15 min after 2 failures" in line for line in logs.output))
+        self.assertTrue((await self.search_once(service)).statuses[0].resting)
+        self.assertEqual(len(bit.requests), 4)
+
+    async def test_timing_out_twice_counts_as_failing(self) -> None:
+        now = [0.0]
+        slow = fake("slow", delay=30)
+        service = TorrentSearchService([slow], settings_service(), timeout=0.02, clock=lambda: now[0])
+        with self.assertLogs(LOGGER, "WARNING"):
+            await self.search_once(service)
+            await self.search_once(service)
+        self.assertTrue((await self.search_once(service)).statuses[0].resting)
+        self.assertEqual(len(slow.requests), 2)
+
+    async def test_a_success_clears_the_failures(self) -> None:
+        now = [0.0]
+        flaky = fake("flaky", error=IndexerUnavailable("FLAKY: no response from /api (ReadTimeout)"))
+        service = TorrentSearchService([flaky], settings_service(), clock=lambda: now[0])
+        with self.assertLogs(LOGGER, "WARNING"):
+            await self.search_once(service)
+        flaky.error = None  # answers, with nothing found: that counts as an answer
+        self.assertEqual((await self.search_once(service)).statuses[0].state, IndexerState.EMPTY)
+        flaky.error = IndexerUnavailable("FLAKY: no response from /api (ReadTimeout)")
+        now[0] += 60
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            await self.search_once(service)
+        self.assertFalse(any("skipped for" in line for line in logs.output))
+        latest = await self.search_once(service)  # one failure in a row: it still searched
+        self.assertFalse(latest.statuses[0].resting)
+        self.assertEqual(len(flaky.requests), 4)
+
+    async def test_an_error_answer_is_no_reason_to_rest(self) -> None:
+        # A 4xx (a wrong Prowlarr key, say) is raised at once, not after retries: fixed in
+        # Settings, the next search must use it.
+        denied = fake("denied", error=IndexerError("DENIED: /api answered HTTP 401"))
+        service = TorrentSearchService([denied], settings_service(), clock=lambda: 0.0)
+        with self.assertLogs(LOGGER, "WARNING"):
+            for _ in range(3):
+                await self.search_once(service)
+        self.assertEqual(len(denied.requests), 3)
 
     async def test_an_indexer_can_set_its_own_timeout(self) -> None:
         patient = timed("patient", 5.0, delay=0.2, result=[release("Severance S02E01 720p-X")])

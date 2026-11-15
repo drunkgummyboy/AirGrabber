@@ -691,6 +691,7 @@ class IndexerStatus(DomainModel):
     count: int = 0  # raw hits (FOUND), before merging and filtering
     message: str | None = None  # why it was SKIPPED or FAILED
     web_url: str | None = None  # that indexer's own search page for the first query
+    resting: bool = False  # SKIPPED because it kept failing (TorrentSearchService's rest)
 
 
 class SearchUpdate(DomainModel):

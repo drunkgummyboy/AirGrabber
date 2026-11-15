@@ -431,11 +431,17 @@ class TrayHostOpenTests(unittest.TestCase):
         self.calls: list[str] = []
         self.state = "withdrawn"
 
+    def window_state(self, new: str | None = None) -> str:
+        if new is not None:
+            self.calls.append(new)
+            self.state = new
+        return self.state
+
     def host(self, closing: bool = False) -> TrayHost:
         calls = self.calls
         window: Any = SimpleNamespace(
             winfo_exists=lambda: True,
-            state=lambda: self.state,
+            state=self.window_state,
             deiconify=lambda: calls.append("deiconify"),
             lift=lambda: calls.append("lift"),
             focus_force=lambda: calls.append("focus"),
@@ -452,7 +458,7 @@ class TrayHostOpenTests(unittest.TestCase):
 
     def test_open_from_the_tray_goes_home_first(self) -> None:
         self.host().open_window()
-        self.assertEqual(self.calls, ["home", "deiconify", "lift", "focus"])
+        self.assertEqual(self.calls, ["home", "deiconify", "zoomed", "lift", "focus"])
 
     def test_open_keeps_the_page_of_a_window_on_screen(self) -> None:
         for state in ("normal", "zoomed", "iconic"):
@@ -460,16 +466,17 @@ class TrayHostOpenTests(unittest.TestCase):
                 self.calls.clear()
                 self.state = state
                 self.host().open_window()
-                self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
+                zoom = [] if state == "zoomed" else ["zoomed"]  # always full-size
+                self.assertEqual(self.calls, ["deiconify", *zoom, "lift", "focus"])
 
     def test_show_window_keeps_the_page(self) -> None:
         # Shown for a purpose: no start page.
         self.host().show_window()
-        self.assertEqual(self.calls, ["deiconify", "lift", "focus"])
+        self.assertEqual(self.calls, ["deiconify", "zoomed", "lift", "focus"])
 
     def test_a_second_start_goes_home(self) -> None:
         self.watch(self.host())
-        self.assertEqual(self.calls, ["home", "deiconify", "lift", "focus", "answer"])
+        self.assertEqual(self.calls, ["home", "deiconify", "zoomed", "lift", "focus", "answer"])
 
     def test_while_closing_a_second_start_gets_no_window_nor_answer(self) -> None:
         # Unanswered, that start waits for this copy to close and then starts itself.

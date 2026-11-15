@@ -14,7 +14,8 @@ Protocol, per qBittorrent's "WebUI API" wiki (v4.1 – v5.x) and its source:
 - the Downloads page (read-only): `GET /api/v2/torrents/info` (optionally `hashes=a|b`) → a JSON
   list of torrents with `hash` (`infohash_v1` from v4.4), `name`, `progress` (0…1) and `state`
   (downloading, stalledDL, queuedDL, pausedDL / stoppedDL (v5), uploading, …, error,
-  missingFiles), `size` and `added_on`; `GET /api/v2/sync/maindata` →
+  missingFiles), `size`, `added_on`, `dlspeed` (bytes/s) and `eta` (seconds; 8640000 = not
+  known); `GET /api/v2/sync/maindata` →
   `server_state.free_space_on_disk`;
 - the page's ⋯ menu: `POST /api/v2/torrents/stop` / `torrents/start` (v5; before it
   `torrents/pause` / `torrents/resume`, used when the new name answers 404) and
@@ -44,8 +45,10 @@ from pydantic import SecretStr
 from app.i18n import t
 from app.models import DownloadState, RemoteKind, RemoteStatus, RemoteTask, Settings
 from app.services.remote import (
+    STATUS_TIMEOUT,
     DiskSpace,
     HttpClients,
+    ReleaseRefused,
     RemoteError,
     byte_count,
     clamp_progress,
@@ -54,6 +57,7 @@ from app.services.remote import (
     failure_text,
     host_of,
     normal_hash,
+    seconds_left,
     number,
     redirect_text,
 )
@@ -200,8 +204,9 @@ class QBittorrentClient:
             return
 
     async def _read(self, path: str, params: Mapping[str, str] | None) -> httpx.Response:
-        """GET a read-only API path on the kept session (see `_call`)."""
-        return await self._call("GET", path, params=params)
+        """GET a read-only API path on the kept session (see `_call`), within STATUS_TIMEOUT
+        (the Downloads page's calls: a hanging program is given up on soon)."""
+        return await self._call("GET", path, params=params, timeout=STATUS_TIMEOUT)
 
     async def _call(
         self,
@@ -210,22 +215,25 @@ class QBittorrentClient:
         *,
         params: Mapping[str, str] | None = None,
         data: Mapping[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
         """Send one API request on the kept session; when qBittorrent ended that session
-        (403), sign in once more and send it again."""
+        (403), sign in once more and send it again. `timeout`: instead of the clients' own."""
         settings = self._settings.current  # one snapshot for the whole operation
         key = _login_key(settings)
         kept = self._kept if self._kept is not None and self._kept.key == key else None
         if kept is not None:
             try:
-                async with self._session(sign_in=False, cookies=kept.cookies) as session:
+                async with self._session(
+                    sign_in=False, cookies=kept.cookies, timeout=timeout
+                ) as session:
                     return await session.request(method, path, params=params, data=data)
             except _Refused as exc:
                 if exc.status not in (401, 403):
                     raise
             log.info("The qBittorrent session ended; signing in again")
             self._kept = None
-        async with self._session(sign_out=False) as session:
+        async with self._session(sign_out=False, timeout=timeout) as session:
             if session.cookies:
                 self._kept = _KeptCookies(key, session.cookies)
             return await session.request(method, path, params=params, data=data)
@@ -238,6 +246,7 @@ class QBittorrentClient:
         sign_out: bool = True,
         cookies: Mapping[str, str] | None = None,
         movie: bool = False,
+        timeout: httpx.Timeout | None = None,
     ) -> AsyncIterator[_Session]:
         """One operation's session: signed in (with a user name) and out again; the status
         calls keep it (`sign_out=False`) or reuse its `cookies` (`sign_in=False`). A film's
@@ -249,7 +258,9 @@ class QBittorrentClient:
         headers = {"Referer": f"{_normalized(base)}/", "Origin": _origin(base)}
         if cookies:
             headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in cookies.items())
-        async with await self._http.client(settings.remote_verify_tls, headers=headers) as http:
+        async with await self._http.client(
+            settings.remote_verify_tls, headers=headers, timeout=timeout
+        ) as http:
             session = _Session(http, base, destination(settings, movie=movie))
             if sign_in and settings.remote_username:
                 await session.login(
@@ -298,8 +309,8 @@ class _Session:
         if self._destination:
             fields.append(("savepath", (None, self._destination)))
         response = await self.request("POST", "torrents/add", files=fields, refused="add")
-        if not _added(response):
-            raise RemoteError(
+        if not _added(response):  # "Fails.": this release (e.g. one it has already)
+            raise ReleaseRefused(
                 t(
                     "qBittorrent didn't add the torrent. It may have it already, or the save "
                     "folder may not be usable."
@@ -333,6 +344,8 @@ class _Session:
             raise RemoteError(redirect_text(response, self.host))
         if response.is_success:
             return response
+        if refused == "add" and response.status_code in (409, 415):  # this release's
+            raise ReleaseRefused(self._status_text(response.status_code, refused))
         raise _Refused(self._status_text(response.status_code, refused), response.status_code)
 
     def _status_text(self, status: int, refused: str) -> str:
@@ -396,6 +409,8 @@ def _remote_task(raw: object) -> RemoteTask | None:
         task_id=task_id.strip().lower() if isinstance(task_id, str) and task_id.strip() else None,
         size=byte_count(raw.get("size", raw.get("total_size"))),
         added_at=epoch_time(raw.get("added_on")),
+        speed_bps=byte_count(raw.get("dlspeed")),
+        eta_s=seconds_left(raw.get("eta")),
     )
 
 

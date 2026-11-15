@@ -1,0 +1,140 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "allowSync": true,
+    "identifier": "com.plexapp.plugins.library",
+    "Hub": [
+      {
+        "hubKey": "/library/metadata/7122,7101,7215,7301",
+        "key": "/hubs/continueWatching/items",
+        "title": "Continue Watching",
+        "type": "mixed",
+        "hubIdentifier": "home.continue",
+        "context": "hub.home.continue",
+        "size": 4,
+        "more": false,
+        "style": "hero",
+        "Metadata": [
+          {
+            "ratingKey": "7122",
+            "key": "/library/metadata/7122",
+            "parentRatingKey": "7120",
+            "grandparentRatingKey": "7001",
+            "type": "episode",
+            "title": "The Tide Clock",
+            "grandparentTitle": "Harbour Lights",
+            "parentTitle": "Season 2",
+            "index": 2,
+            "parentIndex": 2,
+            "viewOffset": 1200000,
+            "duration": 2700000,
+            "lastViewedAt": 1762770000,
+            "thumb": "/library/metadata/7122/thumb/1762000000",
+            "art": "/library/metadata/7001/art/1762000000",
+            "parentThumb": "/library/metadata/7120/thumb/1762000000",
+            "grandparentThumb": "/library/metadata/7001/thumb/1762000000",
+            "grandparentArt": "/library/metadata/7001/art/1762000000",
+            "Media": [
+              {
+                "id": 9122,
+                "duration": 2700000,
+                "videoResolution": "1080",
+                "height": 1080,
+                "Part": [
+                  {
+                    "id": 9922,
+                    "key": "/library/parts/9922/1762000000/file.mkv",
+                    "duration": 2700000,
+                    "file": "/volume1/video/TV/Harbour Lights (2024)/Season 02/Harbour Lights - S02E02 - The Tide Clock.mkv",
+                    "size": 1800000000,
+                    "container": "mkv"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "ratingKey": "7101",
+            "key": "/library/metadata/7101",
+            "type": "movie",
+            "title": "The Glass Orchard",
+            "year": 2025,
+            "viewOffset": 4360000,
+            "duration": 7980000,
+            "lastViewedAt": 1762760000,
+            "thumb": "/library/metadata/7101/thumb/1762000001",
+            "art": "/library/metadata/7101/art/1762000001",
+            "Media": [
+              {
+                "id": 9101,
+                "duration": 7980000,
+                "videoResolution": "1080",
+                "height": 1080,
+                "Part": [
+                  {
+                    "id": 9901,
+                    "key": "/library/parts/9901/1762000001/file.mkv",
+                    "file": "/volume1/video/Movies/The Glass Orchard (2025)/The Glass Orchard (2025) 1080p.mkv",
+                    "size": 9000000000,
+                    "container": "mkv"
+                  }
+                ]
+              },
+              {
+                "id": 9102,
+                "duration": 7980000,
+                "videoResolution": "4k",
+                "height": 2160,
+                "Part": [
+                  {
+                    "id": 9902,
+                    "key": "/library/parts/9902/1762000001/file.mkv",
+                    "file": "/volume1/video/Movies/The Glass Orchard (2025)/The Glass Orchard (2025).mkv",
+                    "size": 42000000000,
+                    "container": "mkv"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "ratingKey": "7215",
+            "key": "/library/metadata/7215",
+            "parentRatingKey": "7210",
+            "grandparentRatingKey": "7200",
+            "type": "episode",
+            "title": "Low Water",
+            "grandparentTitle": "Saltmarsh",
+            "parentTitle": "Season 1",
+            "index": 5,
+            "parentIndex": 1,
+            "viewOffset": 300000,
+            "duration": 3300000,
+            "thumb": "/library/metadata/7215/thumb/1762000002",
+            "grandparentThumb": "/library/metadata/7200/thumb/1762000002",
+            "Media": [
+              {
+                "id": 9215,
+                "Part": [
+                  {
+                    "id": 9915,
+                    "key": "/library/parts/9915/1762000002/file.mkv",
+                    "file": "/volume1/video/TV/Saltmarsh (2025)/Season 01/Saltmarsh - S01E05 - Low Water.mkv"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "ratingKey": "7301",
+            "key": "/library/metadata/7301",
+            "type": "clip",
+            "title": "Behind the Lighthouse",
+            "viewOffset": 60000,
+            "duration": 600000
+          }
+        ]
+      }
+    ]
+  }
+}

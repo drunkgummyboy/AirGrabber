@@ -6,12 +6,13 @@ httpx.MockTransport; no live network."""
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import tempfile
 import unittest
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -118,7 +119,8 @@ class PickTrailerTests(unittest.TestCase):
 
 class FakeTMDB:
     """Serves the extras fixtures by path, records every request; a path in `failures` answers
-    with that status."""
+    with that status. As TMDB, a title's `append_to_response` parts (credits, videos) come along
+    in its answer, from their own paths' payloads."""
 
     def __init__(self) -> None:
         english = copy.deepcopy(load("extras_movie_info_nl.json"))
@@ -151,6 +153,12 @@ class FakeTMDB:
         payload = self.payloads.get((path, request.url.params.get("language")))
         if payload is None:
             payload = self.payloads.get((path, None))
+        appended = request.url.params.get("append_to_response", "")
+        if payload is not None and appended:
+            payload = dict(payload)
+            for part in appended.split(","):
+                if (extra := self.payloads.get((f"{path}/{part}", None))) is not None:
+                    payload[part] = extra
         if payload is None:
             if path.startswith("/3/find/"):
                 payload = {"movie_results": [], "tv_results": []}
@@ -269,8 +277,8 @@ class MovieExtrasTests(ExtrasTestCase):
         self.assertEqual(extras.trailer.key, "officialEn3")
         self.assertEqual(len(extras.cast), CAST_LIMIT)
         self.assertEqual(extras.cast[0].name, "Maren Holloway")
-        [videos] = self.server.of(f"/3/movie/{MOVIE}/videos")
-        self.assertEqual(videos.url.params["include_video_language"], "en,null")
+        [request] = self.server.requests
+        self.assertEqual(request.url.params["include_video_language"], "en,null")
 
     async def test_dutch(self) -> None:
         self.use(Language.NL)
@@ -279,10 +287,44 @@ class MovieExtrasTests(ExtrasTestCase):
         self.assertEqual(extras.info.genres, ("Drama", "Mysterie", "Thriller"))
         assert extras.trailer is not None
         self.assertEqual(extras.trailer.key, "officialNl4")  # official and Dutch
-        [videos] = self.server.of(f"/3/movie/{MOVIE}/videos")
-        self.assertEqual(videos.url.params["include_video_language"], "nl,en,null")
         # The Dutch text was there: no English request.
-        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}")), 1)
+        [request] = self.server.requests
+        self.assertEqual(request.url.params["include_video_language"], "nl,en,null")
+
+    async def test_the_film_window_needs_one_tmdb_call(self) -> None:
+        self.use(Language.NL)
+        payload = self.server.payloads[(f"/3/movie/{MOVIE}", "nl-NL")]
+        payload["release_dates"] = {
+            "results": [
+                {
+                    "iso_3166_1": "US",
+                    "release_dates": [{"type": 4, "release_date": "2026-06-02T00:00:00.000Z"}],
+                }
+            ]
+        }
+        # As the film window asks: its extras, its details, then the release panel's details.
+        extras, details, again = await asyncio.gather(
+            self.service.movie_extras(MOVIE),
+            self.service.movie_details(MOVIE),
+            self.service.movie_details(MOVIE),
+        )
+        [request] = self.server.requests
+        self.assertEqual(request.url.path, f"/3/movie/{MOVIE}")
+        self.assertEqual(
+            request.url.params["append_to_response"], "credits,videos,release_dates,external_ids"
+        )
+        self.assertEqual(request.url.params["include_video_language"], "nl,en,null")
+        self.assertEqual(request.url.params["language"], "nl-NL")
+        self.assertTrue(extras.info.overview.startswith("Wanneer de vuurtoren"))
+        assert extras.trailer is not None
+        self.assertEqual(extras.trailer.key, "officialNl4")
+        self.assertEqual(extras.cast[0].name, "Maren Holloway")
+        self.assertEqual((details.id, details.runtime), (MOVIE, 128))
+        self.assertEqual(details.digital_release, date(2026, 6, 2))
+        self.assertEqual(again, details)
+        # Kept like any details: no request later either.
+        self.assertEqual(await self.service.movie_details(MOVIE), details)
+        self.assertEqual(len(self.server.requests), 1)
 
     async def test_dutch_without_a_dutch_overview_takes_the_english_one(self) -> None:
         self.use(Language.NL)
@@ -291,26 +333,62 @@ class MovieExtrasTests(ExtrasTestCase):
         self.assertEqual(extras.info.overview, ENGLISH_OVERVIEW)
         self.assertEqual(extras.info.genres, ("Drama", "Mysterie", "Thriller"))  # still Dutch
 
-    async def test_the_titles_own_language_is_asked_for_trailers_too(self) -> None:
+    async def test_a_shows_own_language_is_asked_for_trailers_too(self) -> None:
+        self.use(Language.NL)
+        self.server.payloads[(f"/3/tv/{TV}", "nl-NL")]["original_language"] = "ko"
+        await self.service.tv_extras(TV)
+        [videos] = self.server.of(f"/3/tv/{TV}/videos")
+        self.assertEqual(videos.url.params["include_video_language"], "nl,en,ko,null")
+
+    async def test_a_film_with_a_trailer_makes_no_second_call(self) -> None:
+        # One call: the film's own language is not known before it, and isn't needed.
         self.use(Language.NL)
         self.server.payloads[(f"/3/movie/{MOVIE}", "nl-NL")]["original_language"] = "ko"
-        await self.service.movie_extras(MOVIE)
-        [videos] = self.server.of(f"/3/movie/{MOVIE}/videos")
-        self.assertEqual(videos.url.params["include_video_language"], "nl,en,ko,null")
+        extras = await self.service.movie_extras(MOVIE)
+        [request] = self.server.requests
+        self.assertEqual(request.url.params["include_video_language"], "nl,en,null")
+        self.assertIsNotNone(extras.trailer)
+
+    async def test_a_film_without_one_gets_its_trailer_in_its_own_language(self) -> None:
+        self.use(Language.NL)
+        videos_path = f"/3/movie/{MOVIE}/videos"
+        self.server.payloads[(f"/3/movie/{MOVIE}", "nl-NL")]["original_language"] = "ko"
+        # The combined call's videos (served from the None-language entry): no trailer.
+        self.server.payloads[(videos_path, None)] = {"id": MOVIE, "results": []}
+        # The videos call itself (it carries the client's own language, en-US): a Korean one.
+        korean = {
+            "iso_639_1": "ko", "key": "koreanKey1", "site": "YouTube", "type": "Trailer",
+            "official": True, "published_at": "2026-04-01T00:00:00.000Z",
+        }
+        self.server.payloads[(videos_path, "en-US")] = {"id": MOVIE, "results": [korean]}
+        extras = await self.service.movie_extras(MOVIE)
+        assert extras.trailer is not None
+        self.assertEqual((extras.trailer.key, extras.trailer.language), ("koreanKey1", "ko"))
+        self.assertEqual(len(self.server.requests), 2)
+        [second] = self.server.of(videos_path)
+        self.assertEqual(second.url.params["include_video_language"], "nl,en,ko,null")
+
+    async def test_a_film_in_a_preferred_language_without_a_trailer_asks_no_more(self) -> None:
+        self.use(Language.NL)
+        self.server.payloads[(f"/3/movie/{MOVIE}", "nl-NL")]["original_language"] = "en"
+        self.server.payloads[(f"/3/movie/{MOVIE}/videos", None)] = {"id": MOVIE, "results": []}
+        extras = await self.service.movie_extras(MOVIE)
+        self.assertIsNone(extras.trailer)
+        self.assertEqual(len(self.server.requests), 1)
 
     async def test_cached_for_24_hours(self) -> None:
         first = await self.service.movie_extras(MOVIE)
         self.now += timedelta(hours=23)
         self.assertEqual(await self.service.movie_extras(MOVIE), first)
-        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}/credits")), 1)
+        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}")), 1)
         self.now += timedelta(hours=2)
         await self.service.movie_extras(MOVIE)
-        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}/credits")), 2)
+        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}")), 2)
 
-    async def test_failing_videos_or_cast_only_leave_those_out(self) -> None:
-        self.server.failures[f"/3/movie/{MOVIE}/videos"] = 500
-        self.server.failures[f"/3/movie/{MOVIE}/credits"] = 404
-        with self.assertLogs("app.services", "INFO"):  # the retries and what was left out
+    async def test_broken_videos_or_cast_only_leave_those_out(self) -> None:
+        self.server.payloads[(f"/3/movie/{MOVIE}/videos", None)] = {"results": 5}
+        self.server.payloads[(f"/3/movie/{MOVIE}/credits", None)] = {"cast": "none"}
+        with self.assertLogs("app.services", "INFO"):  # what was left out
             extras = await self.service.movie_extras(MOVIE)
         self.assertIsNone(extras.trailer)
         self.assertEqual(extras.cast, ())
@@ -324,7 +402,7 @@ class MovieExtrasTests(ExtrasTestCase):
         self.assertEqual((await self.service.movie_extras(MOVIE)).info.id, MOVIE)
 
     async def test_a_rejected_key_raises(self) -> None:
-        self.server.failures[f"/3/movie/{MOVIE}/credits"] = 401
+        self.server.failures[f"/3/movie/{MOVIE}"] = 401
         with self.assertRaises(TMDBAuthError):
             await self.service.movie_extras(MOVIE)
 
@@ -338,7 +416,7 @@ class MovieExtrasTests(ExtrasTestCase):
         await self.service.movie_extras(MOVIE)
         self.service.clear_cache()
         await self.service.movie_extras(MOVIE)
-        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}/credits")), 2)
+        self.assertEqual(len(self.server.of(f"/3/movie/{MOVIE}")), 2)
 
 
 class ShowExtrasTests(ExtrasTestCase):

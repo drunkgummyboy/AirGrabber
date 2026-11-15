@@ -37,6 +37,11 @@ def states(status: RemoteStatus) -> dict[str, tuple[DownloadState, float]]:
     return {task.name: (task.state, round(task.progress, 4)) for task in status.tasks}
 
 
+def transfers(status: RemoteStatus) -> dict[str, tuple[int | None, int | None]]:
+    """Each task's (speed in bytes/s, seconds left), as the program says."""
+    return {task.name: (task.speed_bps, task.eta_s) for task in status.tasks}
+
+
 class HelperTests(unittest.TestCase):
     def test_magnet_hash_reads_hex_and_base32_and_nothing_else(self) -> None:
         self.assertEqual(
@@ -103,6 +108,19 @@ class SynologyStatusTests(dsm.SynologyTestCase):
         # The links themselves are never kept.
         self.assertNotIn("magnet:", repr(status))
         self.assertNotIn("dn=", repr(status))
+
+    async def test_reads_speed_and_works_out_the_time_left(self) -> None:
+        # Download Station has no ETA: it is (size - downloaded) / speed when all are known.
+        status = await self.client.status()
+        self.assertEqual(
+            transfers(status),
+            {
+                "Fallout.S02E03.1080p.WEB.h264": (2500000, 348),  # 870 MB left at 2.5 MB/s
+                "Gladiator.II.2024.1080p.WEB-DL": (0, None),
+                "The.Bear.S04E01.720p": (0, None),
+                "Severance.S02E01.1080p": (None, None),  # no speed in its transfer
+            },
+        )
 
     async def test_keeps_its_sign_in_between_calls(self) -> None:
         await self.client.status()
@@ -239,6 +257,19 @@ class QBittorrentStatusTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status.tasks[0].info_hash, "2" * 40)
 
+    async def test_reads_speed_and_time_left(self) -> None:
+        status = await self.client.status()
+        self.assertEqual(
+            transfers(status),
+            {
+                "Fallout.S02E03.1080p.WEB.h264": (2500000, 348),
+                "Gladiator.II.2024.1080p.WEB-DL": (None, None),
+                "The.Bear.S04E01.720p": (0, None),  # 8640000: qBittorrent's "infinity"
+                "Severance.S02E01.1080p": (None, None),
+                "Andor.S02E01.1080p": (None, None),
+            },
+        )
+
     async def test_asks_for_just_the_hashes_it_needs(self) -> None:
         await self.client.status({"b" * 40, "a" * 40})
         info = next(r for r in self.server.requests if r.url.path.endswith("torrents/info"))
@@ -326,6 +357,23 @@ class TransmissionStatusTests(tr.TransmissionTestCase):
         self.assertIn("hashString", body["arguments"]["fields"])
         self.assertNotIn("ids", body["arguments"])
 
+    async def test_reads_speed_and_time_left(self) -> None:
+        status = await self.client.status()
+        self.assertEqual(
+            transfers(status),
+            {
+                "Fallout.S02E03.1080p.WEB.h264": (2500000, 348),
+                "The.Bear.S04E01.720p": (None, None),
+                "Gladiator.II.2024.1080p.WEB-DL": (None, None),
+                "Severance.S02E01.1080p": (0, None),  # -1: not available
+                "Andor.S02E01.1080p": (None, None),
+                "Shogun.S01E01": (0, None),  # -2: unknown
+            },
+        )
+        fields = self.server.bodies[-1]["arguments"]["fields"]
+        self.assertIn("rateDownload", fields)
+        self.assertIn("eta", fields)
+
     async def test_asks_for_just_the_hashes_it_needs(self) -> None:
         await self.client.status({"b" * 40, "a" * 40})
         self.assertEqual(self.server.bodies[-1]["arguments"]["ids"], ["a" * 40, "b" * 40])
@@ -341,7 +389,7 @@ class TransmissionStatusTests(tr.TransmissionTestCase):
             "arguments": {
                 "torrents": [
                     {"hash_string": "d" * 40, "name": "X", "percent_done": 0.5, "status": 4,
-                     "error": 0, "is_finished": False}
+                     "error": 0, "is_finished": False, "rate_download": 1000, "eta": 60}
                 ]
             },
             "result": "success",
@@ -349,6 +397,7 @@ class TransmissionStatusTests(tr.TransmissionTestCase):
         status = await self.client.status()
         self.assertEqual(states(status), {"X": (DownloadState.DOWNLOADING, 0.5)})
         self.assertEqual(status.tasks[0].info_hash, "d" * 40)
+        self.assertEqual(transfers(status), {"X": (1000, 60)})
 
     async def test_free_space_of_its_download_folder(self) -> None:
         self.assertEqual(

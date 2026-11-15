@@ -26,6 +26,7 @@ from app.i18n import N_, t
 from app.models import MissingRunReport, QueueEvent, QueueState, Show
 from app.ui import theme
 from app.ui.borderless import disc_image
+from app.ui.plain_popup import PlainPopup
 from app.ui.tooltip import add_tooltip
 
 MISSING_COLOR = theme.WARNING  # amber: something is missing rather than broken
@@ -325,19 +326,28 @@ def menu_position(
     bounds: tuple[int, int, int, int],
     *,
     align: Literal["left", "right"] = "right",
+    above: bool = False,
 ) -> tuple[int, int]:
     """Where a popup menu of `size` goes for an `anchor` box (x, y, width, height): below it,
     right edges aligned (left edges with `align="left"`), kept within `bounds` (x, y, width,
-    height: the anchor's window); above the anchor when there is no room below. All in screen
-    pixels."""
+    height: the anchor's window); above the anchor when there is no room below. With `above`
+    (a player's controls at the bottom of the screen) the other way round, and with room on
+    neither side it is pulled up until its bottom is within `bounds`. All in screen pixels."""
     ax, ay, aw, ah = anchor
     width, height = size
     bx, by, bw, bh = bounds
     edge = ax if align == "left" else ax + aw - width
     x = max(bx, min(edge, bx + bw - width))
-    y = ay + ah + 2
-    if y + height > by + bh and ay - height - 2 >= by:
-        y = ay - height - 2
+    below, over = ay + ah + 2, ay - height - 2
+    if above:
+        if over >= by:
+            return x, over
+        if below + height <= by + bh:
+            return x, below
+        return x, max(by, by + bh - height)
+    y = below
+    if y + height > by + bh and over >= by:
+        y = over
     return x, y
 
 
@@ -371,11 +381,16 @@ class PopupMenu:
         under: tuple[int, int, int, int] | None = None,
         look: theme.Look | None = None,
         align: Literal["left", "right"] = "right",
+        bounds: tuple[int, int, int, int] | None = None,
+        above: bool = False,
     ) -> None:
         """`point`: open at the pointer (screen pixels) instead of under `anchor`. `under`: open
         under this part of `anchor` instead (x, y, width, height in screen pixels: a button
         drawn on a canvas). `look`: a view's accent tokens (Forge's `app_look()`)
-        instead of AirGrabber's. `align`: which edges line up with what it opens under."""
+        instead of AirGrabber's. `align`: which edges line up with what it opens under.
+        `bounds`: what keeps it in (x, y, width, height, screen pixels) instead of the anchor's
+        window (the player's controls are a strip of their own: the screen's work area).
+        `above`: open above the anchor first (`menu_position`)."""
         edge = theme.EDGE if look is None else look.EDGE
         surface = theme.SURFACE if look is None else look.SURFACE
         menu_hover = theme.MENU_HOVER if look is None else look.MENU_HOVER
@@ -386,7 +401,7 @@ class PopupMenu:
         entries = [_entry(item) for item in items]
         self.labels = tuple(entry.label for entry in entries if not entry.separator)
         self.checks: list[ctk.CTkLabel] = []  # the ✓ marks
-        top = self._top = tk.Toplevel(anchor.winfo_toplevel(), bg=theme.pick(edge))
+        top = self._top = PlainPopup(anchor.winfo_toplevel(), bg=theme.pick(edge))
         top.withdraw()
         top.overrideredirect(True)
         top.attributes("-topmost", True)
@@ -438,7 +453,13 @@ class PopupMenu:
         # unlike wm_maxsize() of a new window.
         window = anchor.winfo_toplevel()
         size = (top.winfo_reqwidth(), top.winfo_reqheight())
-        bounds = (window.winfo_rootx(), window.winfo_rooty(), window.winfo_width(), window.winfo_height())
+        if bounds is None:
+            bounds = (
+                window.winfo_rootx(),
+                window.winfo_rooty(),
+                window.winfo_width(),
+                window.winfo_height(),
+            )
         if point is not None:
             x, y = point_position(point, size, bounds)
         else:
@@ -449,7 +470,7 @@ class PopupMenu:
                     anchor.winfo_width(),
                     anchor.winfo_height(),
                 )
-            x, y = menu_position(under, size, bounds, align=align)
+            x, y = menu_position(under, size, bounds, align=align, above=above)
         top.geometry(f"+{x}+{y}")
         top.deiconify()
         top.lift()

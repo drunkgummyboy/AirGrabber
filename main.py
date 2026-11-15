@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -249,6 +251,12 @@ def _run(
             # Forge closes through it too (forge.db's thread is no daemon either).
             loop.run_until_complete(services.aclose())
         loop.run_until_complete(loop.shutdown_asyncgens())
+        try:
+            # asyncio.to_thread's workers are no daemons: one still busy would keep the process.
+            if isinstance(loop, asyncio.BaseEventLoop):  # its `timeout` (3.12+)
+                loop.run_until_complete(loop.shutdown_default_executor(timeout=2.0))
+        except Exception:
+            log.exception("Stopping the worker threads failed")
         loop.close()
         quit_watchdog.disarm()  # closed: the update install has its own safety (update_guard)
         _apply_staged_update(paths)
@@ -389,6 +397,30 @@ def _relaunch(args: Sequence[str] = ()) -> None:
         log.exception("Could not restart AirGrabber")
 
 
+def _exit_if_stuck(
+    code: int,
+    *,
+    threads: Callable[[], Sequence[threading.Thread]] = threading.enumerate,
+    exit_now: Callable[[int], object] = os._exit,
+) -> int:
+    """`code`, once main() is done (the lock released, a restart started). A thread that is no
+    daemon and still runs (a worker stuck on a share, say) would keep a hidden python process
+    alive after Quit: then the log is closed, the output flushed, and the process ends at once
+    with `code`. Called from `__main__` only, never in tests' own process (seams instead)."""
+    me = threading.main_thread()
+    stuck = [th for th in threads() if th is not me and not th.daemon and th.is_alive()]
+    if not stuck:
+        return code
+    log.warning("%d thread(s) still running after shutdown; ending the process", len(stuck))
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                stream.flush()
+    exit_now(code)
+    return code
+
+
 def _show_fatal_error(paths: AppPaths) -> None:
     try:
         import tkinter as tk
@@ -409,4 +441,4 @@ def _show_fatal_error(paths: AppPaths) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_exit_if_stuck(main()))

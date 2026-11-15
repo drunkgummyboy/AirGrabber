@@ -17,17 +17,18 @@ import logging
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
-from app.i18n import t, tn
+from app.i18n import N_, t, tn
 from app.models import (
     GrabTarget,
     IndexerState,
+    IndexerStatus,
     MediaType,
     QuickDownloadResult,
     SearchKind,
     SearchRequest,
     TorrentRelease,
 )
-from app.services.downloads import DownloadService, ProgramInTorrent
+from app.services.downloads import RELEASE_FAILURES, DownloadService, GrabError, ProgramInTorrent
 from app.services.picking import rank_releases
 from app.services.search import TorrentSearchService
 from app.services.settings import SettingsService
@@ -41,7 +42,21 @@ _TargetKey = tuple[MediaType, int, int | None, int | None]
 
 SEARCH_TIMEOUT = 30.0  # seconds a one-click download waits for the sources, in all
 GRACE_S = 8.0  # once a release it would pick has turned up: how long the slower sources still get
-MAX_PICKS = 5  # how many releases it tries when the best ones turn out to hold a program
+# How many releases it tries when the best ones hold a program or can't be grabbed
+# (RELEASE_FAILURES: ReleaseError, or the remote program's ReleaseRefused).
+MAX_PICKS = 5
+
+
+SOURCES_RESTING = N_(
+    "The sources that can search this are resting after repeated failures; "
+    "try again in a few minutes."
+)
+
+
+class SourcesResting(GrabError):
+    """No source searched: every one that could is resting after failing
+    (`TorrentSearchService`, INDEXER_REST_S). Not the release's fault: the automatic downloads
+    stop their run without counting a try."""
 
 
 @dataclass(slots=True)
@@ -121,7 +136,13 @@ class QuickDownloadService:
         whatever has arrived; once something it would pick has arrived, the sources still
         searching get `grace` seconds more, not the rest of `timeout` (one source that hardly
         ever answers made every download wait the whole time). Nothing suitable: `found=False` and nothing is grabbed. Grab
-        failures propagate (GrabError, or RemoteError from the remote torrent program).
+        failures of the program or folder propagate at once (GrabError, or RemoteError from the
+        remote torrent program). A pick that fails for its own reasons (`RELEASE_FAILURES`: a
+        program inside, no link, no .torrent and nowhere to send its magnet, the remote program
+        turning it down) gives way to the next best, up to MAX_PICKS; when none can be grabbed
+        the last such error propagates (only programs inside, or a season pack: `found=False`,
+        so the queue falls back to the season's episodes). Every source resting after failing
+        (`TorrentSearchService`): `SourcesResting`, at once.
         `progress` receives short status texts along the way. `avoid`: release titles and info
         hashes (casefolded) never picked: the ones a stuck download was swapped from.
         """
@@ -155,6 +176,7 @@ class QuickDownloadService:
         if not ranked:
             log.info("One-click %s: nothing suitable among %d results", label, len(releases))
             return QuickDownloadResult(found=False)
+        unusable: Exception | None = None  # the last pick that failed for its own reasons
         for best in ranked[:MAX_PICKS]:
             quality = best.resolution.value if best.resolution else None
             log.info(
@@ -170,6 +192,10 @@ class QuickDownloadService:
                 grab = await self._downloads.grab(best, target)
             except ProgramInTorrent:
                 continue  # malware dressed up as a video: on to the next best
+            except RELEASE_FAILURES as exc:  # no link, turned down...: the next best may do
+                log.info("One-click %s: that release can't be grabbed, trying the next", label)
+                unusable = exc
+                continue
             log.info("One-click %s: %s", label, grab.outcome.value)
             return QuickDownloadResult(
                 found=True,
@@ -179,6 +205,12 @@ class QuickDownloadService:
                 size_bytes=best.size_bytes or None,  # 0 = the source didn't say
                 grab=grab,
             )
+        if unusable is not None and request.kind is not SearchKind.SEASON:
+            log.warning("One-click %s: none of the picks could be grabbed", label)
+            raise unusable
+        if unusable is not None:  # a season pack: not found, so its episodes are fetched instead
+            log.warning("One-click %s: none of the season packs could be grabbed", label)
+            return QuickDownloadResult(found=False)
         log.warning("One-click %s: every pick held a program, none started", label)
         return QuickDownloadResult(found=False)
 
@@ -196,6 +228,9 @@ class QuickDownloadService:
             async with deadline:
                 async with contextlib.aclosing(self._search.search(request)) as updates:
                     async for update in updates:
+                        if update.done and _all_resting(update.statuses):
+                            log.info("One-click %s: every source is resting after failing", label)
+                            raise SourcesResting(t(SOURCES_RESTING))
                         releases = update.releases
                         if not pickable and rank_releases(releases, request, settings):
                             # Something good enough is in: the others get a little longer.
@@ -228,3 +263,9 @@ class QuickDownloadService:
                 loop.time() - started,
             )
         return releases
+
+
+def _all_resting(statuses: Iterable[IndexerStatus]) -> bool:
+    """No source searched, and at least one sat out only because it rests after failing."""
+    items = tuple(statuses)
+    return any(s.resting for s in items) and all(s.state is IndexerState.SKIPPED for s in items)

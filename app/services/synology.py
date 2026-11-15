@@ -23,7 +23,9 @@ tasks with SYNO.DownloadStation.Task `list` (`additional=detail,transfer`; docum
 Web API guide, still offered next to DownloadStation2 on DSM 7), else with DownloadStation2
 `list`. Download Station has no info hash per task: a magnet task's `uri` holds it, a .torrent
 task is matched by its file name or title (app/services/download_status.py). Each task's `id`
-("dbid_…"), `size` and `additional.detail.create_time` (its added time) come along.
+("dbid_…"), `size` and `additional.detail.create_time` (its added time) come along, and from
+`additional.transfer` `size_downloaded` and `speed_download` (bytes per second; the time left,
+which DSM doesn't give, is worked out from them: `time_left`).
 
 The page's ⋯ menu (`pause`, `resume`, `remove`) uses the same kept sign-in and the same API:
 Task `pause` / `resume` / `delete` with `id` (the ids comma-separated; DownloadStation2: a JSON
@@ -56,6 +58,7 @@ from app.i18n import N_, t
 from app.models import DownloadState, RemoteKind, RemoteStatus, RemoteTask, Settings
 from app.services.remote import (
     CERTIFICATE_SETTING,
+    STATUS_TIMEOUT,
     DiskSpace,
     HttpClients,
     RemoteError,
@@ -313,8 +316,11 @@ class DownloadStationClient:
 
     async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
         """Download Station's tasks with their progress (read-only). Keeps its sign-in between
-        calls; signs in again once when DSM ended the session."""
-        tasks = await self._on_kept_session(lambda session: session.list_tasks())
+        calls; signs in again once when DSM ended the session. STATUS_TIMEOUT: a hanging NAS
+        is given up on soon."""
+        tasks = await self._on_kept_session(
+            lambda session: session.list_tasks(), timeout=STATUS_TIMEOUT
+        )
         return RemoteStatus(program=self.kind.program, tasks=tuple(tasks))
 
     async def pause(self, task_ids: Collection[str]) -> None:
@@ -361,13 +367,19 @@ class DownloadStationClient:
 
         await self._on_kept_session(operation)
 
-    async def _on_kept_session(self, operation: Callable[[_Session], Awaitable[_T]]) -> _T:
+    async def _on_kept_session(
+        self,
+        operation: Callable[[_Session], Awaitable[_T]],
+        *,
+        timeout: httpx.Timeout | None = None,
+    ) -> _T:
         """Run `operation` on the kept sign-in (the APIs and the sid, for the settings it was
-        made with), signing in first when there is none, and once more when DSM ended it."""
+        made with), signing in first when there is none, and once more when DSM ended it.
+        `timeout`: instead of the clients' own limit (the status calls')."""
         settings = self._settings.current  # one snapshot for the whole operation
         _check_configured(settings)
         key = _login_key(settings)
-        async with await self._http.client(settings.remote_verify_tls) as http:
+        async with await self._http.client(settings.remote_verify_tls, timeout=timeout) as http:
             session = _Session(http, settings.remote_url, "")
             kept = self._kept if self._kept is not None and self._kept.key == key else None
             if kept is not None:
@@ -647,7 +659,9 @@ def _remote_task(raw: object) -> RemoteTask | None:
     uri = detail.get("uri")
     uri = uri.strip() if isinstance(uri, str) else ""
     status = _status_name(raw.get("status"))
-    progress = fraction(number(transfer.get("size_downloaded")), number(raw.get("size")))
+    downloaded, size = number(transfer.get("size_downloaded")), number(raw.get("size"))
+    progress = fraction(downloaded, size)
+    speed = byte_count(transfer.get("speed_download"))
     state = ds_state(status, progress)
     if state is DownloadState.READY:
         progress = 1.0
@@ -661,7 +675,17 @@ def _remote_task(raw: object) -> RemoteTask | None:
         task_id=task_id if isinstance(task_id, str) and task_id else None,
         size=byte_count(raw.get("size")),
         added_at=epoch_time(detail.get("create_time")),
+        speed_bps=speed,
+        eta_s=time_left(size, downloaded, speed),
     )
+
+
+def time_left(size: float | None, downloaded: float | None, speed: int | None) -> int | None:
+    """Download Station gives no time left: what is still to come at the current speed, when
+    the size, what was downloaded and a speed above 0 are all known."""
+    if size is None or downloaded is None or not speed or size < downloaded:
+        return None
+    return round((size - downloaded) / speed)
 
 
 def _task_results(data: object) -> dict[str, int]:

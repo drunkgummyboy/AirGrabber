@@ -260,10 +260,12 @@ class MovieNoticeTests(unittest.TestCase):
     def test_a_downloaded_film_also_goes_to_the_status_bar(self) -> None:
         notes: list[tuple[str, str]] = []
         status: list[str] = []
+        given_up: list[str] = []  # a give-up's line with "Show" (item 23)
         window: Any = SimpleNamespace(
             _auto_throttle=AutoNoticeThrottle(clock=lambda: 0.0),
             tray=SimpleNamespace(running=True, notify=lambda t, b: notes.append((t, b))),
             _report=lambda text, ms: status.append(text),
+            _report_given_up=given_up.append,
         )
         MainWindow._on_auto_event(window, AutoMovieDownloaded(title="Sinners", quality="1080p"))
         MainWindow._on_auto_event(window, AutoMovieGaveUp(title="Weapons"))
@@ -271,6 +273,8 @@ class MovieNoticeTests(unittest.TestCase):
             [title for title, _ in notes], ["Downloaded Sinners", "Couldn't find Weapons"]
         )
         self.assertEqual(status, ["Downloaded Sinners (picked automatically from your watchlist)"])
+        self.assertEqual(len(given_up), 1)
+        self.assertTrue(given_up[0].startswith("Couldn't find Weapons. "))
 
 
 # -- widgets -----------------------------------------------------------------------------------

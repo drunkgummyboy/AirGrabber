@@ -17,8 +17,23 @@ from app.models import (
     SearchRequest,
     TorrentRelease,
 )
-from app.services.downloads import DownloadService, GrabError, ProgramInTorrent
-from app.services.quick_download import QuickDownloadService, request_label
+from app.i18n import t
+from app.services.downloads import (
+    NO_LINK,
+    NO_REMOTE_FALLBACK,
+    DownloadService,
+    GrabError,
+    ProgramInTorrent,
+    ReleaseError,
+)
+from app.indexers import IndexerUnavailable
+from app.services.remote import ReleaseRefused
+from app.services.quick_download import (
+    SOURCES_RESTING,
+    QuickDownloadService,
+    SourcesResting,
+    request_label,
+)
 from app.services.search import TorrentSearchService
 from tests.test_search import MIB, fake, release, running_searches, settings_service
 
@@ -32,6 +47,10 @@ EPISODE = SearchRequest(
     queries=("Severance S02E01",),
 )
 TARGET = GrabTarget(media_type=MediaType.TV, media_id=44933, season=2, episode=1)
+SEASON = SearchRequest(
+    kind=SearchKind.SEASON, title="Severance", year=2022, season=2, queries=("Severance S02",)
+)
+PACK = GrabTarget(media_type=MediaType.TV, media_id=44933, season=2)
 SAVED = GrabResult(outcome=GrabOutcome.SAVED, path="C:/watch/x.torrent", message="Saved x.torrent")
 LINK = "https://prowlarr.example/download?apikey=SECRET"
 
@@ -291,6 +310,94 @@ class QuickDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tried, [bad.title, good.title])
         self.assertTrue(result.found)
         self.assertEqual(result.release_title, good.title)
+
+    async def test_a_release_without_a_link_falls_through_to_the_next_pick(self) -> None:
+        linkless = release("Severance S02E01 1080p WEB-A", h=1, seeders=900, size=1200 * MIB)
+        no_torrent = release("Severance S02E01 1080p WEB-B", h=2, seeders=500, size=1200 * MIB)
+        good = release("Severance S02E01 1080p WEB-C", h=3, seeders=40, size=1200 * MIB)
+        grabber = downloads()
+        real_grab = grabber.grab.side_effect
+        tried: list[str] = []
+
+        async def grab(chosen: TorrentRelease, target: GrabTarget) -> GrabResult:
+            tried.append(chosen.title)
+            if chosen.title == linkless.title:
+                raise ReleaseError(t(NO_LINK))
+            if chosen.title == no_torrent.title:
+                raise ReleaseError(t(NO_REMOTE_FALLBACK))
+            result: GrabResult = await real_grab(chosen, target)
+            return result
+
+        grabber.grab.side_effect = grab
+        service = self.service([fake("a", result=[linkless, no_torrent, good])], grabber)
+        result = await service.download(EPISODE, TARGET)
+        self.assertEqual(tried, [linkless.title, no_torrent.title, good.title])
+        self.assertEqual(result.release_title, good.title)
+
+    async def test_when_no_pick_can_be_grabbed_the_last_reason_is_raised(self) -> None:
+        picks = [
+            release(f"Severance S02E01 1080p WEB-{n}", h=n, seeders=100 - n, size=1200 * MIB)
+            for n in range(1, 4)
+        ]
+        grabber = downloads()
+        grabber.grab.side_effect = ReleaseError(t(NO_LINK))
+        with self.assertRaisesRegex(ReleaseError, "No .torrent file or magnet link"):
+            await self.service([fake("a", result=picks)], grabber).download(EPISODE, TARGET)
+        self.assertEqual(grabber.grab.await_count, 3)
+
+    async def test_a_release_the_program_turns_down_falls_through_to_the_next_pick(self) -> None:
+        picks = [release(f"Severance S02E01 1080p WEB-{n}", h=n, size=1200 * MIB) for n in (1, 2)]
+        grabber = downloads()
+        real_grab = grabber.grab.side_effect
+
+        async def grab(chosen: TorrentRelease, target: GrabTarget) -> GrabResult:
+            if chosen.title == picks[0].title:
+                raise ReleaseRefused("qBittorrent didn't add the torrent. It may have it already.")
+            result: GrabResult = await real_grab(chosen, target)
+            return result
+
+        grabber.grab.side_effect = grab
+        result = await self.service([fake("a", result=picks)], grabber).download(EPISODE, TARGET)
+        self.assertEqual(result.release_title, picks[1].title)
+
+    async def test_a_season_pack_none_can_be_grabbed_is_not_found(self) -> None:
+        # found=False, not an error: the queue then fetches the season's episodes one by one.
+        packs = [
+            release(f"Severance S02 1080p WEB-{n}", h=n, size=12000 * MIB, seeders=90 - n)
+            for n in (1, 2)
+        ]
+        grabber = downloads()
+        grabber.grab.side_effect = ReleaseError(t(NO_LINK))
+        result = await self.service([fake("a", result=packs)], grabber).download(SEASON, PACK)
+        self.assertEqual(result, QuickDownloadResult(found=False))
+        self.assertEqual(grabber.grab.await_count, 2)
+
+    async def test_a_program_or_folder_failure_ends_the_download_at_once(self) -> None:
+        picks = [release(f"Severance S02E01 1080p WEB-{n}", h=n, size=1200 * MIB) for n in (1, 2)]
+        grabber = downloads()
+        grabber.grab.side_effect = GrabError("Can't write to the download folder \\\\NAS\\Media")
+        with self.assertRaises(GrabError):
+            await self.service([fake("a", result=picks)], grabber).download(EPISODE, TARGET)
+        grabber.grab.assert_awaited_once()
+
+    async def test_every_source_resting_says_so_instead_of_waiting(self) -> None:
+        gave_up = IndexerUnavailable("DOWN: /api answered HTTP 520; gave up after 3 attempts")
+        down = fake("down", error=gave_up)
+        movies = fake("movies", kinds=[SearchKind.MOVIE])  # sits episode searches out anyway
+        prefs = settings_service()
+        search = TorrentSearchService([down, movies], prefs, clock=lambda: 0.0)
+        grabber = downloads()
+        service = QuickDownloadService(search, grabber, prefs, timeout=30.0)
+        with self.assertLogs("app.services.search", "WARNING"):
+            for _ in range(2):  # two failures in a row: it rests
+                self.assertFalse((await service.download(EPISODE, TARGET)).found)
+        with self.assertRaises(SourcesResting) as caught:
+            await asyncio.wait_for(service.download(EPISODE, TARGET), timeout=1)
+        self.assertEqual(str(caught.exception), t(SOURCES_RESTING))
+        self.assertIn("resting after repeated failures", str(caught.exception))
+        self.assertIsInstance(caught.exception, GrabError)  # the automatic run stops, no try
+        self.assertEqual(len(down.requests), 2)
+        grabber.grab.assert_not_awaited()
 
     async def test_when_all_hold_one_nothing_is_grabbed(self) -> None:
         bad = release("Severance S02E01 1080p WEB-A", h=1, seeders=900, size=1200 * MIB)

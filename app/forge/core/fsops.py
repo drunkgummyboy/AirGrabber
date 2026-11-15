@@ -1,6 +1,9 @@
 """Disk operations that never overwrite anything. All are blocking: call via asyncio.to_thread.
 
-Paths go through long_path() so deep NAS folders past 260 characters still work.
+Paths go through long_path() so deep NAS folders past 260 characters still work. A move
+between shares or drives is a copy under a `.mediaforge-partial` name, renamed once whole, then
+the source removed; on Windows through CopyFile2 (app/forge/core/win_copy.py: progress and Stop),
+else in chunks.
 """
 
 from __future__ import annotations
@@ -11,8 +14,16 @@ import os
 import shutil
 from pathlib import Path
 
+from app.forge.core import win_copy
+from app.forge.core.win_copy import CopyCancelled as CopyCancelled
+from app.forge.core.win_copy import NativeCopy as NativeCopy
+from app.forge.core.win_copy import Progress as Progress
+from app.forge.core.win_copy import Stop as Stop
 from app.i18n import N_
 
+# The copy between shares: Windows' CopyFile2 (progress, Stop), or None to copy in chunks
+# (away from Windows, or without CopyFile2). The seam tests replace with a fake.
+native_copy: NativeCopy | None = win_copy.copier()
 _ERROR_NOT_SAME_DEVICE = 17  # Windows' code for a move across drives or shares
 NAME_TAKEN = N_("Something already has this name")  # an OSError's text: t() it where shown
 PARTIAL_SUFFIX = ".mediaforge-partial"  # a copy between shares that isn't whole yet
@@ -65,8 +76,14 @@ def _cross_device(exc: OSError) -> bool:
     return exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == _ERROR_NOT_SAME_DEVICE
 
 
-def move_file(src: Path, dst: Path) -> None:
-    """Move src to dst. Raises FileExistsError rather than replacing anything."""
+def move_file(
+    src: Path, dst: Path, *, progress: Progress | None = None, stop: Stop | None = None
+) -> None:
+    """Move src to dst. Raises FileExistsError rather than replacing anything.
+
+    Between shares or drives the file is copied: `progress(copied, size)` hears how far (on
+    this thread) and `stop()` true ends it (CopyCancelled, the source left as it was), both
+    only with the native copy (CopyFile2)."""
     if os.path.lexists(long_path(dst)) and not _same_file_name(src, dst):
         raise FileExistsError(errno.EEXIST, NAME_TAKEN, str(dst))
     try:
@@ -74,7 +91,7 @@ def move_file(src: Path, dst: Path) -> None:
     except OSError as exc:
         if not _cross_device(exc):
             raise
-        _copy_then_delete(src, dst)
+        _copy_then_delete(src, dst, progress, stop)
 
 
 def partial_path(dst: Path) -> Path:
@@ -82,10 +99,8 @@ def partial_path(dst: Path) -> Path:
     return dst.with_name(dst.name + PARTIAL_SUFFIX)
 
 
-def _copy_then_delete(src: Path, dst: Path) -> None:
-    # The copy gets its real name only once it is whole: a copy cut off (the NAS gone, the PC
-    # switched off) never leaves a half file under the name; recovery clears the partial one.
-    partial = partial_path(dst)
+def _copy_in_chunks(src: Path, partial: Path) -> None:
+    """Without CopyFile2: through the PC in 16 MB chunks (no progress, no stop)."""
     with open(long_path(src), "rb") as reader:
         # Opened exclusively *outside* the cleanup: if it exists already this raises
         # FileExistsError and we never touch a file that is already there.
@@ -94,13 +109,45 @@ def _copy_then_delete(src: Path, dst: Path) -> None:
             with writer:
                 shutil.copyfileobj(reader, writer, 16 * 1024 * 1024)
             shutil.copystat(long_path(src), long_path(partial))
-            if os.path.lexists(long_path(dst)):
-                raise FileExistsError(errno.EEXIST, NAME_TAKEN, str(dst))
-            os.rename(long_path(partial), long_path(dst))
         except BaseException:
             with contextlib.suppress(OSError):
                 os.remove(long_path(partial))  # only the copy this call created
             raise
+
+
+def _copy_natively(
+    copy: NativeCopy, src: Path, partial: Path, progress: Progress | None, stop: Stop | None
+) -> None:
+    """CopyFile2 (it keeps the file's times itself), never over a file that is there."""
+    try:
+        copy(long_path(src), long_path(partial), progress, stop)
+    except FileExistsError:
+        raise  # the partial name was taken before: not this copy's, so it stays
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(long_path(partial))  # what is left of this copy (usually CopyFile2 did)
+        raise
+
+
+def _copy_then_delete(
+    src: Path, dst: Path, progress: Progress | None = None, stop: Stop | None = None
+) -> None:
+    # The copy gets its real name only once it is whole: a copy cut off (the NAS gone, the PC
+    # switched off) never leaves a half file under the name; recovery clears the partial one.
+    partial = partial_path(dst)
+    copy = native_copy
+    if copy is None:
+        _copy_in_chunks(src, partial)
+    else:
+        _copy_natively(copy, src, partial, progress, stop)
+    try:
+        if os.path.lexists(long_path(dst)):
+            raise FileExistsError(errno.EEXIST, NAME_TAKEN, str(dst))
+        os.rename(long_path(partial), long_path(dst))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(long_path(partial))  # only the copy this call created
+        raise
     try:
         os.remove(long_path(src))
     except OSError:

@@ -6,14 +6,25 @@ promised) is said in the Activity strip as a warning.
 
 With `moves` (ForgeMoveService), a rename into the Series or Movies folder also writes a move
 record in the same journal step, with what the caller's `media` (by item id) says the file is.
+
+A plan's `aside` ("Replace the one in the library"): right before a file's rename, the library's
+copies it replaces move aside (each a journaled rename, its subtitles along), so undoing the run
+puts them back too. One that can't move fails that file: it stays where it was. When anything
+after a move aside fails (the next copy, the file's own rename, Stop during its copy, or the run
+cancelled), what was moved aside for it goes back at once (`_put_back`: those journal lines
+undone through UndoService, shielded from the cancellation; any other error too, re-raised
+after), so the library is never left without the film. A copy that can't go back is said in the
+Activity strip (by its file name), and History can undo it. Nothing is deleted (a move never goes
+over a file: `fsops.move_file`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, cast
@@ -28,22 +39,24 @@ from app.forge.core.cleanup import (
     find_cleanup_targets,
     videos_left,
 )
-from app.forge.core.parser import VIDEO_EXTENSIONS
+from app.forge.core.parser import VIDEO_EXTENSIONS, is_video
 from app.forge.core.planner import subtitle_moves
-from app.forge.core.undo import FOLDER_NOT_EMPTY
+from app.forge.core.undo import FOLDER_NOT_EMPTY, UndoService
+from app.forge.core.win_copy import COPY_STOPPED
 from app.forge.db.history import HistoryRepo
-from app.forge.models.history import OpKind, RunSource
+from app.forge.models.history import OpKind, OpState, RunSource
 from app.forge.models.media import MediaKind, ResolvedMedia
 from app.forge.models.moves import MoveNote
 from app.forge.models.plan import (
     Plan,
+    PlannedAside,
     PlannedFile,
     PlannedNfo,
     PlannedSubtitles,
     PlannedTrailer,
 )
 from app.forge.models.subtitles import SubtitleFetch, SubtitleFetchOutcome, SubtitleIdentity
-from app.i18n import N_, t, tn
+from app.i18n import N_, number, t, tn
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -54,18 +67,53 @@ NOTHING_DOWNLOADED = N_("nothing downloaded")
 NO_SUBTITLE_FOUND = N_("no subtitle found")
 SUBTITLES_TOO_SLOW = N_("OpenSubtitles took too long")
 SUBTITLES_FAILED = N_("Couldn't get subtitles")
+ASIDE_FAILED = N_("Couldn't move the copy in the library aside: {name} ({reason})")
+PUT_BACK = N_("Put the copy back in the library: {name}")
+NOT_PUT_BACK = N_("Couldn't put the copy back in the library: {name}. History can undo it.")
 SUBTITLE_LIMIT_S = 30.0  # one video's subtitles at most; then the run's other videos go without
 SUBTITLES_RUN_LIMIT_S = 300.0  # all subtitles of one run at most
+COPY_PROGRESS_EVERY_S = 0.25  # a copy between shares tells how far at most this often
+_GB, _MB = 1024**3, 1024**2
+
+
+def _gigabytes(size: int) -> str:
+    """"4.2", "20" (no ".0"), with Dutch separators while Dutch is on."""
+    value = round(size / _GB, 1)
+    return number(value, ".0f" if value.is_integer() else ".1f")
+
+
+def copy_text(copied: int, size: int) -> str:
+    """"Copying 4.2 of 20 GB" ("Copying 300 of 700 MB" below a GB), translated."""
+    if size >= _GB:
+        return t(
+            "Copying {done} of {total} GB", done=_gigabytes(copied), total=_gigabytes(size)
+        )
+    return t("Copying {done} of {total} MB", done=round(copied / _MB), total=round(size / _MB))
 
 
 class ProgressEvent(BaseModel):
     """A step of a run. With an `item_id`: that file's rename. Without one, "working": a step
-    after the renames (a trailer download), `message` saying which and `fraction` how far."""
+    after the renames (a trailer download), `message` saying which and `fraction` how far.
+    `copying`: a "working" event of that file's copy between shares, `message` "Copying 4.2 of
+    20 GB" and `fraction` the run's with this file's part copied; sent on the loop.
+    `in_library`: an "error" of a file that replaces a copy in the library, which is still there
+    (`message` says why in full): it stays held as already in the library."""
 
     item_id: int | None
     status: Literal["working", "done", "error", "skipped"]
     message: str  # shown as it is: already in the interface language
     fraction: float
+    copying: bool = False
+    in_library: bool = False
+
+
+class _AsideFailed(Exception):
+    """A library copy couldn't move aside (its file name, and the OSError)."""
+
+    def __init__(self, name: str, error: OSError) -> None:
+        super().__init__(name)
+        self.name = name
+        self.error = error
 
 
 class RunResult(BaseModel):
@@ -81,6 +129,7 @@ class RunResult(BaseModel):
     pruned: int = 0
     subtitles: int = 0  # subtitles moved along with their video
     subtitles_fetched: int = 0  # subtitles found and saved right after the rename
+    replaced: int = 0  # library copies moved aside for the files that replaced them
     warnings: int = 0  # what the file check found wrong in the renamed videos
     cancelled: bool = False
     errors: list[str] = []
@@ -126,7 +175,9 @@ def log_reason(exc: BaseException) -> str:
 
 def _journal_text(exc: BaseException) -> str:
     """The error kept in the journal (and shown in History). An httpx error's text can hold a
-    URL, so it is kept as its type only."""
+    URL, so it is kept as its type only; a stopped copy as COPY_STOPPED (English, t() it)."""
+    if isinstance(exc, fsops.CopyCancelled):
+        return COPY_STOPPED
     if type(exc).__module__.split(".")[0] in ("httpx", "httpcore"):
         return type(exc).__name__
     return str(exc) or type(exc).__name__
@@ -195,6 +246,8 @@ class Executor:
 
         If the run is cancelled meanwhile (window closed), the change still finishes, since
         it can't be stopped halfway, and is journaled before the cancellation goes through.
+        (A copy between shares does end on Stop, the cancel flag: CopyCancelled, journaled as
+        failed, nothing moved.)
         """
         future = asyncio.ensure_future(asyncio.to_thread(work))
         cancelled = False
@@ -217,9 +270,15 @@ class Executor:
             raise error
         return future.result()
 
-    async def _ensure_dir(self, run_id: int, folder: Path) -> None:
+    async def _ensure_dir(
+        self, run_id: int, folder: Path, made: list[int] | None = None
+    ) -> None:
+        """Make `folder` and the folders above it that are missing, each journaled; `made`
+        hears each journal line."""
         for missing in await asyncio.to_thread(fsops.missing_dirs, folder):
             op = await self._history.record_pending(run_id, OpKind.CREATE_DIR, None, missing)
+            if made is not None:
+                made.append(op)
             try:
                 await self._journaled(op, partial(fsops.make_dir, missing))
             except FileExistsError:
@@ -323,6 +382,44 @@ class Executor:
                 log.info("Removed the download's folder: %s", folder.name)
                 self._say(t("Removed the download's folder: {name}", name=folder.name))
 
+    def _stopped(self, left: int) -> None:
+        log.warning("Run cancelled; %d file(s) not processed", left)
+        self._say(
+            tn("Stopped; {n} file not renamed", "Stopped; {n} files not renamed", left),
+            level=logging.WARNING,
+        )
+
+    @staticmethod
+    def _copy_progress(
+        item_id: int, index: int, total: int, on_progress: Callable[[ProgressEvent], None]
+    ) -> Callable[[int, int], None]:
+        """What a copy between shares calls on its own thread: at most every
+        COPY_PROGRESS_EVERY_S (and at its end) a `copying` event, handed to the loop."""
+        loop = asyncio.get_running_loop()
+        last = [0.0]  # time.monotonic() of the last one handed over
+
+        def send(copied: int, size: int) -> None:  # on the loop
+            part = copied / size if size else 1.0
+            on_progress(
+                ProgressEvent(
+                    item_id=item_id,
+                    status="working",
+                    message=copy_text(copied, size),
+                    fraction=(index + part) / total,
+                    copying=True,
+                )
+            )
+
+        def heard(copied: int, size: int) -> None:  # on the copy's thread
+            now = time.monotonic()
+            if now - last[0] < COPY_PROGRESS_EVERY_S and copied < size:
+                return
+            last[0] = now
+            with contextlib.suppress(RuntimeError):  # the loop closed meanwhile
+                loop.call_soon_threadsafe(send, copied, size)
+
+        return heard
+
     async def _files(
         self,
         run_id: int,
@@ -335,19 +432,13 @@ class Executor:
         """Rename every file; returns the item ids now in their final place."""
         succeeded: set[int] = set()
         total = max(len(plan.files), 1)
+        asides: dict[int, list[PlannedAside]] = {}
+        for aside in plan.aside:
+            asides.setdefault(aside.item_id, []).append(aside)
         for index, planned in enumerate(plan.files):
             if cancel.is_set():
                 result.cancelled = True
-                left = len(plan.files) - index
-                log.warning("Run cancelled; %d file(s) not processed", left)
-                self._say(
-                    tn(
-                        "Stopped; {n} file not renamed",
-                        "Stopped; {n} files not renamed",
-                        left,
-                    ),
-                    level=logging.WARNING,
-                )
+                self._stopped(len(plan.files) - index)
                 break
             fraction = (index + 1) / total
             name = planned.source.name
@@ -375,32 +466,76 @@ class Executor:
                     fraction=fraction,
                 )
             )
+            replacing = planned.item_id in asides
+            mine = asides.get(planned.item_id, [])
+            made: list[int] = []  # the journal lines of this file's moves aside
+            moved_aside = RunResult()  # counted only once the file is in their place
+            rename_op: int | None = None
             try:
+                for aside in mine:
+                    await self._move_aside(run_id, aside, moved_aside, cancel, made)
+                heard = self._copy_progress(planned.item_id, index, total, on_progress)
                 await self._ensure_dir(run_id, planned.target.parent)
                 note = self._note(planned, media.get(planned.item_id))
                 op = await self._history.record_pending(
                     run_id, OpKind.RENAME, planned.source, planned.target
                 )
-                await self._journaled(
-                    op, partial(fsops.move_file, planned.source, planned.target), move=note
+                rename_op = op
+                move = partial(
+                    fsops.move_file,
+                    planned.source,
+                    planned.target,
+                    progress=heard,
+                    stop=cancel.is_set,  # read on the copy's thread: a flag, never changed there
                 )
-            except OSError as exc:
+                await self._journaled(op, move, move=note)
+            except asyncio.CancelledError:  # the window closed: the library keeps its copy
+                await self._put_back_shielded(made, rename_op, mine)
+                raise
+            except fsops.CopyCancelled:  # Stop during a copy between shares: nothing moved
+                await self._put_back_shielded(made, rename_op, mine)
+                result.cancelled = True
+                self._stopped(len(plan.files) - index)
+                break
+            except _AsideFailed as exc:
+                await self._put_back_shielded(made, rename_op, mine)
                 result.failed += 1
-                result.errors.append(f"{name}: {exc}")
-                log.error("Couldn't rename %s: %s", name, log_reason(exc))
-                self._say(
-                    t("Couldn't rename {name}: {reason}", name=name, reason=t(log_reason(exc))),
-                    level=logging.ERROR,
-                )
+                text = t(ASIDE_FAILED, name=exc.name, reason=t(log_reason(exc.error)))
+                result.errors.append(text)
+                self._say(text, level=logging.ERROR)
                 on_progress(
                     ProgressEvent(
                         item_id=planned.item_id,
                         status="error",
-                        message=t(log_reason(exc)),  # str(exc) names the full path
+                        message=text,
                         fraction=fraction,
+                        in_library=True,
                     )
                 )
                 continue
+            except OSError as exc:
+                await self._put_back_shielded(made, rename_op, mine)
+                result.failed += 1
+                result.errors.append(f"{name}: {exc}")
+                log.error("Couldn't rename %s: %s", name, log_reason(exc))
+                text = t("Couldn't rename {name}: {reason}", name=name, reason=t(log_reason(exc)))
+                self._say(text, level=logging.ERROR)
+                on_progress(
+                    ProgressEvent(
+                        item_id=planned.item_id,
+                        status="error",
+                        # str(exc) names the full path; a replace's file stays held as in the library
+                        message=text if replacing else t(log_reason(exc)),
+                        fraction=fraction,
+                        in_library=replacing,
+                    )
+                )
+                continue
+            except Exception:  # an unforeseen error (the journal's, say): the library keeps it
+                await self._put_back_shielded(made, rename_op, mine)
+                raise
+            result.replaced += moved_aside.replaced
+            result.subtitles += moved_aside.subtitles
             result.renamed += 1
             succeeded.add(planned.item_id)
             log.info("Renamed: %s → %s", name, planned.target.name, extra=_SUCCESS)
@@ -419,7 +554,95 @@ class Executor:
             )
         return succeeded
 
-    async def _subtitles(self, run_id: int, planned: PlannedFile, result: RunResult) -> None:
+    async def _move_aside(
+        self,
+        run_id: int,
+        aside: PlannedAside,
+        result: RunResult,
+        cancel: asyncio.Event,
+        made: list[int],
+    ) -> None:
+        """Move a library copy out of the way of the file replacing it, journaled (each line in
+        `made`), with the subtitles beside it. No progress of its own: the bar is the file's.
+        Raises _AsideFailed (CopyCancelled on Stop) when it can't: that file then stays where it
+        is."""
+        name = aside.source.name
+        try:
+            await self._ensure_dir(run_id, aside.target.parent, made)
+            op = await self._history.record_pending(
+                run_id, OpKind.RENAME, aside.source, aside.target
+            )
+            made.append(op)
+            move = partial(fsops.move_file, aside.source, aside.target, stop=cancel.is_set)
+            await self._journaled(op, move)
+        except fsops.CopyCancelled:
+            raise
+        except OSError as exc:
+            log.error("Couldn't move the library's copy %s aside: %s", name, log_reason(exc))
+            raise _AsideFailed(name, exc) from exc
+        result.replaced += 1
+        log.info("Moved the library's copy aside: %s", name, extra=_SUCCESS)
+        self._say(t("Moved the copy in the library aside: {name}", name=name))
+        await self._subtitles(
+            run_id,
+            PlannedFile(item_id=aside.item_id, source=aside.source, target=aside.target),
+            result,
+            made,
+        )
+
+    async def _put_back(
+        self, made: list[int], rename_op: int | None, asides: Sequence[PlannedAside] = ()
+    ) -> None:
+        """What was moved aside for a file back into the library (its journal lines `made`
+        undone, newest first, the folders made for it removed once empty), unless the file's
+        own rename stood after all. Never raises: what can't go back stays, and History shows
+        it (and can undo it later); the Activity strip says which copy (`asides`: the file's
+        planned moves aside, for the library copy's name)."""
+        if not made:
+            return
+        try:
+            if rename_op is not None:
+                [renamed] = await self._history.get_operations([rename_op])
+                if renamed.state is OpState.DONE:
+                    return  # it is in the copy's place: the moves aside stand
+            undone = await UndoService(self._history).undo_operations(made)
+            back = await self._history.get_operations(undone.undone_ids)
+        except Exception as exc:  # noqa: BLE001 - the run's own error is what is reported
+            log.error("Couldn't put the library's copy back: %s", log_reason(exc))
+            for aside in asides:
+                if is_video(aside.source):
+                    self._say_not_put_back(aside.source.name)
+            return
+        for op in back:
+            if op.kind is OpKind.RENAME and op.src and is_video(Path(op.src)):
+                name = Path(op.src).name
+                log.info("Put the library's copy back: %s", name)
+                self._say(t(PUT_BACK, name=name))
+        if undone.skipped:
+            log.warning("%d move(s) aside not put back", len(undone.skipped))
+        by_place = {str(aside.target): aside.source.name for aside in asides}
+        for path, _reason in undone.skipped:
+            if is_video(Path(path)):
+                self._say_not_put_back(by_place.get(path, Path(path).name))
+
+    def _say_not_put_back(self, name: str) -> None:
+        """A library copy still aside after a failed replace: said, by its file name only."""
+        self._say(t(NOT_PUT_BACK, name=name), level=logging.WARNING)
+
+    async def _put_back_shielded(
+        self, made: list[int], rename_op: int | None, asides: Sequence[PlannedAside] = ()
+    ) -> None:
+        """`_put_back` that a cancellation can't stop halfway (the window closed)."""
+        task = asyncio.ensure_future(self._put_back(made, rename_op, asides))
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+
+    async def _subtitles(
+        self, run_id: int, planned: PlannedFile, result: RunResult, made: list[int] | None = None
+    ) -> None:
         """Move the subtitles beside a renamed video along with it (planner.subtitle_moves),
         each journaled as a rename of its own, so undo puts them back too. One that can't be
         moved stays where it is; the video's rename stands."""
@@ -431,6 +654,8 @@ class Executor:
             return
         for src, dst in moves:
             op = await self._history.record_pending(run_id, OpKind.RENAME, src, dst)
+            if made is not None:
+                made.append(op)
             try:
                 await self._journaled(op, partial(fsops.move_file, src, dst))
             except OSError as exc:

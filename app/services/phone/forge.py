@@ -336,10 +336,10 @@ class PhoneForge:
             show = match_key(item.parsed)
             same_show = [i for i in queue.items if match_key(i.parsed) == show]
             ids = [i.id for i in same_show if _waiting(i)]
-            staying = [(i.id, _reason(i)) for i in same_show if _elsewhere(i)]
+            staying = [(i.id, _reason(i), i.in_library) for i in same_show if _elsewhere(i)]
             await queue.choose_match(item.id, title)
-            for other_id, reason in staying:  # choose_match made them ready too
-                queue.hold(other_id, reason)
+            for other_id, reason, in_library in staying:  # choose_match made them ready too
+                queue.hold(other_id, reason, in_library=in_library)  # Replace stays offered
         try:
             result = await services.auto.rename(
                 ids, source=RunSource.APP, hold_taken=True, preferred=item.id

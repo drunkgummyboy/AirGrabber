@@ -111,6 +111,9 @@ NL: dict[str, str] = {
     "Removed the download's folder: {name}": "Map van de download verwijderd: {name}",
     "Stopped; {n} file not renamed": "Gestopt; {n} bestand niet hernoemd",
     "Stopped; {n} files not renamed": "Gestopt; {n} bestanden niet hernoemd",
+    "Copying {done} of {total} GB": "{done} van {total} GB gekopieerd",
+    "Copying {done} of {total} MB": "{done} van {total} MB gekopieerd",
+    "The copy was stopped": "Het kopiëren is gestopt",
     "Skipped {name} ({reason})": "{name} overgeslagen ({reason})",
     "Couldn't rename {name}: {reason}": "Kon {name} niet hernoemen: {reason}",
     "Renamed: {name} → {target}": "Hernoemd: {name} → {target}",
@@ -144,6 +147,26 @@ NL: dict[str, str] = {
     "Season lookup for {title} failed": "Seizoen opzoeken mislukt voor {title}",
     # app/forge/core/auto.py
     "Already in the library.": "Staat al in de bibliotheek.",
+    # "Replace the one in the library" (auto.py, executor.py, queue_rows.py, queue_view.py)
+    "Replace the one in the library": "Vervang die in de bibliotheek",
+    "Replace {name} in the library? The one there now moves to {folder}.":
+        "{name} in de bibliotheek vervangen? Die er nu staat, gaat naar {folder}.",
+    "Replace these {n} files in the library? The ones there now move to {folder}.":
+        "Deze {n} bestanden in de bibliotheek vervangen? Die er nu staan, gaan naar {folder}.",
+    "Where should the copies you replace go?": "Waar moeten de vervangen exemplaren heen?",
+    "Moved the copy in the library aside: {name}": "Exemplaar uit de bibliotheek opzijgezet: {name}",
+    "{n} old copy moved aside": "{n} oud exemplaar opzijgezet",
+    "{n} old copies moved aside": "{n} oude exemplaren opzijgezet",
+    "Couldn't move the copy in the library aside: {name} ({reason})":
+        "Kon het exemplaar in de bibliotheek niet opzijzetten: {name} ({reason})",
+    "Put the copy back in the library: {name}": "Exemplaar teruggezet in de bibliotheek: {name}",
+    "Couldn't put the copy back in the library: {name}. History can undo it.":
+        "Kon het exemplaar niet terugzetten in de bibliotheek: {name}. "
+        "Geschiedenis kan het ongedaan maken.",
+    "Nothing in the library to replace for {n} file: renamed as usual.":
+        "Niets in de bibliotheek te vervangen voor {n} bestand: gewoon hernoemd.",
+    "Nothing in the library to replace for {n} files: renamed as usual.":
+        "Niets in de bibliotheek te vervangen voor {n} bestanden: gewoon hernoemd.",
     "Two downloads would get the same name.": "Twee downloads zouden dezelfde naam krijgen.",
     "It isn't in a watched folder any more.": "Het staat niet meer in een bewaakte map.",
     "TMDB isn't sure which one it is.": "TMDB weet niet zeker welke het is.",
@@ -160,6 +183,14 @@ NL: dict[str, str] = {
     "Found {n} new file": "{n} nieuw bestand gevonden",
     "Found {n} new files": "{n} nieuwe bestanden gevonden",
     "No new files found": "Geen nieuwe bestanden gevonden",
+    "{n} download finishing, ready in about {m} min":
+        "{n} download bijna binnen, klaar over ongeveer {m} min",
+    "{n} downloads finishing, ready in about {m} min":
+        "{n} downloads bijna binnen, klaar over ongeveer {m} min",
+    "{n} download finishing, ready in under a minute":
+        "{n} download bijna binnen, klaar binnen een minuut",
+    "{n} downloads finishing, ready in under a minute":
+        "{n} downloads bijna binnen, klaar binnen een minuut",
     "{n} file needs you": "{n} bestand heeft je nodig",
     "{n} files need you": "{n} bestanden hebben je nodig",
     "Open MediaForge to pick or confirm them.": "Open MediaForge om ze te kiezen of te bevestigen.",
@@ -171,6 +202,7 @@ NL: dict[str, str] = {
     "Set up watching in Settings": "Stel bewaken in bij Instellingen",
     "Can't reach {folder}": "Kan {folder} niet bereiken",
     "Can't reach {folder}.": "Kan {folder} niet bereiken.",
+    "Waiting for Auto-rename to finish…": "Wachten tot Automatisch hernoemen klaar is…",
     "Manual: watching {n} folder": "Handmatig: bewaakt {n} map",
     "Manual: watching {n} folders": "Handmatig: bewaakt {n} mappen",
     "Watching {n} folder": "Bewaakt {n} map",
@@ -339,7 +371,10 @@ NL: dict[str, str] = {
     "Empty folders": "Lege mappen",
     "After moving, deletes folders that are left empty":
         "Haalt na het verplaatsen de mappen weg die leeg zijn gebleven",
-    "Clear queue": "Wachtrij leegmaken",
+    "Clear": "Leegmaken",
+    "Clear what's done": "Weghalen wat klaar is",
+    "Clear everything": "Alles weghalen",
+    "Remove files from the queue after they're forged": "Na het forgen uit de wachtrij halen",
     "Custom": "Aangepast",
     "Save as preset…": "Opslaan als voorinstelling…",
     "Type a naming rule for this item only; it isn't saved.":
@@ -795,6 +830,13 @@ NL: dict[str, str] = {
         "Dezelfde aflevering of film meer dan eens. Het grootste exemplaar blijft; de andere gaan naar "
         "een map \"Duplicates\" naast de bibliotheekmap. Er wordt niets verwijderd, en Geschiedenis "
         "kan het terugdraaien.",
+    "The same episode or film more than once. The biggest copy stays; the others move to a "
+    "folder you choose. Nothing is deleted, and History can undo it.":
+        "Dezelfde aflevering of film meer dan eens. Het grootste exemplaar blijft; de andere gaan naar "
+        "een map die je zelf kiest. Er wordt niets verwijderd, en Geschiedenis kan het terugdraaien.",
+    "Where should the extra copies go?": "Waar moeten de extra exemplaren heen?",
+    "Choose a folder outside your Series and Movies folders.":
+        "Kies een map buiten je mappen Series en Films.",
     "No duplicates: every episode and film is in your library once.":
         "Geen dubbele bestanden: elke aflevering en film staat er één keer in.",
     "Choose your Series and Movies folders in Settings › Auto-rename first.":
@@ -805,6 +847,9 @@ NL: dict[str, str] = {
     "Move {n} extra copies aside": "{n} extra exemplaren wegzetten",
     "✓ Moved {n} copy to Duplicates": "✓ {n} exemplaar naar Duplicates verplaatst",
     "✓ Moved {n} copies to Duplicates": "✓ {n} exemplaren naar Duplicates verplaatst",
+    "✓ Moved {n} copy to the folder you chose": "✓ {n} exemplaar naar de gekozen map verplaatst",
+    "✓ Moved {n} copies to the folder you chose":
+        "✓ {n} exemplaren naar de gekozen map verplaatst",
     "Moving…": "Verplaatsen…",
     "{name}: plays {language} first; {wanted} is there too":
         "{name}: speelt eerst {language} af; {wanted} zit er ook in",

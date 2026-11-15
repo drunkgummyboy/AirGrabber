@@ -114,6 +114,11 @@ class PlexItemReply(_Wire):
 
     rating_key: _Key | None = Field(default=None, alias="ratingKey")
     title: str = ""
+    # Continue watching (a hub's items): "episode" / "movie" (others passed over), an
+    # episode's show by its title and poster.
+    type: str = ""
+    grandparent_title: str = Field(default="", alias="grandparentTitle")
+    grandparent_thumb: str | None = Field(default=None, alias="grandparentThumb")
     guid: str | None = None  # "plex://show/…" or an old agent's "com.plexapp.agents.thetvdb://…"
     guids: list[PlexGuidReply] = Field(default_factory=list, alias="Guid")  # includeGuids=1
     grandparent_rating_key: _Key | None = Field(default=None, alias="grandparentRatingKey")
@@ -154,6 +159,14 @@ class PlexDirectoryReply(_Wire):
     locations: list[PlexLocationReply] = Field(default_factory=list, alias="Location")
 
 
+class PlexHubReply(_Wire):
+    """One hub of /hubs/continueWatching (Plex's "Continue Watching": `hubIdentifier`
+    "home.continue"), its items as `Metadata`."""
+
+    hub_identifier: str = Field(default="", alias="hubIdentifier")
+    metadata: list[PlexItemReply] = Field(default_factory=list, alias="Metadata")
+
+
 class PlexContainerReply(_Wire):
     size: int = 0
     total_size: int | None = Field(default=None, alias="totalSize")
@@ -161,6 +174,7 @@ class PlexContainerReply(_Wire):
     machine_identifier: str | None = Field(default=None, alias="machineIdentifier")
     directories: list[PlexDirectoryReply] = Field(default_factory=list, alias="Directory")
     metadata: list[PlexItemReply] = Field(default_factory=list, alias="Metadata")
+    hubs: list[PlexHubReply] = Field(default_factory=list, alias="Hub")
 
 
 class PlexReply(_Wire):
@@ -287,7 +301,9 @@ class PlexVideo(DomainModel):
     the file as the Plex server sees it (`file`: a path on the server, never logged), an
     episode's season, number and title, and whether it was watched. For the player: where Plex
     says it was left (`view_offset_ms`, 0: from the start) and its length, in milliseconds; the
-    intro's (start, end) and the credits' start when Plex has those markers."""
+    intro's (start, end) and the credits' start when Plex has those markers (`markers_known`:
+    they were asked for with the video, a film's `film_video`, so the player doesn't ask
+    again)."""
 
     key: str
     file: str
@@ -299,6 +315,7 @@ class PlexVideo(DomainModel):
     duration_ms: int = 0
     intro: tuple[int, int] | None = None
     credits_ms: int | None = None
+    markers_known: bool = False
 
 
 class PlexTitle(DomainModel):
@@ -320,6 +337,16 @@ class PlexTitle(DomainModel):
     tvdb_id: int | None = None
     imdb_id: str | None = None
     tmdb_id: int | None = None
+
+
+class PlexContinue(DomainModel):
+    """One of Plex's "Continue watching" (`PlexService.continue_watching`): the show or film
+    (`title`, the last check's copy when it knows it, else made from the item: an episode's
+    show by its key, title and poster) and the video to play, where Plex left it and its
+    length (for an episode its season, number and title: the card's code)."""
+
+    title: PlexTitle
+    video: PlexVideo
 
 
 class PlexScan(DomainModel):

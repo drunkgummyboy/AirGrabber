@@ -34,6 +34,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -52,6 +53,7 @@ log = logging.getLogger(__name__)
 
 TAIL_PARTS = (3, 2)  # "Show/Season 01/file.mkv", "Dune (2021)/Dune (2021).mkv"
 FIND_TIMEOUT_S = 20.0  # a share that takes longer counts as not holding the file this time
+EPISODES_TTL_S = 300.0  # a show's episodes read this recently show at once in the picker
 VLC_PLACES = (
     ("ProgramFiles", r"VideoLAN\VLC\vlc.exe"),
     ("ProgramFiles(x86)", r"VideoLAN\VLC\vlc.exe"),
@@ -341,13 +343,17 @@ class PlaybackService:
         launch: Launcher = launch_video,
         exists: Callable[[str], bool] = os.path.isfile,
         timeout_s: float = FIND_TIMEOUT_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """`launch` / `exists`: the seams tests replace (never a real player)."""
+        """`launch` / `exists`: the seams tests replace (never a real player); `clock`: how
+        old a kept episode list is."""
         self._plex = plex
         self._folders = folders
         self._launch = launch
         self._exists = exists
         self._timeout_s = timeout_s
+        self._clock = clock
+        self._kept: dict[str, tuple[float, list[PlexVideo]]] = {}  # a show's key: (read, list)
 
     @property
     def available(self) -> bool:
@@ -377,10 +383,20 @@ class PlaybackService:
         # Plex may keep one show as two titles (files it matched apart): the one with most.
         return max(found, key=lambda title: title.episodes or 0) if found else None
 
+    def kept_episodes(self, title: PlexTitle) -> list[PlexVideo] | None:
+        """The show's episodes as `episodes` last read them, if that was less than
+        EPISODES_TTL_S ago (the picker shows them at once while it reads them again); else
+        None."""
+        kept = self._kept.get(title.key)
+        if kept is None or self._clock() - kept[0] >= EPISODES_TTL_S:
+            return None
+        return list(kept[1])
+
     async def episodes(self, title: PlexTitle) -> list[PlexVideo]:
         """A show's episodes with their files (the picker), in order: those of every title Plex
         keeps the show as (`same_show`; it splits one when some files got matched apart), an
-        episode in two of them once: the copy of the title with the most. Raises PlexError."""
+        episode in two of them once: the copy of the title with the most. Kept by the show's
+        Plex key for `kept_episodes`. Raises PlexError."""
         titles = [title] + [
             other
             for other in await self._plex.titles()
@@ -400,6 +416,7 @@ class PlaybackService:
         if len(titles) > 1:
             log.info("Play: a show kept as %d titles in Plex", len(titles))
             videos.sort(key=episode_order)
+        self._kept[title.key] = (self._clock(), list(videos))
         return videos
 
     async def film_video(self, title: PlexTitle) -> PlexVideo | PlayOutcome:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import time
 import tkinter as tk
 import unittest
 from collections.abc import Callable
@@ -25,6 +26,7 @@ import httpx
 
 from app.config import AppPaths
 from app.forge.core.auto import LookResult, WatchStatus
+from app.forge.core.watch import Settling
 from app.forge.services import ForgeServices
 from app.forge.ui import file_drops
 from app.forge.ui.activity_panel import ActivityPanel
@@ -518,6 +520,32 @@ class ScanTests(PageCase):
         assert page.scan_button is not None
         self.assertEqual(page.scan_button.cget("state"), "normal")
 
+    async def test_a_settling_download_says_when_it_will_be_ready(self) -> None:
+        page = await self.make_page()
+        heard: list[str] = []
+        page.on_message = heard.append
+        soon = time.time() + 7 * 60 + 30  # rounded up: about 8 min
+        self.watching(page, LookResult(0, 0, 0, [], Settling(1, soon)))
+        page.scan_now()
+        assert page._scan_task is not None
+        await page._scan_task
+        self.assertEqual(heard[-1], "1 download finishing, ready in about 8 min")
+        page.services = self.services  # it closes for real
+        # The empty queue says it too, from the renamer's last look.
+        queue = page.queue
+        assert queue is not None
+        hint = queue.empty_hint.cget("text")
+        auto = self.services.auto
+        auto._settling_seen = Settling(2, time.time() + 30)
+        auto._tell_status(auto.status([]))
+        await pump_until(self.root, lambda: queue.empty_hint.cget("text") != hint)
+        self.assertEqual(
+            queue.empty_hint.cget("text"), "2 downloads finishing, ready in under a minute"
+        )
+        auto._settling_seen = Settling()
+        auto._tell_status(auto.status([]))
+        await pump_until(self.root, lambda: queue.empty_hint.cget("text") == hint)
+
     async def test_opening_the_page_looks_quietly_and_not_too_often(self) -> None:
         page = await self.make_page()
         heard: list[str] = []
@@ -534,6 +562,43 @@ class ScanTests(PageCase):
         await pump(self.root, 0.05)
         self.assertEqual(scan.await_count, 1)
         page.services = self.services  # it closes for real
+
+
+class YesterdayTests(PageCase):
+    async def test_the_first_visit_clears_them_too(self) -> None:
+        folder = self.tmp / "in"
+        folder.mkdir()
+        for name in ("Dune.2021.mkv", "Heat.1995.mkv"):
+            (folder / name).write_bytes(b"v")
+        queue = self.services.queue
+        await queue.add_paths([folder], recursive=True)
+        await queue.wait_idle()
+        dune = next(i for i in queue.items if i.path.name.startswith("Dune"))
+        queue.mark_finished(dune.id, None)
+        dune.finished_at = time.time() - 86_400  # done yesterday, before the page was built
+        await self.make_page()
+        self.assertEqual([i.path.name for i in queue.items], ["Heat.1995.mkv"])
+
+    async def test_yesterdays_done_bands_go_when_the_page_opens(self) -> None:
+        page = await self.make_page()  # Auto-rename is off: no look clears them
+        folder = self.tmp / "in"
+        folder.mkdir()
+        for name in ("Dune.2021.mkv", "Heat.1995.mkv", "Ran.1985.mkv"):
+            (folder / name).write_bytes(b"v")
+        queue = page.queue
+        assert queue is not None
+        await queue.add([folder])
+        items = {i.path.name.split(".")[0]: i for i in self.services.queue.items}
+        for name in ("Dune", "Heat"):
+            self.services.queue.mark_finished(items[name].id, None)
+        items["Dune"].finished_at = time.time() - 86_400  # done yesterday
+        page.set_shown(False)
+        page.set_shown(True)
+        await pump(self.root, 0.1)
+        self.assertEqual(
+            sorted(i.path.name for i in self.services.queue.items),
+            ["Heat.1995.mkv", "Ran.1985.mkv"],
+        )
 
 
 class MessagesTests(PageCase):

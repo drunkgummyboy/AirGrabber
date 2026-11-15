@@ -23,6 +23,7 @@ import asyncio
 import functools
 import logging
 import re
+import time
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -73,6 +74,9 @@ LibraryListener = Callable[[], None]
 SCHEDULE_COUNTRY = "US"
 # Schedules from yesterday on can still change (new listings, reschedules); older days are final.
 SCHEDULE_TTL = timedelta(hours=12)
+# A day TVMaze didn't deliver (or delivered without its streaming schedule) is asked again only
+# after this long: every calendar load would otherwise wait on it again.
+FAILED_DAY_S = 1800.0
 # Shows synced longer ago than this may have changed before TVMaze's "month" updates feed starts.
 UPDATES_WINDOW = timedelta(days=28)
 SYNC_CONCURRENCY = 3
@@ -128,10 +132,12 @@ class LibraryService:
         tvmaze: TVMazeClient,
         *,
         settings: SettingsService | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """`settings`: read for `auto_download_new_shows` whenever a show is newly followed
         (without it, new shows start with automatic downloads off), and for whether Plex is
-        connected (`plex_connected`; without settings it never is)."""
+        connected (`plex_connected`; without settings it never is). `clock`: seconds, for
+        FAILED_DAY_S (tests)."""
         self._library = library
         self._history = history
         self._tvmaze = tvmaze
@@ -141,6 +147,8 @@ class LibraryService:
         # shows), so a show can't be pruned between being saved and being tracked.
         self._tracking = asyncio.Lock()
         self._schedule_fetches: dict[date, asyncio.Task[None]] = {}
+        self._clock = clock
+        self._failed_days: dict[date, float] = {}  # a day TVMaze failed -> when (`clock`)
         self._sync_run: asyncio.Task[SyncReport] | None = None
         self._waiters: Counter[asyncio.Task[Any]] = Counter()
         # Untracked shows fetched for `show_details`, oldest first.
@@ -488,6 +496,16 @@ class LibraryService:
         )
         self._notify()
 
+    async def given_up(self, limit: int) -> list[tuple[CalendarEntry, datetime]]:
+        """The episodes the automatic downloads gave up on after trying (still followed with
+        the switch on, not grabbed, not in Plex), with their last try, the latest first."""
+        return await self._library.auto_given_up(limit=limit)
+
+    async def try_again(self, episode_id: int) -> None:
+        """Forget an episode's give-up and its tries: the next automatic run includes it."""
+        await self._library.auto_try_again(episode_id)
+        log.info("Automatic downloads: episode %d is open again", episode_id)
+
     async def remove_ended(self, *, profile_id: int) -> int:
         """Stop following every ended show the person follows (others keep theirs)."""
         removed = await self._library.untrack_ended(profile_id=profile_id)
@@ -690,17 +708,24 @@ class LibraryService:
 
         Days never fetched are fetched. Days from yesterday on are fetched again once their copy
         is older than SCHEDULE_TTL; earlier days are final once fetched. A day TVMaze fails to
-        deliver is logged and skipped.
+        deliver (wholly, or its streaming schedule) is logged and skipped, and not asked again
+        for FAILED_DAY_S.
         """
         if end < start:
             return
         fetched = await self._library.schedule_fetches(start, end)
-        now, today = datetime.now(UTC), date.today()
+        now, today, clock = datetime.now(UTC), date.today(), self._clock()
+        self._failed_days = {
+            day: when for day, when in self._failed_days.items() if clock - when < FAILED_DAY_S
+        }
         due = [
             day
             for day in _days(start, end)
-            if (last := fetched.get(day)) is None
-            or (day >= today - timedelta(days=1) and now - last > SCHEDULE_TTL)
+            if day not in self._failed_days
+            and (
+                (last := fetched.get(day)) is None
+                or (day >= today - timedelta(days=1) and now - last > SCHEDULE_TTL)
+            )
         ]
         if due:
             await self._join(*(self._schedule_fetch(day) for day in due))
@@ -723,6 +748,7 @@ class LibraryService:
             items = await self._tvmaze.schedule(day, country=SCHEDULE_COUNTRY)
         except TVMazeError as exc:
             log.warning("Skipping the TVMaze schedule of %s: %s", day, exc)
+            self._failed_days[day] = self._clock()
             return
         whole = True
         try:  # Netflix and the like: without them the day still has its regular schedule
@@ -730,6 +756,7 @@ class LibraryService:
         except TVMazeError as exc:
             log.warning("No TVMaze streaming schedule for %s: %s", day, exc)
             whole = False
+            self._failed_days[day] = self._clock()  # its regular schedule is kept meanwhile
         async with self._tracking:
             # Followed shows' rows (anyone's) are left to sync: storing their change stamp from
             # here would make sync believe their (unrefreshed) episode lists are current.
@@ -740,6 +767,8 @@ class LibraryService:
             await self._library.save_schedule_day(
                 day, shows.values(), episodes.values(), whole=whole
             )
+        if whole:
+            self._failed_days.pop(day, None)  # delivered: an earlier failure no longer counts
 
     # -- sync ----------------------------------------------------------------------------------
 

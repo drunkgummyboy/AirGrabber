@@ -17,15 +17,23 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import math
 import re
+import time
 import unicodedata
-from collections.abc import AsyncGenerator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 from app.i18n import N_, t
-from app.indexers import BaseIndexer, EztvIndexer, IndexerError, ProwlarrIndexer
+from app.indexers import (
+    BaseIndexer,
+    EztvIndexer,
+    IndexerError,
+    IndexerUnavailable,
+    ProwlarrIndexer,
+)
 from app.indexers.base import text_queries
 from app.models import (
     IndexerState,
@@ -84,6 +92,12 @@ _PROFILE_KEYS = {
     QualityProfile.HEVC: "x265",
 }
 _UNAVAILABLE = N_("not available for this search")  # through t(), as the other reasons
+_RESTING = N_("resting after failing, back in {minutes} min")
+
+# An indexer that failed (gave up after its retries, or timed out) REST_AFTER_FAILURES times in a
+# row sits the searches out for INDEXER_REST_S seconds: one that is down slowed every search.
+INDEXER_REST_S = 900.0
+REST_AFTER_FAILURES = 2
 
 
 # --- queries ----------------------------------------------------------------------------------
@@ -511,6 +525,20 @@ def episode_request(show: Show, season: int, episode: int) -> SearchRequest:
     )
 
 
+def season_request(show: Show, season: int, *, episodes: int | None = None) -> SearchRequest:
+    """The search for a season's pack (also used by the automatic downloads); `episodes`: how
+    many have aired, when known: what a pack's size is judged by."""
+    return SearchRequest(
+        kind=SearchKind.SEASON,
+        title=show.name,
+        year=show.year,
+        season=season,
+        episode_count=episodes,
+        imdb_id=show.imdb_id,
+        queries=build_queries(SearchKind.SEASON, show.name, year=show.year, season=season),
+    )
+
+
 def movie_request(movie: Movie, details: MovieDetails | None = None) -> SearchRequest:
     """The search for a film; the details' IMDb id wins over the list entry's (also used
     without the UI, by the automatic downloads of watchlist films)."""
@@ -531,13 +559,55 @@ class TorrentSearchService:
     """Searches every indexer concurrently and streams the merged, filtered results."""
 
     def __init__(
-        self, indexers: Sequence[BaseIndexer], settings: SettingsService, *, timeout: float = 25.0
+        self,
+        indexers: Sequence[BaseIndexer],
+        settings: SettingsService,
+        *,
+        timeout: float = 25.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """`timeout` caps each indexer's whole search (retries included), in seconds, unless
-        the indexer sets its own `search_timeout`."""
+        the indexer sets its own `search_timeout`. `clock`: monotonic seconds, for the rests
+        (tests move it)."""
         self._indexers = tuple(indexers)
         self._settings = settings
         self._timeout = timeout
+        self._clock = clock
+        # In memory only, by indexer name: failures in a row, and when a rest ends.
+        self._failures: dict[str, int] = {}
+        self._rest_until: dict[str, float] = {}
+
+    def _rest_left(self, indexer: BaseIndexer) -> float:
+        """Seconds `indexer` still rests; 0 when it searches."""
+        until = self._rest_until.get(indexer.name)
+        if until is None:
+            return 0.0
+        left = until - self._clock()
+        if left <= 0:
+            del self._rest_until[indexer.name]
+            return 0.0
+        return left
+
+    def _failed(self, indexer: BaseIndexer) -> None:
+        """Count a failure; the REST_AFTER_FAILURES-th in a row starts a rest, logged once
+        (searches already running may fail into it), and the count starts afresh."""
+        if self._rest_left(indexer):  # a search started before the rest: already counted for
+            return
+        failures = self._failures.get(indexer.name, 0) + 1
+        self._failures[indexer.name] = failures
+        if failures >= REST_AFTER_FAILURES:
+            self._rest_until[indexer.name] = self._clock() + INDEXER_REST_S
+            self._failures[indexer.name] = 0
+            log.warning(
+                "%s skipped for %d min after %d failures",
+                indexer.label,
+                round(INDEXER_REST_S / 60),
+                failures,
+            )
+
+    def _answered(self, indexer: BaseIndexer) -> None:
+        """It answered (with or without results): the failures are forgotten."""
+        self._failures.pop(indexer.name, None)
 
     # Request builders: what the UI searches for.
 
@@ -547,16 +617,7 @@ class TorrentSearchService:
     def season_request(
         self, show: Show, season: int, *, episodes: int | None = None
     ) -> SearchRequest:
-        """`episodes`: how many have aired, when known: what a pack's size is judged by."""
-        return SearchRequest(
-            kind=SearchKind.SEASON,
-            title=show.name,
-            year=show.year,
-            season=season,
-            episode_count=episodes,
-            imdb_id=show.imdb_id,
-            queries=build_queries(SearchKind.SEASON, show.name, year=show.year, season=season),
-        )
+        return season_request(show, season, episodes=episodes)
 
     def movie_request(self, movie: Movie, details: MovieDetails | None = None) -> SearchRequest:
         return movie_request(movie, details)
@@ -564,7 +625,8 @@ class TorrentSearchService:
     async def search(self, request: SearchRequest) -> AsyncGenerator[SearchUpdate, None]:
         """Stream the search for `request` as snapshots.
 
-        The first update lists every indexer as SEARCHING or SKIPPED; one more follows each time
+        The first update lists every indexer as SEARCHING or SKIPPED (one resting after failing:
+        `resting=True`, see INDEXER_REST_S); one more follows each time
         an indexer finishes, and the last one has `done=True` (the first already does when no
         indexer searches). Settings are read once, when the search starts. Closing the generator
         (`aclose()`, or cancelling the task iterating it) cancels and awaits the indexers still
@@ -578,12 +640,17 @@ class TorrentSearchService:
         try:
             for index, indexer in enumerate(self._indexers):
                 reason = _skip_reason(indexer, request, settings)
+                resting = False
+                if reason is None and (left := self._rest_left(indexer)):
+                    reason = t(_RESTING, minutes=math.ceil(left / 60))
+                    resting = True
                 status = IndexerStatus(
                     name=indexer.name,
                     label=indexer.label,
                     state=IndexerState.SEARCHING if reason is None else IndexerState.SKIPPED,
                     message=reason,
                     web_url=indexer.web_search_url(queries[0]) if queries else None,
+                    resting=resting,
                 )
                 statuses.append(status)
                 if reason is None:
@@ -619,7 +686,9 @@ class TorrentSearchService:
     async def _run(
         self, indexer: BaseIndexer, request: SearchRequest, status: IndexerStatus
     ) -> _Outcome:
-        """One indexer's search, turned into its final status; never raises but CancelledError."""
+        """One indexer's search, turned into its final status; never raises but CancelledError.
+        Giving up after its retries (IndexerUnavailable) or timing out counts towards a rest;
+        any answer, even with nothing found, clears the count."""
         limit = self._timeout if indexer.search_timeout is None else indexer.search_timeout
         deadline = asyncio.timeout(limit)
         try:
@@ -628,14 +697,18 @@ class TorrentSearchService:
         except IndexerError as exc:
             log.warning("%s search failed: %s", indexer.label, exc)
             failure = str(exc)
+            if isinstance(exc, IndexerUnavailable):
+                self._failed(indexer)
         except Exception as exc:
             if isinstance(exc, TimeoutError) and deadline.expired():
                 log.warning("%s search timed out after %g s", indexer.label, limit)
                 failure = t("timed out")
+                self._failed(indexer)
             else:
                 log.exception("%s search failed unexpectedly", indexer.label)
                 failure = t("unexpected error")
         else:
+            self._answered(indexer)
             state = IndexerState.FOUND if releases else IndexerState.EMPTY
             return status.model_copy(update={"state": state, "count": len(releases)}), releases
         return status.model_copy(update={"state": IndexerState.FAILED, "message": failure}), []

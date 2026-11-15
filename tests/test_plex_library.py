@@ -327,6 +327,55 @@ class ViewTests(DialogTestCase):
         await asyncio.sleep(0)
         self.assertEqual(opened, ["Dune"])
 
+    async def test_show_more_keeps_the_cards_already_shown(self) -> None:
+        from app.ui.views.library_view import PAGE_SIZE, LibraryView
+
+        shows = tuple(
+            LibraryShow(title(f"Show {n:03d}", key=str(n), seasons=1, episodes=1), following=False)
+            for n in range(2 * PAGE_SIZE + 5)
+        )
+        view = LibraryView(
+            self.root,
+            service=FakeService(LibraryContents(shows=shows, checked_at=NOW)),  # type: ignore[arg-type]
+            posters=mock.Mock(get=mock.AsyncMock(return_value=None)),
+            settings=self.settings(),
+            status=lambda text, clear_after_ms=None: None,
+            on_open_show=mock.AsyncMock(return_value=True),
+            on_open_film=lambda found: None,
+        )
+        view.pack(fill="both", expand=True)
+        self.keep(view)
+        await view.load()
+        await self.settle()
+        first, grid, button = list(view.cards), view._grid, view.more_button
+        self.assertEqual(len(first), PAGE_SIZE)
+
+        view.show_more()
+        await self.settle()
+        self.assertEqual(len(view.cards), 2 * PAGE_SIZE)
+        self.assertTrue(all(a is b for a, b in zip(first, view.cards[:PAGE_SIZE], strict=True)))
+        self.assertTrue(all(card.winfo_exists() for card in first))
+        self.assertIs(view._grid, grid)
+        self.assertIs(view.more_button, button)
+        assert button is not None
+        self.assertEqual(button.cget("text"), "Show more (5)")
+        self.assertEqual(
+            [c.title.title for c in view.cards], [f"Show {n:03d}" for n in range(2 * PAGE_SIZE)]
+        )
+
+        view.show_more()
+        await self.settle()
+        self.assertEqual(len(view.cards), 2 * PAGE_SIZE + 5)
+        self.assertTrue(all(card.winfo_exists() for card in first))
+        self.assertIsNone(view.more_button)
+        self.assertFalse(button.winfo_exists())
+
+        # A filter change still starts over.
+        view._choose_filter(LibraryFilter.NOT_FOLLOWED)
+        await self.settle()
+        self.assertEqual(len(view.cards), PAGE_SIZE)
+        self.assertFalse(first[0].winfo_exists())
+
     async def test_a_film_below_1080p_offers_upgrade(self) -> None:
         from app.ui.views.library_view import LibraryView
 
