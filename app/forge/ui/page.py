@@ -4,12 +4,12 @@ mockups/forge-as-a-page.html). AirGrabber's main window (`Mode.FORGE`) shows it;
 
 Top to bottom, under the band's top row:
 1. The main window's tabs row, whose left part is the page's (`tabs_row`; the switch stays at its
-   right end). With the queue: + Files, + Folder, Library (the queue's own `toolbar`) and the
+   right end). With the queue: + Files, + Folder and Presets (the queue's own `toolbar`) and the
    status line, the renamer's light and words (`WatchStatus`, a quiet "Auto-rename off" while off;
    cut to fit; a click opens Settings at Auto-rename, `on_settings`). With History: the heading,
    its muted line and the Activity button.
-2. The queue (QueueView: the preset card, the filters with Clear ▾, Preview and Forge, the
-   cards) or History (HistoryView) in the same place; 🕘 in the band switches them
+2. The queue (QueueView: the preset card, the filters with Library ▾, Clear ▾, Preview and
+   Forge, the cards) or History (HistoryView) in the same place; 🕘 in the band switches them
    (`toggle_history`), MediaForge in the switch goes back to the queue (`show_view`).
 
 The Activity panel opens only from History's button, over the top right of the page; ✕ or Escape

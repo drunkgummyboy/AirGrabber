@@ -364,7 +364,7 @@ class QueueView(ctk.CTkFrame):
         )
 
     def _build_toolbar(self, master: Any) -> None:
-        """+ Files and + Folder, in `master` (the page's tabs row) or in a row of their own."""
+        """+ Files, + Folder ▾ and the presets switch, in `master` (the page's tabs row) or in a row of their own."""
         look = self.look
         bar = ctk.CTkFrame(self if master is None else master, fg_color="transparent")
         if master is None:
@@ -378,8 +378,6 @@ class QueueView(ctk.CTkFrame):
             bar, t("+ Folder") + " ▾", self._folder_menu, edge=look.ACCENT
         )
         self.folder_button.pack(side="left", padx=(10, 0))
-        self.library_button = self._tool_button(bar, t(LIBRARY_TEXT) + " ▾", self._library_menu)
-        self.library_button.pack(side="left", padx=(10, 0))
         caption = ctk.CTkLabel(
             bar, text=t(PRESETS_CAPTION), font=theme.font(13), text_color=theme.TEXT_MUTED
         )
@@ -402,8 +400,9 @@ class QueueView(ctk.CTkFrame):
         add_tooltip(caption, t(MODE_TIP))
         add_tooltip(self.mode_switch, t(MODE_TIP))
 
+
     def _build_actions(self, row: Any) -> None:
-        """Clear ▾, Preview and Forge at the right end of the filters' row."""
+        """Library ▾, Clear ▾, Preview and Forge at the right end of the filters' row."""
         look = self.look
         self.actions = ctk.CTkFrame(row, fg_color="transparent")
         self.actions.pack(side="right")
@@ -423,6 +422,11 @@ class QueueView(ctk.CTkFrame):
         self.preview_button = self._tool_button(self.actions, t("Preview"), self._preview_clicked)
         self.clear_button = self._tool_button(
             self.actions, t(CLEAR_TEXT) + " ▾", self._clear_menu
+        )
+        # Library ▾ before them: here, not in the tabs row, so that row fits a narrow window in
+        # Dutch too; a run leaves it there.
+        self.library_button = self._tool_button(
+            self.actions, t(LIBRARY_TEXT) + " ▾", self._library_menu
         )
         # A run's dock, centred under the list (its row, 4, is empty otherwise), Cancel on it.
         self.progress = ForgeProgress(self, look=look, ground=look.BG)
@@ -445,10 +449,11 @@ class QueueView(ctk.CTkFrame):
         self._show_actions(running=False)
 
     def _show_actions(self, *, running: bool, installing: bool = False) -> None:
-        """The filters' row's right end: Clear ▾, Preview and Forge; or, with nothing there,
-        the dock under the list with Cancel (a run), or only the dock (the trailer tools coming
-        in)."""
-        for widget in (self.clear_button, self.preview_button, self.forge_button):
+        """The filters' row's right end: Library ▾ (always), Clear ▾, Preview and Forge; or,
+        with only Library ▾ there, the dock under the list with Cancel (a run), or only the dock
+        (the trailer tools coming in)."""
+        actions = (self.library_button, self.clear_button, self.preview_button, self.forge_button)
+        for widget in actions:
             widget.pack_forget()
         self.cancel_button.place_forget()
         if running or installing:
@@ -464,6 +469,8 @@ class QueueView(ctk.CTkFrame):
             self.forge_button.pack(side="right", padx=(10, 0))
             self.preview_button.pack(side="right", padx=(10, 0))
             self.clear_button.pack(side="right")
+        beside_clear = bool(self.clear_button.winfo_manager())
+        self.library_button.pack(side="right", padx=(0, 10) if beside_clear else 0)
 
     def _build_card(self) -> None:
         look = self.look

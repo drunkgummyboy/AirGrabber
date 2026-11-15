@@ -1182,16 +1182,23 @@ class QueueTest(QueueCase):
         await pump_until(self.root, lambda: len(self.services.queue.items) == 2)
 
     async def test_library_tools_moved_to_their_own_menu(self) -> None:
-        # Library ▾ sits right after + Folder ▾; without library folders only Find duplicates…
+        # Library ▾ sits with the actions, before Clear ▾ (the tabs row has no room for it in
+        # Dutch); without library folders only Find duplicates…
         self.view.library_button.invoke()
         menu = PopupMenu._open
         assert menu is not None
         self.assertEqual(menu.labels, ("🔁 Find duplicates…",))
         menu.close()
         self.assertEqual(self.view.library_button.cget("text"), "Library ▾")
+        self.assertNotIn(self.view.library_button, self.view.toolbar.pack_slaves())
         self.assertEqual(
-            self.view.toolbar.pack_slaves()[:3],
-            [self.view.files_button, self.view.folder_button, self.view.library_button],
+            self.view.actions.pack_slaves(),
+            [
+                self.view.forge_button,
+                self.view.preview_button,
+                self.view.clear_button,
+                self.view.library_button,
+            ],
         )
         await self.library(automatic="off")
         with mock.patch.object(QueueView, "find_duplicates") as find:
