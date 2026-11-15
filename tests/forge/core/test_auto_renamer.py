@@ -576,8 +576,13 @@ class RenamerTest(RenamerTestCase):
         auto.reconfigure()
         await self.use(automatic="trial")
         auto.reconfigure()
-        await asyncio.sleep(0.5)
-        assert auto.running
+        # The look under way ends first (its folder reads run on a thread: slow on a busy
+        # machine), then it starts again: waited for, not a fixed time.
+        for _ in range(200):
+            if auto.running and not auto._stopping:
+                break
+            await asyncio.sleep(0.05)
+        assert auto.running and not auto._stopping
         await auto.stop()
 
     async def test_a_mode_change_before_the_lock_moves_nothing(self) -> None:
