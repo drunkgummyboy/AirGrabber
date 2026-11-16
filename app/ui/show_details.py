@@ -53,7 +53,7 @@ from app.models import (
 from app.services.discovery import NoTVMazeMatch
 from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
-from app.ui import dialog_kit, theme
+from app.ui import dialog_kit, library_words, theme
 from app.ui.cards import (
     AUTO_SWITCH_TEXT,
     AUTO_SWITCH_TIP,
@@ -85,7 +85,6 @@ from app.ui.missing_control import (
     MARK_FONT_SIZE,
     MISSING_COLOR,
     NOTHING_MISSING_TEXT,
-    PLEX_TIP,
     mark_label,
     missing_text,
     progress_texts,
@@ -680,7 +679,7 @@ class _EpisodeRow(ctk.CTkFrame):
         )
         label.pack(side="left", fill="y")
         if mark == "plex":
-            add_tooltip(label, t(PLEX_TIP))
+            add_tooltip(label, library_words.have_tip())
         elif mark == "new":
             add_tooltip(label, t(NEW_TIP))
 

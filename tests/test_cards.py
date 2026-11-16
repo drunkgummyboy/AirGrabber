@@ -221,6 +221,18 @@ class IconTests(unittest.TestCase):
                 self.assertTrue(opaque)
                 self.assertTrue(all(px[:3] == (10, 20, 30) for px in opaque))
 
+    def test_the_watchlist_date_icons(self) -> None:
+        from app.ui.icons import cinema_icon, download_icon
+
+        for draw in (cinema_icon, download_icon):
+            with self.subTest(draw.__name__):
+                icon = draw(30, (250, 250, 250))
+                self.assertEqual((icon.mode, icon.size), ("RGBA", (30, 30)))
+                self.assertEqual(icon.getpixel((0, 0))[3], 0)  # type: ignore[index]
+                self.assertEqual(icon.getpixel((10, 21))[3], 0)  # type: ignore[index]  # outlines only
+                alpha = icon.getchannel("A")
+                self.assertTrue(alpha.getbbox())
+
     def test_filled_or_hollow(self) -> None:
         def centre(painter: Any) -> int:
             alpha: int = icon_image(painter, 24, (0, 0, 0)).getpixel((12, 12))[3]  # type: ignore[index]

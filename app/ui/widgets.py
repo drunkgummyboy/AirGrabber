@@ -91,6 +91,34 @@ def edit_actions(field: tk.Entry | tk.Text) -> list[MenuItem]:
     return items
 
 
+def elided(text: str, fits: Callable[[str], bool]) -> str:
+    """`text`, or its start and end around "…" so that it `fits` (a path's drive or share and its
+    last folder stay readable)."""
+    if fits(text):
+        return text
+    keep = len(text) - 1
+    while keep > 2:
+        head = (keep + 1) // 2
+        tail = keep - head
+        shorter = f"{text[:head]}…{text[len(text) - tail:]}"
+        if fits(shorter):
+            return shorter
+        keep -= 1
+    return "…"
+
+
+def hairline(master: Any, color: theme.Color) -> tk.Frame:
+    """A 1-pixel line (a CTkFrame that thin isn't drawn): a plain Tk frame in `color`,
+    repainted on a switch between light and dark. Not placed yet."""
+    line = tk.Frame(master, height=1, bd=0, highlightthickness=0, bg=theme.pick(color))
+
+    def repaint() -> None:
+        line.configure(bg=theme.pick(color))
+
+    theme.on_mode_change(line, repaint)
+    return line
+
+
 def destroy_tree(widget: Any) -> None:
     """Destroy `widget` and its descendants with one Tk call.
 
@@ -410,6 +438,8 @@ class FlexGrid(ctk.CTkFrame):
 
     Children are re-flowed on resize only when the column count changes. Call `relayout()`
     after adding or removing children. `set_order` shows some of them in another order.
+    With `whole_rows` only full rows show: what would start a short last row stays hidden
+    (TMDB's suggestions, where leaving a few out costs nothing), unless there is just one row.
     """
 
     def __init__(
@@ -420,6 +450,7 @@ class FlexGrid(ctk.CTkFrame):
         pad_x: int = 8,
         pad_y: int = 10,
         center: bool = True,
+        whole_rows: bool = False,
         **kwargs: Any,
     ) -> None:
         kwargs.setdefault("fg_color", "transparent")
@@ -428,6 +459,7 @@ class FlexGrid(ctk.CTkFrame):
         self.pad_x = pad_x
         self.pad_y = pad_y
         self.center = center
+        self.whole_rows = whole_rows
         self._current_cols = 0
         self._configured_cols = 0  # the grid columns `_configure_columns` last set up
         self._order: list[Any] | None = None  # set_order's children; None = all, as added
@@ -484,7 +516,13 @@ class FlexGrid(ctk.CTkFrame):
 
     def _regrid(self, cols: int) -> None:
         self._configure_columns(cols)
-        for idx, child in enumerate(self._shown()):
+        shown = self._shown()
+        if self.whole_rows and len(shown) > cols:
+            keep = len(shown) - len(shown) % cols
+            for child in shown[keep:]:
+                child.grid_remove()
+            shown = shown[:keep]
+        for idx, child in enumerate(shown):
             row, column = flex_cell(idx, cols, center=self.center)
             child.grid(row=row, column=column, padx=self.pad_x, pady=self.pad_y, sticky="nw")
 

@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.17.0": (
+        N_("Film dates say what they are: a clapperboard for the cinema, an arrow for the download, ~ for a guess."),
+        N_("Movies and Discover show only whole rows of posters, never half a row cut off."),
+        N_("A release downloaded again shows on the Downloads page again, instead of hiding under its old date."),
+    ),
     "3.16.0": (
         N_("Automatic downloads try the next release when one fails, fetch a finished season as one pack, and survive a restart."),
         N_("Downloads page: speed and time left per download, and what couldn't be found automatically, with Try again."),
@@ -280,14 +285,14 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.15.0": (
+    "3.17.0": (
         Feature(
-            N_("Your own player"),
+            N_("Your own folders as your library"),
             N_(
-                "▶ Play now opens a film or episode in AirGrabber itself, in a window or full "
-                "screen, with the keys you know from VLC."
+                "No Plex? In Settings → Library, AirGrabber can read your own film and series "
+                "folders: browse and play them, and what you have isn't downloaded again."
             ),
-            "player.png",
+            "folders.png",
         ),
     ),
 }

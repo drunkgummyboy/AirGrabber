@@ -1,5 +1,6 @@
 """My shows' ⋯ → "🧩 Find gaps in Plex…": the episodes Plex doesn't have in the seasons it has
-some of, for every show the person follows (LibraryService.gaps; offered only with Plex).
+some of, for every show the person follows (LibraryService.gaps; offered only with a library:
+Plex, or else the folder library, whose words it then uses, app/ui/library_words.py).
 
 One row per show: its name, its gaps per season ("S01: E03, E05–E07 · S02: E01"), what is on its
 way (grabbed, not in Plex yet), and "⬇ Download {n}"; above them "⬇ Download all {n}". A click
@@ -18,7 +19,7 @@ import customtkinter as ctk
 
 from app.i18n import N_, t, tn
 from app.models import CalendarEntry, Show
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.dialog_kit import (
@@ -41,6 +42,10 @@ from app.ui.scrollable import ScrollableFrame
 TITLE = N_("Gaps in Plex")
 TEXT = N_("Episodes Plex doesn't have, in the seasons it has some of.")
 NONE_TEXT = N_("No gaps: every season Plex has of your shows is complete.")
+# The same with the folder library as the source.
+FOLDERS_TITLE = N_("Gaps in your library")
+FOLDERS_TEXT = N_("Episodes your library doesn't have, in the seasons it has some of.")
+FOLDERS_NONE_TEXT = N_("No gaps: every season of your shows in your library is complete.")
 ALL_TEXT = N_("⬇ Download all {n}")
 ONE_TEXT = N_("⬇ Download {n}")
 QUEUED_TEXT = N_("✓ Queued")
@@ -116,7 +121,8 @@ class GapsWindow(ctk.CTkToplevel):
         on_download: Callable[[Sequence[CalendarEntry]], None],
     ) -> None:
         super().__init__(master, fg_color=theme.BG)
-        self.title(t(TITLE))
+        title = t(library_words.by_source(TITLE, FOLDERS_TITLE))
+        self.title(title)
         set_window_icon(self)
         self.resizable(False, False)
         self.transient(master)
@@ -127,9 +133,12 @@ class GapsWindow(ctk.CTkToplevel):
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         ctk.CTkFrame(body, width=WIDTH, height=1, fg_color="transparent").pack()
-        heading = heading_row(body, t(TITLE), right_room=CLOSE_CLEARANCE)
+        heading = heading_row(body, title, right_room=CLOSE_CLEARANCE)
         heading.pack(fill="x")
-        text = t(TEXT) if self._gaps else t(NONE_TEXT)
+        if self._gaps:
+            text = t(library_words.by_source(TEXT, FOLDERS_TEXT))
+        else:
+            text = t(library_words.by_source(NONE_TEXT, FOLDERS_NONE_TEXT))
         text_label(body, text, size=BODY_SIZE, color=theme.TEXT_MUTED, wraplength=WIDTH).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )

@@ -449,7 +449,7 @@ class DiscoveryService:
             trending=lists.get("trending", ()),
             upcoming=lists.get("upcoming", ()),
             failed=failed,
-            plex_connected=self._library.plex_connected,
+            plex_connected=self._library.has_library,
             in_plex=frozenset(movie_id for movie_id in on_shelves if plex.has(movie_id)),
         )
 

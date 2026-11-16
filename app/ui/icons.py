@@ -9,6 +9,7 @@ three vertical lines with a knob each).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -80,7 +81,77 @@ def sliders_icon(size_px: int, color: RGB) -> Image.Image:
     return draw_lines(SLIDERS, size_px, color)
 
 
-def _rgb(color: str) -> RGB:
+Point = tuple[float, float]
+DATE_STROKE = 1.8  # the watchlist's date icons: a little finer, they sit beside small text
+
+
+def _corner(centre: Point, radius: float, start: float, end: float, steps: int = 6) -> list[Point]:
+    """Points along a quarter circle around `centre`, from angle `start` to `end` (degrees,
+    0 = right, 90 = down)."""
+    x, y = centre
+    return [
+        (
+            x + radius * math.cos(math.radians(start + (end - start) * i / steps)),
+            y + radius * math.sin(math.radians(start + (end - start) * i / steps)),
+        )
+        for i in range(steps + 1)
+    ]
+
+
+# The download arrow: a stem, its head, and an open tray with rounded bottom corners.
+DOWNLOAD_PATHS: tuple[tuple[Point, ...], ...] = (
+    ((12, 3.5), (12, 15)),
+    ((7, 10.5), (12, 15.5), (17, 10.5)),
+    (
+        (4, 15.5),
+        *_corner((6, 18.5), 2, 180, 90),
+        *_corner((18, 18.5), 2, 90, 0),
+        (20, 15.5),
+    ),
+)
+
+# The clapperboard: its body (a box, rounded at the bottom), the lid lifted at the left hinge,
+# and the lid's two stripes.
+CINEMA_PATHS: tuple[tuple[Point, ...], ...] = (
+    ((3, 11), (21, 11), *_corner((19, 19), 2, 0, 90), *_corner((5, 19), 2, 90, 180), (3, 11)),
+    ((3, 11), (2.1, 7.9), (18.3, 2.7), (19.5, 6.0), (3, 11)),
+    ((7.2, 5.4), (9.8, 9.0)),
+    ((12.6, 3.9), (15.2, 7.5)),
+)
+
+
+def draw_paths(
+    paths: tuple[tuple[Point, ...], ...], size_px: int, color: RGB, stroke: float = STROKE
+) -> Image.Image:
+    """`paths` (in VIEWBOX units) as `stroke`-wide lines with round joins and ends in `color`,
+    on a transparent `size_px` square (RGBA)."""
+    big = size_px * _SUPERSAMPLE
+    scale = big / VIEWBOX
+    width = max(1.0, stroke * scale)
+    radius = width / 2
+    image = Image.new("RGBA", (big, big), (*color, 0))
+    draw = ImageDraw.Draw(image)
+    fill = (*color, 255)
+    for path in paths:
+        points = [(x * scale, y * scale) for x, y in path]
+        draw.line(points, fill=fill, width=round(width), joint="curve")
+        for x, y in points:  # round joins and ends
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
+    return image.resize((size_px, size_px), Image.Resampling.BOX)
+
+
+def download_icon(size_px: int, color: RGB) -> Image.Image:
+    """A watchlist date's "out to download" icon: an arrow into a tray, `size_px` square, RGBA."""
+    return draw_paths(DOWNLOAD_PATHS, size_px, color, DATE_STROKE)
+
+
+def cinema_icon(size_px: int, color: RGB) -> Image.Image:
+    """A watchlist date's "in cinemas" icon: a clapperboard, `size_px` square, RGBA."""
+    return draw_paths(CINEMA_PATHS, size_px, color, DATE_STROKE)
+
+
+def icon_rgb(color: str) -> RGB:
+    """A colour ("#A4B2C6") as the RGB the drawings take."""
     red, green, blue = ImageColor.getrgb(color)[:3]
     return red, green, blue
 
@@ -116,7 +187,7 @@ class IconButton(ctk.CTkButton):
         if self._draw_icon is None:
             return
         side = self.icon_pixels
-        light, dark = (self._draw_icon(side, _rgb(color)) for color in self._icon_color)
+        light, dark = (self._draw_icon(side, icon_rgb(color)) for color in self._icon_color)
         self.icon = ctk.CTkImage(
             light_image=light, dark_image=dark, size=(self._icon_size, self._icon_size)
         )

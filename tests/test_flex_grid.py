@@ -72,6 +72,17 @@ class FlexGridTests(unittest.TestCase):
             options = grid.grid_columnconfigure(column)
             self.assertEqual((int(options["weight"]), int(options["minsize"])), (0, slot))
 
+    def test_whole_rows_leave_a_short_last_row_out(self) -> None:
+        grid = self.grid_with(7)
+        grid.whole_rows = True
+        grid._regrid(3)
+        children = grid.winfo_children()
+        self.assertEqual([bool(child.grid_info()) for child in children], [True] * 6 + [False])
+        grid._regrid(7)  # wider: all of them fit one row, the left-out one comes back
+        self.assertTrue(all(child.grid_info() for child in children))
+        grid._regrid(10)  # fewer than one row: they all show
+        self.assertTrue(all(child.grid_info() for child in children))
+
     def test_fewer_columns_after_a_resize_moves_the_right_margin(self) -> None:
         grid = self.grid_with(7)
         grid._regrid(5)

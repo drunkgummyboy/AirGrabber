@@ -142,6 +142,9 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "stuck_swap_hours": 12,
     "text_size": "larger",
     "auto_paused_until": datetime(2026, 11, 8, 12, tzinfo=UTC),
+    "folder_library_on": True,
+    "film_folders": ("D:/Films",),
+    "series_folders": ("D:/Series",),
     "phone_devices": (
         PairedPhone(
             id="a",

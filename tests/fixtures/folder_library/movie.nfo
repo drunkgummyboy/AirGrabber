@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>Arrival</title>
+  <year>2016</year>
+  <uniqueid type="tmdb" default="true">329865</uniqueid>
+</movie>

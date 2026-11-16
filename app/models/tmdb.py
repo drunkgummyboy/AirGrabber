@@ -22,7 +22,7 @@ from app.models.domain import (
     TVDetails,
     Video,
 )
-from app.models.types import OptionalDate
+from app.models.types import ImdbId, OptionalDate
 
 
 def _empty_to_none(value: object) -> object:
@@ -427,6 +427,23 @@ class TMDBTitle(_Wire):
         if self.date and len(self.date) >= 4 and self.date[:4].isdigit():
             return int(self.date[:4])
         return None
+
+
+class TMDBTitleIds(TMDBTitle):
+    """/movie/{id} or /tv/{id}?append_to_response=external_ids: a title with the ids other sites
+    give it (the folder library's titles, app/services/folder_library/match.py). A film has
+    its IMDb id at the top too."""
+
+    imdb_id: ImdbId = None
+    external_ids: TMDBExternalIds = Field(default_factory=TMDBExternalIds)
+
+    @property
+    def imdb(self) -> str | None:
+        return self.imdb_id or self.external_ids.imdb_id or None
+
+    @property
+    def tvdb(self) -> int | None:
+        return self.external_ids.tvdb_id or None
 
 
 class TMDBSeasonEpisode(_Wire):

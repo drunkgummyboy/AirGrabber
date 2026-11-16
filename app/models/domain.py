@@ -336,8 +336,9 @@ class MovieDashboard(DomainModel):
     trending: tuple[Movie, ...] = ()
     upcoming: tuple[Movie, ...] = ()
     failed: tuple[str, ...] = ()  # names of the shelves that couldn't be loaded
-    # Plex is connected (app/services/plex.py): only then do the films in it count as had (their
-    # ids: `in_plex`, recomputed on every call) and can the page hide them.
+    # There is a library (named before the folder library: Plex, or else the folder library;
+    # app/services/library_source.py `has_library`): only then do the films in it count as had
+    # (their ids: `in_plex`, recomputed on every call) and can the page hide them.
     plex_connected: bool = False
     in_plex: frozenset[int] = frozenset()
 
@@ -474,8 +475,9 @@ class ShowDetails(DomainModel):
     # from fetching an episode twice.
     downloaded: frozenset[int] = frozenset()
     next_episode: Episode | None = None  # the first numbered episode still to air
-    # Plex is connected (app/services/plex.py): only then does the window show what you have
-    # and miss. Then, for tracked shows (see app.services.missing): the latest season (the
+    # There is a library (named before the folder library: Plex, or else the folder library;
+    # app/services/library_source.py `has_library`): only then does the window show what you
+    # have and miss. Then, for tracked shows (see app.services.missing): the latest season (the
     # highest with an aired regular numbered episode), its episodes neither in Plex nor
     # downloaded (ids) that aired at least a day ago (`missing`) or less (`new`), and the
     # episodes in Plex (`in_plex`, ids, any season), the only ones that count as had.

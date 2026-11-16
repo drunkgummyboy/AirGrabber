@@ -13,6 +13,7 @@ import tempfile
 import time
 import tkinter as tk
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,15 @@ from app.ui.views.downloads_view import (
     folder_tip,
     row_menu,
 )
-from tests.test_download_status import FALLOUT, HASH_A, NOW, ServiceTestCase, record
+from tests.test_download_status import (
+    FALLOUT,
+    HASH_A,
+    HASH_B,
+    NOW,
+    ServiceTestCase,
+    record,
+    task,
+)
 from tests.test_downloads_view import FakeImages, FakeSettings, FakeStatus
 
 
@@ -160,6 +169,75 @@ class ClearedTests(ServiceTestCase):
         await self.db.history.clear([grab.id], NOW)
         self.assertEqual(await self.db.history.listed(10), [])
         self.assertEqual((await self.service.check()).entries, ())
+
+    async def test_grabbing_the_same_release_again_counts_as_a_new_grab(self) -> None:
+        # ↻ Again (or any grab) of a release fetched before: its row becomes the new grab, and
+        # the old grab's marks (taken off the page, had by the program) go with it.
+        first = await self.add(
+            record("Fallout.S02E03.1080p.WEB", info_hash=HASH_A, when=NOW - timedelta(days=3))
+        )
+        assert first.id is not None
+        await self.db.history.mark_seen([first.id], NOW - timedelta(days=3))
+        await self.db.history.clear([first.id], NOW - timedelta(days=2))
+        self.assertEqual(await self.db.history.listed(10), [])
+        stamp = await self.db.history.stamp()
+        again = record(
+            "Fallout.S02E03.1080p.WEB", info_hash=HASH_A, episode=4, saved_path="qBittorrent", when=NOW
+        )
+        self.assertFalse(await self.db.history.add(again))  # no row of its own
+        [row] = await self.db.history.recent(10)
+        self.assertEqual(row, again.model_copy(update={"id": first.id}))
+        self.assertEqual(await self.db.history.seen([first.id]), frozenset())
+        self.assertEqual(await self.db.history.listed(10), [row])  # on the page again
+        self.assertNotEqual(await self.db.history.stamp(), stamp)  # the page reads it again
+        # A release never grabbed before still gets a row of its own.
+        other = record("Fallout.S02E05.1080p.WEB", episode=5, info_hash=HASH_B, when=NOW)
+        self.assertTrue(await self.db.history.add(other))
+        self.assertEqual(len(await self.db.history.recent(10)), 2)
+
+    async def test_a_season_pack_grabbed_again_for_one_episode_stays_the_season(self) -> None:
+        # Ruling SF-1: a re-grab keeps the existing row's wider target (the season's pack) when
+        # the show and the season are the same; it never shrinks to the one episode.
+        pack = record("Fallout.S02.1080p.WEB", info_hash=HASH_A, episode=None)
+        self.assertTrue(await self.db.history.add(pack))
+        again = record("Fallout.S02.1080p.WEB", info_hash=HASH_A, episode=4, when=NOW)
+        self.assertFalse(await self.db.history.add(again))
+        [row] = await self.db.history.recent(10)
+        self.assertEqual((row.season, row.episode, row.downloaded_at), (2, None, NOW))
+        self.assertTrue(await self.db.history.has_episode(FALLOUT.id, 2, 7))  # the whole season
+        # Another season, or another show: the new target wins.
+        other_season = record("Fallout.S02.1080p.WEB", info_hash=HASH_A, season=3, episode=1)
+        await self.db.history.add(other_season)
+        [row] = await self.db.history.recent(10)
+        self.assertEqual((row.season, row.episode), (3, 1))
+        # A single episode's row grabbed again as the season's pack widens to it.
+        await self.db.history.add(record("Fallout.S03.1080p.WEB", info_hash=HASH_A, season=3,
+                                         episode=None))
+        [row] = await self.db.history.recent(10)
+        self.assertEqual((row.season, row.episode), (3, None))
+        await self.db.history.add(record("x", info_hash=HASH_A, media_id=FALLOUT.id + 1,
+                                         season=3, episode=2))
+        [row] = await self.db.history.recent(10)
+        self.assertEqual((row.media_id, row.season, row.episode), (FALLOUT.id + 1, 3, 2))
+
+    async def test_a_grab_taken_off_this_run_comes_back_when_grabbed_again(self) -> None:
+        self.station.tasks = (task("Fallout.S02E03.1080p.WEB", info_hash=HASH_A),)
+        grab = await self.add(record("Fallout.S02E03.1080p.WEB", info_hash=HASH_A))
+        assert grab.id is not None
+        await self.service.check()  # the program has it: seen
+        self.station.tasks = ()  # removed there, and taken off the page
+        await self.service.clear([grab.id])
+        self.assertEqual((await self.service.check()).entries, ())
+        # Fetched again a minute later: a fresh grab waiting for its program, not a gone one.
+        self.service._now = lambda: NOW + timedelta(minutes=5)
+        await self.db.history.add(
+            record("Fallout.S02E03.1080p.WEB", info_hash=HASH_A, when=NOW + timedelta(minutes=1))
+        )
+        overview = await self.service.check()
+        self.assertEqual(
+            [(e.record.id, e.state) for e in overview.entries], [(grab.id, DownloadState.PENDING)]
+        )
+        self.assertEqual([e.record.id for e in self.overviews[-1].entries], [grab.id])
 
 
 class LocateTests(ServiceTestCase):

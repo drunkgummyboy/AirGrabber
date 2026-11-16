@@ -167,6 +167,15 @@ class SettingsPage:
         widget.grid(row=self._next_row, column=0, sticky="ew", pady=(gap, 0))
         self._next_row += 1
 
+    def order(self, frames: Sequence[Any]) -> None:
+        """Put these placed blocks in this order, on the rows they take now (each row keeps its
+        gap): Settings → Library's boxes swap places when the library's source changes."""
+        rows = sorted(int(frame.grid_info()["row"]) for frame in frames)
+        gaps = {row: FIRST_BOX_GAP if row == 2 else BOX_GAP for row in rows}
+        for frame, row in zip(frames, rows, strict=True):
+            if int(frame.grid_info()["row"]) != row:
+                frame.grid_configure(row=row, pady=(gaps[row], 0))
+
 
 # -- the sidebar -----------------------------------------------------------------------------------
 

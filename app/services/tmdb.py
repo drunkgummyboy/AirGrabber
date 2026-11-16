@@ -44,6 +44,7 @@ from app.models.tmdb import (
     TMDBMovieItem,
     TMDBSeason,
     TMDBTitle,
+    TMDBTitleIds,
     TMDBTVDetails,
     TMDBTVInfo,
     TMDBTVItem,
@@ -341,6 +342,17 @@ class TMDBClient:
         except TMDBNotFound:
             return None
         return _parse_one(path, payload, TMDBTitle.model_validate)
+
+    async def title_ids(self, kind: MediaType, tmdb_id: int) -> TMDBTitleIds | None:
+        """A film (/movie/{id}) or show (/tv/{id}) in the client's language, with its IMDb and
+        TheTVDB ids (external_ids appended), in one request: the folder library's titles.
+        None when TMDB has none."""
+        path = f"/{kind.value}/{tmdb_id}"
+        try:
+            payload = await self._get_json(path, {"append_to_response": "external_ids"})
+        except TMDBNotFound:
+            return None
+        return _parse_one(path, payload, TMDBTitleIds.model_validate)
 
     async def tv_season(
         self, tv_id: int, number: int, *, language: str | None = None

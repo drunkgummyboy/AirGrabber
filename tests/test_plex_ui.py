@@ -1,4 +1,4 @@
-"""Plex in the UI: Settings → Plex (app/ui/plex_settings.py: not connected, connected with its
+"""Plex in the UI: Settings → Library's Plex box (app/ui/plex_settings.py: not connected, connected with its
 counts, libraries and buttons, a problem, several servers, Disconnect's question), the connect
 window (app/ui/plex_connect.py: the code, plex.tv/link, the token arriving, an expired code,
 Plex not answering, Cancel), the show window's and the film info window's quiet ✓ "In Plex"
@@ -272,20 +272,48 @@ class BoxTests(TkTestCase):
         assert box.play_in_control is not None
         self.assertEqual(box.play_in_control.get(), VLC_TEXT)
 
-    async def test_play_in_only_while_connected(self) -> None:
+    async def test_play_in_has_a_box_of_its_own(self) -> None:
+        # Under the Plex and the folders boxes (mockups/folder-library.html): with Plex or
+        # without, since ▶ Play also plays from your own folders.
         fake = FakePlex()
         box = await self.box(fake, FakeSettings())
-        assert box.player_line is not None
-        self.assertEqual(box.player_line.winfo_manager(), "")  # not connected: hidden
+        assert box.player_line is not None and box.play_box is not None
+        assert box.open_with_box is not None
+        self.assertEqual(box.player_line.winfo_manager(), "grid")  # not connected: there too
+        self.assertIs(box.player_line.master, box.play_box.body)
+        self.assertIs(box.open_with_box.master, box.play_box.body)
+        self.assertIsNot(box.play_box.frame, box.box.frame)
         fake.set(CONNECTED)
         await box.loaded()
         self.assertEqual(box.player_line.winfo_manager(), "grid")
-        fake.set(PlexStatus())
-        await box.loaded()
-        self.assertEqual(box.player_line.winfo_manager(), "")
-        without = await self.box(FakePlex(CONNECTED))  # no settings given: no line
+        without = await self.box(FakePlex(CONNECTED))  # no settings given: no box
+        self.assertIsNone(without.play_box)
         self.assertIsNone(without.player_line)
         self.assertIsNone(without.play_in_control)
+
+    async def test_its_first_line_with_your_own_folders(self) -> None:
+        from app.models.folder_library import FolderLibraryStatus
+        from app.ui.plex_settings import INTRO_FOLDERS_TEXT
+
+        listeners: list[Any] = []
+
+        def subscribe(listener: Any) -> Any:
+            listeners.append(listener)
+            return lambda: None
+
+        folders = SimpleNamespace(status=FolderLibraryStatus(on=True), subscribe=subscribe)
+        frame = ctk.CTkFrame(self.root)
+        self.keep(frame)
+        page = SettingsPage(frame, "Library", "A note")
+        box = PlexBox(page, FakePlex(), folders=folders)  # type: ignore[arg-type]
+        await box.loaded()
+        self.assertIn(INTRO_FOLDERS_TEXT, texts(box.content))
+        self.assertEqual(page.boxes[0][0], "Plex")  # Settings' search: "Plex · Library"
+        folders.status = FolderLibraryStatus()  # switched off
+        for listener in listeners:
+            listener()
+        await box.loaded()
+        self.assertIn(INTRO_TEXT, texts(box.content))
 
     async def test_not_connected(self) -> None:
         box = await self.box(FakePlex())
@@ -457,7 +485,7 @@ class ConnectWindowTests(TkTestCase):
 class SettingsSectionTests(TkTestCase):
     async def test_the_plex_section(self) -> None:
         from app.services import SettingsService
-        from app.ui.settings_dialog import SECTION_PLEX, SettingsDialog
+        from app.ui.settings_dialog import SECTION_LIBRARY, SettingsDialog
 
         dialog = SettingsDialog(
             self.root,
@@ -473,12 +501,12 @@ class SettingsSectionTests(TkTestCase):
         )
         self.keep(dialog)
         items = list(dialog._items)
-        self.assertIn(SECTION_PLEX, items)
-        self.assertEqual(items.index(SECTION_PLEX), 3)  # last of Downloading
+        self.assertIn(SECTION_LIBRARY, items)  # "Plex" before the folder library
+        self.assertEqual(items.index(SECTION_LIBRARY), 3)  # last of Downloading
         self.assertNotIn("Subtitles", items)  # MediaForge's now
         assert dialog.plex_box is not None
         await dialog.plex_box.loaded()
-        self.assertIn("Connected to Alex-NAS", texts(dialog.page(SECTION_PLEX)))
+        self.assertIn("Connected to Alex-NAS", texts(dialog.page(SECTION_LIBRARY)))
 
     def dialog_with(self, phone: Any) -> Any:
         from app.services import SettingsService
@@ -502,15 +530,21 @@ class SettingsSectionTests(TkTestCase):
 
     async def test_the_plex_page_compares_with_and_without_plex(self) -> None:
         from app.ui.plex_compare import PHONE_HEADING, PHONE_LINES, TITLE_TEXT
-        from app.ui.settings_dialog import SECTION_PLEX
+        from app.ui.settings_dialog import SECTION_LIBRARY
 
         dialog = self.dialog_with(None)
-        shown = texts(dialog.page(SECTION_PLEX))
+        shown = texts(dialog.page(SECTION_LIBRARY))
         self.assertIn(TITLE_TEXT, shown)
         assert dialog.plex_compare is not None
         rows = dict((text, (left, right)) for text, left, right in dialog.plex_compare.rows)
         self.assertEqual(rows["Rename and sort files with MediaForge"], ("✓", "✓"))
         self.assertEqual(rows["The Library page with your posters"], ("—", "✓"))
+        # Both sources count (the folder library): the columns and the last line say so.
+        self.assertEqual(TITLE_TEXT, "With and without a library")
+        self.assertIn("Without a library", shown)
+        self.assertIn("With Plex or your folders", shown)
+        self.assertEqual(rows["New files count soon after MediaForge moves them"], ("—", "✓"))
+        self.assertFalse(any("Plex" in text for text in rows))
         # No word of the phone app where the phone connection isn't offered.
         self.assertNotIn(PHONE_HEADING, shown)
         self.assertFalse(any(line.text in rows for line in PHONE_LINES))

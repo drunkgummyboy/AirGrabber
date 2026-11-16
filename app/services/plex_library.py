@@ -1,11 +1,16 @@
-"""The Library page: what is in Plex, as cards (only while Plex is connected).
+"""The Library page: what is in the library, as cards (only while there is one: Plex connected,
+or the folder library switched on without Plex; `library_source`).
 
-`PlexLibraryService.contents` gives the page every show and film the last Plex check read
-(`plex_titles`), each show with whether the selected person follows it, its gaps (episodes Plex
-lacks in the seasons it has some of: LibraryService.gaps) and whether it ended. `follow` adds a
-show to My shows (by its TVMaze id when AirGrabber knows it, else looked up by TheTVDB / IMDb id,
-the name last), then has Plex checked again so its episodes count. `show` finds the TVMaze show a
-card opens. `continue_watching` is the row above the tabs (what Plex says to go on with).
+`PlexLibraryService.contents` gives the page every show and film the last check read
+(`plex_titles`: Plex's, or the folder library's titles; `folders`, playing.py), each show with
+whether the selected person follows it, its gaps (episodes the library lacks in the seasons it
+has some of: LibraryService.gaps) and whether it ended. `follow` adds a show to My shows (by its
+TVMaze id when AirGrabber knows it, else looked up by TheTVDB / IMDb id, the name last), then has
+Plex checked again so its episodes count. `show` finds the TVMaze show a card opens.
+`continue_watching` is the row above the tabs (what Plex says to go on with; with the folder
+library, the selected person's videos with a place, the newest first). `library_posters` gets
+the cards' pictures: Plex's from the server, a folder title's TMDB poster through the regular
+TMDB image cache.
 
 The pure part (filters, sort, search, the cards' lines) is here too, tested without Tk. Nothing
 here logs a title.
@@ -14,14 +19,16 @@ here logs a title.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from app.i18n import N_, t, tn
-from app.models import Show
+from app.models import FIRST_PROFILE_ID, Show
+from app.models.domain import TMDB_IMAGE_BASE
 from app.models.plex import PlexContinue, PlexTitle
+from app.services.folder_library.playing import FolderPlaying
 from app.services.library import LibraryService
 from app.services.plex import PlexService
 
@@ -195,11 +202,15 @@ def gaps_text(count: int) -> str:
     return tn("{n} gap", "{n} gaps", count) if count else ""
 
 
-def checked_text(when: datetime | None) -> str:
-    """"From Plex · checked 08:53"."""
+def checked_text(when: datetime | None, *, folders: bool = False) -> str:
+    """"From Plex · checked 08:53", or with the folder library (`folders`) "From your folders ·
+    checked 08:53"."""
     if when is None:
-        return t("From Plex")
-    return t("From Plex · checked {time}", time=when.astimezone().strftime("%H:%M"))
+        return t("From your folders") if folders else t("From Plex")
+    time = when.astimezone().strftime("%H:%M")
+    if folders:
+        return t("From your folders · checked {time}", time=time)
+    return t("From Plex · checked {time}", time=time)
 
 
 def follow_line(title: PlexTitle) -> str:
@@ -213,25 +224,61 @@ def follow_line(title: PlexTitle) -> str:
     return title.title
 
 
+Fetch = Callable[[str], Awaitable[bytes | None]]
+
+
+def library_posters(plex: Fetch, tmdb: Fetch) -> Fetch:
+    """The Library page's pictures (its ImageCache's `fetch`): a folder title's TMDB poster
+    (`poster_url`) from `tmdb` (the regular TMDB ImageCache's `raw`: no Plex, no token), every
+    other "url" from `plex` (PlexService.poster: "plex:…", the token in its header only)."""
+
+    async def fetch(url: str) -> bytes | None:
+        if url.startswith(TMDB_IMAGE_BASE):
+            return await tmdb(url)
+        return await plex(url)
+
+    return fetch
+
+
 # -- the service ---------------------------------------------------------------------------------------
 
 
 class PlexLibraryService:
-    def __init__(self, plex: PlexService, library: LibraryService) -> None:
+    def __init__(
+        self,
+        plex: PlexService,
+        library: LibraryService,
+        *,
+        folders: FolderPlaying | None = None,
+        person: Callable[[], int] | None = None,
+    ) -> None:
+        """`folders`: the folder library (its titles and Continue watching while it is the
+        library), for `person` (the PC's selected person; the first without it)."""
         self._plex = plex
         self._library = library
+        self._folders = folders
+        self._person = person or (lambda: FIRST_PROFILE_ID)
+
+    def _folder_library(self) -> FolderPlaying | None:
+        """The folder library while it is the library (no Plex token)."""
+        folders = self._folders
+        return folders if folders is not None and folders.on else None
 
     @property
     def available(self) -> bool:
-        """Plex is connected: the Library page shows on the switch."""
-        return self._plex.connected
+        """There is a library (Plex connected, or the folder library): the Library page shows
+        on the switch."""
+        return self._plex.connected or self._folder_library() is not None
 
     async def contents(self, *, profile_id: int) -> LibraryContents:
         """Every show and film of the last check, the shows with the person's follows and gaps;
-        empty without Plex."""
-        if not self._plex.connected:
+        empty without a library."""
+        if self._plex.connected:
+            titles = await self._plex.titles()
+        elif (folders := self._folder_library()) is not None:
+            titles = await folders.titles()
+        else:
             return LibraryContents()
-        titles = await self._plex.titles()
         tracked = await self._library.tracked_ids(profile_id=profile_id)
         gaps: dict[int, int] = {}
         for entry in await self._library.gaps(profile_id=profile_id):
@@ -254,15 +301,19 @@ class PlexLibraryService:
         return LibraryContents(shows=shows, films=films, checked_at=await self._plex.checked_at())
 
     async def continue_watching(self) -> list[PlexContinue]:
-        """The page's Continue watching row (PlexService.continue_watching); none without Plex.
-        Raises PlexError."""
-        if not self._plex.connected:
+        """The page's Continue watching row (PlexService.continue_watching; the folder
+        library's for the selected person); none without a library. Raises PlexError."""
+        if self._plex.connected:
+            return await self._plex.continue_watching()
+        folders = self._folder_library()
+        if folders is None:
             return []
-        return await self._plex.continue_watching()
+        return await folders.continue_watching(profile_id=self._person())
 
     async def follow(self, title: PlexTitle, *, profile_id: int) -> bool:
         """Follow a show from Plex; whether it was added. A show AirGrabber didn't know yet has
-        Plex checked again, so its episodes count."""
+        Plex checked again, so its episodes count. A folder library title's show is read
+        again by the folder library itself (`LibraryService.on_followed`), whatever its id."""
         result = await self._library.import_shows([follow_line(title)], profile_id=profile_id)
         if result.added and title.show_id is None:
             await self._plex.check(again=True)

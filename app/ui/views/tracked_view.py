@@ -5,9 +5,10 @@ switches, removals and imports go to the person whose shows it shows.
 Under the heading a bar sorts the grid (A–Z / Next episode / Recently downloaded) and filters
 it (All / Has missing / Auto on / Ended); both choices are kept in Settings (`tracked_sort`,
 `tracked_filter`) and only re-order the cards already there. Missing episodes (the cards'
-"3 missing", "Has missing") exist only while Plex is connected (owner's decision for 3.1.0,
-app/services/plex.py): without Plex the filter offers no "Has missing" (a stored choice of it
-counts as All until Plex is back) and the cards show no counts. Next to Import Shows are
+"3 missing", "Has missing") exist only while there is a library (owner's decision for 3.1.0:
+Plex, or else the folder library; app/services/library_source.py): without one the filter
+offers no "Has missing" (a stored choice of it counts as All until one is back) and the cards
+show no counts. Next to Import Shows are
 "+ Pick shows…" (the "Let's get started" window, app/ui/get_started.py, when the page has
 `on_pick_shows`) and a ⋯ menu that holds "Remove ended shows…".
 """
@@ -28,7 +29,7 @@ from app.models import Episode, FollowRecord, ImportResult, LibraryEntry, Show, 
 from app.models.settings import TrackedFilter, TrackedSort
 from app.services import ImageCache, LibraryService, SettingsService
 from app.services.tvmaze import TVMazeError
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.airdates_import import PreviewFinder
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import ShowCard, card_info_line
@@ -74,6 +75,7 @@ FILTER_TEXT = N_("Show:")
 MORE_TEXT = "⋯"
 MORE_TIP = SEASON_MENU_TIP  # "More options"
 FIND_GAPS_TEXT = N_("🧩 Find gaps in Plex…")
+FIND_GAPS_FOLDERS_TEXT = N_("🧩 Find gaps in your library…")  # the folder library's words
 REMOVE_ENDED_TEXT = N_("Remove ended shows…")
 UNDO_TEXT = N_("Undo")
 UNDO_S = 10  # how long "Removed … · Undo" stays
@@ -276,7 +278,7 @@ class TrackedView(BaseView):
         """`on_open_show`: what a click on a card's poster or title does (the show details).
         `on_pick_shows`: "+ Pick shows…" opens "Let's get started" (no button without it).
         `missing_actions`: the cards show their missing episodes and "Download missing".
-        `on_find_gaps`: the ⋯ menu's "🧩 Find gaps in Plex…" (only while Plex is connected).
+        `on_find_gaps`: the ⋯ menu's "🧩 Find gaps in Plex…" (only while there is a library).
         `card_scale`: the card size (Settings), read at every load. `settings`: the sort and
         filter choices (`tracked_sort`, `tracked_filter`)."""
         super().__init__(master, **kwargs)
@@ -298,7 +300,7 @@ class TrackedView(BaseView):
         self._grid: FlexGrid | None = None  # None while loading or without shows
         self._no_match: ctk.CTkLabel | None = None  # the line when the filter leaves nothing
         prefs = settings.current
-        self._plex = library.plex_connected  # "Has missing" is offered
+        self._plex = library.has_library  # "Has missing" is offered (a library, Plex or folders)
         self._sort = prefs.tracked_sort
         self._filter = shown_filter(prefs.tracked_filter, self._plex)
         # Switch changes in flight: the library change they cause needs no reload of this page.
@@ -424,8 +426,8 @@ class TrackedView(BaseView):
         # Only over cards on screen (not the line a filter leaves when it matches nothing).
         quiet = self.quiet_load and self._showing_cards()  # before the first await
         prefs = self._settings.current
-        plex = self._library.plex_connected
-        if plex != self._plex:  # Plex connected or disconnected: "Has missing" comes or goes
+        plex = self._library.has_library
+        if plex != self._plex:  # a library came or went: "Has missing" comes or goes
             self._plex = plex
             self._filter_choice.configure(values=self._filter_labels())
         self._sort = prefs.tracked_sort
@@ -639,7 +641,8 @@ class TrackedView(BaseView):
     def _open_more_menu(self) -> None:
         items: list[tuple[str, Callable[[], None]]] = []
         if self._plex and self._on_find_gaps is not None:
-            items.append((t(FIND_GAPS_TEXT), self._on_find_gaps))
+            text = library_words.by_source(FIND_GAPS_TEXT, FIND_GAPS_FOLDERS_TEXT)
+            items.append((t(text), self._on_find_gaps))
         items.append((t(REMOVE_ENDED_TEXT), self._remove_ended))
         popup_menu(self._more_button, items)
 

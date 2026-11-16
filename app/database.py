@@ -36,6 +36,7 @@ from app.models import (
     Show,
     WatchlistEntry,
 )
+from app.models.folder_library import FileKind, LibraryFile, WatchPlace
 from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan, PlexTitle, PlexShows
 from app.models.backup import (
     BackupData,
@@ -223,6 +224,38 @@ LIBRARY_MIGRATION = """
     ) STRICT;
 """
 
+# v12: the folder library (docs/folder-library/, app/services/folder_library/): without Plex, the
+# user's own film and series folders are the library. Its titles go into plex_titles /
+# plex_episodes / plex_movies like Plex's (PlexRepository.replace); these two tables are its own.
+# `library_files`: per video file what the last check found (an unchanged file, by size and
+# change time, isn't read again; its TMDB match is cached here, never read from MediaForge's
+# forge.db). `watch_places`: where each person left a folder-library video (▶ Play). New tables
+# only: a version before it never reads them.
+FOLDER_LIBRARY_MIGRATION = """
+    CREATE TABLE library_files (
+        path        TEXT PRIMARY KEY,                       -- the file's full path (never logged)
+        size        INTEGER NOT NULL,
+        mtime       REAL    NOT NULL,                       -- its change time, POSIX seconds
+        kind        TEXT,                                   -- 'movie', 'episode'; NULL: unread
+        tmdb_id     INTEGER,                                -- the film's or the show's
+        season      INTEGER,
+        episode     INTEGER,
+        episode_end INTEGER,                                -- "S01E02-E03": 3
+        quality     TEXT,                                   -- "4K", "1080p", "720p", "SD"
+        recognised  INTEGER NOT NULL                        -- 1: matched to a TMDB title
+    ) STRICT;
+
+    CREATE TABLE watch_places (
+        profile_id  INTEGER NOT NULL,
+        item        TEXT    NOT NULL,
+        position_ms INTEGER NOT NULL,
+        duration_ms INTEGER,
+        watched     INTEGER NOT NULL DEFAULT 0,
+        updated_at  TEXT    NOT NULL,                       -- UTC ISO-8601
+        PRIMARY KEY (profile_id, item)
+    ) STRICT;
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -376,6 +409,8 @@ MIGRATIONS: tuple[str, ...] = (
     PLEX_MIGRATION,
     # v11: Plex's titles for the Library page; see LIBRARY_MIGRATION.
     LIBRARY_MIGRATION,
+    # v12: the folder library's files and places; see FOLDER_LIBRARY_MIGRATION.
+    FOLDER_LIBRARY_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -734,6 +769,8 @@ class Database:
         self.settings = SettingsRepository(self)
         self.watchlist = WatchlistRepository(self)
         self.plex = PlexRepository(self)
+        self.library_files = LibraryFileRepository(self)
+        self.watch_places = WatchPlaceRepository(self)
 
     @classmethod
     async def open(cls, path: Path | str) -> Database:
@@ -1438,22 +1475,58 @@ class HistoryRepository:
         self._db = db
 
     async def add(self, record: DownloadRecord) -> bool:
-        """Record a grab. Returns False if this exact torrent (info hash) was already recorded.
+        """Record a grab. Returns True when it got a row of its own, False when this exact
+        torrent (info hash) was grabbed before: a new grab of it, so that row becomes this
+        grab (same id; this grab's date, target, title, source, size and where it went; a
+        season's pack keeps the whole season as its target when it's grabbed again for one
+        of that season's episodes) and
+        the old grab's Downloads page marks go (taken off the page, had by the torrent
+        program): the page lists it again and waits for its program like any fresh grab.
 
         A film's grab also takes it off every person's watchlist, in the same transaction and
         however it was grabbed: a downloaded film is on the shared PC, it leaves every list.
         """
+        values = record.model_dump(mode="json", exclude={"id"})
         columns = [column for column in HISTORY_COLUMNS if column != "id"]
-        sql = (
-            f"INSERT INTO download_history ({', '.join(columns)}) "
-            f"VALUES ({', '.join(':' + column for column in columns)}) "
-            "ON CONFLICT (info_hash) DO NOTHING"
-        )
         async with self._db.transaction() as conn:
-            cursor = await conn.execute(sql, record.model_dump(mode="json", exclude={"id"}))
+            row = None
+            if record.info_hash is not None:
+                cursor = await conn.execute(
+                    "SELECT id, media_type, media_id, season, episode FROM download_history "
+                    "WHERE info_hash = ?",
+                    (record.info_hash,),
+                )
+                row = await cursor.fetchone()
+            if (
+                row is not None
+                and row["episode"] is None
+                and (row["media_type"], row["media_id"], row["season"])
+                == (record.media_type.value, record.media_id, record.season)
+            ):
+                # Ruling SF-1: the season's pack grabbed again (for one of its episodes) stays
+                # the season, so the rest of it never counts as not fetched.
+                values["episode"] = None
+            if row is None:
+                await conn.execute(
+                    f"INSERT INTO download_history ({', '.join(columns)}) "
+                    f"VALUES ({', '.join(':' + column for column in columns)})",
+                    values,
+                )
+            else:
+                history_id = int(row[0])
+                await conn.execute(
+                    f"UPDATE download_history "
+                    f"SET {', '.join(f'{column} = :{column}' for column in columns)} "
+                    "WHERE id = :id",
+                    {**values, "id": history_id},
+                )
+                await conn.execute(
+                    "DELETE FROM cleared_downloads WHERE history_id = ?", (history_id,)
+                )
+                await conn.execute("DELETE FROM seen_downloads WHERE history_id = ?", (history_id,))
             if record.media_type is MediaType.MOVIE:
                 await conn.execute("DELETE FROM watchlist WHERE movie_id = ?", (record.media_id,))
-            return cursor.rowcount > 0
+            return row is None
 
     async def has_episode(self, show_id: int, season: int, episode: int | None) -> bool:
         """True if the episode was grabbed, or a pack of its whole season that can hold it: one
@@ -1545,10 +1618,14 @@ class HistoryRepository:
         )
         return [DownloadRecord.model_validate(dict(row)) for row in rows]
 
-    async def stamp(self) -> tuple[int, int]:
-        """(how many grabs, the highest id): changes whenever a grab is added or removed."""
-        row = await self._db.fetch_one("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM download_history")
-        return (int(row[0]), int(row[1])) if row is not None else (0, 0)
+    async def stamp(self) -> tuple[int, int, str]:
+        """(how many grabs, the highest id, the newest grab's time): changes whenever a grab is
+        added or removed, or a release grabbed before is grabbed again (`add`)."""
+        row = await self._db.fetch_one(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(MAX(downloaded_at), '') "
+            "FROM download_history"
+        )
+        return (int(row[0]), int(row[1]), str(row[2])) if row is not None else (0, 0, "")
 
     async def seen(self, history_ids: Iterable[int]) -> frozenset[int]:
         """Of these grabs, the ones their torrent program has had (`mark_seen`)."""
@@ -1986,6 +2063,152 @@ class PlexRepository:
             return ()
         found = (_plex_library(item) for item in items)
         return tuple(library for library in found if library is not None)
+
+
+_LIBRARY_FILE_COLUMNS = tuple(LibraryFile.model_fields)
+
+
+def _folder_prefixes(folder: str) -> tuple[str, str]:
+    """What the paths of the files below `folder` start with: the folder without its trailing
+    separators, then a backslash or a slash ("M:\\" → "M:\\", "M:/")."""
+    base = folder.rstrip("\\/")
+    return base + "\\", base + "/"
+
+
+class LibraryFileRepository:
+    """The folder library's files (app/services/folder_library/): what the last check found per
+    video file, by path. Each folder's rows are replaced on their own (a folder that couldn't be
+    reached keeps its rows). Shared by everyone."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def all(self) -> dict[str, LibraryFile]:
+        """Every stored file, by path; a row that doesn't read (a newer version's) left out."""
+        rows = await self._db.fetch_all(
+            f"SELECT {', '.join(_LIBRARY_FILE_COLUMNS)} FROM library_files"
+        )
+        found: dict[str, LibraryFile] = {}
+        for row in rows:
+            try:
+                file = LibraryFile.model_validate(dict(zip(_LIBRARY_FILE_COLUMNS, tuple(row))))
+            except ValidationError:
+                continue
+            found[file.path] = file
+        return found
+
+    async def of_title(self, kind: FileKind, tmdb_id: int) -> list[LibraryFile]:
+        """A film's (`kind` "movie") or a show's ("episode") recognised files, by path; a row
+        that doesn't read left out."""
+        rows = await self._db.fetch_all(
+            f"SELECT {', '.join(_LIBRARY_FILE_COLUMNS)} FROM library_files "
+            "WHERE kind = ? AND tmdb_id = ? AND recognised = 1 ORDER BY path",
+            (kind, tmdb_id),
+        )
+        found: list[LibraryFile] = []
+        for row in rows:
+            try:
+                found.append(
+                    LibraryFile.model_validate(dict(zip(_LIBRARY_FILE_COLUMNS, tuple(row))))
+                )
+            except ValidationError:
+                continue
+        return found
+
+    async def replace_folder(self, folder: str, rows: Iterable[LibraryFile]) -> None:
+        """Make `rows` what is stored for the files below `folder`, in one transaction; the
+        other folders' rows stay."""
+        prefixes = _folder_prefixes(folder)
+        values = [
+            tuple(row.model_dump()[column] for column in _LIBRARY_FILE_COLUMNS) for row in rows
+        ]
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "DELETE FROM library_files WHERE substr(path, 1, ?) IN (?, ?)",
+                (len(prefixes[0]), *prefixes),
+            )
+            await conn.executemany(
+                f"INSERT INTO library_files ({', '.join(_LIBRARY_FILE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _LIBRARY_FILE_COLUMNS)}) "
+                "ON CONFLICT (path) DO UPDATE SET "
+                + ", ".join(f"{c} = excluded.{c}" for c in _LIBRARY_FILE_COLUMNS[1:]),
+                values,
+            )
+
+    async def remove(self, paths: Iterable[str]) -> None:
+        """Forget these files (exactly these paths): what lies below no folder set any more, or
+        was stored under a folder's other spelling."""
+        async with self._db.transaction() as conn:
+            await conn.executemany(
+                "DELETE FROM library_files WHERE path = ?", [(path,) for path in paths]
+            )
+
+    async def clear(self) -> None:
+        """Forget every file (the folder library switched off, or no folder left)."""
+        async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM library_files")
+
+
+_WATCH_PLACE_COLUMNS = tuple(WatchPlace.model_fields)
+
+
+class WatchPlaceRepository:
+    """Where each person left the folder library's videos (`watch_places`, playing.py): one
+    row per person and item. Rows of a person removed since stay unread."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def places(self, profile_id: int) -> dict[str, WatchPlace]:
+        """The person's places, by item; a row that doesn't read left out."""
+        return {
+            place.item: place
+            for place in await self._read("WHERE profile_id = ?", (profile_id,))
+        }
+
+    async def get(self, profile_id: int, item: str) -> WatchPlace | None:
+        found = await self._read("WHERE profile_id = ? AND item = ?", (profile_id, item))
+        return found[0] if found else None
+
+    async def recent(self, profile_id: int, limit: int) -> list[WatchPlace]:
+        """The person's videos with a place to go on from, the newest first (Continue
+        watching), at most `limit`."""
+        return await self._read(
+            "WHERE profile_id = ? AND position_ms > 0 ORDER BY updated_at DESC, item LIMIT ?",
+            (profile_id, limit),
+        )
+
+    async def put(self, place: WatchPlace) -> None:
+        """Store `place` (it replaces the person's row for its item)."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                f"INSERT INTO watch_places ({', '.join(_WATCH_PLACE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _WATCH_PLACE_COLUMNS)}) "
+                "ON CONFLICT (profile_id, item) DO UPDATE SET "
+                + ", ".join(f"{c} = excluded.{c}" for c in _WATCH_PLACE_COLUMNS[2:]),
+                (
+                    place.profile_id,
+                    place.item,
+                    place.position_ms,
+                    place.duration_ms,
+                    int(place.watched),
+                    _utc(place.updated_at),
+                ),
+            )
+
+    async def _read(self, where: str, params: Sequence[Any]) -> list[WatchPlace]:
+        rows = await self._db.fetch_all(
+            f"SELECT {', '.join(_WATCH_PLACE_COLUMNS)} FROM watch_places {where}", params
+        )
+        found: list[WatchPlace] = []
+        for row in rows:
+            try:
+                found.append(
+                    WatchPlace.model_validate(dict(zip(_WATCH_PLACE_COLUMNS, tuple(row))))
+                )
+            except ValidationError:
+                continue
+        return found
 
 
 class SettingsRepository:

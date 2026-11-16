@@ -11,14 +11,16 @@ full card's ⋯, `RoundButton` as on My shows); the compact cards' round buttons
 notes as pills (`CanvasPill` on the full card's canvas, `PillLabel` on the compact cards: a
 small rounded outline with coloured text on the card's ground, `pill_image`).
 
-While Plex is connected (app/services/plex.py; without it nothing is missing or new, owner's
-decision for 3.1.0), a missing episode (app.services.missing's rule: aired at least a day ago,
-neither in Plex nor downloaded; the view hands the cards `missing`) gets an amber "Not
-downloaded yet" pill under its code, on the full and the compact cards alike; a new one (aired
-less than a day ago, `new`) a blue "New" pill there instead; one you have (`have`) a green
-"✓ In Plex", or a blue "✓ Downloaded" while it hasn't reached Plex yet. These come from the
-database, so they outlive a restart, unlike a run's outcome (the ✓ button). Clicking a show's
-name (full cards: also the poster) opens its window (`on_open_show`), suggestions included.
+While there is a library (Plex, or else the folder library: app/services/library_source.py;
+without one nothing is missing or new, owner's decision for 3.1.0), a missing episode
+(app.services.missing's rule: aired at least a day ago, neither in Plex nor downloaded; the view
+hands the cards `missing`) gets an amber "Not downloaded yet" pill under its code, on the full
+and the compact cards alike; a new one (aired less than a day ago, `new`) a blue "New" pill
+there instead; one you have (`have`) a green "✓ In Plex", or a blue "✓ Downloaded" while it
+hasn't reached Plex yet. These come from the database, so they outlive a restart, unlike a run's
+outcome (the ✓ button). With the folder library as the source they say "your library" where
+Plex's say Plex (app/ui/library_words.py). Clicking a show's name (full cards: also the poster)
+opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
 EpisodeCard and the compact cards' small buttons (SlimDownload).
@@ -38,7 +40,7 @@ from PIL import Image, ImageTk
 from app.i18n import N_, t
 from app.models import CalendarEntry, Show
 from app.services.tvmaze import TVMazeError
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.calendar_face import (
     PILL_PAD_X,
     STACK_BEHIND,
@@ -102,6 +104,7 @@ SHOW_TIP = N_("More about this show")  # a card's show name (it opens the show's
 # A missing episode's amber note, with shorter texts for when it doesn't fit.
 MISSING_TEXTS = (N_("Not downloaded yet"), N_("Not downloaded"), N_("Missing"))
 MISSING_TIP = N_("Aired, but not in Plex and not downloaded yet.")
+FOLDER_MISSING_TIP = N_("Aired, but not in your library and not downloaded yet.")
 CHOOSE_TIP = N_("Nothing good enough was found. Choose a download yourself.")
 # A new episode's quiet note (aired less than a day ago: not missing yet).
 NEW_NOTE_TEXT = N_("New")
@@ -115,6 +118,15 @@ HAVE_TEXTS: dict[HaveMark, str] = {"plex": N_("✓ In Plex"), "downloaded": N_("
 HAVE_TIPS: dict[HaveMark, str] = {
     "plex": N_("This episode is in your Plex."),
     "downloaded": N_("Downloaded by AirGrabber. Plex doesn't have it yet."),
+}
+# The same marks with the folder library as the source (app/ui/library_words.py).
+FOLDER_HAVE_TEXTS: dict[HaveMark, str] = {
+    "plex": N_("✓ In your library"),
+    "downloaded": N_("✓ Downloaded"),
+}
+FOLDER_HAVE_TIPS: dict[HaveMark, str] = {
+    "plex": N_("This episode is in your library."),
+    "downloaded": N_("Downloaded by AirGrabber. It isn't in your library yet."),
 }
 
 
@@ -306,18 +318,21 @@ class CardNote:
 def card_note(
     *, missing: bool = False, new: bool = False, have: HaveMark | None = None
 ) -> CardNote | None:
-    """A card's note: missing wins, then new, then what you have."""
+    """A card's note: missing wins, then new, then what you have (in the source's words:
+    Plex's, or the folder library's)."""
+    folders = library_words.folders()
     if missing:
-        return CardNote(MISSING_TEXTS[0], missing_note, MISSING_COLOR, MISSING_TIP)
+        tip = FOLDER_MISSING_TIP if folders else MISSING_TIP
+        return CardNote(MISSING_TEXTS[0], missing_note, MISSING_COLOR, tip)
     if new:
         return CardNote(NEW_NOTE_TEXT, new_note, new_color(), NEW_NOTE_TIP)
     if have is not None:
-        text = HAVE_TEXTS[have]
+        text = (FOLDER_HAVE_TEXTS if folders else HAVE_TEXTS)[have]
         return CardNote(
             text,
             lambda room, measure: elide_to_width(t(text), room, measure),
             have_color(have),
-            HAVE_TIPS[have],
+            (FOLDER_HAVE_TIPS if folders else HAVE_TIPS)[have],
         )
     return None
 

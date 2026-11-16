@@ -254,7 +254,7 @@ class _Library:
     ) -> None:
         self.entries = entries
         self.missing = missing
-        self.plex_connected = plex  # missing episodes exist only with Plex (3.1.0)
+        self.has_library = plex  # missing episodes exist only with Plex (3.1.0)
         self.removed_ended = 0
         self.removed_for: list[int] = []  # whose ended shows went
         self.people: list[int] = []  # whose shows each load asked for
@@ -269,14 +269,14 @@ class _Library:
         return {}
 
     async def missing_counts(self, *, profile_id: int) -> dict[int, int]:
-        return self.missing if self.plex_connected else {}  # as LibraryService answers
+        return self.missing if self.has_library else {}  # as LibraryService answers
 
     async def last_downloads(self) -> dict[int, datetime]:
         return {2: NOW - timedelta(days=3), 3: NOW - timedelta(days=1)}
 
     async def plex_shows(self) -> PlexShows:
         # As LibraryService answers: none without Plex. Bravo is in Plex by its TheTVDB id.
-        return PlexShows(tvdb=frozenset({303})) if self.plex_connected else PlexShows()
+        return PlexShows(tvdb=frozenset({303})) if self.has_library else PlexShows()
 
     async def untrack(self, show_id: int, *, profile_id: int) -> FollowRecord | None:
         self.untracked.append(show_id)
@@ -482,7 +482,7 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("⬇ Download missing (2)", labels)
         self.assertIs(self.settings.current.tracked_filter, TrackedFilter.MISSING)  # kept
         # Plex connected: the next load (the pages reload) offers it again, and its counts.
-        self.library.plex_connected = True
+        self.library.has_library = True
         await view.load()
         self.assertEqual(
             view._filter_choice.cget("values"), ["All", "Has missing", "Auto on", "Ended"]
@@ -491,7 +491,7 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.shown(view), ["Bravo"])
         self.assertEqual(view._cards[3].badge_text, "2 missing")
         # Disconnected again: gone again.
-        self.library.plex_connected = False
+        self.library.has_library = False
         await view.load()
         self.assertEqual(view._filter_choice.cget("values"), ["All", "Auto on", "Ended"])
         self.assertEqual(self.shown(view), ["alpha", "Bravo", "Charlie"])
@@ -500,7 +500,7 @@ class TrackedViewWidgetTests(unittest.IsolatedAsyncioTestCase):
         view = await self.view(missing={})
         marks = {show_id: card.plex_mark is not None for show_id, card in view._cards.items()}
         self.assertEqual(marks, {1: False, 2: False, 3: True})
-        self.library.plex_connected = False  # without Plex nothing counts as had
+        self.library.has_library = False  # without Plex nothing counts as had
         await view.load()
         self.assertFalse(any(card.plex_mark for card in view._cards.values()))
 

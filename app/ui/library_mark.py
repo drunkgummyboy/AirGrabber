@@ -1,7 +1,8 @@
 """The library mark: a small drawn shelf of books on a card's cover, top-right, while its film or
-show is in the user's Plex libraries (only while Plex is connected: without it nothing counts as
-had). On every poster card that can tell: Movies, the watchlist shelf, My shows, Discover and
-the search results window. Its tip says "In Plex".
+show is in the user's Plex libraries or folder library (only while there is a library: without
+one nothing counts as had). On every poster card that can tell: Movies, the watchlist shelf, My
+shows, Discover and the search results window. Its tip says "In Plex" ("In your library" with
+the folder library: app/ui/library_words.py).
 
 Just the icon, no box behind it (the owner's wish): white books with a soft dark shadow, drawn on
 the cover's canvas (`PosterCard.set_corner_icon`) so they read on bright and dark covers alike.
@@ -16,9 +17,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from app.i18n import t
-from app.ui import theme
-from app.ui.missing_control import PLEX_TIP
+from app.ui import library_words, theme
 
 if TYPE_CHECKING:
     from app.ui.poster_card import PosterCard
@@ -81,7 +80,7 @@ class LibraryMark:
 
     def __init__(self, card: PosterCard) -> None:
         self.card = card
-        self.text = t(PLEX_TIP)
+        self.text = library_words.have_tip()
         card.set_corner_icon(mark_image, self.text)
 
     def destroy(self) -> None:

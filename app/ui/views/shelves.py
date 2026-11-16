@@ -88,8 +88,9 @@ class ShelvesView(BaseView, Generic[T]):
 
     The filter only re-renders the shelves the last load fetched. The genre chip is kept for
     the session (the page lives as long as the window); the switch is the Settings field
-    `_hide_owned_setting`, offered while `_hide_owned_offered` (Movies: only with Plex, the
-    only thing that counts as had); without it nothing is hidden.
+    `_hide_owned_setting`, offered while `_hide_owned_offered` (Movies: only with a library,
+    Plex or the folder library, the only thing that counts as had); without one nothing is
+    hidden.
     """
 
     _body_pady: tuple[int, int] = (5, 5)
@@ -132,7 +133,7 @@ class ShelvesView(BaseView, Generic[T]):
         self.filter_bar = FilterBar(
             self,
             hide_owned=self._hide_owned,
-            hide_tip=t(self._hide_owned_tip),
+            hide_tip=self._hide_owned_tip_text(),
             on_genre=self._pick_genre,
             on_hide_owned=self._set_hide_owned,
             hide_text=self._hide_owned_text,
@@ -162,6 +163,10 @@ class ShelvesView(BaseView, Generic[T]):
     def _hide_owned_offered(self) -> bool:
         """Whether the page offers its hide switch now (as the last load found it)."""
         return True
+
+    def _hide_owned_tip_text(self) -> str:
+        """The hide switch's tip, translated (read whenever the filter bar is shown)."""
+        return t(self._hide_owned_tip)
 
     def _keep(self, item: T) -> bool:
         """Whether a filter of the page's own (Discover's service) leaves `item` on it."""
@@ -312,6 +317,7 @@ class ShelvesView(BaseView, Generic[T]):
                     return
 
     def _show_filter_bar(self, genres: Sequence[Genre]) -> None:
+        self.filter_bar.set_hide_tip(self._hide_owned_tip_text())
         self.filter_bar.offer_hide(self._hide_owned_offered())
         self.filter_bar.show_genres(genres, self._genre)
         if not self.filter_bar.winfo_manager():
@@ -356,7 +362,7 @@ class ShelvesView(BaseView, Generic[T]):
             ).pack(anchor="w", padx=10)
             return
         item_width = grid_item_width(POSTER_CARD_WIDTH, self._scale)
-        grid = FlexGrid(section, item_width=item_width, pad_x=8, pad_y=10)
+        grid = FlexGrid(section, item_width=item_width, pad_x=8, pad_y=10, whole_rows=True)
         grid.pack(fill="x")
         for item in shelf.items:
             self._card(grid, item)

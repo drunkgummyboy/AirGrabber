@@ -183,10 +183,23 @@ class BaseTests(unittest.TestCase):
         self.assertEqual(movie_base(out, None, today), Base("download"))
         later = MovieDetails(id=1, digital_release=date(2026, 10, 15))
         self.assertEqual(
-            movie_base(out, later, today), Base("unavailable", "Digital 15 Oct", ("15 Oct",))
+            movie_base(out, later, today),
+            Base("unavailable", "15 Oct", icon="download", tip="Out to download on 15 Oct"),
+        )
+        coming = Movie(id=3, title="Dune 4", release_date=date(2027, 3, 4))
+        self.assertEqual(
+            movie_base(coming, None, today),
+            Base(
+                "unavailable",
+                "04 Mar 2027",
+                icon="cinema",
+                tip="In cinemas from 04 Mar 2027; not out to download yet",
+            ),
         )
         unreleased = Movie(id=2, title="Dune 3")
-        self.assertEqual(movie_base(unreleased, None, today), Base("unavailable", "Not Released"))
+        self.assertEqual(
+            movie_base(unreleased, None, today), Base("unavailable", "Not Released", ("Not out yet",))
+        )
 
     def test_keys(self) -> None:
         self.assertEqual(episode_key(7, 2, 1), (MediaType.TV, 7, 2, 1))
@@ -328,6 +341,13 @@ class HoverTipTests(unittest.TestCase):
         # A disabled text shown shorter: in full under the pointer.
         later = control_look(Base("unavailable", "Digital 15 Oct", ("15 Oct",)), None)
         self.assertEqual(control_tip(later, None, looks_for, shortened=True), "Digital 15 Oct")
+        # A date with an icon (the watchlist): its words, shortened or not.
+        dated = later_look(Base("unavailable", "15 Oct", icon="cinema", tip="In cinemas from 15 Oct"))
+        self.assertEqual(dated.icon, "cinema")
+        for shortened in (False, True):
+            self.assertEqual(
+                control_tip(dated, None, looks_for, shortened=shortened), "In cinemas from 15 Oct"
+            )
         # Nothing found, working, a disabled button: no tip.
         for base, state in (
             (DOWNLOAD, NOTHING),

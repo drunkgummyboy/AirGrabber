@@ -64,6 +64,7 @@ from app.models import (
 from app.models.plex import PlexTitle
 from app.services import Services, UpdateError, open_with
 from app.services.search import UPGRADE_KEY
+from app.services.library_source import library_source
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
 from app.services.stuck_downloads import StuckWatch
@@ -71,7 +72,7 @@ from app.services.missing import MAX_PER_RUN
 from app.services.auto_download import GIVE_UP_AFTER
 from app.services.watchlist import GIVE_UP_AFTER as MOVIE_GIVE_UP_AFTER
 from app.services.tmdb import TMDBError
-from app.ui import quit_watchdog, theme
+from app.ui import library_words, quit_watchdog, theme
 from app.ui.branding import set_window_icon
 from app.ui.card_scale import CardScale
 from app.ui.download_control import (
@@ -210,6 +211,12 @@ _OFF_PAGE_SETTINGS = frozenset(
         "plex_server_name",
         "plex_server_uri",
         "plex_sections_off",
+        # The folder library's switch and folders: like Plex's link, what they change reaches
+        # the pages through the library's listeners (`LibraryService.notify_changed`) once its
+        # folders are read or cleared, not before (docs/folder-library/).
+        "folder_library_on",
+        "film_folders",
+        "series_folders",
         # The PC player's settings: read when something is played.
         "play_in",
         "always_audio",
@@ -375,7 +382,7 @@ class Mode(StrEnum):
     MOVIES = "Movies"
     DOWNLOADS = "Downloads"  # the band's ⬇ button; the switch leads back
     FORGE = "MediaForge"  # the switch's last part: MediaForge's page
-    LIBRARY = "Library"  # what is in Plex (the switch shows it only while Plex is connected)
+    LIBRARY = "Library"  # what is in your library (the switch shows it only while there is one)
 
 
 # The switch's parts and their modes (the Downloads page lights none), and whose titles the band
@@ -493,6 +500,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             services.settings,
             forge_subtitles(services.forge),
             places=services.local_places,
+            folders=services.folder_playing,  # the folder library's places, per person
+            person=lambda: services.profiles.current_id,
         )
         self.player.on_status = lambda text: self._report(text, _PLAY_STATUS_MS)
         self.player.on_idle = self._on_player_idle
@@ -545,11 +554,18 @@ class MainWindow(AsyncCTk, ctk.CTk):
         on_task_error(self._report_task_error)
         self._settings_seen = services.settings.current
         self._unsubscribe_settings = services.settings.subscribe(self._on_settings_changed)
+        # The marks of what you have say Plex or "your library" by the library's source.
+        library_words.follow(services.settings)
         self._unsubscribe_library = services.library.subscribe(self._on_library_changed)
-        # A grab changes what is still missing (with Plex).
+        # A grab changes what is still missing (with a library).
         self._unsubscribe_downloads = services.downloads.subscribe_grabs(self._on_grab)
         # The footer's loader while Plex is being read.
         self._unsubscribe_plex = services.plex.subscribe(self._show_plex_sync)
+        # The folder library switched on or off, or a check done: the Library part and the
+        # page's "Couldn't recognise" follow it.
+        self._unsubscribe_folder_library = services.folder_library.subscribe(
+            self._on_folder_library_changed
+        )
         # The tray menu's line of downloads in progress.
         self._unsubscribe_tray = services.download_status.subscribe(self._tray_downloads_changed)
         self._gaps_window: GapsWindow | None = None  # My shows ⋯ → Find gaps in Plex…
@@ -650,9 +666,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             task.cancel()
         self._queue_link.close()
         self._unsubscribe_settings()
+        library_words.follow(None)
         self._unsubscribe_library()
         self._unsubscribe_downloads()
         self._unsubscribe_plex()
+        self._unsubscribe_folder_library()
         self._unsubscribe_tray()
         self._unsubscribe_stuck()
         self._unsubscribe_auto()
@@ -798,7 +816,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
             queue=self._services.download_queue,  # its waiting downloads at the top
             given_up=self._services.given_up,  # "Couldn't find automatically" at the bottom
         )
-        # What is in Plex (the switch's Library part, only while Plex is connected).
+        # What is in your library: Plex, or your own folders (the switch's Library part, only
+        # while there is one).
         self._library_view = LibraryView(
             self,
             service=self._services.plex_library,
@@ -815,6 +834,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             # Continue watching above the tabs, and ▶ Play on its cards and on hover.
             continue_watching=self._services.plex_library.continue_watching,
             play=Play(self._services.playback, self.player, self.set_status),
+            # The folder library's files it couldn't recognise, and "Tidy up in MediaForge".
+            unrecognised=self._unrecognised_files,
+            on_tidy=self._tidy_up,
+            # The folders it couldn't read, in the Settings box's words.
+            reach=self._folder_reach_lines,
         )
         # A video stopped (or was marked watched) in the player: Plex's row changes.
         self.player.on_stopped = self._on_player_stopped
@@ -938,12 +962,34 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._show_library_part()
 
     def _show_library_part(self) -> None:
-        """The switch's Library part only while Plex is connected; leaving its page when Plex
-        goes."""
+        """The switch's Library part only while there is a library (Plex, or your own folders
+        switched on); leaving its page when it goes."""
         shown = self._services.plex_library.available
         self._band.set_library_shown(shown)
         if not shown and self._mode is Mode.LIBRARY:
             self._go_home()
+
+    def _on_folder_library_changed(self) -> None:
+        """The folder library's status changed (switched on or off, a check done, Plex
+        connected or disconnected): the Library part, and the page's "Couldn't recognise"."""
+        self._show_library_part()
+        self._library_view.refresh_unrecognised()
+
+    def _unrecognised_files(self) -> tuple[str, ...]:
+        """The files the folder library couldn't recognise (none while it isn't the library)."""
+        status = self._services.folder_library.status
+        return status.unrecognised if status.on else ()
+
+    def _folder_reach_lines(self) -> list[str]:
+        """The folder library's lines on folders its last check couldn't read ("Can't reach …",
+        "Reading … takes a while"; none while it isn't the library)."""
+        status = self._services.folder_library.status
+        return library_words.reach_lines(status) if status.on else []
+
+    def _tidy_up(self, paths: Sequence[str]) -> None:
+        """The Library page's "Tidy up in MediaForge": the files go to MediaForge's queue and its
+        page shows, as an Explorer drop does (nothing is moved or renamed here)."""
+        self._forge.handle(ForgeRequest(paths=tuple(paths)))
 
     async def _open_plex_show(self, title: PlexTitle) -> bool:
         """A Library show card: its window (looked up on TVmaze when AirGrabber didn't know it)."""
@@ -989,8 +1035,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
 
     def _can_send_to_phone(self) -> bool:
-        """A Library card gets 📱 while the phone connection has a phone to send to."""
+        """A Library card gets 📱 while the phone connection has a phone to send to, and only
+        with Plex as the library (the phone plays from Plex, not from your folders)."""
         phone = self._services.phone
+        if library_source(self._services.settings.current) != "plex":
+            return False
         return phone.available and bool(phone.phones())
 
     def _send_to_phone(self, title: PlexTitle) -> None:
@@ -1043,6 +1092,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._services.auto_download.run_periodic(), name="auto-download")
         # What is in Plex: checked now, then every 30 minutes (a change reloads the pages).
         spawn(self._services.plex.run_periodic(), name="plex")
+        # The folder library (without Plex, once switched on): read now, then every 6 hours;
+        # nothing while off. The start doesn't wait for a folder.
+        spawn(self._services.folder_library.run(), name="folder-library")
         spawn(self._keep_tray_today(), name="tray-today")
         spawn(self._services.phone.run(), name="phone")  # does nothing while off, or without its marker
         # The Downloads page's progress and the header badge (they listen to it themselves).
@@ -1775,6 +1827,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             plex=self._services.plex,
             phone=self._services.phone,
             forge=self._services.forge,
+            folder_library=self._services.folder_library,
             section=section,
         )
         if section is not None and spot is not None:

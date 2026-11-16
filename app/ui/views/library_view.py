@@ -1,11 +1,13 @@
-"""The Library page: what is in Plex, as a grid of posters (the switch's Library part, only while
-Plex is connected; app/services/plex_library.py gives it its contents).
+"""The Library page: what is in your library, as a grid of posters (the switch's Library part,
+only while there is one: Plex, or your own folders once switched on in Settings → Library,
+docs/folder-library/; app/services/plex_library.py gives it its contents from either source).
 
 At the top (the owner's choice A, mockups/library-filters.html): "Library" with a round search box
 at its right; under them the Shows and Films tabs with their counts, a line under the chosen one;
 then the filters as chips (shows: All / Not followed / With gaps / Ended; films: All / 4K /
 Recently added) and, at the right, Sort ▾ (Recently added / A–Z / Year). "From Plex · checked
-08:53" goes to the main window's footer (`on_checked`). The cards follow the card size (Settings › Looks): the poster
+08:53" ("From your folders · …" with the folder library) goes to the main window's footer
+(`on_checked`). The cards follow the card size (Settings › Looks): the poster
 from the Plex server (`posters`: an ImageCache fetching through PlexService.poster), the title
 (two lines' room on every card, so a row's cards line up; longer ends in "…"),
 "3 seasons · 34 episodes" or the year and quality, an amber "2 gaps" pill and, for a show,
@@ -20,6 +22,15 @@ player stopped: `refresh_continue`), a click playing it where Plex left it (`pla
 Hidden when it is empty, when Plex isn't connected or when Plex didn't answer (one quiet log
 line). With a `play`, a card also offers "▶ Play" on hover (an accent pill drawn on its cover):
 a film plays at once, a show opens the episode picker.
+
+At the bottom, only with the folder library and only when there is something in it,
+"Couldn't recognise (n)" (mockups/folder-library.html, state 4): the files whose names say no film
+or episode (`unrecognised()`, the folder library's last check), each its name and its folder, and
+"Tidy up in MediaForge" (`on_tidy(paths)`: the main window hands them to MediaForge's page; this
+page never moves or renames anything). Under the cards, above the footer's "From your folders"
+line, one muted amber line per folder the last check couldn't read (`reach()`, the Settings
+box's words: "Can't reach …" / "Reading … takes a while"). `refresh_unrecognised` draws both
+again after a check.
 """
 
 from __future__ import annotations
@@ -27,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import ntpath
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
@@ -34,7 +46,7 @@ from typing import Any, Protocol
 import customtkinter as ctk
 from PIL import ImageTk
 
-from app.i18n import N_, t
+from app.i18n import N_, t, tn
 from app.models.plex import PlexContinue, PlexTitle
 from app.services import ImageCache, SettingsService
 from app.services.plex import PlexError, poster_url
@@ -58,7 +70,7 @@ from app.services.plex_library import (
     shown_films,
     shown_shows,
 )
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.card_scale import FULL, CardScale, grid_item_width
 from app.ui.cards import RoundButton, phone_icon
 from app.ui.continue_watching import ContinueRow
@@ -80,7 +92,7 @@ from app.ui.shelf_filter import CHIP_FONT_SIZE, CHIP_GAP, CHIP_HEIGHT, CHIP_PAD,
 from app.ui.tasks import spawn
 from app.ui.tooltip import Tooltip
 from app.ui.views.base import BaseView, StatusReporter
-from app.ui.widgets import FlexGrid, MessagePanel
+from app.ui.widgets import FlexGrid, MessagePanel, elided, hairline
 
 log = logging.getLogger(__name__)
 
@@ -98,7 +110,24 @@ FOLLOW_FAILED = N_("Couldn't follow {name}: TVmaze doesn't know it")
 OPEN_FAILED = N_("Couldn't find {name} on TVmaze")
 MORE_TEXT = N_("Show more ({n})")
 EMPTY_TITLE = N_("Nothing from Plex yet")
-EMPTY_TEXT = N_("AirGrabber reads Plex every half hour; Settings → Plex → Check now reads it at once.")
+EMPTY_TEXT = N_("AirGrabber reads Plex every half hour; Settings → Library → Check now reads it at once.")
+EMPTY_FOLDERS_TITLE = N_("Nothing from your folders yet")
+EMPTY_FOLDERS_TEXT = N_(
+    "AirGrabber reads your folders every 6 hours; Settings → Library → Check now reads them at once."
+)
+UNRECOGNISED_TITLE = N_("Couldn't recognise ({n})")
+UNRECOGNISED_TEXT = N_("These files' names don't say which film or episode they are.")
+TIDY_TEXT = N_("Tidy up in MediaForge")
+TIDY_TIP = N_("Adds these files to MediaForge's queue, where you can name and sort them")
+MORE_FILES_ONE = N_("…and {n} more file")
+MORE_FILES_MORE = N_("…and {n} more files")
+UNRECOGNISED_SHOWN = 50  # files listed; "Tidy up" takes them all
+FILE_FONT = "Consolas"
+FILE_SIZE = 12
+# A row's room (CTk units) for a file's name and for its folder: longer ones are shortened in the
+# middle, so a deep NAS path never makes the row wider than the page (narrowest window 1220).
+NAME_ROOM = 460
+FOLDER_ROOM = 440
 NO_MATCH_TEXT = N_("Nothing here with this search or filter.")
 PAGE_SIZE = 60  # cards at first and per "Show more"
 SEARCH_WAIT_MS = 250
@@ -420,6 +449,9 @@ class LibraryView(BaseView):
         on_checked: Callable[[str], None] = lambda text: None,
         continue_watching: ContinueSource | None = None,
         play: LibraryPlay | None = None,
+        unrecognised: Callable[[], Sequence[str]] | None = None,
+        on_tidy: Callable[[Sequence[str]], None] | None = None,
+        reach: Callable[[], Sequence[str]] | None = None,
         **kwargs: Any,
     ) -> None:
         """`on_open_show(title)`: opens the show's window; False when TVmaze knows none.
@@ -427,7 +459,10 @@ class LibraryView(BaseView):
         window, on the cards while `can_send()` (a phone is connected), read at every render.
         `on_checked(text)`: "From Plex · checked 08:53" after every load (the footer's).
         `continue_watching()`: the Continue watching row's items (None: no row; raises
-        PlexError); `play`: ▶ Play (the row's cards, the cards' hover button; None: neither)."""
+        PlexError); `play`: ▶ Play (the row's cards, the cards' hover button; None: neither).
+        `unrecognised()`: the folder library's files it couldn't recognise (read at every
+        render); `on_tidy(paths)`: "Tidy up in MediaForge" (None: no section). `reach()`: the
+        folder library's lines on folders it couldn't read (translated; read at every render)."""
         super().__init__(master, **kwargs)
         self._service = service
         self._posters = posters
@@ -442,6 +477,12 @@ class LibraryView(BaseView):
         self._on_checked = on_checked
         self._continue_watching = continue_watching
         self._play = play
+        self._unrecognised = unrecognised
+        self._on_tidy = on_tidy
+        self._reach = reach
+        self.reach_labels: list[ctk.CTkLabel] = []
+        self.unrecognised_section: ctk.CTkFrame | None = None
+        self._file_fonts: tuple[ctk.CTkFont, ctk.CTkFont] | None = None  # made once, as needed
         self._continue_task: asyncio.Task[None] | None = None
         self.checked_text = ""
         self._contents = LibraryContents()
@@ -518,6 +559,10 @@ class LibraryView(BaseView):
         self._body = ScrollableFrame(self, fg_color="transparent")
         self._body.grid(row=4, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._body.grid_columnconfigure(0, weight=1)
+        # The folders the folder library couldn't read: always in sight, right above the footer.
+        self._reach_row = ctk.CTkFrame(self, fg_color="transparent")
+        self._reach_row.grid(row=5, column=0, sticky="ew", padx=19, pady=(0, 4))
+        self._reach_row.grid_remove()
         self._grid: FlexGrid | None = None
         # What the grid shows from (the last render's search, filter and sort) and its size.
         self._items: Sequence[LibraryShow | PlexTitle] = ()
@@ -608,7 +653,7 @@ class LibraryView(BaseView):
             return
         self._contents = contents
         self._show_kinds()
-        self.checked_text = checked_text(contents.checked_at)
+        self.checked_text = checked_text(contents.checked_at, folders=library_words.folders())
         self._on_checked(self.checked_text)
         self._render()
         self.refresh_continue()
@@ -652,13 +697,24 @@ class LibraryView(BaseView):
         self._items = ()
         self.more_button = None
         self._message = None
+        self.unrecognised_section = None
 
     def _render(self) -> None:
         self._clear()
+        self._render_cards()
+        self.refresh_unrecognised()
+
+    def _render_cards(self) -> None:
         query = self.search.get()
         contents = self._contents
         if not contents.shows and not contents.films:
-            self._message = MessagePanel(self._body, t(EMPTY_TITLE), t(EMPTY_TEXT), height=300)
+            folders = library_words.folders()
+            self._message = MessagePanel(
+                self._body,
+                t(EMPTY_FOLDERS_TITLE if folders else EMPTY_TITLE),
+                t(EMPTY_FOLDERS_TEXT if folders else EMPTY_TEXT),
+                height=300,
+            )
             self._message.grid(row=0, column=0, sticky="nsew")
             return
         scale = self._card_scale()
@@ -733,6 +789,87 @@ class LibraryView(BaseView):
             on_upgrade=(lambda: upgrade(item)) if upgrade is not None else None,
             on_play=(lambda: play.film(item)) if play is not None else None,
         )
+
+    def _refresh_reach(self) -> None:
+        for label in self.reach_labels:
+            label.destroy()
+        self.reach_labels = []
+        lines = list(self._reach()) if self._reach is not None else []
+        if not lines or not self.winfo_exists():
+            self._reach_row.grid_remove()
+            return
+        for line in lines:
+            label = ctk.CTkLabel(
+                self._reach_row, text=line, font=theme.font(12), text_color=theme.WARNING,
+                anchor="w", justify="left",
+            )
+            label.pack(anchor="w")
+            self.reach_labels.append(label)
+        self._reach_row.grid()
+
+    def refresh_unrecognised(self) -> None:
+        """"Couldn't recognise (n)" under the cards, drawn again from `unrecognised()` (gone when
+        nothing is in it), and the lines on folders the last check couldn't read (`reach()`)."""
+        self._refresh_reach()
+        if self.unrecognised_section is not None:
+            self.unrecognised_section.destroy()
+            self.unrecognised_section = None
+        paths = tuple(self._unrecognised()) if self._unrecognised is not None else ()
+        if not paths or self._on_tidy is None or not self.winfo_exists():
+            return
+        on_tidy = self._on_tidy
+        section = ctk.CTkFrame(self._body, fg_color="transparent")
+        section.grid(row=2, column=0, sticky="ew", padx=4, pady=(18, 16))
+        section.grid_columnconfigure(0, weight=1)
+        self.unrecognised_section = section
+        hairline(section, theme.PANEL_EDGE).grid(row=0, column=0, columnspan=2, sticky="ew")
+        words = ctk.CTkFrame(section, fg_color="transparent")
+        words.grid(row=1, column=0, sticky="w", pady=(14, 8))
+        ctk.CTkLabel(
+            words, text=t(UNRECOGNISED_TITLE, n=len(paths)), font=theme.font(15, bold=True),
+            text_color=theme.TEXT, anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            words, text=t(UNRECOGNISED_TEXT), font=theme.font(12), text_color=theme.TEXT_MUTED,
+            anchor="w",
+        ).pack(anchor="w")
+        tidy = ctk.CTkButton(
+            section, text=t(TIDY_TEXT), width=0, height=32, corner_radius=8,
+            font=theme.font(13, bold=True), fg_color="transparent", border_width=1,
+            border_color=theme.EDGE, hover_color=theme.HOVER, text_color=theme.BUTTON_TEXT,
+            command=lambda: on_tidy(paths),
+        )
+        tidy.grid(row=1, column=1, sticky="e", pady=(14, 8))
+        Tooltip(tidy, t(TIDY_TIP))
+        name_font, folder_font = self._fonts()
+        for row, path in enumerate(paths[:UNRECOGNISED_SHOWN], start=2):
+            folder, name = ntpath.split(path)
+            name = elided(name, lambda text: name_font.measure(text) <= NAME_ROOM)
+            folder = elided(folder, lambda text: folder_font.measure(text) <= FOLDER_ROOM)
+            line = ctk.CTkFrame(section, fg_color="transparent")
+            line.grid(row=row, column=0, columnspan=2, sticky="ew")
+            line.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(line, text=name, font=name_font, text_color=theme.TEXT, anchor="w").grid(
+                row=0, column=0, sticky="w", pady=(4, 4)
+            )
+            ctk.CTkLabel(
+                line, text=folder, font=folder_font, text_color=theme.TEXT_MUTED, anchor="e"
+            ).grid(row=0, column=1, sticky="e", padx=(14, 0))
+            hairline(line, theme.CHIP).grid(row=1, column=0, columnspan=2, sticky="ew")
+        rest = len(paths) - UNRECOGNISED_SHOWN
+        if rest > 0:
+            ctk.CTkLabel(
+                section, text=tn(MORE_FILES_ONE, MORE_FILES_MORE, rest), font=theme.font(12),
+                text_color=theme.TEXT_MUTED, anchor="w",
+            ).grid(row=UNRECOGNISED_SHOWN + 2, column=0, sticky="w", pady=(6, 0))
+
+    def _fonts(self) -> tuple[ctk.CTkFont, ctk.CTkFont]:
+        """The file names' Consolas and the folders' font, at the app's text size, made once."""
+        if self._file_fonts is None:
+            name_font = theme.font(FILE_SIZE)
+            name_font.configure(family=FILE_FONT)
+            self._file_fonts = (name_font, theme.font(FILE_SIZE))
+        return self._file_fonts
 
     def show_more(self) -> None:
         """The next PAGE_SIZE cards below those shown, which stay as they are (and so does the

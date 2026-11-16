@@ -66,7 +66,7 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -170,8 +170,15 @@ def _pending_task(task: RemoteTask, pending: _Pending) -> RemoteTask:
     return task
 
 
+def _taken_off(record: DownloadRecord, cleared: Mapping[int, datetime]) -> bool:
+    """`record` was taken off the page this run (`cleared`: id -> when) and not grabbed again
+    since (a grab of the same release again keeps its id, with a later date)."""
+    when = cleared.get(record.id) if record.id is not None else None
+    return when is not None and record.downloaded_at <= when
+
+
 def _with_pending(
-    overview: DownloadsOverview, pending: Mapping[str, _Pending], cleared: Collection[int]
+    overview: DownloadsOverview, pending: Mapping[str, _Pending], cleared: Mapping[int, datetime]
 ) -> DownloadsOverview:
     """The overview as the page shows it: rows being removed (or taken off the list, when
     they have no task) left out, tasks being paused or resumed in their new state."""
@@ -183,7 +190,7 @@ def _with_pending(
 
     entries: list[DownloadEntry] = []
     for entry in overview.entries:
-        if entry.task is None and entry.record.id in cleared:
+        if entry.task is None and _taken_off(entry.record, cleared):
             continue
         found = action(entry.task)
         if found is not None and found.kind == "remove":
@@ -671,9 +678,9 @@ class DownloadStatusService:
         self._forge = forge
         self._known_lookup = known
         self._known_at: float | None = None  # when the known titles were read
-        self._known_stamp: tuple[int, int] | None = None  # … with the history as it was then
+        self._known_stamp: tuple[int, int, str] | None = None  # … with the history as it was then
         self._recognition = Recognition()
-        self._grabs: tuple[tuple[int, int], list[DownloadRecord]] | None = None  # every grab
+        self._grabs: tuple[tuple[int, int, str], list[DownloadRecord]] | None = None  # every grab
         self._show_cache: dict[int, tuple[float, Show | None]] = {}
         self._gone = GoneGrabs()
         self._check_seq = 0  # checks started, for the actions' optimistic states
@@ -692,7 +699,9 @@ class DownloadStatusService:
         self._folder_scanner = folder_scanner
         self._opener = opener if opener is not None else _open_folder
         self._scan: tuple[str, float, FolderScan] | None = None  # (folder, when, scan)
-        self._cleared: set[int] = set()  # taken off this run (a check in flight may list them)
+        # Taken off this run, and when (a check in flight may list them); a grab made after
+        # that is the same release fetched again (HistoryRepository.add): listed once more.
+        self._cleared: dict[int, datetime] = {}
         self._clock = clock
         self._now = now
         self._listeners: list[OverviewListener] = []
@@ -801,7 +810,7 @@ class DownloadStatusService:
             for record in await self._history.listed(RECENT_LIMIT)
             if record.downloaded_at >= since
             and record.id is not None
-            and record.id not in self._cleared
+            and not _taken_off(record, self._cleared)
         ]
 
     async def _check(self) -> DownloadsOverview:
@@ -968,7 +977,7 @@ class DownloadStatusService:
         confirmed = self._gone.confirm(gone, self._clock())
         if confirmed:
             await self._history.clear(confirmed, now)
-            self._cleared |= set(confirmed)
+            self._cleared.update(dict.fromkeys(confirmed, now))
             log.info(
                 "Downloads page: %d grab(s) removed in the torrent program left the list",
                 len(confirmed),
@@ -1029,8 +1038,9 @@ class DownloadStatusService:
         ids = {history_id for history_id in history_ids}
         if not ids:
             return 0
-        count = await self._history.clear(ids, self._now())
-        self._cleared |= ids
+        now = self._now()
+        count = await self._history.clear(ids, now)
+        self._cleared.update(dict.fromkeys(ids, now))
         log.info("Downloads page: %d grab(s) taken off the list", len(ids))
         if self._raw is None and self.latest is not None:
             self._raw = self.latest
@@ -1120,8 +1130,9 @@ class DownloadStatusService:
             if task_id in self._pending:
                 self._pending[task_id] = _Pending("remove", done_seq=self._check_seq)
         if grabs:
-            await self._history.clear(grabs, self._now())
-            self._cleared |= grabs
+            now = self._now()
+            await self._history.clear(grabs, now)
+            self._cleared.update(dict.fromkeys(grabs, now))
         log.info(
             "Downloads page: %d task(s) removed from the torrent program, %d grab(s) off the list",
             len(task_ids),

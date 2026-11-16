@@ -50,6 +50,7 @@ from app.models import (
 )
 from app.ui import theme
 from app.ui.card_scale import FULL, TEXT_MIN, CardScale
+from app.ui.icons import cinema_icon, download_icon, icon_rgb
 from app.ui.text_fit import SLACK, Measure, elide_to_width, unscaled_width
 from app.ui.tooltip import add_tooltip
 
@@ -139,6 +140,10 @@ def grabbed_state(result: QuickDownloadResult) -> RunState:
 # What a card shows without a run: the Download split control, a "Search" button (it opens the
 # search window), or a disabled button such as "Not Aired".
 BaseKind = Literal["download", "search", "unavailable"]
+# A drawn icon before a disabled base's date (the watchlist): in cinemas, or out to download.
+DateIcon = Literal["cinema", "download"]
+DATE_ICON_SIZE = 1.15  # the icon's side, in the row's font size
+DATE_ICON_GAP = 6  # between the icon and the date (CTk units)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +151,8 @@ class Base:
     kind: BaseKind
     text: str = ""  # "unavailable" only: "Not Aired", "Digital 15 Oct"...
     short: tuple[str, ...] = ()  # "unavailable" only: shorter texts, for when `text` won't fit
+    icon: DateIcon | None = None  # "unavailable" only: a drawn icon before the text
+    tip: str = ""  # "unavailable" only: the hover tip, in words ("In cinemas from 3 Dec; …")
 
 
 Action = Literal["download", "choose"]  # choose = open the search window
@@ -164,6 +171,8 @@ class Look:
     action: Action | None = None  # None = disabled
     short: tuple[str, ...] = ()  # shorter texts, in order, for when `text` doesn't fit
     border: theme.Color | None = None  # a 1-unit border in this colour
+    icon: DateIcon | None = None  # a drawn icon before the text (a disabled base's)
+    tip: str = ""  # the hover tip of a disabled base, in words
 
     @property
     def texts(self) -> tuple[str, ...]:
@@ -194,6 +203,8 @@ def later_look(base: Base) -> Look:
         theme.TEXT_MUTED,
         short=base.short,
         border=theme.CHIP_HOVER,
+        icon=base.icon,
+        tip=base.tip,
     )
 
 
@@ -304,6 +315,8 @@ def control_tip(
         return tip
     if state is not None and state.phase is Phase.DONE and state.outcome is not None:
         return picked_text(state.quality, state.size_bytes)
+    if look.action is None and look.tip:
+        return look.tip
     if look.action is None and shortened:
         return look.text
     return ""
@@ -480,6 +493,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         font_size = scale.font(FONT_SIZE, TEXT_MIN)
         self._font = theme.font(font_size, bold=True)
         self._label_font = theme.font(font_size)
+        self._icon_side = max(8, round(font_size * DATE_ICON_SIZE))  # CTk units
+        self._icons: dict[DateIcon, ctk.CTkImage] = {}  # drawn at the current scaling
 
         self._more = ctk.CTkButton(
             self,
@@ -563,7 +578,35 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
                 text_color_disabled=look.text_color or theme.NOT_AIRED_TEXT,
                 state="normal" if look.action else "disabled",
             )
+            self._show_icon(look.icon)
         self._fit_text()
+
+    def _show_icon(self, icon: DateIcon | None) -> None:
+        if icon is None:
+            self._main.configure(image=None)
+            return
+        self._main.configure(image=self._icon(icon), compound="left")
+
+    def _icon(self, icon: DateIcon) -> ctk.CTkImage:
+        """`icon` drawn at the physical size (sharp at any scaling), in TEXT's light and dark
+        shade: a plain outline beside the muted date."""
+        image = self._icons.get(icon)
+        if image is None:
+            draw = cinema_icon if icon == "cinema" else download_icon
+            scaling = float(ctk.ScalingTracker.get_widget_scaling(self)) or 1.0
+            side = self._icon_side
+            light, dark = (draw(round(side * scaling), icon_rgb(c)) for c in theme.TEXT)
+            image = ctk.CTkImage(light_image=light, dark_image=dark, size=(side, side))
+            self._icons[icon] = image
+        return image
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed: the icon is drawn again at the new physical size."""
+        super()._set_scaling(*args, **kwargs)
+        self._icons.clear()
+        look = self._look
+        if look is not None and look.layout != "label" and look.icon is not None:
+            self._show_icon(look.icon)
 
     def _on_resize(self, event: Any) -> None:
         if event.width > 1:
@@ -586,6 +629,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
             split = look.layout == "split" and self._with_more
             more = self._more_width + self._gap if split else 0
             room = self._width - more - 2 * self._corner - SLACK
+            if look.icon is not None:
+                room -= self._icon_side + DATE_ICON_GAP
             text = fit_text(look.texts, room, self._font.measure)
         self._main.configure(text=text)
         self._shortened = look.action in ("download", None) and text != look.text

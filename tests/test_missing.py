@@ -540,7 +540,7 @@ class LibraryMissingTests(ServiceTestCase):
         await self.in_plex((2, 1))  # left from before (Disconnect empties it)
         await self.grab(1, 2, 2)
         await self.settings.update(plex_token="")
-        self.assertFalse(self.library.plex_connected)
+        self.assertFalse(self.library.has_library)
         library = self.library
         start, end = NOW.date() - 30 * DAY, NOW.date() + 30 * DAY
         self.assertEqual(await library.missing_counts(now=NOW, profile_id=1), {})

@@ -415,6 +415,8 @@ NL: dict[str, str] = {
     # app/ui/views/movie_view.py
     "Hides the films you have in Plex (your watchlist always stays)":
         "Verbergt de films die je in Plex hebt (je kijklijst blijft altijd staan)",
+    "Hides the films you have in your library (your watchlist always stays)":
+        "Verbergt de films die je in je bibliotheek hebt (je kijklijst blijft altijd staan)",
     "You already have every film here.": "Je hebt alle films hier al.",
     "Movie Discovery": "Films ontdekken",
     "↻ Refresh": "↻ Vernieuwen",
@@ -503,6 +505,7 @@ NL: dict[str, str] = {
     "Nothing missing": "Niets ontbreekt",
     "Missing": "Ontbreekt",
     "In Plex": "In Plex",
+    "In your library": "In je bibliotheek",
     "Text size": "Tekstgrootte",
     "Every text in AirGrabber a little larger, apart from Windows' own scaling.":
         "Alle tekst in AirGrabber iets groter, los van de schaal van Windows zelf.",
@@ -529,6 +532,7 @@ NL: dict[str, str] = {
     "Couldn't bring {name} back": "Kon {name} niet terugzetten",
     "{had} of {total}": "{had} van {total}",
     "{n} in Plex": "{n} in Plex",
+    "{n} in your library": "{n} in je bibliotheek",
     "{n} downloaded": "{n} gedownload",
     "{n} not downloaded": "{n} niet gedownload",
     "Coming up": "Binnenkort",
@@ -544,6 +548,10 @@ NL: dict[str, str] = {
     "This episode is in your Plex.": "Deze aflevering staat in je Plex.",
     "Downloaded by AirGrabber. Plex doesn't have it yet.":
         "Gedownload door AirGrabber. Plex heeft hem nog niet.",
+    "✓ In your library": "✓ In je bibliotheek",
+    "This episode is in your library.": "Deze aflevering staat in je bibliotheek.",
+    "Downloaded by AirGrabber. It isn't in your library yet.":
+        "Gedownload door AirGrabber. Hij staat nog niet in je bibliotheek.",
     "Syncing with Plex…": "Synchroniseren met Plex…",
     "More options": "Meer opties",
     "{n} missing": "{n} ontbrekend",
@@ -589,6 +597,8 @@ NL: dict[str, str] = {
     "Not downloaded": "Niet gedownload",
     "Aired, but not in Plex and not downloaded yet.":
         "Uitgezonden, maar nog niet in Plex en nog niet gedownload.",
+    "Aired, but not in your library and not downloaded yet.":
+        "Uitgezonden, maar nog niet in je bibliotheek en nog niet gedownload.",
     "Nothing good enough was found. Choose a download yourself.":
         "Er is niets goed genoeg gevonden. Kies zelf een download.",
     "Not Aired": "Niet uitgezonden",
@@ -603,6 +613,7 @@ NL: dict[str, str] = {
     "⬇ All ({n})": "⬇ Alle ({n})",
     "not aired": "niet uitgezonden",
     "✓ in Plex": "✓ in Plex",
+    "✓ in your library": "✓ in je bibliotheek",
     "still needed": "nog nodig",
     # app/ui/watchlist_cards.py
     "📌 My watchlist": "📌 Mijn kijklijst",
@@ -617,12 +628,13 @@ NL: dict[str, str] = {
     "{n} h ago": "{n} u geleden",
     "{n} day ago": "{n} dag geleden",
     "{n} days ago": "{n} dagen geleden",
-    "Out digitally {date}": "Digitaal op {date}",
-    "Out {date}": "Uit {date}",
+    "Out to download on {date}": "Te downloaden vanaf {date}",
+    "~{date}": "~{date}",
     "Not out yet": "Nog niet uit",
     "Remove from watchlist": "Van je kijklijst halen",
-    "In cinemas {date}": "In de bioscoop {date}",
-    "Expected {date}": "Verwacht {date}",
+    "In cinemas from {date}; not out to download yet": "In de bioscoop vanaf {date}; nog niet te downloaden",
+    "Expected to download around {date}, about 2 months after the cinema ({cinema})":
+        "Verwacht te downloaden rond {date}, zo'n 2 maanden na de bioscoop ({cinema})",
     "No good release found in {days} days": "Geen goede release gevonden in {days} dagen",
     "{status} (searched {ago})": "{status} ({ago} gezocht)",
     # app/ui/search.py
@@ -1023,6 +1035,7 @@ NL: dict[str, str] = {
         "haalt de op een na beste release.",
     "Never": "Nooit",
     "🧩 Find gaps in Plex…": "🧩 Gaten in Plex zoeken…",
+    "🧩 Find gaps in your library…": "🧩 Gaten in je bibliotheek zoeken…",
     "Library": "Bibliotheek",
     "Shows": "Series",
     "Films": "Films",
@@ -1033,8 +1046,8 @@ NL: dict[str, str] = {
     "Show more ({n})": "Meer tonen ({n})",
     "Continue watching": "Verder kijken",
     "Nothing from Plex yet": "Nog niets uit Plex",
-    "AirGrabber reads Plex every half hour; Settings → Plex → Check now reads it at once.":
-        "AirGrabber leest Plex elk half uur; Instellingen → Plex → Nu controleren leest het meteen.",
+    "AirGrabber reads Plex every half hour; Settings → Library → Check now reads it at once.":
+        "AirGrabber leest Plex elk half uur; Instellingen → Bibliotheek → Nu controleren leest het meteen.",
     "Nothing here with this search or filter.": "Niets gevonden met deze zoekopdracht of dit filter.",
     "Not followed": "Niet gevolgd",
     "With gaps": "Met gaten",
@@ -1065,6 +1078,11 @@ NL: dict[str, str] = {
         "Afleveringen die Plex niet heeft, in de seizoenen waarvan het er een paar heeft.",
     "No gaps: every season Plex has of your shows is complete.":
         "Geen gaten: elk seizoen van je series in Plex is compleet.",
+    "Gaps in your library": "Gaten in je bibliotheek",
+    "Episodes your library doesn't have, in the seasons it has some of.":
+        "Afleveringen die niet in je bibliotheek staan, in de seizoenen waarvan er een paar in staan.",
+    "No gaps: every season of your shows in your library is complete.":
+        "Geen gaten: elk seizoen van je series in je bibliotheek is compleet.",
     "⬇ Download all {n}": "⬇ Alle {n} downloaden",
     "⬇ Download {n}": "⬇ {n} downloaden",
     "✓ Queued": "✓ In de wachtrij",
@@ -1355,15 +1373,17 @@ NL: dict[str, str] = {
         "Kon de back-up daar niet opslaan. Kies een andere map.",
     # app/ui/plex_settings.py, app/ui/plex_connect.py and Settings' Plex page
     "Plex": "Plex",
-    "What's in your Plex libraries counts as something you already have: it isn't missing and isn't downloaded again.":
-        "Wat in je Plex-bibliotheken staat, telt als iets wat je al hebt: het ontbreekt niet en wordt niet opnieuw gedownload.",
-    "Let AirGrabber see what's in your Plex libraries, so it never downloads something you already have. It only reads; your Plex password isn't needed.":
-        "Laat AirGrabber zien wat er in je Plex-bibliotheken staat, zodat het nooit iets downloadt wat je al hebt. Het leest alleen; je Plex-wachtwoord is niet nodig.",
+    "What you already have, from Plex or from your own folders, isn't missing and isn't downloaded again.":
+        "Wat je al hebt, uit Plex of uit je eigen mappen, ontbreekt niet en wordt niet opnieuw gedownload.",
+    "Have a Plex server? Connect it and Plex is your library.":
+        "Heb je een Plex-server? Koppel hem en Plex is je bibliotheek.",
+    "Connect Plex and it becomes your library instead of your folders.":
+        "Koppel Plex en het wordt je bibliotheek in plaats van je mappen.",
     "Connect to Plex…": "Verbinden met Plex…",
-    "With and without Plex": "Met en zonder Plex",
-    "Without Plex": "Zonder Plex",
-    "With Plex": "Met Plex",
-    "Phone app": "Telefoon-app",
+    "With and without a library": "Met en zonder bibliotheek",
+    "Without a library": "Zonder bibliotheek",
+    "With Plex or your folders": "Met Plex of je mappen",
+    "Phone app (needs Plex)": "Telefoon-app (Plex nodig)",
     "Search, download and follow shows and films": "Series en films zoeken, downloaden en volgen",
     "Rename and sort files with MediaForge": "Bestanden hernoemen en ordenen met MediaForge",
     "Never download the same release twice": "Nooit dezelfde release twee keer downloaden",
@@ -1371,7 +1391,7 @@ NL: dict[str, str] = {
     "See which episodes you have and which are missing": "Zien welke afleveringen je hebt en welke ontbreken",
     "The Library page with your posters": "De bibliotheekpagina met je posters",
     "Find the gaps in your seasons": "De gaten in je seizoenen vinden",
-    "Plex picks up new files as soon as MediaForge moves them": "Plex ziet nieuwe bestanden zodra MediaForge ze verplaatst",
+    "New files count soon after MediaForge moves them": "Nieuwe bestanden tellen kort nadat MediaForge ze verplaatst mee",
     "Use the phone app": "De telefoon-app gebruiken",
     "Browse your library on the phone": "Je bibliotheek op de telefoon bekijken",
     "Play on your TVs": "Afspelen op je tv's",
@@ -1515,9 +1535,15 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
-    "Your own player": "Je eigen speler",
-    "▶ Play now opens a film or episode in AirGrabber itself, in a window or full screen, with the keys you know from VLC.":
-        "▶ Afspelen opent een film of aflevering nu in AirGrabber zelf, in een venster of op volledig scherm, met de toetsen van VLC.",
+    "Your own folders as your library": "Je eigen mappen als bibliotheek",
+    "No Plex? In Settings → Library, AirGrabber can read your own film and series folders: browse and play them, and what you have isn't downloaded again.":
+        "Geen Plex? In Instellingen → Bibliotheek leest AirGrabber je eigen film- en seriemappen: bekijk ze, speel ze af, en wat je hebt wordt niet opnieuw gedownload.",
+    "Film dates say what they are: a clapperboard for the cinema, an arrow for the download, ~ for a guess.":
+        "Filmdatums zeggen wat ze zijn: een klapbord voor de bioscoop, een pijl voor de download, ~ voor een schatting.",
+    "Movies and Discover show only whole rows of posters, never half a row cut off.":
+        "Films en Ontdekken tonen alleen hele rijen posters, nooit een afgesneden halve rij.",
+    "A release downloaded again shows on the Downloads page again, instead of hiding under its old date.":
+        "Een release die je opnieuw downloadt, staat weer op de Downloadspagina in plaats van weggestopt onder zijn oude datum.",
     "Automatic downloads try the next release when one fails, fetch a finished season as one pack, and survive a restart.":
         "Automatisch downloaden neemt bij een fout de volgende release, haalt een heel seizoen ineens en overleeft een herstart.",
     "Downloads page: speed and time left per download, and what couldn't be found automatically, with Try again.":
@@ -1974,7 +2000,7 @@ NL: dict[str, str] = {
     "▶ Finding {name}…": "▶ {name} zoeken…",
     "▶ Playing {name} in VLC.": "▶ {name} speelt af in VLC.",
     "▶ Playing {name} in your video player.": "▶ {name} speelt af in je videospeler.",
-    "Connect Plex in Settings → Plex first.": "Koppel eerst Plex via Instellingen → Plex.",
+    "Connect Plex in Settings → Library first.": "Koppel eerst Plex via Instellingen → Bibliotheek.",
     "Plex didn't answer, so try ▶ Play again in a moment.":
         "Plex antwoordde niet, dus probeer ▶ Afspelen zo nog eens.",
     "Plex doesn't say which file {name} is.": "Plex zegt niet welk bestand {name} is.",
@@ -1988,6 +2014,8 @@ NL: dict[str, str] = {
         "{name} staat vanaf deze pc niet in je map Series: controleer de map Series in Instellingen › Automatisch hernoemen.",
     "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Auto-rename.":
         "{name} staat vanaf deze pc niet in je map Films: controleer de map Films in Instellingen › Automatisch hernoemen.",
+    "AirGrabber can't find {name} in your folders right now.":
+        "AirGrabber kan {name} nu niet vinden in je mappen.",
     "AirGrabber couldn't start a video player for {name}.":
         "AirGrabber kon geen videospeler starten voor {name}.",
     "▶ Play": "▶ Afspelen",
@@ -2046,4 +2074,56 @@ NL: dict[str, str] = {
     "Finding subtitles isn't available in this version.":
         "Ondertitels vinden kan nog niet in deze versie.",
     "The subtitles couldn't be fetched.": "De ondertitels konden niet worden opgehaald.",
+    # app/ui/folder_library_settings.py (Settings → Library: your own folders)
+    "Your own folders": "Je eigen mappen",
+    "No Plex? AirGrabber can read the folders that hold your films and series instead.":
+        "Geen Plex? AirGrabber kan dan de mappen lezen waar je films en series in staan.",
+    "Film folders": "Filmmappen",
+    "Series folders": "Seriemappen",
+    "+ Add a folder": "+ Map toevoegen",
+    "Leave this folder out": "Deze map weglaten",
+    "Filled in from MediaForge's folders. Change them if your films and series are somewhere else.":
+        "Ingevuld vanuit de mappen van MediaForge. Pas ze aan als je films en series ergens anders staan.",
+    "Use these folders": "Deze mappen gebruiken",
+    "Reading your folders…": "Je mappen worden gelezen…",
+    "None of these folders could be reached, so the change wasn't saved: the folders below are the ones still in use.":
+        "Geen van deze mappen was bereikbaar, dus de wijziging is niet bewaard: hieronder staan de mappen die nog worden gebruikt.",
+    "None of these folders could be reached, so nothing was switched on. Check that they're there, then try again.":
+        "Geen van deze mappen was bereikbaar, dus er is niets aangezet. Kijk of ze er zijn en probeer het dan opnieuw.",
+    "Checking your folders…": "Je mappen worden gecontroleerd…",
+    "Stop using folders": "Mappen niet meer gebruiken",
+    "Stop using your folders?": "Je mappen niet meer gebruiken?",
+    "The marks and the Library page go until you switch them on again. No file is touched.":
+        "De markeringen en de bibliotheekpagina verdwijnen tot je ze weer aanzet. Er wordt geen bestand aangeraakt.",
+    "Plex is your library. Your own folders count again if you disconnect Plex.":
+        "Plex is je bibliotheek. Je eigen mappen tellen weer mee als je Plex ontkoppelt.",
+    "{films} · {series} · {episodes} · checked {when}":
+        "{films} · {series} · {episodes} · gecontroleerd {when}",
+    "{n} series": "{n} series",
+    "{n} file couldn't be recognised: it's listed on the Library page.":
+        "{n} bestand kon niet worden herkend: het staat op de bibliotheekpagina.",
+    "{n} files couldn't be recognised: they're listed on the Library page.":
+        "{n} bestanden konden niet worden herkend: ze staan op de bibliotheekpagina.",
+    "Can't reach {folder}: what was found there last time still counts.":
+        "Kan {folder} niet bereiken: wat er de vorige keer gevonden is, telt nog mee.",
+    "Reading {folder} takes a while: what was found there last time still counts until it's done.":
+        "{folder} lezen duurt even: wat er de vorige keer gevonden is, telt mee tot het klaar is.",
+    "These folders answered, but reading them takes longer than usual, so nothing was switched on yet. AirGrabber goes on reading: try again in a minute.":
+        "Deze mappen antwoordden, maar ze lezen duurt langer dan normaal, dus er is nog niets aangezet. AirGrabber leest verder: probeer het over een minuutje opnieuw.",
+    "These folders answered, but reading them takes longer than usual, so the change wasn't saved yet. AirGrabber goes on reading: try again in a minute.":
+        "Deze mappen antwoordden, maar ze lezen duurt langer dan normaal, dus de wijziging is nog niet bewaard. AirGrabber leest verder: probeer het over een minuutje opnieuw.",
+    # app/ui/views/library_view.py and app/services/plex_library.py with your own folders
+    "Nothing from your folders yet": "Nog niets uit je mappen",
+    "AirGrabber reads your folders every 6 hours; Settings → Library → Check now reads them at once.":
+        "AirGrabber leest je mappen elke 6 uur; Instellingen → Bibliotheek → Nu controleren leest ze meteen.",
+    "Couldn't recognise ({n})": "Niet herkend ({n})",
+    "These files' names don't say which film or episode they are.":
+        "Uit de namen van deze bestanden blijkt niet welke film of aflevering het is.",
+    "Tidy up in MediaForge": "Opruimen in MediaForge",
+    "Adds these files to MediaForge's queue, where you can name and sort them":
+        "Zet deze bestanden in de wachtrij van MediaForge, waar je ze een naam geeft en ordent",
+    "…and {n} more file": "…en nog {n} bestand",
+    "…and {n} more files": "…en nog {n} bestanden",
+    "From your folders": "Uit je mappen",
+    "From your folders · checked {time}": "Uit je mappen · gecontroleerd om {time}",
 }

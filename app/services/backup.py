@@ -116,6 +116,10 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "plex_server_name",
         "plex_server_uri",
         "plex_sections_off",
+        # This PC's folder library: its folders are this PC's drives and shares.
+        "folder_library_on",
+        "film_folders",
+        "series_folders",
         # This PC's phone connection: its phones belong to this PC's certificate.
         "phone_connection_on",
         "phone_devices",

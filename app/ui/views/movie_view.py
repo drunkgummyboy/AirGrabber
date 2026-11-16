@@ -11,7 +11,7 @@ import customtkinter as ctk
 from app.i18n import N_, t
 from app.models import Movie
 from app.services import DiscoveryService, ImageCache, SettingsService, WatchlistService
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
@@ -27,17 +27,21 @@ class MovieView(ShelvesView[Movie]):
 
     The watchlist shelf stays across reloads (and while TMDB loads or fails) and follows the
     watchlist by itself; it hides while the list is empty. The filter bar leaves it alone: it
-    filters TMDB's shelves only, and "Hide what I already have" (offered only while Plex is
-    connected: app/services/plex.py, the only thing that counts as had) hides the films in
-    Plex (their cards' quiet ✓).
+    filters TMDB's shelves only, and "Hide what I already have" (offered only while there is a
+    library: Plex, or else the folder library, app/services/library_source.py; the only thing
+    that counts as had) hides the films in it (their cards' quiet ✓).
     """
 
     _body_pady = (0, 5)
     _hide_owned_setting = "hide_owned_movies"
     _hide_owned_tip = N_("Hides the films you have in Plex (your watchlist always stays)")
+    _hide_owned_folders_tip = N_(
+        "Hides the films you have in your library (your watchlist always stays)"
+    )
     _all_owned_text = N_("You already have every film here.")
-    # Whether Plex is connected, as the last load found it (the hide switch is offered); read
-    # by the base class while it builds the filter bar, before the first load.
+    # Whether there is a library (Plex or the folder library; `MovieDashboard.plex_connected`),
+    # as the last load found it (the hide switch is offered); read by the base class while it
+    # builds the filter bar, before the first load.
     _plex_connected = False
 
     def __init__(
@@ -140,8 +144,13 @@ class MovieView(ShelvesView[Movie]):
         return item.id in self._in_plex
 
     def _hide_owned_offered(self) -> bool:
-        """Only with Plex: without it nothing counts as had, so there is nothing to hide."""
+        """Only with a library: without one nothing counts as had, so there is nothing to
+        hide."""
         return self._plex_connected
+
+    def _hide_owned_tip_text(self) -> str:
+        """The switch's tip in the library's words (Plex's, or the folder library's)."""
+        return t(library_words.by_source(self._hide_owned_tip, self._hide_owned_folders_tip))
 
     def _clear_body(self) -> None:
         for child in self._body.winfo_children():

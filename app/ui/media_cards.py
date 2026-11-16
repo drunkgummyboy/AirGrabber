@@ -27,7 +27,7 @@ from urllib.parse import quote
 
 import customtkinter as ctk
 
-from app.i18n import month_short, t
+from app.i18n import N_, month_short, t
 from app.models import DiscoverShow, Movie, MovieDetails, TVDetails
 from app.models.plex import PlexShows
 from app.services.tmdb import TMDBError
@@ -63,6 +63,12 @@ def format_runtime(minutes: int) -> str:
     if rest:
         return t("{hours}h {minutes}m", hours=hours, minutes=rest)
     return t("{hours}h", hours=hours)
+
+
+# A film's date on its "not yet" button: the words in its hover tip (the watchlist's too).
+OUT_TO_DOWNLOAD_TEXT = N_("Out to download on {date}")
+IN_CINEMAS_TEXT = N_("In cinemas from {date}; not out to download yet")
+NOT_OUT_TEXT = N_("Not out yet")  # where "Not Released" / "Release date unknown" won't fit
 
 
 def tmdb_rating(vote_average: float, vote_count: int) -> float | None:
@@ -136,16 +142,28 @@ class _TmdbCard(PosterCard):
         super().destroy()
 
 
+def release_day(day: date, today: date) -> str:
+    """"12 Nov", with the year when it isn't this year's."""
+    text = f"{day:%d} {month_short(day)}"
+    return text if day.year == today.year else f"{text} {day:%Y}"
+
+
 def movie_base(movie: Movie, details: MovieDetails | None, today: date) -> Base:
     """The Download control once the film is out digitally (`movie_action`), else a disabled
-    "Digital 15 Oct" / "Not Released" (on the film cards in the grey "not yet" outline)."""
-    label, can_grab = movie_action(movie, details, today)
+    date after a drawn icon, its words in the hover tip: the download arrow and "15 Oct" (TMDB's
+    digital release), the clapperboard and "3 Dec" (only the release, still ahead), or "Not
+    Released" without a date (on the film cards in the grey "not yet" outline)."""
+    _label, can_grab = movie_action(movie, details, today)
     if can_grab:
         return Base("download")
     digital = details.digital_release if details else None
-    # Where "Digital 15 Oct" doesn't fit: the date alone (its tip says it in full).
-    short = (f"{digital:%d} {month_short(digital)}",) if digital is not None else ()
-    return Base("unavailable", label, short)
+    if digital is not None:
+        day = release_day(digital, today)
+        return Base("unavailable", day, icon="download", tip=t(OUT_TO_DOWNLOAD_TEXT, date=day))
+    if movie.release_date is not None:
+        day = release_day(movie.release_date, today)
+        return Base("unavailable", day, icon="cinema", tip=t(IN_CINEMAS_TEXT, date=day))
+    return Base("unavailable", t("Not Released"), (t(NOT_OUT_TEXT),))
 
 
 class MovieCard(_TmdbCard):

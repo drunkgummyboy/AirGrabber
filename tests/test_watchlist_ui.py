@@ -48,8 +48,8 @@ from app.ui.watchlist_cards import (
     auto_shown,
     film_count,
     imdb_url,
+    release_date,
     release_text,
-    release_texts,
     searched_ago,
     tone_color,
     watch_menu,
@@ -106,36 +106,43 @@ class TextTests(unittest.TestCase):
                 self.assertEqual(searched_ago(NOW - age, NOW), text)
 
     def test_release_text(self) -> None:
+        # The words, as the button's hover tip says them.
         self.assertEqual(
-            release_text(entry(digital_release="2026-11-12"), TODAY), "Out digitally 12 Nov"
+            release_text(entry(digital_release="2026-11-12"), TODAY), "Out to download on 12 Nov"
         )
         self.assertEqual(
-            release_text(entry(digital_release="2027-01-05"), TODAY), "Out digitally 05 Jan 2027"
+            release_text(entry(digital_release="2027-01-05"), TODAY),
+            "Out to download on 05 Jan 2027",
         )
         self.assertEqual(
-            release_text(entry(theatrical_release="2026-12-16"), TODAY), "In cinemas 16 Dec"
+            release_text(entry(theatrical_release="2026-12-16"), TODAY),
+            "In cinemas from 16 Dec; not out to download yet",
         )
         # The cinema release has been, no digital date: AirGrabber's estimate (60 days on).
         self.assertEqual(
-            release_text(entry(theatrical_release="2026-10-01"), TODAY), "Expected 30 Nov"
+            release_text(entry(theatrical_release="2026-10-01"), TODAY),
+            "Expected to download around 30 Nov, about 2 months after the cinema (01 Oct)",
         )
         self.assertEqual(
-            release_text(entry(movie=movie(release_date="2026-12-25")), TODAY), "In cinemas 25 Dec"
+            release_text(entry(movie=movie(release_date="2026-12-25")), TODAY),
+            "In cinemas from 25 Dec; not out to download yet",
         )
         self.assertEqual(release_text(entry(), TODAY), "Release date unknown")
 
-    def test_shorter_release_texts_for_the_button(self) -> None:
-        self.assertEqual(
-            release_texts(entry(digital_release="2026-11-12"), TODAY),
-            ("Out digitally 12 Nov", "Out 12 Nov", "12 Nov"),
-        )
-        self.assertEqual(
-            release_texts(entry(theatrical_release="2026-12-16"), TODAY), ("In cinemas 16 Dec", "16 Dec")
-        )
-        self.assertEqual(
-            release_texts(entry(theatrical_release="2026-10-01"), TODAY), ("Expected 30 Nov", "30 Nov")
-        )
-        self.assertEqual(release_texts(entry(), TODAY), ("Release date unknown", "Not out yet"))
+    def test_the_buttons_date_and_icon(self) -> None:
+        # The download arrow before a digital date or AirGrabber's "~" guess, the clapperboard
+        # before a cinema date still ahead; no icon without a date.
+        cases = [
+            (entry(digital_release="2026-11-12"), ("12 Nov",), "download"),
+            (entry(theatrical_release="2026-12-16"), ("16 Dec",), "cinema"),
+            (entry(theatrical_release="2026-10-01"), ("~30 Nov",), "download"),
+            (entry(), ("Release date unknown", "Not out yet"), None),
+        ]
+        for case, texts, icon in cases:
+            with self.subTest(texts=texts):
+                when = release_date(case, TODAY)
+                self.assertEqual((when.texts, when.icon), (texts, icon))
+        self.assertEqual(release_date(entry(), TODAY).tip, "")
 
     def test_imdb_url(self) -> None:
         self.assertEqual(
@@ -149,7 +156,12 @@ class WatchStatusTests(unittest.TestCase):
         self.assertEqual(
             watch_status(entry(digital_release="2026-11-12"), TODAY, NOW),
             WatchStatus(
-                "Out digitally 12 Nov", "soon", "later", auto=True, short=("Out 12 Nov", "12 Nov")
+                "12 Nov",
+                "soon",
+                "later",
+                auto=True,
+                icon="download",
+                tip="Out to download on 12 Nov",
             ),
         )
         # The toggle is offered either way: it can be turned on before the film is out.
@@ -388,7 +400,11 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(control.master, card.menu_button.master)
         self.assertFalse(control.has_more)
         self.pump()
-        self.assertIn(control.main_text, release_texts(self.watchlist.by_release()[1], date_today()))
+        when = release_date(self.watchlist.by_release()[1], date_today())
+        self.assertIn(control.main_text, when.texts)
+        if when.icon is not None:  # the drawn icon before the date, the words in its tip
+            self.assertIsNotNone(control._main.cget("image"))
+            self.assertEqual(control._main_tip.text, when.tip)
         self.assertEqual(
             (control._main.cget("fg_color"), control._main.cget("border_color")),
             ("transparent", theme.CHIP_HOVER),

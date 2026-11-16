@@ -446,13 +446,13 @@ class PinTests(PlexTestCase):
             sleep=self.clock.sleep,
         )
         heard: list[bool] = []
-        library.subscribe(lambda: heard.append(library.plex_connected))
-        self.assertFalse(library.plex_connected)
+        library.subscribe(lambda: heard.append(library.has_library))
+        self.assertFalse(library.has_library)
         self.assertTrue(await plex.wait_for_pin(await plex.new_pin()))
         self.assertEqual(heard, [True])
         await plex.disconnect()
         self.assertEqual(heard, [True, False])
-        self.assertFalse(library.plex_connected)
+        self.assertFalse(library.has_library)
 
     async def test_a_client_identifier_is_made_once(self) -> None:
         settings = SettingsService(self.db.settings, Settings())

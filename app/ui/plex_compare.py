@@ -1,11 +1,13 @@
-"""Settings → Plex, under the Plex box: what AirGrabber does without Plex and with it, one line per
-thing, a ✓ or a dash in each of the two columns (the owner's wish, 2026-11-08).
+"""Settings → Library, under its boxes: what AirGrabber does without a library and with one (Plex,
+or your own folders: docs/folder-library/), one line per thing, a ✓ or a dash in each of the two
+columns (the owner's wish, 2026-11-08; both sources since the folder library).
 
-Only what really depends on Plex is a dash on the left: what you have and miss (the ✓ and
+Only what really needs a library is a dash on the left: what you have and miss (the ✓ and
 "missing" cues, the calendar's "✓ Downloaded"), skipping what's already in the library, the
-Library page, gaps in seasons, and Plex scanning the folders MediaForge moves files into. The phone
-app's lines show only where the phone connection is offered (`phone`): no text tells others
-about it.
+Library page, gaps in seasons, and new files counting soon after MediaForge moves them (Plex
+scans the folder; the folder library reads it again). The phone app's lines show only where the
+phone connection is offered (`phone`): no text tells others about it; their heading says the
+phone app needs Plex.
 """
 
 from __future__ import annotations
@@ -18,18 +20,18 @@ from app.i18n import N_, t
 from app.ui import theme
 from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
 
-TITLE_TEXT = N_("With and without Plex")
-WITHOUT_TEXT = N_("Without Plex")
-WITH_TEXT = N_("With Plex")
-PHONE_HEADING = N_("Phone app")
+TITLE_TEXT = N_("With and without a library")
+WITHOUT_TEXT = N_("Without a library")
+WITH_TEXT = N_("With Plex or your folders")
+PHONE_HEADING = N_("Phone app (needs Plex)")
 YES = "✓"
 NO = "—"
-MARK_WIDTH = 104  # each of the two columns
+MARK_WIDTH = 130  # each of the two columns (their headings wrap)
 
 
 class Line(NamedTuple):
     text: str  # N_: translated where it is shown
-    without: bool  # there without Plex too
+    without: bool  # there without a library too
 
 
 AIRGRABBER_LINES = (
@@ -40,7 +42,7 @@ AIRGRABBER_LINES = (
     Line(N_("See which episodes you have and which are missing"), False),
     Line(N_("The Library page with your posters"), False),
     Line(N_("Find the gaps in your seasons"), False),
-    Line(N_("Plex picks up new files as soon as MediaForge moves them"), False),
+    Line(N_("New files count soon after MediaForge moves them"), False),
 )
 PHONE_LINES = (
     Line(N_("Use the phone app"), False),
@@ -72,7 +74,9 @@ class PlexCompareBox:
             self.table.grid_columnconfigure(column, minsize=MARK_WIDTH)
         row = 0
         for column, text in ((1, WITHOUT_TEXT), (2, WITH_TEXT)):
-            self._label(t(text), bold=True, colour=theme.TEXT).grid(row=row, column=column, padx=8)
+            heading = self._label(t(text), bold=True, colour=theme.TEXT, wrap=MARK_WIDTH - 8)
+            heading.configure(anchor="center", justify="center")
+            heading.grid(row=row, column=column, padx=4, sticky="s")
         self.rows: list[tuple[str, str, str]] = []  # what each line shows: text, left, right
         for heading, lines in compare_lines(phone=phone):
             if heading:

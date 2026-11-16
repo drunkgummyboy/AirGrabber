@@ -29,11 +29,10 @@ from typing import TYPE_CHECKING, Any
 
 import customtkinter as ctk
 
-from app.i18n import t
 from app.models import InfoLayout, Movie, MovieDetails, TitleExtras
 from app.models.plex import PlexTitle
 from app.services.tmdb import TMDBError, TMDBNotConfigured
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.download_control import CORNER_RADIUS as CONTROL_RADIUS
 from app.ui.download_control import FONT_SIZE as CONTROL_FONT_SIZE
 from app.ui.download_control import ROW_HEIGHT, DownloadActions, movie_key
@@ -45,7 +44,7 @@ from app.ui.media_cards import (
     tmdb_poster_size,
     tmdb_rating,
 )
-from app.ui.missing_control import HAVE_MARK, PLEX_TIP, mark_label
+from app.ui.missing_control import HAVE_MARK, mark_label
 from app.ui.play_control import Play, play_button
 from app.ui.release_panel import MovieTarget, PanelServices, ReleasePanel
 from app.ui.row_actions import RowActions
@@ -239,7 +238,7 @@ class MovieDetailsWindow(TitleInfoWindow):
             self.plex_mark = mark_label(
                 self.buttons, HAVE_MARK, theme.TEXT_MUTED, dot=False, height=ROW_HEIGHT
             )
-            add_tooltip(self.plex_mark, t(PLEX_TIP))
+            add_tooltip(self.plex_mark, library_words.have_tip())
         playable = self._is_in_plex and self._plex_title is not None and self._play is not None
         if playable and self.play_button is None:
             self.play_button = play_button(

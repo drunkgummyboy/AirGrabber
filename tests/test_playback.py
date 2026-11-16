@@ -42,6 +42,8 @@ from app.ui.movie_details import MovieDetailsWindow, MovieWindows
 from app.ui.play_control import PLAY_TEXT, EpisodePicker, Play, episode_line
 from app.ui.show_details import ShowDetailsWindow, ShowWindows
 from tests.test_backup_dialog import DialogTestCase
+from tests.test_folder_playing import DUNE as DUNE_FOLDER
+from tests.test_folder_playing import FolderTestCase, nothing
 from tests.test_info_layouts import SHOW, WindowDiscovery, cast_to, no_subscribe
 from tests.test_info_polish import MarkedLibrary
 from tests.test_info_window import INFO, FILM, FakeDiscovery, FakeImages, FakeWatchlist
@@ -1015,6 +1017,46 @@ class ShowWindowTests(DialogTestCase):
     async def test_no_play_when_not_in_plex(self) -> None:
         window = await self.window(FakePlayback(show=None))
         self.assertIsNone(window.play_button)
+
+
+# -- the folder library as the source (no Plex) ---------------------------------------------------
+
+
+class FolderSourceTests(FolderTestCase):
+    """▶ Play by source: the folder library's titles and files without a Plex token, nothing
+    while neither is the library."""
+
+    async def test_play_is_there_with_either_source(self) -> None:
+        plex = mock.Mock(connected=False)
+        playback = PlaybackService(plex, nothing, folder_library=self.playing)
+        self.assertTrue(playback.available)
+        await self.settings.update(folder_library_on=False)
+        self.assertFalse(playback.available)  # no library at all
+        plex.connected = True
+        self.assertTrue(playback.available)  # Plex, as before
+        self.assertFalse(PlaybackService(mock.Mock(connected=False), nothing).available)
+
+    async def test_a_folder_film_without_files_cant_be_found(self) -> None:
+        await self.db.library_files.clear()
+        outcome = await self.playback().film_video(DUNE_FOLDER)
+        assert isinstance(outcome, PlayOutcome)
+        self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)
+        self.assertEqual(outcome.text, "AirGrabber can't find Dune in your folders right now.")
+
+    async def test_a_folder_that_hangs_counts_as_not_holding_the_file(self) -> None:
+        def slow(path: str) -> bool:
+            time.sleep(0.3)  # a NAS waking up
+            return True
+
+        playback = PlaybackService(
+            cast(Any, mock.Mock(connected=False)), nothing, folder_library=self.playing,
+            exists=slow, timeout_s=0.05,
+        )
+        video = await playback.film_video(DUNE_FOLDER)
+        assert isinstance(video, PlexVideo)
+        outcome = await playback.locate(DUNE_FOLDER, video)
+        assert isinstance(outcome, PlayOutcome)
+        self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)
 
 
 if __name__ == "__main__":

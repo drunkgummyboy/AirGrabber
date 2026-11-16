@@ -22,9 +22,17 @@ across the databases, Forge's types only under TYPE_CHECKING).
 show's with `episodes`, and hands it to AirGrabber's own player (app/ui/media_player.py), which
 uses `locate` alone and `launch` only when it falls back to VLC.
 
+The folder library (docs/folder-library/; `folder_library`, app/services/folder_library/
+playing.py) is the other source: when it is the library (no Plex token), its titles, a film's
+video, a show's episodes (each at the person's place: `person`, the PC's selected one) and the
+file come from what its last check stored, without Plex or MediaForge. A title of one copy
+plays; of two, the best one still there (`copies`, Plex's order). With a Plex token everything is
+Plex's as before; with neither, ▶ Play isn't there (`available`).
+
 What goes wrong comes back as a PlayOutcome whose `text` says so in plain words for the status
 bar: Plex didn't answer, MediaForge is off or its folder isn't set, the file isn't in that folder
-from this PC. Logs give ids and counts only: never a path, file name or title.
+from this PC (or in the folder library's folders). Logs give ids and counts only: never a path,
+file name or title.
 """
 
 from __future__ import annotations
@@ -42,8 +50,9 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Literal
 
 from app.i18n import N_, t
-from app.models import Show
+from app.models import FIRST_PROFILE_ID, Show
 from app.models.plex import LibraryKind, PlexTitle, PlexVideo
+from app.services.folder_library.playing import NOT_IN_FOLDERS_TEXT, FolderPlaying, from_folders
 from app.services.plex import PlexError, PlexService, PlexUnreachable, episode_order
 
 if TYPE_CHECKING:  # Forge's runtime: only typed here, nothing of Forge is imported
@@ -64,7 +73,7 @@ Player = Literal["vlc", "default"]
 FINDING_TEXT = N_("▶ Finding {name}…")
 PLAYING_VLC_TEXT = N_("▶ Playing {name} in VLC.")
 PLAYING_DEFAULT_TEXT = N_("▶ Playing {name} in your video player.")
-NOT_CONNECTED_TEXT = N_("Connect Plex in Settings → Plex first.")
+NOT_CONNECTED_TEXT = N_("Connect Plex in Settings → Library first.")
 PLEX_AWAY_TEXT = N_("Plex didn't answer, so try ▶ Play again in a moment.")
 NO_FILE_TEXT = N_("Plex doesn't say which file {name} is.")
 FORGE_OFF_TEXT = N_(
@@ -94,12 +103,14 @@ class PlayProblem(StrEnum):
 @dataclass(frozen=True, slots=True)
 class PlayOutcome:
     """What ▶ Play did: played in `player`, or the `problem`; `name` is what the status bar
-    names ("Dune", "The Ark S02E03"), `kind` which library folder counted."""
+    names ("Dune", "The Ark S02E03"), `kind` which library folder counted, `folders` that the
+    title is the folder library's (its own words for a file not found)."""
 
     name: str
     kind: LibraryKind
     player: Player | None = None
     problem: PlayProblem | None = None
+    folders: bool = False
 
     @property
     def played(self) -> bool:
@@ -122,6 +133,8 @@ class PlayOutcome:
                 return t(FORGE_OFF_TEXT)
             case PlayProblem.NO_FOLDER:
                 text = NO_SERIES_TEXT if shows else NO_MOVIES_TEXT
+            case PlayProblem.NOT_FOUND if self.folders:
+                text = NOT_IN_FOLDERS_TEXT
             case PlayProblem.NOT_FOUND:
                 text = NOT_IN_SERIES_TEXT if shows else NOT_IN_MOVIES_TEXT
             case PlayProblem.NO_PLAYER:
@@ -333,22 +346,28 @@ def same_show(one: PlexTitle, other: PlexTitle) -> bool:
 
 
 class PlaybackService:
-    """`services.playback`: which Plex title an info window shows, and ▶ Play."""
+    """`services.playback`: which library title an info window shows, and ▶ Play."""
 
     def __init__(
         self,
         plex: PlexService,
         folders: FolderLookup,
         *,
+        folder_library: FolderPlaying | None = None,
+        person: Callable[[], int] | None = None,
         launch: Launcher = launch_video,
         exists: Callable[[str], bool] = os.path.isfile,
         timeout_s: float = FIND_TIMEOUT_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """`launch` / `exists`: the seams tests replace (never a real player); `clock`: how
-        old a kept episode list is."""
+        """`folders`: MediaForge's Series / Movies folders (Plex's files from this PC);
+        `folder_library`: the folder library's titles and files, at the place of `person` (the
+        PC's selected person; the first without it). `launch` / `exists`: the seams tests
+        replace (never a real player); `clock`: how old a kept episode list is."""
         self._plex = plex
         self._folders = folders
+        self._library = folder_library
+        self._person = person or (lambda: FIRST_PROFILE_ID)
         self._launch = launch
         self._exists = exists
         self._timeout_s = timeout_s
@@ -357,14 +376,28 @@ class PlaybackService:
 
     @property
     def available(self) -> bool:
-        """Plex is connected."""
-        return self._plex.connected
+        """There is a library to play from: Plex is connected, or the folder library is the
+        library."""
+        return self._plex.connected or self._folder_library() is not None
+
+    def _folder_library(self) -> FolderPlaying | None:
+        """The folder library while it is the library (no Plex token)."""
+        library = self._library
+        return library if library is not None and library.on else None
+
+    async def _titles(self) -> list[PlexTitle]:
+        """The library's titles of the last check: Plex's with a token, else the folder
+        library's while it is the library, else none."""
+        if self._plex.connected:
+            return await self._plex.titles()
+        library = self._folder_library()
+        return await library.titles() if library is not None else []
 
     async def film(self, tmdb_id: int | None, imdb_id: str | None = None) -> PlexTitle | None:
-        """The film in Plex with this TMDB id (else IMDb id), from the last check."""
+        """The film in the library with this TMDB id (else IMDb id), from the last check."""
         if tmdb_id is None and imdb_id is None:
             return None
-        for title in await self._plex.titles():
+        for title in await self._titles():
             if title.kind == "movie" and (
                 (tmdb_id is not None and title.tmdb_id == tmdb_id)
                 or (imdb_id is not None and title.imdb_id == imdb_id)
@@ -375,7 +408,7 @@ class PlaybackService:
     async def show(self, show: Show) -> PlexTitle | None:
         """The show in Plex for a TVMaze show: by the TVMaze id the check matched it to, else
         its TheTVDB id, else its IMDb id (as app/services/plex.py's `match_scan` matches)."""
-        shows = [title for title in await self._plex.titles() if title.kind == "show"]
+        shows = [title for title in await self._titles() if title.kind == "show"]
         by_id = [title for title in shows if title.show_id == show.id]
         by_tvdb = [one for one in shows if show.tvdb_id is not None and one.tvdb_id == show.tvdb_id]
         by_imdb = [one for one in shows if show.imdb_id is not None and one.imdb_id == show.imdb_id]
@@ -396,7 +429,17 @@ class PlaybackService:
         """A show's episodes with their files (the picker), in order: those of every title Plex
         keeps the show as (`same_show`; it splits one when some files got matched apart), an
         episode in two of them once: the copy of the title with the most. Kept by the show's
-        Plex key for `kept_episodes`. Raises PlexError."""
+        Plex key for `kept_episodes`. A folder library show's come from its files, each at the
+        person's place. Raises PlexError."""
+        if from_folders(title):
+            library = self._folder_library()
+            listed = (
+                await library.show_videos(title, profile_id=self._person())
+                if library is not None
+                else []
+            )
+            self._kept[title.key] = (self._clock(), list(listed))
+            return listed
         titles = [title] + [
             other
             for other in await self._plex.titles()
@@ -421,7 +464,21 @@ class PlaybackService:
 
     async def film_video(self, title: PlexTitle) -> PlexVideo | PlayOutcome:
         """A film's video as Plex has it now (its file, where it was left, its length); the
-        PlayOutcome saying why not when Plex can't say."""
+        PlayOutcome saying why not when Plex can't say. A folder library film's: its best copy
+        at the person's place."""
+        if from_folders(title):
+            library = self._folder_library()
+            found = (
+                await library.film_video(title, profile_id=self._person())
+                if library is not None
+                else None
+            )
+            if found is None:
+                log.info("Play: no file for folder film %s", title.key)
+                return PlayOutcome(
+                    title.title, "movie", problem=PlayProblem.NOT_FOUND, folders=True
+                )
+            return found
         if not self._plex.connected:
             return PlayOutcome(title.title, "movie", problem=PlayProblem.NOT_CONNECTED)
         try:
@@ -453,6 +510,8 @@ class PlaybackService:
         saying why not when it can't be found."""
         kind = title.kind
         name = title.title if kind == "movie" else episode_name(title.title, video)
+        if from_folders(title):
+            return await self._locate_copy(name, kind, video)
         if not self._plex.connected:
             return PlayOutcome(name, kind, problem=PlayProblem.NOT_CONNECTED)
         folders = await self._folders()
@@ -483,6 +542,29 @@ class PlaybackService:
             return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND)
         log.info("Play: %s %s found (place %d)", kind, video.key, index + 1)
         return Located(name, kind, candidates[index])
+
+    async def _locate_copy(
+        self, name: str, kind: LibraryKind, video: PlexVideo
+    ) -> Located | PlayOutcome:
+        """A folder library video's file: the best of its copies still there from this PC (the
+        paths as they are), looked at in a thread within the time limit."""
+        library = self._folder_library()
+        paths = await library.copies(video) if library is not None else []
+        index: int | None = None
+        if paths:
+            try:
+                async with asyncio.timeout(self._timeout_s):
+                    index = await asyncio.to_thread(_first_existing, paths, self._exists)
+            except TimeoutError:
+                log.info("Play: the folder library's %s didn't answer in time", kind)
+        if index is None:
+            log.info(
+                "Play: %s %s not found in the folders (%d copies tried)",
+                kind, video.key, len(paths),
+            )
+            return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND, folders=True)
+        log.info("Play: %s %s found in the folders (copy %d)", kind, video.key, index + 1)
+        return Located(name, kind, paths[index])
 
     async def launch(self, located: Located) -> PlayOutcome:
         """Open a located file in VLC or Windows' own player (3.14.1's ▶ Play)."""

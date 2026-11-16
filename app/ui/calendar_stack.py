@@ -44,7 +44,7 @@ import customtkinter as ctk
 
 from app.i18n import N_, t, tn
 from app.models import CalendarEntry, Episode, Show
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.calendar_cards import (
     GRABBED_ICON,
     SLIM_BUTTONS_GAP,
@@ -131,6 +131,7 @@ ROW_TEXTS: dict[RowState, str] = {
     "new": N_("new"),
     "needed": N_("still needed"),
 }
+IN_LIBRARY_ROW_TEXT = N_("✓ in your library")  # "plex" with the folder library as the source
 FOLDED_ARROW = "▾"
 UNFOLDED_ARROW = "▴"
 
@@ -276,8 +277,13 @@ def row_color(kind: RowState) -> theme.Color:
 
 
 def row_text(kind: RowState) -> str:
-    """"✓ in Plex", "still needed"...; "" for nothing to say."""
-    return t(ROW_TEXTS[kind]) if kind != "quiet" else ""
+    """"✓ in Plex" ("✓ in your library" with the folder library), "still needed"...; "" for
+    nothing to say."""
+    if kind == "quiet":
+        return ""
+    if kind == "plex":
+        return t(library_words.by_source(ROW_TEXTS[kind], IN_LIBRARY_ROW_TEXT))
+    return t(ROW_TEXTS[kind])
 
 
 def needed_entries(

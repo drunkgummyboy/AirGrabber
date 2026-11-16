@@ -475,6 +475,7 @@ class WaysInTests(SettingsWindowCase):
             backup=None,
             plex=None,
             phone=None,
+            folder_library=None,
             forge=forge,
         )
         window: Any = SimpleNamespace(

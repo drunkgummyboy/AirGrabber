@@ -102,6 +102,7 @@ from app.models.plex import (
     PlexVideo,
 )
 from app.models import Settings
+from app.models.domain import TMDB_IMAGE_BASE
 from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
@@ -231,6 +232,10 @@ def resolution_name(value: str | None) -> str | None:
 
 
 POSTER_PREFIX = "plex:"  # a Library card's picture "url": "plex:/library/metadata/1001/thumb/…"
+# A folder library title's key (app/services/folder_library/match.py's `title_key`); its `thumb`
+# is TMDB's poster path ("/abc.jpg"), shown in this TMDB size.
+FOLDER_KEY_PREFIX = "folder:"
+FOLDER_POSTER_SIZE = "w342"
 POSTER_SIZE = (400, 600)  # asked of the server: enough for the biggest card at 175 % scaling
 PICTURE_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 FETCH_TIMEOUT = httpx.Timeout(60.0, connect=5.0)  # a film's file: a pause this long gives up
@@ -239,7 +244,13 @@ _PART_KEY = re.compile(r"/library/parts/\d{1,12}/\d{1,15}/[^?#\\]{1,200}")
 
 
 def poster_url(title: PlexTitle) -> str | None:
-    """The "url" a Library card loads its picture by (None: the title has none)."""
+    """The "url" a Library card loads its picture by (None: the title has none): Plex's
+    "plex:<thumb>", a folder library title's TMDB poster (no Plex, no token)."""
+    if title.key.startswith(FOLDER_KEY_PREFIX):
+        thumb = title.thumb
+        if not thumb or thumb[:1] != "/":
+            return None
+        return f"{TMDB_IMAGE_BASE}{FOLDER_POSTER_SIZE}{thumb}"
     return f"{POSTER_PREFIX}{title.thumb}" if title.thumb else None
 
 
@@ -821,13 +832,17 @@ def item_markers(item: PlexItemReply) -> Markers:
     return intro, credits_ms
 
 
+def version_rank(height: int, parts: int, size: int) -> tuple[int, ...]:
+    """▶ Play's order of a film's copies: the tallest picture, then a copy in one file over one
+    in several parts, then the biggest (all its parts). Plex's versions (`play_rank`) and the
+    folder library's copies (app/services/folder_library/playing.py) both go by it."""
+    return (height, int(parts == 1), size)
+
+
 def play_rank(media: PlexMediaReply) -> tuple[int, ...]:
-    """▶ Play's order of a film's versions: the tallest picture, then a version in one file
-    over one in several parts, then the biggest file (all its parts)."""
-    return (
-        media.height or 0,
-        int(len(media.parts) == 1),
-        sum(one.size or 0 for one in media.parts),
+    """▶ Play's order of a film's versions (`version_rank`)."""
+    return version_rank(
+        media.height or 0, len(media.parts), sum(one.size or 0 for one in media.parts)
     )
 
 

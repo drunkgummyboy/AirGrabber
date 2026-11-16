@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import httpx
@@ -28,6 +28,7 @@ from app.services.plex_library import (
     checked_text,
     follow_line,
     gaps_text,
+    library_posters,
     page_slice,
     show_line,
     shown_films,
@@ -457,6 +458,70 @@ class ViewTests(DialogTestCase):
         assert show.follow_button is not None
         self.assertEqual(phone.winfo_reqheight(), show.follow_button.winfo_reqheight())
         self.assertIn(phone.rescale, show._rescales)
+
+
+class FolderPosterTests(unittest.IsolatedAsyncioTestCase):
+    """A folder library title's picture is TMDB's poster, through the regular TMDB image cache;
+    Plex's stay as they were (the token in their header only)."""
+
+    def test_a_folder_titles_poster_is_tmdbs(self) -> None:
+        folder = title("Dune", "movie", key="folder:movie:438631", thumb="/dune.jpg")
+        self.assertEqual(poster_url(folder), "https://image.tmdb.org/t/p/w342/dune.jpg")
+        self.assertIsNone(poster_url(title("Dune", "movie", key="folder:movie:438631")))
+        # Plex's as before.
+        self.assertEqual(poster_url(title("The Ark", key="1001", thumb=THUMB)), f"plex:{THUMB}")
+
+    async def test_the_pages_pictures_go_to_plex_or_tmdb(self) -> None:
+        asked: list[tuple[str, str]] = []
+
+        async def from_plex(url: str) -> bytes | None:
+            asked.append(("plex", url))
+            return b"plex"
+
+        async def from_tmdb(url: str) -> bytes | None:
+            asked.append(("tmdb", url))
+            return b"tmdb"
+
+        fetch = library_posters(from_plex, from_tmdb)
+        tmdb_url = "https://image.tmdb.org/t/p/w342/dune.jpg"
+        self.assertEqual(await fetch(f"plex:{THUMB}"), b"plex")
+        self.assertEqual(await fetch(tmdb_url), b"tmdb")
+        self.assertEqual(asked, [("plex", f"plex:{THUMB}"), ("tmdb", tmdb_url)])
+
+
+class FolderContentsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_page_contents_from_the_folder_library(self) -> None:
+        dune = title("Dune", "movie", key="folder:movie:438631", tmdb_id=438631)
+        severance = title("Severance", key="folder:show:95396", show_id=44933)
+
+        class Folders:
+            on = True
+
+            async def titles(self) -> list[PlexTitle]:
+                return [dune, severance]
+
+        class NoPlex:
+            connected = False
+
+            async def titles(self) -> list[PlexTitle]:
+                raise AssertionError("Plex isn't asked without a token")
+
+            async def checked_at(self) -> datetime:
+                return NOW
+
+        library = mock.Mock()
+        library.tracked_ids = mock.AsyncMock(return_value=frozenset({44933}))
+        library.gaps = mock.AsyncMock(return_value=[])
+        library.cached_shows = mock.AsyncMock(return_value={})
+        service = PlexLibraryService(cast(Any, NoPlex()), library, folders=cast(Any, Folders()))
+        self.assertTrue(service.available)
+        contents = await service.contents(profile_id=1)
+        self.assertEqual(contents.films, (dune,))
+        self.assertEqual([(s.title, s.following) for s in contents.shows], [(severance, True)])
+        self.assertEqual(contents.checked_at, NOW)
+        Folders.on = False
+        self.assertFalse(service.available)
+        self.assertEqual(await service.contents(profile_id=1), LibraryContents())
 
 
 def view_kind_films() -> Any:

@@ -9,6 +9,7 @@ temporary folder; no player, VLC or Plex is ever reached."""
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -34,15 +35,18 @@ from app.media_protocol import (
     encode,
 )
 from app.models import PlayIn
-from app.models.plex import PlexTitle, PlexVideo
+from app.models.folder_library import LibraryFile
+from app.models.plex import PlexScan, PlexTitle, PlexVideo
 from app.services import playback
+from app.services.folder_library.match import title_key
+from app.services.folder_library.playing import FolderPlaying
 from app.services.local_files import LocalPlaces
 from app.services.playback import LibraryFolders, PlaybackService
 from app.services.vlc_engine import Engine
 from app.ui import media_player
 from app.ui.media_player import APP_ROOT, MediaPlayerHost, previous_in_show
 from tests.plex_link import TOKEN
-from tests.test_plex import until
+from tests.test_plex import NOW, until
 from tests.test_plex_playing import PlayingTestCase
 
 ENGINE = Engine(folder=r"C:\Program Files\VideoLAN\VLC")
@@ -1041,3 +1045,149 @@ class FallbackTests(HostTestCase):
         process = await self.play(DUNE, DUNE_VIDEO)
         self.assertEqual(len(self.starter.commands), 3)
         self.assertEqual(len(process.plays()), 1)
+
+
+# -- the folder library's videos (no Plex) --------------------------------------------------------
+
+
+class FolderHostTests(HostTestCase):
+    """The folders are the library (no Plex token): a folder title's video plays from its file at
+    the person's place, and where it was left goes to `watch_places`, never to Plex."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.host.aclose()
+        await self.settings.update(
+            plex_token="",
+            folder_library_on=True,
+            film_folders=(str(self.movies),),
+            series_folders=(str(self.series),),
+        )
+        self.ark_files = [self.season_here / f"The Ark - S02E0{n}.mkv" for n in (1, 2, 3)]
+        rows = [
+            LibraryFile(path=str(self.dune_here), size=5, mtime=1.0, kind="movie",
+                        tmdb_id=693134, quality="4K", recognised=True),
+            *(
+                LibraryFile(path=str(path), size=5, mtime=1.0, kind="episode", tmdb_id=202411,
+                            season=2, episode=n, recognised=True)
+                for n, path in enumerate(self.ark_files, start=1)
+            ),
+        ]
+        await self.db.library_files.replace_folder(str(self.root), rows)
+        self.folder_dune = DUNE.model_copy(update={"key": title_key("movie", 693134)})
+        self.folder_ark = ARK.model_copy(update={"key": title_key("show", 202411)})
+        await self.db.plex.replace(PlexScan(titles=(self.folder_dune, self.folder_ark)), NOW)
+        self.folders = FolderPlaying(
+            self.settings, self.db.library_files, self.db.watch_places, self.db.plex
+        )
+        self.person = 2
+
+        async def lookup() -> LibraryFolders | None:
+            raise AssertionError("MediaForge's folders aren't needed for the folder library")
+
+        self.playback = PlaybackService(
+            self.plex, lookup, launch=self.launch, folder_library=self.folders,
+            person=lambda: self.person,
+        )
+        self.host = self.make(folders=self.folders, person=lambda: self.person)
+        self.addAsyncCleanup(self.host.aclose)
+        self.stopped = 0
+
+        def stopped() -> None:
+            self.stopped += 1
+
+        self.host.on_stopped = stopped
+
+    async def place(self, item: str, person: int | None = None) -> tuple[int, bool] | None:
+        found = (await self.db.watch_places.places(person or self.person)).get(item)
+        return None if found is None else (found.position_ms, found.watched)
+
+    async def test_a_film_plays_at_the_persons_place_and_keeps_it_without_plex(self) -> None:
+        video = await self.playback.film_video(self.folder_dune)
+        assert isinstance(video, PlexVideo)
+        await self.folders.report(video, 600_000, 9_000_000, profile_id=2)
+        video = await self.playback.film_video(self.folder_dune)
+        assert isinstance(video, PlexVideo)
+        with self.assertLogs("app.ui.media_player", "INFO") as logs:
+            process = await self.play(self.folder_dune, video)
+            [sent] = process.plays()
+            self.assertEqual(sent.file, str(self.dune_here))
+            self.assertEqual((sent.start_ms, sent.ask_resume), (600_000, True))
+            self.assertEqual((sent.intro, sent.credits_ms), (None, None))
+            await self.tell(process, Position(ms=700_000, duration_ms=9_000_000, state="playing"))
+            self.assertEqual(await self.place("movie:693134"), (700_000, False))
+            self.now = 10.0
+            await self.tell(process, Stopped(ms=1_500_000, duration_ms=9_000_000))
+        self.assertEqual(await self.place("movie:693134"), (1_500_000, False))
+        self.assertIsNone(await self.place("movie:693134", person=1))  # the other person's
+        self.assertEqual(self.stopped, 1)  # the Library page's row is read again
+        self.assertEqual(self.server.requests, [])  # no markers, timeline or watched mark
+        self.assert_private(logs.output)
+
+    async def test_watched_at_ninety_percent_for_the_person(self) -> None:
+        video = await self.playback.film_video(self.folder_dune)
+        assert isinstance(video, PlexVideo)
+        process = await self.play(self.folder_dune, video)
+        await self.tell(process, Position(ms=8_000_000, duration_ms=9_000_000, state="playing"))
+        self.assertEqual(await self.place("movie:693134"), (8_000_000, False))
+        self.now = 10.0
+        await self.tell(process, Position(ms=8_100_000, duration_ms=9_000_000, state="playing"))
+        self.assertEqual(await self.place("movie:693134"), (0, True))
+        self.assertEqual(self.server.requests, [])
+
+    async def test_the_next_episode_comes_from_the_library(self) -> None:
+        episodes = await self.playback.episodes(self.folder_ark)
+        self.assertEqual([v.file for v in episodes], [str(path) for path in self.ark_files])
+        process = await self.play(self.folder_ark, episodes[0], episodes)
+        self.assertEqual(process.plays()[0].next_label, "S02E02")
+        await self.tell(process, Position(ms=2_000_000, duration_ms=2_700_000, state="playing"))
+        await self.tell(process, WantNext())
+        self.assertEqual(
+            [p.file for p in process.plays()], [str(self.ark_files[0]), str(self.ark_files[1])]
+        )
+        self.assertEqual(await self.place("episode:202411:2:1"), (0, True))
+        self.assertEqual(self.server.requests, [])
+
+    async def test_quitting_keeps_the_place(self) -> None:
+        video = await self.playback.film_video(self.folder_dune)
+        assert isinstance(video, PlexVideo)
+        process = await self.play(self.folder_dune, video)
+        await self.tell(process, Position(ms=600_000, duration_ms=9_000_000, state="playing"))
+        self.now = 3.0
+        await self.tell(process, Position(ms=603_000, duration_ms=9_000_000, state="playing"))
+        await self.host.aclose()
+        self.assertEqual(await self.place("movie:693134"), (603_000, False))
+        self.assertEqual(self.server.requests, [])
+
+    async def test_a_place_that_cant_be_saved_never_stops_quitting(self) -> None:
+        # The final review's finding 6: a database error from the folder library's report (or
+        # its watched mark) is logged by its type only; the player still closes and is waited for.
+        video = await self.playback.film_video(self.folder_dune)
+        assert isinstance(video, PlexVideo)
+        process = await self.play(self.folder_dune, video)
+        await self.tell(process, Position(ms=600_000, duration_ms=9_000_000, state="playing"))
+        self.now = 3.0
+        secret = f"database trouble in {self.dune_here}"
+
+        async def failing(*args: Any, **kwargs: Any) -> None:
+            raise sqlite3.OperationalError(secret)
+
+        with (
+            mock.patch.object(self.folders, "report", failing),
+            mock.patch.object(self.folders, "mark_watched", failing),
+            self.assertLogs("app.ui.media_player", "INFO") as logs,
+        ):
+            await self.tell(
+                process, Position(ms=8_200_000, duration_ms=9_000_000, state="playing")
+            )
+            await self.host.settled()
+            await asyncio.wait_for(self.host.aclose(), 2.0)
+        self.assertTrue(process.stdin.closed)
+        self.assertEqual((process.returncode, process.killed), (0, False))  # waited for
+        said = "\n".join(logs.output)
+        self.assertIn("OperationalError", said)
+        self.assertNotIn(secret, said)
+        self.assertNotIn("Traceback", said)
+        self.assertTrue(
+            all(record.exc_info is None for record in logs.records if record.levelno >= 30)
+        )

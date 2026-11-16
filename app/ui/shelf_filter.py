@@ -23,7 +23,7 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.ui import theme
-from app.ui.tooltip import add_tooltip
+from app.ui.tooltip import Tooltip, add_tooltip
 
 
 ALL_SERVICES = N_("All services")
@@ -192,6 +192,7 @@ class FilterBar(ctk.CTkFrame):
         self._chip_row.grid(row=0, column=0, sticky="w")
         self._hide_var = ctk.BooleanVar(value=hide_owned)
         self.switch: ctk.CTkSwitch | None = None
+        self._switch_tip: Tooltip | None = None
         self.offer_hide(offered)
         self.bind("<Configure>", self._on_resize, add="+")
 
@@ -210,14 +211,21 @@ class FilterBar(ctk.CTkFrame):
                 progress_color=theme.ACCENT,
                 command=self._hide_toggled,
             )
-            add_tooltip(self.switch, self._hide_tip)
+            self._switch_tip = add_tooltip(self.switch, self._hide_tip)
             self._wrapped = None
             self._place_switch(wrapped=False)
             self._fit()
         elif not offered and self.switch is not None:
             self.switch.destroy()
             self.switch = None
+            self._switch_tip = None
             self._wrapped = None
+
+    def set_hide_tip(self, text: str) -> None:
+        """The hide switch's tip from now on (a page whose words follow the library's source)."""
+        self._hide_tip = text
+        if self._switch_tip is not None:
+            self._switch_tip.set_text(text)
 
     @property
     def genres(self) -> tuple[Genre, ...]:

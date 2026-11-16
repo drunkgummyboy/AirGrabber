@@ -17,7 +17,7 @@ from unittest import mock
 import httpx
 
 from app.models import DiscoverShow, MediaType, Movie, MovieDetails
-from app.models.tmdb import TMDBSeason, TMDBTitle
+from app.models.tmdb import TMDBSeason, TMDBTitle, TMDBTitleIds
 from app.services.tmdb import (
     TMDBAuthError,
     TMDBClient,
@@ -1090,6 +1090,46 @@ class ForgeLookupTests(TMDBTestCase):
             await self.client(FakeTMDB(ok({"id": "x"}))).title(MediaType.TV, 1)
         with self.assertRaises(TMDBError):
             await self.client(FakeTMDB(ok({"episodes": []}))).tv_season(1, 1)
+
+
+class TitleIdsTests(TMDBTestCase):
+    """title_ids: a film or show with its IMDb and TheTVDB ids (the folder library)."""
+
+    async def test_a_film_with_its_ids_in_one_request(self) -> None:
+        server = FakeTMDB(ok(load("movie_details.json")))
+        found = await self.client(server).title_ids(MediaType.MOVIE, 969681)
+        [request] = server.requests
+        self.assert_request(request, "/movie/969681", {"append_to_response": "external_ids"})
+        assert found is not None
+        self.assertIsInstance(found, TMDBTitleIds)
+        self.assertEqual(
+            (found.id, found.title, found.year, found.poster_path, found.imdb, found.tvdb),
+            (969681, "Spider-Man: Brand New Day", 2026, "/bjiS5ipwxb9JFy3XRRN4OAilSeX.jpg",
+             "tt22084616", None),
+        )
+
+    async def test_a_show_with_its_ids(self) -> None:
+        server = FakeTMDB(ok(load("tv_details.json")))
+        found = await self.client(server).title_ids(MediaType.TV, 123542)
+        [request] = server.requests
+        self.assert_request(request, "/tv/123542", {"append_to_response": "external_ids"})
+        assert found is not None
+        self.assertEqual(
+            (found.id, found.title, found.year, found.imdb, found.tvdb),
+            (123542, "LINK CLICK", 2021, "tt14976292", 402033),
+        )
+
+    async def test_missing_ids_and_a_404(self) -> None:
+        bare = await self.client(FakeTMDB(ok({"id": 5, "title": "X", "imdb_id": ""}))).title_ids(
+            MediaType.MOVIE, 5
+        )
+        assert bare is not None
+        self.assertEqual((bare.imdb, bare.tvdb), (None, None))
+        server = FakeTMDB(httpx.Response(404, json={"success": False, "status_code": 34}))
+        self.assertIsNone(await self.client(server).title_ids(MediaType.TV, 7))
+        with self.assertRaises(TMDBError):
+            await self.client(FakeTMDB(ok({"id": "x"}))).title_ids(MediaType.TV, 1)
+
 
 class CollectionTests(TMDBTestCase):
     """`collection_of`: a film's series ("In deze reeks"), by release date."""

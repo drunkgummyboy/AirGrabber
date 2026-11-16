@@ -1,13 +1,14 @@
 """Weekly episode calendar: tracked episodes from SQL, plus suggested shows per day. Both are
 the selected person's (Settings' `current_profile`, read at every load; app/services/profiles.py).
 
-While Plex is connected (`LibraryService.plex_connected`; without it the page shows nothing of
-what you have or miss, owner's decision for 3.1.0), missing episodes (`missing_between`: aired
-at least a day ago, neither in Plex nor downloaded) get the cards' amber pill; new ones
-(`new_between`: aired less than a day ago) a blue "New" pill; the stack cards' rows say
-which are in Plex (`plex_between`). Several episodes of one show on one day share a
-stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers which stacks are
-unfolded for the session, so a reload (a sync, a settings change, a grab) keeps them open.
+While there is a library (`LibraryService.has_library`: Plex, or else the folder library;
+without one the page shows nothing of what you have or miss, owner's decision for 3.1.0),
+missing episodes (`missing_between`: aired at least a day ago, neither in Plex nor downloaded)
+get the cards' amber pill; new ones (`new_between`: aired less than a day ago) a blue "New"
+pill; the stack cards' rows say which are in Plex (`plex_between`). Several episodes of one show
+on one day share a stack card (app/ui/calendar_stack.py: `stack_entries`); the page remembers
+which stacks are unfolded for the session, so a reload (a sync, a settings change, a grab) keeps
+them open.
 
 Suggestions (💡): every day gets its best-ranked one; then each week row's quieter days get
 more, best first, as many as fit within the row's tallest day (`extra_suggestions`), so the
@@ -603,8 +604,8 @@ class CalendarView(BaseView):
             )
         try:
             entries = await self._library.calendar(start, end, profile_id=profile_id)
-            # What you have and miss: with Plex only (the calls answer "nothing" without it).
-            marks = self._library.plex_connected
+            # What you have and miss: with a library only (the calls answer "nothing" without).
+            marks = self._library.has_library
             missing = await self._library.missing_between(start, end, profile_id=profile_id)
             new = await self._library.new_between(start, end, profile_id=profile_id)
             in_plex = await self._library.plex_between(start, end)
@@ -882,11 +883,11 @@ class CalendarView(BaseView):
         """Rebuild only the cards of the grabbed episodes (their ✓ and missing pills), not the
         whole grid; while a load hasn't put its episodes on screen yet the page reloads instead
         (while its suggestions come the cards are taken in place).
-        Without Plex the cards say nothing of what you have: nothing to rebuild (their
+        Without a library the cards say nothing of what you have: nothing to rebuild (their
         Download buttons follow the grab themselves)."""
         if self._shown is None or self._loading():
             return False
-        if target.media_type is not MediaType.TV or not self._library.plex_connected:
+        if target.media_type is not MediaType.TV or not self._library.has_library:
             return True
         self._grabs.append(target)
         if self._grab_task is None or self._grab_task.done():

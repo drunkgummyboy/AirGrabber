@@ -1,5 +1,5 @@
 """Preferences dialog in plain words, the one Settings window of AirGrabber and MediaForge: a
-sidebar of sections (Downloading: where downloads go, quality, automatic, Plex, phone connection;
+sidebar of sections (Downloading: where downloads go, quality, automatic, Library, phone connection;
 MediaForge: FORGE_SECTIONS of app/forge/ui/settings_pages.py; App: movie & show info, looks,
 updates, advanced) and one scrolling page per section, its settings grouped in boxes that each
 say what they are for (the layout is app/ui/settings_layout.py's). Every change goes through
@@ -69,6 +69,7 @@ from app.services.startup import StartupError
 from app.models.backup import BackupLoadResult
 from app.models.settings import AUTO_WAIT_CHOICES, STUCK_CHOICES, TextSize
 from app.services.backup import BackupService
+from app.services.folder_library.service import FolderLibraryService
 from app.services.phone.service import PhoneService
 from app.services.plex import PlexService
 from app.services.tmdb import TMDBError
@@ -96,6 +97,7 @@ from app.ui.dialog_kit import (
 from app.ui.phone_app import PhoneAppDialog
 from app.ui.phone_settings import PhoneBox
 from app.ui.plex_compare import PlexCompareBox
+from app.ui.folder_library_settings import BoxState, FolderLibraryBox
 from app.ui.plex_settings import PlexBox
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
 from app.ui.quick_setup import OPEN_TEXT as QUICK_SETUP_TEXT
@@ -149,7 +151,9 @@ SECTION_LOOKS = N_("Looks")
 SECTION_UPDATES = N_("Updates")
 SECTION_ADVANCED = N_("Advanced")
 SECTION_BACKUP = N_("Backup")
-SECTION_PLEX = N_("Plex")  # app/ui/plex_settings.py: what is in Plex counts as had
+# What you already have, from Plex (app/ui/plex_settings.py) or from your own folders
+# (app/ui/folder_library_settings.py): it counts as had. It was "Plex" before the folder library.
+SECTION_LIBRARY = N_("Library")
 SECTION_PHONE = N_("Phone connection")  # app/ui/phone_settings.py: for the Companion app
 
 # The sidebar: a small group label above each part of the list, then its sections in order.
@@ -157,7 +161,7 @@ SECTION_PHONE = N_("Phone connection")  # app/ui/phone_settings.py: for the Comp
 SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         N_("Downloading"),
-        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_PLEX, SECTION_PHONE),
+        (SECTION_WHERE, SECTION_QUALITY, SECTION_AUTOMATIC, SECTION_LIBRARY, SECTION_PHONE),
     ),
     (
         N_("App"),
@@ -169,7 +173,7 @@ SECTION_ICONS: dict[str, str] = {
     SECTION_WHERE: "⬇",
     SECTION_QUALITY: "🎚",
     SECTION_AUTOMATIC: "⏱",
-    SECTION_PLEX: "▶",
+    SECTION_LIBRARY: "▶",
     SECTION_PHONE: "📱",
     SECTION_INFO: "🎬",
     SECTION_LOOKS: "🖼",
@@ -184,9 +188,9 @@ SECTION_NOTES: dict[str, str] = {
         "Which release AirGrabber picks when you click Download, and for automatic downloads."
     ),
     SECTION_AUTOMATIC: N_("What AirGrabber does on its own, without you clicking anything."),
-    SECTION_PLEX: N_(
-        "What's in your Plex libraries counts as something you already have: it isn't missing "
-        "and isn't downloaded again."
+    SECTION_LIBRARY: N_(
+        "What you already have, from Plex or from your own folders, isn't missing and isn't "
+        "downloaded again."
     ),
     SECTION_PHONE: N_(
         "The Companion app on your phone reaches AirGrabber over your home network, never from "
@@ -725,13 +729,16 @@ class SettingsDialog(ctk.CTkToplevel):
         plex: PlexService | None = None,
         phone: PhoneService | None = None,
         forge: ForgeRuntime | None = None,
+        folder_library: FolderLibraryService | None = None,
     ) -> None:
         """`on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
         `images`: the Card size box's preview card (none without it); `library`: a followed
         show's poster for it (the placeholder card without one). `backup`: the Backup section
         shows when it is given. `forge`: the MediaForge group shows when it is given. `section`:
-        the page it opens at (Where downloads go when not given or not shown)."""
+        the page it opens at (Where downloads go when not given or not shown). `plex` /
+        `folder_library`: the Library section shows when either is given (its boxes for those
+        given)."""
         super().__init__(master, fg_color=theme.BG)
         self._forge = forge
         self.parts: dict[str, ForgeSectionPart] = {}  # the Forge sections built so far
@@ -744,8 +751,10 @@ class SettingsDialog(ctk.CTkToplevel):
             self._forge_sections = FORGE_SECTIONS
             groups.insert(1, (FORGE_GROUP, tuple(FORGE_SECTIONS)))
         self._backup = backup
-        self._plex = plex  # the Plex section shows when it is given
+        self._plex = plex  # the Library section shows when it or `folder_library` is given
+        self._folder_library = folder_library
         self.plex_box: PlexBox | None = None
+        self.folder_box: FolderLibraryBox | None = None
         self.plex_compare: PlexCompareBox | None = None
         self._phone = phone  # the Phone connection section shows when it is given and available
         self.phone_box: PhoneBox | None = None
@@ -863,9 +872,8 @@ class SettingsDialog(ctk.CTkToplevel):
         }
         if self._backup is not None:
             builders[SECTION_BACKUP] = self._build_backup
-        if self._plex is not None:
-            plex_service = self._plex
-            builders[SECTION_PLEX] = lambda: self._build_plex(plex_service)
+        if self._plex is not None or self._folder_library is not None:
+            builders[SECTION_LIBRARY] = self._build_library
         if self._phone is not None and self._phone.available:
             phone_service = self._phone
             builders[SECTION_PHONE] = lambda: self._build_phone(phone_service)
@@ -983,6 +991,8 @@ class SettingsDialog(ctk.CTkToplevel):
             self._build_forge_section(section)
         if section not in self._pages:
             return
+        if section == SECTION_LIBRARY and self.folder_box is not None:
+            self.folder_box.page_shown()  # MediaForge's folders as a suggestion, from now on
         self._section = section
         self._grid_page(section)
         self._scroll._parent_canvas.yview_moveto(0)  # each page starts at its top
@@ -1736,16 +1746,48 @@ class SettingsDialog(ctk.CTkToplevel):
         ).pack(side="left", padx=(12, 0))
         return page
 
-    # -- Plex ----------------------------------------------------------------------------------
+    # -- Library -------------------------------------------------------------------------------
 
-    def _build_plex(self, plex: PlexService) -> _Page:
-        """The Plex box (app/ui/plex_settings.py, with "Play in"), which acts at once, not on Save;
-        under it what AirGrabber does with and without Plex (app/ui/plex_compare.py)."""
-        page = self._new_page(SECTION_PLEX)
-        self.plex_box = PlexBox(page, plex, settings=self._settings)
+    def _build_library(self) -> _Page:
+        """The Plex box (app/ui/plex_settings.py) and the "Your own folders" box
+        (app/ui/folder_library_settings.py), which act at once, not on Save: the library's box
+        first (mockups/folder-library.html: the folders' while they are the library, else
+        Plex's), under both "Play in" and "Open with"; then what AirGrabber does with and
+        without Plex (app/ui/plex_compare.py)."""
+        page = self._new_page(SECTION_LIBRARY)
+        folder_library = self._folder_library
+        if self._plex is not None:
+            self.plex_box = PlexBox(page, self._plex, settings=self._settings, folders=folder_library)
+        if folder_library is not None:
+            suggest = None
+            if self._forge is not None:
+                from app.services.playback import forge_folders
+
+                suggest = forge_folders(self._forge)
+            self.folder_box = FolderLibraryBox(
+                page,
+                folder_library,
+                self._settings,
+                suggest=suggest,
+                on_state=lambda state: self._order_library(page, state),
+            )
+            self._order_library(page, self.folder_box.state)
         phone = self._phone is not None and self._phone.available
         self.plex_compare = PlexCompareBox(page, phone=phone)
         return page
+
+    def _order_library(self, page: _Page, state: BoxState) -> None:
+        """The folders' box first while they are the library, else Plex's; "Play in" under
+        both."""
+        plex, folders = self.plex_box, self.folder_box
+        if plex is None or folders is None:
+            return
+        order = [plex.box.frame, folders.box.frame]
+        if state == "on":
+            order.reverse()
+        if plex.play_box is not None:
+            order.append(plex.play_box.frame)
+        page.order(order)
 
     def _build_phone(self, phone: PhoneService) -> _Page:
         """The phone connection's boxes (app/ui/phone_settings.py); they act at once, not on

@@ -1,8 +1,9 @@
 """Missing episodes in the UI: the amber "3 missing", "Download missing"'s texts and the run
 states behind it, an episode's quiet mark ("● Missing", "● New", a grey ✓ "In Plex":
-`mark_label`) and the small popup menus. Since 3.1.0 they show only while Plex is connected,
-and only Plex counts as had (owner's decision; app/services/plex.py): there are no marks of
-your own ("I already have this" is gone).
+`mark_label`) and the small popup menus. Since 3.1.0 they show only while there is a library
+(Plex, or else the folder library: app/services/library_source.py), and only what is in it counts
+as had (owner's decision): there are no marks of your own ("I already have this" is gone). The
+✓'s tip names the source (app/ui/library_words.py).
 
 The main window runs "Download missing" (one run per show at a time; since 3.0.1 its episodes
 go into the download queue as one batch, `queued_run_report` sums up how it went) and keeps

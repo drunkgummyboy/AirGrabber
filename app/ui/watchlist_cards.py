@@ -6,9 +6,10 @@ its grid when films came or went. Everything it shows is stored data, so it work
 TMDB key.
 
 A `WatchlistCard` has one row, like every poster card: the main button and a round ⋯ beside it.
-For a film not out yet the main button is the grey "not yet" outline with the date ("Out 17
-Nov", `WatchStatus.texts`); once the film can be downloaded, the usual ⬇ Download (a right-click
-chooses a download yourself). The ⋯ menu (`watch_menu`): "☑ / ☐ Download when it's out" (while
+For a film not out yet the main button is the grey "not yet" outline with the date after a
+drawn icon (`release_date`: ⬇ "17 Nov", 🎬 "3 Dec", ⬇ "~30 Nov"; its words in the hover
+tip); once the film can be downloaded, the usual ⬇ Download (a right-click chooses a download
+yourself). The ⋯ menu (`watch_menu`): "☑ / ☐ Download when it's out" (while
 the film isn't out yet, or is out and looked for automatically), "Choose a download yourself"
 (once it is out), "Remove from watchlist". While AirGrabber looks for it automatically, a blue
 "Auto" pill sits in the cover's corner. Under the title: the year and rating, or what is going
@@ -42,12 +43,21 @@ from app.ui.download_control import (
     GAP,
     MORE_TIP,
     Base,
+    DateIcon,
     DownloadActions,
     DownloadControl,
     movie_key,
 )
 from app.ui.library_mark import LibraryMark, library_mark
-from app.ui.media_cards import imdb_search_url, tmdb_poster_size, tmdb_rating
+from app.ui.media_cards import (
+    IN_CINEMAS_TEXT,
+    NOT_OUT_TEXT,
+    OUT_TO_DOWNLOAD_TEXT,
+    imdb_search_url,
+    release_day,
+    tmdb_poster_size,
+    tmdb_rating,
+)
 from app.ui.missing_control import MenuItem, popup_menu
 from app.ui.poster_card import (
     POSTER_CARD_WIDTH,
@@ -73,8 +83,7 @@ OUT_NOW_TEXT = N_("Out now")
 WAITING_TEXT = N_("Waiting for a good release")
 UNKNOWN_TEXT = N_("Release date unknown")
 GAVE_UP_SHORT = N_("No good release found")
-OUT_ON_TEXT = N_("Out {date}")  # the "not yet" button where "Out digitally 17 Nov" won't fit
-NOT_OUT_TEXT = N_("Not out yet")  # … where "Release date unknown" won't fit
+GUESS_TEXT = N_("~{date}")  # the "not yet" button's date when it is AirGrabber's own guess
 REMOVE_TEXT = N_("Remove from watchlist")
 
 Tone = Literal["soon", "out", "waiting", "gave_up"]
@@ -102,34 +111,46 @@ def searched_ago(last_try: datetime, now: datetime) -> str:
     return tn("{n} day ago", "{n} days ago", int(seconds // 86400))
 
 
-def _day(day: date, today: date) -> str:
-    """"12 Nov", with the year when it isn't this year's."""
-    text = f"{day:%d} {month_short(day)}"
-    return text if day.year == today.year else f"{text} {day:%Y}"
+@dataclass(frozen=True, slots=True)
+class ReleaseDate:
+    """When a film that isn't out yet comes out, as its "not yet" button shows it: the date
+    after a drawn icon (the download arrow: out to download; the clapperboard: in cinemas),
+    shorter forms where the longest won't fit, and the words for its hover tip."""
+
+    texts: tuple[str, ...]
+    icon: DateIcon | None
+    tip: str
 
 
-def release_texts(entry: WatchlistEntry, today: date) -> tuple[str, ...]:
-    """When a film that isn't out yet comes out, longest first: "Out digitally 12 Nov", "Out
-    12 Nov", "12 Nov" (TMDB knows the digital release); "In cinemas 12 Nov", "12 Nov" (only the
-    cinema release, still ahead); "Expected 31 Dec", "31 Dec" (the cinema release has been:
-    AirGrabber's own estimate); or "Release date unknown", "Not out yet"."""
+def release_date(entry: WatchlistEntry, today: date) -> ReleaseDate:
+    """TMDB's digital release: ⬇ "12 Nov". Only a cinema release, still ahead: 🎬 "16 Dec".
+    The cinema release has been: ⬇ "~30 Nov", AirGrabber's own guess (`available_on`, the
+    day it starts looking). No date: "Release date unknown" / "Not out yet", no icon."""
     if entry.digital_release is not None:
-        day = _day(entry.digital_release, today)
-        return t("Out digitally {date}", date=day), t(OUT_ON_TEXT, date=day), day
+        day = release_day(entry.digital_release, today)
+        return ReleaseDate((day,), "download", t(OUT_TO_DOWNLOAD_TEXT, date=day))
     theatrical = entry.theatrical_release or entry.movie.release_date
     if theatrical is not None and theatrical > today:
-        day = _day(theatrical, today)
-        return t("In cinemas {date}", date=day), day
+        day = release_day(theatrical, today)
+        tip = t(IN_CINEMAS_TEXT, date=day)
+        return ReleaseDate((day,), "cinema", tip)
     expected = available_on(entry)
-    if expected is None:
-        return t(UNKNOWN_TEXT), t(NOT_OUT_TEXT)
-    day = _day(expected, today)
-    return t("Expected {date}", date=day), day
+    if expected is None or theatrical is None:
+        return ReleaseDate((t(UNKNOWN_TEXT), t(NOT_OUT_TEXT)), None, "")
+    day = release_day(expected, today)
+    tip = t(
+        "Expected to download around {date}, about 2 months after the cinema ({cinema})",
+        date=day,
+        cinema=release_day(theatrical, today),
+    )
+    return ReleaseDate((t(GUESS_TEXT, date=day),), "download", tip)
 
 
 def release_text(entry: WatchlistEntry, today: date) -> str:
-    """When a film that isn't out yet comes out, in full (`release_texts`' first)."""
-    return release_texts(entry, today)[0]
+    """When a film that isn't out yet comes out, in words: the button's tip, or its text when
+    there is no date."""
+    when = release_date(entry, today)
+    return when.tip or when.texts[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +162,8 @@ class WatchStatus:
     bottom: BottomRow
     auto: bool  # the ⋯ menu offers "Download when it's out"
     short: tuple[str, ...] = ()  # shorter forms of `text`, for where it won't fit
+    icon: DateIcon | None = None  # not out yet: the icon before the date
+    tip: str = ""  # not out yet: the date in words, the button's hover tip
 
     @property
     def texts(self) -> tuple[str, ...]:
@@ -157,8 +180,11 @@ def watch_status(entry: WatchlistEntry, today: date, now: datetime) -> WatchStat
         text = t("No good release found in {days} days", days=GIVE_UP_AFTER.days)
         return WatchStatus(text, "gave_up", "download", auto=False, short=(t(GAVE_UP_SHORT),))
     if not is_out(entry, today):
-        full, *short = release_texts(entry, today)
-        return WatchStatus(full, "soon", "later", auto=True, short=tuple(short))
+        when = release_date(entry, today)
+        full, *short = when.texts
+        return WatchStatus(
+            full, "soon", "later", auto=True, short=tuple(short), icon=when.icon, tip=when.tip
+        )
     if entry.auto_download:
         text = t(WAITING_TEXT)
         if entry.last_try is None:
@@ -244,7 +270,7 @@ class WatchlistCard(PosterCard):
         self._now = now
         self._status: WatchStatus | None = None
 
-        # One row: the main button (the Download control: "Out 17 Nov" or ⬇ Download) and ⋯.
+        # One row: the main button (the Download control: "17 Nov" or ⬇ Download) and ⋯.
         height = row_height(scale)
         row = ctk.CTkFrame(self, fg_color="transparent", height=height)
         row.pack_propagate(False)
@@ -312,7 +338,9 @@ class WatchlistCard(PosterCard):
         self._status = status
         if status.bottom == "later":
             self._set_meta(self._year_rating)
-            self._control.set_base(Base("unavailable", status.text, status.short))
+            self._control.set_base(
+                Base("unavailable", status.text, status.short, icon=status.icon, tip=status.tip)
+            )
         else:
             self._set_meta(status.texts, tone_color(status.tone))
             self._control.set_base(Base("download"))

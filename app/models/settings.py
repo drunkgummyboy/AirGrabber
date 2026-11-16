@@ -586,6 +586,13 @@ class Settings(BaseModel):
     plex_server_name: str = ""
     plex_server_uri: str = ""  # the server's connection that answered last
     plex_sections_off: tuple[str, ...] = ()  # the libraries (section keys) switched off
+    # The folder library (docs/folder-library/; app/services/library_source.py): without Plex,
+    # the user's own film and series folders as the library, only once switched on ("Use these
+    # folders"; an update never does). With a Plex token these are not read. This PC's own,
+    # never in a backup (app/services/backup.py).
+    folder_library_on: bool = False
+    film_folders: tuple[str, ...] = ()
+    series_folders: tuple[str, ...] = ()
     # The PC player (docs/player/2026-11-13-pc-player-design.md): what Play opens in (Settings →
     # Plex), and the always-this-language rules its menus set. `always_audio`: a language code
     # ("nl"), "" = no rule; `always_subtitles`: "" = no rule, "off" = subtitles off, else a code.

@@ -2,7 +2,8 @@
 bar under every season chip and, above the open season's rows, a square per episode. Green: in
 Plex; blue: downloaded, not in Plex yet; amber: aired, neither; grey: not aired yet.
 
-Only for a followed show while Plex is connected (`progress_shown`): what you have counts only
+Only for a followed show while there is a library (Plex, or else the folder library;
+`progress_shown`): what you have counts only
 then (owner's decision for 3.1.0), and `ShowDetails.in_plex` is filled only for followed shows.
 Plain canvases in the theme's colours, painted again on a switch between light and dark."""
 
@@ -19,7 +20,7 @@ import customtkinter as ctk
 
 from app.i18n import t
 from app.models import Episode, ShowDetails
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.missing_control import MISSING_COLOR
 
 EpisodeState = Literal["plex", "downloaded", "missing", "later"]
@@ -43,7 +44,8 @@ SQUARES_PER_ROW = 13  # a long season wraps
 
 
 def progress_shown(details: ShowDetails | None) -> bool:
-    """Whether the window shows season progress: a followed show, with Plex connected."""
+    """Whether the window shows season progress: a followed show, with a library (Plex, or
+    else the folder library; `ShowDetails.plex_connected`)."""
     return details is not None and details.plex_connected and details.tracked
 
 
@@ -75,10 +77,13 @@ def had_text(states: Sequence[EpisodeState]) -> str:
 
 
 def counts_text(states: Sequence[EpisodeState]) -> str:
-    """The squares' line: "7 in Plex · 2 downloaded · 1 not downloaded" (what there is)."""
+    """The squares' line: "7 in Plex · 2 downloaded · 1 not downloaded" (what there is; "7 in
+    your library" with the folder library)."""
     counts = Counter(states)
     parts = []
-    if counts["plex"]:
+    if counts["plex"] and library_words.folders():
+        parts.append(t("{n} in your library", n=counts["plex"]))
+    elif counts["plex"]:
         parts.append(t("{n} in Plex", n=counts["plex"]))
     if counts["downloaded"]:
         parts.append(t("{n} downloaded", n=counts["downloaded"]))

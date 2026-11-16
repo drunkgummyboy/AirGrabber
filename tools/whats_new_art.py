@@ -559,6 +559,76 @@ def draw_player() -> Image.Image:
     return layer.image
 
 
+def _tick(layer: Layer, x: float, y: float) -> None:
+    """A green have-it tick in a circle."""
+    layer.paint(solid("#2FA572"), Mask().add(circle(x, y, 9)).done())
+    layer.paint(
+        solid(WHITE),
+        Mask().line(((x - 4.5, y), (x - 1, y + 3.5), (x + 5, y - 3.5)), 2.2, round_ends=True).done(),
+    )
+
+
+def draw_folders() -> Image.Image:
+    """Your own folder of films on its way into the main window's Library: an open amber folder
+    with three posters sticking out, an arrow, and the window's shelf of posters, most of them
+    ticked (you have them), one with a play button."""
+    layer = _background()
+    layer.paint(glow("#E0A23A", (0.12, 0.55), 0.32, 0.30))
+    layer.paint(glow(STEEL, (0.68, 0.4), 0.55, 0.32))
+
+    # The folder: its back with the tab, three posters in it, its front over them.
+    layer.rect(34, 78, 40, 20, 6, "#a8701c")
+    layer.rect(34, 86, 110, 78, 9, "#a8701c")
+    for x, y, (colour, dark) in (
+        (48, 62, ("#4ac0d8", "#13315a")),
+        (74, 54, ("#e06a5a", "#5a1a20")),
+        (100, 64, ("#7ad04f", "#1e5a2a")),
+    ):
+        poster: Box = (x, y, 30, 44)
+        layer.rect(*poster, 4, down(poster, ((0, colour, 1), (1, dark, 1))))
+    front = ((30, 110), (148, 110), (142, 168), (36, 168))
+    layer.paint(down((30, 110, 118, 58), ((0, "#f0bc55", 1), (1, "#d08a2a", 1))), Mask().add(front).done())
+
+    # The arrow.
+    layer.paint(solid(ON_ACCENT), Mask().line(((158, 128), (186, 128)), 3.5, round_ends=True).done())
+    layer.paint(
+        solid(ON_ACCENT), Mask().line(((178, 118), (190, 128), (178, 138)), 3.5, round_ends=True).done()
+    )
+
+    # The main window and its switch, Library lit (a shelf of spines).
+    layer.rect(204, 18, 494, 206, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(204, 18, 494, 206, 14, 1.5))
+    layer.paint(solid(STEEL), Mask().add(circle(226, 40, 8)).done())
+    layer.rect(242, 35, 58, 9, 4.5, ON_ACCENT)
+    layer.rect(388, 25, 296, 31, 15.5, SURFACE)
+    layer.paint(solid("#3a3a3a"), border_mask(388, 25, 296, 31, 15.5, 1))
+    layer.rect(406, 37, 34, 7, 3.5, MUTED)
+    layer.rect(458, 37, 34, 7, 3.5, MUTED)
+    layer.rect(508, 28, 80, 25, 12.5, "#5f84a8")
+    for index, height in enumerate((13, 11, 13, 9)):
+        layer.rect(534 + index * 7, 47 - height, 5, height, 1, WHITE)
+    layer.rect(532, 47, 34, 2, 1, WHITE)
+    layer.rect(606, 37, 62, 7, 3.5, MUTED)
+
+    # The posters: the folder's three among them, ticked; the third plays.
+    colours = (
+        ("#4ac0d8", "#13315a"), ("#e06a5a", "#5a1a20"), ("#b46ad8", "#3a1a5a"),
+        ("#7ad04f", "#1e5a2a"), ("#e0b44a", "#5a3a12"), ("#6a8ad8", "#1a2a5a"),
+    )
+    for index, (colour, dark) in enumerate(colours):
+        _poster(layer, 235 + index * 74, 72, colour, dark)
+    for index in (0, 1, 3, 4):
+        _tick(layer, 235 + index * 74 + 54, 82)
+    play_x, play_y = 235 + 2 * 74 + 40, 72 + 36
+    layer.paint(solid(WHITE, 0.92), Mask().add(circle(play_x, play_y, 15)).done())
+    layer.paint(
+        solid(WINDOW),
+        Mask().add(((play_x - 4.5, play_y - 7.5), (play_x + 7.5, play_y), (play_x - 4.5, play_y + 7.5))).done(),
+    )
+    layer.rect(235, 196, 432, 14, 7, "#20262d")
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -576,7 +646,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "player.png": draw_player,
+    "folders.png": draw_folders,
 }
 
 

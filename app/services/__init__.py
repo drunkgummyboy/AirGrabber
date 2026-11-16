@@ -23,6 +23,8 @@ from app.services.download_queue import QUEUE_FILE, DownloadQueue
 from app.services.download_status import DownloadStatusService, forge_moves
 from app.services.given_up import GivenUpService
 from app.services.downloads import DownloadService, GrabError
+from app.services.folder_library.playing import FolderPlaying
+from app.services.folder_library.service import FolderLibraryService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
 from app.services.phone.collection import FilmSeries
@@ -39,7 +41,7 @@ from app.services.phone.suggestions import Suggestions
 from app.services.local_files import PLACES_FILE, LocalPlaces
 from app.services.playback import PlaybackService, forge_folders
 from app.services.plex import PlexClient, PlexService
-from app.services.plex_library import PlexLibraryService
+from app.services.plex_library import PlexLibraryService, library_posters
 from app.services.plex_scans import PlexScansAfterMoves
 from app.services.sonarr import SonarrClient
 from app.services.profiles import ProfileService
@@ -87,6 +89,8 @@ class Services:
         "auto_download",
         "backup",
         "discovery",
+        "folder_library",
+        "folder_playing",
         "download_queue",
         "download_status",
         "downloads",
@@ -126,6 +130,7 @@ class Services:
         *,
         forge: ForgeRuntime,
         paths: AppPaths,
+        tmdb: TMDBClient,
     ) -> None:
         self._db = db
         self._http = http
@@ -200,12 +205,29 @@ class Services:
             settings,
             on_change=library.notify_changed,
         )
-        # The Library page: Plex's shows and films, their posters from the Plex server.
-        self.plex_library = PlexLibraryService(self.plex, library)
-        self.plex_posters = ImageCache(http, paths.posters / "plex", fetch=self.plex.poster)
+        # Without Plex, the folder library's side of ▶ Play: its titles and files, and where
+        # each person left a video (`watch_places`).
+        self.folder_playing = FolderPlaying(settings, db.library_files, db.watch_places, db.plex)
+        # The Library page: Plex's shows and films, their posters from the Plex server (or the
+        # folder library's, their posters TMDB's through the regular image cache).
+        self.plex_library = PlexLibraryService(
+            self.plex,
+            library,
+            folders=self.folder_playing,
+            person=lambda: self.profiles.current_id,
+        )
+        self.plex_posters = ImageCache(
+            http, paths.posters / "plex", fetch=library_posters(self.plex.poster, images.raw)
+        )
         # ▶ Play in the info windows: Plex's file found through MediaForge's Series / Movies
-        # folders (read from the Forge runtime when asked) and opened in VLC.
-        self.playback = PlaybackService(self.plex, forge_folders(forge))
+        # folders (read from the Forge runtime when asked), or the folder library's own file,
+        # played in AirGrabber's player (VLC as the fallback).
+        self.playback = PlaybackService(
+            self.plex,
+            forge_folders(forge),
+            folder_library=self.folder_playing,
+            person=lambda: self.profiles.current_id,
+        )
         # Where videos opened from Explorer's "Open with" were left (app/services/local_files.py).
         self.local_places = LocalPlaces(paths.root / PLACES_FILE)
         # Import Shows → From Sonarr (a one-off read; nothing of it is stored).
@@ -213,6 +235,13 @@ class Services:
         # What MediaForge moves into a library folder, Plex scans soon after (once Forge runs).
         self.plex_scans = PlexScansAfterMoves(self.plex)
         forge.when_ready(lambda started: self.plex_scans.attach(started.moves))
+        # Without Plex, the user's own film and series folders as the library once switched on
+        # (Settings; `run` from the UI): read at the start, every 6 hours, after Plex is
+        # disconnected and after MediaForge moves something into them (once Forge runs).
+        self.folder_library = FolderLibraryService(
+            settings, db.library_files, db.plex, tmdb, library, plex=self.plex
+        )
+        forge.when_ready(lambda started: self.folder_library.attach(started.moves))
         # The Companion app's way in, on the home network; off until turned on in Settings
         # (`run` from the UI). What it may ask besides pairing comes from `routes_factory`.
         grabbed_films = GrabbedFilms(self.download_status)
@@ -326,6 +355,7 @@ class Services:
                 # the poster cache; nothing of it is imported or opened until it starts.
                 forge=ForgeRuntime(paths, http, tmdb, images, settings, fetch_tools=True),
                 paths=paths,
+                tmdb=tmdb,
             )
             await services.profiles.load()  # also the selected person's watchlist
             await services.downloads.learn_groups()  # the groups whose grabs were kept
@@ -348,6 +378,7 @@ class Services:
                 # Before these: Forge uses the HTTP client, and forge.db's aiosqlite thread is no
                 # daemon.
                 await self.plex_scans.aclose()
+                await self.folder_library.aclose()
                 await self.forge.aclose()
             finally:
                 try:
