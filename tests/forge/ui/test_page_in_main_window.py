@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import logging
 import sys
 import tkinter as tk
 import unittest
@@ -840,9 +841,13 @@ class RunDockTests(MainWindowCase):
 
     async def test_an_automatic_run_shows_on_every_other_page_with_the_pages_words(self) -> None:
         forge = await self.ready()
-        with self.assertNoLogs("app", "DEBUG"):  # the name stays off the log
+        # The name stays off the log (whatever else Forge's start may log meanwhile: on a PC
+        # without the trailer tools, say).
+        with self.assertLogs("app", "DEBUG") as logged:
+            logging.getLogger("app").debug("start of the run")
             forge.run_progress.report("Renaming 2 of 5 · Dune", 0.4, source=AUTO)
             await pump(self.window, 0.05)
+        self.assertFalse([line for line in logged.output if "Dune" in line])
         dock = self.dock()
         self.assertEqual(dock.winfo_manager(), "grid")
         self.assertEqual((dock.text, dock.fraction), ("Renaming 2 of 5 · Dune", 0.4))
