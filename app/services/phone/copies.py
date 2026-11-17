@@ -9,6 +9,12 @@ which the phone then copies from here (`GET /v1/phone-copies/<key>/file`, resuma
 ready by the time the phone comes home; cancelling that order drops it (`drop`). One job at a time; the files live in AirGrabber's local data folder (`phone-copies`),
 never on a synced drive. A copy nobody touched for STALE_DAYS goes.
 
+A folder library film (docs/folder-library/2026-11-16-companion-contract.md) has a video key
+("movie:603", playing.py's `film_item`) instead of a ratingKey: nothing is fetched, the copy is
+converted straight from the PC's own file that is there now (`local_source`, a stat in a worker
+thread under a time limit), its progress starting at FETCH_SHARE. A copy's file is its key with
+`:` as `-` ("movie-603.mkv").
+
 The recipe: CUDA decoding, `scale_cuda` to fit 1920 × 1080 (a 10-bit picture stays 10-bit, its
 colour tags (HDR10) are kept), `hevc_nvenc` at ~6 Mbit/s (10 at the peaks); sound copied when it's
 AAC / AC-3 / E-AC-3 (and other kinds a phone plays), TrueHD / DTS / FLAC / PCM to E-AC-3 640k;
@@ -18,8 +24,9 @@ with a plain sentence rather than wrong colours.
 
 ffmpeg and ffprobe are MediaForge's trailer tools (`AppPaths.forge / "tools" / "ffmpeg" / "bin"`):
 without them, or without a card that encodes (`probe`, once), `available` is False and
-`GET /v1/hello` says so (`phone_copies`). Logs give keys, sizes and durations: never a title, a
-path, an address or ffmpeg's own words (they hold paths).
+`GET /v1/hello` says so (`phone_copies`). Logs give Plex's keys, sizes and durations (a folder
+film's key only as its kind, `_logged`: its TMDB id would name it): never a title, a path, an
+address or ffmpeg's own words (they hold paths).
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from app.i18n import N_, t
 from app.models.plex import PlexFilmFile
+from app.services.folder_library.playing import canonical_item, parse_item
 from app.services.phone.server import (
     FileReply,
     Reply,
@@ -67,7 +75,10 @@ OUT_BYTES_PER_S = 10_000_000 / 8  # the peak rate: room kept on the disk for the
 DISK_MARGIN = 2 * 1024**3
 PROBE_TIMEOUT_S = 30.0
 COPY_TYPE = "video/x-matroska"
-_KEY = re.compile(r"\d{1,12}")
+# Send to phone's key rule: a Plex ratingKey or a folder video's key (the copies narrow it to
+# a film's, `_film_key`).
+_PHONE_KEY = re.compile(r"[A-Za-z0-9:]{1,40}")
+_PLEX_FILM_KEY = re.compile(r"[0-9]{1,12}")  # a Plex ratingKey
 _KEPT_SOUND = frozenset({"aac", "ac3", "eac3", "mp3", "opus", "vorbis", "mp2"})
 _TEXT_SUBTITLES_TO_SRT = frozenset({"mov_text"})  # MP4's text: Matroska takes it as SRT
 
@@ -75,6 +86,7 @@ State = Literal["waiting", "fetching", "converting", "ready", "failed"]
 
 NOT_POSSIBLE_TEXT = N_("This PC can't make phone-sized copies.")
 NOT_THERE_TEXT = N_("Plex doesn't have this film any more.")
+NOT_THERE_TEXT_FOLDERS = N_("This film isn't in your folders any more.")
 SMALL_ALREADY_TEXT = N_("This film is already small enough for the phone.")
 NO_ROOM_TEXT = N_("There isn't enough free space on this PC to make the copy.")
 FETCH_FAILED_TEXT = N_("Your PC couldn't get the film from Plex.")
@@ -319,6 +331,33 @@ class _Job:
 
 Run = Callable[[Sequence[str], float], Awaitable[tuple[int, bytes]]]
 Convert = Callable[[Sequence[str], float, Callable[[float], None]], Awaitable[int]]
+LocalSource = Callable[[str], Awaitable[Path | None]]
+
+
+def _stem(key: str) -> str:
+    """A copy's file name without its extension: the key, `:` as `-` (Windows has no `:`)."""
+    return key.replace(":", "-")
+
+
+def _film_key(key: str) -> str | None:
+    """The key a copy of this film is kept under: a Plex ratingKey (digits) as it is, a folder
+    library film's video key as the library has it ("movie:0603" is "movie:603"); None for any
+    other key (an episode's, a title's, letters)."""
+    if _PLEX_FILM_KEY.fullmatch(key):
+        return key
+    item = canonical_item(key)
+    return item if item is not None and item.startswith("movie:") else None
+
+
+def _logged(key: str) -> str:
+    """A key as the log may hold it: a Plex ratingKey (digits) as it is, any other only as the
+    text before its first `:` ("movie": a folder film's TMDB id would name it)."""
+    return key if _PLEX_FILM_KEY.fullmatch(key) else key.split(":", 1)[0]
+
+
+def _key_of(stem: str) -> str:
+    """The key of a copy's file name (keys never hold `-`)."""
+    return stem.replace("-", ":")
 
 
 class PhoneCopies:
@@ -332,9 +371,11 @@ class PhoneCopies:
         convert: Convert = _convert,
         clock: Callable[[], float] = time.time,
         free_space: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free,
+        local_source: LocalSource | None = None,
     ) -> None:
-        """`folder`: where the copies go (local data). `tools`: ffmpeg's bin folder. The rest:
-        for tests."""
+        """`folder`: where the copies go (local data). `tools`: ffmpeg's bin folder.
+        `local_source(key)`: the PC's own file of a folder library film (a video key) that is
+        there now, None when there is none (None: no folder library). The rest: for tests."""
         self._plex = plex
         self._folder = folder
         self._ffmpeg = tools / "ffmpeg.exe"
@@ -343,6 +384,7 @@ class PhoneCopies:
         self._convert = convert
         self._clock = clock
         self._free_space = free_space
+        self._local_source = local_source
         self._jobs: dict[str, _Job] = {}
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._current: tuple[str, asyncio.Task[None]] | None = None
@@ -407,8 +449,9 @@ class PhoneCopies:
         """Finished copies from before are ready again; half-made files go."""
         for path in await asyncio.to_thread(lambda: list(self._folder.iterdir())):
             name = path.name
-            key, _, rest = name.partition(".")
-            if rest == "mkv" and _KEY.fullmatch(key):
+            stem, _, rest = name.partition(".")
+            key = _key_of(stem)
+            if rest == "mkv" and _film_key(key) == key:
                 stat = path.stat()
                 self._jobs[key] = _Job(
                     key, "ready", 100, size=stat.st_size, touched=stat.st_mtime
@@ -421,28 +464,35 @@ class PhoneCopies:
     # -- the PC's side (Send to phone) -----------------------------------------------------------
 
     def make(self, key: str) -> bool:
-        """Start a copy of this film (a Plex ratingKey) unless there is one: False when this PC
-        can't (`available`) or the key is no film's."""
+        """Start a copy of this film (a Plex ratingKey or a folder film's video key) unless there
+        is one: False when this PC can't (`available`) or the key is no film's."""
         return self._want(key) is not None
 
     def state_of(self, key: str) -> tuple[State, int, str | None] | None:
         """A copy's state, its progress (0-100) and, failed, why; None when there's none."""
-        job = self._jobs.get(key)
+        film = _film_key(key)
+        job = self._jobs.get(film) if film is not None else None
         return None if job is None else (job.state, job.progress, job.message)
 
     async def drop(self, key: str) -> None:
         """No longer wanted: stopped when it is being made, its files gone."""
-        if _KEY.fullmatch(key):
-            await self._forget(key)
+        film = _film_key(key)
+        if film is not None:
+            await self._forget(film)
 
-    def _want(self, key: str) -> _Job | None:
+    def _want(self, wanted: str) -> _Job | None:
+        key = _film_key(wanted)
+        if key is None:
+            return None
         job = self._jobs.get(key)
         if job is None:
-            if not self.available or not _KEY.fullmatch(key):
+            if not self.available:
                 return None
             job = self._jobs[key] = _Job(key, touched=self._clock())
             self._queue.put_nowait(key)
-            log.info("Phone-sized copy %s asked for (%d waiting)", key, self._queue.qsize())
+            log.info(
+                "Phone-sized copy %s asked for (%d waiting)", _logged(key), self._queue.qsize()
+            )
         job.touched = self._clock()
         return job
 
@@ -450,8 +500,8 @@ class PhoneCopies:
 
     async def _ask(self, request: Request) -> Reply:
         key, kind, title = (request.body.get(name) for name in ("key", "kind", "title"))
-        if not isinstance(key, str) or not _KEY.fullmatch(key) or kind != "movie":
-            return bad_request()
+        if not isinstance(key, str) or _film_key(key) is None or kind != "movie":
+            return bad_request()  # only a film's: a Plex ratingKey or "movie:<tmdb>"
         if title is not None and (not isinstance(title, str) or len(title) > 300):
             return bad_request()
         job = self._want(key)
@@ -484,14 +534,14 @@ class PhoneCopies:
         return reply
 
     async def _drop(self, request: Request) -> Reply:
-        key = request.query.get("key", "")
-        if _KEY.fullmatch(key):
-            await self._forget(key)
+        film = _film_key(request.query.get("key", ""))
+        if film is not None:
+            await self._forget(film)
         return Reply(204, {})
 
     def _job(self, request: Request) -> _Job | None:
-        key = request.query.get("key", "")
-        return self._jobs.get(key) if _KEY.fullmatch(key) else None
+        film = _film_key(request.query.get("key", ""))
+        return self._jobs.get(film) if film is not None else None
 
     async def _forget(self, key: str) -> None:
         """The job gone (stopped when it runs) and its files with it."""
@@ -502,15 +552,16 @@ class PhoneCopies:
             current[1].cancel()
             await asyncio.gather(current[1], return_exceptions=True)
         await asyncio.to_thread(self._remove_files, key)
-        log.info("Phone-sized copy %s dropped", key)
+        log.info("Phone-sized copy %s dropped", _logged(key))
 
     # -- the work ------------------------------------------------------------------------------
 
     def _copy(self, key: str) -> Path:
-        return self._folder / f"{key}.mkv"
+        return self._folder / f"{_stem(key)}.mkv"
 
     def _remove_files(self, key: str) -> None:
-        for name in (f"{key}.mkv", f"{key}.mkv.part", f"{key}.source"):
+        stem = _stem(key)
+        for name in (f"{stem}.mkv", f"{stem}.mkv.part", f"{stem}.source"):
             with contextlib.suppress(OSError):
                 (self._folder / name).unlink()
 
@@ -548,13 +599,13 @@ class PhoneCopies:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.error("Phone-sized copy %s failed: %s", job.key, type(exc).__name__)
+            log.error("Phone-sized copy %s failed: %s", _logged(job.key), type(exc).__name__)
             job.state, job.message = "failed", t(CONVERT_FAILED_TEXT)
             await asyncio.to_thread(self._remove_files, job.key)
             return
         log.info(
             "Phone-sized copy %s ready: %.1f GB in %.0f min",
-            job.key,
+            _logged(job.key),
             (job.size or 0) / 1024**3,
             (time.monotonic() - started) / 60,
         )
@@ -562,11 +613,16 @@ class PhoneCopies:
     async def _fetch_and_convert(self, job: _Job) -> None:
         from app.services.plex import PlexError
 
+        if parse_item(job.key) is not None:
+            await self._convert_own(job)
+            return
         job.state, job.progress, job.touched = "fetching", 0, self._clock()
         try:
             film = await self._plex.film_file(job.key)
         except PlexError as exc:
-            log.info("Phone-sized copy %s: Plex didn't say (%s)", job.key, type(exc).__name__)
+            log.info(
+                "Phone-sized copy %s: Plex didn't say (%s)", _logged(job.key), type(exc).__name__
+            )
             raise _Failed(t(FETCH_FAILED_TEXT)) from None
         if film is None:
             raise _Failed(t(NOT_THERE_TEXT))
@@ -574,18 +630,45 @@ class PhoneCopies:
             raise _Failed(t(SMALL_ALREADY_TEXT))
         room = film.size + int(film.duration_s * OUT_BYTES_PER_S) + DISK_MARGIN
         if self._free_space(self._folder) < room:
-            log.info("Phone-sized copy %s: not enough free space", job.key)
+            log.info("Phone-sized copy %s: not enough free space", _logged(job.key))
             raise _Failed(t(NO_ROOM_TEXT))
-        source = self._folder / f"{job.key}.source"
+        source = self._folder / f"{_stem(job.key)}.source"
         await self._fetch(job, film, source)
         info = await self._read_source(source)
         if info is None:
             raise _Failed(t(CONVERT_FAILED_TEXT))
         if info.dolby_vision_only:
             raise _Failed(t(DOLBY_VISION_TEXT))
-        duration = info.duration_s or film.duration_s
-        job.state = "converting"
-        part = self._folder / f"{job.key}.mkv.part"
+        await self._converted(job, source, info, info.duration_s or film.duration_s)
+        await asyncio.to_thread(source.unlink)
+        await self._ready(job)
+
+    async def _convert_own(self, job: _Job) -> None:
+        """A folder library film: converted straight from the PC's own file (left as it is)."""
+        job.state, job.progress, job.touched = "converting", FETCH_SHARE, self._clock()
+        source = await self._local_source(job.key) if self._local_source is not None else None
+        if source is None:
+            log.info("Phone-sized copy %s: no copy in the folders can be reached", _logged(job.key))
+            raise _Failed(t(NOT_THERE_TEXT_FOLDERS))
+        info = await self._read_source(source)
+        if info is None:
+            raise _Failed(t(CONVERT_FAILED_TEXT))
+        if 0 < info.height <= MAX_HEIGHT:
+            raise _Failed(t(SMALL_ALREADY_TEXT))
+        if info.dolby_vision_only:
+            raise _Failed(t(DOLBY_VISION_TEXT))
+        room = int(info.duration_s * OUT_BYTES_PER_S) + DISK_MARGIN
+        if self._free_space(self._folder) < room:
+            log.info("Phone-sized copy %s: not enough free space", _logged(job.key))
+            raise _Failed(t(NO_ROOM_TEXT))
+        await self._converted(job, source, info, info.duration_s)
+        await self._ready(job)
+
+    async def _converted(self, job: _Job, source: Path, info: SourceInfo, duration: float) -> None:
+        """`source` converted into the job's copy, not ready yet (the card decoding, else the
+        processor)."""
+        job.state, job.progress = "converting", FETCH_SHARE
+        part = self._folder / f"{_stem(job.key)}.mkv.part"
 
         def converted(share: float) -> None:
             job.progress = FETCH_SHARE + round(share * (100 - FETCH_SHARE))
@@ -594,7 +677,11 @@ class PhoneCopies:
             ffmpeg_args(self._ffmpeg, source, part, info), duration, converted
         )
         if code != 0:  # the card wouldn't decode it: the processor decodes, the card encodes
-            log.info("Phone-sized copy %s: decoding on the card failed (%d); again", job.key, code)
+            log.info(
+                "Phone-sized copy %s: decoding on the card failed (%d); again",
+                _logged(job.key),
+                code,
+            )
             job.progress = FETCH_SHARE
             code = await self._convert(
                 ffmpeg_args(self._ffmpeg, source, part, info, card_decodes=False),
@@ -602,12 +689,12 @@ class PhoneCopies:
                 converted,
             )
         if code != 0:
-            log.warning("Phone-sized copy %s: ffmpeg ended with %d", job.key, code)
+            log.warning("Phone-sized copy %s: ffmpeg ended with %d", _logged(job.key), code)
             raise _Failed(t(CONVERT_FAILED_TEXT))
-        target = self._copy(job.key)
-        await asyncio.to_thread(os.replace, part, target)
-        await asyncio.to_thread(source.unlink)
-        job.size = (await asyncio.to_thread(target.stat)).st_size
+        await asyncio.to_thread(os.replace, part, self._copy(job.key))
+
+    async def _ready(self, job: _Job) -> None:
+        job.size = (await asyncio.to_thread(self._copy(job.key).stat)).st_size
         job.state, job.progress, job.touched = "ready", 100, self._clock()
 
     async def _fetch(self, job: _Job, film: PlexFilmFile, source: Path) -> None:
@@ -625,12 +712,14 @@ class PhoneCopies:
 
             await self._plex.fetch_film(film, write)
         except PlexError as exc:
-            log.info("Phone-sized copy %s: fetching failed (%s)", job.key, type(exc).__name__)
+            log.info(
+                "Phone-sized copy %s: fetching failed (%s)", _logged(job.key), type(exc).__name__
+            )
             raise _Failed(t(FETCH_FAILED_TEXT)) from None
         finally:
             await asyncio.to_thread(out.close)
         if got < film.size:
-            log.info("Phone-sized copy %s: the file came short", job.key)
+            log.info("Phone-sized copy %s: the file came short", _logged(job.key))
             raise _Failed(t(FETCH_FAILED_TEXT))
         job.progress = FETCH_SHARE
 
@@ -656,7 +745,9 @@ class PhoneCopies:
         running = self._current[0] if self._current is not None else None
         for key, job in list(self._jobs.items()):
             if job.touched < limit and key != running:
-                log.info("Phone-sized copy %s untouched for %d days: removed", key, STALE_DAYS)
+                log.info(
+                    "Phone-sized copy %s untouched for %d days: removed", _logged(key), STALE_DAYS
+                )
                 await self._forget(key)
 
 

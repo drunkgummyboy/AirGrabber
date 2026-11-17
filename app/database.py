@@ -256,6 +256,97 @@ FOLDER_LIBRARY_MIGRATION = """
     ) STRICT;
 """
 
+# v13: two shelves (docs/folder-library/2026-11-16-alongside-plex-design.md): the folder library's
+# titles, episodes, films and state get tables of their own beside Plex's, as plex_titles /
+# plex_episodes / plex_movies / plex_state (without `libraries`; FolderRepository), so neither
+# source's check touches the other's rows and the marks count both. `folder_gone`: what left the
+# folders' episodes or films, and when (`left_at`, UTC ISO-8601); it still counts as had for
+# GONE_GRACE_DAYS (a file moved by hand into Plex's folder, before Plex has scanned it).
+# 3.17.0 kept the folders' rows in the plex_* tables, never mixed with Plex's (Plex's check
+# replaced everything; connecting Plex cleared the folders' rows): a title keyed "folder:…" means
+# all four tables' rows are the folders'. They are copied over, then removed from plex_* (the
+# titles last: they are what tells). New tables only; going back puts the copy of the database
+# from before the update in place (app/update_guard.py), so 3.17.0 never reads this one.
+FOLDER_TABLES_MIGRATION = """
+    CREATE TABLE folder_titles (
+        kind       TEXT    NOT NULL,                        -- 'show' or 'movie'
+        rating_key TEXT    NOT NULL,                        -- "folder:show:<tmdb id>"
+        title      TEXT    NOT NULL,
+        year       INTEGER,
+        thumb      TEXT,                                    -- TMDB's poster path
+        added_at   TEXT,                                    -- UTC ISO-8601
+        seasons    INTEGER,
+        episodes   INTEGER,
+        resolution TEXT,                                    -- "4K", "1080p", "720p", "SD"
+        show_id    INTEGER,                                 -- TVMaze id it was matched to
+        tvdb_id    INTEGER,
+        imdb_id    TEXT,
+        tmdb_id    INTEGER,
+        PRIMARY KEY (kind, rating_key)
+    ) STRICT;
+
+    CREATE TABLE folder_episodes (
+        show_id INTEGER NOT NULL REFERENCES shows (id) ON DELETE CASCADE,
+        season  INTEGER NOT NULL,
+        episode INTEGER NOT NULL,
+        PRIMARY KEY (show_id, season, episode)
+    ) STRICT;
+
+    CREATE TABLE folder_movies (
+        tmdb_id INTEGER,                                    -- TMDB movie id
+        imdb_id TEXT,                                       -- "tt0111161"
+        CHECK (tmdb_id IS NOT NULL OR imdb_id IS NOT NULL)
+    ) STRICT;
+    CREATE INDEX ix_folder_movies_tmdb ON folder_movies (tmdb_id);
+    CREATE INDEX ix_folder_movies_imdb ON folder_movies (imdb_id);
+
+    CREATE TABLE folder_state (                             -- one row once a check stored
+        id              INTEGER PRIMARY KEY CHECK (id = 1),
+        checked_at      TEXT    NOT NULL,                   -- UTC ISO-8601
+        shows           INTEGER NOT NULL,
+        unmatched_shows INTEGER NOT NULL,
+        unmatched_films INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE TABLE folder_gone (                              -- left the folders, still had a while
+        kind    TEXT    NOT NULL CHECK (kind IN ('episode', 'movie')),
+        show_id INTEGER REFERENCES shows (id) ON DELETE CASCADE,
+        season  INTEGER,
+        episode INTEGER,
+        tmdb_id INTEGER,
+        imdb_id TEXT,
+        left_at TEXT    NOT NULL,                           -- UTC ISO-8601
+        CHECK (kind <> 'episode'
+               OR (show_id IS NOT NULL AND season IS NOT NULL AND episode IS NOT NULL)),
+        CHECK (kind <> 'movie' OR tmdb_id IS NOT NULL OR imdb_id IS NOT NULL)
+    ) STRICT;
+    CREATE INDEX ix_folder_gone_episode ON folder_gone (show_id, season, episode);
+
+    INSERT INTO folder_titles
+    SELECT kind, rating_key, title, year, thumb, added_at, seasons, episodes, resolution,
+           show_id, tvdb_id, imdb_id, tmdb_id
+    FROM plex_titles
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+    INSERT INTO folder_episodes (show_id, season, episode)
+    SELECT show_id, season, episode FROM plex_episodes
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+    INSERT INTO folder_movies (tmdb_id, imdb_id)
+    SELECT tmdb_id, imdb_id FROM plex_movies
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+    INSERT INTO folder_state (id, checked_at, shows, unmatched_shows, unmatched_films)
+    SELECT id, checked_at, shows, unmatched_shows, unmatched_films FROM plex_state
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+
+    DELETE FROM plex_episodes
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+    DELETE FROM plex_movies
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+    DELETE FROM plex_state
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+    DELETE FROM plex_titles
+    WHERE EXISTS (SELECT 1 FROM plex_titles WHERE rating_key LIKE 'folder:%');
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -411,6 +502,8 @@ MIGRATIONS: tuple[str, ...] = (
     LIBRARY_MIGRATION,
     # v12: the folder library's files and places; see FOLDER_LIBRARY_MIGRATION.
     FOLDER_LIBRARY_MIGRATION,
+    # v13: the folders' own titles, episodes, films and state; see FOLDER_TABLES_MIGRATION.
+    FOLDER_TABLES_MIGRATION,
 )
 
 SHOW_COLUMNS = tuple(Show.model_fields)
@@ -478,12 +571,42 @@ _IS_DOWNLOADED = f"""
           AND (h.episode = e.number OR (h.episode IS NULL AND {_PACK_HOLDS}))
     )"""
 
-# The episode `e` is in Plex (app/services/plex.py): the only thing that counts as had.
+# How long an episode or film that left the folders still counts as had (`folder_gone`): a file
+# moved by hand into Plex's folder is had again once Plex has scanned it. After that, without Plex
+# having it, it counts as missing again (docs/folder-library/2026-11-16-alongside-plex-design.md).
+GONE_GRACE_DAYS = 3
+
+# The `folder_gone` row `g` left the folders less than GONE_GRACE_DAYS ago (by SQLite's 'now').
+_GONE_RECENTLY = f"julianday(g.left_at) > julianday('now', '-{GONE_GRACE_DAYS} days')"
+
+# The episode `e` is in Plex (app/services/plex.py): the calendar's "✓ In Plex", the show
+# window's Plex marks.
 _IN_PLEX = """
     EXISTS (
         SELECT 1 FROM plex_episodes AS p
         WHERE p.show_id = e.show_id AND p.season = e.season AND p.episode = e.number
     )"""
+
+# The episode `e` is had from the folders (app/services/folder_library/): in them now, or it
+# left them less than GONE_GRACE_DAYS ago.
+_IN_FOLDERS = f"""
+    (
+        EXISTS (
+            SELECT 1 FROM folder_episodes AS f
+            WHERE f.show_id = e.show_id AND f.season = e.season AND f.episode = e.number
+        )
+        OR EXISTS (
+            SELECT 1 FROM folder_gone AS g
+            WHERE g.kind = 'episode' AND g.show_id = e.show_id AND g.season = e.season
+              AND g.episode = e.number AND {_GONE_RECENTLY}
+        )
+    )"""
+
+# The episode `e` is had: in Plex or from the folders (both empty while neither is on). This is
+# what counts for have / missing and the automatic downloads.
+_IN_LIBRARY = f"""
+    ({_IN_PLEX}
+     OR {_IN_FOLDERS})"""
 
 _CALENDAR_SQL = f"""
     SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, {_IS_DOWNLOADED} AS is_downloaded
@@ -534,8 +657,8 @@ _SUGGESTIONS_SQL = f"""
 
 # Episodes the automatic downloads look after: numbered, non-special episodes with an airstamp,
 # of a show anyone follows with the switch on, aired after the earliest moment one of them
-# switched it on, never grabbed (an episode or its season pack), not in Plex (empty without Plex)
-# and not given up: everyone's lists at once, each episode once (its tries are the episode's,
+# switched it on, never grabbed (an episode or its season pack), not had (in Plex or the folders,
+# _IN_LIBRARY; both empty while neither is on) and not given up: everyone's lists at once, each episode once (its tries are the episode's,
 # not a person's). A give-up without a try (written before 2026-11-15, when an episode missed
 # while the PC was off was given up unsearched) doesn't count: such an episode is open again.
 # Instants are compared through julianday(), which reads both the 'Z' and the '+00:00'
@@ -552,7 +675,7 @@ _AUTO_LOOKED_AFTER = f"""
     WHERE e.season > 0 AND e.number IS NOT NULL AND e.airstamp IS NOT NULL
       AND julianday(e.airstamp) > t.since
       AND NOT {_IS_DOWNLOADED}
-      AND NOT {_IN_PLEX}
+      AND NOT {_IN_LIBRARY}
 """
 _AUTO_ELIGIBLE = f"""{_AUTO_LOOKED_AFTER}
       AND (COALESCE(a.gave_up, 0) = 0 OR a.tries = 0)
@@ -560,7 +683,7 @@ _AUTO_ELIGIBLE = f"""{_AUTO_LOOKED_AFTER}
 _AUTO_ORDER = "ORDER BY julianday(e.airstamp), s.name COLLATE NOCASE, e.season, e.number"
 
 # The episodes the automatic downloads gave up on after trying (the Downloads page's
-# "Couldn't find automatically"): still looked after, still not grabbed nor in Plex; the
+# "Couldn't find automatically"): still looked after, still not grabbed nor had; the
 # latest give-up (its last try) first, at most :limit.
 _AUTO_GIVEN_UP_SQL = f"""
     SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, 0 AS is_downloaded, a.last_try AS given_up_try
@@ -636,11 +759,12 @@ _NEXT_EPISODES_SQL = f"""
 # show_id, air_date): the regular
 # numbered episodes (seasons from 1) of each show's latest season — the highest with such an
 # episode aired (an airstamp up to :now, or without one an air date up to :today) — that aren't
-# downloaded (the episode or its season pack) nor in Plex (together the CTE `pending`) and aired
+# downloaded (the episode or its season pack) nor had (in Plex or the folders, _IN_LIBRARY;
+# together the CTE `pending`) and aired
 # long enough ago (an airstamp up to :missing_by, or without one an air date up to :missing_day;
 # app.services.missing.missing_cutoffs). `pending` minus `missing` are the "new" episodes. The
 # SQL twin of app.services.missing.missing_episodes / new_episodes; tests keep them in step.
-# Only run while Plex is connected (LibraryService): without Plex nothing is missing.
+# Only run while there is a library (LibraryService): without one nothing is missing.
 _MISSING_CTE = f"""
     WITH aired AS (
         SELECT e.id, e.show_id, e.season, e.number, e.air_date, e.airstamp
@@ -659,7 +783,7 @@ _MISSING_CTE = f"""
         SELECT e.id, e.show_id, e.air_date, e.airstamp
         FROM aired AS e
         JOIN latest AS l ON l.show_id = e.show_id AND l.season = e.season
-        WHERE NOT {_IN_PLEX}
+        WHERE NOT {_IN_LIBRARY}
           AND NOT {_IS_DOWNLOADED}
     ),
     missing AS (
@@ -674,11 +798,17 @@ _MISSING_COUNTS_SQL = f"""{_MISSING_CTE}
     SELECT show_id, COUNT(*) AS missing FROM missing GROUP BY show_id
 """
 # The gaps (My shows ⋯ → Find gaps in Plex…): aired episodes of the shows a person follows
-# that Plex doesn't have, in the seasons from the first to the last one Plex has some of.
+# that aren't had (_IN_LIBRARY), in the seasons from the first to the last one Plex or the
+# folders have some of.
 _GAPS_SQL = f"""
     WITH have AS (
         SELECT show_id, MIN(season) AS first, MAX(season) AS last
-        FROM plex_episodes GROUP BY show_id
+        FROM (
+            SELECT show_id, season FROM plex_episodes
+            UNION ALL
+            SELECT show_id, season FROM folder_episodes
+        )
+        GROUP BY show_id
     )
     SELECT {_SHOW_FIELDS}, {_EPISODE_FIELDS}, {_IS_DOWNLOADED} AS is_downloaded
     FROM episodes AS e
@@ -691,7 +821,7 @@ _GAPS_SQL = f"""
           (e.airstamp IS NOT NULL AND julianday(e.airstamp) <= julianday(:now))
           OR (e.airstamp IS NULL AND e.air_date <= :today)
       )
-      AND NOT {_IN_PLEX}
+      AND NOT {_IN_LIBRARY}
     ORDER BY s.name COLLATE NOCASE, s.id, e.season, e.number
 """
 # The missing episodes airing between :start and :end (the calendar's amber marks).
@@ -769,6 +899,7 @@ class Database:
         self.settings = SettingsRepository(self)
         self.watchlist = WatchlistRepository(self)
         self.plex = PlexRepository(self)
+        self.folders = FolderRepository(self)
         self.library_files = LibraryFileRepository(self)
         self.watch_places = WatchPlaceRepository(self)
 
@@ -1009,8 +1140,8 @@ class LibraryRepository:
         Those of a show anyone follows with the switch on, numbered and not specials (season
         0), with an airstamp after the earliest moment one of them switched it on and within
         [aired_from, aired_until] (or before `aired_from` and never tried: at most `backlog` of
-        those, None = no cap), not in the download history (nor their season pack), not in
-        Plex and not given up. Each episode once, however many people follow its show.
+        those, None = no cap), not in the download history (nor their season pack), not had
+        (in Plex or the folders, _IN_LIBRARY) and not given up. Each episode once, however many people follow its show.
         """
         rows = await self._db.fetch_all(
             _AUTO_DUE_SQL,
@@ -1051,8 +1182,8 @@ class LibraryRepository:
 
     async def auto_give_up(self, *, aired_before: datetime) -> list[CalendarEntry]:
         """Mark as given up every episode the automatic downloads look after that was tried at
-        least once, aired before `aired_before` and still isn't downloaded; returns them,
-        oldest first.
+        least once, aired before `aired_before` and still isn't downloaded nor had (in Plex or
+        the folders); returns them, oldest first.
 
         Each episode is given up once: later calls skip it. One never tried is left open (it is
         due until tried: `auto_due`). The row keeps its last try.
@@ -1288,8 +1419,8 @@ class LibraryRepository:
         missing_day: date,
     ) -> frozenset[int]:
         """Ids of the new episodes of the shows a person follows (aired, neither downloaded nor
-        in Plex, not yet missing; see _MISSING_CTE) airing between `start` and `end`
-        (inclusive)."""
+        had in Plex or the folders, not yet missing; see _MISSING_CTE) airing between `start`
+        and `end` (inclusive)."""
         rows = await self._db.fetch_all(
             _NEW_BETWEEN_SQL,
             {
@@ -1302,9 +1433,23 @@ class LibraryRepository:
 
     async def plex_between(self, start: date, end: date) -> frozenset[int]:
         """Ids of the episodes airing between `start` and `end` (inclusive) that are in Plex
-        (the calendar's stack cards)."""
+        (the calendar's stack cards, "✓ In Plex"). Plex only: the folders' are
+        `folder_between`."""
         rows = await self._db.fetch_all(
             f"SELECT e.id FROM episodes AS e WHERE e.air_date BETWEEN ? AND ? AND {_IN_PLEX}",
+            (start.isoformat(), end.isoformat()),
+        )
+        return frozenset(row["id"] for row in rows)
+
+    async def folder_between(self, start: date, end: date) -> frozenset[int]:
+        """Ids of the episodes airing between `start` and `end` (inclusive) had from the
+        folders (in them, or left them less than GONE_GRACE_DAYS ago) that Plex doesn't have:
+        with Plex connected, the calendar's "✓ Downloaded"."""
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT e.id FROM episodes AS e
+            WHERE e.air_date BETWEEN ? AND ? AND {_IN_FOLDERS} AND NOT {_IN_PLEX}
+            """,
             (start.isoformat(), end.isoformat()),
         )
         return frozenset(row["id"] for row in rows)
@@ -1313,9 +1458,10 @@ class LibraryRepository:
         self, start: date, end: date, today: date, since: datetime
     ) -> frozenset[int]:
         """Ids of the episodes airing between `start` and `end` (inclusive) that AirGrabber
-        downloaded since `since` and Plex doesn't have (the calendar's "✓ Downloaded": on its
-        way to Plex). Only an episode that has aired, and only a recent grab: an older one Plex
-        doesn't have was deleted there."""
+        downloaded since `since` and that aren't had, neither in Plex nor from the folders
+        (the calendar's "✓ Downloaded": on its way; one the folders have is `folder_between`'s).
+        Only an episode that has aired, and only a recent grab: an older one Plex doesn't have
+        was deleted there."""
         rows = await self._db.fetch_all(
             f"""
             SELECT e.id FROM episodes AS e
@@ -1326,36 +1472,94 @@ class LibraryRepository:
                     AND julianday(h.downloaded_at) >= julianday(?)
                     AND (h.episode = e.number OR (h.episode IS NULL AND {_PACK_HOLDS}))
               )
-              AND NOT {_IN_PLEX}
+              AND NOT {_IN_LIBRARY}
             """,
             (start.isoformat(), end.isoformat(), today.isoformat(), since.isoformat()),
         )
         return frozenset(row["id"] for row in rows)
 
     async def plex_ids(self, show_id: int) -> frozenset[int]:
-        """Ids of the show's episodes that are in Plex."""
+        """Ids of the show's episodes that are in Plex (Plex only: the folders' are
+        `folder_ids`)."""
         rows = await self._db.fetch_all(
             f"SELECT e.id FROM episodes AS e WHERE e.show_id = ? AND {_IN_PLEX}", (show_id,)
         )
         return frozenset(row["id"] for row in rows)
 
+    async def folder_ids(self, show_id: int) -> frozenset[int]:
+        """Ids of the show's episodes had from the folders: in them, or left them less than
+        GONE_GRACE_DAYS ago (whether Plex has them too or not). With `plex_ids`, what is had."""
+        rows = await self._db.fetch_all(
+            f"SELECT e.id FROM episodes AS e WHERE e.show_id = ? AND {_IN_FOLDERS}", (show_id,)
+        )
+        return frozenset(row["id"] for row in rows)
+
     async def plex_films(self) -> PlexFilms:
-        """The films in Plex, by TMDB id and IMDb id."""
-        rows = await self._db.fetch_all("SELECT tmdb_id, imdb_id FROM plex_movies")
+        """The films had, by TMDB id and IMDb id: in Plex or in the folders, or left the
+        folders less than GONE_GRACE_DAYS ago (both sources together, despite the name). Its
+        `folder_tmdb` / `folder_imdb`: those had from the folders that Plex has by neither id
+        (filled whatever the settings; LibraryService keeps them only beside Plex)."""
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT 1 AS plex, tmdb_id, imdb_id FROM plex_movies
+            UNION
+            SELECT 0, tmdb_id, imdb_id FROM folder_movies
+            UNION
+            SELECT 0, g.tmdb_id, g.imdb_id FROM folder_gone AS g
+            WHERE g.kind = 'movie' AND {_GONE_RECENTLY}
+            """
+        )
+        plex = [row for row in rows if row["plex"]]
+        plex_tmdb = frozenset(row["tmdb_id"] for row in plex if row["tmdb_id"] is not None)
+        plex_imdb = frozenset(row["imdb_id"] for row in plex if row["imdb_id"] is not None)
+        folders_only = [
+            row
+            for row in rows
+            if not row["plex"]
+            and row["tmdb_id"] not in plex_tmdb
+            and row["imdb_id"] not in plex_imdb
+        ]
         return PlexFilms(
             tmdb=frozenset(row["tmdb_id"] for row in rows if row["tmdb_id"] is not None),
             imdb=frozenset(row["imdb_id"] for row in rows if row["imdb_id"] is not None),
+            folder_tmdb=frozenset(
+                row["tmdb_id"] for row in folders_only if row["tmdb_id"] is not None
+            ),
+            folder_imdb=frozenset(
+                row["imdb_id"] for row in folders_only if row["imdb_id"] is not None
+            ),
         )
 
     async def plex_shows(self) -> PlexShows:
-        """The shows with an episode in Plex, by TheTVDB id and IMDb id."""
+        """The shows with an episode had, by TheTVDB id and IMDb id: in Plex or in the
+        folders, or one that left the folders less than GONE_GRACE_DAYS ago (both sources
+        together, despite the name). Its `folder_tvdb` / `folder_imdb`: those with no episode
+        in Plex (filled whatever the settings; LibraryService keeps them only beside Plex)."""
         rows = await self._db.fetch_all(
-            "SELECT DISTINCT s.tvdb_id, s.imdb_id FROM plex_episodes AS p "
-            "JOIN shows AS s ON s.id = p.show_id"
+            f"""
+            SELECT DISTINCT s.tvdb_id, s.imdb_id,
+                   s.id NOT IN (SELECT show_id FROM plex_episodes) AS folders_only
+            FROM shows AS s
+            WHERE s.id IN (
+                SELECT show_id FROM plex_episodes
+                UNION
+                SELECT show_id FROM folder_episodes
+                UNION
+                SELECT g.show_id FROM folder_gone AS g
+                WHERE g.kind = 'episode' AND {_GONE_RECENTLY}
+            )
+            """
         )
+        folders_only = [row for row in rows if row["folders_only"]]
         return PlexShows(
             tvdb=frozenset(row["tvdb_id"] for row in rows if row["tvdb_id"] is not None),
             imdb=frozenset(row["imdb_id"] for row in rows if row["imdb_id"] is not None),
+            folder_tvdb=frozenset(
+                row["tvdb_id"] for row in folders_only if row["tvdb_id"] is not None
+            ),
+            folder_imdb=frozenset(
+                row["imdb_id"] for row in folders_only if row["imdb_id"] is not None
+            ),
         )
 
     async def calendar(self, start: date, end: date, *, profile_id: int) -> list[CalendarEntry]:
@@ -1369,8 +1573,9 @@ class LibraryRepository:
 
     async def gaps(self, *, profile_id: int, now: datetime, today: date) -> list[CalendarEntry]:
         """The aired episodes (by `now`; without an airstamp by `today`) of the shows a person
-        follows that Plex doesn't have, in the seasons from the first to the last one Plex has
-        some of; by show name, season and number. `is_downloaded`: grabbed already."""
+        follows that aren't had (in Plex or the folders), in the seasons from the first to the
+        last one Plex or the folders have some of; by show name, season and number.
+        `is_downloaded`: grabbed already."""
         rows = await self._db.fetch_all(
             _GAPS_SQL, {"profile": profile_id, "now": _utc(now), "today": today.isoformat()}
         )
@@ -1912,9 +2117,86 @@ def _plex_library(item: Any) -> PlexLibrary | None:
         return None
 
 
+async def _replace_contents(
+    conn: aiosqlite.Connection, shelf: str, scan: PlexScan
+) -> None:
+    """Make `scan`'s episodes (of shows still in the cache), films and titles what `shelf`'s
+    tables ("plex" or "folder") hold; inside the caller's transaction."""
+    await conn.execute(f"DELETE FROM {shelf}_episodes")
+    await conn.execute(f"DELETE FROM {shelf}_movies")
+    await conn.executemany(
+        f"INSERT INTO {shelf}_episodes (show_id, season, episode) "
+        "SELECT id, ?, ? FROM shows WHERE id = ? "
+        "ON CONFLICT (show_id, season, episode) DO NOTHING",
+        [(season, episode, show_id) for show_id, season, episode in sorted(scan.episodes)],
+    )
+    await conn.executemany(
+        f"INSERT INTO {shelf}_movies (tmdb_id, imdb_id) VALUES (?, ?)",
+        sorted(scan.films, key=lambda film: (film[0] or 0, film[1] or "")),
+    )
+    await conn.execute(f"DELETE FROM {shelf}_titles")
+    await conn.executemany(
+        f"INSERT INTO {shelf}_titles ({', '.join(_TITLE_COLUMNS)}) "
+        f"VALUES ({', '.join('?' for _ in _TITLE_COLUMNS)}) "
+        "ON CONFLICT (kind, rating_key) DO NOTHING",
+        [_title_row(title) for title in scan.titles],
+    )
+
+
+async def _contents(
+    db: Database, shelf: str
+) -> tuple[frozenset[tuple[int, int, int]], frozenset[tuple[int | None, str | None]]]:
+    episodes = await db.fetch_all(f"SELECT show_id, season, episode FROM {shelf}_episodes")
+    films = await db.fetch_all(f"SELECT tmdb_id, imdb_id FROM {shelf}_movies")
+    return (
+        frozenset((row["show_id"], row["season"], row["episode"]) for row in episodes),
+        frozenset((row["tmdb_id"], row["imdb_id"]) for row in films),
+    )
+
+
+async def _titles(db: Database, shelf: str) -> list[PlexTitle]:
+    rows = await db.fetch_all(
+        f"SELECT {', '.join(_TITLE_COLUMNS)} FROM {shelf}_titles ORDER BY title COLLATE NOCASE"
+    )
+    found = []
+    for row in rows:
+        values = dict(zip(_TITLE_FIELDS, tuple(row), strict=True))
+        try:
+            found.append(PlexTitle.model_validate(values))
+        except ValidationError:
+            continue  # a row a newer version wrote differently
+    return found
+
+
+async def _titles_by_key(
+    db: Database, shelf: str, keys: Iterable[tuple[str, str]]
+) -> dict[tuple[str, str], PlexTitle]:
+    wanted = set(keys)
+    if not wanted:
+        return {}
+    rating_keys = sorted({key for _kind, key in wanted})
+    rows = await db.fetch_all(
+        f"SELECT {', '.join(_TITLE_COLUMNS)} FROM {shelf}_titles "
+        f"WHERE rating_key IN ({', '.join('?' for _ in rating_keys)})",
+        tuple(rating_keys),
+    )
+    found: dict[tuple[str, str], PlexTitle] = {}
+    for row in rows:
+        values = dict(zip(_TITLE_FIELDS, tuple(row), strict=True))
+        if (values["kind"], values["key"]) not in wanted:
+            continue
+        try:
+            title = PlexTitle.model_validate(values)
+        except ValidationError:
+            continue  # a row a newer version wrote differently
+        found[(title.kind, title.key)] = title
+    return found
+
+
 class PlexRepository:
     """What is in the user's Plex libraries (app/services/plex.py): the episodes of the shows
-    AirGrabber knows, the films, and the last check's state. Shared by everyone."""
+    AirGrabber knows, the films, and the last check's state. Shared by everyone. Plex's rows
+    only: the folders' are FolderRepository's, and neither touches the other's."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1932,37 +2214,14 @@ class PlexRepository:
     ) -> tuple[frozenset[tuple[int, int, int]], frozenset[tuple[int | None, str | None]]]:
         """What is stored: the episodes (show id, season, episode) and the films (TMDB id,
         IMDb id)."""
-        episodes = await self._db.fetch_all("SELECT show_id, season, episode FROM plex_episodes")
-        films = await self._db.fetch_all("SELECT tmdb_id, imdb_id FROM plex_movies")
-        return (
-            frozenset((row["show_id"], row["season"], row["episode"]) for row in episodes),
-            frozenset((row["tmdb_id"], row["imdb_id"]) for row in films),
-        )
+        return await _contents(self._db, "plex")
 
     async def replace(self, scan: PlexScan, when: datetime) -> None:
         """Make `scan` what is stored, in one transaction: its episodes (of shows still in the
-        cache), its films and the state row."""
+        cache), its films, its titles and the state row. The folders' tables stay."""
         libraries = json.dumps([library.model_dump(mode="json") for library in scan.libraries])
         async with self._db.transaction() as conn:
-            await conn.execute("DELETE FROM plex_episodes")
-            await conn.execute("DELETE FROM plex_movies")
-            await conn.executemany(
-                "INSERT INTO plex_episodes (show_id, season, episode) "
-                "SELECT id, ?, ? FROM shows WHERE id = ? "
-                "ON CONFLICT (show_id, season, episode) DO NOTHING",
-                [(season, episode, show_id) for show_id, season, episode in sorted(scan.episodes)],
-            )
-            await conn.executemany(
-                "INSERT INTO plex_movies (tmdb_id, imdb_id) VALUES (?, ?)",
-                sorted(scan.films, key=lambda film: (film[0] or 0, film[1] or "")),
-            )
-            await conn.execute("DELETE FROM plex_titles")
-            await conn.executemany(
-                f"INSERT INTO plex_titles ({', '.join(_TITLE_COLUMNS)}) "
-                f"VALUES ({', '.join('?' for _ in _TITLE_COLUMNS)}) "
-                "ON CONFLICT (kind, rating_key) DO NOTHING",
-                [_title_row(title) for title in scan.titles],
-            )
+            await _replace_contents(conn, "plex", scan)
             await conn.execute(
                 "INSERT INTO plex_state "
                 "(id, checked_at, shows, unmatched_shows, unmatched_films, libraries) "
@@ -1981,46 +2240,17 @@ class PlexRepository:
 
     async def titles(self) -> list[PlexTitle]:
         """The Library page's shows and films, as the last check read them, by title."""
-        rows = await self._db.fetch_all(
-            f"SELECT {', '.join(_TITLE_COLUMNS)} FROM plex_titles ORDER BY title COLLATE NOCASE"
-        )
-        found = []
-        for row in rows:
-            values = dict(zip(_TITLE_FIELDS, tuple(row), strict=True))
-            try:
-                found.append(PlexTitle.model_validate(values))
-            except ValidationError:
-                continue  # a row a newer version wrote differently
-        return found
+        return await _titles(self._db, "plex")
 
     async def titles_by_key(
         self, keys: Iterable[tuple[str, str]]
     ) -> dict[tuple[str, str], PlexTitle]:
         """The stored shows and films among `keys` ((kind, Plex key): Continue watching's few),
         by those keys; the others (and rows that don't read) left out."""
-        wanted = set(keys)
-        if not wanted:
-            return {}
-        rating_keys = sorted({key for _kind, key in wanted})
-        rows = await self._db.fetch_all(
-            f"SELECT {', '.join(_TITLE_COLUMNS)} FROM plex_titles "
-            f"WHERE rating_key IN ({', '.join('?' for _ in rating_keys)})",
-            tuple(rating_keys),
-        )
-        found: dict[tuple[str, str], PlexTitle] = {}
-        for row in rows:
-            values = dict(zip(_TITLE_FIELDS, tuple(row), strict=True))
-            if (values["kind"], values["key"]) not in wanted:
-                continue
-            try:
-                title = PlexTitle.model_validate(values)
-            except ValidationError:
-                continue  # a row a newer version wrote differently
-            found[(title.kind, title.key)] = title
-        return found
+        return await _titles_by_key(self._db, "plex", keys)
 
     async def clear(self) -> None:
-        """Forget everything (Disconnect)."""
+        """Forget everything of Plex's (Disconnect); the folders' rows stay."""
         async with self._db.transaction() as conn:
             await conn.execute("DELETE FROM plex_titles")
             await conn.execute("DELETE FROM plex_episodes")
@@ -2147,6 +2377,118 @@ class LibraryFileRepository:
         """Forget every file (the folder library switched off, or no folder left)."""
         async with self._db.transaction() as conn:
             await conn.execute("DELETE FROM library_files")
+
+
+class FolderRepository:
+    """The folder library's shelf (app/services/folder_library/): its titles, the episodes of
+    the shows AirGrabber knows, the films and the last check's state, in tables of their own
+    beside Plex's (`folder_*`; the same method names as PlexRepository where they mean the
+    same). What leaves the folders is kept in `folder_gone` for GONE_GRACE_DAYS, so it still
+    counts as had (_IN_LIBRARY) while Plex catches up. Shared by everyone."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def contents(
+        self,
+    ) -> tuple[frozenset[tuple[int, int, int]], frozenset[tuple[int | None, str | None]]]:
+        """What is stored: the episodes (show id, season, episode) and the films (TMDB id,
+        IMDb id); not what left (`folder_gone`)."""
+        return await _contents(self._db, "folder")
+
+    async def replace(self, scan: PlexScan, when: datetime) -> None:
+        """Make `scan` what is stored, in one transaction: its episodes (of shows still in the
+        cache), its films, its titles and the state row. The episodes and films that leave are
+        written to `folder_gone` as left at `when` (one that left before keeps its time); what
+        is back (a film by either id) leaves it, and rows that left more than GONE_GRACE_DAYS
+        before `when` are dropped. Plex's tables stay."""
+        stamp = _utc(when)
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO folder_gone (kind, show_id, season, episode, left_at) "
+                "SELECT 'episode', f.show_id, f.season, f.episode, ? FROM folder_episodes AS f "
+                "WHERE NOT EXISTS (SELECT 1 FROM folder_gone AS g WHERE g.kind = 'episode' "
+                "AND g.show_id = f.show_id AND g.season = f.season AND g.episode = f.episode)",
+                (stamp,),
+            )
+            await conn.execute(
+                "INSERT INTO folder_gone (kind, tmdb_id, imdb_id, left_at) "
+                "SELECT 'movie', f.tmdb_id, f.imdb_id, ? FROM folder_movies AS f "
+                "WHERE NOT EXISTS (SELECT 1 FROM folder_gone AS g WHERE g.kind = 'movie' "
+                "AND g.tmdb_id IS f.tmdb_id AND g.imdb_id IS f.imdb_id)",
+                (stamp,),
+            )
+            await _replace_contents(conn, "folder", scan)
+            # What is (still or again) in the folders hasn't left.
+            await conn.execute(
+                "DELETE FROM folder_gone WHERE kind = 'episode' AND EXISTS ("
+                "SELECT 1 FROM folder_episodes AS f WHERE f.show_id = folder_gone.show_id "
+                "AND f.season = folder_gone.season AND f.episode = folder_gone.episode)"
+            )
+            await conn.execute(
+                "DELETE FROM folder_gone WHERE kind = 'movie' AND EXISTS ("
+                "SELECT 1 FROM folder_movies AS f "
+                "WHERE f.tmdb_id = folder_gone.tmdb_id OR f.imdb_id = folder_gone.imdb_id)"
+            )
+            await conn.execute(
+                "DELETE FROM folder_gone WHERE julianday(left_at) <= julianday(?, ?)",
+                (stamp, f"-{GONE_GRACE_DAYS} days"),
+            )
+            await conn.execute(
+                "INSERT INTO folder_state "
+                "(id, checked_at, shows, unmatched_shows, unmatched_films) "
+                "VALUES (1, :when, :shows, :unmatched_shows, :unmatched_films) "
+                "ON CONFLICT (id) DO UPDATE SET checked_at = excluded.checked_at, "
+                "shows = excluded.shows, unmatched_shows = excluded.unmatched_shows, "
+                "unmatched_films = excluded.unmatched_films",
+                {
+                    "when": stamp,
+                    "shows": scan.shows,
+                    "unmatched_shows": scan.unmatched_shows,
+                    "unmatched_films": scan.unmatched_films,
+                },
+            )
+
+    async def titles(self) -> list[PlexTitle]:
+        """The Downloaded shelf's shows and films, as the last check stored them, by title."""
+        return await _titles(self._db, "folder")
+
+    async def titles_by_key(
+        self, keys: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], PlexTitle]:
+        """The stored shows and films among `keys` ((kind, key)), by those keys; the others
+        (and rows that don't read) left out."""
+        return await _titles_by_key(self._db, "folder", keys)
+
+    async def checked_at(self) -> datetime | None:
+        """When the last check stored its result (None: never)."""
+        row = await self._db.fetch_one("SELECT checked_at FROM folder_state WHERE id = 1")
+        if row is None:
+            return None
+        try:
+            return datetime.fromisoformat(row["checked_at"]).astimezone(UTC)
+        except ValueError:
+            return None
+
+    async def stored(self) -> bool:
+        """Anything of the folders' is stored (titles, episodes, films, what left, the state
+        row): `clear` has something to forget."""
+        row = await self._db.fetch_one(
+            "SELECT EXISTS (SELECT 1 FROM folder_titles) "
+            "OR EXISTS (SELECT 1 FROM folder_episodes) OR EXISTS (SELECT 1 FROM folder_movies) "
+            "OR EXISTS (SELECT 1 FROM folder_state) OR EXISTS (SELECT 1 FROM folder_gone) AS stored"
+        )
+        return row is not None and bool(row["stored"])
+
+    async def clear(self) -> None:
+        """Forget everything of the folders' ("Stop using folders"), what left them too; Plex's
+        rows stay."""
+        async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM folder_titles")
+            await conn.execute("DELETE FROM folder_episodes")
+            await conn.execute("DELETE FROM folder_movies")
+            await conn.execute("DELETE FROM folder_state")
+            await conn.execute("DELETE FROM folder_gone")
 
 
 _WATCH_PLACE_COLUMNS = tuple(WatchPlace.model_fields)

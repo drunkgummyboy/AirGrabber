@@ -44,10 +44,13 @@ STARTING_SHORT = N_("Starting…")
 FAILED_TEXT = N_("Couldn't download")
 NOTHING_MISSING_TEXT = N_("Nothing missing")
 CHIP_MISSING_TEXT = N_("Missing")
-# An episode or film in the user's Plex libraries (app/services/plex.py), the only thing that
-# counts as had: a quiet ✓, no text, this tip.
+# An episode or film you have: a quiet ✓, no text, a tip saying where (app/ui/library_words.py).
+# In the user's Plex libraries (app/services/plex.py): "In Plex"; beside Plex, only in the
+# user's own folders (two shelves): the calendar's "Downloaded" family, on the PC and not in Plex
+# yet; with the folders alone, library_source's "In your library".
 HAVE_MARK = "✓"
 PLEX_TIP = N_("In Plex")
+DOWNLOADED_TIP = N_("Downloaded. Plex doesn't have it yet.")
 SEASON_MENU_TIP = N_("More options")
 
 

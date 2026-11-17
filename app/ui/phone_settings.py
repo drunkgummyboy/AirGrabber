@@ -8,8 +8,8 @@ is more than one), its own Library manager tick (the first phone pairs as one, l
 "What's on it…" (app/ui/phone_contents.py) and Disconnect. Under the phones, "Get the phone app…": the
 Companion app's download code (app/ui/phone_app.py).
 
-Without Plex the page is one line, NEEDS_PLEX_TEXT: no Plex, no phone app. It follows Plex
-connecting and disconnecting while it is open.
+Without a library (Plex or the user's own folders) the page is one line, NEEDS_LIBRARY_TEXT: no
+library, no phone app. It follows the library coming and going while it is open (`has_library`).
 
 Everything acts at once (like the Plex box), not on Save. The box follows the service
 (`PhoneService.subscribe`) and stops when it goes.
@@ -31,7 +31,11 @@ from PIL import Image
 from app.i18n import N_, t
 from app.models import PairedPhone
 from app.services.phone.devices import CODE_LIFETIME
-from app.services.phone.service import NEEDS_PLEX_TEXT, PACKAGES_MISSING_TEXT, PairingUnavailable
+from app.services.phone.service import (
+    NEEDS_LIBRARY_TEXT,
+    PACKAGES_MISSING_TEXT,
+    PairingUnavailable,
+)
 from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, DETAIL_SIZE, primary_button, secondary_button
 from app.ui.people import person_name
@@ -116,8 +120,8 @@ class PhoneBox:
 
         self.box: SettingsBox = page.box()
         body = self.box.body
-        self.needs_plex = self.box.text(t(NEEDS_PLEX_TEXT))
-        self.box.add(self.needs_plex, gap=0, sticky="w")
+        self.needs_library = self.box.text(t(NEEDS_LIBRARY_TEXT))
+        self.box.add(self.needs_library, gap=0, sticky="w")
         self.switch = ctk.CTkSwitch(
             body,
             text=t(SWITCH_TEXT),
@@ -180,11 +184,11 @@ class PhoneBox:
         if not self.listening:
             return
         phone = self._phone
-        plex = phone.plex_connected
-        _show(self.needs_plex, not plex)
-        _show(self.phones_box.frame, plex)
-        _show(self.app_button, plex)  # no Plex, no phone app
-        if not plex:
+        library = phone.has_library
+        _show(self.needs_library, not library)
+        _show(self.phones_box.frame, library)
+        _show(self.app_button, library)  # no library, no phone app
+        if not library:
             self._cancel_code()
             self._hide_code()
             for widget in (

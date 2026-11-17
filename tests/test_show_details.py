@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, date, datetime, timedelta, timezone
+from typing import cast
 
 from app.models import Episode, Show, ShowDetails
+from app.services.library import LibraryService
+from app.services.tvmaze import TVMazeClient
 from app.ui.show_details import (
     collapsed_summary,
     date_text,
@@ -24,8 +27,12 @@ from app.ui.show_details import (
     upcoming_text,
 )
 from app.ui import theme
+from app.ui.season_progress import season_states
+from tests.plex_link import plex_settings
+from tests.test_folder_tables import scan
+from tests.test_missing import DatabaseTestCase, ep
 
-NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)  # a Sunday
+NOW =datetime(2026, 10, 18, 12, 0, tzinfo=UTC)  # a Sunday
 
 
 def show(**fields: object) -> Show:
@@ -219,6 +226,46 @@ class MarkTests(unittest.TestCase):
         width = mark_slot_width(lambda text: 7.0 * len(text))
         self.assertEqual(width, 8 + 6 + 7 * len("New · aired yesterday") + 12)  # dot, gap, text
         self.assertEqual(mark_slot_width(lambda text: 1.0), 72)  # never below MARK_WIDTH
+
+
+class TwoShelvesMarkTests(DatabaseTestCase):
+    """Two shelves: the show window marks each episode with where it is, Plex's "plex", the
+    folders' only "downloaded" (✓ Downloaded); with the folders only, part 1's "plex" ("In your
+    library")."""
+
+    async def test_show_window_marks_both(self) -> None:
+        aired = NOW - 9 * timedelta(days=1)
+        await self.add_show(
+            1,
+            [ep(11, 1, 1, aired=aired), ep(12, 1, 2, aired=aired), ep(13, 1, 3, aired=aired)],
+        )
+        await self.db.plex.replace(scan({(1, 1, 1)}), NOW)
+        await self.db.folders.replace(scan({(1, 1, 2)}), NOW)
+        settings = plex_settings(
+            self.db, folder_library_on=True, series_folders=(r"\\NAS\Series",)
+        )
+        library = LibraryService(
+            self.db.library, self.db.history, cast(TVMazeClient, None), settings=settings
+        )
+
+        async def marks() -> list[str | None]:
+            details = await library.show_details(1, profile_id=1, now=NOW)
+            return [row_mark(details, e) for e in details.episodes]
+
+        self.assertEqual(await marks(), ["plex", "downloaded", "missing"])
+        details = await library.show_details(1, profile_id=1, now=NOW)
+        self.assertEqual((details.in_plex, details.in_folders), ({11}, {12}))
+        self.assertEqual(details.missing, {13})  # the folder's episode is had
+        self.assertEqual(season_marks(details, 1), ([13], [11, 12]))
+        self.assertEqual(mark_text("downloaded", details.episodes[1], NOW), "✓ Downloaded")
+        self.assertEqual(mark_color("downloaded"), theme.TEXT_MUTED)
+        # The season's squares: green in Plex, blue on the PC (the folders' own), amber missing.
+        states = [state for _e, state in season_states(details, 1, NOW)]
+        self.assertEqual(states, ["plex", "downloaded", "missing"])
+        # Plex gone, the folders only: their episode is the library's, as in part 1.
+        await settings.update(plex_token="")
+        await self.db.plex.clear()
+        self.assertEqual(await marks(), ["missing", "plex", "missing"])
 
 
 class SummaryTests(unittest.TestCase):

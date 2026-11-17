@@ -1,7 +1,7 @@
 """Settings → Library's "Your own folders" box (app/ui/folder_library_settings.py,
 mockups/folder-library.html states 1–3): MediaForge's folders suggested and not saved, "Use these
 folders" switching on, the counts / couldn't-recognise / can't-reach lines, "Stop using folders"
-asked first, the one line while Plex is connected; and the Library section in the Settings
+asked first, the box beside Plex (the second shelf); and the Library section in the Settings
 window (the boxes' order, the search still finding Plex). On a hidden Tk root with a stand-in
 FolderLibraryService; nothing reads a folder."""
 
@@ -291,25 +291,65 @@ class FolderBoxTests(TkTestCase):
         self.assertEqual(box.state, "off")
         self.assertEqual(box.films, [MOVIES])  # the folders stay, for switching on again
 
-    async def test_plex_connected_shows_one_line(self) -> None:
-        from app.ui.folder_library_settings import PLEX_LINE_TEXT
-
-        settings = FakeSettings(
-            Settings(plex_token=TOKEN, folder_library_on=True, film_folders=(MOVIES,))
+    async def test_the_folders_box_works_with_plex(self) -> None:
+        from app.ui.folder_library_settings import (
+            BESIDE_PLEX_TEXT,
+            INTRO_TEXT,
+            OFF_TEXT,
+            ON_TEXT,
+            STOP_BESIDE_PLEX_QUESTION,
+            STOP_TEXT,
+            SUGGESTED_TEXT,
+            USE_TEXT,
         )
+
+        self.assertEqual(
+            BESIDE_PLEX_TEXT,
+            "A second shelf beside Plex: what's in these folders shows under Downloaded and "
+            "counts as had.",
+        )
+        # Plex connected, the folders off: the box as without Plex, its intro the second shelf.
+        settings = FakeSettings(Settings(plex_token=TOKEN))
         folders = FakeFolders(settings)
         box = await self.box(folders, settings, suggestion=LibraryFolders(SERIES, MOVIES))
-        self.assertEqual(box.state, "plex")
-        self.assertEqual(self.states[-1], "plex")
-        self.assertEqual(texts(box.box.frame), [PLEX_LINE_TEXT])
-        self.assertEqual(buttons(box.box.frame), {})
-        self.assertEqual(self.asked, 0)
-        # Plex disconnected: the folders count again (the service tells its listeners).
+        self.assertEqual(box.state, "off")
+        self.assertEqual(self.states[-1], "off")
+        shown = texts(box.box.frame)
+        for text in (OFF_TEXT, BESIDE_PLEX_TEXT, MOVIES, SERIES, SUGGESTED_TEXT):
+            self.assertIn(text, shown)
+        self.assertNotIn(INTRO_TEXT, shown)  # "No Plex? …" isn't for a PC with Plex
+        self.assertEqual(self.asked, 1)
+        # "Use these folders" reads them and shows "On" with the counts.
+        assert box.use_button is not None
+        self.assertEqual(box.use_button.cget("text"), USE_TEXT)
+        box.use_button.invoke()
+        await box.loaded()
+        await self.settle()
+        self.assertEqual(folders.calls, [("on", (MOVIES,), (SERIES,))])
+        self.assertEqual(box.state, "on")
+        self.assertEqual(self.states[-1], "on")
+        shown = texts(box.box.frame)
+        self.assertIn(ON_TEXT, shown)
+        self.assertIn(BESIDE_PLEX_TEXT, shown)
+        self.assertIn("2 films · 1 series · 5 episodes · checked just now", shown)
+        self.assertTrue(settings.current.folder_library_on)
+        self.assertEqual(settings.current.plex_token.get_secret_value(), TOKEN)
+        self.assertIn(STOP_TEXT, buttons(box.box.frame))
+        # "Stop using folders" says Plex's shelf stays.
+        buttons(box.box.frame)[STOP_TEXT].invoke()
+        await self.settle()
+        dialog = box.confirm
+        assert isinstance(dialog, ConfirmDialog)
+        self.keep(dialog)
+        self.assertEqual(dialog.text.cget("text"), STOP_BESIDE_PLEX_QUESTION)
+        dialog.destroy()
+        # Plex disconnected: the folders are the library, part 1's words again.
         settings.current = Settings(folder_library_on=True, film_folders=(MOVIES,))
         folders.set(FolderLibraryStatus(on=True, films=3, checked_at=NOW))
         await box.loaded()
         await self.settle()
         self.assertEqual(box.state, "on")
+        self.assertNotIn(BESIDE_PLEX_TEXT, texts(box.box.frame))
 
 
 class FixRoundTests(TkTestCase):
@@ -440,19 +480,19 @@ class FixRoundTests(TkTestCase):
         settings = await SettingsService.load(db.settings)
         library = FakeLibrary()
         service = FolderLibraryService(
-            settings, db.library_files, db.plex, cast(TMDBClient, make_tmdb()),
+            settings, db.library_files, db.folders, cast(TMDBClient, make_tmdb()),
             cast(LibraryService, library), quiet_s=0.0,
         )
         self.addAsyncCleanup(service.aclose)
         storing, go_on = asyncio.Event(), asyncio.Event()
-        real_replace = db.plex.replace
+        real_replace = db.folders.replace
 
         async def replace(scan_: PlexScan, when: Any) -> None:
             storing.set()
             await go_on.wait()
             await real_replace(scan_, when)
 
-        with mock.patch.object(db.plex, "replace", replace):
+        with mock.patch.object(db.folders, "replace", replace):
             box = await self.box(service, settings, suggest=None)
             box.films = [str(films)]
             box.use()
@@ -595,14 +635,37 @@ class LibrarySectionTests(TkTestCase):
         # Without Plex, switched off: Plex first (the sketch's state 1), Play in under both.
         self.assertEqual(self.order(dialog), ["plex", "folders", "play"])
 
+    async def test_settings_search_finds_the_folders_beside_plex(self) -> None:
+        from app.ui.folder_library_settings import TITLE_TEXT
+        from app.ui.settings_dialog import SECTION_LIBRARY
+        from app.ui.settings_search import search
+
+        connected = Settings(plex_token=TOKEN)
+        dialog = self.dialog(connected, FakePlex(CONNECTED))
+        await dialog.plex_box.loaded()
+        await dialog.folder_box.loaded()
+        await asyncio.sleep(0.05)
+        self.root.update()
+        for query in ("folders", "film folders", "second shelf"):  # labels, not buttons
+            with self.subTest(query=query):
+                found = [
+                    match
+                    for match in search(query, dialog._search_places())
+                    if match.section == SECTION_LIBRARY and match.title == TITLE_TEXT
+                ]
+                self.assertTrue(found)
+                self.assertIs(found[0].frame, dialog.folder_box.box.frame)
+
     async def test_the_boxes_order_follows_the_source(self) -> None:
         on = Settings(folder_library_on=True, film_folders=(MOVIES,))
         dialog = self.dialog(on, FakePlex())
         await dialog.folder_box.loaded()
         self.root.update()
         self.assertEqual(self.order(dialog), ["folders", "plex", "play"])
+        # Beside Plex the folders are the second shelf: Plex's box stays first.
         connected = Settings(plex_token=TOKEN, folder_library_on=True, film_folders=(MOVIES,))
         dialog = self.dialog(connected, FakePlex(CONNECTED))
         await dialog.folder_box.loaded()
         self.root.update()
+        self.assertEqual(dialog.folder_box.state, "on")
         self.assertEqual(self.order(dialog), ["plex", "folders", "play"])

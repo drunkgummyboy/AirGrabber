@@ -381,7 +381,8 @@ class ShowCard(PosterCard):
     `missing_actions`: the card shows the show's `missing` episodes (the amber pill, the main
     button's "⬇ Download missing (3)") and follows the show's "Download missing" run.
     `on_open(show)`: a click on the cover or the title. `on_remove(show)`: the menu's "Remove
-    show…". `scale` sizes the whole card. `in_plex`: the show is in Plex (the library mark).
+    show…". `scale` sizes the whole card. `in_plex`: the show is had, in Plex or in the folders
+    (the library mark; `from_folders`: beside Plex, only in the user's own folders).
     """
 
     def __init__(
@@ -399,6 +400,7 @@ class ShowCard(PosterCard):
         missing_actions: MissingActions | None = None,
         scale: CardScale = FULL,
         in_plex: bool = False,
+        from_folders: bool = False,
     ) -> None:
         super().__init__(
             master,
@@ -418,7 +420,9 @@ class ShowCard(PosterCard):
         self._missing = missing if missing_actions is not None else 0
         self._auto = auto_download
         self._main: CardMain | None = None
-        self.plex_mark: LibraryMark | None = library_mark(self) if in_plex else None
+        self.plex_mark: LibraryMark | None = (
+            library_mark(self, from_folders=from_folders) if in_plex else None
+        )
 
         height = row_height(scale)
         row = ctk.CTkFrame(self, fg_color="transparent", height=height)
@@ -569,7 +573,8 @@ class ShowCard(PosterCard):
 class SearchShowCard(PosterCard):
     """A search result's TVMaze show as a poster card: year and rating, and + Follow.
     Clicking the cover calls `on_open_show(show)`; without it, it opens the show on IMDb (when
-    TVMaze knows its IMDb id). `in_plex`: the show is in Plex (the library mark)."""
+    TVMaze knows its IMDb id). `in_plex`: the show is had (the library mark; `from_folders`:
+    beside Plex, only in the user's own folders)."""
 
     def __init__(
         self,
@@ -582,6 +587,7 @@ class SearchShowCard(PosterCard):
         on_open_show: Callable[[Show], None] | None = None,
         scale: CardScale = FULL,
         in_plex: bool = False,
+        from_folders: bool = False,
     ) -> None:
         super().__init__(
             master,
@@ -593,7 +599,9 @@ class SearchShowCard(PosterCard):
         )
         self._show = show
         self._on_track = on_track
-        self.plex_mark: LibraryMark | None = library_mark(self) if in_plex else None
+        self.plex_mark: LibraryMark | None = (
+            library_mark(self, from_folders=from_folders) if in_plex else None
+        )
         self._track_button = TrackButton(
             self, busy_text=t("Adding…"), command=self._track, scale=scale
         )

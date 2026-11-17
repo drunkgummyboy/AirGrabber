@@ -69,6 +69,7 @@ from app.forge.core.matcher import normalize_title
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueItem
+from app.forge.core.run_progress import AUTO, RunProgress, item_name
 from app.forge.core.watch import (
     LOOK_INTERVAL_S,
     SECOND_LOOK_S,
@@ -648,8 +649,11 @@ class AutoRenamer:
         activity: ActivityFeed | None = None,
         new_watcher: Callable[[], FinishedCheck] | None = None,
         step_timeout_s: float = LOOK_STEP_TIMEOUT_S,
+        progress: RunProgress | None = None,
     ) -> None:
         self._parts = parts
+        # The dock on every page: this renamer's runs that nobody else shows (`_run`).
+        self._progress = progress
         self._say = say_to(activity)  # the Activity strip, next to each English log line
         self._closed = False  # `close()` was called: never starts again
         self._now = now
@@ -1243,63 +1247,106 @@ class AutoRenamer:
                 )
             else:
                 runs = await asyncio.to_thread(library_runs, items, self._settings, presets)
-            for run in runs:
-                for item_id, reason in run.held.items():
-                    queue.hold(item_id, reason, in_library=item_id in run.in_library)
-                if run.unreplaced:
-                    count = len(run.unreplaced)
-                    log.info("Replace: nothing in the library under %d file(s)' name", count)
-                    self._say(tn(NOTHING_TO_REPLACE, NOTHING_TO_REPLACE_MORE, count))
-                if not run.plan.files:
-                    continue
-                plan = run.plan
-                tools = parts.trailers is not None and parts.trailers.tools_present()
-                if not tools and (plan.options.trailer or plan.trailers):
-                    # Without the tools no trailer can be fetched: drop the planned ones too,
-                    # or the executor would still try (and report a failure) for each.
-                    if plan.trailers:
-                        log.info("No trailer: the trailer tools aren't downloaded yet")
-                        self._say(t(TOOLS_NOT_THERE))
-                    options = plan.options.model_copy(update={"trailer": False})
-                    plan = plan.model_copy(update={"options": options, "trailers": ()})
-                targets = {f.item_id: f.target for f in plan.files}
-                finished: list[int] = []
-
-                def progress(
-                    event: ProgressEvent,
-                    targets: dict[int, Path] = targets,
-                    finished: list[int] = finished,
-                ) -> None:
-                    if event.item_id is not None:
-                        if event.status == "done":
-                            queue.mark_finished(event.item_id, targets.get(event.item_id))
-                            finished.append(event.item_id)
-                        elif event.status == "error" and event.in_library:
-                            # The copy in the library couldn't move aside: still in the library.
-                            queue.hold(event.item_id, event.message, in_library=True)
-                        elif event.status == "error":
-                            reason = t("Couldn't move it: {reason}", reason=event.message)
-                            queue.hold(event.item_id, reason)
-                            if not owner:
-                                self._retry.add(event.item_id)
-                    if on_progress is not None:
-                        on_progress(event)
-
-                result = await parts.executor.run(
-                    plan,
-                    source=source,
-                    preset_name=run.preset.name,
-                    on_progress=progress,
-                    cancel=stop,
-                    kinds={run.kind},
-                    media={i.id: i.media for i in items},  # for the move records
+            # Reported for the dock on every page when the caller shows no progress of its own
+            # (an automatic run, the phone's tap; the page reports its own run itself).
+            follow: Callable[[ProgressEvent], None] | None = None
+            files = sum(len(run.plan.files) for run in runs)
+            if self._progress is not None and on_progress is None and files:
+                follow = self._progress.follow(AUTO, files, self._name_of)
+            try:
+                total = await self._run_plans(
+                    runs,
+                    items,
+                    source,
+                    owner=owner,
+                    on_progress=on_progress,
+                    follow=follow,
+                    stop=stop,
                 )
-                for item_id in finished:
-                    if (item := queue.get(item_id)) is not None:
-                        item.run_id = result.run_id
-                total = _add(total, result)
+            finally:
+                if follow is not None and self._progress is not None:
+                    self._progress.idle(AUTO)
             if self._settings.remove_after_forge:
                 queue.forget_finished()
+        return total
+
+    def _name_of(self, item_id: int) -> str | None:
+        item = self._parts.queue.get(item_id)
+        return item_name(item) if item is not None else None
+
+    async def _run_plans(
+        self,
+        runs: Sequence[LibraryRun],
+        items: Sequence[QueueItem],
+        source: RunSource,
+        *,
+        owner: bool,
+        on_progress: Callable[[ProgressEvent], None] | None,
+        follow: Callable[[ProgressEvent], None] | None,
+        stop: asyncio.Event,
+    ) -> RunResult:
+        """`_run`'s part under the lock, once the runs are planned: each run's plan through the
+        executor, its steps to the queue (and to `on_progress` / `follow`)."""
+        parts = self._parts
+        queue = parts.queue
+        total = RunResult()
+        for run in runs:
+            for item_id, reason in run.held.items():
+                queue.hold(item_id, reason, in_library=item_id in run.in_library)
+            if run.unreplaced:
+                count = len(run.unreplaced)
+                log.info("Replace: nothing in the library under %d file(s)' name", count)
+                self._say(tn(NOTHING_TO_REPLACE, NOTHING_TO_REPLACE_MORE, count))
+            if not run.plan.files:
+                continue
+            plan = run.plan
+            tools = parts.trailers is not None and parts.trailers.tools_present()
+            if not tools and (plan.options.trailer or plan.trailers):
+                # Without the tools no trailer can be fetched: drop the planned ones too,
+                # or the executor would still try (and report a failure) for each.
+                if plan.trailers:
+                    log.info("No trailer: the trailer tools aren't downloaded yet")
+                    self._say(t(TOOLS_NOT_THERE))
+                options = plan.options.model_copy(update={"trailer": False})
+                plan = plan.model_copy(update={"options": options, "trailers": ()})
+            targets = {f.item_id: f.target for f in plan.files}
+            finished: list[int] = []
+
+            def progress(
+                event: ProgressEvent,
+                targets: dict[int, Path] = targets,
+                finished: list[int] = finished,
+            ) -> None:
+                if event.item_id is not None:
+                    if event.status == "done":
+                        queue.mark_finished(event.item_id, targets.get(event.item_id))
+                        finished.append(event.item_id)
+                    elif event.status == "error" and event.in_library:
+                        # The copy in the library couldn't move aside: still in the library.
+                        queue.hold(event.item_id, event.message, in_library=True)
+                    elif event.status == "error":
+                        reason = t("Couldn't move it: {reason}", reason=event.message)
+                        queue.hold(event.item_id, reason)
+                        if not owner:
+                            self._retry.add(event.item_id)
+                if on_progress is not None:
+                    on_progress(event)
+                if follow is not None:
+                    follow(event)
+
+            result = await parts.executor.run(
+                plan,
+                source=source,
+                preset_name=run.preset.name,
+                on_progress=progress,
+                cancel=stop,
+                kinds={run.kind},
+                media={i.id: i.media for i in items},  # for the move records
+            )
+            for item_id in finished:
+                if (item := queue.get(item_id)) is not None:
+                    item.run_id = result.run_id
+            total = _add(total, result)
         return total
 
     async def _maybe_summary(self) -> None:

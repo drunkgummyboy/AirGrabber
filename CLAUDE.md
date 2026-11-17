@@ -69,7 +69,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   Forge's move records (`ForgeMoveService`, `app/forge/core/moves.py`) reach AirGrabber only through
   `app/services/download_status.py` (where a grab was moved, matched by a film's TMDB id or the
   release name; a moved grab shows as finished whatever its torrent program says). There is no
-  library index and no "have it" from the library (removed by the owner's decision, 2026-11-02). AirGrabber's start
+  index of Forge's library and no "have it" from it (removed by the owner's decision, 2026-11-02); the user's own
+  folders count only through the folder library (below), which reads them itself. AirGrabber's start
   imports Forge's types only under `TYPE_CHECKING`; these log ids and counts, never a file's path.
   The other bridge: `app/services/plex_scans.py` hears the same move records and has Plex scan
   the folders they went to (`PlexService.scan_folders`).
@@ -149,15 +150,31 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   (`plex_token`) is a secret: the `X-Plex-Token` header only, never in a URL, log line, message or
   exception text; never in a backup, not even with keys and passwords (`MACHINE_SECRETS` in
   `app/services/backup.py`; all `plex_*` settings are this PC's). Plex requests never follow redirects,
-  their URLs are never logged, nor `str(httpx_exc)`. Logs give ids and counts only. What is in Plex
-  is the only thing that counts as had (`plex_episodes` / `plex_movies`, replaced per check); without
-  Plex connected (no token) the UI shows no have / missing cues at all, not even for AirGrabber's own
-  grabs (owner's decision, 3.1.0): no ✓, "missing", counts or manual marks (`have_episodes` is kept,
-  never read). The download history keeps things from being fetched twice; with Plex connected the
-  calendar also marks a grab of the last 14 days that Plex doesn't have "✓ Downloaded" (on its way;
-  older means it was deleted there). Connecting or
+  their URLs are never logged, nor `str(httpx_exc)`. Logs give ids and counts only. What counts as
+  had is what is in Plex (`plex_episodes` / `plex_movies`, replaced per Plex check) or in the user's
+  own folders (`folder_episodes` / `folder_movies`, replaced per folder check), or what left the
+  folders less than `GONE_GRACE_DAYS` (3) ago (`folder_gone`: moved by hand, Plex hasn't scanned it
+  yet); `_IN_LIBRARY` in `app/database.py`. Neither source's check, Plex's Disconnect nor "Stop using
+  folders" touches the other's rows. Without a library (`has_library`, `app/services/library_source.py`:
+  no token and the folders off) the UI shows no have / missing cues at all, not even for AirGrabber's
+  own grabs (owner's decision, 3.1.0): no ✓, "missing", counts or manual marks (`have_episodes` is
+  kept, never read). The words say where (`app/ui/library_words.py`): what Plex has "✓ In Plex";
+  beside Plex, what only the folders have "✓ Downloaded"; with the folders only, "In your library".
+  The download history keeps things from being fetched twice; with a library the calendar also
+  marks a grab of the last 14 days that isn't had "✓ Downloaded" (on its way; older means it was
+  deleted there). Connecting or
   disconnecting reloads the pages (`on_change`). Tests use `tests/fixtures/plex/` and MockTransport
   (`tests/plex_link.py` for settings with a token); never plex.tv or a real server.
+- The user's own folders (`app/services/folder_library/`, docs/folder-library/): off until "Use these
+  folders" (`folder_library_on`; `folders_on` = on with a folder set), then counted beside Plex or
+  without it. Read-only (never a file moved, renamed or deleted); each folder read in a thread under
+  its time limit (`scan.py`), so a NAS asleep never holds the window and keeps its last result; logs
+  give counts and kinds only, never a path, file name, title or TMDB id. Its rows: `library_files`
+  and the `folder_*` tables (`db.folders`, FolderRepository, v13), never `plex_*`. The Library page's
+  two shelves, Plex and Downloaded (`Shelf`), are never merged; a show's or film's window has both
+  together, each video played from where it is (`is_folder_video`): the folder copy where both have
+  one, Plex's copy when the folder's isn't there. Tests: temporary folders and fakes, never a real
+  NAS, Plex or TMDB.
 - The phone connection (`app/services/phone/`, page `app/ui/phone_settings.py`, for the Companion app; design in
   `docs/companion/`): for now only on a PC whose data folder holds the file `phone-connection.enabled` (`ENABLED_MARKER`,
   owner's decision): without it no Settings page, `PhoneService.run` ends at once and nothing listens, even with
@@ -174,13 +191,25 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   `/v1/pair` and `/v1/hello`; missing means manager, so a phone from before keeps its tabs). Settings also renames a phone
   and sets its person (`change_phone`). Send to phone (`sends.py`, `PUT /v1/on-phone`, design `docs/companion/2026-11-08-send-to-phone-design.md`):
   orders and each phone's last report in `Settings.phone_orders` / `phone_contents`, this PC's own, titles never logged; the Forge routes refuse others with 403 `not_manager`. `GET /v1/suggestions` is
-  what the phone may fetch, without what Plex has; its genres are always in English with compound names split
+  what the phone may fetch, without what is had (Plex's or the folders'); its genres are always in English with compound names split
   (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;
-  a tap fetches by the row's id only, never by its text. No Plex, no phone app (owner, 2026-11-08): without a Plex
-  token the page is one line and no code is made, and every route but `/v1/pair` / `/v1/hello` answers 409 `no_plex`.
+  a tap fetches by the row's id only, never by its text. No library, no phone app (owner, 2026-11-08; Plex or the
+  user's own folders, `library_source`): without one the page is one line and no code is made, and every route but
+  `/v1/pair` / `/v1/hello` answers 409 (`_needs_library`). A Companion that knows the folder library says so on every
+  request (`X-Companion-Can: folder-library`, `knows_folders`); one that doesn't sees `no_plex` unless Plex is connected
+  (old Companions see today's PC), one that does `no_library` without either. `hello` gives `library` (the main source:
+  "plex" with a token, else "folders", else null), `folders` (`folders_on`, beside Plex too: the phone's Downloaded
+  section), `plex` stays null without Plex, `api_version` 1. The folder library's routes (`library.py`, `/v1/library…`,
+  contract `docs/folder-library/2026-11-16-companion-contract.md`) answer whenever the folders are on, with Plex or
+  without (`_while_folders_on`; 409 `plex_library` only while they are off): lists
+  from the database, every share read in a thread under `READ_TIMEOUT_S` (a share asleep is 404 `no_longer_there`,
+  never a window that waits), places and watched marks the phone's own person's (`PairedPhone.profile_id`), never the
+  PC's. Play links (`play_links.py`, for the phone's player and TVs): port 58762, plain http, home addresses only, a
+  `secrets` token good for 6 h, in memory only; the link, its token, the address and the path are never logged.
   Phone-sized copies (`copies.py`, contract in the Companion's docs/2026-11-09-phone-sized-copies.md): a 4K film fetched
-  from Plex into `<data>\phone-copies` and made 1080p HEVC on the card (MediaForge's ffmpeg, `hevc_nvenc`), one at a
-  time; `hello`'s `phone_copies` says whether the card works. Send to phone's Phone-sized tick (4K films) starts one from
+  from Plex into `<data>\phone-copies` (a folder library film's made straight from the PC's own file, `local_source`)
+  and made 1080p HEVC on the card (MediaForge's ffmpeg, `hevc_nvenc`), one at a time; Send to phone takes
+  a folder video's key (`movie:<tmdb>`, `episode:<tmdb>:<s>:<e>`; `_PHONE_KEY`), the copies a Plex ratingKey or `movie:<tmdb>` only (`_film_key`), logged only as its kind (`_logged`); `hello`'s `phone_copies` says whether the card works. Send to phone's Phone-sized tick (4K films) starts one from
   the PC at once (`phone_sized` in the order; cancelling drops it; `resume_copies` after a restart). The file goes out as a `FileReply` (server.py, Range).
   ffmpeg runs as a subprocess of the loop (no threads); its output holds paths: never logged. Tests fake Plex and ffmpeg.
 

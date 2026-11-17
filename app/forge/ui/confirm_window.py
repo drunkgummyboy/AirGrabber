@@ -30,6 +30,7 @@ from app.forge.core.auto import WAITING_FOR_AUTO, taking
 from app.forge.core.library import library_folder, route_inputs
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import ItemStatus, Queue, QueueEvent, QueueItem
+from app.forge.core.run_progress import item_name
 from app.forge.models.history import RunSource
 from app.forge.models.preset import Preset, with_options
 from app.forge.ui.queue_rows import build_rows
@@ -397,6 +398,10 @@ class ConfirmWindow(ctk.CTkToplevel):
             widget.configure(state=state)
         self.preset_menu.configure(state=state)
 
+    def _name_of(self, item_id: int) -> str | None:
+        item = self.queue.get(item_id)
+        return item_name(item) if item is not None else None
+
     async def _rename(self, preset: Preset) -> None:
         self._set_buttons("disabled")
         await self.queue.wait_idle()
@@ -420,15 +425,20 @@ class ConfirmWindow(ctk.CTkToplevel):
         plan = await asyncio.to_thread(build_plan, inputs, with_options(preset.format, options), options)
         # Never alongside the renamer's or the Inbox's run; the status says when it waits.
         async with taking(self.services.run_lock, self._show_waiting):
-            result = await self.services.executor.run(
-                plan,
-                source=RunSource.RIGHT_CLICK,
-                preset_name=preset.name,
-                on_progress=lambda event: None,
-                cancel=asyncio.Event(),
-                kinds={item.media.kind for item in self.queue.items if item.id in chosen},
-                media={i.item_id: i.media for i in inputs},  # for the move records
-            )
+            # Its steps for MediaForge's dock on every page of the main window.
+            progress, source = self.services.run_progress, f"confirm-{id(self)}"
+            try:
+                result = await self.services.executor.run(
+                    plan,
+                    source=RunSource.RIGHT_CLICK,
+                    preset_name=preset.name,
+                    on_progress=progress.follow(source, len(plan.files), self._name_of),
+                    cancel=asyncio.Event(),
+                    kinds={item.media.kind for item in self.queue.items if item.id in chosen},
+                    media={i.item_id: i.media for i in inputs},  # for the move records
+                )
+            finally:
+                progress.idle(source)
         self.run_id = result.run_id
         parts = [
             t("{n} moved", n=result.renamed)

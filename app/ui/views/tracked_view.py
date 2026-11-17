@@ -75,7 +75,7 @@ FILTER_TEXT = N_("Show:")
 MORE_TEXT = "⋯"
 MORE_TIP = SEASON_MENU_TIP  # "More options"
 FIND_GAPS_TEXT = N_("🧩 Find gaps in Plex…")
-FIND_GAPS_FOLDERS_TEXT = N_("🧩 Find gaps in your library…")  # the folder library's words
+FIND_GAPS_FOLDERS_TEXT = N_("🧩 Find gaps in your library…")  # whenever the folders count
 REMOVE_ENDED_TEXT = N_("Remove ended shows…")
 UNDO_TEXT = N_("Undo")
 UNDO_S = 10  # how long "Removed … · Undo" stays
@@ -446,7 +446,8 @@ class TrackedView(BaseView):
             else {}
         )
         last_downloads = await self._library.last_downloads()
-        in_plex = await self._library.plex_shows()  # the cards' library mark (none without Plex)
+        # The cards' library mark: had in Plex or in the folders (none without a library).
+        in_plex = await self._library.plex_shows()
         now = datetime.now().astimezone()
         self._profile_id = profile_id
         shown = self._grid
@@ -491,6 +492,7 @@ class TrackedView(BaseView):
                 missing_actions=self._missing_actions,
                 scale=scale,
                 in_plex=in_plex.has(entry.show.tvdb_id, entry.show.imdb_id),
+                from_folders=in_plex.only_in_folders(entry.show.tvdb_id, entry.show.imdb_id),
             )
         if quiet:
             # Lay the hidden cards out, then let their covers load before the swap.
@@ -641,7 +643,7 @@ class TrackedView(BaseView):
     def _open_more_menu(self) -> None:
         items: list[tuple[str, Callable[[], None]]] = []
         if self._plex and self._on_find_gaps is not None:
-            text = library_words.by_source(FIND_GAPS_TEXT, FIND_GAPS_FOLDERS_TEXT)
+            text = library_words.by_library(FIND_GAPS_TEXT, FIND_GAPS_FOLDERS_TEXT)
             items.append((t(text), self._on_find_gaps))
         items.append((t(REMOVE_ENDED_TEXT), self._remove_ended))
         popup_menu(self._more_button, items)

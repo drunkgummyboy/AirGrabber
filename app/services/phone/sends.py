@@ -12,8 +12,20 @@ making the smaller copy at once (copies.py), so it is ready when the phone comes
 copies that one from here instead of the film from Plex. Cancelling the order before the phone took it
 drops the copy; a copy still wanted when AirGrabber starts again is started again (`resume_copies`).
 
-Open to every paired phone (a library manager's or not), behind the "no Plex, no phone app" rule. Both
-lists are this PC's own (never in a backup); disconnecting a phone drops its share (`DeviceStore.remove`).
+Open to every paired phone (a library manager's or not), behind the phone connection's library
+gate (`_needs_library` in service.py: Plex, or the folder library for a Companion that knows it).
+Both lists are this PC's own (never in a backup); disconnecting a phone drops its share
+(`DeviceStore.remove`).
+
+A folder library title (docs/folder-library/2026-11-16-companion-contract.md) goes as its video key
+(playing.py's "movie:<tmdb>", "episode:<tmdb>:<season>:<episode>"), also beside Plex (the
+Downloaded shelf, docs/folder-library/2026-11-16-alongside-plex-design.md): the phone copies it from
+this PC (`/v1/library/<key>/file`, answered whenever the folders are on), and a 4K one's phone-sized
+copy is made from the PC's own file; a Plex title goes as its ratingKey, from Plex. Only a
+Companion that knows the folder library (`X-Companion-Can: folder-library`, `knows_folders`) hears
+of an order with such a key; an older one (beside Plex it passes the library gate) can't fetch it,
+so its answer leaves those out and the order stays open on the PC for a newer Companion. A key is
+letters, digits and `:` (copies.py's `_PHONE_KEY`), at most MAX_KEY characters.
 
 The log gets ids and counts, never a title.
 """
@@ -29,7 +41,9 @@ from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 from app.models import PairedPhone, PhoneContents, PhoneItem, PhoneOrder, Settings
 from app.models.plex import PlexEpisode, PlexTitle
-from app.services.phone.server import Handler, Reply, Request, bad_request
+from app.services.folder_library.playing import canonical_item, film_item, from_folders
+from app.services.phone.copies import _PHONE_KEY
+from app.services.phone.server import Handler, Reply, Request, bad_request, knows_folders
 from app.services.settings import SettingsService
 
 if TYPE_CHECKING:
@@ -39,7 +53,7 @@ log = logging.getLogger(__name__)
 
 MAX_ITEMS = 300  # what one phone may say it holds; MAX_BODY fits this many
 MAX_TEXT = 200  # characters of a title or a show's name
-MAX_KEY = 20  # characters of a Plex ratingKey
+MAX_KEY = 40  # characters of a key: a Plex ratingKey or a folder video's (`_PHONE_KEY`)
 MAX_NUMBER = 10_000  # a season or an episode
 MAX_SIZE = 10**13  # bytes: 10 TB
 _KINDS = ("movie", "episode")
@@ -51,7 +65,15 @@ def _whole_number(value: object) -> TypeGuard[int]:
 
 
 def _key(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and 0 < len(value) <= MAX_KEY and value.isascii() and value.isalnum()
+    return isinstance(value, str) and len(value) <= MAX_KEY and _PHONE_KEY.fullmatch(value) is not None
+
+
+def order_key(title: PlexTitle) -> str:
+    """The key a title's order carries: a folder library film's video key ("movie:<tmdb>"), else
+    Plex's ratingKey."""
+    if from_folders(title) and title.kind == "movie" and title.tmdb_id is not None:
+        return film_item(title.tmdb_id)
+    return title.key
 
 
 def _text(value: object, *, needed: bool) -> str | None:
@@ -80,7 +102,7 @@ def read_item(data: object) -> PhoneItem | None:
     if not isinstance(data, dict):
         return None
     key, kind, state = data.get("key"), data.get("kind"), data.get("state")
-    title = _text(data.get("title"), needed=True)
+    title = _text(data.get("title"), needed=kind == "movie")  # an episode is its show + numbers
     show = _text(data.get("show"), needed=False)
     season, episode = _number(data.get("season")), _number(data.get("episode"))
     progress, size = data.get("progress", 0), data.get("size", 0)
@@ -99,7 +121,7 @@ def read_item(data: object) -> PhoneItem | None:
     ):
         return None
     return PhoneItem(
-        key=key,
+        key=canonical_item(key) or key,  # "movie:0603" is the order's "movie:603"
         kind=kind,
         title=title,
         show=show if kind == "episode" else "",
@@ -211,16 +233,18 @@ class PhoneSends:
 
     async def send_film(self, phone: PairedPhone, film: PlexTitle, *, phone_sized: bool = False) -> int:
         """Put a film from the Library page on `phone`: 1, or 0 when it is there already.
-        `phone_sized`: as this PC's phone-sized copy, started here at once."""
+        `phone_sized`: as this PC's phone-sized copy, started here at once. A folder library
+        film goes as its video key (`order_key`)."""
+        key = order_key(film)
         added = await self._send(
             phone.id,
-            [{"key": film.key, "kind": "movie", "title": film.title, "phone_sized": phone_sized}],
+            [{"key": key, "kind": "movie", "title": film.title, "phone_sized": phone_sized}],
         )
         if added and phone_sized and self._copies is not None and any(
-            o.phone_id == phone.id and o.key == film.key and o.action == "take" and o.phone_sized
+            o.phone_id == phone.id and o.key == key and o.action == "take" and o.phone_sized
             for o in self._settings.current.phone_orders
         ):
-            self._copies.make(film.key)
+            self._copies.make(key)
         return added
 
     def resume_copies(self) -> None:
@@ -242,7 +266,8 @@ class PhoneSends:
     async def send_episodes(
         self, phone: PairedPhone, show: PlexTitle, episodes: Sequence[PlexEpisode]
     ) -> int:
-        """Put these episodes of `show` on `phone`: how many weren't there or on their way."""
+        """Put these episodes of `show` on `phone`: how many weren't there or on their way. A
+        folder library show's episodes carry their video keys ("episode:<tmdb>:<s>:<e>")."""
         return await self._send(
             phone.id,
             [
@@ -373,7 +398,13 @@ class PhoneSends:
                     report,
                 ),
             )
-        mine = [order for order in orders if order.phone_id == phone.id]
+        # An older Companion can't fetch a folder video (its key holds `:`): not told of it.
+        knows = knows_folders(request)
+        mine = [
+            order
+            for order in orders
+            if order.phone_id == phone.id and (knows or ":" not in order.key)
+        ]
         log.debug("Phone %s holds %d item(s), %d order(s) open", phone.id, len(items), len(mine))
         return Reply(
             200,

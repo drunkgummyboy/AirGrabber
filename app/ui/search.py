@@ -628,6 +628,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 on_open_show=self._on_open_show,
                 scale=self._scale,
                 in_plex=plex.has(result.show.tvdb_id, result.show.imdb_id),
+                from_folders=plex.only_in_folders(result.show.tvdb_id, result.show.imdb_id),
             )
         grid.relayout()
 
@@ -689,6 +690,7 @@ class SearchResultsWindow(ctk.CTkToplevel):
                 scale=self._scale,
                 on_open=self._on_open_movie,
                 in_plex=plex.has(movie.id),
+                from_folders=plex.only_in_folders(movie.id),
             )
         grid.relayout()
 

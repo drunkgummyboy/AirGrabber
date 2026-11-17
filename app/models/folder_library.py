@@ -13,9 +13,9 @@ FileKind = Literal["movie", "episode"]
 # What FolderLibraryService.switch_on came to: "on" switched on; "unreachable" no folder could be
 # reached (nothing stored or saved); "slow" none was read in time but some answered (as
 # "unreachable", but asking again soon uses what was read meanwhile); "overtaken" a later switch
-# or Plex came first; "plex" saved behind a connected Plex, nothing read; "off" no folder given,
-# switched off.
-SwitchOutcome = Literal["on", "unreachable", "slow", "overtaken", "plex", "off"]
+# came first; "off" no folder given, switched off. With Plex connected it is read all the same
+# (two shelves: the folders count beside Plex).
+SwitchOutcome = Literal["on", "unreachable", "slow", "overtaken", "off"]
 
 
 class LibraryFile(DomainModel):
@@ -40,8 +40,8 @@ class LibraryFile(DomainModel):
 
 class FolderLibraryStatus(DomainModel):
     """What Settings' folder library part and the Library page show (FolderLibraryService's
-    `status`): whether the folders are the library now (`on`: switched on, a folder set, no
-    Plex), whether a check runs, the last check's films, shows and their episodes, the files it
+    `status`): whether the folders count now (`on`: switched on with a folder set, with or
+    without Plex: `folders_on`), whether a check runs, the last check's films, shows and their episodes, the files it
     couldn't recognise (paths, sorted; never logged), the folders it couldn't reach (as set in
     Settings), those that answered but weren't read in time (`slow`) and when it was."""
 

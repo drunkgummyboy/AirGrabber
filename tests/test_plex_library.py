@@ -16,7 +16,7 @@ import httpx
 from PIL import Image
 
 from app.models import ImportResult, Show
-from app.models.plex import PlexItemReply, PlexTitle
+from app.models.plex import PlexContinue, PlexItemReply, PlexTitle, PlexVideo
 from app.services.images import ImageCache
 from app.services.plex import plex_title, poster_url, resolution_name
 from app.services.plex_library import (
@@ -25,6 +25,7 @@ from app.services.plex_library import (
     LibraryShow,
     LibrarySort,
     PlexLibraryService,
+    Shelf,
     checked_text,
     follow_line,
     gaps_text,
@@ -231,12 +232,17 @@ class NoPlexTests(PlexTestCase):
 
 
 class FakeService:
+    """PlexLibraryService with Plex as its one shelf."""
+
     def __init__(self, contents: LibraryContents) -> None:
         self._contents = contents
         self.followed: list[str] = []
         self.available = True
 
-    async def contents(self, *, profile_id: int) -> LibraryContents:
+    def shelves(self) -> tuple[Shelf, ...]:
+        return ("plex",)
+
+    async def contents(self, *, profile_id: int, shelf: Shelf | None = None) -> LibraryContents:
         return self._contents
 
     async def follow(self, plex_title: PlexTitle, *, profile_id: int) -> bool:
@@ -500,6 +506,9 @@ class FolderContentsTests(unittest.IsolatedAsyncioTestCase):
             async def titles(self) -> list[PlexTitle]:
                 return [dune, severance]
 
+            async def checked_at(self) -> datetime:
+                return NOW - timedelta(hours=1)
+
         class NoPlex:
             connected = False
 
@@ -518,11 +527,94 @@ class FolderContentsTests(unittest.IsolatedAsyncioTestCase):
         contents = await service.contents(profile_id=1)
         self.assertEqual(contents.films, (dune,))
         self.assertEqual([(s.title, s.following) for s in contents.shows], [(severance, True)])
-        self.assertEqual(contents.checked_at, NOW)
+        self.assertEqual(contents.checked_at, NOW - timedelta(hours=1))  # the folders' own check
         Folders.on = False
         self.assertFalse(service.available)
         self.assertEqual(await service.contents(profile_id=1), LibraryContents())
 
+
+class ShelvesTests(unittest.IsolatedAsyncioTestCase):
+    """Two shelves (docs/folder-library/2026-11-16-alongside-plex-design.md): what Plex has and
+    what the folders hold, each its own list."""
+
+    async def test_two_shelves_never_mix(self) -> None:
+        plex_ark = title("The Ark", key="1001", show_id=101)
+        plex_dune = title("Dune", "movie", key="3001", tmdb_id=438631)
+        folder_ark = title("The Ark", key="folder:show:2001", show_id=101, tmdb_id=2001)
+        folder_heat = title("Heat", "movie", key="folder:movie:949", tmdb_id=949)
+        folders_checked = NOW - timedelta(hours=2)
+        plex_next = PlexContinue(title=plex_ark, video=PlexVideo(key="7122", file="/v/1.mkv"))
+        folder_next = PlexContinue(
+            title=folder_heat, video=PlexVideo(key="movie:949", file=r"D:\Films\Heat.mkv")
+        )
+        people: list[int] = []
+
+        class Plex:
+            connected = True
+
+            async def titles(self) -> list[PlexTitle]:
+                return [plex_ark, plex_dune]
+
+            async def checked_at(self) -> datetime:
+                return NOW
+
+            async def continue_watching(self) -> list[PlexContinue]:
+                return [plex_next]
+
+        class Folders:
+            on = True
+
+            async def titles(self) -> list[PlexTitle]:
+                return [folder_ark, folder_heat]
+
+            async def checked_at(self) -> datetime:
+                return folders_checked
+
+            async def continue_watching(self, *, profile_id: int) -> list[PlexContinue]:
+                people.append(profile_id)
+                return [folder_next]
+
+        library = mock.Mock()
+        library.tracked_ids = mock.AsyncMock(return_value=frozenset({101}))
+        library.gaps = mock.AsyncMock(return_value=[])
+        library.cached_shows = mock.AsyncMock(return_value={})
+        service = PlexLibraryService(
+            cast(Any, Plex()), library, folders=cast(Any, Folders()), person=lambda: 2
+        )
+        self.assertEqual(service.shelves(), ("plex", "downloaded"))
+        self.assertTrue(service.available)
+        on_plex = await service.contents(profile_id=1, shelf="plex")
+        self.assertEqual([s.title for s in on_plex.shows], [plex_ark])
+        self.assertEqual(on_plex.films, (plex_dune,))
+        self.assertEqual(on_plex.checked_at, NOW)
+        downloaded = await service.contents(profile_id=1, shelf="downloaded")
+        self.assertEqual([s.title for s in downloaded.shows], [folder_ark])
+        self.assertEqual(downloaded.films, (folder_heat,))
+        self.assertEqual(downloaded.checked_at, folders_checked)
+        # The show in both places is on both shelves, each its own card, followed on both.
+        self.assertTrue(on_plex.shows[0].following and downloaded.shows[0].following)
+        # Continue watching per shelf: Plex's, or the folders' for the PC's person.
+        self.assertEqual(await service.continue_watching("plex"), [plex_next])
+        self.assertEqual(await service.continue_watching("downloaded"), [folder_next])
+        self.assertEqual(people, [2])
+        # Without a shelf: the main one (Plex's).
+        self.assertEqual(await service.contents(profile_id=1), on_plex)
+        # The folders off: one shelf; Downloaded's answers nothing.
+        Folders.on = False
+        self.assertEqual(service.shelves(), ("plex",))
+        self.assertEqual(await service.contents(profile_id=1, shelf="downloaded"), LibraryContents())
+        self.assertEqual(await service.continue_watching("downloaded"), [])
+        # Plex gone, the folders on: Downloaded alone, also as the main one.
+        Folders.on = True
+        Plex.connected = False
+        self.assertEqual(service.shelves(), ("downloaded",))
+        self.assertEqual(await service.contents(profile_id=1, shelf="plex"), LibraryContents())
+        self.assertEqual(await service.continue_watching("plex"), [])
+        self.assertEqual(await service.contents(profile_id=1), downloaded)
+        self.assertEqual(await service.continue_watching(), [folder_next])
+        Folders.on = False
+        self.assertEqual(service.shelves(), ())
+        self.assertFalse(service.available)
 
 def view_kind_films() -> Any:
     from app.services.plex_library import LibraryKindTab

@@ -461,6 +461,35 @@ class MovieDashboardTests(DiscoveryTestCase):
         self.assertEqual((dashboard.plex_connected, dashboard.in_plex), (True, frozenset({film})))
         self.assertEqual(self.server.count(MOVIE_TRENDING), 1)  # from the cache
 
+    async def test_film_in_folders_counts_as_had(self) -> None:
+        # Two shelves: a film only in the folders is had beside Plex (Movies hides it, the
+        # watchlist and search cards mark it), worded "Downloaded"; Plex's says "In Plex".
+        dashboard = await self.service.movie_dashboard()
+        in_plex, in_folders = dashboard.trending[0].id, dashboard.trending[1].id
+        await self.db.plex.replace(PlexScan(films=frozenset({(in_plex, None)})), self.now)
+        await self.db.folders.replace(
+            PlexScan(films=frozenset({(in_folders, "tt7"), (in_plex, None)})), self.now
+        )
+        await self.settings.update(
+            plex_token=TOKEN, folder_library_on=True, film_folders=(r"\\NAS\Films",)
+        )
+        dashboard = await self.service.movie_dashboard()
+        self.assertEqual(
+            (dashboard.in_plex, dashboard.in_folders), ({in_plex}, {in_folders})
+        )
+        films = await self.service.plex_films()  # the watchlist's and search's marks
+        self.assertTrue(films.has(in_folders) and films.has(None, "tt7"))
+        self.assertTrue(films.only_in_folders(in_folders))
+        self.assertFalse(films.only_in_folders(in_plex))  # in both: Plex's
+        # The folders only: everything they have is the library's (part 1's words).
+        await self.settings.update(plex_token="")
+        await self.db.plex.clear()
+        dashboard = await self.service.movie_dashboard()
+        self.assertEqual(
+            (dashboard.in_plex, dashboard.in_folders), ({in_plex, in_folders}, frozenset())
+        )
+        self.assertFalse((await self.service.plex_films()).only_in_folders(in_folders))
+
     async def test_failed_shelf(self) -> None:
         self.server.failures[MOVIE_TRENDING] = 500
         with self.assertLogs(LOGGER, "WARNING"):
@@ -743,6 +772,25 @@ class DetailsTests(DiscoveryTestCase):
         self.assertEqual(len(requests), 2)
         self.assertEqual(requests[0].url.params["query"], "dune")
         self.assertEqual(len(await self.service.search_movies("  ")), 0)
+
+
+class ShowTmdbIdTests(DiscoveryTestCase):
+    """`show_tmdb_id`: ▶ Play joins a show's marks in the user's own folders by it."""
+
+    async def test_by_imdb_kept_and_none_when_tmdb_cant_say(self) -> None:
+        show = Show(id=901, name="Severance", imdb_id="tt11280740")
+        path = "/3/find/tt11280740"
+        self.server.tmdb[path] = {"tv_results": [{"id": 95396, "name": "Severance"}]}
+        self.assertEqual(await self.service.show_tmdb_id(show), 95396)
+        self.assertEqual(await self.service.show_tmdb_id(show), 95396)
+        self.assertEqual(self.server.count(path), 1)  # kept
+        self.assertIsNone(await self.service.show_tmdb_id(Show(id=902, name="No IMDb id")))
+        other = Show(id=903, name="Away", imdb_id="tt0000903")
+        self.server.failures["/3/find/tt0000903"] = 500
+        with self.assertLogs("app.services.discovery", "INFO"):
+            self.assertIsNone(await self.service.show_tmdb_id(other))  # TMDB away: no id
+        self.key = ""
+        self.assertIsNone(await self.service.show_tmdb_id(other))  # no key: nothing asked
 
 
 class ClearCacheTests(DiscoveryTestCase):

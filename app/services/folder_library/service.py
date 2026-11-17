@@ -7,29 +7,27 @@ page show.
   as app/services/plex_scans.py hears Forge's moves), QUIET_S after a check found files still
   being written, at once when a folder's read past its limit ends at last (its result used),
   at once when a show is newly followed (`LibraryService.on_followed`: its episodes count only
-  for a show in the cache, so its files count from that check on, not 6 hours later), at once
-  when Plex gets disconnected (its tables were just cleared) and when asked (`check_soon`,
-  "Check now"). Only while the folders are the library
-  (`library_source` "folders"); otherwise nothing is read.
+  for a show in the cache, so its files count from that check on, not 6 hours later) and when
+  asked (`check_soon`, "Check now"). Only while the folders are on (`folders_on`: switched on
+  with a folder set, with or without Plex); otherwise nothing is read.
 - **A check** reads every folder at once, each on its own and limited in time (scan.py). A
   folder that can't be reached, that answers but whose read went past its limit (`slow`), or
   whose last read still runs in its thread, keeps its stored
-  rows: they go into the matching as they are (`from_row`), since `PlexRepository.replace`
-  replaces everything. The same folder set twice, or one inside another of its kind, is read
-  once (the outer one). Then `match_files` (with the last check's titles, so TMDB and TVMaze
-  aren't asked again) and the store: `replace_folder` per folder read, the rows below no folder
-  set dropped, `PlexRepository.replace` with the whole scan. The pages reload
+  rows: they go into the matching as they are (`from_row`), since `FolderRepository.replace`
+  replaces all the folders' rows. The same folder set twice, or one inside another of its kind,
+  is read once (the outer one). Then `match_files` (with the last check's titles, so TMDB and
+  TVMaze aren't asked again) and the store: `replace_folder` per folder read, the rows below no
+  folder set dropped, `FolderRepository.replace` with the whole scan. The pages reload
   (`LibraryService.notify_changed`) when what is had or the titles changed.
-- **Plex wins.** Right before storing, the source is checked again: a check under way when Plex
-  got connected (or the library switched off, or switched on with other folders) stores nothing.
-- **Plex disconnected** empties the tables: the pages' marks are held (`LibraryService.hold_marks`,
-  no library for them) from that moment until the check that follows has ended, so no "missing"
-  stands over empty tables. The last check's titles are kept in memory too (`prior` for the
-  matching), so TMDB isn't asked for every title's details again.
+- **Beside Plex** (two shelves, docs/folder-library/2026-11-16-alongside-plex-design.md): the
+  folders' result has tables of its own (`folder_*`, `db.folders`); Plex's check and the folder
+  check each replace only their own rows, so Plex connecting or going changes nothing here (its
+  status listeners only tell Settings' box). Right before storing, the switch is checked again:
+  a check under way when the folders got switched off, or switched on with other folders, stores
+  nothing.
 - **Switching on** stores the first read's result before `folder_library_on` is saved, so the
   marks never stand over empty tables; **switching off** clears `library_files` and the
-  `plex_*` tables (not while Plex is connected: they are Plex's then). Never a file on disk is
-  touched.
+  folders' tables, never Plex's. Never a file on disk is touched.
 
 Logs give counts only, never a path, a file name or a title.
 """
@@ -46,10 +44,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from app.database import LibraryFileRepository, PlexRepository
+from app.database import FolderRepository, LibraryFileRepository
 from app.models.folder_library import FolderLibraryStatus, LibraryFile, SwitchOutcome
 from app.models.plex import PlexTitle
-from app.services.folder_library.match import KEY_PREFIX, FolderMatch, match_files
+from app.services.folder_library.match import FolderMatch, match_files
 from app.services.folder_library.scan import (
     READ_TIMEOUT_S,
     FolderKind,
@@ -60,7 +58,7 @@ from app.services.folder_library.scan import (
     read_folder,
 )
 from app.services.library import LibraryService
-from app.services.library_source import library_source
+from app.services.library_source import folders_on
 from app.services.plex import plex_connected
 from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient
@@ -81,8 +79,8 @@ Listener = Callable[[], None]
 
 
 class PlexListeners(Protocol):
-    """PlexService's status listeners: called after a connect and after a disconnect (once its
-    tables are cleared), among other times."""
+    """PlexService's status listeners: called after a connect and after a disconnect, among
+    other times."""
 
     def subscribe(self, listener: Listener) -> Callable[[], None]: ...
 
@@ -207,7 +205,7 @@ class FolderLibraryService:
         self,
         settings: SettingsService,
         files: LibraryFileRepository,
-        plex_store: PlexRepository,
+        folders: FolderRepository,
         tmdb: TMDBClient,
         library: LibraryService,
         *,
@@ -218,11 +216,11 @@ class FolderLibraryService:
         plex: PlexListeners | None = None,
     ) -> None:
         """`clock`: POSIX seconds (a file's change time is held against it); `sleep`: the waits
-        between checks (tests move both). `plex`: PlexService, whose connect / disconnect this
-        hears."""
+        between checks (tests move both). `folders`: the folders' own tables (`db.folders`).
+        `plex`: PlexService, whose connect / disconnect this passes on to its listeners."""
         self._settings = settings
         self._files = files
-        self._plex_store = plex_store
+        self._folders = folders
         self._tmdb = tmdb
         self._library = library
         self._clock = clock
@@ -236,7 +234,7 @@ class FolderLibraryService:
         self._again = False  # asked for during a check: one more after it
         self._soon: asyncio.Task[None] | None = None  # `check_soon`'s
         self._soon_at = 0.0  # the loop's time it is due
-        self._generation = 0  # moved on by a switch and by Plex connecting: older reads store nothing
+        self._generation = 0  # moved on by a switch: older reads store nothing
         self._store_lock = asyncio.Lock()
         # Reads that went past their limit: one ending at last brings a check.
         self._reading = LongReads(on_ended=self._long_read_ended)
@@ -245,14 +243,12 @@ class FolderLibraryService:
         self._moves_since = 0.0
         self._moves_task: asyncio.Task[None] | None = None
         self._moves_again = False
-        self._clearing: asyncio.Task[None] | None = None  # Plex connected: the tables cleared
         # switch_on / switch_off run as tasks of their own: a caller that goes (Settings closed
         # mid-read) doesn't stop them half-way.
         self._switches: set[asyncio.Task[Any]] = set()
         self._unsubscribe: list[Callable[[], None]] = []
         self._plex_was = plex_connected(settings.current)
-        self._titles: dict[str, PlexTitle] = {}  # the last stored ones: they outlive a Plex spell
-        self._holding = False  # the pages' marks held after a Plex disconnect
+        self._titles: dict[str, PlexTitle] = {}  # the last stored ones (`prior` for matching)
         if plex is not None:
             self._unsubscribe.append(plex.subscribe(self._plex_changed))
         self._unsubscribe.append(library.on_followed(self._followed))
@@ -263,7 +259,7 @@ class FolderLibraryService:
     def status(self) -> FolderLibraryStatus:
         return self._found.model_copy(
             update={
-                "on": library_source(self._settings.current) == "folders",
+                "on": folders_on(self._settings.current),
                 "checking": self._working > 0,
             }
         )
@@ -291,23 +287,36 @@ class FolderLibraryService:
         self._notify()
 
     def _on(self) -> bool:
-        return library_source(self._settings.current) == "folders"
+        return folders_on(self._settings.current)
 
     async def load(self) -> None:
-        """The stored result as the status, before the first check (the start)."""
+        """The stored result as the status, before the first check (the start). Off, what an
+        older run left of the folders (cut off between switching off and forgetting) is
+        forgotten: it would count as had beside Plex."""
         if not self._on():
+            await self._forget_leftovers()
             return
-        titles = [t for t in await self._plex_store.titles() if t.key.startswith(KEY_PREFIX)]
+        titles = await self._folders.titles()
         self._titles = {title.key: title for title in titles}
         rows = await self._files.all()
-        counts = await self._plex_store.counts()
         self._found = _counted(
             titles,
             unrecognised=(path for path, row in rows.items() if not row.recognised),
             unreachable=(),
-            checked_at=counts.checked_at,
+            checked_at=await self._folders.checked_at(),
         )
         self._notify()
+
+    async def _forget_leftovers(self) -> None:
+        if not await self._folders.stored() and not await self._files.all():
+            return
+        async with self._store_lock:
+            if self._on():  # switched on meanwhile: those rows are its
+                return
+            await self._files.clear()
+            await self._folders.clear()
+        log.info("Folder library is off: what an earlier run left of it forgotten")
+        self._library.notify_changed()
 
     # -- when ----------------------------------------------------------------------------------
 
@@ -326,7 +335,7 @@ class FolderLibraryService:
 
     def check_soon(self, delay_s: float = 0) -> None:
         """One check about `delay_s` seconds from now; one waiting at a time (the earliest).
-        Nothing while the folders aren't the library (no timer either)."""
+        Nothing while the folders are off (no timer either)."""
         if not self._on():
             return
         loop = asyncio.get_running_loop()
@@ -343,7 +352,6 @@ class FolderLibraryService:
         self._soon = None  # from here on a new `check_soon` waits on its own
         with contextlib.suppress(Exception):  # logged by its type (`_retrieved`)
             await self.check()
-        self._release_marks()  # also when there was nothing to check (switched off meanwhile)
 
     def _cancel_soon(self) -> None:
         if self._soon is not None:
@@ -352,7 +360,7 @@ class FolderLibraryService:
 
     async def check(self) -> None:
         """Read the folders and store what they hold (see the module docstring); nothing while
-        they aren't the library. One at a time: a call during a check waits for it, and one
+        they are off. One at a time: a call during a check waits for it, and one
         more check follows it."""
         if not self._on():
             return
@@ -378,12 +386,11 @@ class FolderLibraryService:
                 if not self._again:
                     return
         finally:
-            self._release_marks()  # stored, or not: either way no longer held
             self._work(-1)
 
     async def _check_once(self) -> None:
         settings = self._settings.current
-        if library_source(settings) != "folders":
+        if not folders_on(settings):
             return
         generation = self._generation
         folders = (settings.film_folders, settings.series_folders)
@@ -393,7 +400,7 @@ class FolderLibraryService:
             return
         async with self._store_lock:
             current = self._settings.current
-            if not self._may_store(generation) or library_source(current) != "folders":
+            if not self._may_store(generation) or not folders_on(current):
                 log.info("Folder library check: the library changed meanwhile, nothing stored")
                 return
             if (current.film_folders, current.series_folders) != folders:
@@ -411,8 +418,8 @@ class FolderLibraryService:
     # -- reading and storing --------------------------------------------------------------------
 
     def _may_store(self, generation: int) -> bool:
-        """No switch and no Plex connect since `generation` was taken (Plex wins)."""
-        return generation == self._generation and not plex_connected(self._settings.current)
+        """No switch since `generation` was taken."""
+        return generation == self._generation
 
     async def _read(
         self, films: Sequence[str], series: Sequence[str], *, generation: int
@@ -420,10 +427,8 @@ class FolderLibraryService:
         """Read and match the folders; None when overtaken (`_may_store`) before matching."""
         folders = _folders(films, series)
         stored = await self._files.all()
-        prior = dict(self._titles)  # also when Plex's spell emptied the tables
-        prior.update(
-            (t.key, t) for t in await self._plex_store.titles() if t.key.startswith(KEY_PREFIX)
-        )
+        prior = dict(self._titles)
+        prior.update((title.key, title) for title in await self._folders.titles())
         now = self._clock()
         owners = {path: _owner(path, folders) for path in stored}
         shares = [
@@ -490,12 +495,12 @@ class FolderLibraryService:
 
     async def _store(self, outcome: _Outcome, generation: int) -> bool | None:
         """Store a read (under the store lock): whether what is had or the titles changed; None
-        when overtaken right before the tables (`_may_store`: nothing of Plex's written over).
+        when overtaken right before the tables (`_may_store`: a switch came first).
         Each file belongs to the deepest folder set above it (`_owner`): a folder read gives
         its own files' rows, an unreached one keeps its stored rows."""
         match = outcome.match
-        before = await self._plex_store.contents()
-        before_titles = {title.key: title for title in await self._plex_store.titles()}
+        before = await self._folders.contents()
+        before_titles = {title.key: title for title in await self._folders.titles()}
         reached = set(outcome.reached)
         final: dict[str, LibraryFile] = {}
         for row in match.rows:
@@ -513,10 +518,10 @@ class FolderLibraryService:
         if stale:  # below no folder set (any more), or under a folder's other spelling
             await self._files.remove(stale)
         if not self._may_store(generation):
-            log.info("Folder library: Plex or a switch came first, the tables left alone")
+            log.info("Folder library: a switch came first, the tables left alone")
             return None
         when = datetime.fromtimestamp(outcome.now, UTC)
-        await self._plex_store.replace(match.scan, when)
+        await self._folders.replace(match.scan, when)
         self._titles = {title.key: title for title in match.scan.titles}
         self._found = _counted(
             match.scan.titles,
@@ -548,10 +553,9 @@ class FolderLibraryService:
           it was; `status.unreachable` names the folders;
         - "slow": none was read in time, but some answered (`status.slow`): as "unreachable",
           but asking again soon uses what their reads found meanwhile;
-        - "overtaken": a later switch, or Plex connecting, came first; nothing stored;
-        - "plex": Plex is connected: the switch and the folders are saved, nothing read (Plex
-          wins; the folders are read once Plex is disconnected);
+        - "overtaken": a later switch came first; nothing stored;
         - "off": no folder given: switched off (`switch_off`).
+        Plex connected or not, the folders are read the same way (they count beside Plex).
         A check under way is waited for first (it stores nothing): never two reads at once."""
         task = self._own(self._switch_on(films, series), "folder-library-switch-on")
         await asyncio.wait({task})  # a caller cancelled doesn't cancel the switch
@@ -569,14 +573,6 @@ class FolderLibraryService:
         self._work(1)
         try:
             await self._wait_for_check()
-            if plex_connected(self._settings.current):
-                await self._settings.update(
-                    folder_library_on=True,
-                    film_folders=film_folders,
-                    series_folders=series_folders,
-                )
-                log.info("Folder library switched on, not read while Plex is connected")
-                return "plex"
             outcome = await self._read(film_folders, series_folders, generation=generation)
             if outcome is None:
                 log.info("Folder library: switching on was overtaken, nothing stored")
@@ -618,7 +614,6 @@ class FolderLibraryService:
                 self.check_soon(self._quiet + ARRIVING_MARGIN_S)
             return "on"
         finally:
-            self._release_marks()
             self._work(-1)
 
     async def _wait_for_check(self) -> None:
@@ -629,9 +624,9 @@ class FolderLibraryService:
             await asyncio.wait({run})
 
     async def switch_off(self) -> None:
-        """"Stop using these folders": what was read is forgotten (`library_files`, and the
-        `plex_*` tables unless Plex is connected: then they are Plex's), the folders stay set.
-        Nothing on disk is touched. Its own task, as `switch_on`'s."""
+        """"Stop using these folders": what was read is forgotten (`library_files` and the
+        folders' own tables; Plex's stay), the folders stay set. Nothing on disk is touched.
+        Its own task, as `switch_on`'s."""
         task = self._own(self._switch_off(), "folder-library-switch-off")
         await asyncio.wait({task})
         task.result()
@@ -640,13 +635,13 @@ class FolderLibraryService:
         self._generation += 1  # a check under way stores nothing
         self._cancel_soon()
         async with self._store_lock:
-            await self._settings.update(folder_library_on=False)
+            # Forgotten first, then the switch saved: rows outliving it would count as had
+            # beside Plex (a failed or cut-off clear leaves it on, and the next check refills).
             await self._files.clear()
-            if not plex_connected(self._settings.current):
-                await self._plex_store.clear()
+            await self._folders.clear()
+            await self._settings.update(folder_library_on=False)
         self._found = FolderLibraryStatus()
         self._titles = {}  # what was read is forgotten
-        self._release_marks()
         log.info("Folder library switched off, what was read forgotten")
         self._notify()
         self._library.notify_changed()
@@ -654,35 +649,14 @@ class FolderLibraryService:
     # -- Plex ----------------------------------------------------------------------------------
 
     def _plex_changed(self) -> None:
+        """Plex connected or disconnected: nothing of the folders' changes (their own tables),
+        but the status's listeners hear it (Settings' box words itself by Plex)."""
         connected = plex_connected(self._settings.current)
         was, self._plex_was = self._plex_was, connected
-        if connected and not was:
-            # Plex wins: a check under way stores nothing, the folders' result leaves the
-            # tables, Plex's check fills them.
-            self._generation += 1
-            self._cancel_soon()
-            self._release_marks()  # Plex's marks now
-            log.info("Plex connected: the folder library stops")
+        if connected != was:
+            log.info("Plex %s: the folder library goes on as it was",
+                     "connected" if connected else "disconnected")
             self._notify()
-            if self._clearing is None or self._clearing.done():
-                self._clearing = asyncio.get_running_loop().create_task(
-                    self._clear_for_plex(), name="folder-library-plex"
-                )
-        elif was and not connected and self._on():
-            # Disconnecting cleared the tables: the folders fill them again now, not in 6 hours,
-            # and till then the pages show no marks (held before they reload: Plex's `on_change`
-            # comes after its status listeners).
-            log.info("Plex disconnected: the folder library is read again")
-            self._holding = True
-            self._library.hold_marks(True)
-            self._notify()
-            self.check_soon()
-
-    def _release_marks(self) -> None:
-        """The marks held since Plex's disconnect go back (the pages reload with them)."""
-        if self._holding:
-            self._holding = False
-            self._library.hold_marks(False)
 
     def _followed(self) -> None:
         """A show newly followed: a check now, so its files' episodes count (only a show in the
@@ -690,25 +664,6 @@ class FolderLibraryService:
         if not self._closed and self._on():
             log.info("A show was followed: the folder library is checked")
             self.check_soon()
-
-    async def _clear_for_plex(self) -> None:
-        """Plex connected: no folder title may show as Plex's or reach Plex's playing. The
-        tables are cleared unless Plex's own check got there first (no folder title left)."""
-        try:
-            async with self._store_lock:
-                if not plex_connected(self._settings.current):
-                    return
-                titles = await self._plex_store.titles()
-                if not any(title.key.startswith(KEY_PREFIX) for title in titles):
-                    return
-                await self._plex_store.clear()
-        except Exception as exc:  # by its type only: a message could hold a path
-            log.warning(
-                "Clearing the folder library's result for Plex failed (%s)", type(exc).__name__
-            )
-            return
-        log.info("Plex connected: the folder library's result cleared from the tables")
-        self._library.notify_changed()
 
     def _long_read_ended(self) -> None:
         """A folder's read past its limit ended at last: a check now uses it (not in 6 hours);
@@ -758,7 +713,7 @@ class FolderLibraryService:
             return
         self._moves_since = max(record.moved_at.timestamp() for record in records)
         settings = self._settings.current
-        if library_source(settings) != "folders":
+        if not folders_on(settings):
             return
         folders = _folders(settings.film_folders, settings.series_folders)
         inside = sum(
@@ -775,10 +730,9 @@ class FolderLibraryService:
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe.clear()
-        self._holding = False  # quitting: no page is told anything any more
         tasks = [
             task
-            for task in (self._soon, self._moves_task, self._run, self._clearing, *self._switches)
+            for task in (self._soon, self._moves_task, self._run, *self._switches)
             if task is not None and not task.done()
         ]
         for task in tasks:

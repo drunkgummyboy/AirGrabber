@@ -1,12 +1,14 @@
 """Settings → Library: the "Your own folders" box (mockups/folder-library.html, states 1–3) over
 FolderLibraryService (app/services/folder_library/service.py; docs/folder-library/).
 
-Three looks, by the library's source:
-- **Off** (no Plex, not switched on): "Your own folders" with an "Off" pill, one muted line on
-  what it is for, the film folders and the series folders (each a 📁 row with ✕, then "+ Add a
-  folder", Windows' folder picker), and the accent "Use these folders". With no folder set yet,
-  MediaForge's Movies and Series folders are filled in as a suggestion (`suggest`, playback's
-  `forge_folders`), with a line saying so; nothing is saved or read until "Use these folders"
+Two looks, with or without Plex (the two shelves, docs/folder-library/2026-11-16-alongside-plex-
+design.md: the folders count beside Plex too):
+- **Off** (not switched on): "Your own folders" with an "Off" pill, one muted line on what it is
+  for (without Plex "No Plex? …", with Plex connected the second shelf, BESIDE_PLEX_TEXT, also
+  under the pill once on), the film folders and the series folders (each a 📁 row with ✕, then
+  "+ Add a folder", Windows' folder picker), and the accent "Use these folders". With no folder
+  set yet, MediaForge's Movies and Series folders are filled in as a suggestion (`suggest`,
+  playback's `forge_folders`), with a line saying so; nothing is saved or read until "Use these folders"
   (`switch_on`, which reads the folders first and saves them once switched on). While it reads,
   the button says so; when no folder could be reached, one plain line says nothing was switched
   on, and the folders stay as entered (when they answered but weren't read in time, the line
@@ -17,13 +19,13 @@ Three looks, by the library's source:
   answered but wasn't read in time "takes a while"; library_words' `reach_lines`, the Library page's too), the
   folders (a change is read and saved at once, through `switch_on` again), "↻ Check now"
   (`check_soon`) and "Stop using folders" (asked first; `switch_off`: what was read is forgotten,
-  the folders stay set, no file is touched).
-- **Plex connected**: one muted line, "Plex is your library. Your own folders count again if you
-  disconnect Plex." The folders stay as they are, unread.
+  the folders stay set, no file is touched; with Plex connected the question says Plex's shelf
+  stays).
 
 Everything acts at once (like the Plex box), not on Save. The box follows the service
 (`subscribe`, which also hears Plex connecting and disconnecting) and stops when it goes;
-`on_state` tells Settings which look it has, so the library's box comes first.
+`on_state` tells Settings which look it has, so the library's box comes first (the folders'
+only while they are the only source).
 """
 
 from __future__ import annotations
@@ -60,13 +62,16 @@ if TYPE_CHECKING:
     from app.services.playback import LibraryFolders
     from app.services.settings import SettingsService
 
-BoxState = Literal["off", "on", "plex"]
+BoxState = Literal["off", "on"]
 FolderKind = Literal["film", "series"]
 
 TITLE_TEXT = N_("Your own folders")
 OFF_TEXT = N_("Off")
 ON_TEXT = N_("On")
 INTRO_TEXT = N_("No Plex? AirGrabber can read the folders that hold your films and series instead.")
+BESIDE_PLEX_TEXT = N_(
+    "A second shelf beside Plex: what's in these folders shows under Downloaded and counts as had."
+)
 FILMS_LABEL = N_("Film folders")
 SERIES_LABEL = N_("Series folders")
 ADD_TEXT = N_("+ Add a folder")
@@ -101,7 +106,10 @@ STOP_TITLE = N_("Stop using your folders?")
 STOP_QUESTION = N_(
     "The marks and the Library page go until you switch them on again. No file is touched."
 )
-PLEX_LINE_TEXT = N_("Plex is your library. Your own folders count again if you disconnect Plex.")
+STOP_BESIDE_PLEX_QUESTION = N_(
+    "The Downloaded shelf and the marks from these folders go until you switch them on again; "
+    "Plex's stay. No file is touched."
+)
 COUNTS_TEXT = N_("{films} · {series} · {episodes} · checked {when}")
 FILM_ONE, FILM_MORE = N_("{n} film"), N_("{n} films")
 SERIES_ONE, SERIES_MORE = N_("{n} series"), N_("{n} series")
@@ -268,9 +276,11 @@ class FolderLibraryBox:
     # -- drawing -----------------------------------------------------------------------------
 
     def _current_state(self) -> BoxState:
-        if library_source(self._settings.current) == "plex":
-            return "plex"
         return "on" if self._folders.status.on else "off"
+
+    def _beside_plex(self) -> bool:
+        """Plex is connected: the folders are the second shelf."""
+        return library_source(self._settings.current) == "plex"
 
     def show(self) -> None:
         """Draw the box for the service's status now."""
@@ -292,21 +302,21 @@ class FolderLibraryBox:
             widget.grid(row=row, column=0, sticky=sticky, pady=(0 if row == 0 else gap, 0))
             row += 1
 
-        if state == "plex":
-            place(self._text(t(PLEX_LINE_TEXT)))
-        else:
-            place(self._header(on=state == "on"))
-            if state == "on":
-                self._place_status(place, status)
-            else:
-                place(self._text(t(INTRO_TEXT)), gap=4)
-            self._place_folders(place, on=state == "on")
-            if state == "off" and self.suggested:
-                place(self._text(t(SUGGESTED_TEXT), size=SMALL_SIZE), gap=8)
-            if self._message:
-                place(self._dot_line(self._message, theme.WARNING), gap=10)
-            place(hairline(self.content, theme.PANEL_EDGE), gap=14, sticky="ew")
-            place(self._buttons(status, on=state == "on"), gap=14)
+        beside_plex = self._beside_plex()
+        place(self._header(on=state == "on"))
+        if beside_plex:
+            place(self._text(t(BESIDE_PLEX_TEXT)), gap=4)
+        if state == "on":
+            self._place_status(place, status)
+        elif not beside_plex:
+            place(self._text(t(INTRO_TEXT)), gap=4)
+        self._place_folders(place, on=state == "on")
+        if state == "off" and self.suggested:
+            place(self._text(t(SUGGESTED_TEXT), size=SMALL_SIZE), gap=8)
+        if self._message:
+            place(self._dot_line(self._message, theme.WARNING), gap=10)
+        place(hairline(self.content, theme.PANEL_EDGE), gap=14, sticky="ew")
+        place(self._buttons(status, on=state == "on"), gap=14)
         if (
             state == "off"
             and self._page_shown
@@ -577,7 +587,7 @@ class FolderLibraryBox:
         self.confirm = ConfirmDialog(
             owner,
             title=t(STOP_TITLE),
-            text=t(STOP_QUESTION),
+            text=t(STOP_BESIDE_PLEX_QUESTION if self._beside_plex() else STOP_QUESTION),
             confirm=t(STOP_TEXT),
             on_confirm=self.stop,
         )

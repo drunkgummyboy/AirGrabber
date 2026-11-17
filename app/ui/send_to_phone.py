@@ -8,6 +8,10 @@ its way there already shows ticked and greyed, and isn't sent twice. Send hands 
 A 4K film, on a PC whose card makes phone-sized copies, gets the Phone-sized tick (on to start with):
 then this PC makes the ~5 GB 1080p copy at once and the phone copies that one from here.
 Borderless in AirGrabber's style; Escape, the ✕ and Cancel close it without sending.
+
+A folder library title (docs/folder-library/) goes the same way, in the folders' words: a show lists
+the episode files the folder library has (`episodes_reader`, the PC's person's; nothing is written),
+and the phone copies it from this PC instead of from Plex.
 """
 
 from __future__ import annotations
@@ -15,13 +19,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import customtkinter as ctk
 
 from app.i18n import N_, t, tn
 from app.models import PairedPhone, Profile
-from app.models.plex import PlexEpisode, PlexTitle
+from app.models.plex import PlexEpisode, PlexTitle, PlexVideo
+from app.services.folder_library.playing import from_folders
+from app.services.phone.sends import order_key
 from app.services.plex import PlexError
 from app.ui import theme
 from app.ui.borderless import make_borderless
@@ -55,6 +61,9 @@ TITLE_TEXT = N_("Send to phone")
 TO_TEXT = N_("To")
 ONE_PHONE_TEXT = N_("To {phone} ({person})")
 HOW_TEXT = N_("The phone copies it from Plex the next time the Companion app is open at home.")
+HOW_FOLDERS_TEXT = N_(
+    "The phone copies it from this PC the next time the Companion app is open at home."
+)
 THERE_TEXT = N_("Already on this phone or on its way.")
 PHONE_SIZED_TEXT = N_("Phone-sized: about 5 GB in 1080p instead of the whole 4K film")
 PHONE_SIZED_HOW_TEXT = N_(
@@ -64,6 +73,8 @@ PHONE_SIZED_HOW_TEXT = N_(
 LOADING_TEXT = N_("Reading the episodes from Plex…")
 PLEX_AWAY_TEXT = N_("Plex didn't answer, so try again in a moment.")
 NO_EPISODES_TEXT = N_("Plex has no episodes of this show.")
+LOADING_FOLDERS_TEXT = N_("Reading the episodes from your folders…")
+NO_EPISODES_FOLDERS_TEXT = N_("Your folders have no episodes of this show.")
 SEASON_TEXT = N_("Season {n}")
 SPECIALS_TEXT = N_("Specials")
 ON_PHONE_TEXT = N_("on the phone")
@@ -91,6 +102,31 @@ def phones_by_person(
     return found
 
 
+Episodes = Callable[[PlexTitle], Awaitable[list[PlexEpisode]]]
+
+
+class ShowVideos(Protocol):
+    """FolderPlaying.show_videos."""
+
+    def __call__(self, title: PlexTitle, *, profile_id: int) -> Awaitable[list[PlexVideo]]: ...
+
+
+def episodes_reader(plex: Episodes, show_videos: ShowVideos, person: Callable[[], int]) -> Episodes:
+    """The window's `episodes`: a folder library show's from `show_videos` (FolderPlaying's, the
+    PC's person `person()`), each under its video key; any other show's from Plex (`plex`)."""
+
+    async def read(title: PlexTitle) -> list[PlexEpisode]:
+        if not from_folders(title):
+            return await plex(title)
+        videos = await show_videos(title, profile_id=person())
+        return [
+            PlexEpisode(key=video.key, season=video.season, episode=video.episode, title=video.title)
+            for video in videos
+        ]
+
+    return read
+
+
 def season_text(season: int | None) -> str:
     if not season:
         return t(SPECIALS_TEXT)
@@ -113,7 +149,7 @@ class SendToPhoneDialog(ctk.CTkToplevel):
         people: Sequence[Profile],
         current_person: int,
         sends: PhoneSends,
-        episodes: Callable[[PlexTitle], Awaitable[list[PlexEpisode]]],
+        episodes: Episodes,
         on_sent: Callable[[str], None],
     ) -> None:
         super().__init__(master, fg_color=theme.BG)
@@ -123,6 +159,7 @@ class SendToPhoneDialog(ctk.CTkToplevel):
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self.close)
         self._item = title
+        self._folders = from_folders(title)
         self._sends = sends
         self._read_episodes = episodes
         self._on_sent = on_sent
@@ -191,7 +228,7 @@ class SendToPhoneDialog(ctk.CTkToplevel):
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
         self._scroll.set_limit(round(max(120, max_dialog_height(master, scaling) - LIST_ROOM) * scaling))
         if title.kind == "show":
-            self.note.configure(text=t(LOADING_TEXT))
+            self.note.configure(text=t(LOADING_FOLDERS_TEXT if self._folders else LOADING_TEXT))
             self.send_button.configure(state="disabled")
             self._task = spawn(self._load(), name="send-to-phone-episodes")
         else:
@@ -276,12 +313,15 @@ class SendToPhoneDialog(ctk.CTkToplevel):
     # -- what goes ---------------------------------------------------------------------------------
 
     def _show_film(self) -> None:
-        there = self._item.key in self._sends.taken_keys(self._phone.id)
-        how = PHONE_SIZED_HOW_TEXT if self._wants_phone_sized() else HOW_TEXT
+        there = order_key(self._item) in self._sends.taken_keys(self._phone.id)
+        how = PHONE_SIZED_HOW_TEXT if self._wants_phone_sized() else self._how()
         self.note.configure(text=t(THERE_TEXT if there else how))
         self.send_button.configure(state="disabled" if there else "normal")
         if self.phone_sized is not None:
             self.phone_sized.configure(state="disabled" if there else "normal")
+
+    def _how(self) -> str:
+        return HOW_FOLDERS_TEXT if self._folders else HOW_TEXT
 
     def _wants_phone_sized(self) -> bool:
         return self.phone_sized is not None and bool(self.phone_sized.get())
@@ -297,9 +337,10 @@ class SendToPhoneDialog(ctk.CTkToplevel):
             return
         self._episodes = episodes
         if not episodes:
-            self.note.configure(text=t(NO_EPISODES_TEXT))
+            none = NO_EPISODES_FOLDERS_TEXT if self._folders else NO_EPISODES_TEXT
+            self.note.configure(text=t(none))
             return
-        self.note.configure(text=t(HOW_TEXT))
+        self.note.configure(text=t(self._how()))
         self._fill_episodes()
 
     def _fill_episodes(self) -> None:

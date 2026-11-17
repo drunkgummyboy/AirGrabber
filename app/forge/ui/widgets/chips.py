@@ -49,6 +49,8 @@ PROGRESS_BADGE = 36  # the ⚒ badge's diameter
 PROGRESS_TRACK = 6  # the bar's thickness
 PROGRESS_FONT = 14
 PROGRESS_DETAIL_FONT = 13
+PROGRESS_ACTION_WIDTH = 86  # the button on the dock (Cancel)
+PROGRESS_ACTION_ROOM = PROGRESS_ACTION_WIDTH + 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +321,35 @@ class ForgeProgress(_CanvasWidget):
         if units != self.action_room:
             self.action_room = units
             self._paint()
+
+    def action_button(self, text: str, command: Callable[[], None]) -> ctk.CTkButton:
+        """A button for the panel's right end (Cancel), in its colours; `show_action` shows it."""
+        style = self.style()
+        return ctk.CTkButton(
+            self,
+            text=text,
+            width=PROGRESS_ACTION_WIDTH,
+            height=32,
+            corner_radius=16,
+            fg_color=style.badge,
+            hover_color=style.edge,
+            border_width=1,
+            border_color=style.edge,
+            bg_color=style.panel,
+            text_color=style.text,
+            font=theme.font(13, bold=True),
+            command=command,
+        )
+
+    def show_action(self, button: ctk.CTkButton, shown: bool) -> None:
+        """`button` (from `action_button`) at the panel's right end with room kept for it, or
+        neither."""
+        if shown:
+            button.place(relx=1.0, x=-PROGRESS_PAD - 2, y=self.action_y(), anchor="e")
+            self.set_action_room(PROGRESS_ACTION_ROOM)
+        else:
+            button.place_forget()
+            self.set_action_room(0)
 
     def style(self) -> ProgressStyle:
         return progress_style(self.look, self._ground)

@@ -1,5 +1,5 @@
 """The folder library's service (app/services/folder_library/service.py): when the folders are
-read, switching on and off, Plex taking over, Forge's moves and the status. A real temporary
+read, switching on and off, the folders beside Plex, Forge's moves and the status. A real temporary
 database and temporary folders with empty files, a fake clock and sleep, a fake TMDB / TVMaze
 side and a fake Plex link; never a live TMDB, TVMaze, NAS or Plex."""
 
@@ -15,7 +15,7 @@ import unittest
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 from unittest import mock
 
 from app.database import Database
@@ -23,7 +23,8 @@ from app.forge.core import watch
 from app.forge.models.media import MediaKind
 from app.forge.models.moves import MoveRecord
 from app.models import MediaType, Show
-from app.models.plex import PlexScan, PlexTitle
+from app.models.folder_library import SwitchOutcome
+from app.models.plex import PlexLibrary, PlexScan, PlexTitle
 from app.models.tmdb import TMDBTitle, TMDBTitleIds
 from app.services.folder_library import scan
 from app.services.folder_library import service as folder_service
@@ -77,22 +78,16 @@ def make_tmdb() -> FakeTMDB:
 
 
 class FakeLibrary:
-    """LibraryService's part the folder library uses; counts `notify_changed`, hears the marks'
-    hold (`hold_marks`) and calls the `on_followed` listeners when `followed` is."""
+    """LibraryService's part the folder library uses; counts `notify_changed` and calls the
+    `on_followed` listeners when `followed` is. No `hold_marks`: the marks are never held."""
 
     def __init__(self) -> None:
         self.notified = 0
         self.cached: set[int] = set()
-        self.held = False
-        self.holds: list[bool] = []
         self.follow_listeners: list[Callable[[], None]] = []
 
     def notify_changed(self) -> None:
         self.notified += 1
-
-    def hold_marks(self, held: bool) -> None:
-        self.holds.append(held)
-        self.held = held
 
     def on_followed(self, listener: Callable[[], None]) -> Callable[[], None]:
         self.follow_listeners.append(listener)
@@ -201,7 +196,7 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
         service = FolderLibraryService(
             self.settings,
             self.db.library_files,
-            self.db.plex,
+            self.db.folders,
             cast(TMDBClient, self.tmdb),
             cast(LibraryService, self.library),
             clock=self.time.clock,
@@ -225,7 +220,7 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
         return path
 
     async def keys(self) -> set[str]:
-        return {title.key for title in await self.db.plex.titles()}
+        return {title.key for title in await self.db.folders.titles()}
 
     async def until(self, check: Callable[[], Any], timeout: float = 10.0) -> None:
         deadline = time.monotonic() + timeout
@@ -269,13 +264,13 @@ class FolderLibraryServiceTests(ServiceTestCase):
     async def test_switch_on_reads_and_stores(self) -> None:
         service = self.make()
         on_when_stored: list[bool] = []
-        real_replace = self.db.plex.replace
+        real_replace = self.db.folders.replace
 
         async def replace(scan_: PlexScan, when: datetime) -> None:
             on_when_stored.append(self.settings.current.folder_library_on)
             await real_replace(scan_, when)
 
-        with mock.patch.object(self.db.plex, "replace", replace):
+        with mock.patch.object(self.db.folders, "replace", replace):
             outcome = await service.switch_on([str(self.films)], [str(self.series)])
         self.assertEqual(outcome, "on")
 
@@ -287,8 +282,9 @@ class FolderLibraryServiceTests(ServiceTestCase):
             (current.film_folders, current.series_folders), ((str(self.films),), (str(self.series),))
         )
         self.assertEqual(await self.keys(), {"folder:movie:438631"})
-        episodes, films = await self.db.plex.contents()
+        episodes, films = await self.db.folders.contents()
         self.assertEqual(films, frozenset({(438631, "tt1160419")}))
+        self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset()))  # Plex's
         rows = await self.db.library_files.all()
         self.assertEqual(set(rows), {str(self.dune)})
         self.assertTrue(rows[str(self.dune)].recognised)
@@ -331,7 +327,10 @@ class FolderLibraryServiceTests(ServiceTestCase):
         moves.move(Path(str(heat).upper().replace("\\", "/")), NOW + 3)
         await self.until(lambda: self.has("folder:movie:949"))
 
-    async def test_plex_connected_stops_the_folder_library(self) -> None:
+    async def test_plex_connecting_during_a_check_stores_both(self) -> None:
+        # Was "Plex connected stops the folder library": now a check under way when Plex gets
+        # connected (and its check stores) stores the folders' result in their own tables, and
+        # Plex's result stays as Plex stored it.
         service = self.make()
         await service.switch_on([str(self.films)], [])
         self.touch(self.films, "Arrival (2016)/Arrival (2016).mkv")
@@ -342,45 +341,30 @@ class FolderLibraryServiceTests(ServiceTestCase):
             # Plex gets connected and its check stores while the folders are being read.
             await self.settings.update(plex_token="token")
             self.plex.notify()
-            # The folders' result leaves the tables at once (Plex's check needs the network).
-            await self.until(lambda: self.lacks("folder:movie:438631"))
             await self.db.plex.replace(plex_scan, datetime.now(UTC))
             return await real_read(*args, **kwargs)
 
         with mock.patch.object(folder_service, "read_folder", read_while_plex_connects):
             await service.check()
-        self.assertEqual(await self.db.plex.contents(), (frozenset(), plex_scan.films))
-        self.assertEqual(await self.keys(), set())  # Plex's result, not written over
-        self.assertNotIn(
+        self.assertEqual(await self.db.plex.contents(), (frozenset(), plex_scan.films))  # Plex's
+        self.assertEqual(await self.keys(), {"folder:movie:438631", "folder:movie:329865"})
+        self.assertIn(
             "Arrival (2016).mkv", {Path(p).name for p in await self.db.library_files.all()}
         )
-        self.assertFalse(service.status.on)
-
-        reads = mock.AsyncMock(wraps=scan.read_folder)
-        with mock.patch.object(folder_service, "read_folder", reads):
-            await service.check()
-            service.check_soon()
-            await asyncio.sleep(0.05)
-            outcome = await service.switch_on([str(self.films)], [])  # Plex wins: saved, not read
-        self.assertEqual(outcome, "plex")
-        reads.assert_not_called()
-        self.assertEqual(await self.db.plex.contents(), (frozenset(), plex_scan.films))
-
-    async def test_plex_disconnected_brings_the_folders_back(self) -> None:
-        service = self.make()
-        await service.switch_on([str(self.films)], [])
-        await self.settings.update(plex_token="token")
-        self.plex.notify()
-        await self.db.plex.replace(PlexScan(films=frozenset({(7, None)})), datetime.now(UTC))
-        # Disconnect (PlexService.disconnect): the token goes, its tables are cleared, then its
-        # listeners hear it.
-        await self.settings.update(plex_token="")
-        await self.db.plex.clear()
-        self.plex.notify()
-        await self.until(lambda: self.has("folder:movie:438631"))
-        _episodes, films = await self.db.plex.contents()
-        self.assertEqual(films, frozenset({(438631, "tt1160419")}))
         self.assertTrue(service.status.on)
+
+    async def test_plex_disconnected_tells_the_box_while_the_folders_are_off(self) -> None:
+        # The folders were never switched on: Settings' box still has to leave its "Plex is
+        # your library" line when Plex goes (the owner saw it stay, 2026-11-16).
+        await self.settings.update(plex_token="token")
+        service = self.make()
+        heard: list[bool] = []
+        service.subscribe(lambda: heard.append(service.status.on))
+        await self.settings.update(plex_token="")
+        self.plex.notify()
+        self.assertEqual(heard, [False])
+        await asyncio.sleep(0.05)
+        self.assertEqual(await self.db.library_files.all(), {})  # nothing read: still off
 
     async def test_stop_using_folders_clears_what_was_read(self) -> None:
         service = self.make()
@@ -391,7 +375,8 @@ class FolderLibraryServiceTests(ServiceTestCase):
         self.assertFalse(self.settings.current.folder_library_on)
         self.assertEqual(await self.db.library_files.all(), {})
         self.assertEqual(await self.keys(), set())
-        self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset()))
+        self.assertEqual(await self.db.folders.contents(), (frozenset(), frozenset()))
+        self.assertIsNone(await self.db.folders.checked_at())
         self.assertEqual(self.library.notified, notified + 1)
         # Nothing on disk changed.
         self.assertTrue(self.dune.exists())
@@ -449,7 +434,7 @@ class FolderRulesTests(ServiceTestCase):
         await service.check()
         self.assertEqual(await self.keys(), {"folder:movie:438631", "folder:movie:949"})
         self.assertIn(str(heat), await self.db.library_files.all())
-        _episodes, films = await self.db.plex.contents()
+        _episodes, films = await self.db.folders.contents()
         self.assertIn((949, "tt0113277"), films)
         self.assertEqual(service.status.unreachable, (str(nas),))
         self.assertEqual(service.status.films, 2)
@@ -646,33 +631,9 @@ class FixRoundOneTests(ServiceTestCase):
         await self.until(lambda: self.has("folder:movie:329865"))
         self.assertEqual(self.time.sleeps, [QUIET_S + ARRIVING_MARGIN_S])  # once, not forever
 
-    async def test_plex_connected_clears_the_folders_result(self) -> None:
-        service = self.make()
-        await service.switch_on([str(self.films)], [])
-        notified = self.library.notified
-        await self.settings.update(plex_token="token")
-        self.plex.notify()
-        await self.until(lambda: self.lacks("folder:movie:438631"))
-        self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset()))
-        self.assertEqual(self.library.notified, notified + 1)
-        self.assertIn(str(self.dune), await self.db.library_files.all())  # kept for later
-        self.assertTrue(self.dune.exists())
-
-    async def test_plex_result_already_there_is_not_cleared(self) -> None:
-        service = self.make()
-        await service.switch_on([str(self.films)], [])
-        await self.settings.update(plex_token="token")
-        plex_scan = PlexScan(
-            films=frozenset({(7, None)}),
-            titles=(PlexTitle(kind="movie", key="123", title="Plex film"),),
-        )
-        await self.db.plex.replace(plex_scan, datetime.now(UTC))  # Plex's check came first
-        self.plex.notify()
-        await asyncio.sleep(0.1)
-        self.assertEqual(await self.keys(), {"123"})
-        self.assertEqual((await self.db.plex.contents())[1], plex_scan.films)
-
-    async def test_plex_connecting_while_storing_writes_nothing_over_plex(self) -> None:
+    async def test_plex_storing_while_the_folders_store_keeps_both(self) -> None:
+        # Was "Plex connecting while storing writes nothing over Plex": Plex connects and its
+        # check stores between the folders' rows and their tables; each keeps its own.
         service = self.make()
         await service.switch_on([str(self.films)], [])
         self.touch(self.films, "Arrival (2016)/Arrival (2016).mkv")
@@ -680,13 +641,13 @@ class FixRoundOneTests(ServiceTestCase):
 
         async def replace_folder(folder: str, rows: Any) -> None:
             await real(folder, rows)
-            # Plex connects, and its check stores, between the rows and the tables.
             await self.settings.update(plex_token="token")
             await self.db.plex.replace(PlexScan(films=frozenset({(7, None)})), datetime.now(UTC))
 
         with mock.patch.object(self.db.library_files, "replace_folder", replace_folder):
             await service.check()
         self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset({(7, None)})))
+        self.assertEqual(await self.keys(), {"folder:movie:438631", "folder:movie:329865"})
 
     async def test_switch_on_waits_for_a_check_under_way(self) -> None:
         service = self.make()
@@ -728,13 +689,14 @@ class FixRoundOneTests(ServiceTestCase):
 
 
 class FinalReviewTests(ServiceTestCase):
-    """The final review's findings 2 and 9."""
+    """The final review's finding 2 (finding 9's held marks went with two shelves: the
+    folders' rows no longer leave when Plex comes or goes, BesidePlexTests)."""
 
     async def test_a_newly_followed_show_counts_at_once(self) -> None:
         self.touch(self.series, "Severance (2022)/Season 01/Severance - S01E01.mkv")
         service = self.make()
         await service.switch_on([], [str(self.series)])
-        self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset()))  # not followed
+        self.assertEqual(await self.db.folders.contents(), (frozenset(), frozenset()))  # unfollowed
         searched, detailed = len(self.tmdb.searched), len(self.tmdb.detailed)
         # Followed (My shows, the Library page's Follow, an import): the show in the cache.
         await self.db.library.save_show(Show(id=44933, name="Severance"), [])
@@ -750,51 +712,177 @@ class FinalReviewTests(ServiceTestCase):
         self.assertEqual(self.time.sleeps, [0])
 
     async def has_episode(self, episode: tuple[int, int, int]) -> bool:
-        return episode in (await self.db.plex.contents())[0]
+        return episode in (await self.db.folders.contents())[0]
 
-    async def test_plex_disconnected_shows_no_marks_until_the_folders_are_back(self) -> None:
+
+class BesidePlexTests(ServiceTestCase):
+    """Two shelves (docs/folder-library/2026-11-16-alongside-plex-design.md): the folders count
+    beside Plex, in tables of their own (`db.folders`); neither source touches the other's."""
+
+    PLEX_FILM = PlexTitle(kind="movie", key="123", title="Plex film", tmdb_id=7)
+    LIBRARY = PlexLibrary(key="1", title="Films", kind="movie")
+
+    async def connect_plex(self) -> PlexScan:
+        """Plex connected and its check stored (a title, a film, its libraries)."""
+        await self.settings.update(plex_token="token")
+        plex_scan = PlexScan(
+            films=frozenset({(7, "tt0000007")}), titles=(self.PLEX_FILM,),
+            libraries=(self.LIBRARY,),
+        )
+        await self.db.plex.replace(plex_scan, datetime.fromtimestamp(OLD, UTC))
+        self.plex.notify()
+        return plex_scan
+
+    async def plex_untouched(self, plex_scan: PlexScan) -> None:
+        self.assertEqual(await self.db.plex.contents(), (frozenset(), plex_scan.films))
+        self.assertEqual([title.key for title in await self.db.plex.titles()], ["123"])
+        self.assertEqual(await self.db.plex.libraries(), (self.LIBRARY,))
+        counts = await self.db.plex.counts()
+        self.assertEqual((counts.films, counts.checked_at), (1, datetime.fromtimestamp(OLD, UTC)))
+
+    async def test_plex_and_folder_checks_dont_touch_each_other(self) -> None:
+        plex_scan = await self.connect_plex()
+        service = self.make()
+        self.assertEqual(await service.switch_on([str(self.films)], []), "on")
+        self.touch(self.films, "Arrival (2016)/Arrival (2016).mkv")
+        await service.check()
+        both = {"folder:movie:438631", "folder:movie:329865"}
+        self.assertEqual(await self.keys(), both)
+        _episodes, films = await self.db.folders.contents()
+        self.assertEqual(films, frozenset({(438631, "tt1160419"), (329865, "tt2543164")}))
+        self.assertEqual(await self.db.folders.checked_at(), datetime.fromtimestamp(NOW, UTC))
+        await self.plex_untouched(plex_scan)  # its rows, its libraries list, its check's time
+        # Plex's next check replaces Plex's rows only.
+        again = PlexScan(films=frozenset({(8, None)}), libraries=(self.LIBRARY,))
+        await self.db.plex.replace(again, datetime.now(UTC))
+        self.assertEqual(await self.db.plex.contents(), (frozenset(), again.films))
+        self.assertEqual(await self.keys(), both)
+        self.assertEqual((await self.db.folders.contents())[1], films)
+        self.assertEqual(await self.db.folders.checked_at(), datetime.fromtimestamp(NOW, UTC))
+        self.assertTrue(service.status.on)
+        self.assertEqual(service.status.films, 2)
+
+    async def test_switch_on_with_plex_reads_the_folders(self) -> None:
+        self.assertNotIn("plex", get_args(SwitchOutcome))  # no more "saved behind Plex"
+        plex_scan = await self.connect_plex()
+        service = self.make()
+        reads = mock.AsyncMock(wraps=scan.read_folder)
+        with mock.patch.object(folder_service, "read_folder", reads):
+            outcome = await service.switch_on([str(self.films)], [])
+        self.assertEqual(outcome, "on")
+        reads.assert_called_once()
+        self.assertEqual(await self.keys(), {"folder:movie:438631"})
+        rows = await self.db.library_files.all()
+        self.assertEqual(set(rows), {str(self.dune)})
+        self.assertTrue(rows[str(self.dune)].recognised)
+        self.assertTrue(self.settings.current.folder_library_on)
+        self.assertEqual((service.status.on, service.status.films), (True, 1))
+        self.assertEqual(self.library.notified, 1)  # the pages count the folders from now on
+        await self.plex_untouched(plex_scan)
+
+    async def test_plex_connecting_or_going_leaves_the_folders(self) -> None:
         service = self.make()
         await service.switch_on([str(self.films)], [])
-        detailed = len(self.tmdb.detailed)
-        await self.settings.update(plex_token="token")
-        self.plex.notify()
-        await self.until(lambda: self.lacks("folder:movie:438631"))
-        stored = asyncio.Event()
-        real_replace = self.db.plex.replace
 
-        async def replace(scan_: PlexScan, when: datetime) -> None:
-            self.assertTrue(self.library.held)  # still held while the tables are empty
-            await real_replace(scan_, when)
-            stored.set()
+        async def folders() -> Any:
+            return (
+                await self.keys(), await self.db.folders.contents(),
+                await self.db.folders.checked_at(), await self.db.library_files.all(),
+            )
 
-        with mock.patch.object(self.db.plex, "replace", replace):
-            # Disconnect (PlexService.disconnect): the token goes, the tables are cleared, its
-            # status listeners hear it, then the pages reload (`on_change`).
+        stored = await folders()
+        self.assertEqual(stored[0], {"folder:movie:438631"})
+        notified = self.library.notified
+        heard: list[bool] = []
+        service.subscribe(lambda: heard.append(service.status.on))
+        reads = mock.AsyncMock(wraps=scan.read_folder)
+        with mock.patch.object(folder_service, "read_folder", reads):
+            plex_scan = await self.connect_plex()
+            await asyncio.sleep(0.05)
+            self.assertEqual(await folders(), stored)
+            await self.plex_untouched(plex_scan)
+            self.assertTrue(service.status.on)
+            # Disconnect (PlexService.disconnect): the token goes, Plex's tables are cleared,
+            # then its listeners hear it.
             await self.settings.update(plex_token="")
             await self.db.plex.clear()
             self.plex.notify()
-            self.assertTrue(self.library.held)  # before the pages reload: no marks over nothing
-            await self.until(stored.is_set)
-            await self.until(lambda: not self.library.held)
-        self.assertEqual(self.library.holds, [True, False])
-        self.assertTrue(await self.has("folder:movie:438631"))
-        # The folders' titles were kept: TMDB isn't asked for their details again.
-        self.assertEqual(len(self.tmdb.detailed), detailed)
+            await asyncio.sleep(0.05)
+        self.assertEqual(await folders(), stored)
+        self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset()))
+        self.assertTrue(service.status.on)
+        self.assertEqual(heard, [True, True])  # Settings' box hears both
+        # Nothing to read again or to hold: the folders' rows never left.
+        reads.assert_not_called()
+        self.assertEqual(self.time.sleeps, [])
+        self.assertEqual(self.library.notified, notified)
+        self.assertFalse(hasattr(LibraryService, "hold_marks"))
 
-    async def test_the_marks_hold_ends_whatever_the_check_comes_to(self) -> None:
+    async def test_stop_using_folders_clears_only_the_folders(self) -> None:
         service = self.make()
         await service.switch_on([str(self.films)], [])
-        await self.settings.update(plex_token="token")
-        self.plex.notify()
+        plex_scan = await self.connect_plex()
+        await service.switch_off()
+        self.assertFalse(self.settings.current.folder_library_on)
+        self.assertEqual(await self.db.library_files.all(), {})
+        self.assertEqual(await self.keys(), set())
+        self.assertEqual(await self.db.folders.contents(), (frozenset(), frozenset()))
+        self.assertIsNone(await self.db.folders.checked_at())
+        self.assertFalse(service.status.on)
+        await self.plex_untouched(plex_scan)
 
-        async def failing() -> None:
-            raise RuntimeError("disk trouble")
+    async def test_stop_using_folders_forgets_before_it_saves_the_switch(self) -> None:
+        # Saved first, a clear that fails (or the app dying in between) would leave rows that
+        # count as had beside Plex while the folders are off, with no "Stop using" to clear them.
+        service = self.make()
+        await service.switch_on([str(self.films)], [])
+        await self.connect_plex()
+        with mock.patch.object(self.db.folders, "clear", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                await service.switch_off()
+        self.assertTrue(self.settings.current.folder_library_on)  # still on: the next check refills
+        self.assertTrue(service.status.on)
+        await service.switch_off()
+        self.assertFalse(self.settings.current.folder_library_on)
+        self.assertEqual(await self.keys(), set())
 
-        with mock.patch.object(service, "_check_once", failing):
-            await self.settings.update(plex_token="")
-            self.plex.notify()
-            await self.until(lambda: self.library.holds == [True, False])
-        self.assertFalse(self.library.held)
+    async def test_rows_left_while_off_are_forgotten_at_start(self) -> None:
+        # An older run switched off and died before the clear: the next start heals it.
+        service = self.make()
+        await service.switch_on([str(self.films)], [])
+        plex_scan = await self.connect_plex()
+        await self.settings.update(folder_library_on=False)  # saved, never cleared
+        self.assertEqual(await self.keys(), {"folder:movie:438631"})
+        notified = self.library.notified
+        again = self.make()
+        with self.assertLogs("app.services.folder_library.service", "INFO"):
+            await again.load()
+        self.assertEqual(await self.keys(), set())
+        self.assertEqual(await self.db.folders.contents(), (frozenset(), frozenset()))
+        self.assertIsNone(await self.db.folders.checked_at())
+        self.assertEqual(await self.db.library_files.all(), {})
+        self.assertFalse(again.status.on)
+        self.assertEqual(self.library.notified, notified + 1)  # the pages lose the leftovers' ✓
+        await self.plex_untouched(plex_scan)
+        # Nothing left: the next start leaves it be.
+        await self.make().load()
+        self.assertEqual(self.library.notified, notified + 1)
+
+    async def test_a_user_who_had_it_on_is_read_at_start(self) -> None:
+        # 3.17.0's "Use these folders" with Plex connected saved the switch and read nothing
+        # (outcome "plex"): after the update the folders count, read at the start.
+        plex_scan = await self.connect_plex()
+        await self.settings.update(folder_library_on=True, film_folders=(str(self.films),))
+        self.assertEqual(await self.db.library_files.all(), {})
+        service = self.make()
+        run = asyncio.create_task(service.run())
+        self.addCleanup(run.cancel)
+        await self.until(lambda: self.time.sleeps == [CHECK_EVERY_S])
+        self.assertEqual(await self.keys(), {"folder:movie:438631"})
+        self.assertIn(str(self.dune), await self.db.library_files.all())
+        self.assertEqual((service.status.on, service.status.films), (True, 1))
+        self.assertEqual(self.library.notified, 1)
+        await self.plex_untouched(plex_scan)
 
 
 class SettingsClosedTests(ServiceTestCase):
@@ -804,14 +892,14 @@ class SettingsClosedTests(ServiceTestCase):
     async def test_a_switch_on_survives_its_caller(self) -> None:
         service = self.make()
         storing, go_on = asyncio.Event(), asyncio.Event()
-        real_replace = self.db.plex.replace
+        real_replace = self.db.folders.replace
 
         async def replace(scan_: PlexScan, when: datetime) -> None:
             storing.set()
             await go_on.wait()
             await real_replace(scan_, when)
 
-        with mock.patch.object(self.db.plex, "replace", replace):
+        with mock.patch.object(self.db.folders, "replace", replace):
             caller = asyncio.create_task(service.switch_on([str(self.films)], []))
             await self.until(storing.is_set)
             caller.cancel()  # the Settings box went
@@ -833,7 +921,7 @@ class SettingsClosedTests(ServiceTestCase):
             await asyncio.sleep(0.05)
             raise RuntimeError(f"disk trouble under {self.films}")
 
-        with mock.patch.object(self.db.plex, "replace", replace):
+        with mock.patch.object(self.db.folders, "replace", replace):
             with self.assertLogs(folder_service.log, "INFO") as logs:
                 caller = asyncio.create_task(service.switch_on([str(self.films)], []))
                 await self.until(storing.is_set)

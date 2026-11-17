@@ -2,8 +2,10 @@
 trailer, the poster, title, meta line, genres, synopsis, track state, the cast), and the show's
 episodes by season, each with its download controls (⬇ Auto with ☰ Choose…: app/ui/
 row_actions.py; or when it airs). Whether an episode was downloaded is never shown as such (owner's
-decision for 3.1.0): only while Plex is connected does the window show what you have and miss,
-and then only Plex counts as had (a quiet ✓ "In Plex"; app/services/plex.py). "☰ Choose…" shows that episode's releases (app/ui/release_panel.py)
+decision for 3.1.0): only while there is a library does the window show what you have and miss,
+and then only what it has counts as had: a quiet ✓ "In Plex" (app/services/plex.py), beside Plex
+a quiet "✓ Downloaded" for what only the user's own folders have (two shelves), and with the
+folders alone part 1's ✓ "In your library". "☰ Choose…" shows that episode's releases (app/ui/release_panel.py)
 in this window: in place of the episodes under a "← Episodes" bar ("S03E05 · The Crossing"),
 or in the Releases tab ("Releases · S03E05"), by the layout (Settings' `info_layout`).
 
@@ -63,6 +65,7 @@ from app.ui.cards import (
 from app.ui.download_control import (
     ROW_HEIGHT as CONTROL_HEIGHT,
 )
+from app.ui.calendar_cards import HAVE_TEXTS
 from app.ui.calendar_stack import StateOf, entry_key, needed_entries
 from app.ui.download_control import (
     QUEUED_TEXT,
@@ -120,18 +123,19 @@ from app.ui.season_progress import (
 from app.ui.widgets import FlexGrid, LoadingBar
 
 if TYPE_CHECKING:
-    from app.models.plex import PlexTitle
     from app.services import DiscoveryService, ImageCache, LibraryService
-    from app.services.playback import PlaybackService
+    from app.services.playback import PlaybackService, ShowTitles
     from app.ui.play_control import PlayerHost
     from app.ui.views.base import StatusReporter
 
 log = logging.getLogger(__name__)
 
 RowState = Literal["downloadable", "upcoming"]
-# With Plex, the latest season's amber "● Missing" / blue "● New · aired today" / the muted ✓ of
-# an episode in the user's Plex libraries ("plex", tipped "In Plex").
-Mark = Literal["missing", "new", "plex"]
+# With a library, the latest season's amber "● Missing" / blue "● New · aired today" / the muted
+# ✓ of an episode in the user's Plex libraries ("plex", tipped "In Plex"; with the folders alone
+# "In your library") / beside Plex the muted "✓ Downloaded" of one only the user's own folders
+# have ("downloaded").
+Mark = Literal["missing", "new", "plex", "downloaded"]
 Listener = Callable[[], None]
 RGB = tuple[int, int, int]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
@@ -329,10 +333,11 @@ def marks_shown(details: ShowDetails, season: int | None) -> bool:
 
 
 def row_mark(details: ShowDetails, episode: Episode) -> Mark | None:
-    """The mark a row of a tracked show's latest season gets while Plex is connected:
+    """The mark a row of a tracked show's latest season gets while there is a library:
     "missing" (see app.services.missing), "new" (aired less than a day ago, not missing yet),
-    "plex" (in Plex), else None (a grabbed episode Plex doesn't have yet is on its way: no
-    mark). Older seasons never get one, nor does any row without Plex."""
+    "plex" (in Plex, or with the folders alone in them), "downloaded" (beside Plex, only in the
+    user's own folders), else None (a grabbed episode Plex doesn't have yet is on its way: no
+    mark). Older seasons never get one, nor does any row without a library."""
     if not marks_shown(details, episode.season):
         return None
     if details.is_missing(episode):
@@ -341,19 +346,22 @@ def row_mark(details: ShowDetails, episode: Episode) -> Mark | None:
         return "new"
     if details.is_in_plex(episode):
         return "plex"
+    if details.is_in_folders(episode):
+        return "downloaded"
     return None
 
 
 def season_marks(details: ShowDetails, season: int | None) -> tuple[list[int], list[int]]:
-    """The ids of `season`'s missing episodes (oldest first) and of its episodes in Plex; both
-    empty unless Plex is connected and it is the tracked show's latest season."""
+    """The ids of `season`'s missing episodes (oldest first) and of its episodes had (in Plex
+    or in the folders); both empty unless there is a library and it is the tracked show's
+    latest season."""
     if not marks_shown(details, season):
         return [], []
     assert season is not None
     episodes = season_episodes(details.episodes, season)
     missing = [e.id for e in episodes if details.is_missing(e)]
-    in_plex = [e.id for e in episodes if row_mark(details, e) == "plex"]
-    return missing, in_plex
+    had = [e.id for e in episodes if row_mark(details, e) in ("plex", "downloaded")]
+    return missing, had
 
 
 # What the season bar's download control offers: "whole" = ⬇ Whole season (a season pack, its
@@ -388,9 +396,9 @@ def season_needed(
     details: ShowDetails, season: int, state_of: StateOf
 ) -> tuple[CalendarEntry, ...]:
     """The season's episodes still needed: aired, not downloaded (before, or by a run just
-    now) and not in Plex (none are without Plex), with a number to download by; the calendar
-    stack's "Download all" rule (`needed_entries`)."""
-    return needed_entries(season_entries(details, season), state_of, details.in_plex)
+    now) and not had, in Plex or in the folders (none are without a library), with a number to
+    download by; the calendar stack's "Download all" rule (`needed_entries`)."""
+    return needed_entries(season_entries(details, season), state_of, details.had)
 
 
 def season_look(kind: SeasonKind, state: RunState | None, batch: BatchState | None) -> RowLook:
@@ -429,16 +437,19 @@ def new_text(episode: Episode, now: datetime) -> str:
 
 
 def mark_text(mark: Mark, episode: Episode, now: datetime) -> str:
-    """The mark's text: "Missing", "✓" (in Plex) or "New · aired today"."""
+    """The mark's text: "Missing", "✓" (in Plex), "✓ Downloaded" (only in the folders) or
+    "New · aired today"."""
     if mark == "missing":
         return t(CHIP_MISSING_TEXT)
     if mark == "plex":
         return HAVE_MARK
+    if mark == "downloaded":
+        return t(HAVE_TEXTS["downloaded"])
     return new_text(episode, now)
 
 
 def mark_color(mark: Mark) -> theme.Color:
-    """Amber for missing, blue for new, muted for the ✓."""
+    """Amber for missing, blue for new, muted for the ✓ and "✓ Downloaded"."""
     if mark == "missing":
         return MISSING_COLOR
     if mark == "new":
@@ -450,7 +461,9 @@ def mark_slot_width(measure: Measure) -> int:
     """The marks' slot (logical units, in the current language): room for the dot and the
     widest of "Missing" and the new texts (the ✓ is narrower), so a season's rows stay
     aligned."""
-    texts = (CHIP_MISSING_TEXT, NEW_TODAY_TEXT, NEW_YESTERDAY_TEXT, NEW_TEXT)
+    texts = (
+        CHIP_MISSING_TEXT, NEW_TODAY_TEXT, NEW_YESTERDAY_TEXT, NEW_TEXT, HAVE_TEXTS["downloaded"]
+    )
     widest = max(round(measure(t(text))) for text in texts)
     return max(MARK_WIDTH, MARK_DOT + MARK_DOT_GAP + widest + MARK_PAD)
 
@@ -674,12 +687,14 @@ class _EpisodeRow(ctk.CTkFrame):
             self._mark_slot,
             text,
             mark_color(mark),
-            dot=mark != "plex",
+            dot=mark not in ("plex", "downloaded"),
             height=MARK_HEIGHT,
         )
         label.pack(side="left", fill="y")
         if mark == "plex":
             add_tooltip(label, library_words.have_tip())
+        elif mark == "downloaded":
+            add_tooltip(label, library_words.have_tip("downloaded"))
         elif mark == "new":
             add_tooltip(label, t(NEW_TIP))
 
@@ -870,9 +885,10 @@ class ShowDetailsWindow(TitleInfoWindow):
     ) -> None:
         """`profile_id`: the person the window shows the show for (followed or not, its Track
         button and switch; ShowWindows closes it when another person is selected).
-        `playback` + `player`: "▶ Play" while the show is in Plex (its Plex title found by
-        `PlaybackService.show`); a click opens the episode picker (app/ui/play_control.py), the
-        episode plays in the app's player.
+        `playback` + `player`: "▶ Play" while the show is in Plex or in the user's own folders
+        (its titles in both found by `PlaybackService.show`); a click opens the episode picker
+        (app/ui/play_control.py) with the episodes of both, each played from where it is in the
+        app's player.
         `discovery`: the TMDB extras (backdrop, trailer, cast); without it the window shows only
         what TVMaze knows. `releases`: what the releases panel
         works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
@@ -920,7 +936,7 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._play = (
             Play(playback, player, status) if playback is not None and player is not None else None
         )
-        self._plex_title: PlexTitle | None = None  # the show in Plex: what ▶ Play picks from
+        self._titles: ShowTitles | None = None  # in Plex and / or the folders: ▶ Play's
         self._plex_task: asyncio.Task[None] | None = None
         self.play_button: ctk.CTkButton | None = None
         self._auto_var = ctk.BooleanVar(value=False)
@@ -1044,10 +1060,10 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     def _paint_buttons(self, details: ShowDetails) -> None:
         """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
-        the hover tip says so); ▶ Play while the show is in Plex; then IMDb."""
+        the hover tip says so); ▶ Play while the show is in Plex or the folders; then IMDb."""
         imdb_url = details.show.imdb_url
-        plex_key = self._plex_title.key if self._plex_title is not None else None
-        look = (details.tracked, details.auto_download, self._tracking, imdb_url, plex_key)
+        play_key = self._titles.key if self._titles is not None else None
+        look = (details.tracked, details.auto_download, self._tracking, imdb_url, play_key)
         if look == self._buttons_look:
             return
         self._buttons_look = look
@@ -1087,7 +1103,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             if self._tracking:
                 track.configure(text=t(ADDING_TEXT), state="disabled")
             items.append(track)
-        if plex_key is not None:
+        if play_key is not None:
             self.play_button = play_button(
                 self._buttons, self.play, height=dialog_kit.BUTTON_HEIGHT
             )
@@ -1102,14 +1118,14 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     def play(self) -> None:
         """"▶ Play": the episode picker, then the chosen episode in the app's player."""
-        if self._play is not None and self._plex_title is not None:
-            self._play.pick(self, self._plex_title)
+        if self._play is not None and self._titles is not None:
+            self._play.pick(self, self._titles)
 
     # -- loading -----------------------------------------------------------------------------
 
     def reload(self) -> None:
         """Fetch the details again (a load still in flight is dropped), and whether the show is
-        in Plex (▶ Play)."""
+        in Plex or the folders (▶ Play)."""
         if self._load_task is not None and not self._load_task.done():
             self._load_task.cancel()
         self._load_task = spawn(self._load(), name="ShowDetailsWindow.load")
@@ -1119,10 +1135,10 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._plex_task = spawn(self._load_plex(self._playback), name="ShowDetailsWindow.plex")
 
     async def _load_plex(self, playback: PlaybackService) -> None:
-        title = await playback.show(self._show) if playback.available else None
+        titles = await playback.show(self._show) if playback.available else None
         if not self.winfo_exists():
             return
-        self._plex_title = title
+        self._titles = titles
         if self._details is not None:
             self._paint_buttons(self._details)
 

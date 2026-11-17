@@ -73,8 +73,8 @@ TODAY_BG: Pair = ("#DEE8F3", "#182133")  # today's cell (its border is ACCENT)
 SUGGESTION_BG: Pair = ("#F5F3F9", "#14121A")  # untracked-show suggestion card
 SUGGESTION_BORDER: Pair = ("#DAD3E6", "#2A2438")
 SUGGESTION_TEXT: Pair = ("#6C6878", "gray40")  # a suggestion's episode code
-SUGGESTION_BUTTON_EDGE: Pair = ("#B9B3C6", "gray30")  # its + Track button
-SUGGESTION_BUTTON_TEXT: Pair = ("#5A5666", "gray60")
+SUGGESTION_BUTTON_EDGE: Pair = ("#B9B3C6", "gray30")  # its round + (follow)
+SUGGESTION_BUTTON_TEXT: Pair = ("#5A5666", "gray60")  # the +, and the ✦ before the name
 # A stack card (several episodes of one show on one day): the two cards peeking out behind it,
 # the nearer one first; their edges a little lighter (light) / darker (dark) than EDGE.
 STACK_NEAR: Pair = ("#F6F8FB", "#212830")

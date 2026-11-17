@@ -9,8 +9,9 @@ A film plays at once (its video read from Plex first, `PlaybackService.film_vide
 there is said instead; one look at a time per window); a show first opens the EpisodePicker:
 borderless in AirGrabber's dialog look, its seasons as chips and the season's episodes as rows
 ("E03 · Title", a muted ✓ on a watched one, a thin progress line under one Plex has a place in:
-`0 < view_offset_ms < 90 %` of its length), the next unwatched one (`playback.next_episode`)
-selected and scrolled into view. Each picker reads the episodes from Plex again; a list read
+`0 < view_offset_ms < 90 %` of its length, a small muted "Downloaded" on one that plays from the
+user's own folders beside Plex; without Plex they are the library and no row says it), the next unwatched one (`playback.next_episode`) selected and scrolled into
+view. A show's episodes are Plex's and the folders' together (`ShowTitles`, one list). Each picker reads the episodes from Plex again; a list read
 less than EPISODES_TTL_S ago (`PlaybackService.kept_episodes`) shows at once meanwhile and is
 redrawn when Plex's answer differs (the season and selection kept once the user chose one), and
 stays when Plex doesn't answer. A click on a row, or Enter on the selection, plays it with the
@@ -33,15 +34,17 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.models.plex import PlexContinue, PlexTitle, PlexVideo
+from app.services.folder_library.playing import is_folder_video
 from app.services.playback import (
     FINDING_TEXT,
     PlayOutcome,
     PlayProblem,
+    ShowTitles,
     episode_name,
     next_episode,
 )
 from app.services.plex import PlexError
-from app.ui import theme
+from app.ui import library_words, theme
 from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
 from app.ui.dialog_kit import (
@@ -75,6 +78,7 @@ log = logging.getLogger(__name__)
 PLAY_TEXT = N_("▶ Play")
 PLAY_TIP = N_("Play it on this PC")
 PICK_TEXT = N_("Choose an episode to play.")
+DOWNLOADED_CUE = N_("Downloaded")  # a picker row whose episode plays from the user's own folders
 WATCHED_MARK = "✓"
 PLAY_WIDTH = 100
 STATUS_MS = 8000  # how long the status bar keeps what Play said
@@ -211,19 +215,27 @@ class Play:
         self._report(t(FINDING_TEXT, name=episode_name(title.title, video)), None)
         self._player.play(title, video, episodes=episodes)
 
-    def pick(self, master: Any, title: PlexTitle) -> EpisodePicker:
-        """A show: the episode picker (one per window; an open one is raised)."""
+    def pick(self, master: Any, titles: ShowTitles | PlexTitle) -> EpisodePicker:
+        """A show: the episode picker (one per window; an open one is raised), its episodes
+        from Plex and the folders together (`titles`, the show's window's)."""
         picker = self.picker
         if picker is not None and picker.winfo_exists():
             picker.lift()
             picker.focus_force()
             return picker
+        both = titles if isinstance(titles, ShowTitles) else ShowTitles.of(titles)
+        title = both.main
+        playback = self._playback
+
+        async def episodes(_title: PlexTitle) -> list[PlexVideo]:
+            return await playback.episodes(both)
+
         self.picker = EpisodePicker(
             master,
             title,
-            episodes=self._playback.episodes,
-            kept=self._playback.kept_episodes,
-            on_play=lambda video, episodes: self.episode(title, video, episodes),
+            episodes=episodes,
+            kept=lambda _title: playback.kept_episodes(both),
+            on_play=lambda video, listed: self.episode(title, video, listed),
         )
         return self.picker
 
@@ -275,6 +287,7 @@ class EpisodePicker(ctk.CTkToplevel):
         self.chips: dict[int | None, ctk.CTkButton] = {}
         self.rows: dict[str, ctk.CTkButton] = {}  # by an episode's key
         self.progress: dict[str, ctk.CTkProgressBar] = {}  # the rows with a progress line
+        self.cues: dict[str, ctk.CTkLabel] = {}  # the rows of folder episodes: "Downloaded"
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
         ctk.CTkFrame(body, width=WIDTH, height=1, fg_color="transparent").pack()
@@ -326,7 +339,7 @@ class EpisodePicker(ctk.CTkToplevel):
         if chosen is None:
             for row in self.rows.values():
                 row.master.destroy()
-            self.rows, self.progress, self.selected = {}, {}, None
+            self.rows, self.progress, self.cues, self.selected = {}, {}, {}, None
             self._chip_row.pack_forget()  # no chips: no empty gap above the list
             self.note.configure(text=t(NO_EPISODES_TEXT))
             return
@@ -388,6 +401,7 @@ class EpisodePicker(ctk.CTkToplevel):
             row.master.destroy()
         self.rows = {}
         self.progress = {}
+        self.cues = {}
         shown = self._shown()
         for index, video in enumerate(shown):
             self._row(index, video)
@@ -413,13 +427,20 @@ class EpisodePicker(ctk.CTkToplevel):
             command=lambda: self.play(video),
         )
         button.grid(row=0, column=0, sticky="ew")
+        # It plays from the user's own folders: said only beside Plex (alone they are the library).
+        if is_folder_video(video) and not library_words.folders():
+            cue = ctk.CTkLabel(
+                row, text=t(DOWNLOADED_CUE), font=theme.font(12), text_color=theme.TEXT_MUTED
+            )
+            cue.grid(row=0, column=1, padx=(4, 0))
+            self.cues[video.key] = cue
         ctk.CTkLabel(
             row,
             text=WATCHED_MARK if video.watched else "",
             width=24,
             font=theme.font(DETAIL_SIZE),
             text_color=theme.TEXT_MUTED,
-        ).grid(row=0, column=1, padx=(4, 0))
+        ).grid(row=0, column=2, padx=(4, 0))
         self.rows[video.key] = button
         share = watched_share(video)
         if share is not None:  # under the row's text, as wide as its button

@@ -165,7 +165,10 @@ class FakeService:
         self._contents = contents
         self.available = True
 
-    async def contents(self, *, profile_id: int) -> LibraryContents:
+    def shelves(self) -> tuple[str, ...]:
+        return ("plex",)
+
+    async def contents(self, *, profile_id: int, shelf: str | None = None) -> LibraryContents:
         return self._contents
 
     async def follow(self, plex_title: PlexTitle, *, profile_id: int) -> bool:

@@ -408,12 +408,13 @@ class DiscoveryService:
         return picks
 
     async def plex_films(self) -> PlexFilms:
-        """The films in Plex (the film cards' library mark, app/ui/library_mark.py); none
-        without Plex."""
+        """The films had, in Plex or in the folders (the film cards' library mark,
+        app/ui/library_mark.py; `only_in_folders` beside Plex); none without a library."""
         return await self._library.plex_films()
 
     async def plex_shows(self) -> PlexShows:
-        """The series in Plex (Discover's show cards' library mark); none without Plex."""
+        """The series had, in Plex or in the folders (Discover's show cards' library mark);
+        none without a library."""
         return await self._library.plex_shows()
 
     async def movie_dashboard(self, *, force: bool = False) -> MovieDashboard:
@@ -421,9 +422,10 @@ class DiscoveryService:
         released digitally in the next 21 days; 18 at most each.
 
         The digital shelves are filtered on each film's details (see `_first_digital_releases`).
-        Cached like `tv_dashboard`, filtered; whether Plex is connected and `in_plex` (the
-        shelves' films in Plex, none without Plex) are recomputed on every call, as the TV
-        dashboard's tracked flags are.
+        Cached like `tv_dashboard`, filtered; whether there is a library and the shelves'
+        films had (`in_plex`, the main source's; `in_folders`, beside Plex the folders' own;
+        none without a library) are recomputed on every call, as the TV dashboard's tracked
+        flags are.
         """
         today = self._today()
         lists = None if force else self._fresh(self._movie_shelves, today)
@@ -444,13 +446,16 @@ class DiscoveryService:
                 self._movie_shelves = _Shelves(today, lists, self._clock())
         plex = await self._library.plex_films()
         on_shelves = {movie.id for movies in lists.values() for movie in movies}
+        had = {movie_id for movie_id in on_shelves if plex.has(movie_id)}
+        in_folders = frozenset(movie_id for movie_id in had if plex.only_in_folders(movie_id))
         return MovieDashboard(
             just_dropped=lists.get("just_dropped", ()),
             trending=lists.get("trending", ()),
             upcoming=lists.get("upcoming", ()),
             failed=failed,
             plex_connected=self._library.has_library,
-            in_plex=frozenset(movie_id for movie_id in on_shelves if plex.has(movie_id)),
+            in_plex=frozenset(had - in_folders),
+            in_folders=in_folders,
         )
 
     async def _first_digital_releases(self, start: date, end: date) -> list[Movie]:
@@ -645,6 +650,19 @@ class DiscoveryService:
         """A TMDB show's extras by its TMDB id (the spotlight band's trending shows); see
         `movie_extras`, whose errors it raises too. Shared with `show_extras`' cache."""
         return await self._tv_extras.get(tv_id)
+
+    async def show_tmdb_id(self, show: Show) -> int | None:
+        """A TVMaze show's TMDB id (`_tmdb_id_of`: the one it was matched from on Discover, else
+        TMDB's show with its IMDb id, kept for DETAILS_TTL); None when there is none, without a
+        key, or when TMDB can't say now. ▶ Play joins a show's marks in the user's own folders
+        by it when neither Plex nor the folders name it."""
+        if not self._tmdb.configured:
+            return None
+        try:
+            return await self._tmdb_id_of(show)
+        except TMDBError as exc:
+            log.info("No TMDB id for TVMaze show %d: %s", show.id, type(exc).__name__)
+            return None
 
     async def _tmdb_id_of(self, show: Show) -> int | None:
         for matched_tmdb_id, tvmaze_id in self._tracked_via_tmdb.items():

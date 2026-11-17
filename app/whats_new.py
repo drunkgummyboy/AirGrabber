@@ -20,6 +20,12 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.18.0": (
+        N_("MediaForge's progress bar now shows on every page while it renames, so you can keep browsing."),
+        N_("Calendar suggestions take one line each now, so many more fit on a day."),
+        N_("Library: ↻ Check now reads Plex and your folders again straight away."),
+        N_("Something not working? Settings → Updates puts AirGrabber's logs in one file to send to whoever helps you."),
+    ),
     "3.17.0": (
         N_("Film dates say what they are: a clapperboard for the cinema, an arrow for the download, ~ for a guess."),
         N_("Movies and Discover show only whole rows of posters, never half a row cut off."),
@@ -285,14 +291,14 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.17.0": (
+    "3.18.0": (
         Feature(
-            N_("Your own folders as your library"),
+            N_("Your folders beside Plex"),
             N_(
-                "No Plex? In Settings → Library, AirGrabber can read your own film and series "
-                "folders: browse and play them, and what you have isn't downloaded again."
+                "With Plex connected, your own folders can be a second shelf, Downloaded: what you "
+                "just downloaded stays apart from Plex, plays from there and counts as had."
             ),
-            "folders.png",
+            "shelves.png",
         ),
     ),
 }

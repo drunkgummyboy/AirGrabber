@@ -1125,6 +1125,15 @@ class WatchlistFilmTests(WatchlistTestCase):
         self.assertTrue(self.service.contains(2))
         self.assertTrue(any("2 film(s) in Plex skipped" in line for line in logs.output))
 
+    async def test_films_in_the_folders_are_skipped(self) -> None:
+        # Two shelves: a film only in the user's own folders is had too.
+        await self.add(1, "Dune: Part Two", imdb_id="tt15239678")
+        await self.add(3, "Weapons")
+        await self.db.folders.replace(PlexScan(films=frozenset({(1, "tt15239678")})), self.now)
+        with self.assertLogs("app.services.auto_download", logging.INFO):
+            await self.auto.run_once()
+        self.assertEqual(self.quick.titles, ["Weapons"])
+
 
 # -- the film side ----------------------------------------------------------------------------------
 

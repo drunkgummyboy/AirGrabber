@@ -19,14 +19,15 @@ from unittest import mock
 import httpx
 
 from app.i18n_nl import NL
-from app.models import CalendarEntry, Show, TitleExtras
-from app.models.plex import PlexTitle, PlexVideo
+from app.models import CalendarEntry, Settings, Show, TitleExtras
+from app.models.plex import PlexScan, PlexTitle, PlexVideo
 from app.services import playback
 from app.services.playback import (
     LibraryFolders,
     PlaybackService,
     PlayOutcome,
     PlayProblem,
+    ShowTitles,
     episode_name,
     find_vlc,
     launch_video,
@@ -36,14 +37,18 @@ from app.services.playback import (
 from app.services.playback import EPISODES_TTL_S
 from app.services import plex as plex_module
 from app.services.plex import FAIL_FAST_S, PlexError, PlexUnreachable
-from app.ui import play_control, theme
+from app.services.settings import SettingsService
+from app.ui import library_words, play_control, theme
 from app.ui.download_control import DownloadActions, DownloadStates
+from app.ui.library_words import HaveSource
 from app.ui.movie_details import MovieDetailsWindow, MovieWindows
 from app.ui.play_control import PLAY_TEXT, EpisodePicker, Play, episode_line
 from app.ui.show_details import ShowDetailsWindow, ShowWindows
 from tests.test_backup_dialog import DialogTestCase
+from app.services.folder_library.playing import is_folder_video
 from tests.test_folder_playing import DUNE as DUNE_FOLDER
-from tests.test_folder_playing import FolderTestCase, nothing
+from tests.test_folder_playing import SEVERANCE as SEVERANCE_FOLDER
+from tests.test_folder_playing import NOW, FolderTestCase, nothing
 from tests.test_info_layouts import SHOW, WindowDiscovery, cast_to, no_subscribe
 from tests.test_info_polish import MarkedLibrary
 from tests.test_info_window import INFO, FILM, FakeDiscovery, FakeImages, FakeWatchlist
@@ -408,7 +413,7 @@ class SplitShowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_show_is_its_title_with_the_most_episodes(self) -> None:
         found = await self.service.show(Show(id=43031, name="Reacher"))
-        self.assertEqual(found, self.plex.main)
+        self.assertEqual(found, ShowTitles(plex=self.plex.main))
 
     async def test_the_episodes_of_every_title_of_the_show(self) -> None:
         for title in (self.plex.main, self.plex.stray):
@@ -498,7 +503,7 @@ class ServiceTests(PlexPlayTestCase):
         chosen = next_episode(videos)
         assert chosen is not None
         self.launch.player = "default"
-        outcome = await self.service.play(ark, chosen)
+        outcome = await self.service.play(ark.main, chosen)
         self.assertEqual(self.launch.paths, [ARK_E02_HERE])
         self.assertEqual(outcome.text, "▶ Playing The Ark S02E02 in your video player.")
 
@@ -652,6 +657,7 @@ class FakePlayback:
         self._film = film
         self._show = show
         self._videos = videos
+        self._show_titles: ShowTitles | None = None
         self.available = True
         self.fail = False
         self.film_problem: PlayProblem | None = None
@@ -659,15 +665,17 @@ class FakePlayback:
     async def film(self, tmdb_id: int | None, imdb_id: str | None = None) -> PlexTitle | None:
         return self._film
 
-    async def show(self, show: Show) -> PlexTitle | None:
-        return self._show
+    async def show(self, show: Show) -> ShowTitles | None:
+        if self._show_titles is not None:
+            return self._show_titles
+        return ShowTitles(plex=self._show) if self._show is not None else None
 
-    async def episodes(self, title: PlexTitle) -> list[PlexVideo]:
+    async def episodes(self, title: ShowTitles | PlexTitle) -> list[PlexVideo]:
         if self.fail:
             raise PlexUnreachable("away")
         return list(self._videos) if self._videos is not None else leaves()
 
-    def kept_episodes(self, title: PlexTitle) -> list[PlexVideo] | None:
+    def kept_episodes(self, title: ShowTitles | PlexTitle) -> list[PlexVideo] | None:
         return None
 
     async def film_video(self, title: PlexTitle) -> PlexVideo | PlayOutcome:
@@ -884,8 +892,8 @@ class FilmWindowTests(DialogTestCase):
         actions.states.get.return_value = None
         status = Status()
 
-        async def plex(movie_id: int, imdb_id: str | None) -> bool:
-            return in_plex
+        async def plex(movie_id: int, imdb_id: str | None) -> HaveSource | None:
+            return "plex" if in_plex else None
 
         windows = MovieWindows(
             self.root,
@@ -946,8 +954,8 @@ class FilmWindowTests(DialogTestCase):
         actions = mock.MagicMock()
         actions.states.get.return_value = None
 
-        async def plex(movie_id: int, imdb_id: str | None) -> bool:
-            return True
+        async def plex(movie_id: int, imdb_id: str | None) -> HaveSource | None:
+            return "plex"
 
         windows = MovieWindows(
             self.root,
@@ -1018,6 +1026,21 @@ class ShowWindowTests(DialogTestCase):
         window = await self.window(FakePlayback(show=None))
         self.assertIsNone(window.play_button)
 
+    async def test_a_show_window_with_only_the_folders_plays(self) -> None:
+        player = FakePlayer()
+        fake = FakePlayback()
+        fake._show_titles = ShowTitles(folders=SEVERANCE_FOLDER)
+        window = await self.window(fake, player)
+        assert window.play_button is not None and window._play is not None
+        window.play_button.invoke()
+        picker = window._play.picker
+        assert picker is not None
+        await picker.loaded()
+        await self.settle()
+        picker.play_selected()
+        await window._play.settled()
+        self.assertEqual([show for show, _video, _e in player.played], [SEVERANCE_FOLDER.key])
+
 
 # -- the folder library as the source (no Plex) ---------------------------------------------------
 
@@ -1057,6 +1080,347 @@ class FolderSourceTests(FolderTestCase):
         outcome = await playback.locate(DUNE_FOLDER, video)
         assert isinstance(outcome, PlayOutcome)
         self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)
+
+
+# -- both sources: a show's and a film's window (two shelves) -------------------------------------
+
+
+PLEX_SEVERANCE = PlexTitle(kind="show", key="7000", title="Severance", show_id=44933, episodes=2)
+PLEX_DUNE = PlexTitle(kind="movie", key="3001", title="Dune", tmdb_id=DUNE_FOLDER.tmdb_id)
+
+
+class BothPlex:
+    """PlexService connected, with Severance S01E01 (watched) and S01E02, and Dune: the same show
+    and film the folders hold (FolderTestCase)."""
+
+    connected = True
+
+    def __init__(self) -> None:
+        self.listed = [PLEX_SEVERANCE, PLEX_DUNE]
+        self.asked: list[str] = []
+        self.extra: list[PlexVideo] = []  # Plex-only episodes
+        self.away = False
+
+    async def titles(self) -> list[PlexTitle]:
+        return list(self.listed)
+
+    async def locations(self) -> list[tuple[str, str]]:
+        return []
+
+    async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
+        self.asked.append(show.key)
+        if self.away:
+            raise PlexUnreachable("away")
+        return [
+            PlexVideo(key="7011", file="/v/Severance/S01E01.mkv", season=1, episode=1,
+                      title="Good News About Hell", watched=True),
+            PlexVideo(key="7012", file="/v/Severance/S01E02.mkv", season=1, episode=2,
+                      title="Half Loop", view_offset_ms=60_000, duration_ms=3_000_000),
+            *self.extra,
+        ]
+
+    async def film_video(self, key: str) -> PlexVideo | None:
+        self.asked.append(key)
+        return PlexVideo(key=key, file="/v/Movies/Dune.mkv")
+
+
+class TwoShelvesPlayTests(FolderTestCase):
+    """Plex connected and the folders on: a show's window lists both, each episode from where it
+    is, the folder copy when both have one; a film in both plays from the folder."""
+
+    def both(self, plex: Any | None = None, **kwargs: Any) -> tuple[PlaybackService, BothPlex]:
+        fake = plex or BothPlex()
+        self.plex_series, self.plex_movies = self.root / "PlexTV", self.root / "PlexMovies"
+
+        async def mediaforge() -> LibraryFolders | None:  # Plex's files from this PC
+            return LibraryFolders(series=str(self.plex_series), movies=str(self.plex_movies))
+
+        return (
+            PlaybackService(
+                cast(Any, fake), mediaforge, folder_library=self.playing,
+                person=lambda: self.person, **kwargs,
+            ),
+            fake,
+        )
+
+    async def test_watched_from_the_folders_counts_for_plexs_copy(self) -> None:
+        # S01E05 and S01E06 were watched from the folders, then moved into Plex's folder by
+        # hand: Plex scanned them in unwatched. The person's own mark still counts.
+        service, plex = self.both()
+        plex.extra = [
+            PlexVideo(key=f"701{n}", file=f"/v/Severance/S01E0{n}.mkv", season=1, episode=n)
+            for n in (5, 6, 7)
+        ]
+        for n in (5, 6):
+            moved = PlexVideo(key=f"episode:{SEVERANCE_FOLDER.tmdb_id}:1:{n}", file="")
+            await self.playing.mark_watched(moved, profile_id=1)
+        titles = await service.show(Show(id=44933, name="Severance"))
+        assert titles is not None
+        videos = {(v.season, v.episode): v for v in await service.episodes(titles)}
+        self.assertEqual(
+            [videos[1, n].watched for n in (5, 6, 7)], [True, True, False]
+        )  # Plex's own copies, the person's mark
+        self.assertEqual(videos[1, 5].key, "7015")
+        self.person = 2  # another person's marks are theirs
+        videos = {(v.season, v.episode): v for v in await service.episodes(titles)}
+        self.assertFalse(videos[1, 5].watched)
+        # A Plex-only film watched from the folders: the same.
+        self.person = 1
+        await self.settings.update(folder_library_on=False)  # Dune is Plex's alone now
+        dune = await service.film(DUNE_FOLDER.tmdb_id)
+        self.assertEqual(dune, PLEX_DUNE)
+        assert dune is not None
+        self.assertFalse(await self.film_watched(service, dune))
+        await self.playing.mark_watched(
+            PlexVideo(key=f"movie:{DUNE_FOLDER.tmdb_id}", file=""), profile_id=1
+        )
+        self.assertTrue(await self.film_watched(service, dune))
+
+    async def test_marks_count_once_the_folder_title_is_gone(self) -> None:
+        # Every file of the show moved into Plex's folder by hand: the folders' title is gone and
+        # Plex's (an older agent) names no TMDB id. TMDB's id of the TVMaze show joins the marks.
+        asked: list[int] = []
+
+        async def tmdb_id_of(show: Show) -> int | None:
+            asked.append(show.id)
+            return SEVERANCE_FOLDER.tmdb_id
+
+        await self.db.folders.replace(PlexScan(titles=(DUNE_FOLDER,)), NOW)
+        service, plex = self.both(show_tmdb_id=tmdb_id_of)
+        plex.extra = [PlexVideo(key="7015", file="/v/Severance/S01E05.mkv", season=1, episode=5)]
+        moved = PlexVideo(key=f"episode:{SEVERANCE_FOLDER.tmdb_id}:1:5", file="")
+        await self.playing.mark_watched(moved, profile_id=1)
+        titles = await service.show(Show(id=44933, name="Severance"))
+        self.assertEqual(
+            titles, ShowTitles(plex=PLEX_SEVERANCE, tmdb_id=SEVERANCE_FOLDER.tmdb_id)
+        )
+        assert titles is not None
+        self.assertEqual(titles.main.tmdb_id, SEVERANCE_FOLDER.tmdb_id)
+        videos = {(v.season, v.episode): v for v in await service.episodes(titles)}
+        self.assertTrue(videos[1, 5].watched)
+        self.assertEqual(asked, [44933])
+        # Asked only while neither title has the id.
+        await self.db.folders.replace(PlexScan(titles=(DUNE_FOLDER, SEVERANCE_FOLDER)), NOW)
+        await service.show(Show(id=44933, name="Severance"))
+        self.assertEqual(asked, [44933])
+
+    async def test_a_plex_film_without_a_tmdb_id_is_joined_by_imdb(self) -> None:
+        await self.settings.update(folder_library_on=False)
+        plex = BothPlex()
+        old_agent = PlexTitle(kind="movie", key="3001", title="Dune", imdb_id="tt1160419")
+        plex.listed = [PLEX_SEVERANCE, old_agent]
+        service, _plex = self.both(plex)
+        title = await service.film(DUNE_FOLDER.tmdb_id, "tt1160419")
+        self.assertEqual(title, old_agent)
+        assert title is not None
+        await self.playing.mark_watched(
+            PlexVideo(key=f"movie:{DUNE_FOLDER.tmdb_id}", file=""), profile_id=1
+        )
+        self.assertTrue(await self.film_watched(service, title))
+
+    async def test_the_kept_list_is_the_persons_own(self) -> None:
+        service, plex = self.both()
+        titles = await service.show(Show(id=44933, name="Severance"))
+        assert titles is not None
+        e02 = PlexVideo(key=f"episode:{SEVERANCE_FOLDER.tmdb_id}:1:2", file="")
+        await self.playing.mark_watched(e02, profile_id=1)
+        mine = await service.episodes(titles)
+        self.assertTrue(mine[1].watched)
+        self.person = 2
+        self.assertIsNone(service.kept_episodes(titles))  # not person 1's list
+        plex.away = True
+        with self.assertLogs("app.services.playback", "INFO"):
+            theirs = await service.episodes(titles)
+        self.assertFalse(theirs[1].watched)  # person 2's own marks, not person 1's
+        self.person = 1
+        self.assertEqual(service.kept_episodes(titles), mine)
+
+    @staticmethod
+    async def film_watched(service: PlaybackService, title: PlexTitle) -> bool:
+        video = await service.film_video(title)
+        assert isinstance(video, PlexVideo)
+        return video.watched
+
+    async def test_a_folder_copy_thats_gone_plays_plexs(self) -> None:
+        # Moved into Plex's folder by hand (or the NAS asleep): Plex's copy plays, as Plex's.
+        service, plex = self.both()
+        here = self.plex_series / "Severance" / "S01E02.mkv"  # Plex's file from this PC
+        here.parent.mkdir(parents=True)
+        here.write_bytes(b"video")
+        self.episodes[1, 2].unlink()
+        titles = await service.show(Show(id=44933, name="Severance"))
+        assert titles is not None
+        videos = await service.episodes(titles)
+        e02 = videos[1]
+        self.assertEqual(e02.key, f"episode:{SEVERANCE_FOLDER.tmdb_id}:1:2")
+        with self.assertLogs("app.services.playback", "INFO") as logs:
+            found = await service.locate(titles.main, e02)
+        assert isinstance(found, playback.Located)
+        self.assertEqual(found.path, str(here))
+        assert found.video is not None
+        self.assertEqual(found.video.key, "7012")  # it plays, and is reported, as Plex's
+        self.assertFalse([line for line in logs.output if str(SEVERANCE_FOLDER.tmdb_id) in line])
+        # Neither copy there: the folders' words.
+        here.unlink()
+        missing = await service.locate(titles.main, e02)
+        assert isinstance(missing, PlayOutcome)
+        self.assertTrue(missing.folders)
+        # A film the same way: its folder copies gone, Plex's plays.
+        dune_here = self.plex_movies / "Movies" / "Dune.mkv"
+        dune_here.parent.mkdir(parents=True)
+        dune_here.write_bytes(b"video")
+        title = await service.film(DUNE_FOLDER.tmdb_id)
+        assert title is not None
+        video = await service.film_video(title)
+        assert isinstance(video, PlexVideo)
+        self.dune_4k.unlink()
+        self.dune_1080.unlink()
+        found = await service.locate(title, video)
+        assert isinstance(found, playback.Located)
+        self.assertEqual(found.path, str(dune_here))
+        assert found.video is not None
+        self.assertEqual(found.video.key, "3001")
+
+    async def test_plex_away_keeps_the_list_read_a_moment_ago(self) -> None:
+        service, plex = self.both()
+        plex.extra = [PlexVideo(key="7015", file="/v/Severance/S01E05.mkv", season=1, episode=5)]
+        titles = await service.show(Show(id=44933, name="Severance"))
+        assert titles is not None
+        first = await service.episodes(titles)
+        self.assertEqual(len(first), 5)  # the folders' four and Plex's S01E05
+        plex.away = True
+        with self.assertLogs("app.services.playback", "INFO"):
+            again = await service.episodes(titles)
+        self.assertEqual(again, first)
+
+    async def test_an_episode_in_both_plays_from_the_folder(self) -> None:
+        service, plex = self.both()
+        titles = await service.show(Show(id=44933, name="Severance"))
+        self.assertEqual(titles, ShowTitles(plex=PLEX_SEVERANCE, folders=SEVERANCE_FOLDER))
+        assert titles is not None
+        self.assertEqual(titles.main.key, PLEX_SEVERANCE.key)  # the player's and picker's name
+        videos = await service.episodes(titles)
+        self.assertEqual(
+            [(v.season, v.episode, is_folder_video(v)) for v in videos],
+            [(1, 1, True), (1, 2, True), (1, 3, True), (2, 1, True)],  # each once, the folder's
+        )
+        self.assertEqual(videos[1].file, str(self.episodes[1, 2]))
+        self.assertTrue(videos[0].watched)  # Plex says so: it counts
+        self.assertEqual(videos[1].view_offset_ms, 0)  # the place is the folder copy's own
+        self.assertEqual(next_episode(videos), videos[1])
+        found = await service.locate(titles.main, videos[1])
+        self.assertEqual(found, playback.Located(
+            "Severance S01E02", "show", str(self.episodes[1, 2])
+        ))
+        self.assertEqual(service.kept_episodes(titles), videos)
+
+    async def test_a_film_in_both_plays_from_the_folder(self) -> None:
+        service, plex = self.both()
+        title = await service.film(DUNE_FOLDER.tmdb_id)
+        self.assertEqual(title, DUNE_FOLDER)
+        assert title is not None
+        video = await service.film_video(title)
+        assert isinstance(video, PlexVideo)
+        self.assertTrue(is_folder_video(video))
+        self.assertEqual(video.file, str(self.dune_4k))  # its best copy
+        self.assertEqual(plex.asked, [])  # Plex isn't asked for it
+
+    async def test_plex_only_and_folders_only_are_as_before(self) -> None:
+        # Plex alone (the folders off): Plex's show, Plex's episodes, Plex's film.
+        await self.settings.update(folder_library_on=False)
+        service, plex = self.both()
+        titles = await service.show(Show(id=44933, name="Severance"))
+        self.assertEqual(titles, ShowTitles(plex=PLEX_SEVERANCE))
+        assert titles is not None
+        self.assertEqual([v.key for v in await service.episodes(titles)], ["7011", "7012"])
+        self.assertEqual(await service.film(DUNE_FOLDER.tmdb_id), PLEX_DUNE)
+        self.assertEqual(
+            [v.key for v in await service.episodes(PLEX_SEVERANCE)], ["7011", "7012"]
+        )  # a lone title (Continue watching) is its own source's
+        # The folders alone (no Plex): theirs, as part 1.
+        await self.settings.update(folder_library_on=True)
+        alone = self.playback()
+        titles = await alone.show(Show(id=44933, name="Severance"))
+        self.assertEqual(titles, ShowTitles(folders=SEVERANCE_FOLDER))
+        assert titles is not None
+        self.assertEqual(titles.main, SEVERANCE_FOLDER)
+        self.assertEqual(len(await alone.episodes(titles)), 4)
+        self.assertEqual(await alone.film(DUNE_FOLDER.tmdb_id), DUNE_FOLDER)
+        self.assertIsNone(await alone.show(Show(id=1, name="Other")))
+        with self.assertRaises(ValueError):
+            ShowTitles()
+
+    async def test_plex_away_still_lists_the_folders(self) -> None:
+        class AwayPlex(BothPlex):
+            async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
+                raise PlexUnreachable("away")
+
+        service, _plex = self.both(AwayPlex())
+        titles = await service.show(Show(id=44933, name="Severance"))
+        assert titles is not None
+        with self.assertLogs("app.services.playback", "INFO"):
+            videos = await service.episodes(titles)
+        self.assertEqual(len(videos), 4)  # the folder's, Plex's later
+        self.assertIsNone(service.kept_episodes(titles))  # not kept as the whole list
+        only_plex = ShowTitles(plex=PLEX_SEVERANCE)
+        with self.assertRaises(PlexError):
+            await service.episodes(only_plex)
+
+
+class DownloadedCueTests(DialogTestCase):
+    async def test_folder_episodes_have_the_downloaded_cue(self) -> None:
+        videos = [
+            PlexVideo(key="41", file="/v/a.mkv", season=1, episode=1, watched=True),
+            PlexVideo(key="episode:5:1:2", file=r"D:\Series\b.mkv", season=1, episode=2),
+        ]
+
+        async def episodes(title: PlexTitle) -> list[PlexVideo]:
+            return videos
+
+        picker = EpisodePicker(self.root, ARK, episodes=episodes, on_play=lambda v, e: None)
+        self.keep(picker)
+        await picker.loaded()
+        await self.settle()
+        self.assertEqual(list(picker.cues), ["episode:5:1:2"])
+        self.assertEqual(picker.cues["episode:5:1:2"].cget("text"), "Downloaded")
+        self.assertEqual(NL[play_control.DOWNLOADED_CUE], "Gedownload")
+        assert picker.selected is not None
+        self.assertEqual(picker.selected.key, "episode:5:1:2")  # Plex's watched: on into it
+
+    async def picker_cues(self, settings: Settings) -> list[str]:
+        """The keys of the rows with the "Downloaded" cue, the words following `settings`."""
+        library_words.follow(cast(SettingsService, _CurrentSettings(settings)))
+        self.addCleanup(library_words.follow, None)
+        videos = [
+            PlexVideo(key="41", file="/v/a.mkv", season=1, episode=1),
+            PlexVideo(key="episode:5:1:2", file=r"D:\Series\b.mkv", season=1, episode=2),
+        ]
+
+        async def episodes(title: PlexTitle) -> list[PlexVideo]:
+            return videos
+
+        picker = EpisodePicker(self.root, ARK, episodes=episodes, on_play=lambda v, e: None)
+        self.keep(picker)
+        await picker.loaded()
+        await self.settle()
+        return list(picker.cues)
+
+    async def test_folders_only_has_no_downloaded_cue(self) -> None:
+        # Without Plex every video is the folders': "Downloaded" (on the PC, not in Plex yet)
+        # would sit on every row.
+        folders = Settings(folder_library_on=True, series_folders=("D:\\Series",))
+        self.assertEqual(await self.picker_cues(folders), [])
+
+    async def test_beside_plex_folder_episodes_have_the_cue(self) -> None:
+        both = Settings(
+            plex_token="made-up-token", folder_library_on=True, series_folders=("D:\\Series",)
+        )
+        self.assertEqual(await self.picker_cues(both), ["episode:5:1:2"])
+
+
+class _CurrentSettings:
+    def __init__(self, settings: Settings) -> None:
+        self.current = settings
 
 
 if __name__ == "__main__":

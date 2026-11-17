@@ -26,7 +26,7 @@ from app.models import (
     ProfileColour,
     Show,
 )
-from app.models.plex import PlexFilms
+from app.models.plex import PlexFilms, PlexScan
 from app.services.download_queue import DownloadQueue
 from app.services.download_status import DownloadStatusService
 from app.services.downloads import DownloadService
@@ -446,6 +446,32 @@ class ComingUpTests(PhoneCase):
             ),
         ):
             items = await self.items(**{"from": "2026-11-01"})
+        self.assertEqual(
+            [item["state"] for item in items],
+            ["downloaded", "downloaded", "can_download", "downloaded"],
+        )
+
+    async def test_what_the_folders_have_is_downloaded_beside_plex(self) -> None:
+        # Two shelves: E1 in Plex, E2 and the film only in the user's own folders, E3 nowhere.
+        await self.follow(
+            episode(1, date(2026, 11, 1), number=1),
+            episode(2, date(2026, 11, 1), number=2),
+            episode(3, date(2026, 11, 1), number=3),
+        )
+        await self.want(film(), digital=date(2026, 11, 7))
+        await self.db.plex.replace(PlexScan(episodes=frozenset({(SEVERANCE, 2, 1)})), NOW)
+        await self.db.folders.replace(
+            PlexScan(
+                episodes=frozenset({(SEVERANCE, 2, 2)}), films=frozenset({(DUNE, None)})
+            ),
+            NOW,
+        )
+        await self.settings.update(
+            plex_token="made-up-plex-token",
+            folder_library_on=True,
+            series_folders=(r"\\NAS\Series",),
+        )
+        items = await self.items(**{"from": "2026-11-01"})
         self.assertEqual(
             [item["state"] for item in items],
             ["downloaded", "downloaded", "can_download", "downloaded"],

@@ -320,10 +320,15 @@ class WatchlistCard(PosterCard):
     def imdb_id(self) -> str | None:
         return self._entry.imdb_id
 
-    def set_in_plex(self, in_plex: bool) -> None:
-        """The library mark ("In Plex") on the cover's corner, or not (app/ui/library_mark.py)."""
-        if in_plex and self.plex_mark is None:
-            self.plex_mark = library_mark(self)
+    def set_in_plex(self, in_plex: bool, *, from_folders: bool = False) -> None:
+        """The library mark ("In Plex"; `from_folders`: beside Plex, only in the user's own
+        folders, "Downloaded…") on the cover's corner, or not (app/ui/library_mark.py)."""
+        mark = self.plex_mark
+        if in_plex and mark is not None and mark.from_folders != from_folders:
+            mark.destroy()
+            self.plex_mark = mark = None
+        if in_plex and mark is None:
+            self.plex_mark = library_mark(self, from_folders=from_folders)
         elif not in_plex and self.plex_mark is not None:
             self.plex_mark.destroy()
             self.plex_mark = None
@@ -446,8 +451,12 @@ class WatchlistShelf(ctk.CTkFrame):
             self._mark_plex()
 
     def _mark_plex(self) -> None:
+        films = self._in_plex
         for card in self._cards.values():
-            card.set_in_plex(self._in_plex.has(card.movie_id, card.imdb_id))
+            card.set_in_plex(
+                films.has(card.movie_id, card.imdb_id),
+                from_folders=films.only_in_folders(card.movie_id, card.imdb_id),
+            )
 
     @property
     def cards(self) -> dict[int, WatchlistCard]:

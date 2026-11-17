@@ -15,9 +15,10 @@ Plex "✓ in Plex", amber "still needed", blue "new": `row_state`); a right-clic
 the search window. Clicking the pill again folds them. The view remembers the unfolded stacks
 for the session (`on_fold`), so a reload keeps them open.
 
-What you have and miss shows only while Plex is connected (`marks`; owner's decision for 3.1.0,
-app/services/plex.py), and only Plex counts as had: an episode grabbed by AirGrabber that Plex
-doesn't have yet is on its way, neither ✓ nor still needed. With Plex the bottom row is
+What you have and miss shows only while there is a library (`marks`; owner's decision for
+3.1.0, app/services/library_source.py), and only what it has counts as had: an episode grabbed
+by AirGrabber that Plex doesn't have yet is on its way, "✓ downloaded", never still needed; so is,
+beside Plex, one only the user's own folders have (two shelves: both are in `downloaded`). With Plex the bottom row is
 "⬇ Download all (2)" while episodes are still needed (aired, neither in Plex nor grabbed:
 `needed_entries`); it fetches them one after another through the one-click download
 (`DownloadActions.download_all`: the main window queues them as one batch in the download
@@ -117,8 +118,9 @@ if TYPE_CHECKING:
 
 FoldKey = tuple[int, date]  # (show id, air date): which stacks are unfolded
 StateOf = Callable[[DownloadKey], RunState | None]  # a title's one-click run state
-# "quiet": nothing to say (every aired episode without Plex). "downloaded": with Plex, one grabbed
-# by AirGrabber that Plex doesn't have yet, on its way.
+# "quiet": nothing to say (every aired episode without a library). "downloaded": with Plex, one
+# grabbed by AirGrabber that Plex doesn't have yet, on its way, or one only the user's own
+# folders have.
 RowState = Literal["not_aired", "plex", "downloaded", "new", "needed", "quiet"]
 
 # The texts are shown through t().
@@ -630,6 +632,8 @@ class StackCard(EpisodeCard):
         self._in_plex = frozenset(in_plex)
         self._new_ids = frozenset(new)
         self._downloaded = frozenset(downloaded)
+        # Had, so never still needed: in Plex, or on the PC (a grab, or in the folders).
+        self._had = self._in_plex | self._downloaded
         self._unfolded = unfolded
         self._scale = scale
         self._rows: list[_EpisodeRow] = []
@@ -699,7 +703,7 @@ class StackCard(EpisodeCard):
         return StackControl(
             master,
             self._stack,
-            in_plex=self._in_plex,
+            in_plex=self._had,
             actions=self._actions,
             scale=self._layout.row_scale,
             on_choose=self.toggle,
@@ -940,6 +944,7 @@ class CompactStackCard(ctk.CTkFrame):
         self._marks = marks
         self._in_plex = frozenset(in_plex)
         self._downloaded = frozenset(downloaded)
+        self._had = self._in_plex | self._downloaded  # never still needed (StackCard's)
         self._look: IconLook | None = None
         show = stack.show
         line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
@@ -1022,7 +1027,7 @@ class CompactStackCard(ctk.CTkFrame):
                 self._stack.entries,
                 states.get,
                 states.batch(self._stack.keys),
-                self._in_plex,
+                self._had,
                 marks=self._marks,
             )
         )
@@ -1058,7 +1063,7 @@ class CompactStackCard(ctk.CTkFrame):
         if look is None or look.action is None:
             return
         if look.action == "download":
-            start_download_all(self._stack, self._actions, self._in_plex)
+            start_download_all(self._stack, self._actions, self._had)
         else:
             self._right_click()
 

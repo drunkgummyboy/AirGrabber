@@ -239,6 +239,8 @@ class ComingUp:
         self, person: int, start: date, end: date, now: datetime
     ) -> list[dict[str, Any]]:
         entries = await self._library.calendar(start, end, profile_id=person)
+        # Had: the main source's (Plex's, or the folders' alone), and on the PC, not in Plex yet
+        # (a recent grab, or beside Plex what only the user's own folders have).
         in_plex = await self._library.plex_between(start, end)
         on_its_way = await self._library.downloaded_between(start, end, today=now.date())
         page = self._page()

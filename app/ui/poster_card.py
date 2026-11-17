@@ -389,12 +389,7 @@ def track_look(state: TrackState, busy_text: str) -> TrackLook:
 
 class TrackButton(ctk.CTkButton):
     """A show card's action row: "+ Follow", `busy_text` while adding, "✓ Following" once
-    tracked (see `track_look`).
-
-    `quiet` (the calendar's suggestion cards): "+ Follow" outlined instead of filled, a 1-unit
-    SUGGESTION_BUTTON_EDGE edge and SUGGESTION_BUTTON_TEXT text, the edge in the accent while the
-    pointer is on it (CTk's own hover is a fill, so it is off then); its other states look the same.
-    It relies on CTkButton's private `_on_enter` / `_on_leave` (overridden) and `_mouse_inside`."""
+    tracked (see `track_look`)."""
 
     def __init__(
         self,
@@ -403,10 +398,7 @@ class TrackButton(ctk.CTkButton):
         busy_text: str,
         command: Callable[[], None],
         scale: CardScale = FULL,
-        quiet: bool = False,
     ) -> None:
-        self._quiet = quiet
-        self._state_now: TrackState = "idle"
         super().__init__(
             master,
             text="",
@@ -422,19 +414,6 @@ class TrackButton(ctk.CTkButton):
         self.set_state("idle")
 
     def set_state(self, state: TrackState) -> None:
-        self._state_now = state
-        if self._outlined():
-            self.configure(
-                text=t(TRACK_TEXT),
-                fg_color="transparent",
-                hover=False,
-                border_width=1,
-                border_color=self._outline(),
-                text_color=theme.SUGGESTION_BUTTON_TEXT,
-                text_color_disabled=theme.SUGGESTION_BUTTON_TEXT,
-                state="normal",
-            )
-            return
         look = track_look(state, self._busy_text)
         self.configure(
             text=look.text,
@@ -447,23 +426,6 @@ class TrackButton(ctk.CTkButton):
             text_color_disabled=look.text_color or self._default_disabled_color,
             state="normal" if look.enabled else "disabled",
         )
-
-    def _outlined(self) -> bool:
-        return self._quiet and self._state_now == "idle"
-
-    def _outline(self) -> theme.Pair:
-        # CTk's own flag: the pointer is on the button (its text label included).
-        return theme.ACCENT if getattr(self, "_mouse_inside", False) else theme.SUGGESTION_BUTTON_EDGE
-
-    def _on_enter(self, event: Any = None) -> None:
-        super()._on_enter(event)
-        if self._outlined():
-            self.configure(border_color=self._outline())
-
-    def _on_leave(self, event: Any = None) -> None:
-        super()._on_leave(event)
-        if self._outlined():
-            self.configure(border_color=self._outline())
 
 
 # -- the card --------------------------------------------------------------------------------

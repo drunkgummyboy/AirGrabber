@@ -69,6 +69,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 Listener = Callable[[], None]
+# Where a film (TMDB id, IMDb id) is had, None when it isn't (the main window's `_film_in_plex`).
+FilmHave = Callable[[int, str | None], Awaitable[library_words.HaveSource | None]]
 Subscribe = Callable[[Listener], Callable[[], None]]  # returns the unsubscribe function
 
 WATCHLIST_WIDTH = 170
@@ -137,16 +139,18 @@ class MovieDetailsWindow(TitleInfoWindow):
         today: Callable[[], date] = date.today,
         layout: InfoLayout = InfoLayout.SIDE,
         releases: PanelServices | None = None,
-        in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
+        in_plex: FilmHave | None = None,
         playback: PlaybackService | None = None,
         player: PlayerHost | None = None,
         status: StatusReporter | None = None,
     ) -> None:
         """`releases`: what its
         releases panel works with (without it there is none). `in_plex(tmdb_id, imdb_id)`:
-        whether the film is in Plex (the quiet ✓ `plex_mark`, made only then). `playback` +
-        `player` + `status`: "▶ Play" (`play_button`) while the film is in Plex, played in the
-        app's player, which says on the status bar how it went."""
+        where the film is had (library_words' HaveSource: in Plex, beside Plex only in the
+        user's own folders, or with the folders alone in them), None when it isn't (the quiet ✓
+        `plex_mark`, made only then, its tip saying where). `playback` +
+        `player` + `status`: "▶ Play" (`play_button`) while the film is had, played in the app's
+        player (from the folder when both have it), which says on the status bar how it went."""
         super().__init__(
             master,
             title=movie.title,
@@ -160,7 +164,10 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._today = today
         self._in_plex_lookup = in_plex
         self._is_in_plex = False
-        self._plex_title: PlexTitle | None = None  # the film in Plex: what ▶ Play plays
+        self._have: library_words.HaveSource | None = None  # where it is had (the ✓'s tip)
+        # The film in Plex or the folders (the folders' copy when both: PlaybackService.film),
+        # what ▶ Play plays; the ✓'s tip says where it is had.
+        self._plex_title: PlexTitle | None = None
         self._playback = playback
         self._play = (
             Play(playback, player, status)
@@ -238,7 +245,7 @@ class MovieDetailsWindow(TitleInfoWindow):
             self.plex_mark = mark_label(
                 self.buttons, HAVE_MARK, theme.TEXT_MUTED, dot=False, height=ROW_HEIGHT
             )
-            add_tooltip(self.plex_mark, library_words.have_tip())
+            add_tooltip(self.plex_mark, library_words.have_tip(self._have))
         playable = self._is_in_plex and self._plex_title is not None and self._play is not None
         if playable and self.play_button is None:
             self.play_button = play_button(
@@ -274,16 +281,20 @@ class MovieDetailsWindow(TitleInfoWindow):
         self._state_task.add_done_callback(self._tasks.discard)
 
     async def _load_state(self) -> None:
-        in_plex = False
+        have: library_words.HaveSource | None = None
         plex_title: PlexTitle | None = None
         if self._in_plex_lookup is not None:
             imdb_id = self._details.imdb_id if self._details is not None else None
-            in_plex = await self._in_plex_lookup(self._movie.id, imdb_id)
-            if in_plex and self._playback is not None and self._play is not None:
+            have = await self._in_plex_lookup(self._movie.id, imdb_id)
+            if have is not None and self._playback is not None and self._play is not None:
                 plex_title = await self._playback.film(self._movie.id, imdb_id)
         if not self.winfo_exists():
             return
-        self._is_in_plex = in_plex
+        if have != self._have and self.plex_mark is not None:
+            self.plex_mark.destroy()  # made again with the tip of where it is now
+            self.plex_mark = None
+        self._have = have
+        self._is_in_plex = have is not None
         self._plex_title = plex_title
         self._show_buttons()
 
@@ -379,14 +390,15 @@ class MovieWindows:
         watchlist: WatchlistService,
         actions: DownloadActions[Movie],
         releases: PanelServices | None = None,
-        in_plex: Callable[[int, str | None], Awaitable[bool]] | None = None,
+        in_plex: FilmHave | None = None,
         plex_changed: Subscribe | None = None,
         playback: PlaybackService | None = None,
         player: PlayerHost | None = None,
         status: StatusReporter | None = None,
     ) -> None:
         """`releases`: the releases panels' services; its settings say the layout a new window opens in.
-        `in_plex` / `plex_changed`: whether a film is in Plex and when that may have changed.
+        `in_plex` / `plex_changed`: where a film is had (MovieDetailsWindow's) and when that
+        may have changed.
         `playback` / `player` / `status`: the windows' "▶ Play" (none without them; `player` is
         the app's one MediaPlayerHost)."""
         self._master = master

@@ -1,10 +1,11 @@
 """A show window's season progress (owner's choice C of docs/season-progress-sketch.html): a thin
 bar under every season chip and, above the open season's rows, a square per episode. Green: in
-Plex; blue: downloaded, not in Plex yet; amber: aired, neither; grey: not aired yet.
+Plex (with the folders alone: in them); blue: downloaded, not in Plex yet (a grab, or beside
+Plex one only the user's own folders have); amber: aired, neither; grey: not aired yet.
 
-Only for a followed show while there is a library (Plex, or else the folder library;
-`progress_shown`): what you have counts only
-then (owner's decision for 3.1.0), and `ShowDetails.in_plex` is filled only for followed shows.
+Only for a followed show while there is a library (Plex, the folder library, or both;
+`progress_shown`): what you have counts only then (owner's decision for 3.1.0), and
+`ShowDetails.in_plex` / `in_folders` are filled only for followed shows.
 Plain canvases in the theme's colours, painted again on a switch between light and dark."""
 
 from __future__ import annotations
@@ -52,6 +53,8 @@ def progress_shown(details: ShowDetails | None) -> bool:
 def episode_state(details: ShowDetails, episode: Episode, now: datetime) -> EpisodeState:
     if details.is_in_plex(episode):
         return "plex"
+    if details.is_in_folders(episode):
+        return "downloaded"  # beside Plex, on the PC and not in Plex yet
     if not episode.has_aired(now):
         return "later"
     if details.is_downloaded(episode):
@@ -78,7 +81,8 @@ def had_text(states: Sequence[EpisodeState]) -> str:
 
 def counts_text(states: Sequence[EpisodeState]) -> str:
     """The squares' line: "7 in Plex · 2 downloaded · 1 not downloaded" (what there is; "7 in
-    your library" with the folder library)."""
+    your library" with the folder library alone; beside Plex the folders' own count as
+    downloaded)."""
     counts = Counter(states)
     parts = []
     if counts["plex"] and library_words.folders():

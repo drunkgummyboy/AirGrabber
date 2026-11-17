@@ -121,6 +121,66 @@ class ReadFolderTests(FolderTestCase):
             ("episode", "The Bear", 3, 4, "720p"),
         )
 
+    async def test_a_flat_folder_of_several_shows(self) -> None:
+        # MediaForge's "Series (flat)": every show's episodes in one folder, no sub-folders,
+        # right in the series folder or one level below it.
+        names = (
+            "Show A (2022) - S01E02 - Pilot.mkv", "Show B - S03E01 - x.mkv",
+            "The.Bear.S03E04.720p.mkv",
+        )
+        expected = {
+            ("episode", "Show A", 2022, 1, 2),
+            ("episode", "Show B", None, 3, 1),
+            ("episode", "The Bear", None, 3, 4),
+        }
+        flat = self.folder("Downloads")
+        nested = self.folder("Series")
+        for name in names:
+            self.touch(flat, name)
+            self.touch(nested, f"Series (flat)/{name}")
+        for guessit in (True, False):
+            for folder in (flat, nested):
+                with self.subTest(guessit=guessit, folder=folder.name), mock.patch(
+                    "app.forge.core.parser.parser_ready", return_value=guessit
+                ):
+                    found = (await self.read(folder, "show")).files
+                    self.assertEqual(
+                        {(f.kind, f.title, f.year, f.season, f.episode) for f in found}, expected
+                    )
+        # Read again unchanged (their stored rows, no parsing): each keeps its own show.
+        first = (await self.read(nested, "show")).files
+        rows = {
+            f.path: LibraryFile(path=f.path, size=f.size, mtime=f.mtime, kind="episode",
+                                tmdb_id=1, season=f.season, episode=f.episode, recognised=True)
+            for f in first
+        }
+        with mock.patch.object(scan, "_parse_name", wraps=scan._parse_name) as parse:
+            again = (await self.read(nested, "show", rows)).files
+        parse.assert_not_called()
+        self.assertEqual(
+            {(f.title, f.year) for f in again},
+            {("Show A", 2022), ("Show B", None), ("The Bear", None)},
+        )
+
+    async def test_one_show_named_two_ways_is_still_one_show_folder(self) -> None:
+        # A show folder whose files are named by different release groups stays one show.
+        series = self.folder("Series")
+        self.touch(series, "Doctor Who (2005)/Doctor.Who.2005.S01E01.mkv")
+        self.touch(series, "Doctor Who (2005)/Doctor Who (2005) - S01E02 - Rose.mkv")
+        self.touch(series, "Doctor Who (2005)/Doctor Who - S01E03.mkv")
+        self.touch(series, "Severance (2022)/Season 01/Good News About Hell.mkv")
+        self.touch(series, "Severance (2022)/Season 01/Half Loop.mkv")
+        # Episode titles without a code name no show: the folder still does.
+        for guessit in (True, False):
+            with self.subTest(guessit=guessit), mock.patch(
+                "app.forge.core.parser.parser_ready", return_value=guessit
+            ):
+                found = (await self.read(series, "show")).files
+                self.assertEqual(len(found), 5)
+                self.assertEqual(
+                    {(f.title, f.year) for f in found}, {("Doctor Who", 2005), ("Severance", 2022)}
+                )
+
     async def test_a_raw_named_show_folder_is_recognised(self) -> None:
         # The final review's probe: a release's own folder in the series folder.
         series = self.folder("Series")

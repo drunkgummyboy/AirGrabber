@@ -2,7 +2,8 @@
 same title and video shapes Plex gives playback (`PlexTitle`, `PlexVideo`), made from what the
 last check stored, and each person's own place in a video.
 
-- **Titles** are the folder titles in `plex_titles` (key "folder:…", match.py's `title_key`).
+- **Titles** are the folder titles in their own table (`folder_titles`, `db.folders`; key
+  "folder:…", match.py's `title_key`), beside Plex's or without Plex.
 - **A video** is a film's or an episode's file from `library_files`: `file` is the local path
   (handed to the player as it is; never logged) and `key` is `item_key`, the title's identity
   ("movie:<tmdb>", "episode:<tmdb>:<season>:<episode>"), so a file MediaForge renamed or moved
@@ -14,7 +15,8 @@ last check stored, and each person's own place in a video.
   phone's its own): `view_offset_ms` / `duration_ms` / `watched` of a video come from the
   person's row. A place under MIN_PLACE_MS isn't kept (nothing to resume, as for a file from
   Explorer); one at WATCHED_SHARE of the length or past it marks the video watched. Continue
-  watching is the person's videos with a place, the newest first.
+  watching is the person's videos with a place, the newest first. A phone also marks a video
+  unwatched (back to the start) and takes one off Carry on (its place to 0, watched kept).
 
 Nothing here touches a file on disk. Logs give counts only, never a path, a file name or a title.
 """
@@ -26,12 +28,12 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Protocol
 
-from app.database import LibraryFileRepository, PlexRepository, WatchPlaceRepository
+from app.database import FolderRepository, LibraryFileRepository, WatchPlaceRepository
 from app.i18n import N_
 from app.models import Settings
 from app.models.folder_library import FileKind, LibraryFile, WatchPlace
 from app.models.plex import PlexContinue, PlexTitle, PlexVideo
-from app.services.library_source import library_source
+from app.services.library_source import folders_on
 from app.services.local_files import MIN_PLACE_MS
 from app.services.plex import CONTINUE_SIZE, FOLDER_KEY_PREFIX, episode_order, version_rank
 
@@ -43,7 +45,9 @@ __all__ = [
     "WATCHED_SHARE",
     "FolderPlaying",
     "from_folders",
+    "is_folder_video",
     "item_key",
+    "logged_key",
 ]
 
 WATCHED_SHARE = 0.9  # watched from here, as Plex's mark (app/ui/media_player.py uses this one)
@@ -51,6 +55,7 @@ WATCHED_SHARE = 0.9  # watched from here, as Plex's mark (app/ui/media_player.py
 NOT_IN_FOLDERS_TEXT = N_("AirGrabber can't find {name} in your folders right now.")
 _HEIGHTS = {"4K": 2160, "1080p": 1080, "720p": 720, "SD": 480}  # the quality a name says
 _CONTINUE_READ = 50  # places read for Continue watching (some may name what is gone)
+_MAX_DIGITS = 12  # of an item key's numbers (a phone's key): more can't be stored as one
 
 
 class SettingsSource(Protocol):
@@ -65,6 +70,19 @@ def from_folders(title: PlexTitle) -> bool:
     return title.key.startswith(FOLDER_KEY_PREFIX)
 
 
+def is_folder_video(video: PlexVideo) -> bool:
+    """A video of the folder library (its key an item key, `parse_item`), not one of Plex's: it
+    plays from its own file and its place goes to `watch_places`, never to Plex."""
+    return parse_item(video.key) is not None
+
+
+def logged_key(key: str) -> str:
+    """A video's or title's key as a log line may hold it: a Plex ratingKey (digits) as it is,
+    any other only as the text before its first `:` ("episode", "folder"): a folder key's TMDB
+    id would name the title (as app/services/phone/copies.py's `_logged`)."""
+    return key if key.isascii() and key.isdigit() else key.split(":", 1)[0]
+
+
 def film_item(tmdb_id: int) -> str:
     return f"movie:{tmdb_id}"
 
@@ -73,10 +91,13 @@ def episode_item(tmdb_id: int, season: int, episode: int) -> str:
     return f"episode:{tmdb_id}:{season}:{episode}"
 
 
-def _parse(item: str) -> tuple[FileKind, int, int | None, int | None] | None:
-    """(kind, TMDB id, season, episode) of an item key; None for anything else (a Plex key)."""
+def parse_item(item: str) -> tuple[FileKind, int, int | None, int | None] | None:
+    """(kind, TMDB id, season, episode) of an item key; None for anything else (a Plex key, or
+    numbers no TMDB id or season could be: other digits than 0-9, or over _MAX_DIGITS)."""
     parts = item.split(":")
-    if not all(part.isdigit() for part in parts[1:]):
+    if not all(
+        part.isascii() and part.isdigit() and len(part) <= _MAX_DIGITS for part in parts[1:]
+    ):
         return None
     if parts[0] == "movie" and len(parts) == 2:
         return "movie", int(parts[1]), None, None
@@ -85,12 +106,22 @@ def _parse(item: str) -> tuple[FileKind, int, int | None, int | None] | None:
     return None
 
 
+def canonical_item(item: str) -> str | None:
+    """An item key as the library stores it ("movie:0603" is "movie:603"); None for a key that
+    is no folder library video's (`parse_item`)."""
+    parsed = parse_item(item)
+    if parsed is None:
+        return None
+    kind, tmdb_id, season, episode = parsed
+    if kind == "movie" or season is None or episode is None:
+        return film_item(tmdb_id)
+    return episode_item(tmdb_id, season, episode)
+
+
 def item_key(video: PlexVideo) -> str:
     """The `watch_places` item of a folder library video (its `key`: "movie:<tmdb>",
     "episode:<tmdb>:<season>:<episode>"). ValueError for a video that isn't one (Plex's)."""
-    if _parse(video.key) is None:
-        raise ValueError("Not a folder library video")
-    return video.key
+    return _checked(video.key)
 
 
 def copy_rank(file: LibraryFile) -> tuple[int, ...]:
@@ -98,7 +129,7 @@ def copy_rank(file: LibraryFile) -> tuple[int, ...]:
     return version_rank(_HEIGHTS.get(file.quality or "", 0), 1, file.size)
 
 
-def _ranked(files: Iterable[LibraryFile]) -> list[LibraryFile]:
+def ranked(files: Iterable[LibraryFile]) -> list[LibraryFile]:
     """Best first; of equal copies, the first by path."""
     return sorted(files, key=copy_rank, reverse=True)
 
@@ -111,7 +142,7 @@ class FolderPlaying:
         settings: SettingsSource,
         files: LibraryFileRepository,
         places: WatchPlaceRepository,
-        titles: PlexRepository,
+        titles: FolderRepository,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -123,19 +154,30 @@ class FolderPlaying:
 
     @property
     def on(self) -> bool:
-        """The folders are the library now (no Plex token; switched on with a folder set)."""
-        return library_source(self._settings.current) == "folders"
+        """The folders count now (switched on with a folder set, with or without Plex)."""
+        return folders_on(self._settings.current)
 
     async def titles(self) -> list[PlexTitle]:
         """The folder library's films and shows, as the last check stored them, by title."""
-        return [title for title in await self._titles.titles() if from_folders(title)]
+        return await self._titles.titles()
+
+    async def watched_items(self, *, profile_id: int) -> set[str]:
+        """The item keys the person has watched here ("movie:<tmdb>", "episode:<tmdb>:<s>:<e>"),
+        whether or not their files are still in the folders (one moved into Plex's folder by
+        hand keeps its mark: ▶ Play's next episode goes on after it)."""
+        places = await self._places.places(profile_id)
+        return {item for item, place in places.items() if place.watched}
+
+    async def checked_at(self) -> datetime | None:
+        """When the folders' last check was stored (None: never)."""
+        return await self._titles.checked_at()
 
     async def film_video(self, title: PlexTitle, *, profile_id: int) -> PlexVideo | None:
         """A film's video: its best copy, at the person's place; None when it has no file (or
         isn't a folder library film)."""
         if title.kind != "movie" or title.tmdb_id is None or not from_folders(title):
             return None
-        files = _ranked(await self._files.of_title("movie", title.tmdb_id))
+        files = ranked(await self._files.of_title("movie", title.tmdb_id))
         if not files:
             return None
         item = film_item(title.tmdb_id)
@@ -155,7 +197,7 @@ class FolderPlaying:
         videos = []
         for (season, number), files in copies.items():
             item = episode_item(tmdb_id, season, number)
-            videos.append(_video(item, _ranked(files)[0], places.get(item)))
+            videos.append(_video(item, ranked(files)[0], places.get(item)))
         videos.sort(key=episode_order)
         log.info("Folder library: %d episode file(s) of a show", len(videos))
         return videos
@@ -163,7 +205,12 @@ class FolderPlaying:
     async def copies(self, video: PlexVideo) -> list[str]:
         """Every file of `video`'s film or episode, best first (`locate` plays the first one
         still there); none for a video that isn't the folder library's."""
-        parsed = _parse(video.key)
+        return await self.copies_of(video.key)
+
+    async def copies_of(self, item: str) -> list[str]:
+        """Every file of the film or episode with this item key, best first; none for any other
+        key (the phone's `file` sends the first one still there)."""
+        parsed = parse_item(item)
         if parsed is None:
             return []
         kind, tmdb_id, season, number = parsed
@@ -172,7 +219,7 @@ class FolderPlaying:
             for file in await self._files.of_title(kind, tmdb_id)
             if kind == "movie" or (file.season, file.episode) == (season, number)
         ]
-        return [file.path for file in _ranked(files)]
+        return [file.path for file in ranked(files)]
 
     async def continue_watching(self, *, profile_id: int) -> list[PlexContinue]:
         """The person's videos with a place to go on from, the newest first, at most
@@ -194,7 +241,7 @@ class FolderPlaying:
     async def _continue_item(
         self, place: WatchPlace, titles: dict[str, PlexTitle]
     ) -> PlexContinue | None:
-        parsed = _parse(place.item)
+        parsed = parse_item(place.item)
         if parsed is None:
             return None
         kind, tmdb_id, season, number = parsed
@@ -209,7 +256,7 @@ class FolderPlaying:
         if not files:
             return None
         name = title.title if kind == "movie" else ""
-        return PlexContinue(title=title, video=_video(place.item, _ranked(files)[0], place, name))
+        return PlexContinue(title=title, video=_video(place.item, ranked(files)[0], place, name))
 
     async def report(
         self, video: PlexVideo, position_ms: int, duration_ms: int | None, *, profile_id: int
@@ -256,6 +303,31 @@ class FolderPlaying:
                 updated_at=self._now(),
             )
         )
+
+    async def mark_unwatched(self, item: str, *, profile_id: int) -> None:
+        """The person marked the video with this item key unwatched: back to the start, its
+        length kept; nothing stored for one without a row (it is unwatched already). ValueError
+        for a key that isn't a folder library video's."""
+        before = await self._places.get(profile_id, _checked(item))
+        if before is None:
+            return
+        changes = {"watched": False, "position_ms": 0, "updated_at": self._now()}
+        await self._places.put(before.model_copy(update=changes))
+
+    async def clear_place(self, item: str, *, profile_id: int) -> None:
+        """Off Carry on (Continue watching): the person's place in the video with this item key
+        back to the start, watched and when it last changed kept (taking it off isn't watching
+        it); nothing for one without a row. ValueError for a key that isn't a video's."""
+        before = await self._places.get(profile_id, _checked(item))
+        if before is None or before.position_ms == 0:
+            return
+        await self._places.put(before.model_copy(update={"position_ms": 0}))
+
+
+def _checked(item: str) -> str:
+    if parse_item(item) is None:
+        raise ValueError("Not a folder library video")
+    return item
 
 
 def _video(item: str, file: LibraryFile, place: WatchPlace | None, title: str = "") -> PlexVideo:

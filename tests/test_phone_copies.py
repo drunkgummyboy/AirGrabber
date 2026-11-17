@@ -11,16 +11,19 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from app.i18n import t
 from app.models.plex import PlexFilmFile
 from app.services.phone.copies import (
     CONVERT_FAILED_TEXT,
     DOLBY_VISION_TEXT,
     FETCH_SHARE,
     NO_ROOM_TEXT,
+    NOT_THERE_TEXT_FOLDERS,
     SMALL_ALREADY_TEXT,
     STALE_DAYS,
     PhoneCopies,
     SourceInfo,
+    _logged,
     ffmpeg_args,
     fit,
     progress_seconds,
@@ -121,8 +124,10 @@ class FakePlex:
             duration_s=7200,
         )  # fmt: skip
         self.broken = False
+        self.asked: list[str] = []
 
     async def film_file(self, key: str) -> PlexFilmFile | None:
+        self.asked.append(key)
         return self.film
 
     async def fetch_film(self, film: PlexFilmFile, write: Callable[[bytes], Awaitable[None]]) -> None:
@@ -150,11 +155,12 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.now = 1_000_000.0
         self.free = 10**12
 
-    def copies(self) -> PhoneCopies:
+    def copies(self, **extra: Any) -> PhoneCopies:
         copies = PhoneCopies(
             self.plex,  # type: ignore[arg-type]
             self.folder,
             self.tools,
+            **extra,
             run=self.fake_run,
             convert=self.fake_convert,
             clock=lambda: self.now,
@@ -352,6 +358,269 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.made(copies, "502"))["state"], "ready")
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["502.mkv"])
 
+    async def test_a_phone_sized_copy_from_a_folder_file(self) -> None:
+        films = self.root / "Films" / "Nightfall (1999)"
+        films.mkdir(parents=True)
+        own = films / "Nightfall (1999) 2160p.mkv"
+        own.write_bytes(FILM_BYTES)
+        asked: list[str] = []
+
+        async def where(key: str) -> Path | None:
+            asked.append(key)
+            return own if key == "movie:603" else None
+
+        # The log names no film: a folder key is logged as its kind, never its TMDB id.
+        with self.assertLogs("app.services.phone.copies", level="DEBUG") as logged:
+            copies = self.copies(local_source=where)
+            await copies.start()
+            seen: list[tuple[str, int]] = []
+            real = self.fake_convert
+
+            async def watched(args: Sequence[str], duration: float, progress: Callable[[float], None]) -> int:
+                job = copies._jobs["movie:603"]
+                seen.append((job.state, job.progress))  # no fetch: converting from the start
+                return await real(args, duration, progress)
+
+            copies._convert = watched
+            self.assertTrue(copies.make("movie:603"))
+            body = await self.made(copies, "movie:603")
+            self.assertEqual(body, {"key": "movie:603", "state": "ready", "progress": 100, "size": 10})
+            self.assertEqual(self.plex.asked, [])  # Plex never asked
+            self.assertEqual(asked, ["movie:603"])
+            self.assertEqual(seen, [("converting", FETCH_SHARE)])
+            [args] = self.conversions
+            self.assertEqual(args[args.index("-i") + 1], str(own))  # straight from the PC's file
+            self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["movie-603.mkv"])
+            self.assertEqual(own.read_bytes(), FILM_BYTES)  # the film itself is left alone
+            whole = await self.ask(copies, "GET", "/v1/phone-copies/movie:603/file")
+            self.assertIsInstance(whole, FileReply)
+            self.assertEqual(whole.size, 10)
+            # The phone asks for one too, by the video key.
+            asked_too = await self.ask(
+                copies, "POST", "/v1/phone-copies", key="movie:603", kind="movie", title="Nightfall"
+            )
+            self.assertEqual((asked_too.status, asked_too.body["state"]), (200, "ready"))
+            # Made before: found again by its file's name.
+            again = self.copies(local_source=where)
+            await again.start()
+            self.assertEqual(again.state_of("movie:603"), ("ready", 100, None))
+            await again.drop("movie:603")
+            self.assertEqual(list(self.folder.iterdir()), [])
+            self.assertTrue(own.is_file())
+        self.assertTrue(logged.output)
+        for line in logged.output:
+            self.assertNotIn("603", line)
+        self.assertTrue(any("movie" in line for line in logged.output))
+
+    async def test_phone_sized_copy_from_a_folder_film_beside_plex(self) -> None:
+        """Two shelves: with Plex connected and the folders on, a Downloaded film's copy is made
+        from the PC's own file (the real `_own_file` over a real FolderPlaying), Plex never
+        asked; with the folders switched off it says it can't find one."""
+        import functools
+
+        from app.database import Database
+        from app.models import Settings
+        from app.models.folder_library import LibraryFile
+        from app.services import _own_file
+        from app.services.folder_library.playing import FolderPlaying
+        from app.services.settings import SettingsService
+        from tests.plex_link import TOKEN
+
+        own = self.root / "Films" / "Nightfall (1999) 2160p.mkv"
+        own.parent.mkdir(parents=True)
+        own.write_bytes(FILM_BYTES)
+        db = await Database.open(self.root / "library.db")
+        self.addAsyncCleanup(db.close)
+        settings = SettingsService(
+            db.settings,
+            Settings(
+                plex_token=TOKEN, folder_library_on=True, film_folders=(str(own.parent),)
+            ),
+        )
+        await db.library_files.replace_folder(
+            str(own.parent),
+            [
+                LibraryFile(
+                    path=str(own), size=len(FILM_BYTES), mtime=1.0, kind="movie", tmdb_id=603,
+                    quality="4K", recognised=True,
+                )
+            ],
+        )  # fmt: skip
+        playing = FolderPlaying(settings, db.library_files, db.watch_places, db.folders)
+        copies = self.copies(local_source=functools.partial(_own_file, playing))
+        await copies.start()
+        self.assertTrue(copies.make("movie:603"))
+        body = await self.made(copies, "movie:603")
+        self.assertEqual(body["state"], "ready", body)
+        self.assertEqual(self.plex.asked, [])  # Plex's shelf isn't where this film is
+        [args] = self.conversions
+        self.assertEqual(args[args.index("-i") + 1], str(own))
+        await copies.drop("movie:603")
+        # "Stop using folders" (Plex stays): the folders' list of files isn't read any more.
+        await settings.update(folder_library_on=False)
+        self.assertTrue(copies.make("movie:603"))
+        body = await self.made(copies, "movie:603")
+        self.assertEqual((body["state"], body["message"]), ("failed", t(NOT_THERE_TEXT_FOLDERS)))
+        self.assertEqual(self.plex.asked, [])
+
+    async def test_a_raw_colon_reaches_the_copy_routes(self) -> None:
+        """A real request through the phone server (TLS on loopback): GET and DELETE
+        /v1/phone-copies/movie:603[/file] with the key's ':' as it is."""
+        import contextlib
+        import socket
+        import ssl
+
+        from app.config import AppPaths
+        from app.database import Database
+        from app.models import Settings
+        from app.services.phone.certificate import ensure_certificate
+        from app.services.phone.devices import DeviceStore
+        from app.services.phone.server import PhoneServer
+        from app.services.settings import SettingsService
+
+        own = self.root / "Nightfall.mkv"
+        own.write_bytes(FILM_BYTES)
+
+        async def where(key: str) -> Path | None:
+            return own if key == "movie:603" else None
+
+        copies = self.copies(local_source=where)
+        await copies.start()
+        self.assertTrue(copies.make("movie:603"))
+        self.assertEqual((await self.made(copies, "movie:603"))["state"], "ready")
+        db = await Database.open(self.root / "server.db")
+        self.addAsyncCleanup(db.close)
+        devices = DeviceStore(SettingsService(db.settings, Settings()))
+        _, token = await devices.add("Pixel", 1)
+        cert, key, _ = await asyncio.to_thread(ensure_certificate, AppPaths(root=self.root))
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        server = PhoneServer(copies.routes(), devices, cert, key)
+        await server.start(port)
+        self.addAsyncCleanup(server.stop)
+        client = ssl.create_default_context()
+        client.check_hostname = False
+        client.verify_mode = ssl.CERT_NONE
+
+        async def send(method: str, path: str) -> tuple[str, bytes]:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=client)
+            try:
+                writer.write(
+                    f"{method} {path} HTTP/1.1\r\nHost: pc\r\n"
+                    f"Authorization: Bearer {token}\r\n\r\n".encode()
+                )
+                await writer.drain()
+                raw = await asyncio.wait_for(reader.read(-1), 10)
+            finally:
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+            head, _, body = raw.partition(b"\r\n\r\n")
+            return head.decode("latin-1").split("\r\n")[0], body
+
+        line, body = await send("GET", "/v1/phone-copies/movie:603")
+        self.assertEqual(line, "HTTP/1.1 200 OK")
+        self.assertEqual(json.loads(body)["key"], "movie:603")
+        line, body = await send("GET", "/v1/phone-copies/movie:603/file")
+        self.assertEqual((line, body), ("HTTP/1.1 200 OK", b"small copy"))
+        line, _ = await send("DELETE", "/v1/phone-copies/movie:603")
+        self.assertEqual(line, "HTTP/1.1 204 No Content")
+        line, _ = await send("GET", "/v1/phone-copies/movie:603")
+        self.assertEqual(line, "HTTP/1.1 404 Not Found")
+        self.assertEqual(list(self.folder.iterdir()), [])
+
+    async def test_a_folder_film_that_isnt_there_says_so(self) -> None:
+        async def nowhere(_key: str) -> Path | None:
+            return None
+
+        for extra in ({"local_source": nowhere}, {}):
+            with self.subTest(resolver=bool(extra)):
+                await self.asyncSetUp()
+                copies = self.copies(**extra)
+                await copies.start()
+                self.assertTrue(copies.make("movie:603"))
+                body = await self.made(copies, "movie:603")
+                self.assertEqual(
+                    (body["state"], body["message"]), ("failed", NOT_THERE_TEXT_FOLDERS)
+                )
+                self.assertEqual(self.plex.asked, [])
+                self.assertEqual(self.conversions, [])
+
+    async def test_a_folder_film_too_small_or_without_room(self) -> None:
+        own = self.root / "Nightfall.mkv"
+        own.write_bytes(FILM_BYTES)
+
+        async def where(_key: str) -> Path | None:
+            return own
+
+        cases: list[tuple[str, Callable[[], None], str]] = [
+            ("small", lambda: setattr(self, "probe", probe_json(height=1080, width=1920)), SMALL_ALREADY_TEXT),
+            ("room", lambda: setattr(self, "free", 1000), NO_ROOM_TEXT),
+        ]  # fmt: skip
+        for name, make_it_fail, text in cases:
+            with self.subTest(name):
+                await self.asyncSetUp()
+                make_it_fail()
+                copies = self.copies(local_source=where)
+                await copies.start()
+                copies.make("movie:603")
+                body = await self.made(copies, "movie:603")
+                self.assertEqual((body["state"], body["message"]), ("failed", text))
+                self.assertEqual(list(self.folder.iterdir()), [])
+                self.assertTrue(own.is_file())
+
+    async def test_keys(self) -> None:
+        copies = self.copies()
+        await copies.start()
+        for key in ("movie/603", "a" * 41, "movie:6 3", "../x"):
+            with self.subTest(key=key):
+                self.assertFalse(copies.make(key))
+                reply = await self.ask(copies, "POST", "/v1/phone-copies", key=key, kind="movie")
+                self.assertEqual(reply.status, 400)
+
+    async def test_only_a_films_key_is_taken(self) -> None:
+        asked: list[str] = []
+
+        async def where(key: str) -> Path | None:
+            asked.append(key)
+            return None
+
+        copies = self.copies(local_source=where)
+        await copies.start()
+        for key in ("episode:1399:1:1", "folder:movie:603", "movie:603:1", "abc", "movie:", "0x1"):
+            with self.subTest(key=key):
+                self.assertFalse(copies.make(key))
+                reply = await self.ask(copies, "POST", "/v1/phone-copies", key=key, kind="movie")
+                self.assertEqual(reply.status, 400)
+        self.assertEqual((self.plex.asked, asked, copies._jobs), ([], [], {}))
+        # The log never holds more of a key that isn't Plex's than the text before its first ":".
+        self.assertEqual(
+            [_logged(key) for key in ("501", "movie:603", "folder:movie:603", "movie:603:1")],
+            ["501", "movie", "folder", "movie"],
+        )
+
+    async def test_a_key_with_a_leading_zero_is_the_same_film(self) -> None:
+        asked: list[str] = []
+
+        async def where(key: str) -> Path | None:
+            asked.append(key)
+            return None
+
+        copies = self.copies(local_source=where)
+        await copies.start()
+        reply = await self.ask(copies, "POST", "/v1/phone-copies", key="movie:0603", kind="movie")
+        self.assertEqual((reply.status, reply.body["key"]), (200, "movie:603"))
+        self.assertTrue(copies.make("movie:603"))  # the same job
+        self.assertEqual(list(copies._jobs), ["movie:603"])
+        await self.made(copies, "movie:603")
+        self.assertEqual(asked, ["movie:603"])
+        self.assertEqual(
+            (await self.ask(copies, "GET", "/v1/phone-copies/movie:0603")).body["key"], "movie:603"
+        )
+        await copies.drop("movie:0603")
+        self.assertEqual(copies._jobs, {})
+
     async def test_copies_from_before_and_stale_ones(self) -> None:
         self.folder.mkdir()
         (self.folder / "501.mkv").write_bytes(b"made before")
@@ -367,6 +636,29 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         await copies._clean()
         self.assertEqual(list(self.folder.iterdir()), [])
         self.assertEqual((await self.ask(copies, "GET", "/v1/phone-copies/501")).status, 404)
+
+
+class OwnFileTests(unittest.IsolatedAsyncioTestCase):
+    """app/services' `_own_file`, the copies' `local_source`: the PC's own file of a folder film."""
+
+    async def test_only_while_the_folders_are_on(self) -> None:
+        from app.services import _own_file
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        own = Path(tmp.name) / "Nightfall.mkv"
+        own.write_bytes(FILM_BYTES)
+
+        class Playing:
+            on = True
+
+            async def copies_of(self, _item: str) -> list[str]:
+                return [str(own)]
+
+        playing = Playing()
+        self.assertEqual(await _own_file(playing, "movie:603"), own)  # type: ignore[arg-type]
+        playing.on = False  # the folders off: the old list of files isn't read
+        self.assertIsNone(await _own_file(playing, "movie:603"))  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

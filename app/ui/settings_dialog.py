@@ -70,8 +70,10 @@ from app.models.backup import BackupLoadResult
 from app.models.settings import AUTO_WAIT_CHOICES, STUCK_CHOICES, TextSize
 from app.services.backup import BackupService
 from app.services.folder_library.service import FolderLibraryService
+from app.services.library_source import library_source
 from app.services.phone.service import PhoneService
 from app.services.plex import PlexService
+from app.services.problem_report import ProblemReports
 from app.services.tmdb import TMDBError
 from app.ui import theme
 from app.ui.accent_picker import AccentSwatches
@@ -321,6 +323,17 @@ PHONE_SWITCH_TEXT = N_(
     "This counts from the next time AirGrabber starts. Your paired phones are kept."
 )
 PHONE_SWITCH_FAILED = N_("AirGrabber couldn't switch the phone features.")
+REPORT_TITLE = N_("Something not working?")
+REPORT_TEXT = N_(
+    "This puts AirGrabber's logs in one file on your desktop, so you can send it to whoever helps "
+    "you with AirGrabber. It holds no passwords, keys or file names, and nothing is sent by itself."
+)
+REPORT_BUTTON = N_("Make a report file")
+REPORT_ON_DESKTOP = N_("The report file is on your desktop: send it to whoever helps you.")
+REPORT_IN_FOLDER = N_(
+    "The report file is in the folder that just opened: send it to whoever helps you."
+)
+REPORT_FAILED = N_("AirGrabber couldn't make the report file, so try again.")
 GO_BACK_TITLE = N_("Not happy with this version?")
 GO_BACK_TEXT = N_(
     "AirGrabber keeps the version from before its last update. "
@@ -730,6 +743,7 @@ class SettingsDialog(ctk.CTkToplevel):
         phone: PhoneService | None = None,
         forge: ForgeRuntime | None = None,
         folder_library: FolderLibraryService | None = None,
+        problem_reports: ProblemReports | None = None,
     ) -> None:
         """`on_restart`: restarts
         AirGrabber (the Language box's "Restart now"; without it only the note shows).
@@ -738,7 +752,7 @@ class SettingsDialog(ctk.CTkToplevel):
         shows when it is given. `forge`: the MediaForge group shows when it is given. `section`:
         the page it opens at (Where downloads go when not given or not shown). `plex` /
         `folder_library`: the Library section shows when either is given (its boxes for those
-        given)."""
+        given). `problem_reports`: Updates' "Report a problem" box shows when it is given."""
         super().__init__(master, fg_color=theme.BG)
         self._forge = forge
         self.parts: dict[str, ForgeSectionPart] = {}  # the Forge sections built so far
@@ -753,6 +767,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self._backup = backup
         self._plex = plex  # the Library section shows when it or `folder_library` is given
         self._folder_library = folder_library
+        self._problem_reports = problem_reports
+        self.report_button: ctk.CTkButton | None = None
+        self.report_result: ctk.CTkLabel | None = None
         self.plex_box: PlexBox | None = None
         self.folder_box: FolderLibraryBox | None = None
         self.plex_compare: PlexCompareBox | None = None
@@ -1683,7 +1700,45 @@ class SettingsDialog(ctk.CTkToplevel):
                 width=_GO_BACK_BUTTON_WIDTH,
             )
             self.go_back_button.pack(side="left")
+        if self._problem_reports is not None:
+            report = page.box(t(REPORT_TITLE), t(REPORT_TEXT))
+            row = report.frame_row()
+            self.report_button = secondary_button(
+                row, t(REPORT_BUTTON), self._make_report, width=_GO_BACK_BUTTON_WIDTH
+            )
+            self.report_button.pack(side="left", anchor="n")
+            self.report_result = text_label(
+                row, "", size=SMALL_SIZE, wraplength=_BOX_INNER - _GO_BACK_BUTTON_WIDTH - 12
+            )
+            self.report_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
         return page
+
+    def _make_report(self) -> None:
+        if self.report_button is not None:
+            self.report_button.configure(state="disabled")
+        spawn(self._save_report(), name="problem-report")
+
+    async def _save_report(self) -> None:
+        """The report file, then Explorer with it selected."""
+        reports = self._problem_reports
+        assert reports is not None
+        try:
+            path, on_desktop = await reports.save()
+        except OSError as exc:
+            log.warning("The problem report couldn't be made (%s)", type(exc).__name__)
+            text, colour = t(REPORT_FAILED), theme.DANGER
+        else:
+            from app.forge.ui.file_browser import open_explorer
+
+            open_explorer(path, select=True)
+            text = t(REPORT_ON_DESKTOP if on_desktop else REPORT_IN_FOLDER)
+            colour = theme.TEXT_MUTED
+        if not self.winfo_exists():
+            return
+        if self.report_result is not None:
+            self.report_result.configure(text=text, text_color=colour)
+        if self.report_button is not None:
+            self.report_button.configure(state="normal")
 
     def version_clicked(self, now: float | None = None) -> None:
         """One click on "Version …": the SWITCH_CLICKSth quick one switches the phone features."""
@@ -1751,7 +1806,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def _build_library(self) -> _Page:
         """The Plex box (app/ui/plex_settings.py) and the "Your own folders" box
         (app/ui/folder_library_settings.py), which act at once, not on Save: the library's box
-        first (mockups/folder-library.html: the folders' while they are the library, else
+        first (mockups/folder-library.html: the folders' while they are the only library, else
         Plex's), under both "Play in" and "Open with"; then what AirGrabber does with and
         without Plex (app/ui/plex_compare.py)."""
         page = self._new_page(SECTION_LIBRARY)
@@ -1777,13 +1832,13 @@ class SettingsDialog(ctk.CTkToplevel):
         return page
 
     def _order_library(self, page: _Page, state: BoxState) -> None:
-        """The folders' box first while they are the library, else Plex's; "Play in" under
-        both."""
+        """The folders' box first while they are the only library (on, no Plex), else Plex's
+        (beside Plex the folders are the second shelf); "Play in" under both."""
         plex, folders = self.plex_box, self.folder_box
         if plex is None or folders is None:
             return
         order = [plex.box.frame, folders.box.frame]
-        if state == "on":
+        if state == "on" and library_source(self._settings.current) == "folders":
             order.reverse()
         if plex.play_box is not None:
             order.append(plex.play_box.frame)

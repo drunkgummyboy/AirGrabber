@@ -27,6 +27,7 @@ from app.ui.phone_contents import (
     size_text,
 )
 from app.ui.send_to_phone import (
+    HOW_FOLDERS_TEXT,
     HOW_TEXT,
     PHONE_SIZED_HOW_TEXT,
     PLEX_AWAY_TEXT,
@@ -44,6 +45,15 @@ EPISODES = [
     PlexEpisode(key="701", season=1, episode=1, title="Pilot"),
     PlexEpisode(key="702", season=1, episode=2, title="Second"),
     PlexEpisode(key="711", season=2, episode=1, title="Back"),
+]
+# The folder library's titles (made-up TMDB ids): the order carries the video's key.
+FOLDER_FILM = PlexTitle(
+    kind="movie", key="folder:movie:603", title="Nightfall", year=1999, tmdb_id=603, resolution="4K"
+)
+FOLDER_SHOW = PlexTitle(kind="show", key="folder:show:1399", title="Harbour", tmdb_id=1399)
+FOLDER_EPISODES = [
+    PlexEpisode(key="episode:1399:1:1", season=1, episode=1, title="One"),
+    PlexEpisode(key="episode:1399:1:2", season=1, episode=2, title="Two"),
 ]
 
 
@@ -92,9 +102,14 @@ class SendsCase(ServiceCase):
         await self.settings.update(phone_devices=(*self.settings.current.phone_devices, phone))
         return phone
 
-    async def report(self, phone: PairedPhone, items: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+    async def report(
+        self, phone: PairedPhone, items: list[dict[str, Any]], *, knows_folders: bool = True
+    ) -> tuple[int, dict[str, Any]]:
+        """A report from a Companion that knows the folder library (`knows_folders`: it sends
+        `X-Companion-Can: folder-library`), unless told otherwise."""
         handler = self.sends.routes()["PUT", "/v1/on-phone"]
-        reply = await handler(Request("PUT", "/v1/on-phone", {}, {"items": items}, phone))
+        headers = {"x-companion-can": "folder-library"} if knows_folders else {}
+        reply = await handler(Request("PUT", "/v1/on-phone", {}, {"items": items}, phone, headers))
         return reply.status, reply.body
 
 
@@ -185,6 +200,96 @@ class SendTests(SendsCase):
                 reply = await handler(Request("PUT", "/v1/on-phone", {}, {"items": items}, self.alex))
                 self.assertEqual(reply.status, 400)
         self.assertIsNone(self.sends.contents_of("a"))
+
+    async def test_a_folder_film_goes_as_its_video_key(self) -> None:
+        self.assertEqual(await self.sends.send_film(self.alex, FOLDER_FILM), 1)
+        self.assertEqual(await self.sends.send_film(self.alex, FOLDER_FILM), 0)  # on its way
+        [order] = self.sends.orders_for("a")
+        self.assertEqual((order.key, order.kind, order.title), ("movie:603", "movie", "Nightfall"))
+        self.assertIn("movie:603", self.sends.taken_keys("a"))
+        _, body = await self.report(self.alex, [])
+        self.assertEqual([one["key"] for one in body["take"]], ["movie:603"])
+        # A show's episodes go as their video keys.
+        self.assertEqual(await self.sends.send_episodes(self.alex, FOLDER_SHOW, FOLDER_EPISODES), 2)
+        keys = [o.key for o in self.sends.orders_for("a")]
+        self.assertEqual(keys, ["movie:603", "episode:1399:1:1", "episode:1399:1:2"])
+
+    async def test_an_old_companion_gets_no_folder_orders(self) -> None:
+        """Two shelves: Plex connected and the folders on, a Downloaded film and a Plex film are
+        sent. A Companion that doesn't know the folder library hears only the Plex one (it couldn't
+        fetch "movie:603"); the folder order stays open on the PC for a newer Companion."""
+        await self.settings.update(
+            plex_token="made-up", folder_library_on=True, film_folders=(r"\\nas\films",)
+        )
+        await self.sends.send_film(self.alex, FOLDER_FILM)
+        await self.sends.send_film(self.alex, FILM)
+        status, body = await self.report(self.alex, [], knows_folders=False)
+        self.assertEqual(status, 200)
+        self.assertEqual([one["key"] for one in body["take"]], ["501"])
+        self.assertEqual(body["remove"], [])
+        self.assertEqual([o.key for o in self.sends.orders_for("a")], ["movie:603", "501"])
+        # Nor a folder video's removal (from a report a newer Companion made).
+        await self.report(self.alex, [item("movie:603"), item("501")])
+        await self.sends.remove("a", "movie:603")
+        _, body = await self.report(
+            self.alex, [item("movie:603"), item("501")], knows_folders=False
+        )
+        self.assertEqual((body["take"], body["remove"]), ([], []))
+        # A newer Companion hears both.
+        _, body = await self.report(self.alex, [item("movie:603"), item("501")])
+        self.assertEqual([one["key"] for one in body["remove"]], ["movie:603"])
+
+    async def test_reports_with_folder_keys_are_read(self) -> None:
+        await self.sends.send_film(self.alex, FOLDER_FILM)
+        status, body = await self.report(self.alex, [
+            item("movie:603", state="copying", progress=10),
+            item("episode:1399:1:2", kind="episode", show="Harbour", season=1, episode=2),
+            item("a" * 40),
+        ])
+        self.assertEqual((status, body), (200, {"take": [], "remove": []}))  # the film's settled
+        report = self.sends.contents_of("a")
+        assert report is not None
+        self.assertEqual(
+            [one.key for one in report.items], ["movie:603", "episode:1399:1:2", "a" * 40]
+        )
+        # Anything else is no key: the report is refused, as before.
+        for key in ("movie/603", "a" * 41, "movie:6 3", "movie:603\n", "fïlm:1"):
+            with self.subTest(key=key):
+                status, _ = await self.report(self.alex, [item(key)])
+                self.assertEqual(status, 400)
+        self.assertEqual(len(self.sends.contents_of("a").items), 3)  # type: ignore[union-attr]
+
+    async def test_a_folder_key_with_a_leading_zero_is_the_same_video(self) -> None:
+        await self.sends.send_film(self.alex, FOLDER_FILM)
+        status, body = await self.report(self.alex, [
+            item("movie:0603"),
+            item("episode:01399:01:02", kind="episode", show="Harbour", season=1, episode=2),
+        ])
+        self.assertEqual((status, body), (200, {"take": [], "remove": []}))  # the film's settled
+        report = self.sends.contents_of("a")
+        assert report is not None
+        self.assertEqual([one.key for one in report.items], ["movie:603", "episode:1399:1:2"])
+
+    async def test_an_episode_without_a_title_is_read(self) -> None:
+        # The folder library names no episodes: the order goes out with "title": "", and a phone
+        # that echoes it back must not have its whole report refused.
+        nameless = [one.model_copy(update={"title": ""}) for one in FOLDER_EPISODES]
+        self.assertEqual(await self.sends.send_episodes(self.alex, FOLDER_SHOW, nameless), 2)
+        _, body = await self.report(self.alex, [])
+        self.assertEqual([one["title"] for one in body["take"]], ["", ""])
+        status, body = await self.report(self.alex, [
+            {"key": "episode:1399:1:1", "kind": "episode", "title": "", "show": "Harbour",
+             "season": 1, "episode": 1, "state": "copying"},
+            {"key": "episode:1399:1:2", "kind": "episode", "show": "Harbour",
+             "season": 1, "episode": 2, "state": "ready"},  # no title at all
+        ])
+        self.assertEqual((status, body), (200, {"take": [], "remove": []}))
+        report = self.sends.contents_of("a")
+        assert report is not None
+        self.assertEqual([one.title for one in report.items], ["", ""])
+        # A film still needs its title.
+        status, _ = await self.report(self.alex, [item("1", title="")])
+        self.assertEqual(status, 400)
 
     def test_a_film_drops_episode_fields_and_text_is_one_line(self) -> None:
         read = read_item(item("1", show="x", season=2, title="Two\nlines"))
@@ -411,6 +516,15 @@ class SendDialogTests(WindowCase):
         sent.assert_called_once_with("Sent 2 episodes to Alex's phone.")
         self.assertEqual({o.key for o in self.sends.orders_for("a")}, {"701", "702", "711"})
 
+    async def test_a_folder_film_on_its_way_shows_so(self) -> None:
+        dialog, sent = self.dialog(FOLDER_FILM)
+        self.assertEqual(str(dialog.note.cget("text")), HOW_FOLDERS_TEXT)
+        dialog.send()
+        await dialog.settled()
+        sent.assert_called_once_with("Sent Nightfall to Alex's phone.")
+        again, _ = self.dialog(FOLDER_FILM)
+        self.assertEqual(str(again.note.cget("text")), THERE_TEXT)
+
     async def test_plex_away_says_so(self) -> None:
         dialog, _ = self.dialog(SHOW, episodes=mock.AsyncMock(side_effect=PlexUnreachable("x")))
         await dialog.settled()
@@ -485,6 +599,19 @@ class PhoneSizedTests(SendsCase):
         await self.sends.remove("k", "601")  # still waiting: simply not sent
         self.assertEqual(self.copies.dropped, ["601"])
         self.assertEqual(self.sends.orders_for("k"), ())
+
+    async def test_a_4k_folder_film_goes_phone_sized_by_its_video_key(self) -> None:
+        # Part 1 stores a folder film's best copy's quality as its resolution.
+        self.assertTrue(self.sends.phone_sized_possible(FOLDER_FILM))
+        self.assertFalse(
+            self.sends.phone_sized_possible(FOLDER_FILM.model_copy(update={"resolution": "1080p"}))
+        )
+        self.assertEqual(await self.sends.send_film(self.alex, FOLDER_FILM, phone_sized=True), 1)
+        self.assertEqual(self.copies.made, ["movie:603"])
+        [order] = self.sends.orders_for("a")
+        self.assertEqual(self.sends.copy_state(order), ("waiting", 0, None))
+        await self.sends.cancel(order.id)
+        self.assertEqual(self.copies.dropped, ["movie:603"])
 
     async def test_a_restart_makes_what_is_still_wanted(self) -> None:
         await self.sends.send_film(self.alex, FILM_4K, phone_sized=True)

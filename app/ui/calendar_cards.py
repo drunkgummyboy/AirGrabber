@@ -1,8 +1,8 @@
 """Cards for the calendar grid: tracked episodes (full and compact) and suggested shows.
 
 All three are drawn at the page's `CardScale` (Settings → Card size). The full card's sizes and
-baked images are in app/ui/calendar_face.py; the compact and suggestion cards keep their look,
-only their fonts (and the suggestion's button) follow the card size (never below the readable
+baked images are in app/ui/calendar_face.py; the compact and suggestion cards (one slim line
+each) keep their look, only their fonts follow the card size (never below the readable
 minimums).
 
 The cards share the poster cards' look: one bottom row, a wide main button (filled accent = do
@@ -11,15 +11,16 @@ full card's ⋯, `RoundButton` as on My shows); the compact cards' round buttons
 notes as pills (`CanvasPill` on the full card's canvas, `PillLabel` on the compact cards: a
 small rounded outline with coloured text on the card's ground, `pill_image`).
 
-While there is a library (Plex, or else the folder library: app/services/library_source.py;
+While there is a library (Plex, the folder library, or both: app/services/library_source.py;
 without one nothing is missing or new, owner's decision for 3.1.0), a missing episode
-(app.services.missing's rule: aired at least a day ago, neither in Plex nor downloaded; the view
+(app.services.missing's rule: aired at least a day ago, neither had nor downloaded; the view
 hands the cards `missing`) gets an amber "Not downloaded yet" pill under its code, on the full
 and the compact cards alike; a new one (aired less than a day ago, `new`) a blue "New" pill
-there instead; one you have (`have`) a green "✓ In Plex", or a blue "✓ Downloaded" while it
-hasn't reached Plex yet. These come from the database, so they outlive a restart, unlike a run's
-outcome (the ✓ button). With the folder library as the source they say "your library" where
-Plex's say Plex (app/ui/library_words.py). Clicking a show's name (full cards: also the poster)
+there instead; one you have (`have`) a green "✓ In Plex", or a blue "✓ Downloaded" while it is
+on the PC and hasn't reached Plex yet (a recent grab, or beside Plex one only the user's own
+folders have: two shelves, LibraryService.downloaded_between). These come from the database, so
+they outlive a restart, unlike a run's outcome (the ✓ button). With the folder library as the
+only source they say "your library" where Plex's say Plex (app/ui/library_words.py). Clicking a show's name (full cards: also the poster)
 opens its window (`on_open_show`), suggestions included.
 
 Several episodes of one show on one day share a stack card: app/ui/calendar_stack.py, built on
@@ -78,8 +79,8 @@ from app.ui.download_control import (
     episode_key,
     fit_text,
 )
-from app.ui.missing_control import MISSING_COLOR
-from app.ui.poster_card import TrackButton, pill_image, row_font_size, row_height
+from app.ui.missing_control import DOWNLOADED_TIP, MISSING_COLOR
+from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT, pill_image, row_font_size
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 from app.ui.text_fit import (
@@ -112,14 +113,15 @@ NEW_NOTE_TIP = N_(
     "Aired less than a day ago: a release usually turns up within hours. It counts as missing "
     "after a day."
 )
-# An episode you have: in Plex, or downloaded and on its way there (with Plex only).
+# An episode you have: in Plex, or on the PC and not in Plex yet (with Plex only: a recent grab,
+# or one only the user's own folders have).
 HaveMark = Literal["plex", "downloaded"]
 HAVE_TEXTS: dict[HaveMark, str] = {"plex": N_("✓ In Plex"), "downloaded": N_("✓ Downloaded")}
 HAVE_TIPS: dict[HaveMark, str] = {
     "plex": N_("This episode is in your Plex."),
     "downloaded": N_("Downloaded by AirGrabber. Plex doesn't have it yet."),
 }
-# The same marks with the folder library as the source (app/ui/library_words.py).
+# The same marks with the folder library as the only source (app/ui/library_words.py).
 FOLDER_HAVE_TEXTS: dict[HaveMark, str] = {
     "plex": N_("✓ In your library"),
     "downloaded": N_("✓ Downloaded"),
@@ -165,17 +167,15 @@ SLIM_PILL_PAD_X = 6  # a compact card's pill: its room left and right of its tex
 PILL_BORDER = 1  # a pill's outline, in CTk units
 _ICON_SIZE = 13  # bold
 _NOTE_SIZE = 10  # bold
-_COMPACT_NAME_HEIGHT = 20  # the suggestions' name line
-_COMPACT_CODE_HEIGHT = 16  # ... and their code line
 _NAME_SIZE = 11  # bold
 _CODE_SIZE = 9
-# Suggestions: a "Suggested" line (with the source, `with_source`), the name, the code, then
-# the + Follow button (the poster cards' row, `row_height`).
-_SUGGESTED_HEIGHT = 16
-_SUGGESTED_SIZE = 11
-_SUGGESTION_PAD_Y = 6
-_SUGGESTION_NAME_GAP = 2  # between the name and the code
-_SUGGESTION_ROW_GAP = 6  # between the code and the button
+# Suggestions: the compact cards' slim line on the suggestion's ground, a ✦ before the name and
+# the code, the round + (follow) at the right; where the show airs is in the card's tip.
+STAR_ICON = "✦"
+FOLLOW_ICON = "+"
+_STAR_SIZE = 11
+_STAR_GAP = 4  # between the ✦ and the name
+FollowState = Literal["idle", "busy", "tracked"]
 
 
 # -- shared parts ----------------------------------------------------------------------------
@@ -185,17 +185,6 @@ def with_source(text: str, show: Show) -> str:
     """`text` with where the show airs behind it: "S09E05 · Netflix", the source going first when
     the line is cut. Just `text` for a show without one."""
     return f"{text} · {show.network}" if show.network else text
-
-
-def _keep_elided(label: ctk.CTkLabel, text: str, font: ctk.CTkFont, *, reserve: float = 0) -> None:
-    """Show `text` on one line in `label`, elided to its parent's width less `reserve`."""
-
-    def fit(event: Any) -> None:
-        if event.width > 1:
-            width = unscaled_width(label, event.width) - reserve - SLACK
-            label.configure(text=elide_to_width(text, width, font.measure))
-
-    label.master.bind("<Configure>", fit)
 
 
 def episode_base(entry: CalendarEntry) -> Base:
@@ -322,17 +311,22 @@ def card_note(
     Plex's, or the folder library's)."""
     folders = library_words.folders()
     if missing:
-        tip = FOLDER_MISSING_TIP if folders else MISSING_TIP
+        # Not had anywhere: "your library" whenever the folders count (beside Plex too).
+        tip = library_words.by_library(MISSING_TIP, FOLDER_MISSING_TIP)
         return CardNote(MISSING_TEXTS[0], missing_note, MISSING_COLOR, tip)
     if new:
         return CardNote(NEW_NOTE_TEXT, new_note, new_color(), NEW_NOTE_TIP)
     if have is not None:
         text = (FOLDER_HAVE_TEXTS if folders else HAVE_TEXTS)[have]
+        tip = (FOLDER_HAVE_TIPS if folders else HAVE_TIPS)[have]
+        if have == "downloaded" and not folders:
+            # Beside the user's own folders, on the PC needn't mean grabbed by AirGrabber.
+            tip = library_words.by_library(tip, DOWNLOADED_TIP)
         return CardNote(
             text,
             lambda room, measure: elide_to_width(t(text), room, measure),
             have_color(have),
-            (FOLDER_HAVE_TIPS if folders else HAVE_TIPS)[have],
+            tip,
         )
     return None
 
@@ -343,17 +337,9 @@ def compact_height(noted: bool) -> int:
 
 
 def suggestion_height(scale: CardScale = FULL) -> int:
-    """A suggestion card's height: the "Suggested" line, the name, the code and the poster
-    cards' row for its + Follow button."""
-    return (
-        2 * _SUGGESTION_PAD_Y
-        + _SUGGESTED_HEIGHT
-        + _COMPACT_NAME_HEIGHT
-        + _SUGGESTION_NAME_GAP
-        + _COMPACT_CODE_HEIGHT
-        + _SUGGESTION_ROW_GAP
-        + row_height(scale)
-    )
+    """A suggestion card's height: one slim line, as a compact card without a note (at every
+    card size: only its fonts follow `scale`)."""
+    return compact_height(False)
 
 
 def slim_name_room(row_width: float, code_width: float, buttons_width: float) -> float:
@@ -411,6 +397,51 @@ def icon_look(base: Base, state: RunState | None) -> IconLook:
         return replace(painted, text=GRABBED_ICON, tip=look.text)
     tip = t(CHOOSE_TIP) if look.text == t(CHOOSE_TEXT) else t(MORE_TIP)
     return replace(painted, text=MORE_TEXT, tip=tip)
+
+
+@dataclass(frozen=True, slots=True)
+class FollowLook:
+    """A suggestion's round + in one state (`RoundIcon.set_look`'s parts) with its hover tip;
+    `enabled`: a click follows the show."""
+
+    text: str
+    tip: str
+    fill: theme.Color
+    hover: theme.Color
+    text_color: theme.Color
+    edge: theme.Color | None
+    enabled: bool
+
+
+def follow_look(state: FollowState) -> FollowLook:
+    """The + as the poster cards' Track button's states go (`track_look`), in one character
+    like the compact cards' button: an outlined + in the suggestion's quiet colours; a muted …
+    while adding (the compact cards' working look; "Adding…" is its tip); a green ✓ once
+    followed. Made each time it is shown: HOVER, the +'s fill under the pointer, follows the
+    accent colour chosen in Settings, which is set at startup."""
+    if state == "busy":
+        return FollowLook(
+            WORKING_ICON, t("Adding…"), "transparent", "transparent", theme.TEXT_MUTED, None, False
+        )
+    if state == "tracked":
+        return FollowLook(
+            GRABBED_ICON,
+            t(FOLLOWING_TEXT),
+            "transparent",
+            "transparent",
+            theme.SUCCESS,
+            theme.SUCCESS,
+            False,
+        )
+    return FollowLook(
+        FOLLOW_ICON,
+        t(TRACK_TEXT),
+        "transparent",
+        theme.HOVER,
+        theme.SUGGESTION_BUTTON_TEXT,
+        theme.SUGGESTION_BUTTON_EDGE,
+        True,
+    )
 
 
 def _rgb(widget: Any, color: theme.Color) -> RGB:
@@ -1097,10 +1128,10 @@ def _font_linespace(size: int, bold: bool) -> int:
 
 
 def _open_on_click(
-    label: ctk.CTkLabel, show: Show, on_open_show: OpenShow | None
+    label: ctk.CTkLabel, show: Show, on_open_show: OpenShow | None, *, tip: bool = True
 ) -> Callable[[], None] | None:
-    """Make a card's show name open the show's window (with a hover tip), when there is one.
-    Returns what a click on it does."""
+    """Make a card's show name open the show's window (with a hover tip unless not `tip`: a
+    card with a tip of its own), when there is one. Returns what a click on it does."""
     if on_open_show is None:
         return None
     open_show = on_open_show
@@ -1113,7 +1144,8 @@ def _open_on_click(
     # the frame's), which the click binding covers as well.
     tk.Frame.configure(label, cursor="hand2")
     label.bind("<Button-1>", lambda _event: clicked())
-    add_tooltip(label, t(SHOW_TIP))
+    if tip:
+        add_tooltip(label, t(SHOW_TIP))
     return clicked
 
 
@@ -1355,11 +1387,12 @@ def _descendants(widget: tk.Misc) -> list[tk.Misc]:
 
 
 class SuggestionCard(ctk.CTkFrame):
-    """A popular untracked show airing that day, toned down below the tracked episodes, with
-    the poster cards' + Follow button (`TrackButton`: the row's height and corners; `quiet`:
-    outlined, not filled like a Download button, its edge in the accent on hover; "✓ Following"
-    in green once followed) along its bottom. A click anywhere on it but
-    the button opens the show's window (`on_open_show`)."""
+    """A popular untracked show airing that day, toned down below the tracked episodes: one
+    slim line like the compact cards (`suggestion_height`) on the suggestion's ground, a ✦, the
+    show's name and the episode code, then the round + at the right (`follow_look`: it follows
+    the show; … while adding, a green ✓ once followed). The card's tip names the show in full
+    and where it airs (`with_source`). A click anywhere on it but the + opens the show's window
+    (`on_open_show`)."""
 
     def __init__(
         self,
@@ -1372,70 +1405,74 @@ class SuggestionCard(ctk.CTkFrame):
         scale: CardScale = FULL,
         on_open_show: OpenShow | None = None,
     ) -> None:
-        """`profile_id`: the person whose calendar suggests the show; "+ Follow" adds it to
-        their library."""
+        """`profile_id`: the person whose calendar suggests the show; the + adds it to their
+        library."""
         super().__init__(
             master,
             fg_color=theme.SUGGESTION_BG,
             border_color=theme.SUGGESTION_BORDER,
             border_width=1,
-            corner_radius=8,
+            corner_radius=SLIM_RADIUS,
             height=suggestion_height(scale),
         )
         self.pack_propagate(False)
-        self._show = entry.show
+        show = entry.show
+        code = entry.episode.code
+        self._show = show
         self._library = library
         self._status = status
         self._profile_id = profile_id
-        code_font = theme.font(scale.font(_CODE_SIZE, SMALL_TEXT_MIN))
-
-        inner = ctk.CTkFrame(self, fg_color="transparent")
-        inner.pack(side="left", fill="both", expand=True, padx=8, pady=_SUGGESTION_PAD_Y)
-        suggested_text = with_source(t("Suggested"), entry.show)
-        suggested_font = theme.font(scale.font(_SUGGESTED_SIZE, SMALL_TEXT_MIN))
-        self.suggested_label = ctk.CTkLabel(
-            inner,
-            text=suggested_text,
-            font=suggested_font,
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-            height=_SUGGESTED_HEIGHT,
+        line = ctk.CTkFrame(self, fg_color="transparent", height=SLIM_LINE)
+        line.pack(side="top", fill="x", padx=(SLIM_PAD_X, SLIM_PAD_RIGHT), pady=(SLIM_PAD_Y, 0))
+        line.pack_propagate(False)
+        self.follow_button = RoundIcon(
+            line,
+            size=SLIM_ICON,
+            font=theme.font(_ICON_SIZE, bold=True),
+            command=self._track,
+            ground=theme.SUGGESTION_BG,
         )
-        self.suggested_label.pack(anchor="w")
-        _keep_elided(self.suggested_label, suggested_text, suggested_font)
+        self.follow_button.pack(side="right")
+        self.follow_tip = add_tooltip(self.follow_button, "")
+        star_font = theme.font(scale.font(_STAR_SIZE, SMALL_TEXT_MIN))
         name_font = theme.font(scale.font(_NAME_SIZE, TITLE_MIN), bold=True)
-        name = ctk.CTkLabel(
-            inner,
-            text=entry.show.name,
-            font=name_font,
-            text_color=theme.TEXT_DIM,
-            anchor="w",
-            height=_COMPACT_NAME_HEIGHT,
+        code_font = theme.font(scale.font(_CODE_SIZE, SMALL_TEXT_MIN))
+        self.star_label = ctk.CTkLabel(
+            line,
+            text=STAR_ICON,
+            font=star_font,
+            text_color=theme.SUGGESTION_BUTTON_TEXT,
+            height=SLIM_LINE,
         )
-        name.pack(anchor="w")
-        _keep_elided(name, entry.show.name, name_font)
-        self.open_show = _open_on_click(name, entry.show, on_open_show)
-        self.name_label = name
+        self.star_label.pack(side="left")
+        self.name_label = ctk.CTkLabel(
+            line, text=show.name, font=name_font, text_color=theme.TEXT_DIM, height=SLIM_LINE
+        )
+        self.name_label.pack(side="left", padx=(_STAR_GAP, 0))
+        self.open_show = _open_on_click(self.name_label, show, on_open_show, tip=False)
+        self.code_label = ctk.CTkLabel(
+            line, text=code, font=code_font, text_color=theme.SUGGESTION_TEXT, height=SLIM_LINE
+        )
+        self.code_label.pack(side="left", padx=(SLIM_CODE_GAP, 0))
+        # The whole card's tip (the + has its own): the name in full, which the line may cut.
+        self.tip = add_tooltip(self, with_source(t("Suggested: {name}", name=show.name), show))
+        self._set_follow("idle")
 
-        self._track_button = TrackButton(
-            inner, busy_text=t("Adding…"), command=self._track, scale=scale, quiet=True
-        )
-        self._track_button.pack(side="bottom", fill="x")
-        ctk.CTkLabel(
-            inner,
-            text=entry.episode.code,
-            font=code_font,
-            text_color=theme.SUGGESTION_TEXT,
-            anchor="w",
-            height=_COMPACT_CODE_HEIGHT,
-        ).pack(side="bottom", anchor="w", pady=(_SUGGESTION_NAME_GAP, _SUGGESTION_ROW_GAP))
+        def resized(event: Any) -> None:
+            if event.width > 1:
+                star = star_font.measure(STAR_ICON) + _STAR_GAP
+                width = unscaled_width(line, event.width) - star
+                room = slim_name_room(width, code_font.measure(code), SLIM_ICON)
+                self.name_label.configure(text=elide_to_width(show.name, room, name_font.measure))
+
+        line.bind("<Configure>", resized)
         if self.open_show is not None:
             self._open_everywhere(self.open_show)
 
     def _open_everywhere(self, open_show: Callable[[], None]) -> None:
-        """The whole card opens the show, with the hand pointer, except "+ Follow" (its own
-        action). The name already opens it (`_open_on_click`, its own binding)."""
-        own = {str(w) for w in (self._track_button, *_descendants(self._track_button))}
+        """The whole card opens the show, with the hand pointer, except the + (its own action,
+        its own pointer). The name already opens it (`_open_on_click`, its own binding)."""
+        own = {str(self.follow_button)}
         named = {str(w) for w in _descendants(self.name_label)}
         widgets: list[tk.Misc] = [self, *_descendants(self)]
         for widget in widgets:
@@ -1446,23 +1483,40 @@ class SuggestionCard(ctk.CTkFrame):
             if str(widget) not in named:
                 tk.Misc.bind(widget, "<Button-1>", lambda _event: open_show(), add="+")
 
+    def _set_follow(self, state: FollowState) -> None:
+        look = follow_look(state)
+        self.follow_button.set_look(
+            look.text,
+            fill=look.fill,
+            hover=look.hover,
+            text_color=look.text_color,
+            edge=look.edge,
+            enabled=look.enabled,
+        )
+        self.follow_tip.set_text(look.tip)
+
     def _track(self) -> None:
-        self._track_button.set_state("busy")
+        self._set_follow("busy")
         spawn(self._track_show(), name="SuggestionCard.track")
 
     async def _track_show(self) -> None:
         # On success the library notifies its listeners and the window reloads the calendar
         # quietly (CalendarView.load), which replaces this card with the show's tracked
-        # episode; until then the button says the show is followed.
+        # episode; until then the + says the show is followed.
         try:
             await self._library.track(self._show.id, profile_id=self._profile_id)
         except TVMazeError as exc:
-            if self._track_button.winfo_exists():
-                self._track_button.set_state("idle")
+            if self.follow_button.winfo_exists():
+                self._set_follow("idle")
             self._status(
                 t("Couldn't track {name}: {error}", name=self._show.name, error=exc),
                 clear_after_ms=6000,
             )
             return
-        if self._track_button.winfo_exists():
-            self._track_button.set_state("tracked")
+        if self.follow_button.winfo_exists():
+            self._set_follow("tracked")
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed: the round + (plain Tk) is drawn again."""
+        super()._set_scaling(*args, **kwargs)
+        self.follow_button.redraw()

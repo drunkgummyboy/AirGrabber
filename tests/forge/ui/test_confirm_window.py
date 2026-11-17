@@ -185,6 +185,20 @@ class ActionTests(ConfirmCase):
         self.assertTrue(win.close_button.winfo_manager())
         self.assertFalse(win.rename_button.winfo_manager())
 
+    async def test_rename_shows_on_mediaforges_dock_on_every_page(self) -> None:
+        # app/forge/core/run_progress.py: the main window's dock follows a right-click rename too.
+        files = make_files(self.tmp / "m", ["Dune.2021.mkv"])
+        win = await self.open_window(files)
+        heard: list[tuple[bool, str]] = []
+        self.addCleanup(
+            self.services.run_progress.subscribe(lambda s: heard.append((s.running, s.text)))
+        )
+        await win.rename()
+        self.assertIn((True, "Renaming 1 of 1"), heard)
+        self.assertIn((True, "Renaming 1 of 1 · Dune"), heard)
+        self.assertEqual(heard[-1][0], False)
+        self.assertFalse(self.services.run_progress.state.running)
+
     async def test_rename_hands_each_files_media_to_the_move_records(self) -> None:
         await self.services.settings.update(movies_folder=str(self.tmp / "m"))
         files = make_files(self.tmp / "m", ["Dune.2021.mkv"])

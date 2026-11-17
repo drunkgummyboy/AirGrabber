@@ -1,7 +1,7 @@
 """The calendar's cards: the full card's sizes per card size, the baked poster piece and right
 cap (pure Pillow), the pills of missing / new / had episodes, the compact card's slim line and
-round button, the poster cards' row on the full and suggestion cards, and the cards themselves
-on a hidden Tk root."""
+round button, the poster cards' row on the full cards, the suggestions' slim line with its round
++, and the cards themselves on a hidden Tk root."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ from PIL import Image
 from app import i18n
 from app.models import CalendarEntry, CardSize, Episode, GrabOutcome, Show
 from app.services import ImageCache
-from app.ui import theme
+from app.services.library import LibraryService
+from app.services.tvmaze import TVMazeClient, TVMazeError
+from app.ui import library_words, theme
 from app.ui.calendar_cards import (
     CHOOSE_TIP,
     MISSING_TEXTS,
@@ -37,10 +39,16 @@ from app.ui.calendar_cards import (
     SuggestionCard,
     EpisodeCard,
     IconLook,
+    _descendants,
+    _CODE_SIZE,
+    _NAME_SIZE,
+    _STAR_SIZE,
     _rgb,
     buttons_width,
+    card_note,
     card_title,
     compact_height,
+    have_mark,
     episode_base,
     icon_look,
     missing_note,
@@ -65,7 +73,7 @@ from app.ui.calendar_face import (
     poster_face,
     text_width,
 )
-from app.ui.card_scale import FULL, CardScale, line_height
+from app.ui.card_scale import FULL, SMALL_TEXT_MIN, TITLE_MIN, CardScale, line_height
 from app.ui.download_control import (
     CORNER_RADIUS as ROW_CORNER_RADIUS,
     DOWNLOAD_TIP,
@@ -80,6 +88,9 @@ from app.ui.download_control import (
 )
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT, TrackButton, row_height
 from app.ui.text_fit import SLACK
+from tests.plex_link import plex_settings
+from tests.test_folder_tables import scan
+from tests.test_missing import DAY, NOW, DatabaseTestCase, ep
 
 # The poster cards' old cap behind their text (they fade on to solid under it now): the
 # calendar card's fade at its text stays above it.
@@ -344,15 +355,11 @@ class TextTests(unittest.TestCase):
         smallest = episode_layout(CardScale.of(CardSize.XS), linespace=linespace).height
         self.assertLess(compact_height(True), smallest)  # slimmer than any poster card
 
-    def test_a_suggestion_makes_room_for_the_poster_cards_row(self) -> None:
+    def test_a_suggestion_is_one_slim_line(self) -> None:
+        # As high as a compact card without a note, at every card size (only the fonts follow).
         for size in CardSize:
-            scale = CardScale.of(size)
             with self.subTest(size=size):
-                self.assertGreater(suggestion_height(scale), row_height(scale))
-                self.assertEqual(
-                    suggestion_height(scale) - suggestion_height(FULL),
-                    row_height(scale) - row_height(FULL),
-                )
+                self.assertEqual(suggestion_height(CardScale.of(size)), compact_height(False))
 
     def test_slim_name_room(self) -> None:
         both = buttons_width(IconLook("⬇", more=True))
@@ -425,6 +432,20 @@ class FakeImages:
         return cover if finish is None else cast(Image.Image, finish(cover))
 
 
+class FakeFollow:
+    """LibraryService.track for a suggestion's +: records the shows, raises `error` if given."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.followed: list[int] = []
+
+    async def track(self, show_id: int, *, profile_id: int) -> Show:
+        self.followed.append(show_id)
+        if self.error is not None:
+            raise self.error
+        return Show(id=show_id, name="Severance")
+
+
 def calendar_entry(*, aired: bool, imdb: str | None = "tt0944947") -> CalendarEntry:
     now = datetime.now(UTC)
     airstamp = now - timedelta(days=1) if aired else now + timedelta(days=2)
@@ -490,95 +511,146 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card._code_text, "S02E01 · Netflix")
         self.assertEqual(self.card(plain, FakeImages())._code_text, "S02E01")
 
-    async def test_a_suggestion_says_where_it_airs(self) -> None:
+    def suggestion(
+        self,
+        entry: CalendarEntry | None = None,
+        *,
+        library: Any = None,
+        status: Any = None,
+        scale: CardScale = FULL,
+        on_open_show: Any = None,
+    ) -> SuggestionCard:
+        return SuggestionCard(
+            self.root,
+            entry or calendar_entry(aired=False),
+            library=cast(Any, library),
+            status=cast(Any, status),
+            profile_id=1,
+            scale=scale,
+            on_open_show=on_open_show,
+        )
+
+    async def test_a_suggestion_is_one_line_with_a_round_plus(self) -> None:
         plain = calendar_entry(aired=False)
         show = plain.show.model_copy(update={"network": "Netflix"})
-        card = SuggestionCard(
-            self.root,
-            plain.model_copy(update={"show": show}),
-            library=cast(Any, None),
-            status=cast(Any, None),
-            profile_id=1,
-        )
-        self.assertEqual(card.suggested_label.cget("text"), "Suggested · Netflix")
-        bare = SuggestionCard(
-            self.root, plain, library=cast(Any, None), status=cast(Any, None), profile_id=1
-        )
-        self.assertEqual(bare.suggested_label.cget("text"), "Suggested")
-
-    async def test_a_suggestion_has_the_poster_cards_follow_button(self) -> None:
         for scale in (FULL, CardScale.of(CardSize.XS)):
-            card = SuggestionCard(
-                self.root,
-                calendar_entry(aired=False),
-                library=cast(Any, None),
-                status=cast(Any, None),
-                profile_id=1,
-                scale=scale,
-            )
-            button = card._track_button
+            card = self.suggestion(plain.model_copy(update={"show": show}), scale=scale)
             with self.subTest(scale=scale):
                 self.assertEqual(card.cget("height"), suggestion_height(scale))
-                self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))  # the shared word
-                self.assertEqual(button.cget("height"), row_height(scale))
-                self.assertEqual(button.cget("corner_radius"), scale.px(ROW_CORNER_RADIUS))
-                self.assertEqual(button.pack_info()["fill"], "x")  # wide
-        button.set_state("tracked")
-        self.assertEqual(button.cget("text"), i18n.t(FOLLOWING_TEXT))
-        self.assertEqual(button.cget("border_color"), theme.SUCCESS)  # green outline: yours
-
-    async def test_a_suggestion_cards_follow_button_has_no_fill(self) -> None:
-        card = SuggestionCard(
-            self.root,
-            calendar_entry(aired=False),
-            library=cast(Any, None),
-            status=cast(Any, None),
-            profile_id=1,
-        )
-        button: Any = card._track_button
-
-        def assert_quiet(border: theme.Color) -> None:
-            self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))
-            self.assertEqual(button.cget("fg_color"), "transparent")  # an outline, no fill
-            self.assertEqual(button.cget("border_width"), 1)
-            self.assertEqual(button.cget("border_color"), border)
-            self.assertEqual(button.cget("text_color"), theme.SUGGESTION_BUTTON_TEXT)
-            self.assertFalse(button.cget("hover"))  # CTk's hover is a fill
-            self.assertEqual(button.cget("state"), "normal")
-
-        assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
-        button._on_enter()
-        self.assertEqual(button.cget("border_color"), theme.ACCENT)  # the accent on hover
-        self.assertEqual(button.cget("fg_color"), "transparent")
-        button._on_leave()
-        assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
-        # A switch between light and dark keeps it (the colours are pairs CTk repaints).
-        for index, mode in ((1, "dark"), (0, "light")):
-            button._set_appearance_mode(mode)
-            assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
-            canvas = button._canvas
-            with self.subTest(mode=mode):
+                self.assertEqual(card.cget("fg_color"), theme.SUGGESTION_BG)  # toned down
+                self.assertEqual(card.cget("border_color"), theme.SUGGESTION_BORDER)
+                texts = [
+                    str(w.cget("text"))
+                    for w in (card, *_descendants(card))
+                    if isinstance(w, ctk.CTkLabel)
+                ]
+                # No "Suggested" line: the ✦, the name and the code, on one line.
+                self.assertFalse([text for text in texts if "Suggested" in text], texts)
+                self.assertEqual(card.star_label.cget("text"), "✦")
+                self.assertEqual(card.star_label.cget("text_color"), theme.SUGGESTION_BUTTON_TEXT)
+                self.assertEqual(card.name_label.cget("text"), "Severance")
+                self.assertEqual(card.name_label.cget("text_color"), theme.TEXT_DIM)
+                self.assertEqual(card.code_label.cget("text"), "S02E01")
+                self.assertEqual(card.code_label.cget("text_color"), theme.SUGGESTION_TEXT)
+                same_line = {w.master for w in (card.star_label, card.name_label, card.code_label)}
+                self.assertEqual(same_line, {card.follow_button.master})
+                # The round +: the compact cards' round button, on the suggestion's ground.
+                button = card.follow_button
+                self.assertIsInstance(button, RoundIcon)
+                self.assertEqual((button.text, button.enabled), ("+", True))
+                self.assertEqual(button.fill, "transparent")
+                self.assertEqual(button.edge, theme.SUGGESTION_BUTTON_EDGE)
+                self.assertEqual(button.pack_info()["side"], "right")
+                self.assertEqual(card.follow_tip.text, i18n.t(TRACK_TEXT))
+                # Where it airs: in the card's tip (with the whole name, which the line may cut).
+                self.assertEqual(card.tip.text, "Suggested: Severance · Netflix")
+        self.assertEqual(self.suggestion(plain).tip.text, "Suggested: Severance")
+        # Fonts follow the card size (never below the readable minimums).
+        for size in (CardSize.XS, CardSize.XL):
+            scale = CardScale.of(size)
+            card = self.suggestion(scale=scale)
+            with self.subTest(fonts=size):
                 self.assertEqual(
-                    canvas.itemcget("border_parts", "fill"), theme.SUGGESTION_BUTTON_EDGE[index]
+                    card.name_label.cget("font").cget("size"),
+                    scale.font(_NAME_SIZE, TITLE_MIN),
                 )
-                inner = canvas.itemcget("inner_parts", "fill")
-                self.assertNotEqual(inner, theme.ACCENT[index])
-                self.assertEqual(inner, button._apply_appearance_mode(button.cget("bg_color")))
-        # "Adding…" and "✓ Following" look as they did.
-        button.set_state("busy")
-        self.assertEqual(button.cget("fg_color"), theme.ACCENT)
-        self.assertTrue(button.cget("hover"))
-        button._on_enter()  # disabled: the outline stays out of it
-        self.assertEqual(button.cget("border_width"), 0)
-        button.set_state("tracked")
-        self.assertEqual(button.cget("fg_color"), "transparent")
-        self.assertEqual(button.cget("border_color"), theme.SUCCESS)
-        self.assertEqual(button.cget("text_color"), theme.SUCCESS)
-        # Back to "+ Follow" (adding failed) with the pointer still on it: the hover look.
-        button.set_state("idle")
-        self.assertEqual(button.cget("border_color"), theme.ACCENT)
-        button._on_leave()
-        assert_quiet(theme.SUGGESTION_BUTTON_EDGE)
+                self.assertEqual(
+                    card.code_label.cget("font").cget("size"),
+                    scale.font(_CODE_SIZE, SMALL_TEXT_MIN),
+                )
+                self.assertEqual(
+                    card.star_label.cget("font").cget("size"),
+                    scale.font(_STAR_SIZE, SMALL_TEXT_MIN),
+                )
+
+    async def test_the_plus_follows_the_show(self) -> None:
+        library = FakeFollow()
+        said: list[str] = []
+        card = self.suggestion(library=library, status=lambda text, **_kw: said.append(text))
+        button = card.follow_button
+        button.invoke()
+        # Busy: the compact cards' working look ("…", disabled), the tip says what goes on.
+        self.assertEqual((button.text, button.enabled), ("…", False))
+        self.assertEqual(card.follow_tip.text, "Adding…")
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual(library.followed, [7])
+        # Followed: a green ✓, done (disabled), "✓ Following" as its tip.
+        self.assertEqual((button.text, button.enabled), ("✓", False))
+        self.assertEqual(button.edge, theme.SUCCESS)
+        self.assertEqual(card.follow_tip.text, i18n.t(FOLLOWING_TEXT))
+        self.assertEqual(said, [])
+
+    async def test_a_tvmaze_error_gives_the_plus_back(self) -> None:
+        library = FakeFollow(error=TVMazeError("down"))
+        said: list[str] = []
+        card = self.suggestion(library=library, status=lambda text, **_kw: said.append(text))
+        card.follow_button.invoke()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual(library.followed, [7])
+        self.assertEqual((card.follow_button.text, card.follow_button.enabled), ("+", True))
+        self.assertEqual(card.follow_tip.text, i18n.t(TRACK_TEXT))
+        self.assertEqual(len(said), 1)
+        self.assertIn("Severance", said[0])
+
+    async def test_a_click_on_the_card_opens_the_show_but_the_plus_follows(self) -> None:
+        opened: list[Show] = []
+        library = FakeFollow()
+        card = self.suggestion(library=library, on_open_show=opened.append)
+        card.pack(fill="x")
+        self.root.deiconify()  # Tk sends no generated clicks to a window that isn't mapped
+        self.root.update()
+        for widget in (card, card.star_label._label, card.code_label._label, card.name_label._label):
+            opened.clear()
+            widget.event_generate("<Button-1>", x=1, y=1)
+            self.assertEqual([show.name for show in opened], ["Severance"], str(widget))
+            self.assertEqual(str(tk.Misc.cget(widget, "cursor")), "hand2")
+        opened.clear()
+        card.follow_button.event_generate("<Button-1>", x=1, y=1)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual(opened, [])
+        self.assertEqual(library.followed, [7])
+
+    async def test_the_plus_follows_light_and_dark(self) -> None:
+        card = self.suggestion()
+        button: Any = card.follow_button
+        dark = theme.is_dark()
+        try:
+            for mode in ("light", "dark"):
+                ctk.set_appearance_mode(mode)
+                self.root.update_idletasks()
+                with self.subTest(mode=mode):
+                    self.assertEqual(
+                        str(button.cget("background")), theme.pick(theme.SUGGESTION_BG)
+                    )
+                    label = button.find_all()[-1]
+                    self.assertEqual(
+                        button.itemcget(label, "fill"), theme.pick(theme.SUGGESTION_BUTTON_TEXT)
+                    )
+        finally:
+            ctk.set_appearance_mode("dark" if dark else "light")
 
     async def test_the_poster_cards_follow_button_stays_filled(self) -> None:
         button = TrackButton(self.root, busy_text="Adding…", command=lambda: None)
@@ -908,6 +980,51 @@ class EpisodeCardTests(unittest.IsolatedAsyncioTestCase):
         await card._art_task
         self.assertEqual(card._photos["poster"].width(), round(80 * scaling))
         self.assertEqual(images.sizes[-1], cover_size((round(80 * scaling), height)))
+
+
+class TwoShelvesWordsTests(DatabaseTestCase):
+    """Two shelves (docs/folder-library/2026-11-16-alongside-plex-design.md): what Plex has
+    says "✓ In Plex", what only the folders have beside Plex "✓ Downloaded", and with the
+    folders only part 1's "✓ In your library" stays."""
+
+    async def test_folder_only_episode_says_downloaded_beside_plex(self) -> None:
+        aired = NOW - 9 * DAY
+        await self.add_show(1, [ep(11, 1, 1, aired=aired), ep(12, 1, 2, aired=aired)])
+        await self.db.plex.replace(scan({(1, 1, 1)}), NOW)
+        await self.db.folders.replace(scan({(1, 1, 2)}), NOW)
+        settings = plex_settings(
+            self.db, folder_library_on=True, series_folders=(r"\\NAS\Series",)
+        )
+        library = LibraryService(
+            self.db.library, self.db.history, cast(TVMazeClient, None), settings=settings
+        )
+        library_words.follow(settings)
+        self.addCleanup(library_words.follow, None)
+        start, end = NOW.date() - 30 * DAY, NOW.date()
+
+        async def notes() -> dict[int, str | None]:
+            in_plex = await library.plex_between(start, end)
+            downloaded = await library.downloaded_between(start, end, today=NOW.date())
+            found: dict[int, str | None] = {}
+            for episode_id in (11, 12):
+                note = card_note(have=have_mark([episode_id], in_plex, downloaded))
+                found[episode_id] = None if note is None else note.text
+            return found
+
+        self.assertEqual(await notes(), {11: "✓ In Plex", 12: "✓ Downloaded"})
+        # Its tip: on the PC, not grabbed by AirGrabber perhaps; missing is "your library"'s.
+        downloaded = card_note(have="downloaded")
+        assert downloaded is not None
+        self.assertEqual(downloaded.tip, "Downloaded. Plex doesn't have it yet.")
+        missing = card_note(missing=True)
+        assert missing is not None
+        self.assertEqual(
+            missing.tip, "Aired, but not in your library and not downloaded yet."
+        )
+        # Plex disconnected (its rows go with it): the folders only, part 1's words.
+        await settings.update(plex_token="")
+        await self.db.plex.clear()
+        self.assertEqual(await notes(), {11: None, 12: "✓ In your library"})
 
 
 if __name__ == "__main__":

@@ -170,7 +170,8 @@ class MovieCard(_TmdbCard):
     """A film: year and rating, and one row: "⬇ Download" (a right-click: the search window),
     which unlocks once the film is out digitally, with the round watchlist ★ beside it. Clicking the cover or the title calls `on_open(movie)` (the film's info window);
     without it, it opens the film on IMDb: its own page once the details name it, IMDb's search
-    until then. `in_plex`: the film is in the user's Plex libraries (`plex_mark`, the books)."""
+    until then. `in_plex`: the film is had, in the user's Plex libraries or own folders
+    (`plex_mark`, the books; `from_folders`: beside Plex, only in the folders)."""
 
     def __init__(
         self,
@@ -184,6 +185,7 @@ class MovieCard(_TmdbCard):
         scale: CardScale = FULL,
         on_open: Callable[[Movie], None] | None = None,
         in_plex: bool = False,
+        from_folders: bool = False,
     ) -> None:
         super().__init__(
             master,
@@ -215,7 +217,9 @@ class MovieCard(_TmdbCard):
             outline_unavailable=True,
         )
         self._control.pack(side="left", fill="both", expand=True)
-        self.plex_mark: LibraryMark | None = library_mark(self) if in_plex else None
+        self.plex_mark: LibraryMark | None = (
+            library_mark(self, from_folders=from_folders) if in_plex else None
+        )
         if on_open is not None:
             self._set_open(lambda: on_open(movie))
         else:
@@ -292,7 +296,9 @@ class DiscoverShowCard(_TmdbCard):
     def _show_details(self, details: TVDetails) -> None:
         plex = self._plex_shows
         if plex is not None and self.plex_mark is None and plex.has(details.tvdb_id, details.imdb_id):
-            self.plex_mark = library_mark(self)
+            self.plex_mark = library_mark(
+                self, from_folders=plex.only_in_folders(details.tvdb_id, details.imdb_id)
+            )
         if self._on_open_show is None and (url := show_imdb_url(details)) is not None:
             self._set_open(lambda: webbrowser.open(url))
         if details.networks:

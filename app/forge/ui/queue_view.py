@@ -101,6 +101,7 @@ from app.forge.core.library import inside, library_folder, route_inputs
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import PlanPart, build_mixed_plan, describe, identity_of
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
+from app.forge.core.run_progress import PAGE, RunSteps
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind, TypeHint
 from app.forge.models.preset import Preset, PresetOptions, has_quality, without_quality
@@ -125,7 +126,7 @@ from app.forge.ui.queue_rows import (
     item_kind,
 )
 from app.forge.ui.subtitle_control import CC_ACTION, CcLook, SubtitleDesk, VideoTarget
-from app.forge.ui.widgets.chips import PROGRESS_PAD, ForgeProgress, OptionButton, fit_text
+from app.forge.ui.widgets.chips import ForgeProgress, OptionButton, fit_text
 from app.forge.ui.widgets.dialogs import ask_choice, ask_text
 from app.forge.ui.widgets.virtual_list import (
     FOLDERS_ACTION,
@@ -302,11 +303,8 @@ class QueueView(ctk.CTkFrame):
         self._refreshed_at = 0.0  # time.monotonic() of the last refresh
         self._refresh_cost = 0.0  # how long it took (s)
         self._told: tuple[object, int] | None = None  # (on_counts, waiting) last told
-        self._run_total = 0
-        self._run_done: set[int] = set()
-        self._run_name = ""
-        self._run_step: tuple[str, float] | None = None  # a step after the renames: words, how far
-        self._run_copy: tuple[str, float] | None = None  # a copy between shares: words, how far
+        # The run's dock: its words and how far (also reported for the dock on every page).
+        self._run_steps = RunSteps()
         self._waiting_for_lock = False  # the run waits for another one (`taking`)
         self._setting_rule = False  # the rule's box is being filled, not typed in
         self._example_font: tuple[float, tkfont.Font] | None = None
@@ -430,22 +428,7 @@ class QueueView(ctk.CTkFrame):
         )
         # A run's dock, centred under the list (its row, 4, is empty otherwise), Cancel on it.
         self.progress = ForgeProgress(self, look=look, ground=look.BG)
-        style = self.progress.style()
-        self.cancel_button = ctk.CTkButton(
-            self.progress,
-            text=t("Cancel"),
-            width=86,
-            height=32,
-            corner_radius=16,
-            fg_color=style.badge,
-            hover_color=style.edge,
-            border_width=1,
-            border_color=style.edge,
-            bg_color=style.panel,
-            text_color=style.text,
-            font=theme.font(13, bold=True),
-            command=self._cancel_clicked,
-        )
+        self.cancel_button = self.progress.action_button(t("Cancel"), self._cancel_clicked)
         self._show_actions(running=False)
 
     def _show_actions(self, *, running: bool, installing: bool = False) -> None:
@@ -455,13 +438,8 @@ class QueueView(ctk.CTkFrame):
         actions = (self.library_button, self.clear_button, self.preview_button, self.forge_button)
         for widget in actions:
             widget.pack_forget()
-        self.cancel_button.place_forget()
+        self.progress.show_action(self.cancel_button, running)
         if running or installing:
-            if running:
-                self.cancel_button.place(
-                    relx=1.0, x=-PROGRESS_PAD - 2, y=ForgeProgress.action_y(), anchor="e"
-                )
-            self.progress.set_action_room(86 + 12 if running else 0)
             self.progress.grid(row=4, column=0, pady=(12, 14))
             self.progress.lift()
         else:
@@ -2084,67 +2062,46 @@ class QueueView(ctk.CTkFrame):
 
     def _set_running(self, running: bool, total: int = 0) -> None:
         self.running = running
-        self._run_total, self._run_done, self._run_name = total, set(), ""
-        self._run_step = None
-        self._run_copy = None
+        self._run_steps = RunSteps(total)
         self._waiting_for_lock = False
+        if running:
+            self._show_progress()
+        else:
+            self.services.run_progress.idle(PAGE)  # the dock on the other pages goes too
         if not self.winfo_exists():
             return
         state = "disabled" if running else "normal"
         for button in (self.files_button, self.folder_button):
             button.configure(state=state)
         self._show_actions(running=running)
-        if running:
-            self._show_progress()
-        else:
+        if not running:
             self.refresh()
 
     def _on_lock_wait(self, waiting: bool) -> None:
         """The run waits for another one (an automatic run, say) before it can start, or no
         longer does: the dock says so."""
         self._waiting_for_lock = waiting
-        if self.winfo_exists() and self.running:
+        if self.running:
             self._show_progress()
 
     def _show_progress(self) -> None:
+        """The dock's words and how far, here and (reported, with its Cancel) on every other
+        page of the main window."""
         if self._waiting_for_lock:
-            self.progress.show(0, t(WAITING_FOR_AUTO))
-            return
-        if self._run_step is not None:  # the renames are done: a trailer download, say
-            text, fraction = self._run_step
-            self.progress.show(fraction, text)
-            return
-        if self._run_copy is not None:  # "Copying 4.2 of 20 GB · Dune (2021)"
-            text, fraction = self._run_copy
-            self.progress.show(fraction, f"{text} · {self._run_name}" if self._run_name else text)
-            return
-        total = max(self._run_total, 1)
-        done = len(self._run_done)
-        if self._run_name:
-            text = t(
-                "Renaming {n} of {total} · {name}",
-                n=min(done + 1, total),
-                total=total,
-                name=self._run_name,
-            )
+            text, fraction = t(WAITING_FOR_AUTO), 0.0
         else:
-            text = t("Renaming {n} of {total}", n=min(done + 1, total), total=total)
-        self.progress.show(done / total, text)
+            text, fraction = self._run_steps.now()
+        self.services.run_progress.report(
+            text, fraction, source=PAGE, cancel=self._cancel_clicked
+        )
+        if self.winfo_exists():
+            self.progress.show(fraction, text)
 
     def _heard_progress(self, event: ProgressEvent) -> None:
         """A step of the run (dropped files or downloads): the bar and its words."""
         item = self.services.queue.get(event.item_id) if event.item_id is not None else None
-        if event.item_id is not None and not event.copying:
-            self._run_copy = None  # a file's own step: its copy (if any) is over
-        if event.copying:  # how far the file's copy between shares is
-            self._run_copy = (event.message, event.fraction)
-        elif event.item_id is None and event.status == "working":
-            self._run_step = (event.message, event.fraction)  # already in the interface language
-        elif event.status == "working" and item is not None:
-            self._run_name = display_name(item)
-        elif event.item_id is not None:
-            self._run_done.add(event.item_id)
-        if self.winfo_exists() and self.running:
+        self._run_steps.heard(event, display_name(item) if item is not None else None)
+        if self.running:
             self._show_progress()
 
     def _on_progress(self, event: ProgressEvent) -> None:
@@ -2331,9 +2288,11 @@ class QueueView(ctk.CTkFrame):
     def _run_ended(self) -> None:
         """After Forge or Replace, whatever happened: done files leave the queue when Settings
         say so, the dock goes, and a close asked for meanwhile happens."""
-        if self.services.settings.current.remove_after_forge:
-            self.services.queue.forget_finished()
-        self._set_running(False)
+        try:
+            if self.services.settings.current.remove_after_forge:
+                self.services.queue.forget_finished()
+        finally:
+            self._set_running(False)  # the dock on every page goes, whatever happened
         close, self._close_after_run = self._close_after_run, None
         if close is not None:
             if self.winfo_exists():

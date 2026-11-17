@@ -64,6 +64,16 @@ NL: dict[str, str] = {
     "⚠ Could not go back to the older version.": "⚠ Teruggaan naar de oudere versie is niet gelukt.",
     "Going back to the older version. Restarting…": "Terug naar de oudere versie. Opnieuw starten…",
     "Not happy with this version?": "Niet tevreden met deze versie?",
+    "Something not working?": "Werkt er iets niet?",
+    "This puts AirGrabber's logs in one file on your desktop, so you can send it to whoever helps you with AirGrabber. It holds no passwords, keys or file names, and nothing is sent by itself.":
+        "Dit zet de logboeken van AirGrabber in één bestand op je bureaublad, zodat je het kunt sturen naar wie je met AirGrabber helpt. Er staan geen wachtwoorden, sleutels of bestandsnamen in, en er wordt niets vanzelf verstuurd.",
+    "Make a report file": "Rapportbestand maken",
+    "The report file is on your desktop: send it to whoever helps you.":
+        "Het rapportbestand staat op je bureaublad: stuur het naar wie je helpt.",
+    "The report file is in the folder that just opened: send it to whoever helps you.":
+        "Het rapportbestand staat in de map die net openging: stuur het naar wie je helpt.",
+    "AirGrabber couldn't make the report file, so try again.":
+        "AirGrabber kon het rapportbestand niet maken, dus probeer het opnieuw.",
     "AirGrabber keeps the version from before its last update. If you go back, it waits for a version newer than this one.": (
         "AirGrabber bewaart de versie van vóór de laatste update. Ga je terug, dan wacht het op een versie nieuwer dan deze."
     ),
@@ -548,6 +558,7 @@ NL: dict[str, str] = {
     "This episode is in your Plex.": "Deze aflevering staat in je Plex.",
     "Downloaded by AirGrabber. Plex doesn't have it yet.":
         "Gedownload door AirGrabber. Plex heeft hem nog niet.",
+    "Downloaded. Plex doesn't have it yet.": "Gedownload. Plex heeft hem nog niet.",
     "✓ In your library": "✓ In je bibliotheek",
     "This episode is in your library.": "Deze aflevering staat in je bibliotheek.",
     "Downloaded by AirGrabber. It isn't in your library yet.":
@@ -602,7 +613,7 @@ NL: dict[str, str] = {
     "Nothing good enough was found. Choose a download yourself.":
         "Er is niets goed genoeg gevonden. Kies zelf een download.",
     "Not Aired": "Niet uitgezonden",
-    "Suggested": "Suggestie",
+    "Suggested: {name}": "Suggestie: {name}",
     "Back to today": "Terug naar vandaag",
     "All services": "Alle diensten",
     "Nothing from {service} here right now. Pick another service or {all}.":
@@ -1377,13 +1388,13 @@ NL: dict[str, str] = {
         "Wat je al hebt, uit Plex of uit je eigen mappen, ontbreekt niet en wordt niet opnieuw gedownload.",
     "Have a Plex server? Connect it and Plex is your library.":
         "Heb je een Plex-server? Koppel hem en Plex is je bibliotheek.",
-    "Connect Plex and it becomes your library instead of your folders.":
-        "Koppel Plex en het wordt je bibliotheek in plaats van je mappen.",
+    "Connect Plex and it becomes a shelf beside your folders.":
+        "Verbind Plex en het wordt een plank naast je mappen.",
     "Connect to Plex…": "Verbinden met Plex…",
     "With and without a library": "Met en zonder bibliotheek",
     "Without a library": "Zonder bibliotheek",
     "With Plex or your folders": "Met Plex of je mappen",
-    "Phone app (needs Plex)": "Telefoon-app (Plex nodig)",
+    "Phone app (needs a library)": "Telefoon-app (bibliotheek nodig)",
     "Search, download and follow shows and films": "Series en films zoeken, downloaden en volgen",
     "Rename and sort files with MediaForge": "Bestanden hernoemen en ordenen met MediaForge",
     "Never download the same release twice": "Nooit dezelfde release twee keer downloaden",
@@ -1535,9 +1546,17 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
-    "Your own folders as your library": "Je eigen mappen als bibliotheek",
-    "No Plex? In Settings → Library, AirGrabber can read your own film and series folders: browse and play them, and what you have isn't downloaded again.":
-        "Geen Plex? In Instellingen → Bibliotheek leest AirGrabber je eigen film- en seriemappen: bekijk ze, speel ze af, en wat je hebt wordt niet opnieuw gedownload.",
+    "Your folders beside Plex": "Je mappen naast Plex",
+    "With Plex connected, your own folders can be a second shelf, Downloaded: what you just downloaded stays apart from Plex, plays from there and counts as had.":
+        "Met Plex verbonden kunnen je eigen mappen een tweede plank zijn, Gedownload: wat je net downloadde blijft los van Plex, speelt daarvandaan af en telt als in bezit.",
+    "MediaForge's progress bar now shows on every page while it renames, so you can keep browsing.":
+        "De voortgangsbalk van MediaForge staat nu op elke pagina terwijl hij hernoemt, dus je kunt verder kijken.",
+    "Calendar suggestions take one line each now, so many more fit on a day.":
+        "Suggesties in de kalender nemen nu één regel, dus er passen er veel meer op een dag.",
+    "Library: ↻ Check now reads Plex and your folders again straight away.":
+        "Bibliotheek: ↻ Nu controleren leest Plex en je mappen meteen opnieuw.",
+    "Something not working? Settings → Updates puts AirGrabber's logs in one file to send to whoever helps you.":
+        "Werkt er iets niet? Instellingen → Updates zet de logboeken van AirGrabber in één bestand voor wie je helpt.",
     "Film dates say what they are: a clapperboard for the cinema, an arrow for the download, ~ for a guess.":
         "Filmdatums zeggen wat ze zijn: een klapbord voor de bioscoop, een pijl voor de download, ~ voor een schatting.",
     "Movies and Discover show only whole rows of posters, never half a row cut off.":
@@ -1881,7 +1900,14 @@ NL: dict[str, str] = {
     "Windows may ask if AirGrabber may use your network. Choose Allow.":
         "Windows vraagt misschien of AirGrabber je netwerk mag gebruiken. Kies Toestaan.",
     "Library manager": "Bibliotheekbeheerder",
-    "Connect Plex first to use the phone app.": "Koppel eerst Plex om de telefoon-app te gebruiken.",
+    "Connect Plex or choose your own folders in Settings → Library first to use the phone app.":
+        "Koppel eerst Plex of kies je eigen mappen in Instellingen → Bibliotheek om de telefoon-app te gebruiken.",
+    "AirGrabber has no library yet, so connect Plex or choose your folders in AirGrabber's Settings → Library.":
+        "AirGrabber heeft nog geen bibliotheek, dus koppel Plex of kies je mappen in Instellingen → Bibliotheek van AirGrabber.",
+    "AirGrabber's library is Plex now, so pull down to refresh.":
+        "De bibliotheek van AirGrabber is nu Plex, dus trek omlaag om te vernieuwen.",
+    "That isn't in your folders any more, so refresh the list.":
+        "Dat staat niet meer in je mappen, dus ververs de lijst.",
     "AirGrabber isn't connected to Plex, so connect Plex in AirGrabber on your PC.":
         "AirGrabber is niet met Plex verbonden, dus koppel Plex in AirGrabber op je pc.",
     "Only a library manager's phone can do this, so ask the person who set up AirGrabber to make this phone a library manager in AirGrabber's Settings.":
@@ -1900,6 +1926,7 @@ NL: dict[str, str] = {
     # app/services/phone/copies.py
     "This PC can't make phone-sized copies.": "Deze pc kan geen telefoonformaat-kopieën maken.",
     "Plex doesn't have this film any more.": "Plex heeft deze film niet meer.",
+    "This film isn't in your folders any more.": "Deze film staat niet meer in je mappen.",
     "This film is already small enough for the phone.": "Deze film is al klein genoeg voor de telefoon.",
     "There isn't enough free space on this PC to make the copy.":
         "Er is niet genoeg vrije ruimte op deze pc om de kopie te maken.",
@@ -1922,6 +1949,8 @@ NL: dict[str, str] = {
     "To": "Naar",
     "To {phone} ({person})": "Naar {phone} ({person})",
     "The phone copies it from Plex the next time the Companion app is open at home.": "De telefoon kopieert het uit Plex zodra de Companion-app weer thuis openstaat.",
+    "The phone copies it from this PC the next time the Companion app is open at home.":
+        "De telefoon kopieert het van deze pc zodra de Companion-app weer thuis openstaat.",
     "Already on this phone or on its way.": "Staat al op deze telefoon of is onderweg.",
     "Phone-sized: about 5 GB in 1080p instead of the whole 4K film": "Telefoonformaat: zo'n 5 GB in 1080p in plaats van de hele 4K-film",
     "This PC makes the smaller copy now, and the phone copies it from here the next time the Companion app is open at home.":
@@ -1944,6 +1973,8 @@ NL: dict[str, str] = {
     "Reading the episodes from Plex…": "De afleveringen uit Plex lezen…",
     "Plex didn't answer, so try again in a moment.": "Plex antwoordde niet, dus probeer het zo nog eens.",
     "Plex has no episodes of this show.": "Plex heeft geen afleveringen van deze serie.",
+    "Reading the episodes from your folders…": "De afleveringen uit je mappen lezen…",
+    "Your folders have no episodes of this show.": "Je mappen hebben geen afleveringen van deze serie.",
     "Specials": "Specials",
     "on the phone": "op de telefoon",
     "{n} episode chosen": "{n} aflevering gekozen",
@@ -2021,6 +2052,7 @@ NL: dict[str, str] = {
     "▶ Play": "▶ Afspelen",
     "Play it on this PC": "Afspelen op deze pc",
     "Choose an episode to play.": "Kies een aflevering om af te spelen.",
+    "Downloaded": "Gedownload",
     # app/media_player.py (AirGrabber's own video player: the app passes these on its command line)
     "Play (Space)": "Afspelen (spatie)",
     "Pause (Space)": "Pauzeren (spatie)",
@@ -2095,8 +2127,10 @@ NL: dict[str, str] = {
     "Stop using your folders?": "Je mappen niet meer gebruiken?",
     "The marks and the Library page go until you switch them on again. No file is touched.":
         "De markeringen en de bibliotheekpagina verdwijnen tot je ze weer aanzet. Er wordt geen bestand aangeraakt.",
-    "Plex is your library. Your own folders count again if you disconnect Plex.":
-        "Plex is je bibliotheek. Je eigen mappen tellen weer mee als je Plex ontkoppelt.",
+    "A second shelf beside Plex: what's in these folders shows under Downloaded and counts as had.":
+        "Een tweede plank naast Plex: wat in deze mappen staat, komt onder Gedownload en telt als iets wat je al hebt.",
+    "The Downloaded shelf and the marks from these folders go until you switch them on again; Plex's stay. No file is touched.":
+        "De plank Gedownload en de markeringen uit deze mappen verdwijnen tot je ze weer aanzet; die van Plex blijven. Er wordt geen bestand aangeraakt.",
     "{films} · {series} · {episodes} · checked {when}":
         "{films} · {series} · {episodes} · gecontroleerd {when}",
     "{n} series": "{n} series",

@@ -24,9 +24,11 @@ never a change on disk: the folders are only read.
   series folder (a release's own folder, "Severance.S02.2160p…", cut at its season code or
   tags), or the series folder itself when that top folder is a season's ("Season 01",
   "Specials", "Seizoen 2": a single show's folder set as a series folder); a folder that names
-  no show, or none (an episode right in the series folder), goes by the file's name. Names are
-  parsed on the loop in
-  small pieces, as MediaForge's queue does (guessit in a thread fights the window for the GIL).
+  no show, or none (an episode right in the series folder), goes by the file's name. So does a
+  show folder whose episodes' own names give two shows or more (MediaForge's "Series (flat)"
+  one level below the series folder: every show in one folder, `_mixed_show_folders`). Names
+  are parsed on the loop in small pieces, as MediaForge's queue does (guessit in a thread
+  fights the window for the GIL).
 
 MediaForge's code is imported inside the functions only: AirGrabber's start loads none of it.
 Nothing here logs a path, a file name or a title.
@@ -40,7 +42,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Literal
@@ -86,6 +88,8 @@ _NOT_A_COPY = re.compile(
 )
 _EPISODE = re.compile(r"(?<![a-z0-9])s(\d{1,3})e(\d{1,4})(?:-?e(\d{1,4}))?(?![0-9])", re.IGNORECASE)
 _TIDY = re.compile(r"^(.+?)\s*\((\d{4})\)")  # "Dune (2021)", "Dune (2021) - 2160p"
+_TRAILING_YEAR = re.compile(r"^(.+?)\s*\(((?:19|20)\d{2})\)$")  # a show's "Show A (2022)"
+_KEY_YEAR = re.compile(r"(?:19|20)\d{2}$")  # a year at the end of a show's key ("doctorwho2005")
 _RAW_YEAR = re.compile(r"^(.+?)[ ._\-\[(]+((?:19|20)\d{2})(?![0-9])")  # "Dune.Part.Two.2024.…"
 # A season code in a folder's name ("Severance.S02.2160p…", "Fargo Season 2"): a release's own
 # folder, its name cut there.
@@ -357,7 +361,7 @@ def _look(
                 progress.step()
         return nfos[real]
 
-    seen: list[_Seen] = []
+    kept: list[tuple[str, int, float, tuple[str, ...]]] = []
     arriving = 0
     for path, size, mtime in files:
         name = os.path.basename(path)
@@ -374,8 +378,14 @@ def _look(
             # than that (a clock off on the NAS) counts as settled, never as arriving forever.
             arriving += 1
             continue
-        parts = PurePath(os.path.relpath(path, root)).parts[:-1]
+        kept.append((path, size, mtime, PurePath(os.path.relpath(path, root)).parts[:-1]))
+    mixed = _mixed_show_folders(root, kept) if kind == "show" else frozenset()
+    seen: list[_Seen] = []
+    for path, size, mtime, parts in kept:
+        stem = os.path.splitext(os.path.basename(path))[0]
         show = _show_folder(root, parts) if kind == "show" else None
+        if show in mixed:
+            show = None  # several shows in one folder: each file goes by its own name
         row = known.get(path)
         if row is not None and row.size == size and row.mtime == mtime:
             seen.append(_Seen(path, size, mtime, parts, None, row, show))
@@ -389,6 +399,46 @@ def _look(
             found = nfo(os.path.join(show, "tvshow.nfo")) if show is not None else None
         seen.append(_Seen(path, size, mtime, parts, found, None, show))
     return seen, arriving
+
+
+def _show_key(stem: str) -> str | None:
+    """The show an episode's own name gives before its SxxEyy code (the rough patterns, no
+    guessit: cheap enough for every file of every check), as a key to compare by: letters and
+    digits only, a year at its end left out ("Doctor.Who.2005" and "Doctor Who (2005)" are one
+    show). None when the name gives none ("S01E02 - Pilot", an episode's title alone)."""
+    if _EPISODE.search(stem) is None:
+        return None
+    named = _rough_name(stem, "show")
+    if named is None or named.episode is None:
+        return None
+    key = "".join(char for char in named.title.casefold() if char.isalnum())
+    return _KEY_YEAR.sub("", key) or key or None
+
+
+def _mixed_show_folders(
+    root: str, files: Iterable[tuple[str, int, float, tuple[str, ...]]]
+) -> frozenset[str]:
+    """The show folders (`_show_folder`) whose episodes' own names give two shows or more: a
+    flat folder of several shows ("Series (flat)" below the series folder), read file by file.
+    Names of one show that one starts the other ("The Office" / "The Office US") count once."""
+    keys: dict[str, set[str]] = {}
+    for path, _size, _mtime, parts in files:
+        show = _show_folder(root, parts)
+        key = _show_key(os.path.splitext(os.path.basename(path))[0])
+        if show is not None and key is not None:
+            keys.setdefault(show, set()).add(key)
+    mixed: list[str] = []
+    for show, found in keys.items():
+        apart: list[str] = []
+        for key in sorted(found, key=len):  # the shorter first: a longer one may start with it
+            if not any(key.startswith(other) for other in apart):
+                apart.append(key)
+        if len(apart) >= 2:
+            mixed.append(show)
+    if mixed:
+        log.info("Reading a series folder: %d folders of several shows, read file by file",
+                 len(mixed))
+    return frozenset(mixed)
 
 
 def _clean(text: str) -> str:
@@ -436,10 +486,13 @@ def _rough_name(stem: str, kind: FolderKind) -> _Name | None:
     code = _EPISODE.search(stem)
     if kind == "show" and numbers is not None and code is not None:
         title = _clean(_TAGS.sub("", stem[: code.start()])).rstrip(" -")
+        year: int | None = None
+        if (dated := _TRAILING_YEAR.match(title)) is not None:  # "Show A (2022) - S01E02 - …"
+            title, year = _clean(dated.group(1)).rstrip(" -"), int(dated.group(2))
         if not title:
             return None
         season, episode, end = numbers
-        return _Name(title, None, season, episode, end)
+        return _Name(title, year, season, episode, end)
     named = _tidy(stem)
     if named is None and (raw := _RAW_YEAR.match(stem)) is not None:
         if title := _clean(raw.group(1)):

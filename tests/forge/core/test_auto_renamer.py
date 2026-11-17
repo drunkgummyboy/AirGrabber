@@ -39,6 +39,7 @@ from app.forge.core.auto import (
 from app.forge.core.executor import Executor
 from app.forge.core.matcher import Resolver
 from app.forge.core.queue import ItemStatus, Queue
+from app.forge.core.run_progress import AUTO, RunProgress, RunState
 from app.forge.core.settings import ForgeSettingsService
 from app.forge.core.undo import UndoService
 from app.forge.db.history import HistoryRepo
@@ -918,3 +919,66 @@ class MessagesTest(RenamerTestCase):
         assert summary_due(evening, "")
         assert summary_due(evening, "2026-11-01")
         assert not summary_due(evening, "2026-11-02")  # sent today already
+
+
+class RunProgressTest(RenamerTestCase):
+    """An automatic run reports to MediaForge's run progress (the dock on every page of the main
+    window) and goes idle at its end, whatever happened; a run whose caller shows its own
+    progress (the page) leaves that to the caller."""
+
+    def follow(self, clock: Clock) -> tuple[AutoRenamer, list[RunState]]:
+        progress = RunProgress()
+        heard: list[RunState] = []
+        progress.subscribe(heard.append)
+        auto = AutoRenamer(self.parts, now=clock, progress=progress)
+        self.addAsyncCleanup(auto.stop)
+        return auto, heard
+
+    async def test_an_automatic_run_reports_its_steps_then_goes_idle(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        clock = Clock()
+        auto, heard = self.follow(clock)
+        await self.two_looks(auto, clock)
+        assert (self.folders.movies / "Dune (2021)" / "Dune (2021).mkv").exists()
+        busy = [state for state in heard if state.running]
+        assert busy and all(state.source == AUTO and state.cancel is None for state in busy)
+        assert busy[0].text == "Renaming 1 of 1"
+        assert any(state.text == "Renaming 1 of 1 · Dune" for state in busy)
+        assert not heard[-1].running
+
+    async def test_a_failed_run_goes_idle_too(self) -> None:
+        await self.use()
+        self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        clock = Clock()
+        auto, heard = self.follow(clock)
+        await auto.look()
+        clock.now += 300
+        broken = mock.AsyncMock(side_effect=RuntimeError("disk"))
+        with mock.patch.object(self.parts.executor, "run", broken), self.assertRaises(RuntimeError):
+            await auto.look()
+        assert broken.called
+        assert any(state.running for state in heard)
+        assert not heard[-1].running
+
+    async def test_a_run_whose_caller_shows_its_progress_isnt_reported(self) -> None:
+        await self.use(automatic="off")
+        file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        ids = await self.queue.add_watched([(file, self.folders.downloads)])
+        await self.queue.wait_idle()
+        auto, heard = self.follow(Clock())
+        events: list[object] = []
+        result = await auto.rename(ids, source=RunSource.APP, on_progress=events.append)
+        assert result.renamed == 1 and events
+        assert heard == []
+
+    async def test_the_owners_rename_without_its_own_progress_is_reported(self) -> None:
+        # The phone's tap: nobody else shows that run.
+        await self.use(automatic="off")
+        file = self.folders.download("Dune.2021.2160p.WEB-DL.mkv")
+        ids = await self.queue.add_watched([(file, self.folders.downloads)])
+        await self.queue.wait_idle()
+        auto, heard = self.follow(Clock())
+        result = await auto.rename(ids, source=RunSource.APP)
+        assert result.renamed == 1
+        assert any(state.running for state in heard) and not heard[-1].running

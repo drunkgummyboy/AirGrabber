@@ -238,28 +238,48 @@ class PlexProblem(StrEnum):
 
 
 class PlexFilms(DomainModel):
-    """The films in Plex by their TMDB and IMDb ids (a film from Plex's old IMDb agent may
-    have only the second)."""
+    """The films had, by their TMDB and IMDb ids (a film from Plex's old IMDb agent may have
+    only the second): in Plex or in the user's own folders (two shelves). `folder_tmdb` /
+    `folder_imdb`: of those, the ones only the folders have (Plex has none by either id), told
+    apart only beside Plex ("✓ Downloaded" rather than "✓ In Plex"); empty with one source."""
 
     tmdb: frozenset[int] = frozenset()
     imdb: frozenset[str] = frozenset()
+    folder_tmdb: frozenset[int] = frozenset()
+    folder_imdb: frozenset[str] = frozenset()
 
     def has(self, tmdb_id: int | None, imdb_id: str | None = None) -> bool:
         return (tmdb_id is not None and tmdb_id in self.tmdb) or (
             imdb_id is not None and imdb_id in self.imdb
         )
 
+    def only_in_folders(self, tmdb_id: int | None, imdb_id: str | None = None) -> bool:
+        """Had from the folders only, beside Plex (see the class docstring)."""
+        return (tmdb_id is not None and tmdb_id in self.folder_tmdb) or (
+            imdb_id is not None and imdb_id in self.folder_imdb
+        )
+
 
 class PlexShows(DomainModel):
-    """The series with an episode in Plex, by their TheTVDB and IMDb ids (only those AirGrabber's
-    shows cache knows: `match_scan`)."""
+    """The series with an episode had, by their TheTVDB and IMDb ids (only those AirGrabber's
+    shows cache knows: `match_scan`): in Plex or in the user's own folders. `folder_tvdb` /
+    `folder_imdb`: of those, the ones only the folders have an episode of, told apart only
+    beside Plex (as PlexFilms')."""
 
     tvdb: frozenset[int] = frozenset()
     imdb: frozenset[str] = frozenset()
+    folder_tvdb: frozenset[int] = frozenset()
+    folder_imdb: frozenset[str] = frozenset()
 
     def has(self, tvdb_id: int | None, imdb_id: str | None = None) -> bool:
         return (tvdb_id is not None and tvdb_id in self.tvdb) or (
             imdb_id is not None and imdb_id in self.imdb
+        )
+
+    def only_in_folders(self, tvdb_id: int | None, imdb_id: str | None = None) -> bool:
+        """Had from the folders only, beside Plex (see the class docstring)."""
+        return (tvdb_id is not None and tvdb_id in self.folder_tvdb) or (
+            imdb_id is not None and imdb_id in self.folder_imdb
         )
 
 

@@ -1,16 +1,20 @@
-"""The Library page: what is in the library, as cards (only while there is one: Plex connected,
-or the folder library switched on without Plex; `library_source`).
+"""The Library page: what is in the library, as cards, on two shelves never mixed (only while
+there is one; docs/folder-library/2026-11-16-alongside-plex-design.md): "plex", what Plex has
+(with a token), and "downloaded", what the user's own folders hold (switched on, with or
+without Plex; `folders_on`). `PlexLibraryService.shelves` says which are on, Plex's first.
 
-`PlexLibraryService.contents` gives the page every show and film the last check read
-(`plex_titles`: Plex's, or the folder library's titles; `folders`, playing.py), each show with
-whether the selected person follows it, its gaps (episodes the library lacks in the seasons it
-has some of: LibraryService.gaps) and whether it ended. `follow` adds a show to My shows (by its
-TVMaze id when AirGrabber knows it, else looked up by TheTVDB / IMDb id, the name last), then has
-Plex checked again so its episodes count. `show` finds the TVMaze show a card opens.
-`continue_watching` is the row above the tabs (what Plex says to go on with; with the folder
-library, the selected person's videos with a place, the newest first). `library_posters` gets
-the cards' pictures: Plex's from the server, a folder title's TMDB poster through the regular
-TMDB image cache.
+`PlexLibraryService.contents(shelf=)` gives the page every show and film of a shelf's last
+check (Plex's `plex_titles`, or the folders' own titles: `folders`, playing.py) and when that
+check was, each show with whether the selected person follows it, its gaps (episodes the
+library lacks in the seasons it has some of: LibraryService.gaps, counting both sources) and
+whether it ended. A show in both places is on both shelves, each its own card. `follow` adds a
+show to My shows (by its TVMaze id when AirGrabber knows it, else looked up by TheTVDB / IMDb
+id, the name last), then has Plex checked again so its episodes count. `show` finds the TVMaze
+show a card opens. `continue_watching(shelf)` is the row above the tabs (what Plex says to go
+on with; on Downloaded the selected person's videos with a place, the newest first). Without
+a shelf both answer for the main one (the first on). `library_posters` gets the cards'
+pictures: Plex's from the server, a folder title's TMDB poster through the regular TMDB image
+cache.
 
 The pure part (filters, sort, search, the cards' lines) is here too, tested without Tk. Nothing
 here logs a title.
@@ -23,6 +27,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from app.i18n import N_, t, tn
 from app.models import FIRST_PROFILE_ID, Show
@@ -33,6 +38,9 @@ from app.services.library import LibraryService
 from app.services.plex import PlexService
 
 log = logging.getLogger(__name__)
+
+# The Library page's two lists, never mixed: what Plex has, what the user's own folders hold.
+Shelf = Literal["plex", "downloaded"]
 
 RECENT_DAYS = 30  # Films' "Recently added": what came in this many days ago at most
 
@@ -252,31 +260,52 @@ class PlexLibraryService:
         folders: FolderPlaying | None = None,
         person: Callable[[], int] | None = None,
     ) -> None:
-        """`folders`: the folder library (its titles and Continue watching while it is the
-        library), for `person` (the PC's selected person; the first without it)."""
+        """`folders`: the folder library (the Downloaded shelf's titles and Continue watching
+        while it is on), for `person` (the PC's selected person; the first without it)."""
         self._plex = plex
         self._library = library
         self._folders = folders
         self._person = person or (lambda: FIRST_PROFILE_ID)
 
     def _folder_library(self) -> FolderPlaying | None:
-        """The folder library while it is the library (no Plex token)."""
+        """The folder library while it is on (with or without Plex)."""
         folders = self._folders
         return folders if folders is not None and folders.on else None
+
+    def shelves(self) -> tuple[Shelf, ...]:
+        """The shelves on: "plex" with Plex connected, "downloaded" with the folders on; Plex's
+        first."""
+        found: list[Shelf] = []
+        if self._plex.connected:
+            found.append("plex")
+        if self._folder_library() is not None:
+            found.append("downloaded")
+        return tuple(found)
 
     @property
     def available(self) -> bool:
         """There is a library (Plex connected, or the folder library): the Library page shows
         on the switch."""
-        return self._plex.connected or self._folder_library() is not None
+        return bool(self.shelves())
 
-    async def contents(self, *, profile_id: int) -> LibraryContents:
-        """Every show and film of the last check, the shows with the person's follows and gaps;
-        empty without a library."""
-        if self._plex.connected:
+    def _shelf(self, shelf: Shelf | None) -> Shelf | None:
+        """`shelf` while it is on (without one: the main one), else None."""
+        on = self.shelves()
+        if shelf is None:
+            return on[0] if on else None
+        return shelf if shelf in on else None
+
+    async def contents(self, *, profile_id: int, shelf: Shelf | None = None) -> LibraryContents:
+        """Every show and film of the shelf's last check (Plex's or the folders', never both),
+        the shows with the person's follows and gaps; empty for a shelf that isn't on."""
+        chosen = self._shelf(shelf)
+        folders = self._folder_library()
+        if chosen == "plex":
             titles = await self._plex.titles()
-        elif (folders := self._folder_library()) is not None:
+            checked_at = await self._plex.checked_at()
+        elif chosen == "downloaded" and folders is not None:
             titles = await folders.titles()
+            checked_at = await folders.checked_at()
         else:
             return LibraryContents()
         tracked = await self._library.tracked_ids(profile_id=profile_id)
@@ -298,15 +327,17 @@ class PlexLibraryService:
             if title.kind == "show"
         )
         films = tuple(title for title in titles if title.kind == "movie")
-        return LibraryContents(shows=shows, films=films, checked_at=await self._plex.checked_at())
+        return LibraryContents(shows=shows, films=films, checked_at=checked_at)
 
-    async def continue_watching(self) -> list[PlexContinue]:
-        """The page's Continue watching row (PlexService.continue_watching; the folder
-        library's for the selected person); none without a library. Raises PlexError."""
-        if self._plex.connected:
+    async def continue_watching(self, shelf: Shelf | None = None) -> list[PlexContinue]:
+        """The shelf's Continue watching row: Plex's (PlexService.continue_watching), or on
+        Downloaded the folder library's for the selected person; none for a shelf that isn't
+        on. Raises PlexError."""
+        chosen = self._shelf(shelf)
+        if chosen == "plex":
             return await self._plex.continue_watching()
         folders = self._folder_library()
-        if folders is None:
+        if chosen != "downloaded" or folders is None:
             return []
         return await folders.continue_watching(profile_id=self._person())
 

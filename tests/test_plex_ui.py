@@ -307,6 +307,7 @@ class BoxTests(TkTestCase):
         page = SettingsPage(frame, "Library", "A note")
         box = PlexBox(page, FakePlex(), folders=folders)  # type: ignore[arg-type]
         await box.loaded()
+        self.assertEqual(INTRO_FOLDERS_TEXT, "Connect Plex and it becomes a shelf beside your folders.")
         self.assertIn(INTRO_FOLDERS_TEXT, texts(box.content))
         self.assertEqual(page.boxes[0][0], "Plex")  # Settings' search: "Plex · Library"
         folders.status = FolderLibraryStatus()  # switched off

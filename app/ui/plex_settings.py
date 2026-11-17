@@ -2,7 +2,7 @@
 for its first line and its place) over PlexService (app/services/plex.py).
 
 Not connected: what Plex does for AirGrabber in one line ("Have a Plex server? Connect it and Plex
-is your library.", or, while your own folders are the library, that Plex would take their place)
+is your library.", or, while your own folders are on, that Plex would be a shelf beside them)
 and "Connect to Plex…" (Plex's yellow, dark text), which opens the connect window
 (app/ui/plex_connect.py). Connected: a dot and
 "Connected to <server>" (amber with the reason when the last check failed: "Plex didn't answer:
@@ -61,7 +61,7 @@ class FolderSwitch(Protocol):
 
 TITLE_TEXT = N_("Plex")
 INTRO_TEXT = N_("Have a Plex server? Connect it and Plex is your library.")
-INTRO_FOLDERS_TEXT = N_("Connect Plex and it becomes your library instead of your folders.")
+INTRO_FOLDERS_TEXT = N_("Connect Plex and it becomes a shelf beside your folders.")
 CONNECT_TEXT = N_("Connect to Plex…")
 CHECK_NOW_TEXT = N_("↻ Check now")
 CHECKING_TEXT = N_("Checking…")

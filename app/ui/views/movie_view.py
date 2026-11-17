@@ -28,8 +28,8 @@ class MovieView(ShelvesView[Movie]):
     The watchlist shelf stays across reloads (and while TMDB loads or fails) and follows the
     watchlist by itself; it hides while the list is empty. The filter bar leaves it alone: it
     filters TMDB's shelves only, and "Hide what I already have" (offered only while there is a
-    library: Plex, or else the folder library, app/services/library_source.py; the only thing
-    that counts as had) hides the films in it (their cards' quiet ✓).
+    library: Plex, the folder library, or both, app/services/library_source.py; the only thing
+    that counts as had) hides the films in it (their cards' library mark).
     """
 
     _body_pady = (0, 5)
@@ -74,7 +74,9 @@ class MovieView(ShelvesView[Movie]):
         self._movie_actions = movie_actions  # the cards' Download and ⋯ buttons
         self._watchlist = watchlist
         self._on_open_movie = on_open_movie
-        self._in_plex: frozenset[int] = frozenset()  # the last load's films in Plex
+        # The last load's films had: the main source's, and beside Plex the folders' own.
+        self._in_plex: frozenset[int] = frozenset()
+        self._in_folders: frozenset[int] = frozenset()
         self.watchlist_shelf = WatchlistShelf(
             self._body,
             watchlist=watchlist,
@@ -107,6 +109,7 @@ class MovieView(ShelvesView[Movie]):
         dashboard = await self._discovery.movie_dashboard(force=force)
         self._plex_connected = dashboard.plex_connected
         self._in_plex = dashboard.in_plex
+        self._in_folders = dashboard.in_folders
         failed = set(dashboard.failed)
         return [
             Shelf(
@@ -140,8 +143,8 @@ class MovieView(ShelvesView[Movie]):
         return genres_of(item.genre_ids, MOVIE_GENRES)
 
     def _is_owned(self, item: Movie) -> bool:
-        """In Plex, the only thing that counts as had (app/services/plex.py)."""
-        return item.id in self._in_plex
+        """Had, in Plex or in the folders: the only thing that counts as had."""
+        return item.id in self._in_plex or item.id in self._in_folders
 
     def _hide_owned_offered(self) -> bool:
         """Only with a library: without one nothing counts as had, so there is nothing to
@@ -149,8 +152,9 @@ class MovieView(ShelvesView[Movie]):
         return self._plex_connected
 
     def _hide_owned_tip_text(self) -> str:
-        """The switch's tip in the library's words (Plex's, or the folder library's)."""
-        return t(library_words.by_source(self._hide_owned_tip, self._hide_owned_folders_tip))
+        """The switch's tip in the library's words (Plex's, or "your library" whenever the
+        folders count)."""
+        return t(library_words.by_library(self._hide_owned_tip, self._hide_owned_folders_tip))
 
     def _clear_body(self) -> None:
         for child in self._body.winfo_children():
@@ -167,5 +171,6 @@ class MovieView(ShelvesView[Movie]):
             watchlist=self._watchlist,
             scale=self._scale,
             on_open=self._on_open_movie,
-            in_plex=item.id in self._in_plex,
+            in_plex=self._is_owned(item),
+            from_folders=item.id in self._in_folders,
         )

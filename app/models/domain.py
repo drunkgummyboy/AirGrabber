@@ -336,11 +336,17 @@ class MovieDashboard(DomainModel):
     trending: tuple[Movie, ...] = ()
     upcoming: tuple[Movie, ...] = ()
     failed: tuple[str, ...] = ()  # names of the shelves that couldn't be loaded
-    # There is a library (named before the folder library: Plex, or else the folder library;
+    # There is a library (named before the folder library: Plex, or the folder library, or both;
     # app/services/library_source.py `has_library`): only then do the films in it count as had
-    # (their ids: `in_plex`, recomputed on every call) and can the page hide them.
+    # and can the page hide them. Their ids, recomputed on every call: `in_plex`, the main
+    # source's (Plex's with a token, else the folders'); `in_folders`, beside Plex the ones
+    # only the folders have ("✓ Downloaded"). Had: either.
     plex_connected: bool = False
     in_plex: frozenset[int] = frozenset()
+    in_folders: frozenset[int] = frozenset()
+
+    def is_had(self, movie_id: int) -> bool:
+        return movie_id in self.in_plex or movie_id in self.in_folders
 
 
 class SearchKind(StrEnum):
@@ -475,17 +481,20 @@ class ShowDetails(DomainModel):
     # from fetching an episode twice.
     downloaded: frozenset[int] = frozenset()
     next_episode: Episode | None = None  # the first numbered episode still to air
-    # There is a library (named before the folder library: Plex, or else the folder library;
-    # app/services/library_source.py `has_library`): only then does the window show what you
-    # have and miss. Then, for tracked shows (see app.services.missing): the latest season (the
-    # highest with an aired regular numbered episode), its episodes neither in Plex nor
+    # There is a library (named before the folder library: Plex, or the folder library, or
+    # both; app/services/library_source.py `has_library`): only then does the window show what
+    # you have and miss. Then, for tracked shows (see app.services.missing): the latest season
+    # (the highest with an aired regular numbered episode), its episodes neither had nor
     # downloaded (ids) that aired at least a day ago (`missing`) or less (`new`), and the
-    # episodes in Plex (`in_plex`, ids, any season), the only ones that count as had.
+    # episodes had (ids, any season), the only ones that count as had: `in_plex`, the main
+    # source's (Plex's with a token; with the folders only, theirs, "In your library"), and
+    # `in_folders`, beside Plex the ones only the folders have ("✓ Downloaded").
     plex_connected: bool = False
     latest_season: int | None = None
     missing: frozenset[int] = frozenset()
     new: frozenset[int] = frozenset()
     in_plex: frozenset[int] = frozenset()
+    in_folders: frozenset[int] = frozenset()
 
     def is_downloaded(self, episode: Episode) -> bool:
         return episode.id in self.downloaded
@@ -498,8 +507,17 @@ class ShowDetails(DomainModel):
         return episode.id in self.new
 
     def is_in_plex(self, episode: Episode) -> bool:
-        """In the user's Plex libraries."""
+        """In the main source: the user's Plex libraries (with the folders only, the folders)."""
         return episode.id in self.in_plex
+
+    def is_in_folders(self, episode: Episode) -> bool:
+        """Beside Plex, in the user's own folders only (Plex doesn't have it)."""
+        return episode.id in self.in_folders
+
+    @property
+    def had(self) -> frozenset[int]:
+        """The ids of the episodes had, from either source."""
+        return self.in_plex | self.in_folders
 
 
 class GrabTarget(DomainModel):

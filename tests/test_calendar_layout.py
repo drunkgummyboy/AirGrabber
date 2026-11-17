@@ -9,10 +9,12 @@ from datetime import date, timedelta
 from app.models import CalendarEntry, CardSize, Episode, Settings, Show, Weekday
 from app.services.library import RECENT_DAYS, calendar_range, week_start
 from app.ui import theme
-from app.ui.calendar_cards import fit_words_to_lines
+from app.ui.calendar_cards import compact_height, fit_words_to_lines, suggestion_height
+from app.ui.card_scale import FULL
 from app.ui.main_window import settings_affect_pages
 from app.ui.text_fit import SLACK
 from app.ui.views.calendar_view import (
+    CARD_GAP,
     WEEK_COUNTS,
     SUGGESTION_CAP,
     by_day,
@@ -261,6 +263,14 @@ class ExtraSuggestionTests(unittest.TestCase):
 
     def test_an_empty_row(self) -> None:
         self.assertEqual(extra_suggestions([], 0, 100, cap=7), [])
+
+    def test_one_line_suggestions_fit_about_three_times_as_many(self) -> None:
+        # A suggestion's slot is its card and the gap under it (at XL, in CTk units: 32 + 12;
+        # the three-line card's was 108 + 12). A quiet day with 132 units to spare held one
+        # more; now three. With 264 to spare: two then, six now.
+        slot = suggestion_height(FULL) + CARD_GAP
+        self.assertEqual(slot, compact_height(False) + CARD_GAP)
+        self.assertEqual(extra_suggestions([400, 268, 136], 400, slot, cap=7), [0, 3, 6])
 
     def test_by_day_keeps_the_order_and_drops_undated(self) -> None:
         first, second, other = entry(1, MONDAY), entry(2, MONDAY), entry(3, SUNDAY)

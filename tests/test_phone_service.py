@@ -37,7 +37,8 @@ from app.services.phone.service import (
     FINDER_BUSY_TEXT,
     ENABLED_MARKER,
     MAX_PHONE_NAME,
-    NEEDS_PLEX_TEXT,
+    NEEDS_LIBRARY_TEXT,
+    NO_LIBRARY_TEXT,
     NO_PLEX_TEXT,
     PACKAGES_MISSING_TEXT,
     PORT_BUSY_TEXT,
@@ -118,12 +119,15 @@ class ServiceCase(unittest.IsolatedAsyncioTestCase):
         path: str,
         body: dict[str, Any] | None = None,
         token: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         reader, writer = await asyncio.open_connection("127.0.0.1", self.port, ssl=self.tls)
         data = b"" if body is None else json.dumps(body).encode()
         head = f"{method} {path} HTTP/1.1\r\nContent-Length: {len(data)}\r\n"
         if token is not None:
             head += f"Authorization: Bearer {token}\r\n"
+        for name, value in (headers or {}).items():
+            head += f"{name}: {value}\r\n"
         writer.write(head.encode() + b"\r\n" + data)
         await writer.drain()
         raw = await asyncio.wait_for(reader.read(), 5)
@@ -201,6 +205,8 @@ class PairingTests(ServiceCase):
                     "server_id": "a1b2",
                     "server_name": "Alex-NAS",
                 },
+                "library": "plex",
+                "folders": False,  # the folders aren't on: no Downloaded shelf
                 "phone_copies": False,  # no copy maker here
             },
         )
@@ -234,7 +240,7 @@ class PairingTests(ServiceCase):
         await self.settings.update(plex_token="")
         with self.assertRaises(PairingUnavailable) as caught:
             self.service.new_pairing_payload()
-        self.assertEqual(str(caught.exception), NEEDS_PLEX_TEXT)
+        self.assertEqual(str(caught.exception), NEEDS_LIBRARY_TEXT)
 
     async def test_pair_before_plex_found_its_server_says_null(self) -> None:
         await self.settings.update(plex_server_uri="")
@@ -375,6 +381,123 @@ class PairingTests(ServiceCase):
         await self.settings.update(plex_token=PLEX_TOKEN)
         status, _ = await self.ask("GET", "/v1/thing", token=paired["token"])
         self.assertEqual(status, 200)
+
+
+CAN_FOLDERS = {"X-Companion-Can": "folder-library"}
+
+
+class LibraryGateTests(ServiceCase):
+    """A library (Plex or the folders) lets the phone in; an old Companion sees "no Plex"."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.settings.update(**PLEX)
+
+        async def handler(request: Request) -> Reply:
+            return Reply(200, {"ok": True})
+
+        self.service = self.make_service({("GET", "/v1/thing"): handler})
+        await self.service.set_on(True)
+        _, paired = await self.pair()
+        self.token = paired["token"]
+
+    async def use_folders(self) -> None:
+        await self.settings.update(
+            plex_token="", folder_library_on=True, film_folders=(str(self.root / "Films"),)
+        )
+
+    async def thing(self, headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+        return await self.ask("GET", "/v1/thing", token=self.token, headers=headers)
+
+    async def test_an_old_companion_still_sees_no_plex(self) -> None:
+        await self.use_folders()
+        status, hello = await self.ask("GET", "/v1/hello", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertIsNone(hello["plex"])
+        self.assertEqual(hello["library"], "folders")
+        self.assertEqual(hello["api_version"], 1)
+        self.assertEqual(
+            await self.thing(), (409, {"error": "no_plex", "message": t(NO_PLEX_TEXT)})
+        )
+
+    async def test_a_new_companion_reaches_the_folder_library(self) -> None:
+        await self.use_folders()
+        self.assertEqual(await self.thing(CAN_FOLDERS), (200, {"ok": True}))
+        # Any case, among other capabilities.
+        status, _ = await self.thing({"X-Companion-Can": "later-thing, Folder-Library"})
+        self.assertEqual(status, 200)
+
+    async def test_no_library_at_all(self) -> None:
+        await self.settings.update(plex_token="", folder_library_on=False)
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token, headers=CAN_FOLDERS)
+        self.assertIsNone(hello["library"])
+        self.assertEqual(
+            await self.thing(CAN_FOLDERS),
+            (409, {"error": "no_library", "message": t(NO_LIBRARY_TEXT)}),
+        )
+        self.assertEqual(
+            await self.thing(), (409, {"error": "no_plex", "message": t(NO_PLEX_TEXT)})
+        )
+
+    async def test_hello_says_folders(self) -> None:
+        # Plex alone: "folders" false.
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token, headers=CAN_FOLDERS)
+        self.assertEqual((hello["library"], hello["folders"]), ("plex", False))
+        # The folders on beside Plex: the main source stays Plex, and "folders" says so.
+        await self.settings.update(folder_library_on=True, film_folders=(str(self.root),))
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token, headers=CAN_FOLDERS)
+        self.assertEqual((hello["library"], hello["folders"]), ("plex", True))
+        self.assertEqual(hello["plex"]["token"], PLEX_TOKEN)
+        # An old Companion gets the same answer (an extra key it doesn't read).
+        _, old = await self.ask("GET", "/v1/hello", token=self.token)
+        self.assertEqual(old, hello)
+        # The folders only, and none at all.
+        await self.use_folders()
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token, headers=CAN_FOLDERS)
+        self.assertEqual((hello["library"], hello["folders"]), ("folders", True))
+        await self.settings.update(folder_library_on=False)
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token, headers=CAN_FOLDERS)
+        self.assertEqual((hello["library"], hello["folders"]), (None, False))
+        # Switched on with no folder set counts as off.
+        await self.settings.update(folder_library_on=True, film_folders=(), series_folders=())
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token, headers=CAN_FOLDERS)
+        self.assertFalse(hello["folders"])
+
+    async def test_with_plex_nothing_changes(self) -> None:
+        await self.settings.update(folder_library_on=True, film_folders=(str(self.root),))
+        _, hello = await self.ask("GET", "/v1/hello", token=self.token)
+        self.assertEqual(hello["library"], "plex")
+        self.assertEqual(hello["plex"]["token"], PLEX_TOKEN)
+        self.assertEqual(await self.thing(), (200, {"ok": True}))
+        self.assertEqual(await self.thing(CAN_FOLDERS), (200, {"ok": True}))
+
+    async def test_pairing_works_with_the_folder_library(self) -> None:
+        await self.use_folders()
+        self.assertTrue(self.service.has_library)
+        self.assertEqual(self.service.library_source, "folders")
+        status, body = await self.pair("Second phone")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["library"], "folders")
+        self.assertIsNone(body["plex"])
+        await self.settings.update(folder_library_on=False)
+        self.assertFalse(self.service.has_library)
+        self.assertIsNone(self.service.library_source)
+        with self.assertRaises(PairingUnavailable) as caught:
+            self.service.new_pairing_payload()
+        self.assertEqual(str(caught.exception), t(NEEDS_LIBRARY_TEXT))
+
+    async def test_the_page_follows_the_library(self) -> None:
+        await self.settings.update(plex_token="")
+        heard: list[None] = []
+        self.service.subscribe(lambda: heard.append(None))
+        await self.settings.update(film_folders=(str(self.root / "Films"),))
+        self.assertEqual(heard, [])  # still no library: switched off
+        await self.settings.update(folder_library_on=True)
+        self.assertEqual(len(heard), 1)  # None -> "folders"
+        await self.settings.update(series_folders=(str(self.root / "Series"),))
+        self.assertEqual(len(heard), 1)  # still "folders"
+        await self.settings.update(plex_token=PLEX_TOKEN)
+        self.assertEqual(len(heard), 2)  # "folders" -> "plex"
 
 
 class HomeOnlyTests(unittest.TestCase):
@@ -743,19 +866,22 @@ class PageCase(ServiceCase):
 
 
 class PageTests(PageCase):
-    async def test_without_plex_the_page_is_one_line_and_follows_plex(self) -> None:
+    async def test_without_a_library_the_page_is_one_line_and_follows_it(self) -> None:
         await self.service.set_on(True)
         await self.settings.update(plex_token="")
         box, page = self.box()
         heading = self.shown(page)[:2]  # the page's own title and note
-        self.assertEqual(self.shown(page)[2:], [NEEDS_PLEX_TEXT])
+        self.assertEqual(self.shown(page)[2:], [NEEDS_LIBRARY_TEXT])
         self.assertEqual(self.shown_buttons(page), {})
         await self.settings.update(plex_token=PLEX_TOKEN)
-        self.assertNotIn(NEEDS_PLEX_TEXT, self.shown(page))
+        self.assertNotIn(NEEDS_LIBRARY_TEXT, self.shown(page))
         self.assertIn(CONNECT_TEXT, self.shown_buttons(page))
         box.show_code()
         await self.settings.update(plex_token="")  # disconnected with a code on screen
-        self.assertEqual(self.shown(page), [*heading, NEEDS_PLEX_TEXT])  # the code too is gone
+        self.assertEqual(self.shown(page), [*heading, NEEDS_LIBRARY_TEXT])  # the code too is gone
+        await self.settings.update(folder_library_on=True, film_folders=(str(self.root),))
+        self.assertNotIn(NEEDS_LIBRARY_TEXT, self.shown(page))  # the folders are a library too
+        self.assertIn(CONNECT_TEXT, self.shown_buttons(page))
 
     async def test_off_shows_the_switch_and_the_firewall_line(self) -> None:
         box, page = self.box()

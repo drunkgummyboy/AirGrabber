@@ -629,6 +629,62 @@ def draw_folders() -> Image.Image:
     return layer.image
 
 
+def draw_shelves() -> Image.Image:
+    """Two shelves: Plex's amber chevron at the left and an amber folder at the right, each
+    feeding its own half of the main window's Library: a two-part switch on top (Plex's part
+    with a chevron, the folders' lit with a folder) and two rows of posters, kept apart by a
+    gap, the folder row ticked."""
+    layer = _background()
+    layer.paint(glow("#E5A00D", (0.08, 0.5), 0.3, 0.26))
+    layer.paint(glow("#E0A23A", (0.92, 0.5), 0.3, 0.26))
+    layer.paint(glow(STEEL, (0.5, 0.42), 0.5, 0.3))
+
+    # Plex's chevron at the left, the folder at the right.
+    chevron = ((26, 92), (50, 92), (78, 120), (50, 148), (26, 148), (54, 120))
+    layer.paint(solid("#E5A00D"), Mask().add(chevron).done())
+    layer.rect(652, 98, 26, 14, 4, "#a8701c")
+    layer.rect(652, 104, 46, 40, 6, "#a8701c")
+    front = ((648, 116), (702, 116), (698, 148), (652, 148))
+    layer.paint(down((648, 116, 54, 32), ((0, "#f0bc55", 1), (1, "#d08a2a", 1))), Mask().add(front).done())
+
+    # The main window.
+    layer.rect(104, 16, 512, 208, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(104, 16, 512, 208, 14, 1.5))
+    layer.paint(solid(STEEL), Mask().add(circle(126, 38, 8)).done())
+    layer.rect(142, 33, 58, 9, 4.5, ON_ACCENT)
+
+    # The shelf switch: Plex | your folders (lit).
+    layer.rect(122, 56, 156, 26, 13, SURFACE)
+    layer.paint(solid("#3a3a3a"), border_mask(122, 56, 156, 26, 13, 1))
+    small = ((150, 63), (156, 63), (162, 69), (156, 75), (150, 75), (156, 69))
+    layer.paint(solid("#E5A00D"), Mask().add(small).done())
+    layer.rect(168, 66, 30, 6, 3, MUTED)
+    layer.rect(202, 58, 74, 22, 11, "#5f84a8")
+    layer.rect(214, 63, 9, 5, 1.5, WHITE)
+    layer.rect(214, 65, 15, 10, 2, WHITE)
+    layer.rect(236, 66, 30, 6, 3, WHITE)
+
+    # Plex's row (dim) and the folders' row (ticked), apart.
+    plex_colours = (("#4ac0d8", "#13315a"), ("#b46ad8", "#3a1a5a"), ("#6a8ad8", "#1a2a5a"))
+    folder_colours = (("#e06a5a", "#5a1a20"), ("#7ad04f", "#1e5a2a"), ("#e0b44a", "#5a3a12"))
+    for index, (colour, dark) in enumerate(plex_colours):
+        poster: Box = (124 + index * 50, 100, 42, 62)
+        layer.rect(*poster, 5, down(poster, ((0, colour, 0.55), (1, dark, 0.55))))
+    layer.rect(290, 104, 2, 108, 1, "#3a3a3a")
+    for index, (colour, dark) in enumerate(folder_colours):
+        x = 308 + index * 98
+        poster = (x, 96, 62, 92)
+        layer.rect(*poster, 6, down(poster, ((0, colour, 1), (1, dark, 1))))
+        layer.paint(solid("#2FA572"), Mask().add(circle(x + 56, 102, 9)).done())
+        layer.paint(
+            solid(WHITE),
+            Mask().line(((x + 51.5, 102), (x + 55, 105.5), (x + 61, 98.5)), 2.2, round_ends=True).done(),
+        )
+    layer.rect(124, 174, 142, 6, 3, MUTED)
+    layer.rect(308, 198, 290, 8, 4, MUTED)
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -646,7 +702,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "folders.png": draw_folders,
+    "shelves.png": draw_shelves,
 }
 
 

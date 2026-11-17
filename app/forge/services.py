@@ -56,6 +56,7 @@ from app.forge.core.parser import parse_filename
 from app.forge.core.presets_service import PresetService
 from app.forge.core.queue import Queue, QueueEvent
 from app.forge.core.recovery import recover
+from app.forge.core.run_progress import RunProgress
 from app.forge.core.settings import ForgeSettingsService
 from app.forge.core.library import carry_move_option
 from app.forge.core.subtitles import ForgeSubtitles, carry_subtitles
@@ -243,6 +244,8 @@ class ForgeServices:
         )
         self.undo = UndoService(history_repo, activity=self.activity)
         self.run_lock = asyncio.Lock()  # one rename run at a time: the owner's or the renamer's
+        # What the runs are doing now: the dock on every page of the main window.
+        self.run_progress = RunProgress()
         # Where the copies the queue's "Replace the one in the library" replaces go while a library
         # folder is a share or drive root: asked once, kept for this session only (never saved).
         self.aside_place: Path | None = None
@@ -259,6 +262,7 @@ class ForgeServices:
                 ignored=self.ignored,
             ),
             activity=self.activity,
+            progress=self.run_progress,
         )
         # Where AirGrabber's downloads end up, kept in Forge's settings (B-01; started with the
         # renamer).
@@ -456,6 +460,7 @@ class ForgeServices:
             await self.airgrabber_folders.close()  # before forge.db goes: it may be storing
             self.moves.close()
             self.queue_events.close()
+            self.run_progress.close()
             self.activity.close()
             self.queue.clear()  # cancels the lookups still running
             await asyncio.sleep(0)  # let them unwind before the database goes

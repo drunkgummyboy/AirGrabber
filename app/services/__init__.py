@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+from pathlib import Path
 
 import httpx
 
@@ -33,12 +34,15 @@ from app.services.phone.copies import FOLDER as COPIES_FOLDER
 from app.services.phone.copies import PhoneCopies
 from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.forge import PhoneForge
+from app.services.phone.library import PhoneLibrary, reachable_copy
+from app.services.phone.play_links import PlayLinks
 from app.services.phone.sends import PhoneSends
 from app.services.phone.server import Route
 from app.services.phone.service import PhoneService
 from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
 from app.services.local_files import PLACES_FILE, LocalPlaces
+from app.services.problem_report import ProblemReports
 from app.services.playback import PlaybackService, forge_folders
 from app.services.plex import PlexClient, PlexService
 from app.services.plex_library import PlexLibraryService, library_posters
@@ -79,6 +83,7 @@ class Services:
     __slots__ = (
         "playback",
         "local_places",
+        "problem_reports",
         "plex_scans",
         "plex_library",
         "plex_posters",
@@ -205,9 +210,11 @@ class Services:
             settings,
             on_change=library.notify_changed,
         )
-        # Without Plex, the folder library's side of ▶ Play: its titles and files, and where
-        # each person left a video (`watch_places`).
-        self.folder_playing = FolderPlaying(settings, db.library_files, db.watch_places, db.plex)
+        # The folder library's side of ▶ Play (beside Plex or without it): its titles (its own
+        # tables, `db.folders`) and files, and where each person left a video (`watch_places`).
+        self.folder_playing = FolderPlaying(
+            settings, db.library_files, db.watch_places, db.folders
+        )
         # The Library page: Plex's shows and films, their posters from the Plex server (or the
         # folder library's, their posters TMDB's through the regular image cache).
         self.plex_library = PlexLibraryService(
@@ -227,19 +234,22 @@ class Services:
             forge_folders(forge),
             folder_library=self.folder_playing,
             person=lambda: self.profiles.current_id,
+            show_tmdb_id=discovery.show_tmdb_id,  # a show's folder marks when no title names it
         )
         # Where videos opened from Explorer's "Open with" were left (app/services/local_files.py).
         self.local_places = LocalPlaces(paths.root / PLACES_FILE)
+        # Settings → Updates' "Report a problem": the logs in one zip on the desktop.
+        self.problem_reports = ProblemReports(paths.logs, paths.root, __version__)
         # Import Shows → From Sonarr (a one-off read; nothing of it is stored).
         self.sonarr = SonarrClient(http)
         # What MediaForge moves into a library folder, Plex scans soon after (once Forge runs).
         self.plex_scans = PlexScansAfterMoves(self.plex)
         forge.when_ready(lambda started: self.plex_scans.attach(started.moves))
-        # Without Plex, the user's own film and series folders as the library once switched on
-        # (Settings; `run` from the UI): read at the start, every 6 hours, after Plex is
-        # disconnected and after MediaForge moves something into them (once Forge runs).
+        # The user's own film and series folders, once switched on (Settings; `run` from the
+        # UI), beside Plex or without it, in tables of their own (`db.folders`): read at the
+        # start, every 6 hours and after MediaForge moves something into them (once Forge runs).
         self.folder_library = FolderLibraryService(
-            settings, db.library_files, db.plex, tmdb, library, plex=self.plex
+            settings, db.library_files, db.folders, tmdb, library, plex=self.plex
         )
         forge.when_ready(lambda started: self.folder_library.attach(started.moves))
         # The Companion app's way in, on the home network; off until turned on in Settings
@@ -248,12 +258,32 @@ class Services:
         suggestions = Suggestions(library, self.watchlist, discovery, self.profiles, settings)
         shortlist = Shortlist(settings, self.profiles, suggestions)
         # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
-        # ffmpeg (app/services/phone/copies.py); the phone asks, or Send to phone does.
+        # ffmpeg (app/services/phone/copies.py); the phone asks, or Send to phone does. A folder
+        # library film's (Downloaded's, beside Plex too) is made from its own file that is there
+        # now (no fetch).
         copies = PhoneCopies(
-            self.plex, paths.root / COPIES_FOLDER, paths.forge / "tools" / "ffmpeg" / "bin"
+            self.plex,
+            paths.root / COPIES_FOLDER,
+            paths.forge / "tools" / "ffmpeg" / "bin",
+            local_source=functools.partial(_own_file, self.folder_playing),
         )
         # Send to phone (the Library page) and each phone's menu of what it holds.
         self.phone_sends = PhoneSends(settings, copies=copies)
+        # The folder library for a Companion that knows it, whenever the folders are on (without
+        # Plex its library, beside Plex its Downloaded section): the films and shows, a title's
+        # details and a show's episodes, with the phone's own person's places.
+        # Play links (plain http) to a folder video for the phone's player and TVs: one set,
+        # made by the library's route, served by the server the phone connection runs.
+        play_links = PlayLinks()
+        phone_library = PhoneLibrary(
+            settings,
+            self.folder_playing,
+            db.library_files,
+            db.watch_places,
+            discovery,
+            tmdb,
+            play_links=play_links,
+        )
         phone_routes: dict[tuple[str, str], Route] = {
             **ComingUp(
                 library,
@@ -281,6 +311,7 @@ class Services:
             **self.phone_sends.routes(),
             **PhoneForge(forge, self.profiles).routes(),
             **FilmSeries(discovery.film_series).routes(),
+            **phone_library.routes(),
         }
         phone_routes = {**phone_routes, **copies.routes()}
         self.phone = PhoneService(
@@ -290,6 +321,7 @@ class Services:
             routes_factory=lambda: phone_routes,
             sends=self.phone_sends,
             copies=copies,
+            play_links=play_links,
         )
 
     @classmethod
@@ -404,6 +436,17 @@ async def _film_request(discovery: DiscoveryService, movie_id: int, label: str) 
     except (TMDBError, TimeoutError):
         details = None  # searched by its title and year
     return movie_request(movie, details)
+
+
+async def _own_file(playing: FolderPlaying, key: str) -> Path | None:
+    """The folder library's best file of this video (a video key) that is there now, each copy
+    stat'ed in a worker thread under the folder library's time limit; None when there is none,
+    and while the folders are off (`playing.on` is `folders_on`, with or without Plex: an old
+    list of files isn't read)."""
+    if not playing.on:
+        return None
+    found = await reachable_copy(await playing.copies_of(key))
+    return found[0] if found is not None else None
 
 
 async def _known_titles(db: Database) -> tuple[list[Show], list[Movie]]:

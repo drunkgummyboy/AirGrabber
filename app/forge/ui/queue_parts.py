@@ -14,6 +14,7 @@ from typing import Any
 
 from app.forge.core.executor import RunResult
 from app.forge.core.queue import ItemStatus, QueueItem
+from app.forge.core.run_progress import item_name
 from app.forge.models.media import TypeHint
 from app.forge.models.preset import Preset, PresetOptions, with_options
 from app.forge.ui.look import Pair
@@ -418,6 +419,6 @@ def _same(a: Path, b: Path) -> bool:
 
 
 def display_name(item: QueueItem) -> str:
-    """How the progress bar names a file: the episode's or the film's title."""
-    media = item.media
-    return media.episode_title or media.title or item.path.name
+    """How the progress bar names a file: the episode's or the film's title (the dock on every
+    page names it the same way, app/forge/core/run_progress.py)."""
+    return item_name(item)

@@ -970,13 +970,16 @@ class FolderLibraryMarksTests(LibraryTestCase):
         await self.store_tracked(load("show_embed.json"))  # Dune: season 1, six aired
         now = datetime(2026, 1, 5, 12, tzinfo=UTC)
         self.assertEqual(await library.missing_counts(now=now, profile_id=1), {DUNE: 6})
-        # What the folders hold fills the same tables as Plex: those two count as had.
+        # What the folders hold (their own tables): those two count as had.
         found = frozenset({(DUNE, 1, 1), (DUNE, 1, 2)})
-        await self.db.plex.replace(PlexScan(episodes=found), now)
+        await self.db.folders.replace(PlexScan(episodes=found), now)
         self.assertEqual(await library.missing_counts(now=now, profile_id=1), {DUNE: 4})
+        self.assertEqual(len(await library.missing_episodes(DUNE, now=now, profile_id=1)), 4)
         details = await library.show_details(DUNE, now=now, profile_id=1)
         self.assertTrue(details.plex_connected)  # the window shows its marks
-        self.assertEqual(len(details.in_plex), 2)
+        # The folders alone are the main source: theirs is "in your library" (part 1).
+        self.assertEqual((len(details.in_plex), details.in_folders), (2, frozenset()))
+        self.assertEqual(len(details.missing), 4)
         # Not switched on (or no folder): no library, no marks, as without Plex.
         await settings.update(folder_library_on=False)
         self.assertFalse(library.has_library)
@@ -1006,28 +1009,6 @@ class FollowHookTests(LibraryTestCase):
         unsubscribe()
         await self.service.track(DUNE, profile_id=1)
         self.assertEqual(len(heard), 3)
-
-    async def test_held_marks_show_no_library(self) -> None:
-        settings = SettingsService(
-            self.db.settings,
-            Settings(folder_library_on=True, series_folders=(r"\\NAS\Series",)),
-        )
-        library = LibraryService(
-            self.db.library, self.db.history, TVMazeClient(self.http, retry_delay=0),
-            settings=settings,
-        )
-        heard: list[str] = []
-        library.subscribe(lambda: heard.append("changed"))
-        self.assertTrue(library.has_library)
-        library.hold_marks(True)
-        self.assertFalse(library.has_library)  # the tables are empty: no marks over them
-        self.assertEqual(await library.missing_counts(profile_id=1), {})
-        self.assertEqual(heard, [])
-        library.hold_marks(False)
-        self.assertTrue(library.has_library)
-        self.assertEqual(heard, ["changed"])  # the pages reload with their marks
-        library.hold_marks(False)
-        self.assertEqual(heard, ["changed"])  # once
 
 
 class NextEpisodeTests(unittest.TestCase):

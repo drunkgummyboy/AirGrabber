@@ -25,6 +25,7 @@ import httpx
 
 from app.config import AppPaths
 from app.forge.core.queue import ItemStatus
+from app.forge.core.run_progress import AUTO, PAGE
 from app.forge.runtime import ForgeState
 from app.forge.ui import file_drops
 from app.forge.ui.page import ForgePage
@@ -813,3 +814,136 @@ class ClosingTests(MainWindowCase):
         self.assertEqual(window._quit_gate._close_player, player.aclose)
         player.on_status("▶ Playing Dune.")  # what the player says goes to the status bar
         self.assertEqual(window._status.cget("text"), "▶ Playing Dune.")
+
+
+class RunDockTests(MainWindowCase):
+    """MediaForge's dock on every page (the owner, 2026-11-16: "display the same loading bar from
+    the forge tab on every page when something is going"): the page's own ForgeProgress, fed by
+    Forge's run progress, centred at the bottom of the page on screen; on MediaForge's page only
+    the page's own bar shows."""
+
+    async def ready(self) -> Any:
+        forge = await self.services.forge.start()
+        assert forge is not None
+        await pump(self.window, 0.05)
+        return forge
+
+    def dock(self) -> Any:
+        dock = self.window._run_dock
+        assert dock is not None
+        return dock
+
+    async def test_hidden_until_something_runs(self) -> None:
+        self.assertIsNone(self.window._run_dock)  # nothing before Forge has started
+        await self.ready()
+        self.assertEqual(self.dock().winfo_manager(), "")
+
+    async def test_an_automatic_run_shows_on_every_other_page_with_the_pages_words(self) -> None:
+        forge = await self.ready()
+        with self.assertNoLogs("app", "DEBUG"):  # the name stays off the log
+            forge.run_progress.report("Renaming 2 of 5 · Dune", 0.4, source=AUTO)
+            await pump(self.window, 0.05)
+        dock = self.dock()
+        self.assertEqual(dock.winfo_manager(), "grid")
+        self.assertEqual((dock.text, dock.fraction), ("Renaming 2 of 5 · Dune", 0.4))
+        self.assertTrue(dock.winfo_ismapped())
+        self.assertEqual(dock.cancel_button.winfo_manager(), "")  # the renamer's: no Cancel
+        for mode in (Mode.MOVIES, Mode.DOWNLOADS, Mode.LIBRARY, Mode.SERIES):
+            self.window._select_mode(mode)
+            await pump(self.window, 0.05)
+            self.assertTrue(dock.winfo_ismapped(), mode)
+            page = self.page_frame()
+            # A row of its own: the page ends above the dock, the status bar starts below it.
+            self.assertLessEqual(page.winfo_rooty() + page.winfo_height(), dock.winfo_rooty(), mode)
+            status = self.window._status.master.master
+            self.assertLessEqual(dock.winfo_rooty() + dock.winfo_height(), status.winfo_rooty())
+            middle = page.winfo_rootx() + page.winfo_width() / 2
+            self.assertAlmostEqual(dock.winfo_rootx() + dock.winfo_width() / 2, middle, delta=2)
+        shorter = self.page_frame().winfo_height()
+        forge.run_progress.idle(AUTO)
+        await pump(self.window, 0.05)
+        self.assertEqual(dock.winfo_manager(), "")
+        self.assertGreater(self.page_frame().winfo_height(), shorter)  # the page gets it back
+
+    def page_frame(self) -> Any:
+        window = self.window
+        frames = {
+            Mode.SERIES: window._series_tabs,
+            Mode.MOVIES: window._movie_view,
+            Mode.DOWNLOADS: window._downloads_view,
+            Mode.LIBRARY: window._library_view,
+            Mode.FORGE: window._forge_holder,
+        }
+        assert window._mode is not None
+        return frames[window._mode]
+
+    async def test_on_mediaforges_page_only_its_own_bar(self) -> None:
+        forge = await self.ready()
+        forge.run_progress.report("Renaming 1 of 2 · Dune", 0.0, source=PAGE, cancel=lambda: None)
+        await pump(self.window, 0.02)
+        self.assertEqual(self.dock().winfo_manager(), "grid")
+        await self.on_page()
+        self.assertEqual(self.dock().winfo_manager(), "")
+        self.window._select_mode(Mode.MOVIES)
+        await pump(self.window, 0.02)
+        self.assertEqual(self.dock().winfo_manager(), "grid")  # back on another page
+        forge.run_progress.idle(PAGE)
+        await pump(self.window, 0.02)
+        self.assertEqual(self.dock().winfo_manager(), "")
+
+    async def test_an_automatic_run_shows_on_mediaforges_page_too(self) -> None:
+        # The page has no bar of its own for the renamer's run: the copy is the only one there.
+        await self.on_page()
+        forge = self.forge()
+        forge.run_progress.report("Renaming 1 of 3 · Dune", 0.0, source=AUTO)
+        await pump(self.window, 0.05)
+        self.assertIs(self.window._mode, Mode.FORGE)
+        self.assertEqual(self.dock().winfo_manager(), "grid")
+        self.assertTrue(self.dock().winfo_ismapped())
+        forge.run_progress.idle(AUTO)
+        await pump(self.window, 0.02)
+        self.assertEqual(self.dock().winfo_manager(), "")
+
+    async def test_a_click_on_it_opens_mediaforges_page(self) -> None:
+        forge = await self.ready()
+        forge.run_progress.report("Renaming 1 of 1", 0.0, source=AUTO)
+        await pump(self.window, 0.05)
+        self.dock().canvas.event_generate("<Button-1>", x=40, y=20)
+        await pump_until(self.window, self.page_ready)
+        self.assertIs(self.window._mode, Mode.FORGE)
+
+    async def test_its_cancel_cancels_the_pages_run(self) -> None:
+        forge = await self.ready()
+        cancelled: list[int] = []
+        forge.run_progress.report(
+            "Renaming 1 of 2 · Dune", 0.0, source=PAGE, cancel=lambda: cancelled.append(1)
+        )
+        await pump(self.window, 0.05)
+        button = self.dock().cancel_button
+        self.assertEqual(button.winfo_manager(), "place")  # on the panel, as on the page
+        self.assertEqual(button.cget("text"), "Cancel")
+        button.invoke()
+        self.assertEqual(cancelled, [1])
+        forge.run_progress.idle(PAGE)
+
+    async def test_a_real_page_run_shows_on_another_page_and_goes(self) -> None:
+        page = await self.on_page()
+        queue = page.queue
+        assert queue is not None
+        await queue.add([self.video("Heat.1995.mkv")])
+        await queue.settled()
+        queue.select_preset("Movie (Flat)")
+        await queue.settled()
+        self.window._select_mode(Mode.MOVIES)
+        dock = self.dock()
+        seen: list[tuple[str, str]] = []  # heard after the main window: where the dock is then
+        self.addCleanup(
+            self.forge().run_progress.subscribe(
+                lambda state: seen.append((dock.text, dock.winfo_manager()))
+            )
+        )
+        await queue.forge()
+        await pump(self.window, 0.05)
+        shown = [text for text, manager in seen if manager == "grid"]
+        self.assertTrue(any(text.startswith("Renaming 1 of 1 · ") for text in shown), seen)
+        self.assertEqual(dock.winfo_manager(), "")  # gone at the end

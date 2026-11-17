@@ -295,6 +295,12 @@ class WhatPlexHasTests(SuggestionsCase):
         await self.plex_has(films=frozenset({(1, None), (3, None), (None, "tt0000004")}))
         self.assertEqual(await self.ids("movie"), [2, 5])
 
+    async def test_suggestions_leave_out_what_the_folders_have(self) -> None:
+        await self.settings.update(folder_library_on=True, film_folders=(r"\\nas\films",))
+        await self.db.plex.replace(PlexScan(films=frozenset({(3, None)})), NOW)  # a folder film
+        self.tmdb.trending_movies.return_value = [film(3), film(4)]
+        self.assertEqual(await self.ids("movie"), [4])
+
     async def test_a_series_in_plex_is_found_by_either_id(self) -> None:
         await self.cached_show(501, tvdb_id=9001)
         await self.cached_show(502, imdb_id="tt0000502")

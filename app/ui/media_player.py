@@ -31,11 +31,15 @@ Plex, the network or AirGrabber's settings happens here, on the loop
   the last one nothing happens. The window closed while that one is still being found: nothing
   opens. `WantNext(by_hand=True)` (N, ⏭) skips: not marked watched. `WantPrevious` (P, ⏮)
   plays the episode before (`previous_in_show`; the Play's `previous_label`) the same way.
-- The folder library's videos (a title of `from_folders`, no Plex: app/services/folder_library/
-  playing.py): played the same way from their own file, at the person's place (the person
-  selected when it started, `person`); `Position` / `Ended` / `Stopped` keep where it was left in
-  `folders` (`FolderPlaying.report`, the same throttle) and WATCHED_SHARE marks it watched for
-  that person (`mark_watched`), never Plex. No markers are asked.
+- The folder library's videos (`is_folder_video`, decided per video: a show's `episodes` may be
+  Plex's and the folders' together, app/services/playback.py's `merged_episodes`; app/services/
+  folder_library/playing.py): played the same way from their own file, at the person's place (the
+  person selected when it started, `person`); `Position` / `Ended` / `Stopped` keep where it was
+  left in `folders` (`FolderPlaying.report`, the same throttle) and WATCHED_SHARE marks it watched
+  for that person (`mark_watched`), never Plex. No markers are asked. The next episode after a
+  Plex one may be a folder one, and the other way round. A folder copy that isn't there from
+  this PC plays from Plex's copy when Plex has one (`Located.video`): it is a Plex video then,
+  with Plex's place, markers and reports.
 - `play_file(path)`: a video from Explorer's "Open with" (main.py --play, through the
   single-instance mailbox; docs/player/2026-11-14-open-with-design.md). It never reaches Plex:
   no markers, timeline or watched mark. Where it was left is kept on this PC (`places`,
@@ -100,7 +104,7 @@ from app.media_protocol import (
 from app.models import FIRST_PROFILE_ID, PlayIn, Settings
 from app.models.plex import PlexTitle, PlexVideo
 from app.services.folder_library.playing import WATCHED_SHARE as WATCHED_SHARE
-from app.services.folder_library.playing import from_folders
+from app.services.folder_library.playing import is_folder_video, logged_key
 from app.services.local_files import episode_code as file_code
 from app.services.local_files import VIDEO_SUFFIXES, next_file, video_names
 from app.services.playback import Located, PlayOutcome, episode_name
@@ -525,7 +529,7 @@ class MediaPlayerHost:
             try:
                 async with asyncio.timeout(QUIT_REPORT_TIMEOUT_S), self._plex_lock:
                     await self._tell(head, "stopped", head.ms, head.duration_ms)
-                log.info("Player: %s stopped on quitting", head.video.key)
+                log.info("Player: %s stopped on quitting", logged_key(head.video.key))
             except (PlexError, TimeoutError) as exc:
                 log.info("Player: the last report didn't reach Plex (%s)", type(exc).__name__)
         _close_input(window.process)
@@ -596,7 +600,7 @@ class MediaPlayerHost:
             else:
                 await self._fall_back(located, "no_engine")
             return
-        folder = from_folders(title)
+        folder = is_folder_video(video)  # per video: a show's window plays from both places
         markers = (
             None
             if video.markers_known or folder
@@ -630,6 +634,13 @@ class MediaPlayerHost:
                 if starting is not None:
                     self._close_unused(starting)
                 return
+            if found.video is not None:  # the folder copy wasn't there: Plex's plays, as Plex's
+                asked, video = video, found.video
+                # In the list too, so next and previous find it (they go by its key).
+                episodes = tuple(video if one.key == asked.key else one for one in episodes)
+                folder = is_folder_video(video)
+                if markers is None and not folder and not video.markers_known:
+                    markers = self._job(self._markers(video.key), "player markers")
             window = await starting if starting is not None else await self._window_for(engine)
             if window is None:
                 await self._fall_back(found, "not_started")
@@ -684,7 +695,8 @@ class MediaPlayerHost:
             return
         log.info(
             "Player: %s %s sent (resume asked: %s, intro: %s, next: %s)",
-            title.kind, video.key, message.ask_resume, intro is not None, following is not None,
+            title.kind, logged_key(video.key), message.ask_resume, intro is not None,
+            following is not None,
         )
         self._say(t(PLAYING_TEXT, name=found.name))
 
@@ -831,7 +843,7 @@ class MediaPlayerHost:
             async with asyncio.timeout(MARKERS_TIMEOUT_S):
                 return await self._plex.markers(key)
         except (PlexError, TimeoutError) as exc:
-            log.info("Player: no markers for %s (%s)", key, type(exc).__name__)
+            log.info("Player: no markers for %s (%s)", logged_key(key), type(exc).__name__)
             return None, None
 
     async def _engine_here(self) -> Engine | None:
@@ -938,7 +950,7 @@ class MediaPlayerHost:
             return
         log.info(
             "Player: no Stopped for %s before the player ended",
-            "a file from Explorer" if head.local else head.video.key,
+            "a file from Explorer" if head.local else logged_key(head.video.key),
         )
         self._report(head, "stopped", head.ms)
 
@@ -1049,7 +1061,7 @@ class MediaPlayerHost:
             except Exception as exc:  # by its type only: a message could hold a path
                 log.warning(
                     "Player: the place of %s wasn't kept (%s)",
-                    session.video.key, type(exc).__name__,
+                    logged_key(session.video.key), type(exc).__name__,
                 )
 
     def _check_watched(self, session: _Session, ms: int) -> None:
@@ -1060,7 +1072,7 @@ class MediaPlayerHost:
             return
         session.watched = True
         key = session.video.key
-        log.info("Player: %s watched to %d%%", key, round(100 * WATCHED_SHARE))
+        log.info("Player: %s watched to %d%%", logged_key(key), round(100 * WATCHED_SHARE))
 
         async def mark() -> None:
             if not session.folder:
@@ -1069,7 +1081,9 @@ class MediaPlayerHost:
                 try:
                     await self._folders.mark_watched(session.video, profile_id=session.profile_id)
                 except Exception as exc:  # by its type only, as `_tell`
-                    log.warning("Player: %s wasn't marked watched (%s)", key, type(exc).__name__)
+                    log.warning(
+                        "Player: %s wasn't marked watched (%s)", logged_key(key), type(exc).__name__
+                    )
                     return
             self._stopped()
 
@@ -1091,7 +1105,7 @@ class MediaPlayerHost:
                 except PlexError as exc:
                     log.info(
                         "Player: Plex's %s for %s failed (%s)",
-                        what, session.video.key, type(exc).__name__,
+                        what, logged_key(session.video.key), type(exc).__name__,
                     )
                     if not session.plex_said:
                         session.plex_said = True
@@ -1111,9 +1125,9 @@ class MediaPlayerHost:
             return
         following = next_in_show(session.video, session.episodes)
         if following is None:
-            log.info("Player: no episode after %s", session.video.key)
+            log.info("Player: no episode after %s", logged_key(session.video.key))
             return
-        log.info("Player: the next episode after %s", session.video.key)
+        log.info("Player: the next episode after %s", logged_key(session.video.key))
         # The countdown starts at the credits, below WATCHED_SHARE on a short episode or long
         # credits: moving on means it was watched. Not N / ⏭ (`by_hand`): skipped, not seen.
         if not by_hand:
@@ -1129,9 +1143,9 @@ class MediaPlayerHost:
             return
         before = previous_in_show(session.video, session.episodes)
         if before is None:
-            log.info("Player: no episode before %s", session.video.key)
+            log.info("Player: no episode before %s", logged_key(session.video.key))
             return
-        log.info("Player: the episode before %s", session.video.key)
+        log.info("Player: the episode before %s", logged_key(session.video.key))
         self._start_play(session.title, before, session.episodes, from_next=True, window=window)
 
     async def _always(self, message: AlwaysPick) -> None:
@@ -1147,7 +1161,9 @@ class MediaPlayerHost:
         found: str | None = None
         finder = await self._subtitles()
         if finder is None:
-            log.info("Player: subtitles for %s: MediaForge is off", session.video.key)
+            log.info(
+                "Player: subtitles for %s: MediaForge is off", logged_key(session.video.key)
+            )
             text = t(FORGE_OFF_TEXT)
         else:
             try:
@@ -1159,7 +1175,7 @@ class MediaPlayerHost:
                 text = t(SUBTITLES_FAILED_TEXT)
             else:
                 outcome = str(fetched.outcome)
-                log.info("Player: subtitles for %s: %s", session.video.key, outcome)
+                log.info("Player: subtitles for %s: %s", logged_key(session.video.key), outcome)
                 if outcome in ("saved", "partly", "already"):
                     found = await asyncio.to_thread(subtitle_file, session.path, language)
                 text = None if found else _subtitle_text(outcome, fetched.message)

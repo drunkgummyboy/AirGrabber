@@ -8,13 +8,24 @@ start, and the paired phones stay in the settings either way.
 
 Off (the default) it does nothing: no port, no certificate. On, it runs the HTTPS server
 (app/services/phone/server.py) and a small UDP finder, which tells a phone that knows this PC's id
-where it is now, for when the PC's address changes. A start that fails never stops the app: it
-says why in one plain sentence (`problem`), and `run` tries again now and then, for a port that a
-closing AirGrabber still held.
+where it is now, for when the PC's address changes. After the HTTPS server it starts the play
+link server (app/services/phone/play_links.py, plain http for the phone's player and TVs; a port
+in use there leaves the rest running). A start that fails never stops the app: it says why in one
+plain sentence (`problem`), and `run` tries again now and then, for a port that a closing
+AirGrabber still held.
 
-No Plex, no phone app (the owner's decision): without a Plex token no code is made, and every route
-but `/v1/pair` and `/v1/hello` answers 409 `no_plex` with one plain sentence (`/v1/hello` says
-`"plex": null`, which the phone shows as that sentence). The page follows Plex (`plex_connected`).
+No library, no phone app (the owner's decision): without one (Plex or the user's own folders,
+app/services/library_source.py) no code is made, and every route but `/v1/pair` and `/v1/hello`
+answers 409 with one plain sentence. `/v1/hello` says where the library is (`"library": "plex" |
+"folders" | null`, the main source: "plex" whenever Plex is connected), whether the user's own
+folders are on, also beside Plex (`"folders"`, `folders_on`: the two shelves,
+docs/folder-library/2026-11-16-alongside-plex-design.md, the phone's Downloaded section), and keeps
+`"plex": null` without Plex. A Companion that knows the folder library
+says so on every request (`X-Companion-Can: folder-library`, `knows_folders`); one that doesn't
+sees what it always saw: `no_plex` unless Plex is the library, so an older Companion sees "no Plex"
+and nothing else. With the header, no library at all is `no_library`
+(docs/folder-library/2026-11-16-companion-contract.md). The page follows the library
+(`has_library`).
 
 A phone pairs by scanning a code (`new_pairing_payload`), and from then on follows the person who
 was selected at that moment. The first phone is a library manager's, later ones aren't; the code
@@ -47,17 +58,21 @@ from app.models import PairedPhone, Profile
 from app.services.phone.certificate import ensure_certificate
 from app.services.phone.copies import PhoneCopies
 from app.services.phone.devices import DeviceStore, PairingCode
+from app.services.phone.library import PLEX_LIBRARY_TEXT as PLEX_LIBRARY_TEXT  # re-exported
+from app.services.phone.play_links import PLAY_PORT, PlayLinks
 from app.services.phone.sends import PhoneSends
 from app.services.phone.server import (
     PORT,
-    FileReply,
+    AnyReply,
     PhoneServer,
     Reply,
     Request,
     Route,
     error_reply,
     is_home_address,
+    knows_folders,
 )
+from app.services.library_source import LibrarySource, folders_on, library_source
 from app.services.plex import plex_connected
 from app.services.profiles import ProfileService
 from app.services.settings import SettingsService
@@ -101,8 +116,15 @@ CODE_REFUSED_TEXT = N_(
     "scan that one."
 )
 BAD_PAIRING_TEXT = N_("AirGrabber couldn't read that code, so scan it again.")
-NEEDS_PLEX_TEXT = N_("Connect Plex first to use the phone app.")
+NEEDS_LIBRARY_TEXT = N_(
+    "Connect Plex or choose your own folders in Settings → Library first to use the phone app."
+)
+# For a Companion that doesn't know the folder library: what it has always been told.
 NO_PLEX_TEXT = N_("AirGrabber isn't connected to Plex, so connect Plex in AirGrabber on your PC.")
+NO_LIBRARY_TEXT = N_(
+    "AirGrabber has no library yet, so connect Plex or choose your folders in AirGrabber's "
+    "Settings → Library."
+)
 PHONE_NAME_TEXT = N_("Phone")
 
 # Windows says "access denied" for a port it keeps for itself (Hyper-V's ranges, for one).
@@ -189,9 +211,12 @@ class PhoneService:
         addresses: Callable[[], list[str]] = this_pcs_addresses,
         sends: PhoneSends | None = None,
         copies: PhoneCopies | None = None,
+        play_links: PlayLinks | None = None,
+        play_port: int = PLAY_PORT,
     ) -> None:
         """`routes_factory`: the routes of everything else the phone may ask (read at each
-        start). `port`, `finder_port`, `addresses`: for tests."""
+        start). `play_links`: the play link server, run with the connection (the routes make
+        its links). `port`, `finder_port`, `play_port`, `addresses`: for tests."""
         self._settings = settings
         self._paths = paths
         self._profiles = profiles
@@ -203,6 +228,8 @@ class PhoneService:
         self.sends = sends if sends is not None else PhoneSends(settings)
         # Phone-sized copies of 4K films (copies.py): started with the server, said in hello.
         self.copies = copies
+        self._play_links = play_links
+        self._play_port = play_port
         # Read once: the page and the service agree until the next start.
         self.available = OPEN_TO_EVERYONE or (paths.root / ENABLED_MARKER).is_file()
         # The hidden switch has something to switch while it isn't open to everyone.
@@ -216,7 +243,7 @@ class PhoneService:
         self._closed = False
         self._listeners: list[Callable[[], None]] = []
         self.problem: str | None = None  # why it isn't (fully) working, in one plain sentence
-        self._had_plex = plex_connected(settings.current)
+        self._had_library = library_source(settings.current)
         self._unsubscribe_settings = settings.subscribe(self._settings_changed)
 
     def switched_on_here(self) -> bool:
@@ -272,15 +299,21 @@ class PhoneService:
         return self._profiles.people
 
     @property
-    def plex_connected(self) -> bool:
-        """Plex is connected: without it the phone app has nothing to show."""
-        return plex_connected(self._settings.current)
+    def library_source(self) -> LibrarySource | None:
+        """Where the library is: Plex, the user's own folders, or None."""
+        return library_source(self._settings.current)
+
+    @property
+    def has_library(self) -> bool:
+        """There is a library (Plex or the folders): without one the phone app has nothing to
+        show."""
+        return self.library_source is not None
 
     def _settings_changed(self, current: Any) -> None:
-        """Plex connected or disconnected: the page follows."""
-        now = plex_connected(current)
-        if now != self._had_plex:
-            self._had_plex = now
+        """The library came, went or moved between Plex and the folders: the page follows."""
+        now = library_source(current)
+        if now != self._had_library:
+            self._had_library = now
             self._notify()
 
     def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -338,7 +371,11 @@ class PhoneService:
 
     @property
     def _fully_running(self) -> bool:
-        return self._server is not None and self._finder is not None
+        return (
+            self._server is not None
+            and self._finder is not None
+            and (self._play_links is None or self._play_links.running)
+        )
 
     async def _start(self) -> None:
         """Start what isn't running; `problem` says what didn't work out."""
@@ -349,6 +386,10 @@ class PhoneService:
             problem = await self._start_server()
         if self._server is not None and self._finder is None:
             problem = await self._start_finder()
+        if self._server is not None:
+            # After the phone server; its problem is said when the rest has none.
+            links_problem = await self._start_play_links()
+            problem = problem or links_problem
         self.problem = problem
 
     async def _start_server(self) -> str | None:
@@ -362,7 +403,9 @@ class PhoneService:
             return t(START_FAILED_TEXT)
         await self._remember_identity(fingerprint)
         self._fingerprint = fingerprint
-        others = {key: self._needs_plex(handler) for key, handler in self._routes_factory().items()}
+        others = {
+            key: self._needs_library(handler) for key, handler in self._routes_factory().items()
+        }
         routes = {**others, **self._own_routes()}
         server = PhoneServer(routes, self._devices, cert, key)
         try:
@@ -406,6 +449,18 @@ class PhoneService:
         self._finder = transport
         return None
 
+    async def _start_play_links(self) -> str | None:
+        """The play link server, once the phone server runs; a port in use is said, and leaves
+        the phone server running."""
+        if self._play_links is None or self._play_links.running:
+            return None
+        try:
+            await self._play_links.start(self._play_port)
+        except OSError as exc:
+            self._log_start_failure("The play link server can't start", exc)
+            return t(PORT_BUSY_TEXT if exc.errno in _PORT_ERRORS else START_FAILED_TEXT)
+        return None
+
     def _log_start_failure(self, what: str, exc: Exception) -> None:
         """The first time as a warning, not every time `run` tries again; never the exception's
         text, which holds a file's path."""
@@ -417,6 +472,8 @@ class PhoneService:
         finder, self._finder = self._finder, None
         if finder is not None:
             finder.close()
+        if self._play_links is not None:
+            await self._play_links.stop()
         server, self._server = self._server, None
         if server is not None:
             await server.stop()
@@ -426,8 +483,8 @@ class PhoneService:
     def new_pairing_payload(self) -> str:
         """What the code on the screen holds; it cancels the code before it. Raises
         PairingUnavailable when a phone couldn't connect anyway."""
-        if not self.plex_connected:
-            raise PairingUnavailable(t(NEEDS_PLEX_TEXT))
+        if not self.has_library:
+            raise PairingUnavailable(t(NEEDS_LIBRARY_TEXT))
         if self._server is None:
             raise PairingUnavailable(t(OFF_TEXT))
         hosts = self._addresses()
@@ -470,13 +527,19 @@ class PhoneService:
         )
         self._notify()
 
-    def _needs_plex(self, handler: Route) -> Route:
-        """`handler`, answering `no_plex` while Plex isn't connected."""
+    def _needs_library(self, handler: Route) -> Route:
+        """`handler` while there is a library the asking Companion knows: Plex for any, the
+        folders only for one that says it knows them. Otherwise 409: `no_library` for one that
+        knows the folders, `no_plex` (what it has always been told) for one that doesn't."""
 
-        async def guarded(request: Request) -> Reply | FileReply:
-            if not self.plex_connected:
-                return error_reply(409, "no_plex", t(NO_PLEX_TEXT))
-            return await handler(request)
+        async def guarded(request: Request) -> AnyReply:
+            source = self.library_source
+            knows = knows_folders(request)
+            if source == "plex" or (source == "folders" and knows):
+                return await handler(request)
+            if source is None and knows:
+                return error_reply(409, "no_library", t(NO_LIBRARY_TEXT))
+            return error_reply(409, "no_plex", t(NO_PLEX_TEXT))
 
         return guarded
 
@@ -510,6 +573,8 @@ class PhoneService:
             "api_version": API_VERSION,
             "app_version": __version__,
             "plex": self._plex_details(),
+            "library": self.library_source,
+            "folders": folders_on(self._settings.current),
             "phone_copies": self.copies is not None and self.copies.available,
         }
 

@@ -1,6 +1,7 @@
 """My shows' ⋯ → "🧩 Find gaps in Plex…": the episodes Plex doesn't have in the seasons it has
 some of, for every show the person follows (LibraryService.gaps; offered only with a library:
-Plex, or else the folder library, whose words it then uses, app/ui/library_words.py).
+Plex, the folder library, or both counted together, whose words it then uses: "your library"
+whenever the folders count, `by_library`, app/ui/library_words.py).
 
 One row per show: its name, its gaps per season ("S01: E03, E05–E07 · S02: E01"), what is on its
 way (grabbed, not in Plex yet), and "⬇ Download {n}"; above them "⬇ Download all {n}". A click
@@ -42,7 +43,7 @@ from app.ui.scrollable import ScrollableFrame
 TITLE = N_("Gaps in Plex")
 TEXT = N_("Episodes Plex doesn't have, in the seasons it has some of.")
 NONE_TEXT = N_("No gaps: every season Plex has of your shows is complete.")
-# The same with the folder library as the source.
+# The same whenever the folders count (alone, or with Plex: the two together).
 FOLDERS_TITLE = N_("Gaps in your library")
 FOLDERS_TEXT = N_("Episodes your library doesn't have, in the seasons it has some of.")
 FOLDERS_NONE_TEXT = N_("No gaps: every season of your shows in your library is complete.")
@@ -121,7 +122,7 @@ class GapsWindow(ctk.CTkToplevel):
         on_download: Callable[[Sequence[CalendarEntry]], None],
     ) -> None:
         super().__init__(master, fg_color=theme.BG)
-        title = t(library_words.by_source(TITLE, FOLDERS_TITLE))
+        title = t(library_words.by_library(TITLE, FOLDERS_TITLE))
         self.title(title)
         set_window_icon(self)
         self.resizable(False, False)
@@ -136,9 +137,9 @@ class GapsWindow(ctk.CTkToplevel):
         heading = heading_row(body, title, right_room=CLOSE_CLEARANCE)
         heading.pack(fill="x")
         if self._gaps:
-            text = t(library_words.by_source(TEXT, FOLDERS_TEXT))
+            text = t(library_words.by_library(TEXT, FOLDERS_TEXT))
         else:
-            text = t(library_words.by_source(NONE_TEXT, FOLDERS_NONE_TEXT))
+            text = t(library_words.by_library(NONE_TEXT, FOLDERS_NONE_TEXT))
         text_label(body, text, size=BODY_SIZE, color=theme.TEXT_MUTED, wraplength=WIDTH).pack(
             anchor="w", pady=(LINE_GAP, 0)
         )

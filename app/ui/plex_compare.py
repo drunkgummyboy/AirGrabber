@@ -7,7 +7,7 @@ Only what really needs a library is a dash on the left: what you have and miss (
 Library page, gaps in seasons, and new files counting soon after MediaForge moves them (Plex
 scans the folder; the folder library reads it again). The phone app's lines show only where the
 phone connection is offered (`phone`): no text tells others about it; their heading says the
-phone app needs Plex.
+phone app needs a library.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPa
 TITLE_TEXT = N_("With and without a library")
 WITHOUT_TEXT = N_("Without a library")
 WITH_TEXT = N_("With Plex or your folders")
-PHONE_HEADING = N_("Phone app (needs Plex)")
+PHONE_HEADING = N_("Phone app (needs a library)")
 YES = "✓"
 NO = "—"
 MARK_WIDTH = 130  # each of the two columns (their headings wrap)

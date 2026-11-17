@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from app.media_protocol import (
@@ -34,14 +34,14 @@ from app.media_protocol import (
     decode,
     encode,
 )
-from app.models import PlayIn
+from app.models import PlayIn, Show
 from app.models.folder_library import LibraryFile
 from app.models.plex import PlexScan, PlexTitle, PlexVideo
 from app.services import playback
 from app.services.folder_library.match import title_key
-from app.services.folder_library.playing import FolderPlaying
+from app.services.folder_library.playing import FolderPlaying, is_folder_video
 from app.services.local_files import LocalPlaces
-from app.services.playback import LibraryFolders, PlaybackService
+from app.services.playback import LibraryFolders, PlaybackService, next_episode
 from app.services.vlc_engine import Engine
 from app.ui import media_player
 from app.ui.media_player import APP_ROOT, MediaPlayerHost, previous_in_show
@@ -1076,9 +1076,9 @@ class FolderHostTests(HostTestCase):
         await self.db.library_files.replace_folder(str(self.root), rows)
         self.folder_dune = DUNE.model_copy(update={"key": title_key("movie", 693134)})
         self.folder_ark = ARK.model_copy(update={"key": title_key("show", 202411)})
-        await self.db.plex.replace(PlexScan(titles=(self.folder_dune, self.folder_ark)), NOW)
+        await self.db.folders.replace(PlexScan(titles=(self.folder_dune, self.folder_ark)), NOW)
         self.folders = FolderPlaying(
-            self.settings, self.db.library_files, self.db.watch_places, self.db.plex
+            self.settings, self.db.library_files, self.db.watch_places, self.db.folders
         )
         self.person = 2
 
@@ -1191,3 +1191,162 @@ class FolderHostTests(HostTestCase):
         self.assertTrue(
             all(record.exc_info is None for record in logs.records if record.levelno >= 30)
         )
+
+# -- both sources: a show half in Plex, half in the folders (two shelves) --------------------------
+
+
+class SplitPlex:
+    """PlaybackService's Plex (connected): The Ark's `videos`. Its reports go to the host's own
+    PlexService (the fake server), which must hear nothing of a folder episode."""
+
+    connected = True
+
+    def __init__(self, show: PlexTitle, videos: Sequence[PlexVideo]) -> None:
+        self.show = show
+        self.videos = list(videos)
+
+    async def titles(self) -> list[PlexTitle]:
+        return [self.show]
+
+    async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
+        return list(self.videos)
+
+    async def locations(self) -> list[tuple[str, str]]:
+        return []
+
+
+class SplitShowHostTests(HostTestCase):
+    """Plex connected and the folders on: a show's window's episodes from both, each played and
+    reported where it is."""
+
+    async def split(
+        self, plex_videos: Sequence[PlexVideo], folder_files: dict[tuple[int, int], Path]
+    ) -> None:
+        """The Ark in Plex (`plex_videos`) and in the folders (`folder_files`, each made unless
+        its name says "gone"); `self.playback` and `self.host` at person 2."""
+        await self.host.aclose()
+        await self.settings.update(folder_library_on=True, series_folders=(str(self.series),))
+        for path in folder_files.values():
+            if "gone" not in path.name:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"video")
+        await self.db.library_files.replace_folder(
+            str(self.series),
+            [
+                LibraryFile(path=str(path), size=5, mtime=1.0, kind="episode", tmdb_id=202411,
+                            season=season, episode=number, recognised=True)
+                for (season, number), path in folder_files.items()
+            ],
+        )
+        self.plex_ark = ARK.model_copy(update={"tmdb_id": None, "show_id": 41})
+        self.folder_ark = ARK.model_copy(update={"key": title_key("show", 202411), "show_id": 41})
+        await self.db.folders.replace(PlexScan(titles=(self.folder_ark,)), NOW)
+        self.folders = FolderPlaying(
+            self.settings, self.db.library_files, self.db.watch_places, self.db.folders
+        )
+        self.reported: list[tuple[str, int]] = []
+        report = self.folders.report
+
+        async def spy(video: PlexVideo, ms: int, duration: int | None, *, profile_id: int) -> None:
+            self.reported.append((video.key, profile_id))
+            await report(video, ms, duration, profile_id=profile_id)
+
+        spying = mock.patch.object(self.folders, "report", spy)
+        spying.start()
+        self.addCleanup(spying.stop)
+        self.person = 2  # the person selected when the window played it
+        self.playback = PlaybackService(
+            cast(Any, SplitPlex(self.plex_ark, plex_videos)), self.lookup, launch=self.launch,
+            folder_library=self.folders, person=lambda: self.person,
+        )
+        self.host = self.make(folders=self.folders, person=lambda: self.person)
+        self.addAsyncCleanup(self.host.aclose)
+
+    async def lookup(self) -> LibraryFolders | None:
+        return LibraryFolders(series=str(self.series), movies=str(self.movies))
+
+    def assert_no_tmdb_id(self, lines: Sequence[str]) -> None:
+        self.assertFalse([line for line in lines if "202411" in line], lines)
+
+    async def test_a_split_show_plays_on_into_the_folder(self) -> None:
+        season = self.series / "The Ark (2023)" / "Season 01"
+        new = {(1, n): season / f"The Ark - S01E0{n}.mkv" for n in (4, 5)}
+        watched = [
+            PlexVideo(key=f"5{n}", file=f"/volume1/video/TV/The Ark (2023)/Season 01/E0{n}.mkv",
+                      season=1, episode=n, watched=True, duration_ms=2_700_000)
+            for n in (1, 2, 3)
+        ]
+        await self.split(watched, new)
+        titles = await self.playback.show(Show(id=41, name="The Ark"))
+        assert titles is not None
+        self.assertEqual((titles.plex, titles.folders), (self.plex_ark, self.folder_ark))
+        episodes = await self.playback.episodes(titles)
+        self.assertEqual(
+            [(v.episode, is_folder_video(v)) for v in episodes],
+            [(1, False), (2, False), (3, False), (4, True), (5, True)],
+        )
+        e04 = next_episode(episodes)
+        assert e04 is not None
+        self.assertEqual(e04.key, "episode:202411:1:4")  # on from Plex's watched into the folder
+
+        with self.assertLogs("app", "INFO") as logs:
+            process = await self.play(titles.main, e04, episodes)
+            [sent] = process.plays()
+            self.assertEqual(sent.file, str(new[1, 4]))
+            self.assertEqual(sent.next_label, "S01E05")
+            await self.tell(process, Position(ms=600_000, duration_ms=2_700_000, state="playing"))
+            self.now = 10.0
+            await self.tell(process, Position(ms=2_500_000, duration_ms=2_700_000, state="playing"))
+            await self.tell(process, WantNext())
+        self.assertEqual([p.file for p in process.plays()], [str(new[1, 4]), str(new[1, 5])])
+        self.assertTrue(self.reported)
+        self.assertEqual({key for key, _ in self.reported}, {"episode:202411:1:4"})
+        self.assertEqual({who for _, who in self.reported}, {self.person})
+        place = (await self.db.watch_places.places(self.person)).get("episode:202411:1:4")
+        assert place is not None
+        self.assertTrue(place.watched)
+        self.assertEqual(await self.db.watch_places.places(1), {})  # nobody else's
+        self.assertEqual(self.server.requests, [])  # never Plex: no markers, timeline or watched
+        self.assert_private(logs.output)
+        self.assert_no_tmdb_id(logs.output)  # a folder key's TMDB id would name the show
+
+    async def test_a_folder_copy_thats_gone_plays_plexs_and_tells_plex(self) -> None:
+        # S02E01 moved by hand into Plex's folder (Plex has scanned it): the folders' last check
+        # still lists it, its file gone. It plays from Plex's copy, reported to Plex.
+        plex_e1 = episode("41", 1)  # in MediaForge's Series folder here (HostTestCase)
+        gone = self.series / "Downloads" / "The Ark S02E01 gone.mkv"
+        await self.split([plex_e1], {(2, 1): gone})
+        titles = await self.playback.show(Show(id=41, name="The Ark"))
+        assert titles is not None
+        [listed] = await self.playback.episodes(titles)
+        self.assertEqual(listed.key, "episode:202411:2:1")  # the folders' copy, as listed
+        with self.assertLogs("app", "INFO") as logs:
+            process = await self.play(titles.main, listed, [listed])
+            [sent] = process.plays()
+            self.assertEqual(sent.file, str(self.season_here / "The Ark - S02E01.mkv"))
+            await self.tell(process, Position(ms=600_000, duration_ms=2_700_000, state="playing"))
+        self.assertEqual(self.timeline(), [("41", "playing", 600_000)])  # it is Plex's now
+        self.assertEqual(self.reported, [])
+        self.assertEqual(await self.db.watch_places.places(self.person), {})
+        self.assert_no_tmdb_id(logs.output)
+
+    async def test_play_runs_on_after_an_episode_that_fell_back_to_plex(self) -> None:
+        # S02E01 gone from the folders (Plex's copy plays), S02E02 still there: next and previous
+        # run on across the two.
+        gone = self.series / "Downloads" / "The Ark S02E01 gone.mkv"
+        e02 = self.series / "Downloads" / "The Ark S02E02.mkv"
+        await self.split([episode("41", 1)], {(2, 1): gone, (2, 2): e02})
+        titles = await self.playback.show(Show(id=41, name="The Ark"))
+        assert titles is not None
+        listed = await self.playback.episodes(titles)
+        self.assertEqual([v.key for v in listed], ["episode:202411:2:1", "episode:202411:2:2"])
+        plex_e01 = str(self.season_here / "The Ark - S02E01.mkv")
+        process = await self.play(titles.main, listed[0], listed)
+        [sent] = process.plays()
+        self.assertEqual((sent.file, sent.next_label), (plex_e01, "S02E02"))
+        await self.tell(process, WantNext(by_hand=True))
+        self.assertEqual([p.file for p in process.plays()], [plex_e01, str(e02)])
+        await self.tell(process, Stopped(ms=1_000, duration_ms=2_700_000))  # E01 gives way
+        self.assertEqual(process.plays()[-1].previous_label, "S02E01")
+        await self.tell(process, WantPrevious())
+        self.assertEqual([p.file for p in process.plays()], [plex_e01, str(e02), plex_e01])

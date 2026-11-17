@@ -1,8 +1,9 @@
 """The library mark: a small drawn shelf of books on a card's cover, top-right, while its film or
 show is in the user's Plex libraries or folder library (only while there is a library: without
 one nothing counts as had). On every poster card that can tell: Movies, the watchlist shelf, My
-shows, Discover and the search results window. Its tip says "In Plex" ("In your library" with
-the folder library: app/ui/library_words.py).
+shows, Discover and the search results window. Its tip says where: "In Plex", beside Plex
+"Downloaded…" for what only the user's own folders have (`from_folders`), "In your library" with
+the folder library alone (app/ui/library_words.py).
 
 Just the icon, no box behind it (the owner's wish): white books with a soft dark shadow, drawn on
 the cover's canvas (`PosterCard.set_corner_icon`) so they read on bright and dark covers alike.
@@ -76,11 +77,13 @@ def mark_image(side: int) -> Image.Image:
 
 
 class LibraryMark:
-    """The mark on one card (`PosterCard.set_corner_icon`); `destroy` takes it away."""
+    """The mark on one card (`PosterCard.set_corner_icon`); `destroy` takes it away.
+    `from_folders`: beside Plex, only the user's own folders have it (its tip says so)."""
 
-    def __init__(self, card: PosterCard) -> None:
+    def __init__(self, card: PosterCard, *, from_folders: bool = False) -> None:
         self.card = card
-        self.text = library_words.have_tip()
+        self.from_folders = from_folders
+        self.text = library_words.have_tip(library_words.have_source(from_folders=from_folders))
         card.set_corner_icon(mark_image, self.text)
 
     def destroy(self) -> None:
@@ -88,6 +91,6 @@ class LibraryMark:
             self.card.set_corner_icon(None)
 
 
-def library_mark(card: PosterCard) -> LibraryMark:
-    """Put the mark on `card`'s cover."""
-    return LibraryMark(card)
+def library_mark(card: PosterCard, *, from_folders: bool = False) -> LibraryMark:
+    """Put the mark on `card`'s cover (`from_folders`: as LibraryMark's)."""
+    return LibraryMark(card, from_folders=from_folders)

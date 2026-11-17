@@ -280,11 +280,11 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view._range.cget("text"), "12 – 25 Oct")
 
     async def test_quiet_days_get_more_suggestions_without_a_taller_grid(self) -> None:
-        # Today holds four poster cards; its week's other days only suggestions, many each.
-        tracked = [entry(show_id, TODAY, tracked=True) for show_id in range(1, 5)]
+        # Today holds three poster cards; its week's other days only suggestions, many each.
+        tracked = [entry(show_id, TODAY, tracked=True) for show_id in range(1, 4)]
         quiet = [TODAY + timedelta(days=n) for n in range(1, 7)]
         suggestions = [
-            entry(day.day * 100 + n, day, tracked=False) for day in quiet for n in range(12)
+            entry(day.day * 100 + n, day, tracked=False) for day in quiet for n in range(16)
         ] + [entry(90 + n, TODAY, tracked=False) for n in range(3)]
         prefs = Settings(weeks_to_show=1)
 
@@ -302,11 +302,14 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         filled_height, filled = await grid_height(SUGGESTION_CAP)
         self.assertEqual(filled_height, single_height)
         # The busy day keeps its one suggestion; the quiet days get more, best-ranked first.
-        self.assertEqual(self.cards(filled, TODAY), ["full"] * 4 + ["Show 90"])
+        self.assertEqual(self.cards(filled, TODAY), ["full"] * 3 + ["Show 90"])
+        # One-line suggestions: three poster cards and their gaps leave a quiet day
+        # 3 x (112 + 12) = 372 units, room for 372 // (32 + 12) = 8 more, 9 in all, under the
+        # cap of 12 (the old three-line cards, 108 + 12 a slot: 3 more, 4 in all).
+        self.assertGreater(SUGGESTION_CAP, 9)
         for day in quiet:
             names = self.cards(filled, day)
-            self.assertGreater(len(names), 1)
-            self.assertLessEqual(len(names), SUGGESTION_CAP)
+            self.assertEqual(len(names), 9)
             self.assertEqual(names, [f"Show {day.day * 100 + n}" for n in range(len(names))])
         # Last week's row has no suggestions: nothing to fill.
         self.assertEqual(self.cards(filled, GRID_START), [])
@@ -509,22 +512,26 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         await view.load()
         suggestion = self.card_widgets(view, TODAY)[-1]
         self.assertIsInstance(suggestion, SuggestionCard)
-        button = suggestion._track_button
-        self.assertEqual(button.cget("text"), i18n.t(TRACK_TEXT))
+        button = suggestion.follow_button
+        self.assertEqual((button.text, suggestion.follow_tip.text), ("+", i18n.t(TRACK_TEXT)))
+
+        def state() -> tuple[str, bool, str]:
+            return (button.text, button.enabled, suggestion.follow_tip.text)
+
         button.invoke()
-        self.assertEqual((button.cget("text"), button.cget("state")), ("Adding…", "disabled"))
+        self.assertEqual(state(), ("…", False, "Adding…"))
         for _ in range(3):
             await asyncio.sleep(0)
         self.assertEqual(library.tracked_shows, [10])
-        following = (i18n.t(FOLLOWING_TEXT), "disabled")
-        self.assertEqual((button.cget("text"), button.cget("state")), following)
+        following = ("✓", False, i18n.t(FOLLOWING_TEXT))
+        self.assertEqual(state(), following)
         # A failure gives the button back.
         library.track_error = TVMazeError("down")
-        button.set_state("idle")
+        suggestion._set_follow("idle")
         button.invoke()
         for _ in range(3):
             await asyncio.sleep(0)
-        self.assertEqual((button.cget("text"), button.cget("state")), (i18n.t(TRACK_TEXT), "normal"))
+        self.assertEqual(state(), ("+", True, i18n.t(TRACK_TEXT)))
 
     async def test_missing_episodes_get_the_amber_note(self) -> None:
         # Show 1 today (a poster card) and show 3 a week ago (a compact card) are missing.
@@ -696,18 +703,19 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(tk.Frame.cget(suggestion.name_label, "cursor")), "hand2")
         self.assertNotEqual(suggestion.name_label._canvas.bind("<Button-1>"), "")
         self.assertEqual(str(suggestion.name_label._canvas.cget("cursor")), "hand2")
-        self.assertEqual(str(suggestion._track_button.cget("cursor")), "hand2")
+        self.assertEqual(str(suggestion.follow_button.cget("cursor")), "hand2")
         assert suggestion.open_show is not None
         suggestion.open_show()  # as a click on the name does
         self.assertEqual([show.name for show in opened], ["Show 10"])
 
     async def test_the_whole_suggestion_card_opens_the_show_but_track(self) -> None:
         opened: list[Show] = []
-        view = self.view(self.library(), FakeSettings(Settings(weeks_to_show=1)), opened.append)
+        library = self.library()
+        view = self.view(library, FakeSettings(Settings(weeks_to_show=1)), opened.append)
         await view.load()
         suggestion = self.card_widgets(view, TODAY)[-1]
         self.assertIsInstance(suggestion, SuggestionCard)
-        track = suggestion._track_button
+        track = suggestion.follow_button
         own = {str(w) for w in (track, *_descendants(track))}
         rest = [w for w in (suggestion, *_descendants(suggestion)) if str(w) not in own]
         self.assertGreater(len(rest), 5)  # the card, its frames, texts and their canvases
@@ -725,13 +733,13 @@ class CalendarViewTests(unittest.IsolatedAsyncioTestCase):
             opened.clear()
             widget.event_generate("<Button-1>", x=1, y=1)
             self.assertEqual([show.name for show in opened], ["Show 10"], str(widget))
-        # "+ Follow" keeps its own action: its parts don't open the show.
-        for widget in (track, *_descendants(track)):
-            self.assertNotIn("open_show", str(tk.Misc.bind(widget, "<Button-1>")))
+        # The + keeps its own action (it follows the show): it doesn't open the show.
         opened.clear()
-        for widget in _descendants(track):
-            widget.event_generate("<Button-1>", x=1, y=1)
+        track.event_generate("<Button-1>", x=1, y=1)
+        for _ in range(3):
+            await asyncio.sleep(0)
         self.assertEqual(opened, [])
+        self.assertEqual(library.tracked_shows, [10])
 
     async def test_switched_off_suggestions_are_not_fetched(self) -> None:
         library = self.library()

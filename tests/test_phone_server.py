@@ -8,6 +8,7 @@ import json
 import socket
 import ssl
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from app.services.phone.certificate import ensure_certificate
 from app.services.phone.devices import DeviceStore
 from app.services.phone.server import (
     MAX_BODY,
+    DataReply,
     FileReply,
     Handler,
     PhoneServer,
@@ -29,6 +31,8 @@ from app.services.phone.server import (
     Route,
     file_range,
     is_home_address,
+    knows_folders,
+    range_start,
 )
 
 SURROGATE_UTF8 = b"\xed\xa0\x80"  # how a lone surrogate looks as bytes on the wire
@@ -761,6 +765,121 @@ class FileTests(ServerCase):
         self.assertTrue(raw.startswith(b"HTTP/1.1 204"))
         self.assertIn(b"Content-Length: 0", raw)
         self.assertTrue(raw.endswith(b"\r\n\r\n"))  # no body after a 204
+
+    async def test_bytes_already_read_go_out_with_their_type(self) -> None:
+        async def vtt(_request: Request) -> DataReply:
+            return DataReply("text/vtt; charset=utf-8", b"WEBVTT\n\n")
+
+        routes: dict[tuple[str, str], Route] = {("GET", "/v1/sub"): vtt}
+        self.server = PhoneServer(routes, self.devices, self.cert, self.key)
+        await self.server.start(self.port)
+        status, headers, body = await self._get("/v1/sub")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "text/vtt; charset=utf-8")
+        self.assertEqual(int(headers["content-length"]), len(b"WEBVTT\n\n"))
+        self.assertEqual(body, b"WEBVTT\n\n")
+
+    async def _start_film(self) -> None:
+        routes: dict[tuple[str, str], Route] = {("GET", "/v1/films/{key}/file"): self._film}
+        self.server = PhoneServer(routes, self.devices, self.cert, self.key)
+        await self.server.start(self.port)
+
+    async def _wait_until(self, done: Any) -> None:
+        for _ in range(300):
+            if done():
+                return
+            await asyncio.sleep(0.01)
+        self.fail("never happened")
+
+    async def test_a_read_that_hangs_ends_the_connection(self) -> None:
+        """A share that drops mid-copy: the read gets READ_TIMEOUT, not as long as SMB takes."""
+        closed: list[bool] = []
+
+        class Hanging:
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def read(self, size: int) -> bytes:
+                self.reads += 1
+                if self.reads > 1:
+                    time.sleep(2.0)  # in the worker thread
+                return b"x" * size
+
+            def close(self) -> None:
+                closed.append(True)
+
+        await self._start_film()
+        with (
+            mock.patch.object(server_module, "READ_TIMEOUT", 0.3),
+            mock.patch.object(server_module, "_opened_at", lambda _path, _start: Hanging()),
+        ):
+            started = time.perf_counter()
+            status, headers, body = await self._get("/v1/films/501/file")
+            took = time.perf_counter() - started
+        self.assertEqual(status, 200)
+        self.assertLess(len(body), int(headers["content-length"]))  # cut off, not completed
+        self.assertLess(took, 1.5)
+        await self._wait_until(lambda: closed)  # closed once the read gave up
+
+    async def test_an_open_that_hangs_ends_the_connection(self) -> None:
+        closed: list[bool] = []
+
+        class Late:
+            def close(self) -> None:
+                closed.append(True)
+
+        def opened_late(_path: Path, _start: int) -> Late:
+            time.sleep(1.0)  # a NAS waking up, in the worker thread
+            return Late()
+
+        await self._start_film()
+        with (
+            mock.patch.object(server_module, "READ_TIMEOUT", 0.3),
+            mock.patch.object(server_module, "_opened_at", opened_late),
+        ):
+            started = time.perf_counter()
+            status, _, body = await self._get("/v1/films/501/file")
+            took = time.perf_counter() - started
+        self.assertEqual((status, body), (200, b""))
+        self.assertLess(took, 0.9)
+        await self._wait_until(lambda: closed)  # the file opened too late is closed after all
+
+
+class RangeTests(unittest.TestCase):
+    def test_range_start(self) -> None:
+        """None: the whole file; False: past the end (416); else the byte to start from."""
+        for wanted, start in (
+            ("", None),
+            ("bytes=5-", 5),
+            ("bytes=0-", 0),
+            ("bytes=5-9", 5),  # read as to the end
+            ("items=5-", None),  # not understood: the whole file
+            ("bytes=-5", None),
+            ("bytes=\u00b2-", None),
+            ("bytes=99-", 99),
+            ("bytes=100-", False),
+            ("bytes=500-", False),
+        ):
+            with self.subTest(wanted):
+                found = range_start({"range": wanted} if wanted else {}, 100)
+                self.assertEqual((type(found), found), (type(start), start))
+
+
+class CapabilityTests(unittest.TestCase):
+    def request(self, headers: dict[str, str]) -> Request:
+        return Request("GET", "/v1/thing", {}, {}, None, headers)
+
+    def test_knows_folders_reads_the_header(self) -> None:
+        for value, knows in (
+            ("folder-library", True),
+            (" Folder-Library , other", True),
+            ("other, folder-library", True),
+            ("folder-libraryx", False),
+            ("", False),
+        ):
+            with self.subTest(value):
+                self.assertEqual(knows_folders(self.request({"x-companion-can": value})), knows)
+        self.assertFalse(knows_folders(self.request({})))  # no header at all
 
 
 if __name__ == "__main__":

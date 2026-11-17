@@ -125,7 +125,7 @@ CELL_PAD_Y = 12
 CARD_GAP = 12  # between the cards of a day
 # Most suggestions a day: the first, plus extras that fill a week's quieter days up to its
 # busiest day's height.
-SUGGESTION_CAP = 8
+SUGGESTION_CAP = 12
 # Suggestions fetched a day: more than a day shows, so a day keeps enough once the shows already
 # suggested on another day of its week row are left out (`take_new`).
 SUGGESTION_POOL = 2 * SUGGESTION_CAP

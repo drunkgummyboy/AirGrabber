@@ -37,6 +37,7 @@ from app.forge.core import fsops
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.matcher import Resolution
 from app.forge.core.queue import ItemStatus, QueueItem
+from app.forge.core.run_progress import PAGE, RunState
 from app.forge.core.watch import Settling
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
 from app.forge.models.settings import ForgeSettings
@@ -686,6 +687,65 @@ class QueueTest(QueueCase):
         )
         self.assertTrue(self.view.progress.text.startswith("Renaming 2 of 2"))  # the copy is over
         self.view._set_running(False)
+
+    async def test_a_run_reports_what_its_dock_shows_for_every_page(self) -> None:
+        # The main window shows the same dock on its other pages (app/forge/core/run_progress.py).
+        make_files(self.tmp / "in", ["A.2001.mkv", "B.2002.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        progress = self.services.run_progress
+        heard: list[RunState] = []
+        self.addCleanup(progress.subscribe(heard.append))
+        await self.view.forge()
+        busy = [state for state in heard if state.running]
+        self.assertTrue(busy)
+        self.assertEqual({state.source for state in busy}, {PAGE})
+        self.assertTrue(any(state.text.startswith("Renaming 1 of 2 · ") for state in busy), busy)
+        shown = self.view.progress.text
+        self.assertIn(shown, [state.text for state in busy])  # the same words as the dock's
+        self.assertFalse(heard[-1].running)  # idle at the end
+        self.assertFalse(progress.busy(PAGE))
+
+    async def test_the_reported_cancel_stops_the_pages_run(self) -> None:
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        lock = self.services.run_lock
+        await lock.acquire()  # an automatic run is busy: the page's run waits
+        try:
+            task = asyncio.get_running_loop().create_task(self.view.forge())
+            await pump(self.root, 0.3)
+            state = self.services.run_progress.state
+            self.assertEqual(state.text, "Waiting for Auto-rename to finish…")
+            assert state.cancel is not None
+            state.cancel()  # the dock's Cancel on another page
+        finally:
+            lock.release()
+        await task
+        self.assertTrue((self.tmp / "in" / "Heat.1995.1080p.mkv").exists())  # nothing renamed
+        self.assertFalse(self.services.run_progress.state.running)
+
+    async def test_a_failed_run_goes_idle_too(self) -> None:
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        broken = mock.AsyncMock(side_effect=RuntimeError("disk"))
+        with mock.patch.object(self.services.executor, "run", broken), self.assertRaises(RuntimeError):
+            await self.view.forge()
+        self.assertTrue(broken.called)
+        self.assertFalse(self.services.run_progress.state.running)
+
+    async def test_the_run_goes_idle_even_when_taking_done_files_out_fails(self) -> None:
+        make_files(self.tmp / "in", ["Heat.1995.1080p.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        await self.services.settings.update(remove_after_forge=True)
+        broken = mock.Mock(side_effect=RuntimeError("queue"))
+        with mock.patch.object(self.services.queue, "forget_finished", broken), self.assertRaises(RuntimeError):
+            await self.view.forge()
+        self.assertTrue(broken.called)
+        self.assertFalse(self.services.run_progress.state.running)
+        self.assertFalse(self.view.running)
 
     async def test_request_close_while_idle_closes_at_once(self) -> None:
         self.assertTrue(self.view.request_close(lambda: None))

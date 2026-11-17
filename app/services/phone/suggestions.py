@@ -79,10 +79,14 @@ _TWO_GENRES = {
 }
 
 
+def split_genres(names: Iterable[str]) -> list[str]:
+    """TMDB's English genre names as Plex has them (a name for two becomes both), each once."""
+    return list(dict.fromkeys(one for name in names for one in _TWO_GENRES.get(name, (name,))))
+
+
 def _genre_list(genre_ids: Iterable[int], genres: Mapping[int, str]) -> list[str]:
     """The names under which Plex would have these, each once."""
-    names = (genres[genre] for genre in genre_ids if genre in genres)
-    return list(dict.fromkeys(one for name in names for one in _TWO_GENRES.get(name, (name,))))
+    return split_genres(genres[genre] for genre in genre_ids if genre in genres)
 
 
 def _item(

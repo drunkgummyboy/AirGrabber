@@ -785,6 +785,28 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         popup.assert_called_once()
         self.assertNotEqual(card.name_label._label.bind("<Button-3>"), "")
 
+    async def test_what_the_folders_have_isnt_fetched_again(self) -> None:
+        # Two shelves: beside Plex, E08 is only in the user's own folders (the view hands it
+        # over in `downloaded`): "✓ downloaded", and "Download all" leaves it out.
+        stack = self.stack(ep(8, 1, 7), ep(8, 1, 8), ep(8, 1, 9, done=True))
+        folder_only = stack.entries[1].episode.id
+        for card in (
+            CompactStackCard(
+                self.root, stack, actions=self.actions, marks=True, downloaded={folder_only}
+            ),
+            self.card(stack, marks=True, downloaded={folder_only}),
+        ):
+            labels = [label for label, _ in card.menu_items()]
+            self.assertEqual(labels, ["S01E07 · still needed", "S01E08 · ✓ downloaded", "S01E09"])
+        compact = CompactStackCard(
+            self.root, stack, actions=self.actions, marks=True, downloaded={folder_only}
+        )
+        assert compact.look is not None
+        self.assertEqual(compact.look.tip, "⬇ Download all (1)")
+        compact.main.invoke()
+        ((_key, entries),) = self.batches
+        self.assertEqual([entry.episode.code for entry in entries], ["S01E07"])
+
     async def test_compact_stack_card_without_plex(self) -> None:
         stack = self.stack(ep(9, 1, 7), ep(9, 1, 8), ep(9, 1, 9, done=True))
         card = CompactStackCard(self.root, stack, actions=self.actions)

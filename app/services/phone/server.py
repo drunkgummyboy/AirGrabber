@@ -5,8 +5,13 @@ on the home network; `manager_only` keeps a route to a library manager's phone. 
 token, a request's query or body, or an exception's text: any of them can hold a token or a file's
 path.
 
-A handler answers with a `Reply` (JSON) or a `FileReply`: a file sent in pieces (a phone-sized
-copy, gigabytes), `Range: bytes=N-` giving 206 from byte N (`file_range`), so a broken copy resumes.
+A handler answers with a `Reply` (JSON), a `FileReply`: a file sent in pieces (a phone-sized
+copy, gigabytes), `Range: bytes=N-` giving 206 from byte N (`file_range`, `range_start`), so a
+broken copy resumes; or a `DataReply`: bytes already read (a subtitle).
+
+`Request.local_address` is the address the phone reached this PC on (play links are made on it).
+The play link server (play_links.py) shares the reading of a request's head (`parse_head`),
+`range_span` (exact `bytes=N-M`, as TVs ask), `file_head`, `send_file` and `close_writer`.
 """
 
 from __future__ import annotations
@@ -17,12 +22,12 @@ import json
 import logging
 import ssl
 import traceback
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial, wraps
 from http.client import responses
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, BinaryIO, Literal, NamedTuple, cast
 from urllib.parse import parse_qsl, unquote
 
 from app.i18n import t
@@ -42,6 +47,10 @@ _MAX_HEAD = 16 * 1024
 _MAX_DISCARD = 4 * MAX_BODY  # thrown away after an early answer; a body just over the limit fits
 _WARN_EVERY = 60.0  # seconds between warnings about one kind of refused connection
 _PUBLIC_ROUTES = frozenset({("POST", "/v1/pair")})
+# What a Companion can do, said on every request as a comma-separated list
+# (docs/folder-library/2026-11-16-companion-contract.md).
+CAPABILITY_HEADER = "x-companion-can"
+FOLDER_LIBRARY = "folder-library"  # it knows the folder library's routes and answers
 
 _HOME_NETWORKS = tuple(
     ipaddress.ip_network(network)
@@ -59,6 +68,8 @@ _HOME_NETWORKS = tuple(
 ErrorCode = Literal[
     "not_paired",
     "no_plex",
+    "no_library",
+    "plex_library",
     "not_manager",
     "bad_request",
     "not_found",
@@ -79,6 +90,7 @@ class Request:
     body: dict[str, Any]
     phone: PairedPhone | None
     headers: Mapping[str, str] = field(default_factory=dict)  # lowercase names (Range)
+    local_address: str = ""  # this PC's address the phone reached it on (the connection's own)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,22 +101,37 @@ class Reply:
 
 @dataclass(frozen=True, slots=True)
 class FileReply:
-    """A file to send: `length` bytes from `start` of the file at `path`, `size` bytes in all
-    (206 with Content-Range when `partial`)."""
+    """A file to send: the bytes from `start` to `end` (included; None: the last byte) of the
+    file at `path`, `size` bytes in all (206 with Content-Range when `partial`)."""
 
     path: Path
     content_type: str
     size: int
     start: int = 0
     partial: bool = False
+    end: int | None = None
+
+    @property
+    def last(self) -> int:
+        """The last byte sent (-1 for an empty file)."""
+        return self.size - 1 if self.end is None else self.end
 
     @property
     def length(self) -> int:
-        return self.size - self.start
+        return self.last + 1 - self.start
 
 
+@dataclass(frozen=True, slots=True)
+class DataReply:
+    """Bytes already read (a subtitle file, small), sent as they are with a 200."""
+
+    content_type: str
+    data: bytes
+
+
+AnyReply = Reply | FileReply | DataReply
 Handler = Callable[[Request], Awaitable[Reply]]
-Route = Callable[[Request], Awaitable[Reply | FileReply]]  # what the server takes: a Handler too
+Route = Callable[[Request], Awaitable[AnyReply]]  # what the server takes: a Handler too
 
 
 class _Answer(NamedTuple):
@@ -113,21 +140,65 @@ class _Answer(NamedTuple):
     file: FileReply | None = None  # sent after `data` (its head), in pieces
 
 
-def file_range(path: Path, content_type: str, headers: Mapping[str, str]) -> FileReply | None:
-    """The file at `path` as a FileReply, from where the request's `Range: bytes=N-` (or
-    `bytes=N-M`, read as to the end) asks; None when it starts past the end (416)."""
-    size = path.stat().st_size
+def _range_parts(headers: Mapping[str, str]) -> tuple[int, str] | None:
+    """The request's `Range: bytes=N-…`: N and what follows the dash (as sent); None when there
+    is none, or it isn't one."""
     wanted = headers.get("range", "").strip()
     if not wanted:
-        return FileReply(path, content_type, size)
-    unit, _, spec = wanted.partition("=")
-    first, dash, _last = spec.partition("-")
-    if unit.strip().lower() != "bytes" or not dash or not first.isascii() or not first.isdigit():
-        return FileReply(path, content_type, size)  # a Range not understood: the whole file
-    start = int(first)
-    if start >= size:
         return None
+    unit, _, spec = wanted.partition("=")
+    first, dash, last = spec.partition("-")
+    if unit.strip().lower() != "bytes" or not dash or not first.isascii() or not first.isdigit():
+        return None
+    return int(first), last.strip()
+
+
+def range_start(headers: Mapping[str, str], size: int) -> int | None | Literal[False]:
+    """Where a file of `size` bytes is to be sent from by the request's `Range: bytes=N-` (or
+    `bytes=N-M`, read as to the end): N; None for the whole file (no Range, or one not
+    understood); False when it starts past the end (416)."""
+    parts = _range_parts(headers)
+    if parts is None:
+        return None
+    start = parts[0]
+    return False if start >= size else start
+
+
+def range_span(headers: Mapping[str, str], size: int) -> tuple[int, int] | None | Literal[False]:
+    """The bytes of a file of `size` bytes the request's `Range: bytes=N-M` (or `bytes=N-`: to
+    the end) asks for, both ends included, the end cut to the file's: (N, M); None for the whole
+    file (no Range, or one not understood); False when it starts past the end (416)."""
+    parts = _range_parts(headers)
+    if parts is None:
+        return None
+    start, last_text = parts
+    if not last_text:
+        last = size - 1
+    elif last_text.isascii() and last_text.isdigit():
+        last = min(int(last_text), size - 1)
+    else:
+        return None
+    if start >= size:
+        return False
+    return None if last < start else (start, last)
+
+
+def file_range(path: Path, content_type: str, headers: Mapping[str, str]) -> FileReply | None:
+    """The file at `path` as a FileReply, from where the request's Range asks (`range_start`);
+    None when it starts past the end (416). Blocking: it stats the file."""
+    size = path.stat().st_size
+    start = range_start(headers, size)
+    if start is False:
+        return None
+    if start is None:
+        return FileReply(path, content_type, size)
     return FileReply(path, content_type, size, start=start, partial=True)
+
+
+def knows_folders(request: Request) -> bool:
+    """The Companion asking knows the folder library (`X-Companion-Can: folder-library`)."""
+    said = request.headers.get(CAPABILITY_HEADER, "")
+    return FOLDER_LIBRARY in (part.strip().casefold() for part in said.split(","))
 
 
 def error_reply(status: int, code: ErrorCode, message: str) -> Reply:
@@ -145,7 +216,7 @@ def is_home_address(ip: str) -> bool:
     return any(address in network for network in _HOME_NETWORKS)
 
 
-class _Refused(Exception):
+class Refused(Exception):
     """A request that can't be read; becomes a `bad_request` reply."""
 
     def __init__(self, status: int = 400) -> None:
@@ -227,7 +298,8 @@ def _as_http(reply: Reply) -> bytes:
     return head.encode() + body
 
 
-def _file_head(reply: FileReply) -> bytes:
+def file_head(reply: FileReply, extra: Sequence[tuple[str, str]] = ()) -> bytes:
+    """The answer's head for `reply`, with the `extra` headers (name, value) besides."""
     status = 206 if reply.partial else 200
     head = (
         f"HTTP/1.1 {status} {responses[status]}\r\n"
@@ -236,21 +308,32 @@ def _file_head(reply: FileReply) -> bytes:
         "Accept-Ranges: bytes\r\n"
     )
     if reply.partial:
-        head += f"Content-Range: bytes {reply.start}-{reply.size - 1}/{reply.size}\r\n"
+        head += f"Content-Range: bytes {reply.start}-{reply.last}/{reply.size}\r\n"
+    head += "".join(f"{name}: {value}\r\n" for name, value in extra)
     return (head + "Connection: close\r\n\r\n").encode()
 
 
-def _parse_head(raw: bytes) -> tuple[str, str, dict[str, str]]:
+def _data_http(reply: DataReply) -> bytes:
+    head = (
+        "HTTP/1.1 200 OK\r\n"
+        f"Content-Type: {reply.content_type}\r\n"
+        f"Content-Length: {len(reply.data)}\r\n"
+        "Connection: close\r\n\r\n"
+    )
+    return head.encode() + reply.data
+
+
+def parse_head(raw: bytes) -> tuple[str, str, dict[str, str]]:
     """(method, target, headers with lowercase names). Latin-1 can't fail on any byte."""
     request_line, *header_lines = raw.removesuffix(b"\r\n\r\n").decode("latin-1").split("\r\n")
     parts = request_line.split(" ")
     if len(parts) != 3 or not parts[2].startswith("HTTP/1."):
-        raise _Refused
+        raise Refused
     headers: dict[str, str] = {}
     for line in header_lines:
         name, colon, value = line.partition(":")
         if not colon:
-            raise _Refused
+            raise Refused
         headers[name.strip().lower()] = value.strip()
     return parts[0], parts[1], headers
 
@@ -267,13 +350,13 @@ def _bearer_token(headers: Mapping[str, str]) -> str | None:
 
 def _body_size(headers: Mapping[str, str]) -> int:
     if "transfer-encoding" in headers:
-        raise _Refused
+        raise Refused
     value = headers.get("content-length", "0")
     if not (value.isascii() and value.isdigit()):
-        raise _Refused
+        raise Refused
     # Too long a number can't be a size, and int() refuses the longest ones.
     if len(value) > len(str(MAX_BODY)) or int(value) > MAX_BODY:
-        raise _Refused(413)
+        raise Refused(413)
     return int(value)
 
 
@@ -281,7 +364,7 @@ def _announced_size(headers: Mapping[str, str]) -> int:
     """How much body may come after answering without reading it."""
     try:
         return _body_size(headers)
-    except _Refused:
+    except Refused:
         return _MAX_DISCARD
 
 
@@ -411,24 +494,24 @@ class PhoneServer:
             writer.transport.abort()
             raise
         try:
-            answer = await self._answer(reader)
+            answer = await self._answer(reader, _local_address(writer))
             if answer is not None:
                 async with asyncio.timeout(READ_TIMEOUT):
                     writer.write(answer.data)
                     await writer.drain()
                 if answer.file is not None:
-                    await _send_file(writer, answer.file)
+                    await send_file(writer, answer.file)
                 await _discard(reader, answer.may_still_come)
         except OSError:  # a timeout is one too
             log.debug("A phone connection ended early")
         finally:
-            await _close(writer)
+            await close_writer(writer)
 
-    async def _answer(self, reader: asyncio.StreamReader) -> _Answer | None:
+    async def _answer(self, reader: asyncio.StreamReader, local_address: str) -> _Answer | None:
         """What to send back, or None when the other side went away before finishing."""
         try:
-            return await self._answer_request(reader)
-        except _Refused as refused:
+            return await self._answer_request(reader, local_address)
+        except Refused as refused:
             return _Answer(_as_http(_bad_request(refused.status)), _MAX_DISCARD)
         except asyncio.LimitOverrunError:
             return _Answer(_as_http(_bad_request(400)), _MAX_DISCARD)
@@ -440,11 +523,13 @@ class PhoneServer:
             _log_failure("reading a request", exc)
             return _Answer(_as_http(_failed()), _MAX_DISCARD)
 
-    async def _answer_request(self, reader: asyncio.StreamReader) -> _Answer:
+    async def _answer_request(
+        self, reader: asyncio.StreamReader, local_address: str
+    ) -> _Answer:
         deadline = asyncio.get_running_loop().time() + READ_TIMEOUT
         async with asyncio.timeout_at(deadline):
             raw_head = await reader.readuntil(b"\r\n\r\n")
-        method, target, headers = _parse_head(raw_head)
+        method, target, headers = parse_head(raw_head)
         path, _, query_text = target.partition("?")
 
         found = self._find_route(method, path)
@@ -465,11 +550,13 @@ class PhoneServer:
         if body is None:
             return _Answer(_as_http(_bad_request(400)))
         query = dict(parse_qsl(query_text, keep_blank_values=True)) | path_values
-        request = Request(method, path, query, body, phone, headers)
+        request = Request(method, path, query, body, phone, headers, local_address)
         try:
             reply = await handler(request)
             if isinstance(reply, FileReply):
-                return _Answer(_file_head(reply), file=reply)
+                return _Answer(file_head(reply), file=reply)
+            if isinstance(reply, DataReply):
+                return _Answer(_data_http(reply))
             return _Answer(_as_http(reply))
         except Exception as exc:
             _log_failure(f"answering {method} {pattern}", exc)
@@ -484,26 +571,74 @@ class PhoneServer:
         return None
 
 
+def _local_address(writer: asyncio.StreamWriter) -> str:
+    """This PC's address the connection came in on ("" when it can't be told)."""
+    own = writer.get_extra_info("sockname")
+    return str(own[0]) if isinstance(own, tuple) and own else ""
+
+
 def _log_failure(where: str, exc: Exception) -> None:
     """Where it went wrong and the exception's kind; never its text, which may hold secrets."""
     frames = "".join(traceback.format_tb(exc.__traceback__))
     log.error("Phone connection: %s failed: %s\n%s", where, type(exc).__name__, frames)
 
 
-async def _send_file(writer: asyncio.StreamWriter, reply: FileReply) -> None:
-    """The file's bytes in FILE_CHUNK pieces, each read in a worker thread (the disk mustn't
-    hold up the window) and given READ_TIMEOUT to leave. Raises OSError when it can't go on."""
-    with reply.path.open("rb") as source:
-        source.seek(reply.start)
+async def send_file(
+    writer: asyncio.StreamWriter, reply: FileReply, *, send_timeout: float = READ_TIMEOUT
+) -> None:
+    """The file's bytes (`reply.start` to its `last`) in FILE_CHUNK pieces. Opened, read and
+    closed in a worker thread (the disk, or a share, mustn't hold up the window), the open and
+    each piece's read given READ_TIMEOUT, its sending `send_timeout`: a share that drops mid-copy
+    ends the connection, not just the copy. Raises OSError (TimeoutError is one) when it can't go
+    on."""
+    opening = asyncio.ensure_future(asyncio.to_thread(_opened_at, reply.path, reply.start))
+    try:
+        async with asyncio.timeout(READ_TIMEOUT):
+            source = await asyncio.shield(opening)
+    except BaseException:
+        opening.add_done_callback(_close_when_opened)  # opened too late: closed all the same
+        raise
+    try:
         left = reply.length
         while left > 0:
-            piece = await asyncio.to_thread(source.read, min(FILE_CHUNK, left))
+            async with asyncio.timeout(READ_TIMEOUT):
+                piece = await asyncio.to_thread(source.read, min(FILE_CHUNK, left))
             if not piece:
                 raise OSError("the file got shorter while it was being sent")
             left -= len(piece)
-            async with asyncio.timeout(READ_TIMEOUT):
+            async with asyncio.timeout(send_timeout):
                 writer.write(piece)
                 await writer.drain()
+    finally:
+        _close_later(source)
+
+
+def _close_later(source: BinaryIO) -> None:
+    """Close the file in a worker thread, without waiting: after a read that gave up, closing
+    waits for that read to end."""
+    closing = asyncio.get_running_loop().run_in_executor(None, source.close)
+    closing.add_done_callback(_retrieve)
+
+
+def _close_when_opened(opening: asyncio.Future[BinaryIO]) -> None:
+    if not opening.cancelled() and opening.exception() is None:
+        _close_later(opening.result())
+
+
+def _retrieve(done: asyncio.Future[Any]) -> None:
+    """An outcome nobody waits for (its exception's text may hold a path: never logged)."""
+    if not done.cancelled():
+        done.exception()
+
+
+def _opened_at(path: Path, start: int) -> BinaryIO:
+    source = path.open("rb")
+    try:
+        source.seek(start)
+    except BaseException:
+        source.close()
+        raise
+    return source
 
 
 async def _discard(reader: asyncio.StreamReader, most: int) -> None:
@@ -521,7 +656,7 @@ async def _discard(reader: asyncio.StreamReader, most: int) -> None:
         pass
 
 
-async def _close(writer: asyncio.StreamWriter) -> None:
+async def close_writer(writer: asyncio.StreamWriter) -> None:
     writer.close()
     try:
         async with asyncio.timeout(TLS_TIMEOUT):

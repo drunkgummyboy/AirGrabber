@@ -6,7 +6,8 @@ MediaForge is a page here (`Mode.FORGE`; docs/forge/PAGE.md). It is built by its
 (app/forge/ui/host.py) at the first visit, into a frame of its own (`_forge_holder`) and the tabs
 row's left part; while it shows the band has only its top row (`SpotlightBand.set_compact`). The
 page isn't a BaseView: `_visible_view` is None on it and a change of AirGrabber's settings or
-library leaves it alone.
+library leaves it alone. While MediaForge works, its page's dock shows on every other page too
+(app/forge/ui/run_dock.py, built once Forge has started: `_show_run_dock`).
 
 People (app/services/profiles.py): the band's name button opens the people menu
 (app/ui/people_dialogs.py). When another person is selected, every info window and the search
@@ -24,7 +25,7 @@ from datetime import UTC, date, datetime
 import logging
 import time
 import tkinter as tk
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from functools import partial
 from types import TracebackType
@@ -64,7 +65,8 @@ from app.models import (
 from app.models.plex import PlexTitle
 from app.services import Services, UpdateError, open_with
 from app.services.search import UPGRADE_KEY
-from app.services.library_source import library_source
+from app.services.library_source import folders_on, library_source
+from app.services.plex import plex_connected
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
 from app.services.stuck_downloads import StuckWatch
@@ -106,7 +108,7 @@ from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_searc
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
 from app.ui.phone_contents import PhoneContentsWindow
-from app.ui.send_to_phone import SendToPhoneDialog
+from app.ui.send_to_phone import SendToPhoneDialog, episodes_reader
 from app.ui.spotlight import SwitchPart
 from app.ui.spotlight_band import SpotlightBand
 from app.ui.sync_loader import PLEX_SYNC_TEXT, SyncLoader
@@ -128,8 +130,10 @@ from app.whats_new import WhatsNew, whats_new
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from app.forge.core.run_progress import RunProgress
     from app.forge.old_install import Outcome
     from app.forge.services import ForgeServices
+    from app.forge.ui.run_dock import RunDock
 
 TRAY_TODAY_S = 900  # the tray menu's line of today's episodes is read again this often
 log = logging.getLogger(__name__)
@@ -445,6 +449,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # The name button's menu and its dialogs (add, rename or recolour, remove a person).
         self._people = PeopleActions(self, services.profiles)
         self._mode: Mode | None = None
+        # MediaForge's dock on every page, once Forge has started (`_on_forge_ready`).
+        self._run_dock: RunDock | None = None
+        self._run_progress: RunProgress | None = None
+        self._unsubscribe_run: Callable[[], None] = lambda: None
         self._library_checked_text = ""  # the Library page's "From Plex · checked …" (the footer)
         self._idle_status = ""
         self._status_job: str | None = None
@@ -677,6 +685,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_backup()
         self._unsubscribe_profiles()
         self._unsubscribe_old_remover()
+        self._unsubscribe_run()
         self._unsubscribe_phone()
         # async-tkinter-loop keeps draining Tk events after destroy(); cancel CTk's pending timers
         # (DPI checks, redraws) so they don't fire into a dead interpreter.
@@ -839,11 +848,33 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_tidy=self._tidy_up,
             # The folders it couldn't read, in the Settings box's words.
             reach=self._folder_reach_lines,
+            # "↻ Check now" in the header: Plex and / or the folders read again now.
+            resync=self._resync_library,
+            # The Downloaded shelf opened: the folders read again soon.
+            read_downloaded=self._read_downloaded,
         )
         # A video stopped (or was marked watched) in the player: Plex's row changes.
         self.player.on_stopped = self._on_player_stopped
         # MediaForge's page goes in here at its first visit (ForgeHost.open).
         self._forge_holder = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+
+    async def _resync_library(self) -> None:
+        """The Library page's "↻ Check now": the library's sources read again now, Plex's and
+        the folders' together when both are on. A failure is the button's once both ended."""
+        settings = self._services.settings.current
+        checks: list[Awaitable[object]] = []
+        if plex_connected(settings):
+            checks.append(self._services.plex.check(again=True))
+        if folders_on(settings):
+            checks.append(self._services.folder_library.check())
+        for outcome in await asyncio.gather(*checks, return_exceptions=True):
+            if isinstance(outcome, BaseException):
+                raise outcome
+
+    def _read_downloaded(self) -> None:
+        """The Library page's Downloaded shelf was opened: the folders read again soon (cheap:
+        unchanged files aren't read again), so a file moved by hand leaves it quickly."""
+        self._services.folder_library.check_soon()
 
     def _card_scale(self) -> CardScale:
         """The cards' size as Settings has it now; the pages read it at every load."""
@@ -851,7 +882,8 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _build_status_bar(self) -> None:
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 6))
+        # Row 3, between the page and this bar, is MediaForge's dock while it runs (`_show_run_dock`).
+        bar.grid(row=4, column=0, sticky="ew", padx=15, pady=(0, 6))
         bar.grid_columnconfigure(0, weight=1)
         line = ctk.CTkFrame(bar, fg_color="transparent")  # the message and its action
         line.grid(row=0, column=0)
@@ -1000,9 +1032,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         return True
 
     def _show_phone_button(self) -> None:
-        """📱 beside the name button while there is a phone to look at (connected, with Plex)."""
+        """📱 beside the name button while there is a phone to look at (connected, with a
+        library: Plex or the folders)."""
         phone = self._services.phone
-        self._band.set_phone(phone.available and phone.plex_connected and bool(phone.phones()))
+        self._band.set_phone(phone.available and phone.has_library and bool(phone.phones()))
 
     def _open_phone(self) -> None:
         """📱: the phone's list of what's on it; with several phones a menu first, the selected
@@ -1035,10 +1068,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
 
     def _can_send_to_phone(self) -> bool:
-        """A Library card gets 📱 while the phone connection has a phone to send to, and only
-        with Plex as the library (the phone plays from Plex, not from your folders)."""
+        """A Library card gets 📱 while the phone connection has a phone to send to, with
+        either library (Plex, or your folders: the phone copies those from this PC)."""
         phone = self._services.phone
-        if library_source(self._services.settings.current) != "plex":
+        if library_source(self._services.settings.current) is None:
             return False
         return phone.available and bool(phone.phones())
 
@@ -1054,7 +1087,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
             people=phone.people,
             current_person=self._services.profiles.current_id,
             sends=self._services.phone_sends,
-            episodes=self._services.plex.episodes,
+            episodes=episodes_reader(
+                self._services.plex.episodes,
+                self._services.folder_playing.show_videos,
+                lambda: self._services.profiles.current_id,
+            ),
             on_sent=lambda text: self.set_status(text, clear_after_ms=6000),
         )
 
@@ -1166,6 +1203,36 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
         spawn(context_menu.refresh_from(forge), name="forge-menu-refresh")
         spawn(self._old_mediaforge_notice(forge), name="forge-old-notice")
+        self._follow_runs(forge.run_progress)
+
+    def _follow_runs(self, progress: RunProgress) -> None:
+        """MediaForge's dock on every page from now on (`_show_run_dock`)."""
+        from app.forge.ui.run_dock import RunDock
+
+        if self._run_dock is not None or not self.winfo_exists():
+            return
+        self._run_dock = RunDock(self, on_open=partial(self._part_clicked, SwitchPart.FORGE))
+        self._run_progress = progress
+        self._unsubscribe_run = progress.subscribe(lambda _state: self._show_run_dock())
+        self._show_run_dock()
+
+    def _show_run_dock(self) -> None:
+        """While MediaForge runs: its dock, centred in a row of its own under the page on screen
+        (the page that much shorter meanwhile), as under MediaForge's queue; on MediaForge's page
+        only the page's own while that is its run."""
+        dock, progress = self._run_dock, self._run_progress
+        if dock is None or progress is None or not dock.winfo_exists():
+            return
+        from app.forge.core.run_progress import PAGE  # loaded with the dock already
+        from app.forge.ui.run_dock import DOCK_PAD
+
+        state = progress.state
+        own_bar = self._mode is Mode.FORGE and progress.busy(PAGE)
+        if not state.running or own_bar or self._mode is None:
+            dock.grid_remove()
+            return
+        dock.set_state(state)
+        dock.grid(row=3, column=0, pady=DOCK_PAD)
 
     async def _old_mediaforge_notice(self, forge: ForgeServices) -> None:
         """Once: an old MediaForge's data waits to be brought over (app/forge/old_install.py)."""
@@ -1332,9 +1399,15 @@ class MainWindow(AsyncCTk, ctk.CTk):
         elif item.movie is not None:
             self._grab_movie(item.movie)
 
-    async def _film_in_plex(self, movie_id: int, imdb_id: str | None) -> bool:
-        """Whether a film is in Plex (its window's quiet ✓)."""
-        return (await self._services.library.plex_films()).has(movie_id, imdb_id)
+    async def _film_in_plex(
+        self, movie_id: int, imdb_id: str | None
+    ) -> library_words.HaveSource | None:
+        """Where a film is had, in Plex or in the folders, None when it isn't (its window's
+        quiet ✓ and its tip)."""
+        films = await self._services.library.plex_films()
+        if not films.has(movie_id, imdb_id):
+            return None
+        return library_words.have_source(from_folders=films.only_in_folders(movie_id, imdb_id))
 
     def _select_mode(self, mode: Mode) -> None:
         if mode is self._mode:
@@ -1367,6 +1440,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
                 page.grid_remove()
         pages[mode].grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._show_library_checked()
+        self._show_run_dock()  # on the page now on screen (or not, on MediaForge's)
         if leaving_forge:
             self._forge.close()
         if forge:
@@ -1828,6 +1902,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             phone=self._services.phone,
             forge=self._services.forge,
             folder_library=self._services.folder_library,
+            problem_reports=self._services.problem_reports,
             section=section,
         )
         if section is not None and spot is not None:

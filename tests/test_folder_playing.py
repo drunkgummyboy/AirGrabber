@@ -105,7 +105,7 @@ class FolderTestCase(unittest.IsolatedAsyncioTestCase):
             Path(row.path).parent.mkdir(parents=True, exist_ok=True)
             Path(row.path).write_bytes(b"video")
         await self.db.library_files.replace_folder(str(self.root), rows)
-        await self.db.plex.replace(PlexScan(titles=(DUNE, ARRIVAL, SEVERANCE)), NOW)
+        await self.db.folders.replace(PlexScan(titles=(DUNE, ARRIVAL, SEVERANCE)), NOW)
         self.settings = SettingsService(
             self.db.settings,
             Settings(
@@ -116,7 +116,7 @@ class FolderTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.now = NOW
         self.playing = FolderPlaying(
-            self.settings, self.db.library_files, self.db.watch_places, self.db.plex,
+            self.settings, self.db.library_files, self.db.watch_places, self.db.folders,
             now=lambda: self.now,
         )
         self.person = 1
@@ -263,7 +263,7 @@ class FolderPlayingTests(FolderTestCase):
         self.person = 2
         self.assertEqual([item.title for item in await page.continue_watching()], [DUNE])
         # A title no longer in the library drops out of the row.
-        await self.db.plex.replace(PlexScan(titles=(DUNE, SEVERANCE)), NOW)
+        await self.db.folders.replace(PlexScan(titles=(DUNE, SEVERANCE)), NOW)
         self.assertEqual(
             [item.title for item in await self.playing.continue_watching(profile_id=1)],
             [SEVERANCE],
@@ -342,6 +342,58 @@ class FolderPlayingTests(FolderTestCase):
         self.assertTrue(from_folders(ARRIVAL))
         self.assertFalse(from_folders(PlexTitle(kind="movie", key="3001", title="Dune")))
 
+    async def test_unwatched_starts_over(self) -> None:
+        item = f"movie:{ARRIVAL_ID}"
+        video = PlexVideo(key=item, file="")
+        await self.playing.report(video, 600_000, 7_000_000, profile_id=1)
+        await self.playing.mark_watched(video, profile_id=1)
+        await self.playing.mark_watched(video, profile_id=2)
+        self.later()
+        await self.playing.mark_unwatched(item, profile_id=1)
+        place = await self.db.watch_places.get(1, item)
+        assert place is not None
+        self.assertEqual(
+            (place.watched, place.position_ms, place.duration_ms, place.updated_at),
+            (False, 0, 7_000_000, self.now),
+        )
+        other = await self.db.watch_places.get(2, item)
+        assert other is not None
+        self.assertTrue(other.watched)  # another person's mark stays
+        # Nothing stored: nothing to unmark, and no row made for it.
+        await self.playing.mark_unwatched(f"movie:{DUNE_ID}", profile_id=1)
+        self.assertIsNone(await self.db.watch_places.get(1, f"movie:{DUNE_ID}"))
+        with self.assertRaises(ValueError):
+            await self.playing.mark_unwatched("3001", profile_id=1)  # a Plex key
+
+    async def test_clearing_a_place_keeps_watched(self) -> None:
+        item = f"episode:{SEVERANCE_ID}:1:2"
+        video = PlexVideo(key=item, file="")
+        await self.playing.mark_watched(video, profile_id=1)
+        await self.playing.report(video, 900_000, 3_000_000, profile_id=1)  # watching it again
+        before = await self.db.watch_places.get(1, item)
+        assert before is not None
+        self.later()
+        await self.playing.clear_place(item, profile_id=1)
+        place = await self.db.watch_places.get(1, item)
+        assert place is not None
+        self.assertEqual(
+            (place.watched, place.position_ms, place.duration_ms), (True, 0, 3_000_000)
+        )
+        self.assertEqual(place.updated_at, before.updated_at)  # taken off, not watched again
+        self.assertEqual(await self.playing.continue_watching(profile_id=1), [])
+        # Unwatched with a place: back to the start, still unwatched.
+        film = f"movie:{ARRIVAL_ID}"
+        await self.playing.report(PlexVideo(key=film, file=""), 600_000, 7_000_000, profile_id=1)
+        await self.playing.clear_place(film, profile_id=1)
+        cleared = await self.db.watch_places.get(1, film)
+        assert cleared is not None
+        self.assertEqual((cleared.watched, cleared.position_ms), (False, 0))
+        # No row: nothing stored.
+        await self.playing.clear_place(f"movie:{DUNE_ID}", profile_id=1)
+        self.assertIsNone(await self.db.watch_places.get(1, f"movie:{DUNE_ID}"))
+        with self.assertRaises(ValueError):
+            await self.playing.clear_place("folder:movie:1", profile_id=1)
+
     async def test_nothing_while_the_folders_arent_the_library(self) -> None:
         await self.settings.update(folder_library_on=False)
         playback = self.playback()
@@ -381,10 +433,20 @@ class PlexAsBeforeTests(PlayingTestCase):
             [LibraryFile(path=r"D:\Films\Dune.mkv", size=1, mtime=1.0, kind="movie",
                          tmdb_id=693134, recognised=True)],
         )
-        playing = FolderPlaying(
-            self.settings, self.db.library_files, self.db.watch_places, self.db.plex
+        folder_dune = PlexTitle(
+            kind="movie", key=title_key("movie", 693134), title="Dune: Part Two", tmdb_id=693134
         )
-        self.assertFalse(playing.on)  # Plex wins
+        await self.db.folders.replace(PlexScan(titles=(folder_dune,)), NOW)
+        await self.db.plex.replace(
+            PlexScan(titles=(PlexTitle(kind="movie", key="3001", title="Dune: Part Two"),)), NOW
+        )
+        playing = FolderPlaying(
+            self.settings, self.db.library_files, self.db.watch_places, self.db.folders
+        )
+        # Was "Plex wins": the folders now count beside Plex (two shelves), their titles from
+        # their own tables only.
+        self.assertTrue(playing.on)
+        self.assertEqual(await playing.titles(), [folder_dune])
         playback = PlaybackService(self.plex, nothing, folder_library=playing, person=lambda: 1)
         self.assertTrue(playback.available)
         plex_dune = PlexTitle(kind="movie", key="3001", title="Dune: Part Two", tmdb_id=693134)
