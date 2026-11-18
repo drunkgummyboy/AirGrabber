@@ -1,6 +1,7 @@
 """Forge's move records: where Forge moved a video into the Series or Movies library folder from,
-kept in forge.db (`moves`) for a year, longer than the 50 runs of undo history. AirGrabber's
-Downloads page reads them (where a finished download ended up)."""
+kept in forge.db (`moves`) for a year, longer than the 50 runs of undo history; a record whose
+file lies in a folder a rule watches (a Stays rule's sorted file: the renamer's memory) is kept
+for good. AirGrabber's Downloads page reads them (where a finished download ended up)."""
 
 from __future__ import annotations
 
@@ -22,10 +23,12 @@ class MoveNote(BaseModel, frozen=True):
     target: Path
     kind: MediaKind
     tmdb_id: int | None = None  # the film's, or the series' TMDB id
+    # The folders the rules watch now: the records whose file lies below one never expire.
+    kept_below: tuple[Path, ...] = ()
 
 
 class MoveRecord(BaseModel, frozen=True):
-    """One move into a library folder (kept for a year)."""
+    """One move into a library folder (kept for a year; for good inside a watched folder)."""
 
     source: Path
     target: Path

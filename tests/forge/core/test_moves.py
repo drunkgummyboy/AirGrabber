@@ -1,6 +1,7 @@
 """Forge's move records (app/forge/core/moves.py, app/forge/db/moves.py, schema v3): a rename into
-a library folder recorded in its journal step and taken out by undo, the readers AirGrabber uses
-(`moves_from`, `subscribe`), and a MediaForge 1.3 database migrating.
+a library folder or a rule's destination recorded in its journal step and taken out by undo, the
+readers AirGrabber uses (`moves_from`, `subscribe`) and the renamer's (`targets_in`), and a
+MediaForge 1.3 database migrating.
 
 Every file lives in the test's own temporary folder; TMDB is a fake."""
 
@@ -29,6 +30,7 @@ from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia
 from app.forge.models.moves import MOVES_KEPT_S, MoveNote
 from app.forge.models.plan import Plan, PlannedFile
+from app.forge.models.rules import Rule, RuleTarget
 from app.forge.models.settings import ForgeSettings
 from app.forge.services import ForgeServices
 from app.services.images import ImageCache
@@ -242,6 +244,46 @@ class JournalTest(MovesTestCase):
         [move] = await self.moves.moves_from(self.downloads)
         self.assertEqual((move.kind, move.tmdb_id), (MediaKind.MOVIE, DUNE))
 
+    async def test_a_move_into_a_rule_destination_is_recorded(self) -> None:
+        big = self.tmp / "Movies 4K"
+        courses = self.tmp / "Courses"
+        rules = [
+            Rule(
+                id=1,
+                folder=str(self.downloads),
+                take="films",
+                films=RuleTarget(preset="Movie (Folder)", to="folder", folder=str(big)),
+            ),
+            Rule(id=2, folder=str(courses), take="shows", stays=True),
+        ]
+        moves = ForgeMoveService(
+            MoveRepository(self.db), settings=lambda: self.settings, rules=lambda: rules
+        )
+        src = self.downloads / "Dune.2021.2160p.mkv"
+        to_big = PlannedFile(item_id=1, source=src, target=big / "Dune (2021)" / "Dune (2021).mkv")
+        watched = (self.downloads, courses)  # their records never expire
+        self.assertEqual(
+            moves.note(to_big),
+            MoveNote(
+                source=to_big.source, target=to_big.target, kind=MediaKind.MOVIE, kept_below=watched
+            ),
+        )
+        sorted_ = courses / "Gold Rush (2010)" / "Gold Rush (2010) - S01E01.mkv"
+        stays = PlannedFile(item_id=2, source=courses / "Gold.Rush.S01E01.mkv", target=sorted_)
+        note = moves.note(stays, episode("Gold Rush", 1, 1, GOLD_RUSH))
+        self.assertEqual(
+            note,
+            MoveNote(
+                source=stays.source,
+                target=sorted_,
+                kind=MediaKind.EPISODE,
+                tmdb_id=GOLD_RUSH,
+                kept_below=watched,
+            ),
+        )
+        # Without the rules only the library folders are recorded, as before.
+        self.assertIsNone(self.moves.note(to_big))
+
     async def test_a_subtitle_moved_along_is_no_record_of_its_own(self) -> None:
         src = write(self.downloads / "Dune.2021.mkv")
         write(self.downloads / "Dune.2021.en.srt", b"sub")
@@ -270,6 +312,30 @@ class ReadersTest(MovesTestCase):
         [move] = await self.moves.moves_from(other)
         self.assertEqual(move.tmdb_id, GOLD_RUSH)
         self.assertEqual(await self.moves.moves_from(self.tmp / "Down"), [])  # whole names only
+
+    async def test_targets_in_reads_the_records_below_the_folders(self) -> None:
+        self.media = {1: film("Dune", DUNE), 2: episode("Gold Rush", 1, 1, GOLD_RUSH)}
+        dune = self.movies / "Dune (2021)" / "Dune (2021).mkv"
+        gold = self.series / "Gold Rush" / "Gold Rush - S01E01.mkv"
+        await self.rename(
+            (write(self.downloads / "Dune.mkv"), dune),
+            (write(self.downloads / "Gold.mkv"), gold),
+        )
+        upper = Path(str(self.movies).upper() + "\\")  # Windows' comparison, a trailing slash
+        self.assertEqual(await self.moves.targets_in([upper]), {moves_db.path_key(dune)})
+        self.assertEqual(
+            await self.moves.targets_in([self.movies, self.series]),
+            {moves_db.path_key(dune), moves_db.path_key(gold)},
+        )
+        self.assertEqual(await self.moves.targets_in([self.tmp / "Movie"]), set())  # whole names
+        self.assertEqual(await self.moves.targets_in([]), set())
+        # LIKE's own characters in a folder's name are only themselves.
+        odd = self.tmp / "Films_100%!"
+        self.media = {1: film("Dune", DUNE)}
+        self.settings = self.settings.model_copy(update={"movies_folder": str(odd)})
+        await self.rename((write(self.downloads / "Odd.mkv"), odd / "Dune.mkv"))
+        self.assertEqual(await self.moves.targets_in([odd]), {moves_db.path_key(odd / "Dune.mkv")})
+        self.assertEqual(await self.moves.targets_in([self.tmp / "FilmsX100Y!"]), set())
 
     async def test_newest_first(self) -> None:
         self.media = {1: film("Dune", DUNE)}
@@ -309,6 +375,27 @@ class ReadersTest(MovesTestCase):
         moves = await self.moves.moves_from(self.downloads)
         self.assertEqual([m.target.name for m in moves], ["Dune 2.mkv"])  # the old one went
 
+    async def test_records_inside_a_watched_folder_never_expire(self) -> None:
+        # A Stays rule's sorted files are the renamer's memory: kept for good, so a file sorted
+        # long ago is never forged again; the other records still go after a year.
+        courses = self.tmp / "Courses"
+        rules = [Rule(id=1, folder=str(courses), take="shows", stays=True)]
+        self.moves = ForgeMoveService(
+            MoveRepository(self.db), settings=lambda: self.settings, rules=lambda: rules
+        )
+        self.media[1] = episode("Gold Rush", 1, 1, GOLD_RUSH)
+        sorted_ = courses / "Gold Rush (2010)" / "Gold Rush (2010) - S01E01.mkv"
+        await self.rename((write(courses / "Gold.Rush.S01E01.mkv"), sorted_))
+        self.media[1] = film("Dune", DUNE)
+        await self.rename((write(self.downloads / "a.mkv"), self.movies / "Dune.mkv"))
+        a_year_on = time.time() + MOVES_KEPT_S + 60
+        with mock.patch.object(moves_db, "time") as clock:  # only the records' clock
+            clock.time.return_value = a_year_on
+            await self.rename((write(self.downloads / "b.mkv"), self.movies / "Dune 2.mkv"))
+        self.assertEqual(await self.moves.targets_in([courses]), {moves_db.path_key(sorted_)})
+        moves = await self.moves.moves_from(self.downloads)
+        self.assertEqual([m.target.name for m in moves], ["Dune 2.mkv"])  # the library's went
+
 
 # --- an old MediaForge's database ----------------------------------------------------------------
 
@@ -331,7 +418,7 @@ class MediaForgeFileTest(MovesTestCase):
             await conn.commit()
         db = await Database.open(path)
         try:
-            self.assertEqual((await db.fetch_one("PRAGMA user_version") or [0])[0], 4)
+            self.assertEqual((await db.fetch_one("PRAGMA user_version") or [0])[0], 5)
             moves = ForgeMoveService(MoveRepository(db), settings=lambda: self.settings)
             self.assertEqual(await moves.moves_from(self.downloads), [])  # no records before v3
             history = HistoryRepo(db, on_moves_change=moves.changed)

@@ -324,6 +324,36 @@ class RelevanceTests(unittest.TestCase):
         self.assertTrue(relevant("The Shawshank Redemption 1080p BluRay", unknown_year))
         self.assertFalse(relevant("The Shawshank Redemption S01E01", unknown_year))
 
+    def test_movie_release_starts_with_the_title(self) -> None:
+        """A film's name inside a longer one is another film: "The Beast" (2026) was once
+        grabbed as "Heart.Of.The.Beast.2026" (2026-11-17). Tags and sites before it don't count."""
+        beast = MOVIE.model_copy(update={"title": "The Beast", "year": 2026})
+        self.check(
+            beast,
+            good=[
+                "The.Beast.2026.2160p.WEB-DL.DV.HDR10",
+                "Beast 2026 1080p",
+                "[YTS.MX] The Beast (2026) [1080p] [WEBRip]",
+                "www.Torrenting.com   -    The.Beast.2026.1080p",
+                "[ www.UIndex.org ] - The Beast 2026 720p",
+                "rarbg.com - The.Beast.2026.720p",
+            ],
+            bad=[
+                "Heart.Of.The.Beast.2026.2160p.iT.WEB-DL.DV.HDR10+.MULTi.LAT.FRE.GER.POR.MP4-BTM",
+                "[YTS.MX] Heart Of The Beast (2026) [1080p]",
+                "Beauty.and.the.Beast.2026.1080p",
+            ],
+        )
+        spiderman = MOVIE.model_copy(update={"title": "Spider-Man", "year": 2002})
+        self.assertTrue(relevant("Spiderman.2002.1080p.BluRay", spiderman))
+        odyssey = MOVIE.model_copy(update={"title": "2001: A Space Odyssey", "year": 1968})
+        self.assertTrue(relevant("2001.A.Space.Odyssey.1968.2160p", odyssey))
+        hope = MOVIE.model_copy(update={"title": "Star Wars: Episode IV - A New Hope", "year": 1977})
+        self.assertTrue(relevant("Star.Wars.Episode.IV.A.New.Hope.1977.1080p", hope))
+        # Shows keep their own rules: an episode marker decides, not the first word.
+        severance = EPISODE.model_copy(update={"title": "Severance", "season": 2, "episode": 1})
+        self.assertTrue(relevant("Severance.S02E01.1080p", severance))
+
     def test_mostly_overlapping_titles(self) -> None:
         """Release names often shorten a title: 2+ shared words covering 60% of the smaller
         word set (title vs the release's name before its marker or year) are enough."""

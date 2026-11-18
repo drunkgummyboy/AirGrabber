@@ -23,6 +23,8 @@ from app.forge.ui.look import app_look
 from app.forge.ui.widgets.chips import ForgeProgress, OptionButton, option_style
 from app.forge.ui.widgets.virtual_list import (
     MONO_FAMILY,
+    RULE_ACTION,
+    RULE_MAX,
     Row,
     Sizes,
     VirtualList,
@@ -470,6 +472,55 @@ class QueueBandTests(TkCase):
         self.assertEqual(dests["→ Series › Show 1"].upper(), theme.pick(look.LINK).upper())
         self.assertEqual(dests["→ Series › Show 2"], theme.pick(theme.TEXT_MUTED))  # faded
 
+    async def test_the_rule_pill_is_a_click_target(self) -> None:
+        vlist = await self.queue_list()
+        pressed: list[tuple[int, str]] = []
+        vlist.on_action = lambda key, action: pressed.append((key, action))
+        rows = vlist.rows
+        long = "Rule: " + "Films in four K from the big download folder " * 3
+        rows[2] = rows[2].model_copy(update={"rule": "Rule: 4K films"})  # the ready band
+        rows[0] = rows[0].model_copy(update={"rule": long})
+        vlist.set_rows(rows)
+        await pump(self.root, 0.05)
+        canvas = vlist.canvas
+        box = vlist.action_box(-11, RULE_ACTION)
+        assert box is not None
+        texts = {cget(canvas, i, "text"): i for i in canvas.find_withtag("rule-text")}
+        self.assertIn("Rule: 4K films", texts)
+        [dest] = [i for i in canvas.find_withtag("band-dest") if cget(canvas, i, "text") == "→ Series › Show 1"]
+        self.assertGreater(box[0], canvas.bbox(dest)[2])  # right after the destination
+        self.assertIn((*box, "Rule: 4K films"), vlist._tips)
+        cut = next(text for text in texts if text.startswith("Rule: Films"))
+        self.assertTrue(cut.endswith("…"))  # cut to RULE_MAX, its tip the whole label
+        long_box = vlist.action_box(-10, RULE_ACTION)
+        assert long_box is not None
+        self.assertLessEqual(long_box[2] - long_box[0], round(RULE_MAX * vlist.scale) + 1)
+        self.assertIn((*long_box, long), vlist._tips)
+        x, y = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+        vlist.canvas.event_generate("<Motion>", x=x, y=y)
+        await pump(self.root, 0.05)
+        self.assertEqual(str(canvas.cget("cursor")), "hand2")  # it looks clickable
+        vlist.canvas.event_generate("<Button-1>", x=x, y=y)
+        await pump(self.root, 0.05)
+        self.assertEqual(pressed, [(-11, RULE_ACTION)])
+        self.assertIsNone(vlist.action_box(-12, RULE_ACTION))  # a band without a rule: none
+
+    async def test_the_rule_pill_repaints_on_a_switch_between_light_and_dark(self) -> None:
+        vlist = await self.queue_list()
+        rows = vlist.rows
+        rows[2] = rows[2].model_copy(update={"rule": "Rule: 4K films"})
+        vlist.set_rows(rows)
+        ctk.set_appearance_mode("light")
+        await pump(self.root, 0.05)
+        canvas = vlist.canvas
+        chip = app_look().CHIP
+        [pill] = canvas.find_withtag("rule")
+        self.assertEqual(cget(canvas, pill, "fill").upper(), chip[0].upper())
+        ctk.set_appearance_mode("dark")
+        await pump(self.root, 0.05)
+        [pill] = canvas.find_withtag("rule")
+        self.assertEqual(cget(canvas, pill, "fill").upper(), chip[1].upper())
+
     async def test_a_done_band_is_faded(self) -> None:
         vlist = await self.queue_list()
         canvas = vlist.canvas
@@ -590,6 +641,24 @@ class QuestionBandTests(TkCase):
         self.assertGreater(canvas.bbox(more)[1], canvas.bbox(first)[3] - 4)
         self.assertEqual(canvas.bbox(more)[0], canvas.bbox(first)[0])
         self.assertTrue(cget(canvas, more, "text").endswith("…"))
+
+    async def test_a_question_has_the_rule_after_its_line_when_it_fits(self) -> None:
+        ruled = ASKING.model_copy(update={"rule": "Rule: 4K films"})
+        vlist = await self.asking_list(ruled)
+        canvas = vlist.canvas
+        box = vlist.action_box(-20, RULE_ACTION)
+        assert box is not None
+        [more] = canvas.find_withtag("band-ask-more")
+        self.assertGreater(box[0], canvas.bbox(more)[2])  # after the question's whole line
+        moved = ruled.model_copy(update={"ask_more": "So many words " * 12})
+        vlist = await self.asking_list(moved, width=1100)  # its muted words go under it
+        box = vlist.action_box(-20, RULE_ACTION)
+        assert box is not None
+        asked = vlist.canvas.find_withtag("band-ask")
+        self.assertGreater(box[0], vlist.canvas.bbox(asked[-1])[2])  # after the question
+        long = moved.model_copy(update={"ask": "Is this " + "a very long title " * 8, "ask_bold": None})
+        vlist = await self.asking_list(long, width=1100)
+        self.assertIsNone(vlist.action_box(-20, RULE_ACTION))  # no room there: left out
 
     async def test_the_chip_has_its_caption_and_tells_the_new_name(self) -> None:
         vlist = await self.asking_list()

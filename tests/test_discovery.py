@@ -1215,3 +1215,25 @@ class ServicesWiringTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DetailsCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_the_newest_are_kept(self) -> None:
+        from app.services import discovery
+
+        fetched: list[int] = []
+
+        async def fetch(item_id: int) -> int:
+            fetched.append(item_id)
+            return item_id
+
+        cache = discovery._DetailsCache(
+            "test", fetch, timedelta(hours=1), lambda: datetime(2026, 11, 7, tzinfo=UTC)
+        )
+        with mock.patch.object(discovery, "DETAILS_KEPT", 2):
+            for item_id in (1, 2, 1, 3):  # the second 1 comes from the cache
+                await cache.get(item_id)
+            self.assertFalse(cache.has(1))  # stored first, gone first
+            self.assertTrue(cache.has(2))
+            self.assertTrue(cache.has(3))
+        self.assertEqual(fetched, [1, 2, 3])

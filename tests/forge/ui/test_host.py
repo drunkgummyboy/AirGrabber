@@ -23,6 +23,7 @@ import httpx
 from app.config import AppPaths
 from app.forge.core.auto import WatchStatus
 from app.forge.core.queue import ItemStatus
+from app.forge.models.rules import Rule
 from app.forge.runtime import FAILED_REASON, ForgeRuntime, ForgeState
 from app.forge.services import ForgeServices
 from app.forge.ui.confirm_window import ConfirmWindow
@@ -449,6 +450,9 @@ class RenamerTests(HostCase):
             movies_folder=str(self.tmp / "Movies"),
             automatic="trial",
         )
+        # The rules drive watching (carried over at the start, before these folders were set).
+        # The renamer hears the rules' Save (a new folder watched) and looks.
+        await services.rules.replace_all([Rule(folder=str(self.tmp / "downloads"), mode="manual")])
         await pump_until(
             self.root, lambda: self.host.status is not None and self.host.status.state == "trial"
         )

@@ -84,20 +84,27 @@ class Ignored(Protocol):
     def folder_ignored(self, folder: Path | str) -> bool: ...
 
 
-def candidates(root: Path, ignored: Ignored | None = None) -> list[Path]:
+def candidates(
+    root: Path, ignored: Ignored | None = None, prune: Iterable[Path] = ()
+) -> list[Path]:
     """The videos under `root` that may be downloads (blocking: run it in a thread), without
-    the files and folders in `ignored`.
+    the files and folders in `ignored`, and without walking into the folders `prune` (where
+    files are moved to: never taken, so a sorted collection costs a look nothing).
 
     Raises OSError when `root` itself can't be read (not there, the NAS is off).
     """
     with os.scandir(fsops.long_path(root)):
         pass
+    pruned = {os.path.normcase(str(folder)).rstrip("\\/") for folder in prune}
     found: list[Path] = []
     for folder, dirs, names in os.walk(fsops.long_path(root)):
         dirs[:] = [d for d in dirs if not _skip_folder(d)]
-        if ignored:
+        if ignored or pruned:
             here = fsops.short_path(folder)
-            dirs[:] = [d for d in dirs if not ignored.folder_ignored(here / d)]
+            if pruned:
+                dirs[:] = [d for d in dirs if os.path.normcase(str(here / d)) not in pruned]
+            if ignored:
+                dirs[:] = [d for d in dirs if not ignored.folder_ignored(here / d)]
         if any(_in_progress(n) for n in names):
             continue  # part of this release is still coming in: none of it is finished yet
         lower = {n.lower() for n in names}

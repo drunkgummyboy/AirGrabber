@@ -35,20 +35,29 @@ A click on a band selects it. Under the question of a download already in the li
 copies' quality and size (app/forge/core/replace_facts.py, read once per name in a thread under a
 time limit, `read_facts` replaceable in tests). "Leave it alone ▾" (and "Keep the one I have ▾")
 opens a small menu: "Leave this file alone" (its files) and, when they sit in a subfolder of a
-watched folder, "Leave this whole folder alone" (the download's own folder right under the
-watched one, `core.ignored.top_folder`); Auto-rename leaves them alone from then on
+watched folder (its own, else one the rules watch: `services.rules.watched_folders`), "Leave this
+whole folder alone" (the download's own folder right under the watched one,
+`core.ignored.top_folder`); Auto-rename leaves them alone from then on
 (`services.ignored`, listed in Settings › Auto-rename) and their rows leave the queue. Forge
 renames everything not
 waiting for the owner in one go: dropped files where they are, or in their library folder with
 the band's Move to library folder on (without that folder chosen they are left alone, and say so),
-each band with its own preset (or its Custom rule) in one run, and watched downloads always into
-their library folder with their band's preset, through the automatic renamer
-(`services.auto.rename(naming=…)`). A band's subtitle says which: "📦 Moves to …" or "📁 Stays …".
+each band with its own preset (or its Custom rule) in one run, and watched downloads always
+where their rule sends them with their band's preset, through the automatic renamer
+(`services.auto.rename(naming=…)`). A band's subtitle says which: "📦 Moves to …" or "📁 Stays …"
+(a watched download's rule that sorts its files in place: "📁 Sorted in …"). A watched download's
+band names its rule ("Rule: 4K films", `route_of`: app/forge/core/rules.py's `route_for_item`); a
+click on it opens that rule's editor in Settings › Auto-rename (`open_rule`, through the page's
+`on_settings`). A ready one that waits says why: its rule is Manual (or it was taken as Manual
+once), its rule's preset is gone, its rule was changed since it took the file, or no rule takes it
+any more (then it names no destination) (`_waits`). The bands
+follow a change of the rules (`services.rules.subscribe`).
 
 Each band's `Choice` (preset, options, Custom rule) lives as long as its files are queued (in
 memory): the files of one show or film share one (`band_identity`); a new band starts with its
 kind's default (the one remembered for the kind, the last chosen, the library's, the first that
-fits), a watched download with its library's preset; presets read again keep each band's preset
+fits), a watched download with its rule's preset and the rule's extras (`_rule_default`; the kind's
+default when that preset is gone); presets read again keep each band's preset
 by name, else its default. Choosing a preset for a band remembers it as its kind's last. A
 right-click request's preset (`add_paths(paths, preset=)`) names the files it added;
 `select_preset(name)` alone names every band not done that it fits. Forge runs one at a time
@@ -91,17 +100,15 @@ import customtkinter as ctk
 
 from app.forge.clients.trailers import ToolInstallError
 from app.forge.core import fsops
-from app.forge.core.airgrabber_folders import watched_folders
 from app.forge.core.auto import (
     TOOLS_NOT_THERE,
     WAITING_FOR_AUTO,
     NamingChoice,
     held_in_library,
-    library_naming,
     settling_message,
     taking,
 )
-from app.forge.core.duplicates import aside_folder
+from app.forge.core.duplicates import aside_folder, needs_a_place, place_problem
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.formatter import name_file
 from app.forge.core.ignored import top_folder
@@ -110,6 +117,7 @@ from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import PlanPart, build_mixed_plan, describe, identity_of
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
 from app.forge.core.replace_facts import ReplaceFacts, replace_facts
+from app.forge.core.rules import Route, in_watched_folder, route_for_item
 from app.forge.core.run_progress import PAGE, RunSteps
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind, TypeHint
@@ -133,18 +141,22 @@ from app.forge.ui.queue_rows import (
     Kind,
     QueueRows,
     Show,
+    Waits,
+    WatchedLook,
     build_queue_rows,
     empty_texts,
     episode_code,
     is_unsure,
     item_kind,
 )
+from app.forge.ui.rule_rows import name_of
 from app.forge.ui.subtitle_control import CC_ACTION, CcLook, SubtitleDesk, VideoTarget
 from app.forge.ui.widgets.chips import ForgeProgress, OptionButton, fit_text
 from app.forge.ui.widgets.dialogs import ask_choice, ask_text
 from app.forge.ui.widgets.virtual_list import (
     FOLDERS_ACTION,
     MONO_FAMILY,
+    RULE_ACTION,
     Row,
     VirtualList,
     faded_fill,
@@ -265,6 +277,19 @@ def _switch_label(text: str) -> str:
     return f"  {t(text)}  "
 
 
+def _waits(item: QueueItem, route: Route) -> Waits:
+    """Why a watched download's ready band waits: its rule was changed since it took the file,
+    its rule's preset is gone (it acts as Manual, whatever its mode), or it is Manual (the rule's
+    mode, or taken as Manual once)."""
+    if item.rule_changed:
+        return "changed"
+    if route.preset is None:
+        return "no_preset"
+    if item.manual or route.rule.mode == "manual":
+        return "manual"
+    return ""
+
+
 class QueueView(ctk.CTkFrame):
     """The queue on MediaForge's page. `tools_master`: where "+ Files" and "+ Folder" go (its
     owner places `toolbar` there and destroys it); without it a row at the view's top."""
@@ -328,6 +353,8 @@ class QueueView(ctk.CTkFrame):
         self._cancel = asyncio.Event()
         self._bindings: list[tuple[str, str]] = []
         self.on_choose_folders: Callable[[], object] = lambda: None  # the page: Settings' spot
+        # The page's: Settings at a section, scrolled to a spot (a band's rule: its editor).
+        self.on_settings: Callable[..., object] = lambda section, spot=None: None
         self.ask: AskFn = self._ask  # the questions, replaceable in tests
         self.ask_folder: Callable[[], str] = self._ask_folder  # the folder picker, the same
         self.ask_name: AskTextFn = self._ask_name
@@ -348,6 +375,8 @@ class QueueView(ctk.CTkFrame):
         theme.on_mode_change(self, self._repaint)
 
         self._unsubscribe = services.queue_events.subscribe(self._on_queue_event)
+        # A rule renamed or changed: the bands say so (their labels, routes and waits).
+        self._unrules = services.rules.subscribe(lambda _rules: self._schedule_refresh(0))
         self._unwatch = services.auto.watch_status(self._watch_status)  # after each look
         self.drops = attach_file_drops(self, self.add_paths)  # False: the buttons only
         self.spawn(self._load_presets())
@@ -838,20 +867,24 @@ class QueueView(ctk.CTkFrame):
             preset = next((p for p in presets if fits(p, kind)), presets[0] if presets else None)
         return Choice(preset=preset, options=preset.options if preset else PresetOptions())
 
-    def _library_default(self, kind: Kind) -> Choice:
-        """A watched download's choice: its library's preset (as the renamer names it)."""
-        settings = self.services.settings.current
-        name = settings.series_preset if kind == "series" else settings.movies_preset
-        fallback = "Series (Folder)" if kind == "series" else "Movie (Folder)"
-        for wanted in (name, fallback):
-            preset = next((p for p in self.presets if p.name == wanted), None)
-            if preset is not None:
-                return Choice(preset=preset, options=preset.options)
-        return self._kind_default(kind)
+    def route_of(self, item: QueueItem) -> Route | None:
+        """A watched download's route by its rule (`route_for_item`; None: no rule takes it)."""
+        services = self.services
+        return route_for_item(
+            item, services.rules.current, services.settings.current, self.presets
+        )
+
+    def _rule_default(self, item: QueueItem) -> Choice:
+        """A watched download's choice: its rule's preset with the rule's extras (as the renamer
+        names it); its kind's default when the rule's preset is gone or no rule takes it."""
+        route = self.route_of(item)
+        if route is None or route.preset is None:
+            return self._kind_default(item_kind(item))
+        return Choice(preset=route.preset, options=route.options)
 
     def _default_choice(self, item: QueueItem) -> Choice:
         if item.watched is not None:
-            return self._library_default(item_kind(item))
+            return self._rule_default(item)
         return self._kind_default(item_kind(item))
 
     def _sync_choices(self) -> None:
@@ -1548,11 +1581,20 @@ class QueueView(ctk.CTkFrame):
     def _build(self) -> QueueRows:
         settings = self.services.settings.current
         presets = self.presets
+        rules = self.services.rules.current
         self._sync_choices()
 
-        def naming(item: QueueItem) -> tuple[str, Path]:
-            # Into its library folder, named as its band chose (the library's preset by default).
-            return self.rule_for(item), library_naming(item, settings, presets)[1]
+        def naming(item: QueueItem) -> WatchedLook:
+            # Where its rule sends it, named as its band chose (the rule's preset by default).
+            fmt = self.rule_for(item)
+            route = route_for_item(item, rules, settings, presets)
+            if route is None:  # no rule takes it: it says so (Forge holds it with that reason)
+                why: Waits = (
+                    "no_rule" if in_watched_folder(item.path, rules, settings) else "unwatched"
+                )
+                return WatchedLook(fmt, item.watched, False, "", why)
+            name = name_of(route.rule)
+            return WatchedLook(fmt, route.root, route.moves, name, _waits(item, route))
 
         return build_queue_rows(
             self.services.queue.items,
@@ -1782,8 +1824,26 @@ class QueueView(ctk.CTkFrame):
             self.spawn(self.open_in_explorer(ids))
         elif action == FOLDERS_ACTION:
             self.on_choose_folders()
+        elif action == RULE_ACTION:
+            self.open_rule(ids)
         elif action == CHOOSE_ACTION:
             self.spawn(self._pick_band_match(ids))
+
+    def open_rule(self, ids: Sequence[int]) -> None:
+        """A band's rule label: Settings › Auto-rename with that rule's editor open (the page's
+        `on_settings`, at the rule's spot); only the section when the rule was deleted since."""
+        from app.forge.ui.settings_pages import RULE_SPOT, SECTION_LIBRARY
+
+        queue = self.services.queue
+        item = next((i for i in (queue.get(n) for n in ids) if i is not None), None)
+        route = self.route_of(item) if item is not None else None
+        if route is None:
+            return
+        if route.number and route.rule.id:
+            self.on_settings(SECTION_LIBRARY, RULE_SPOT.format(id=route.rule.id))
+        else:
+            self.on_settings(SECTION_LIBRARY)
+        log.info("Opened a band's rule in Settings (rule %d)", route.rule.id)
 
     async def open_in_explorer(self, ids: Sequence[int]) -> None:
         """A band's 📂: where its files are now (`item.path` follows a rename). The check goes
@@ -1878,8 +1938,9 @@ class QueueView(ctk.CTkFrame):
 
     def ignore_folder_for(self, items: Sequence[QueueItem]) -> Path | None:
         """The one folder right under a watched folder that holds all of `items`, or None (a
-        file directly in the watched folder, a file from elsewhere, files from two folders)."""
-        roots = [Path(folder) for folder in watched_folders(self.services.settings.current)]
+        file directly in the watched folder, a file from elsewhere, files from two folders).
+        A file without its own watched folder is placed by the folders the rules watch."""
+        roots = [Path(folder) for folder in self.services.rules.watched_folders()]
         found: Path | None = None
         for item in items:
             root = item.watched or next((r for r in roots if inside(item.path, r)), None)
@@ -2423,20 +2484,22 @@ class QueueView(ctk.CTkFrame):
                 item.status, item.message = ItemStatus.READY, ""
         return result
 
-    def _aside_place(self, libraries: Sequence[Path]) -> tuple[bool, Path | None]:
-        """Whether a replace may go on, and the place the copies go when a library folder is a
-        share or drive root: the one chosen this session, else asked now (`ask_folder`) and kept
-        once it is outside the library folders."""
+    def _aside_place(self, roots: Sequence[Path]) -> tuple[bool, Path | None]:
+        """Whether a replace may go on, and the place the copies go when the folder a band's
+        names start in (its route's root: a library folder, a rule's own folder or its watched
+        folder) is a share or drive root: the one chosen this session, else asked now
+        (`ask_folder`) and kept once it is outside the library folders and those roots."""
         services = self.services
-        if all(aside_folder(library, None) is not None for library in libraries):
+        if not needs_a_place(roots):
             return True, None
-        if services.aside_place is not None:
-            return True, services.aside_place
+        known = services.aside_place
+        if known is not None and place_problem(known, roots) is None:
+            return True, known
         chosen = self.ask_folder()
         if not chosen or not self.winfo_exists():
             return False, None
         place = Path(chosen)
-        problem = services.duplicates_place_problem(place)
+        problem = services.duplicates_place_problem(place) or place_problem(place, roots)
         if problem is not None:
             self._say(t(problem), level=logging.WARNING)
             return False, None
@@ -2449,20 +2512,22 @@ class QueueView(ctk.CTkFrame):
         episode is there already: asked first ("… The one there now moves to Duplicates."), then
         the copy there moves aside and the download takes its place, in one run
         (`services.auto.replace`): its Undo (the card's or History's) puts both back."""
-        queue, settings = self.services.queue, self.services.settings.current
+        queue = self.services.queue
         items = [
             i
             for i in (queue.get(n) for n in ids)
             if i is not None and i.watched is not None and held_in_library(i)
         ]
-        libraries = [library_folder(i.media.kind, settings) for i in items]
-        if not items or None in libraries:
+        routes = [self.route_of(i) for i in items]
+        roots = [route.root for route in routes if route is not None and route.root is not None]
+        if not items or len(roots) != len(items):
             return
-        go, place = self._aside_place([lib for lib in libraries if lib is not None])
+        go, place = self._aside_place(roots)
         if not go:
             return
-        # A band is one show or film: one library folder. Its name only, never the full path.
-        folder = aside_folder(libraries[0] or Path(), place) or Path()
+        # A band is one show or film: one folder its names start in. Its name only, never the
+        # full path.
+        folder = aside_folder(roots[0], place) or Path()
         where = folder.name or folder.anchor
         if len(items) == 1:
             first = items[0]
@@ -2562,6 +2627,7 @@ class QueueView(ctk.CTkFrame):
 
     def destroy(self) -> None:
         self._unsubscribe()
+        self._unrules()
         self._unwatch()
         self._cancel_refresh()
         try:

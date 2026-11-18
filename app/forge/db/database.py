@@ -1,5 +1,6 @@
 """Forge's own database file, `forge.db`: settings, presets, remembered matches, the TMDB cache,
-the undo history, (from v3) the move records and (from v4) the ignored files and folders.
+the undo history, (from v3) the move records, (from v4) the ignored files and folders and (from
+v5) the rules for watched folders.
 
 MediaForge's schema v1 and v2 are kept exactly, so an old `mediaforge.db` copied in opens and
 is migrated on; new migrations continue from v3. The connection follows AirGrabber's pattern
@@ -111,6 +112,36 @@ CREATE TABLE ignored (
 );
 """
 
+# v5 (AirGrabber 3.20.0): the watched-folder rules (app/forge/db/rules.py). `position` is the rule
+# order; `enabled` the rule's on / off (AirGrabber's rule follows `use_airgrabber_downloads`
+# instead); `*_extras` JSON (only the ticks a rule changed). Filters added later are new columns
+# with a default (a later appended migration).
+_SCHEMA_V5 = """
+CREATE TABLE rules (
+    id            INTEGER PRIMARY KEY,
+    position      INTEGER NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    name          TEXT NOT NULL DEFAULT '',
+    folder        TEXT NOT NULL DEFAULT '',
+    airgrabber    INTEGER NOT NULL DEFAULT 0,
+    subfolders    INTEGER NOT NULL DEFAULT 1,
+    take          TEXT NOT NULL DEFAULT 'anything',
+    quality       TEXT NOT NULL DEFAULT 'any',
+    stays         INTEGER NOT NULL DEFAULT 0,
+    shows_preset  TEXT NOT NULL,
+    shows_extras  TEXT NOT NULL DEFAULT '{}',
+    shows_to      TEXT NOT NULL DEFAULT 'library',
+    shows_folder  TEXT NOT NULL DEFAULT '',
+    films_preset  TEXT NOT NULL,
+    films_extras  TEXT NOT NULL DEFAULT '{}',
+    films_to      TEXT NOT NULL DEFAULT 'library',
+    films_folder  TEXT NOT NULL DEFAULT '',
+    mode          TEXT NOT NULL DEFAULT 'manual',
+    fresh         INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX rules_airgrabber ON rules(airgrabber) WHERE airgrabber = 1;
+"""
+
 # Entry i upgrades the schema from version i to i + 1. Append only — never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
     _SCHEMA_V1,
@@ -120,6 +151,8 @@ MIGRATIONS: tuple[str, ...] = (
     _SCHEMA_V3,
     # v4 (AirGrabber 3.0.1): the ignored files and folders.
     _SCHEMA_V4,
+    # v5 (AirGrabber 3.20.0): the watched-folder rules.
+    _SCHEMA_V5,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

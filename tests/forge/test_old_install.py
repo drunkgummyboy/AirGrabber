@@ -22,6 +22,7 @@ import httpx
 from app.config import AppPaths
 from app.forge import old_install
 from app.forge.migration import OldInstall, find_old_install
+from app.forge.models.rules import Rule
 from app.forge.models.settings import ForgeSettings
 from app.forge.old_install import (
     BRING_FIRST_TEXT,
@@ -326,6 +327,8 @@ class GuardTests(ForgeAsyncTestCase):
             movies_folder=str(movies),
             automatic="trial",
         )
+        # The rules drive watching (carried over at the start, before these folders were set).
+        await services.rules.replace_all([Rule(folder=str(watch), mode="manual")])
         statuses: list[str] = []
         services.auto.on_status = lambda status: statuses.append(status.state)
         self.assertTrue(services.auto.blocked_by_old_install)
@@ -561,6 +564,7 @@ class SettingsBoxTests(TkCase):
             presets=None,
             history=None,
             matches=None,
+            rules=None,
             airgrabber_settings=None,
             run_lock=asyncio.Lock(),
         )

@@ -200,6 +200,14 @@ class TMDBClient:
         params = {"query": query, "include_adult": "false"}
         return (await self._list("/search/movie", params, _movie))[:limit]
 
+    async def search_tv(self, query: str, *, limit: int = 12) -> list[DiscoverShow]:
+        """Shows matching `query`, TMDB's best match first (as the lists know shows)."""
+        query = query.strip()
+        if not query or limit <= 0:
+            return []
+        params = {"query": query, "include_adult": "false"}
+        return (await self._list("/search/tv", params, _discover_show))[:limit]
+
     async def movie_details(self, movie_id: int) -> MovieDetails:
         """IMDb id, runtime, and the client region's certification and release dates."""
         path = f"/movie/{movie_id}"
@@ -513,7 +521,7 @@ class TMDBClient:
                 ) from None
             log.warning(
                 "TMDB %s: %s; retrying in %.1f s (attempt %d of %d)",
-                path, reason, delay, attempt + 1, max_attempts,
+                _logged(path), reason, delay, attempt + 1, max_attempts,
             )
             await asyncio.sleep(delay)
 
@@ -577,7 +585,7 @@ def _parse_part(
     try:
         return convert(payload[name])
     except ValidationError as exc:
-        log.info("TMDB %s: no %s: %s", path, name, _summarize(exc))
+        log.info("TMDB %s: no %s: %s", _logged(path), name, _summarize(exc))
         return []
 
 
@@ -596,16 +604,19 @@ def _parse_results(
         try:
             parsed.append(convert(item))
         except ValidationError as exc:
-            label = _item_label(item, index)
-            log.warning("TMDB %s: skipping malformed %s: %s", path, label, _summarize(exc))
+            log.warning(
+                "TMDB %s: skipping malformed item %d: %s", _logged(path), index, _summarize(exc)
+            )
     return parsed
 
 
-def _item_label(item: object, index: int) -> str:
-    """'item 3 (id 12345)' when the raw item carries an id, else 'item 3'."""
-    if isinstance(item, dict) and (item_id := item.get("id")) is not None:
-        return f"item {index} (id {item_id!r})"
-    return f"item {index}"
+_AN_ID = re.compile(r"/\d+")
+
+
+def _logged(path: str) -> str:
+    """A request's path as the log may hold it: "/movie/{id}", never a title's id (the phone's
+    search asks about what a person typed)."""
+    return _AN_ID.sub("/{id}", path)
 
 
 def _movie(raw: object) -> Movie:

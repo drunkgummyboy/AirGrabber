@@ -13,7 +13,7 @@ import builtins
 import gc
 import tkinter as tk
 import weakref
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
@@ -24,6 +24,7 @@ from app import i18n
 from app.forge.models.match import RememberedMatch
 from app.forge.models.media import MediaKind, TypeHint
 from app.forge.models.preset import DEFAULT_PRESETS, Preset, PresetOptions
+from app.forge.models.rules import Rule
 from app.forge.models.settings import ForgeSettings
 from app.forge.ui import settings_naming
 from app.forge.ui.settings_naming import (
@@ -109,6 +110,24 @@ class FakeMatches:
         self.stored.remove(match)
 
 
+class FakeRules:
+    """RuleService's surface the section uses: presets_renamed (recorded); and what Auto-rename
+    reads when a test visits it (`current`: AirGrabber's rule only, `airgrabber_rule`,
+    `subscribe`)."""
+
+    def __init__(self) -> None:
+        self.renamed: list[dict[str, str]] = []
+        self.airgrabber_rule = Rule(id=1, airgrabber=True)
+        self.current: tuple[Rule, ...] = (self.airgrabber_rule,)
+
+    def subscribe(self, listener: Callable[[tuple[Rule, ...]], None]) -> Callable[[], None]:
+        return lambda: None
+
+    async def presets_renamed(self, renamed: Mapping[str, str]) -> None:
+        await asyncio.sleep(0)
+        self.renamed.append(dict(renamed))
+
+
 class FakeForge:
     """ForgeRuntime's surface: `services` (None until started), `start()`, `reason`."""
 
@@ -128,6 +147,7 @@ class FakeForge:
                 presets=presets or FakePresets(),
                 matches=matches or FakeMatches(),
                 subtitles=FakeSubtitleSource(),
+                rules=FakeRules(),
             )
         )
         self.services = self.parts if started else None
@@ -577,6 +597,18 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.assertEqual(self.told[0].renamed, {"Movie (Flat)": "Films"})
         assert part.editing is not None
         self.assertEqual(part.editing.preset.name, "Films")  # still edited after Save
+
+    async def test_a_rename_reaches_the_rules(self) -> None:
+        dialog, part, forge = await self.ready()
+        assert forge.parts is not None
+        rules = cast(FakeRules, forge.parts.rules)
+        self.select(part, "Movie (Folder)")
+        part._name.set("Films 4K")
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(rules.renamed, [{"Movie (Folder)": "Films 4K"}])
+        part._format.set("{t}")  # a change without a rename tells the rules nothing
+        self.assertTrue(await dialog._save_all())
+        self.assertEqual(len(rules.renamed), 1)
 
     async def test_the_library_choice_follows_a_renamed_preset(self) -> None:
         dialog, part, forge = await self.ready()

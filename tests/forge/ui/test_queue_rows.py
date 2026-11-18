@@ -23,6 +23,7 @@ from app.forge.ui.queue_rows import (
     EXPLORER_ACTION,
     REPLACE_ACTION,
     QueueRows,
+    WatchedLook,
     build_queue_rows,
     build_rows,
     empty_texts,
@@ -380,13 +381,94 @@ class QueueRowsTests(ForgeTestCase):
         item = episode(
             downloads, "VisionQuest.S01E02.Theseus.mkv", "VisionQuest", 1, 2, watched=downloads
         )
-        rows = build([item], naming=lambda _item: (SERIES_FOLDER, series))
+        rows = build([item], naming=lambda _item: WatchedLook(SERIES_FOLDER, series, True, "", ""))
         [band] = bands(rows)
         self.assertEqual(band.dest, "📦 Moves to Series › VisionQuest › VisionQuest - Season 01")
         self.assertEqual(rows.targets[item.id].parents[1], series / "VisionQuest")
         self.assertEqual((band.state, band.state_text), ("ready", "Ready to forge"))
         self.assertEqual(rows.needs, 0)
         self.assertEqual(rows.waiting, 1)  # no decision to make, but Forge still to click
+
+    def test_the_band_says_which_rule_took_it(self) -> None:
+        downloads = self.tmp / "dl"
+        film = movie(downloads, "Heart.of.the.Beast.2026.2160p.mkv", "Heart of the Beast", 2026,
+                     watched=downloads)  # fmt: skip
+        nas = Path(r"\\NAS\Movies 4K")  # a share root: named by its share
+        rows = build(
+            [film], naming=lambda i: WatchedLook("{ny}/{ny}", nas, True, "4K films", "")
+        )
+        [band] = bands(rows)
+        self.assertEqual(band.dest, "📦 Moves to Movies 4K › Heart of the Beast (2026)")
+        self.assertEqual(band.rule, "Rule: 4K films")
+        self.assertEqual(band.state_text, "Ready to forge")
+        self.assertEqual(rows.targets[film.id].parent, nas / "Heart of the Beast (2026)")
+        flat = build([film], naming=lambda i: WatchedLook("{ny}", nas, True, "4K films", ""))
+        self.assertEqual(bands(flat)[0].dest, "📦 Moves to Movies 4K")
+        dropped = movie(self.folder, "Heat.1995.mkv", "Heat", 1995)
+        [band] = bands(build([dropped], naming=lambda i: WatchedLook("{ny}", nas, True, "X", "")))
+        self.assertEqual(band.rule, "")  # a dropped file has no rule
+        [band] = bands(build([film], naming=lambda i: WatchedLook("{ny}", nas, True, "", "")))
+        self.assertEqual(band.rule, "")  # no rule takes it
+
+    def test_a_manual_rule_waits_for_you(self) -> None:
+        downloads = self.tmp / "dl"
+        item = episode(downloads, "The.Long.Road.S02E05.mkv", "The Long Road", 2, 5,
+                       watched=downloads)  # fmt: skip
+        look = WatchedLook(SERIES_FLAT, self.tmp / "Series", True, "Shows", "manual")
+        rows = build([item], naming=lambda i: look)
+        [band] = bands(rows)
+        self.assertEqual((band.state, band.state_text),
+                         ("ready", "Waits for you: rule “Shows” is Manual"))  # fmt: skip
+        self.assertEqual(band.rule, "Rule: Shows")
+        self.assertEqual(rows.counts["ready"], 1)  # still ready: Forge this does it
+        item.status, item.message = ItemStatus.HELD, "No year in the name: is it a movie?"
+        [band] = bands(build([item], naming=lambda i: look))
+        self.assertEqual(band.state_text, "Waiting for you")  # one that needs you says why
+
+    def test_a_changed_rule_says_so(self) -> None:
+        downloads = self.tmp / "dl"
+        item = movie(downloads, "Dune.2021.mkv", "Dune", 2021, watched=downloads)
+        look = WatchedLook(MOVIE_FLAT, self.tmp / "Movies", True, "Films", "changed")
+        [band] = bands(build([item], naming=lambda i: look))
+        self.assertEqual((band.state, band.state_text),
+                         ("ready", "Its rule was changed: check it"))  # fmt: skip
+
+    def test_a_stays_rule_is_sorted_in_its_folder(self) -> None:
+        courses = Path(r"D:\Courses")
+        item = movie(courses, "Intro.to.Watercolour.2024.mp4", "Intro to Watercolour", 2024,
+                     watched=courses)  # fmt: skip
+        look = WatchedLook(MOVIE_FOLDER, courses, False, "Courses", "")
+        rows = build([item], naming=lambda i: look)
+        [band] = bands(rows)
+        self.assertEqual((band.dest, band.dest_look), ("📁 Sorted in Courses", "stays"))
+        self.assertEqual(band.rule, "Rule: Courses")
+        named = "Intro to Watercolour (2024)"
+        self.assertEqual(rows.targets[item.id], courses / named / f"{named}.mp4")
+        item.status = DONE
+        item.finished_at = time.time()
+        [band] = bands(build([item], naming=lambda i: look, today=date.today()))
+        self.assertEqual(band.dest, "📁 Was sorted in Courses")  # done: past
+
+    def test_a_rule_whose_preset_is_gone_says_so(self) -> None:
+        downloads = self.tmp / "dl"
+        item = movie(downloads, "Dune.2021.mkv", "Dune", 2021, watched=downloads)
+        look = WatchedLook(MOVIE_FLAT, self.tmp / "Movies", True, "Films", "no_preset")
+        [band] = bands(build([item], naming=lambda i: look))
+        self.assertEqual((band.state, band.state_text),
+                         ("ready", "⚠ The preset of rule “Films” is gone: choose another"))  # fmt: skip
+
+    def test_a_file_no_rule_takes_says_so_and_names_no_destination(self) -> None:
+        downloads = self.tmp / "dl"
+        item = movie(downloads, "Dune.2021.mkv", "Dune", 2021, watched=downloads)
+        look = WatchedLook(MOVIE_FLAT, downloads, False, "", "unwatched")
+        [band] = bands(build([item], naming=lambda i: look))
+        self.assertEqual(band.state_text, "It isn't in a watched folder any more.")
+        self.assertEqual((band.dest, band.rule), ("", ""))  # never "Choose your Movies folder"
+        # Still in a watched folder, but no rule fits it: its own plain words.
+        look = WatchedLook(MOVIE_FLAT, downloads, False, "", "no_rule")
+        [band] = bands(build([item], naming=lambda i: look))
+        self.assertEqual(band.state_text, "No rule takes this file.")
+        self.assertEqual((band.dest, band.rule), ("", ""))
 
     def test_watched_files_are_ready_like_any_other(self) -> None:
         downloads = self.tmp / "dl"

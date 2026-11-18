@@ -2,16 +2,24 @@
 
 `ForgeServices.create` opens `forge.db` (`AppPaths.forge`), settles the journal rows a crash left
 unfinished, seeds the default presets and builds the settings service, TMDB adapter, resolver,
-queue, executor, undo, trailers, the move records and the automatic renamer. It does not start
+queue, executor, undo, trailers, the move records and the automatic renamer (driven by the rules,
+with the move records as its memory of sorted files). It does not start
 the renamer: `ForgeRuntime` (app/forge/runtime.py) does that once whoever shows Forge's state is
 listening.
 
-The window gets services, never repositories: `history`, `presets`, `matches` and `ignored` (what
-Auto-rename leaves alone, read at the start) are thin wrappers over `app.forge.db`, so
-`app/forge/ui` never imports it.
+The window gets services, never repositories: `history`, `presets`, `matches`, `ignored` (what
+Auto-rename leaves alone, read at the start) and `rules` (the rules for watched folders, read at
+the start after today's setup was carried over into them once) are thin wrappers over
+`app.forge.db`, so `app/forge/ui` never imports it.
 
-Settings are saved with `settings.update(...)`; when a save changes one of `RENAMER_FIELDS`
-the renamer is told at once (`AutoRenamer.reconfigure`), so Settings' Save needs nothing more.
+Settings' Save stores both with `rules.save(rules, changes)` (one change for the renamer's
+generation check, never waiting for a look; the rules that now watch what a look skipped marked
+fresh first); when
+a settings save changes one of `RENAMER_FIELDS` or the folders the rules watch (`_renamer_view`),
+and after every change of the rules (a mode or a preset too), the renamer is told at once
+(`AutoRenamer.reconfigure`), so Settings' Save needs nothing more. The
+ignored entries no longer in a folder the rules watch are forgotten at the start (`forget_gone`),
+and AirGrabber's folders (`AirGrabberFolderSync`) mark AirGrabber's rule fresh for a new one.
 
 The warm-up (INTEGRATION.md 3.6): guessit builds its rules on its first parse (with its import
 ~0.5-0.8 s of loop time, once per run). `warm_up()` does that with one made-up name: when the
@@ -36,7 +44,7 @@ from app.forge.clients.posters import CachedPosters
 from app.forge.clients.tmdb import ForgeTmdb
 from app.forge.clients.trailers import ToolInstallError, TrailerService
 from app.forge.core.activity import ActivityFeed
-from app.forge.core.airgrabber_folders import AirGrabberFolderSync, watched_folders
+from app.forge.core.airgrabber_folders import AirGrabberFolderSync
 from app.forge.core.auto import AutoRenamer, NamingChoice, RenamerParts
 from app.forge.core.file_check import FileCheck
 from app.forge.core.duplicates import (
@@ -56,6 +64,8 @@ from app.forge.core.parser import parse_filename
 from app.forge.core.presets_service import PresetService
 from app.forge.core.queue import Queue, QueueEvent
 from app.forge.core.recovery import recover
+from app.forge.core.rules import watched_folders
+from app.forge.core.rules_service import RuleService
 from app.forge.core.run_progress import RunProgress
 from app.forge.core.settings import ForgeSettingsService
 from app.forge.core.library import carry_move_option
@@ -69,7 +79,9 @@ from app.forge.db.ignored import IgnoredRepo
 from app.forge.db.matches import MatchRepo
 from app.forge.db.moves import MoveRepository
 from app.forge.db.presets import PresetRepo
+from app.forge.db.rules import RuleRepo
 from app.forge.db.settings import SettingsRepo
+from app.forge.models.rules import Rule
 from app.forge.models.settings import ForgeSettings
 from app.i18n import t, tn
 
@@ -122,15 +134,14 @@ async def wait_until_quiet(
         quiet = quiet + 1 if clock() - before - tick_s <= lag_s else 0
     return True
 
-# The settings the renamer works from: a save that changes one of them reconfigures it.
+# The settings the renamer works from: a save that changes one of them reconfigures it. The old
+# watched folders and Series / Movies presets aren't among them: the rules are read for watching.
 RENAMER_FIELDS: tuple[str, ...] = (
     "automatic",
-    "watch_folders",
     "series_folder",
     "movies_folder",
-    "series_preset",
-    "movies_preset",
     "clean_downloads",
+    "use_airgrabber_downloads",
 )
 
 QueueListener = Callable[[QueueEvent], None]
@@ -167,10 +178,10 @@ def _own_key(settings: SettingsService) -> str:
     return settings.current.opensubtitles_own_key.get_secret_value().strip()
 
 
-def _renamer_view(settings: ForgeSettings) -> tuple[object, ...]:
-    # The folders watched include AirGrabber's (B-01), which follow other fields than these.
+def _renamer_view(settings: ForgeSettings, rules: Sequence[Rule]) -> tuple[object, ...]:
+    # The folders the rules watch include AirGrabber's (B-01), which follow other fields too.
     fields = tuple(getattr(settings, name) for name in RENAMER_FIELDS)
-    return (*fields, tuple(watched_folders(settings)))
+    return (*fields, tuple(watched_folders(rules, settings)))
 
 
 class ForgeServices:
@@ -195,13 +206,18 @@ class ForgeServices:
         self.images = images
         self.activity = ActivityFeed()  # the Activity strip's translated lines
         match_repo = MatchRepo(db)
-        # The move records: a rename into a library folder is recorded in its journal step (the
-        # executor asks `note` with the caller's media, HistoryRepo writes and reports), an undo
-        # takes it out again.
-        self.moves = ForgeMoveService(MoveRepository(db), settings=lambda: settings.current)
+        # The move records: a rename into a library folder or a rule's destination (a Stays
+        # rule's watched folder too) is recorded in its journal step (the executor asks `note`
+        # with the caller's media, HistoryRepo writes and reports), an undo takes it out again.
+        # The rules are read at each note (`self.rules` is built below).
+        self.moves = ForgeMoveService(
+            MoveRepository(db), settings=lambda: settings.current, rules=lambda: self.rules.current
+        )
         history_repo = HistoryRepo(db, on_moves_change=self.moves.changed)
         self.history = HistoryService(history_repo)
         self.presets = PresetService(PresetRepo(db))
+        # The rules for watched folders (forge.db v5), loaded in `create`.
+        self.rules = RuleService(RuleRepo(db), settings)
         self.matches = MatchService(match_repo)
         # What Auto-rename leaves alone (the queue's Ignore, Settings › Auto-rename).
         self.ignored = IgnoreService(IgnoredRepo(db), activity=self.activity)
@@ -263,17 +279,31 @@ class ForgeServices:
                 settings=settings,
                 run_lock=self.run_lock,
                 ignored=self.ignored,
+                rules=self.rules,
+                outputs=self.moves,  # its memory of what it sorted inside watched folders
             ),
             activity=self.activity,
             progress=self.run_progress,
         )
+        # Settings' Save never lands inside a look's commit (held only a few DB writes long).
+        self.rules.hold_looks_with(self.auto.hold_looks)
         # Where AirGrabber's downloads end up, kept in Forge's settings (B-01; started with the
         # renamer).
+        # A folder AirGrabber's settings bring in makes AirGrabber's rule fresh (nothing moves
+        # unseen).
         self.airgrabber_folders = AirGrabberFolderSync(
-            settings, airgrabber_settings, activity=self.activity
+            settings,
+            airgrabber_settings,
+            rules=self.rules,
+            hold_looks=self.auto.hold_looks,  # the mark and the store: no look between them
+            activity=self.activity,
         )
-        self._renamer_settings = _renamer_view(settings.current)
+        # Taken again once the rules are loaded (`create`).
+        self._renamer_settings = _renamer_view(settings.current, self.rules.current)
         self._unsubscribe = settings.subscribe(self._settings_saved)
+        # Every change of the rules (a Save, an import, presets renamed; never a fresh flag)
+        # reconfigures it: a mode, preset or destination applies and the status is told at once.
+        self._unsubscribe_rules = self.rules.subscribe(lambda _rules: self._rules_saved())
         self._closed = False
         self._tools_task: asyncio.Task[None] | None = None  # fetching the trailer tools
         self._warm_task: asyncio.Task[None] | None = None  # the idle warm-up, while it waits
@@ -314,8 +344,10 @@ class ForgeServices:
             )
             await carry_subtitles(settings, services.presets, airgrabber_settings)
             await carry_move_option(settings, services.presets)
+            await services.rules.load()  # today's setup carried over into rules once
+            services._renamer_settings = services._renamer_view()  # with the rules read
             await services.ignored.load()
-            await services.ignored.forget_gone(map(Path, watched_folders(settings.current)))
+            await services.ignored.forget_gone(map(Path, services.rules.watched_folders()))
             if settled:
                 services.activity.say(
                     tn(
@@ -329,10 +361,24 @@ class ForgeServices:
         return services
 
     def _settings_saved(self, updated: ForgeSettings) -> None:
-        view = _renamer_view(updated)
+        self._renamer_inputs_changed(updated)
+
+    def _renamer_view(self, settings: ForgeSettings | None = None) -> tuple[object, ...]:
+        current = settings if settings is not None else self.settings.current
+        return _renamer_view(current, self.rules.current)
+
+    def _renamer_inputs_changed(self, settings: ForgeSettings | None = None) -> None:
+        """The settings changed: the renamer is reconfigured when what it works from did
+        (`_renamer_view`)."""
+        view = self._renamer_view(settings)
         if view != self._renamer_settings:
             self._renamer_settings = view
             self.auto.reconfigure()
+
+    def _rules_saved(self) -> None:
+        """The rules changed: the renamer is always reconfigured (it looks again at once)."""
+        self._renamer_settings = self._renamer_view()
+        self.auto.reconfigure()
 
     @property
     def parser_warm(self) -> bool:
@@ -452,6 +498,7 @@ class ForgeServices:
             return
         self._closed = True
         self._unsubscribe()
+        self._unsubscribe_rules()
         if self._warm_task is not None:
             self._warm_task.cancel()
         if self._tools_task is not None:

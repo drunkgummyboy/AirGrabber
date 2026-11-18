@@ -1,7 +1,11 @@
 """The queue: files waiting to be forged, each with its parsed name and TMDB lookup.
 
 Item statuses are internal values; the UI gives each one its own label. A held item's `message`
-is the reason the caller passed to `hold()` (already translated there).
+is the reason the caller passed to `hold()` (already translated there). A watched item keeps the
+rule that took it (`rule`, a snapshot: app/forge/core/rules.py's `route_for_item` routes by it),
+whether it was taken as Manual once (`manual`) and whether that rule changed since
+(`rule_changed`, `mark_rule_changed`). The renamer hands its finished downloads over as
+`WatchedFile`s (`add_watched`), parsed already by `parse_names` so the rules could be offered them.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from app.forge.core.matcher import Resolution, match_key
 from app.forge.core.parser import is_video, parse_filename
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia, TypeHint
 from app.forge.models.plan import PlanInput
+from app.forge.models.rules import Rule
 from app.models.tmdb import TMDBTitle
 
 
@@ -63,6 +68,9 @@ class QueueItem:
     run_id: int | None = None  # the run that renamed it
     match_problem: bool = False  # while HELD: held because the match is missing or wrong
     in_library: bool = False  # while HELD: the film or episode is in the library already
+    rule: Rule | None = None  # the rule for watched folders that took it, as it was then
+    manual: bool = False  # taken as Manual once (a fresh rule's or an un-pause's first look)
+    rule_changed: bool = False  # its rule was edited or deleted since it took the file
 
     @property
     def root(self) -> Path:
@@ -133,6 +141,23 @@ async def _parse_all(names: Sequence[str], hint: TypeHint) -> list[ParsedMedia]:
             await asyncio.sleep(PARSE_PAUSE_S)
             started, count = time.perf_counter(), 0
     return parsed
+
+
+async def parse_names(names: Sequence[str]) -> list[ParsedMedia]:
+    """File names as a watched download's are read: without the window's preset hint (a
+    download's kind comes from its name), in `_parse_all`'s small pieces."""
+    return await _parse_all(names, TypeHint.AUTO)
+
+
+class WatchedFile(NamedTuple):
+    """One finished download for `Queue.add_watched`: the file, the folder its rule watches, its
+    parsed name (None: parsed there), the rule that took it and whether it waits as Manual."""
+
+    path: Path
+    watched: Path
+    parsed: ParsedMedia | None = None
+    rule: Rule | None = None
+    manual: bool = False
 
 
 class Queue:
@@ -280,27 +305,36 @@ class Queue:
                 settled.append(other.id)
         return settled
 
-    async def add_watched(self, files: Sequence[tuple[Path, Path]]) -> list[int]:
-        """Finished downloads, as (file, watched folder) pairs; returns the ids of new items.
-
-        They are parsed without the window's preset hint: a download's kind comes from its name.
-        """
+    async def add_watched(self, files: Sequence[tuple[Path, Path] | WatchedFile]) -> list[int]:
+        """Finished downloads, as `WatchedFile`s or (file, watched folder) pairs (a pair has no
+        rule); returns the ids of new items. A given `parsed` isn't parsed again; the others are
+        read by `parse_names`."""
         async with self._adding:
             generation = self._generation
             known = {_key(i.path) for i in self.items}
-            fresh: dict[str, tuple[Path, Path]] = {}
-            for file, root in files:
-                if _key(file) not in known:
-                    fresh.setdefault(_key(file), (file, root))
+            fresh: dict[str, WatchedFile] = {}
+            for entry in files:
+                watched = entry if isinstance(entry, WatchedFile) else WatchedFile(*entry)
+                if _key(watched.path) not in known:
+                    fresh.setdefault(_key(watched.path), watched)
             if not fresh:
                 return []
             entries = list(fresh.values())
-            parsed = await _parse_all([f.name for f, _ in entries], TypeHint.AUTO)
+            unparsed = [e for e in entries if e.parsed is None]
+            read = iter(await parse_names([e.path.name for e in unparsed]))
             if generation != self._generation:
                 return []
             new_items = [
-                QueueItem(next(self._ids), file, None, p, watched=root)
-                for (file, root), p in zip(entries, parsed, strict=True)
+                QueueItem(
+                    next(self._ids),
+                    e.path,
+                    None,
+                    e.parsed if e.parsed is not None else next(read),
+                    watched=e.watched,
+                    rule=e.rule,
+                    manual=e.manual,
+                )
+                for e in entries
             ]
             self.items.extend(new_items)
             self._on_change(QueueEvent(kind="added", ids=tuple(i.id for i in new_items)))
@@ -330,6 +364,18 @@ class Queue:
         item.match_problem = match_problem
         item.in_library = in_library
         self._on_change(QueueEvent(kind="updated", ids=(item_id,)))
+
+    def mark_rule_changed(self, ids: Sequence[int]) -> None:
+        """The rule that took these items was edited or deleted since: they wait for the owner
+        (`rule_changed`); one "updated" event."""
+        changed: list[int] = []
+        for item_id in ids:
+            item = self.get(item_id)
+            if item is not None and not item.rule_changed:
+                item.rule_changed = True
+                changed.append(item_id)
+        if changed:
+            self._on_change(QueueEvent(kind="updated", ids=tuple(changed)))
 
     def purge_finished(self, before: float) -> int:
         """Drop items renamed before `before` (yesterday's "Done today")."""

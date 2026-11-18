@@ -1,10 +1,14 @@
-"""Forge's move records: where Forge moved each video into the Series or Movies library folder
-from (forge.db's `moves`, schema v3; kept for a year, longer than the undo history).
+"""Forge's move records: where Forge moved each video from (forge.db's `moves`, schema v3; kept
+for a year, longer than the undo history; for good when the file lies in a folder a rule
+watches: a Stays rule's sorted files, the renamer's memory, `MoveNote.kept_below`).
 
-Every rename into a library folder is recorded in the same journal step as the rename itself
-(`ForgeMoveService.note` with the caller's media → Executor → HistoryRepo); an undo takes the
-record out again. AirGrabber reads them (`moves_from`, `subscribe`): its Downloads page shows
-where a finished download ended up.
+Every rename into a folder records are about (`record_roots` of the rules for watched folders:
+the library folders, the rules' own folder destinations and the Stays rules' watched folders) is
+recorded in the same journal step as the rename itself (`ForgeMoveService.note` with the caller's
+media → Executor → HistoryRepo); an undo takes the record out again. AirGrabber reads them
+(`moves_from`, `subscribe`): its Downloads page shows where a finished download ended up. The
+renamer reads `targets_in`: a file a Stays rule sorted inside its watched folder is never taken
+again, after a restart too.
 """
 
 from __future__ import annotations
@@ -15,10 +19,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from app.forge.core.library import inside
+from app.forge.core.rules import record_roots, watched_folders
 from app.forge.db.moves import MoveRepository, path_key
 from app.forge.models.media import MediaKind, ResolvedMedia
 from app.forge.models.moves import MoveNote, MoveRecord
 from app.forge.models.plan import PlannedFile
+from app.forge.models.rules import Rule
 from app.forge.models.settings import ForgeSettings
 
 log = logging.getLogger(__name__)
@@ -59,9 +65,16 @@ class ForgeMoveService:
     """Forge's move records for Forge and AirGrabber: what a rename records, where downloads
     went, and who hears about changes."""
 
-    def __init__(self, repo: MoveRepository, *, settings: Callable[[], ForgeSettings]) -> None:
+    def __init__(
+        self,
+        repo: MoveRepository,
+        *,
+        settings: Callable[[], ForgeSettings],
+        rules: Callable[[], Sequence[Rule]] = lambda: (),
+    ) -> None:
         self._repo = repo
         self._settings = settings
+        self._rules = rules  # the rules for watched folders, read at every note
         self._listeners: list[MovesListener] = []
 
     # --- reading --------------------------------------------------------------------------------
@@ -75,6 +88,10 @@ class ForgeMoveService:
         """The moves made after `when` (seconds since the epoch), oldest first (AirGrabber asks
         Plex to scan where they went)."""
         return await self._repo.moved_after(when)
+
+    async def targets_in(self, folders: Sequence[Path]) -> set[str]:
+        """Where the recorded moves went that lie below `folders` (normcased paths)."""
+        return await self._repo.targets_in(folders)
 
     async def of_operation(self, op_id: int) -> MoveRecord | None:
         """What the journal's rename `op_id` recorded of its file, if anything (History's CC)."""
@@ -94,20 +111,33 @@ class ForgeMoveService:
     # --- what a rename records (the executor asks, the journal writes) --------------------------
 
     def note(self, planned: PlannedFile, media: ResolvedMedia | None = None) -> MoveNote | None:
-        """The move record of renaming `planned`: when its target lies in a library folder, what
-        the file is by `media` (what the caller's queue knew of it; without it the kind comes
-        from the folder). None for a move elsewhere, or into a folder for both kinds with
-        nothing known."""
-        place = library_kinds(planned.target, library_roots(self._settings()))
+        """The move record of renaming `planned`: when its target lies in a folder records are
+        about (`record_roots`: a library folder, a rule's own destination, a Stays rule's watched
+        folder), what the file is by `media` (what the caller's queue knew of it; without it the
+        kind comes from the folder). None for a move elsewhere, or into a folder for both kinds
+        with nothing known."""
+        rules, settings = self._rules(), self._settings()
+        place = library_kinds(planned.target, record_roots(rules, settings))
         if place is None:
             return None
         kinds = place[1]
+        # The records inside a watched folder are the renamer's memory: kept for good.
+        kept = tuple(Path(folder) for folder in watched_folders(rules, settings))
         if media is not None:
             return MoveNote(
-                source=planned.source, target=planned.target, kind=media.kind, tmdb_id=media.tmdb_id
+                source=planned.source,
+                target=planned.target,
+                kind=media.kind,
+                tmdb_id=media.tmdb_id,
+                kept_below=kept,
             )
         if len(kinds) == 1:
-            return MoveNote(source=planned.source, target=planned.target, kind=next(iter(kinds)))
+            return MoveNote(
+                source=planned.source,
+                target=planned.target,
+                kind=next(iter(kinds)),
+                kept_below=kept,
+            )
         return None
 
     def changed(self) -> None:

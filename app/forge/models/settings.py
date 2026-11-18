@@ -63,7 +63,9 @@ class ForgeSettings(BaseModel):
     context_menu_presets: list[str] = []
     trailer_tools_ok: bool = False
     ytdlp_checked_at: float = 0.0
-    # Renaming on its own: every folder is chosen in Settings, nothing assumed.
+    # Renaming on its own: every folder is chosen in Settings, nothing assumed. `watch_folders`,
+    # `series_preset` / `movies_preset` are read for watching only by the one-time carry-over into
+    # rules (`rules_carried`); `automatic` is the master switch ("off" paused, else watching).
     watch_folders: list[str] = []
     series_folder: str = ""
     movies_folder: str = ""
@@ -76,11 +78,15 @@ class ForgeSettings(BaseModel):
     remove_after_forge: bool = False  # a run's finished files leave the queue (History keeps them)
     summary_sent_on: str = ""  # ISO date of the last evening summary
     kept_back: list[str] = []  # downloads put back by an undo: never moved on their own again
+    # Downloads already there at a rule's first look or an un-pause (path keys, as `kept_back`):
+    # they wait as Manual once, never moved on their own (after a restart too); forgotten once
+    # the file has left the folder.
+    manual_once: list[str] = []
     imported_from: str = ""  # set once the old MediaForge's data was imported (F-26)
     # "Use AirGrabber's downloads" (B-01): None = not chosen yet (see `airgrabber_on`).
     use_airgrabber_downloads: bool | None = None
     # Where AirGrabber's downloads end up, kept up to date from AirGrabber's settings
-    # (app/forge/core/airgrabber_folders.py); watched next to `watch_folders` while `airgrabber_on`.
+    # (app/forge/core/airgrabber_folders.py); watched by AirGrabber's rule while `airgrabber_on`.
     airgrabber: AirGrabberDownloads = AirGrabberDownloads()
     # AirGrabber's automatic subtitles became presets' Subtitles extra, once
     # (app/forge/core/subtitles.py's `carry_subtitles`): never again after that.
@@ -88,6 +94,10 @@ class ForgeSettings(BaseModel):
     # Series (Folder) and Movie (Folder) got the Move to library folder extra once
     # (app/forge/core/library.py's `carry_move_option`): never again after that.
     move_carried: bool = False
+    # The one-time carry-over of watch_folders / presets / automatic into forge.db's rules ran
+    # (app/forge/core/rules_service.py's `carry_rules`): from then on the rules say what is
+    # watched and how, and those fields are no longer read for watching.
+    rules_carried: bool = False
 
     @property
     def airgrabber_on(self) -> bool:

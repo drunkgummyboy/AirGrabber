@@ -685,6 +685,77 @@ def draw_shelves() -> Image.Image:
     return layer.image
 
 
+def _amber_folder(layer: Layer, x: float, y: float, width: float, height: float) -> None:
+    """An amber folder: its back with the tab, its front a little lower."""
+    layer.rect(x, y, width * 0.4, height * 0.3, 4, "#a8701c")
+    layer.rect(x, y + height * 0.14, width, height * 0.86, 6, "#a8701c")
+    top = y + height * 0.36
+    front = ((x - 3, top), (x + width + 3, top), (x + width - 2, y + height), (x + 2, y + height))
+    paint = down((x - 3, top, width + 6, y + height - top), ((0, "#f0bc55", 1), (1, "#d08a2a", 1)))
+    layer.paint(paint, Mask().add(front).done())
+
+
+def draw_rules() -> Image.Image:
+    """Rules for watched folders: an amber download folder at the left, fanning out to the
+    rows of a rules list (a grip, a folder, two lines, a mode pill and a switch: two on, one
+    off), and the two on rows leading on to their own folders at the right, one of films
+    (red posters) and one of series (blue ones)."""
+    layer = _background()
+    layer.paint(glow("#E0A23A", (0.09, 0.55), 0.3, 0.28))
+    layer.paint(glow(STEEL, (0.5, 0.45), 0.5, 0.3))
+    layer.paint(glow("#E0A23A", (0.9, 0.5), 0.3, 0.22))
+
+    rows = (52, 104, 156)
+    # From the download folder to each rule, and on from the two rules that are on.
+    for y in rows:
+        layer.paint(
+            solid(ON_ACCENT, 0.55),
+            Mask().line(((122, 126), (146, 126), (162, y + 18), (176, y + 18)), 2.5, round_ends=True).done(),
+        )
+    for y, to in ((rows[0], 84), (rows[1], 166)):
+        layer.paint(
+            solid(ON_ACCENT, 0.85),
+            Mask().line(((522, y + 18), (548, y + 18), (562, to), (576, to)), 2.5, round_ends=True).done(),
+        )
+    _amber_folder(layer, 28, 92, 92, 66)
+
+    # The rules list.
+    layer.rect(168, 26, 362, 196, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(168, 26, 362, 196, 14, 1.5))
+    layer.rect(186, 36, 70, 8, 4, ON_ACCENT)
+    for index, y in enumerate(rows):
+        on = index < 2
+        layer.rect(180, y, 338, 40, 8, "#20262d" if on else "#1b1f24")
+        for dot_y in (y + 13, y + 20, y + 27):
+            for dot_x in (190, 196):
+                layer.paint(solid(MUTED, 0.8 if on else 0.4), Mask().add(circle(dot_x, dot_y, 1.6)).done())
+        if on:
+            _amber_folder(layer, 208, y + 9, 26, 22)
+        else:
+            layer.rect(208, y + 12, 26, 19, 4, "#4a4f55")
+        layer.rect(244, y + 11, (120, 96, 108)[index], 7, 3.5, WHITE if on else MUTED)
+        layer.rect(244, y + 24, (84, 112, 70)[index], 5, 2.5, MUTED)
+        layer.rect(398, y + 12, 50, 16, 8, "#5f84a8" if on else "#3a3f45")
+        knob_x = 498 if on else 480
+        layer.rect(470, y + 11, 38, 18, 9, "#2FA572" if on else "#4a4f55")
+        layer.paint(solid(WHITE if on else "#9aa3ad"), Mask().add(circle(knob_x, y + 20, 6.5)).done())
+
+    # Where the two on rules lead: films, then series.
+    for y, colours in (
+        (52, (("#e06a5a", "#5a1a20"), ("#e0b44a", "#5a3a12"))),
+        (134, (("#4ac0d8", "#13315a"), ("#6a8ad8", "#1a2a5a"))),
+    ):
+        _amber_folder(layer, 586, y + 4, 104, 60)
+        for index, (colour, dark) in enumerate(colours):
+            poster: Box = (604 + index * 34, y - 10, 28, 40)
+            layer.rect(*poster, 4, down(poster, ((0, colour, 1), (1, dark, 1))))
+        top = y + 4 + 60 * 0.36
+        front = ((583, top), (693, top), (688, y + 64), (588, y + 64))
+        paint = down((583, top, 110, y + 64 - top), ((0, "#f0bc55", 1), (1, "#d08a2a", 1)))
+        layer.paint(paint, Mask().add(front).done())
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -702,7 +773,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "shelves.png": draw_shelves,
+    "rules.png": draw_rules,
 }
 
 

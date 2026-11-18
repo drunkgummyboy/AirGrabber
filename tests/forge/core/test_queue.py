@@ -1,5 +1,5 @@
-"""The queue: items, background lookups, chunked parsing on the loop, watched items (MediaForge's
-tests/core/test_queue.py, with a fake resolver)."""
+"""The queue: items, background lookups, chunked parsing on the loop, watched items with their rule
+(MediaForge's tests/core/test_queue.py, with a fake resolver)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,18 @@ from unittest import mock
 
 from app.forge.core import queue as queue_module
 from app.forge.core.matcher import Resolution
-from app.forge.core.queue import PARSE_CHUNK, ItemStatus, Queue, QueueEvent, scan_paths
+from app.forge.core.parser import parse_filename
+from app.forge.core.queue import (
+    PARSE_CHUNK,
+    ItemStatus,
+    Queue,
+    QueueEvent,
+    WatchedFile,
+    parse_names,
+    scan_paths,
+)
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia, TypeHint
+from app.forge.models.rules import Rule
 from app.models.tmdb import TMDBTitle
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 
@@ -374,6 +384,28 @@ class QueueTest(ForgeAsyncTestCase):
         assert await q.add_watched([(file, self.tmp)]) == []
         await q.add_paths([file], recursive=False)  # dropped on the window as well
         assert len(q.items) == 1
+
+    async def test_a_watched_file_keeps_its_rule_and_its_parsed_name(self) -> None:
+        q, events = make_queue()
+        rule = Rule(id=4, folder=str(self.tmp))
+        given = (await parse_names(["Dune.2021.mkv"]))[0]
+        dune = touch(self.tmp / "w" / "Dune.2021.mkv")
+        heat = touch(self.tmp / "w" / "Heat.1995.mkv")
+        with mock.patch.object(queue_module, "parse_filename", wraps=parse_filename) as read:
+            ids = await q.add_watched(
+                [WatchedFile(dune, self.tmp, given, rule, manual=True), (heat, self.tmp)]
+            )
+        assert [c.args[0] for c in read.call_args_list] == ["Heat.1995.mkv"]  # Dune's was given
+        first, second = (q.get(i) for i in ids)
+        assert first is not None and second is not None
+        assert first.parsed is given and first.rule == rule and first.manual
+        assert second.rule is None and not second.manual and second.watched == self.tmp
+        await q.wait_idle()
+        events.clear()
+        q.mark_rule_changed([first.id, second.id, 999])
+        q.mark_rule_changed([first.id])  # once
+        assert first.rule_changed and second.rule_changed
+        assert events == [QueueEvent(kind="updated", ids=(first.id, second.id))]
 
     async def test_hold_keeps_a_reason(self) -> None:
         q, events = make_queue()

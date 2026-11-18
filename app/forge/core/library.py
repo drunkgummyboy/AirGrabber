@@ -1,4 +1,8 @@
-"""The library folders: what is still missing before MediaForge can watch, and folder tests.
+"""The library folders, and folder tests.
+
+What a watched folder may not be (inside a library folder, inside the folder its rule moves to)
+is the rules' (app/forge/core/rules.py: refusals on the rule's row); a rule whose library folder
+isn't chosen holds only its own files (`route_problem`).
 
 Paths are compared the way Windows does (case-insensitive, `\\\\server\\share` included) and by
 whole folder names, so `Series2` is not inside `Series`.
@@ -16,7 +20,6 @@ from app.forge.models.media import MediaKind
 from app.forge.models.plan import PlanInput
 from app.forge.models.preset import PresetOptions
 from app.forge.models.settings import ForgeSettings
-from app.i18n import N_, t
 
 if TYPE_CHECKING:
     from app.forge.core.presets_service import PresetService
@@ -24,8 +27,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-OVERLAP = N_("A watched folder can't be inside a library folder, or the other way round.")
-NESTED = N_("A watched folder can't be inside another watched folder.")
 _MOVING_PRESETS = frozenset({"Series (Folder)", "Movie (Folder)"})
 
 
@@ -43,6 +44,11 @@ def library_folder(kind: MediaKind, settings: ForgeSettings) -> Path | None:
     """The library folder for `kind`, or None while it isn't chosen."""
     folder = settings.series_folder if kind is MediaKind.EPISODE else settings.movies_folder
     return Path(folder) if folder else None
+
+
+def library_folders(settings: ForgeSettings) -> list[Path]:
+    """The chosen library folders (Series, then Movies)."""
+    return [Path(f) for f in (settings.series_folder, settings.movies_folder) if f]
 
 
 def route_inputs(
@@ -79,26 +85,3 @@ async def carry_move_option(settings: ForgeSettingsService, presets: PresetServi
         await settings.update(move_carried=True)
     except Exception as exc:  # noqa: BLE001 - forge.db: tried again at the next start
         log.warning("Couldn't set the presets' move option (%s)", type(exc).__name__)
-
-
-def library_problems(settings: ForgeSettings) -> list[str]:
-    """What still needs choosing (plain sentences, translated); empty when watching can start.
-    The watched folders include AirGrabber's (B-01: `airgrabber_folders.watched_folders`)."""
-    from app.forge.core.airgrabber_folders import watched_folders  # it imports this module
-
-    watch_folders = watched_folders(settings)
-    problems: list[str] = []
-    if not watch_folders:
-        problems.append(t("Choose a download folder to watch."))
-    if not settings.series_folder:
-        problems.append(t("Choose the Series library folder."))
-    if not settings.movies_folder:
-        problems.append(t("Choose the Movies library folder."))
-    libraries = [Path(f) for f in (settings.series_folder, settings.movies_folder) if f]
-    watched = [Path(f) for f in watch_folders]
-    if any(inside(w, lib) or inside(lib, w) for w in watched for lib in libraries):
-        problems.append(t(OVERLAP))
-    if any(inside(a, b) or inside(b, a) for i, a in enumerate(watched) for b in watched[i + 1 :]):
-        problems.append(t(NESTED))
-    return problems
-

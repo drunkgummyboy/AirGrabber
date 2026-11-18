@@ -219,3 +219,65 @@ class AfterMovesTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("app.services.plex_scans", "WARNING"):
             self.moves.moved("D:/TV/Show/e1.mkv", when=self.now + 1)
             await self.settle()
+
+
+class RuleDestinationTests(unittest.IsolatedAsyncioTestCase):
+    """Forge's real move records (a temporary forge.db, written by its executor): a rule that moves
+    films to a folder of its own, not a library folder, has Plex scan that folder too."""
+
+    async def test_a_move_outside_the_library_folders_is_scanned_too(self) -> None:
+        import tempfile
+
+        from app.forge.core.executor import Executor
+        from app.forge.core.moves import ForgeMoveService
+        from app.forge.db.database import Database as ForgeDatabase
+        from app.forge.db.history import HistoryRepo
+        from app.forge.db.moves import MoveRepository
+        from app.forge.models.history import RunSource
+        from app.forge.models.plan import Plan, PlannedFile
+        from app.forge.models.rules import Rule, RuleTarget
+        from app.forge.models.settings import ForgeSettings
+
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        films_4k = root / "Movies 4K"
+        settings = ForgeSettings(
+            series_folder=str(root / "Series"), movies_folder=str(root / "Movies")
+        )
+        rules = [
+            Rule(
+                id=1,
+                folder=str(root / "Downloads"),
+                take="films",
+                quality="4k",
+                films=RuleTarget(preset="Movie (Folder)", to="folder", folder=str(films_4k)),
+            )
+        ]
+        forge_db = await ForgeDatabase.open(root / "forge.db")
+        self.addAsyncCleanup(forge_db.close)
+        moves = ForgeMoveService(
+            MoveRepository(forge_db), settings=lambda: settings, rules=lambda: rules
+        )
+        executor = Executor(
+            HistoryRepo(forge_db, on_moves_change=moves.changed), None, None, moves=moves
+        )
+        scanner = FakeScanner()
+        scans = PlexScansAfterMoves(scanner, gather_s=0.01, clock=lambda: 0.0)
+        self.addAsyncCleanup(scans.aclose)
+        scans.attach(moves)
+        source = root / "Downloads" / "Dune.2021.2160p.WEB-DL.mkv"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"video")
+        target = films_4k / "Dune (2021)" / "Dune (2021).mkv"
+        result = await executor.run(
+            Plan(files=(PlannedFile(item_id=1, source=source, target=target),)),
+            source=RunSource.AUTOMATIC,
+            preset_name=None,
+            on_progress=lambda event: None,
+            cancel=asyncio.Event(),
+        )
+        self.assertEqual(result.renamed, 1)
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        self.assertEqual(scanner.calls, [[str(target.parent)]])

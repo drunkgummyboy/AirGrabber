@@ -41,6 +41,7 @@ from app.forge.core.replace_facts import ReplaceFacts
 from app.forge.core.run_progress import PAGE, RunState
 from app.forge.core.watch import Settling
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
+from app.forge.models.rules import Rule, RuleMode, RuleTarget
 from app.forge.models.settings import ForgeSettings
 from app.forge.models.preset import Preset, PresetOptions
 from app.forge.services import ForgeServices
@@ -219,6 +220,9 @@ class QueueCase(ForgeAsyncTestCase):
             movies_folder=str(movies),
             automatic=automatic,
         )
+        # The rules drive watching (carried over at the start, before this folder was set).
+        mode: RuleMode = "auto" if automatic == "on" else "manual"
+        await self.services.rules.replace_all([Rule(folder=str(downloads), mode=mode)])
         return downloads, series, movies
 
     async def watched(self, downloads: Path, *names: str) -> list[int]:
@@ -1581,7 +1585,12 @@ class WatchedTest(QueueCase):
         downloads, _, _ = await self.library(automatic="trial")
         await self.watched(downloads, "Dune.2021.mkv")
         [band] = self.rows("band")
-        self.assertEqual((band.state, band.state_text), ("ready", "Ready to forge"))
+        # Ready (Forge this does it), saying why it waits: its rule is Manual.
+        self.assertEqual(
+            (band.state, band.state_text),
+            ("ready", "Waits for you: rule “Everything from dl” is Manual"),
+        )
+        self.assertEqual(band.rule, "Rule: Everything from dl")
         self.assertTrue(band.dest.startswith("📦 Moves to"))
         self.assertEqual(self.view.filter_buttons["all"].cget("text"), "All 1")
         self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 1")
@@ -1796,6 +1805,85 @@ class WatchedTest(QueueCase):
         self.assertEqual(
             (self.tmp / "aside" / "Movies" / "Heat (1995)" / heat.name).read_bytes(), b"old heat"
         )
+
+
+class RuleLabelTest(QueueCase):
+    """A watched download's band names its rule; a click opens it in Settings; its default
+    choice is the rule's preset with the rule's extras; a ready one says why it waits."""
+
+    async def films_rule(self, **fields: Any) -> tuple[Path, Rule]:
+        downloads, _series, _movies = await self.library()
+        films = RuleTarget(preset="Movie (Flat)", extras={"trailer": True})
+        wanted = Rule(folder=str(downloads), name="4K films", films=films, mode="auto")
+        stored = await self.services.rules.replace_all([wanted.model_copy(update=fields)])
+        return downloads, stored[0]
+
+    async def test_a_click_on_the_rule_opens_it_in_settings(self) -> None:
+        from app.forge.ui.settings_pages import SECTION_LIBRARY
+
+        downloads, rule = await self.films_rule()
+        await self.watched(downloads, "Dune.2021.mkv")
+        band = self.band("Dune")
+        self.assertEqual(band.rule, "Rule: 4K films")
+        asked: list[tuple[str, str | None]] = []
+        self.view.on_settings = lambda section, spot=None: asked.append((section, spot))
+        box = self.view.list.action_box(band.key, "rule")
+        assert box is not None
+        x, y = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+        self.view.list.canvas.event_generate("<Button-1>", x=x, y=y)
+        await pump(self.root, 0.05)
+        self.assertEqual(asked, [(SECTION_LIBRARY, f"rule:{rule.id}")])
+        dropped = self.tmp / "in"
+        make_files(dropped, ["Heat.1995.mkv"])
+        await self.add_and_settle(dropped)
+        self.view.refresh()
+        self.assertEqual(self.band("Heat").rule, "")  # a dropped file has no rule
+
+    async def test_a_watched_bands_default_is_its_rules_preset(self) -> None:
+        downloads, _rule = await self.films_rule()
+        await self.watched(downloads, "Dune.2021.mkv")
+        band = self.band("Dune")
+        self.assertEqual(band.chip, "Movie (Flat) ▾")
+        choice = self.view.choice_for(self.item("Dune"))
+        assert choice.preset is not None
+        self.assertEqual(choice.preset.name, "Movie (Flat)")
+        self.assertTrue(choice.options.trailer)  # the rule's extra
+        self.assertEqual(band.state_text, "Ready to forge")  # Automatic, its preset there
+
+    async def test_a_rule_whose_preset_is_gone_waits_with_the_kinds_default(self) -> None:
+        downloads, _rule = await self.films_rule(films=RuleTarget(preset="Gone"))
+        await self.watched(downloads, "Dune.2021.mkv")
+        band = self.band("Dune")
+        self.assertEqual(band.state_text, "⚠ The preset of rule “4K films” is gone: choose another")
+        self.assertNotEqual(band.chip, "Gone ▾")  # never a preset that isn't there
+
+    async def test_a_file_no_rule_takes_names_no_folder_to_choose(self) -> None:
+        downloads, _rule = await self.films_rule(take="shows")  # films: no rule takes them
+        await self.services.settings.update(movies_folder="")
+        await self.watched(downloads, "Dune.2021.mkv")
+        band = self.band("Dune")
+        self.assertEqual(band.state_text, "No rule takes this file.")  # in a watched folder
+        self.assertEqual((band.dest, band.rule), ("", ""))
+
+    async def test_a_manual_or_changed_rule_says_why_it_waits(self) -> None:
+        downloads, _rule = await self.films_rule(mode="manual")
+        [item_id] = await self.watched(downloads, "Dune.2021.mkv")
+        self.assertEqual(self.band("Dune").state_text, "Waits for you: rule “4K films” is Manual")
+        self.services.queue.mark_rule_changed([item_id])
+        await pump(self.root, 0.3)
+        self.assertEqual(self.band("Dune").state_text, "Its rule was changed: check it")
+
+    async def test_the_bands_follow_a_renamed_rule(self) -> None:
+        downloads, rule = await self.films_rule()
+        await self.watched(downloads, "Dune.2021.mkv")
+        await self.services.rules.replace_all([rule.model_copy(update={"name": "Big films"})])
+        await pump(self.root, 0.3)
+        self.assertEqual(self.band("Dune").rule, "Rule: Big films")
+
+    async def test_a_rule_that_sorts_in_place_says_so(self) -> None:
+        downloads, _rule = await self.films_rule(stays=True)
+        await self.watched(downloads, "Dune.2021.mkv")
+        self.assertEqual(self.band("Dune").dest, f"📁 Sorted in {downloads.name}")
 
 
 class DropsTest(QueueCase):
@@ -2109,6 +2197,19 @@ class IgnoreTest(QueueCase):
         [item] = self.services.queue.items
         labels = [label for label, _ in self.view.ignore_choices([item.id])]
         self.assertEqual(labels, ["Leave this file alone"])  # not under a watched folder
+
+    async def test_ignore_folder_for_uses_the_rules_folders(self) -> None:
+        mine = self.tmp / "mine"
+        make_files(mine / "Holiday Release", ["Holiday.Clip.mp4"])
+        await self.add_and_settle(mine / "Holiday Release")  # dropped: no watched folder of its own
+        [item] = self.services.queue.items
+        self.assertIsNone(self.view.ignore_folder_for([item]))  # no rule watches it
+        await self.services.rules.replace_all([Rule(folder=str(mine))])
+        self.assertEqual(self.view.ignore_folder_for([item]), mine / "Holiday Release")
+        # The old watched folders count no more.
+        await self.services.settings.update(watch_folders=[str(self.tmp)])
+        await self.services.rules.replace_all([])
+        self.assertIsNone(self.view.ignore_folder_for([item]))
 
     async def test_nothing_while_a_run_goes_or_for_done_files(self) -> None:
         _downloads, _course, [clip] = await self.course()

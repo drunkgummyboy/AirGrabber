@@ -402,6 +402,14 @@ class StatusLineTests(PageCase):
         self.assertEqual(asked, [SECTION_LIBRARY])
         self.assertEqual(t(SECTION_LIBRARY), "Auto-rename")
 
+    async def test_a_bands_rule_opens_settings_at_that_rule(self) -> None:
+        page = await self.make_page()
+        asked: list[tuple[str | None, str | None]] = []
+        page.on_settings = lambda section, spot=None: asked.append((section, spot))
+        assert page.queue is not None
+        page.queue.on_settings(SECTION_LIBRARY, "rule:3")  # what a band's rule label asks
+        self.assertEqual(asked, [(SECTION_LIBRARY, "rule:3")])
+
     async def test_a_long_status_is_cut_and_never_moves_the_switch(self) -> None:
         page = await self.make_page()
         where = self.switch.winfo_rootx()

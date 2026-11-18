@@ -25,6 +25,13 @@ A ready band has "Forge this" (only under the pointer). Small extras are quiet l
 "📂 Show file" on every band, "Wrong film?" / "Wrong show?" (the picker), and a ready or unsure
 band's "Leave it alone ▾". A done band keeps CC ▾ and Undo.
 
+A watched download's band (`WatchedLook`, from its rule's route) says where its rule sends it
+("📦 Moves to Movies 4K", or for a rule that sorts its files where they are "📁 Sorted in
+Downloads") and which rule took it (`Row.rule`, "Rule: 4K films": a click opens that rule in
+Settings; a done one "📁 Was sorted in …"). A ready one that waits says why instead of "Ready to
+forge": its rule is Manual (or it was taken as Manual once), its rule's preset is gone, its rule was
+changed since it took the file, or no rule takes it any more (then it names no destination).
+
 The filter (`show`) is All (needs you first, then the rest by name, then today's done ones under
 their heading), Needs you or Ready, and every count is worked out whichever is shown.
 
@@ -38,15 +45,16 @@ import itertools
 import re
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from app.forge.core.auto import held_in_library
 from app.forge.core.formatter import name_file
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.core.replace_facts import ReplaceFacts, facts_text
+from app.forge.core.rules import NO_RULE_TAKES, NOT_WATCHED
 from app.forge.models.media import MatchState, MediaKind
 from app.forge.ui.name_diff import name_changes
 from app.forge.ui.subtitle_control import CC_ACTION, CC_LABEL, CcLook
@@ -127,6 +135,14 @@ STAYED = N_("📁 Stayed in its folder")
 STAYED_IN = N_("📁 Stayed here, in {folder}")
 NO_SERIES_FOLDER = N_("⚠ Choose your Series folder in Settings › Auto-rename")
 NO_MOVIES_FOLDER = N_("⚠ Choose your Movies folder in Settings › Auto-rename")
+SORTED_IN = N_("📁 Sorted in {folder}")  # a rule that sorts its files inside its watched folder
+SORTED_DONE = N_("📁 Was sorted in {folder}")
+
+# Which rule took a watched download (`Row.rule`), and why a ready one waits.
+RULE_LABEL = N_("Rule: {name}")
+MANUAL_WAITS = N_("Waits for you: rule “{name}” is Manual")
+RULE_CHANGED = N_("Its rule was changed: check it")
+PRESET_GONE = N_("⚠ The preset of rule “{name}” is gone: choose another")
 
 EMPTY_TITLE = N_("Drop video files or folders here")
 EMPTY_HINT = N_("or add them with the buttons above. Nothing is renamed until you click Forge.")
@@ -139,6 +155,36 @@ _EMPTY_FILTER: dict[Show, tuple[str, str]] = {
 
 def _files(n: int) -> str:
     return tn("{n} file", "{n} files", n)
+
+
+type Waits = Literal["", "manual", "changed", "no_preset", "unwatched", "no_rule"]
+
+
+class WatchedLook(NamedTuple):
+    """How a watched download's band shows, by its rule's route: its naming rule, the folder its
+    name starts in (None: its library folder isn't chosen), whether it moves (False: sorted inside
+    its watched folder, `root`), the rule's name ("" without a rule) and why a ready one waits
+    ("manual": its rule is Manual or it was taken as Manual once; "no_preset": its rule's preset
+    is gone; "changed": its rule was changed since it took the file; "unwatched": it isn't in
+    a watched folder any more, "no_rule": it is, but no rule takes it; either way its band names
+    no destination)."""
+
+    fmt: str
+    root: Path | None
+    moves: bool
+    rule_name: str
+    waits: Waits
+
+
+def _folder_name(folder: Path) -> str:
+    """A folder as a band names it: its own name, a share root's share ("Movies 4K" for
+    \\\\NAS\\Movies 4K), else as written (a drive root)."""
+    if folder.name:
+        return folder.name
+    share = folder.drive.replace("\\", "/").rstrip("/")
+    if share.startswith("//"):
+        return share.rsplit("/", 1)[-1]
+    return str(folder)
 
 
 def build_rows(
@@ -443,11 +489,33 @@ def _band_look(
     )
 
 
+def _waiting(said: _Band, state: State, way: WatchedLook | None) -> _Band:
+    """A ready watched band that waits says why instead of "Ready to forge"."""
+    if state != "ready" or way is None or not way.waits:
+        return said
+    if way.waits == "changed":
+        text = t(RULE_CHANGED)
+    elif way.waits == "no_preset":
+        text = t(PRESET_GONE, name=way.rule_name)
+    elif way.waits == "unwatched":
+        text = t(NOT_WATCHED)
+    elif way.waits == "no_rule":
+        text = t(NO_RULE_TAKES)
+    else:
+        text = t(MANUAL_WAITS, name=way.rule_name)
+    return replace(said, state_text=text)
+
+
+def _rule_label(way: WatchedLook | None) -> str:
+    """A band's "Rule: 4K films" ("" without a rule: a dropped file)."""
+    return t(RULE_LABEL, name=way.rule_name) if way is not None and way.rule_name else ""
+
+
 def build_queue_rows(
     items: Sequence[QueueItem],
     rule: Callable[[QueueItem], str],
     *,
-    naming: Callable[[QueueItem], tuple[str, Path]] | None = None,
+    naming: Callable[[QueueItem], WatchedLook] | None = None,
     moving: Callable[[QueueItem], tuple[bool, Path | None]] | None = None,
     show: Show = "all",
     today: date | None = None,
@@ -459,8 +527,9 @@ def build_queue_rows(
 
     `rule` gives a dropped file its naming rule (its band's preset, or the band's Custom rule).
     `moving` says whether its band moves it to a library folder, and that folder (None: not chosen
-    yet); otherwise it is renamed where it is. `naming` gives a watched download its library folder
-    and naming rule: those always move.
+    yet); otherwise it is renamed where it is. `naming` gives a watched download how its rule's
+    route shows (`WatchedLook`): moved to the route's folder, or sorted inside its watched folder;
+    its band names the rule (`Row.rule`) and a ready one says why it waits, if it does.
     Only today's finished files are shown when `today` is set. `chip`: a band's preset chip
     (from its first file; none on a done band). `cc`: how a done band's CC ▾ shows (None: not).
     `facts`: the library copy's and the download's quality and size for a download already in
@@ -470,6 +539,7 @@ def build_queue_rows(
     rendered = {}
     roots: dict[int, Path] = {}
     moves: dict[int, bool] = {}  # going to a library folder: whether that folder is known
+    looks: dict[int, WatchedLook] = {}  # a watched download's, by its rule
     states: dict[int, State] = {}
     counts: dict[Show, int] = {"all": 0, "needs": 0, "ready": 0}
     kinds: dict[Kind, int] = {"series": 0, "movies": 0}
@@ -488,8 +558,10 @@ def build_queue_rows(
             continue
         item_fmt, root = rule(item), item.root
         if naming is not None and item.watched is not None:
-            item_fmt, root = naming(item)
-            moves[item.id] = True
+            way = looks[item.id] = naming(item)
+            item_fmt, root = way.fmt, way.root or root
+            if way.moves:
+                moves[item.id] = way.root is not None
         elif moving is not None:
             wanted, library = moving(item)
             if wanted:
@@ -503,7 +575,7 @@ def build_queue_rows(
 
     def folders(item: QueueItem) -> tuple[str, ...]:
         root = roots[item.id]
-        library = (root.name or str(root),) if moves.get(item.id) else ()
+        library = (_folder_name(root),) if moves.get(item.id) else ()
         return (*library, *rendered[item.id].parts[:-1])
 
     # Needs you first, then the ready ones by name, then today's done ones.
@@ -535,6 +607,7 @@ def build_queue_rows(
         )
         first = group[0].media
         band_key = -next(keys)
+        band_way = looks.get(group[0].id)  # a watched download's: by its rule
         out.bands[band_key] = [i.id for i in group]
         greyed: tuple[tuple[str, str], ...] = ()
         note = ""
@@ -551,6 +624,7 @@ def build_queue_rows(
             said = _Band(state_text=done, actions=actions)
         else:
             said = _band_look(state, group, episodes, facts)
+            said = _waiting(said, state, band_way)
             in_library = [i for i in group if held_in_library(i)]
             if state == "needs" and in_library:
                 out.keeps[band_key] = [i.id for i in in_library]
@@ -570,6 +644,12 @@ def build_queue_rows(
             moves.get(group[0].id, False),
             _shared_folder([folders(i) for i in group]),
         )
+        if band_way is not None and band_way.waits in ("unwatched", "no_rule"):
+            dest, dest_look = "", "stays"  # no rule takes it: nowhere to name
+        elif band_way is not None and not band_way.moves and state != "needs":
+            folder = _folder_name(roots[group[0].id])  # its watched folder
+            dest = t(SORTED_DONE if state == "done" else SORTED_IN, folder=folder)
+            dest_look = "stays"
         out.rows.append(
             Row(
                 key=band_key,
@@ -591,6 +671,7 @@ def build_queue_rows(
                     *((("preset", "\\".join(rendered[group[0].id].parts)),) if band_chip else ()),
                 ),
                 note=note,
+                rule=_rule_label(band_way),
                 chip=band_chip,
                 chip_caption=t(NAME_STYLE) if band_chip else "",
                 state=state,

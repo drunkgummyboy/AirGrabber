@@ -10,36 +10,45 @@ AirGrabber's settings say:
 - a torrent program on this PC: the download folders AirGrabber gives it
   (`remote_destination`, the films' `movie_remote_destination`) when they are full Windows paths;
 - Download Station (a NAS): only a *suggestion* `\\\\<host of remote_url>\\<destination>` (and the
-  films one), checked for reachability in a thread with a time limit, never watched until the
-  owner adds it to their own folders;
+  films one), checked for reachability in a thread with a time limit, never watched by
+  AirGrabber's rule (the owner may add a rule for it);
 - qBittorrent / Transmission on another computer: the owner is asked (`AirGrabberAsk`).
 
 The remote program counts in REMOTE mode, and in FOLDER mode when one is set up (releases
 without a .torrent file go there). `derived_folders` is pure; `AirGrabberFolderSync` keeps
 `ForgeSettings.airgrabber` up to date on every change of AirGrabber's settings
-(`SettingsService.subscribe`). `watched_folders` is what the renamer watches: the owner's own
-folders, plus AirGrabber's (not the suggestions) while "Use AirGrabber's downloads" is on, minus
-those that would clash with the owner's or the library folders (`airgrabber_in_use` says why).
+(`SettingsService.subscribe`). With the rules for watched folders (app/forge/core/rules.py),
+AirGrabber's rule watches the folders `airgrabber_uses` marks watched (its switch is "Use
+AirGrabber's downloads"): nesting between rules is allowed, so only suggestions and folders
+overlapping a library folder or inside a rule's destination are left out. Settings › Auto-rename
+shows each with why (`use_text`), and offers a suggestion "Add a rule for this folder".
 
-Nothing moves from a folder that starts being watched behind the owner's back: renaming on its
-own stays as the owner set it, and when AirGrabber's settings add a folder while it is On, it
-goes back to Manual (said in the Activity strip), as On straight from Off does.
+Nothing moves from a folder that starts being watched behind the owner's back: when AirGrabber's
+settings bring AirGrabber's rule a folder (`rules.newly_watched`), that rule is marked fresh
+(`RuleService.mark_fresh`) and the folders are stored in one step no look comes between (the
+renamer's `hold_looks`), so what is there waits in the queue once (said in the Activity strip);
+after that the rule works as the owner set it. A failure stores nothing; the next change of
+either settings tries again. The master switch (`automatic`) is never touched. Logs give no
+folder.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import ntpath
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, Protocol
 from urllib.parse import urlsplit
 
 from app.forge.core.activity import ActivityFeed
-from app.forge.core.library import inside
+from app.forge.core.library import inside, library_folders
+from app.forge.models.rules import Rule
 from app.forge.models.settings import (
     AirGrabberAsk,
     AirGrabberDownloads,
@@ -67,40 +76,34 @@ ASKS: dict[AirGrabberAsk, str] = {
     "": "",
     "finished": N_(
         "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
-        "“Where finished downloads end up” in Settings › Where downloads go, or add the folder to the "
-        "download folders to watch."
+        "“Where finished downloads end up” in Settings › Where downloads go, or add a rule for "
+        "the folder."
     ),
     "other_computer": N_(
-        "AirGrabber sends downloads to {program} on another computer. Add the folder where they "
-        "show up on this PC (a shared network folder) to the download folders to watch, or fill "
-        "in “Where finished downloads end up” in Settings › Where downloads go."
+        "AirGrabber sends downloads to {program} on another computer. Add a rule for the folder "
+        "where they show up on this PC (a shared network folder), or fill in “Where finished "
+        "downloads end up” in Settings › Where downloads go."
     ),
     "nas_folder": N_(
-        "Download Station keeps AirGrabber's downloads in its own download folder. Add the "
-        "shared folder where they show up on this PC to the download folders to watch, or fill "
-        "in “Where finished downloads end up” in Settings › Where downloads go."
+        "Download Station keeps AirGrabber's downloads in its own download folder. Add a rule for "
+        "the shared folder where they show up on this PC, or fill in “Where finished downloads "
+        "end up” in Settings › Where downloads go."
     ),
 }
 SUGGESTED = N_("Suggested: {reason}")
 REACHABLE = N_("This PC can reach it.")
 UNREACHABLE = N_("This PC can't reach it right now.")
 NOT_CHECKED = N_("Not checked yet.")
-COVERED = N_("Watched already: it is in a folder that is watched.")
-HOLDS_OWN = N_("Not watched: a folder you added is inside it.")
-OVERLAP = N_("Not watched: it overlaps a library folder.")
-BACK_TO_TRIAL = N_(
-    "AirGrabber's downloads now also end up in {folder}. Renaming on its own is on Manual again: "
-    "switch it to On when you're happy."
+OVERLAP = N_(
+    "Not watched: it's inside a library folder or a folder a rule moves files to."
+)
+NEW_FOLDER_ONCE = N_(
+    "AirGrabber's downloads now also end up in {folder}. What's there now waits in the queue "
+    "once; after that, AirGrabber's rule works as you set it."
 )
 
-FolderUseKind = Literal["watched", "suggested", "covered", "holds_own", "overlap"]
-_NOTES: dict[FolderUseKind, str] = {
-    "watched": "",
-    "suggested": "",
-    "covered": COVERED,
-    "holds_own": HOLDS_OWN,
-    "overlap": OVERLAP,
-}
+FolderUseKind = Literal["watched", "suggested", "overlap"]
+_NOTES: dict[FolderUseKind, str] = {"watched": "", "suggested": "", "overlap": OVERLAP}
 
 
 class FolderUse(NamedTuple):
@@ -217,53 +220,29 @@ def derived_folders(
     return AirGrabberDownloads(folders=folders, ask=ask, program=other_computer)
 
 
-def _depth(folder: AirGrabberFolder) -> int:
-    return len(Path(folder.path).parts)
-
-
-def airgrabber_in_use(settings: ForgeSettings) -> list[FolderUse]:
-    """What MediaForge does with each of AirGrabber's folders, in their order: watch it, or
-    not (a suggestion; in a folder that is watched already; holding one of the owner's own
-    folders; overlapping a library folder, which would stop all watching). Whether "Use
-    AirGrabber's downloads" is on is not asked here."""
-    own = [Path(f) for f in settings.watch_folders]
-    libraries = [Path(f) for f in (settings.series_folder, settings.movies_folder) if f]
-    taken: list[Path] = []
-    uses: dict[int, FolderUseKind] = {}
-    folders = settings.airgrabber.folders
-    # The outer folders first, so a folder inside another one of AirGrabber's is "covered".
-    for index in sorted(range(len(folders)), key=lambda i: _depth(folders[i])):
-        folder = folders[index]
+def airgrabber_uses(settings: ForgeSettings, destinations: Sequence[Path]) -> list[FolderUse]:
+    """What AirGrabber's rule does with each of AirGrabber's folders, in their order (the rules
+    for watched folders, app/forge/core/rules.py): a suggestion; "overlap" when it is inside or
+    holds a library folder, or is inside a rule's destination (`rules.destinations`); else
+    watched. Nesting between rules is allowed: a folder inside another one is watched. A folder that
+    holds a rule's own folder destination stays watched (unlike one holding a library folder):
+    a look skips every destination, so nothing moved there is found again. Whether AirGrabber's
+    rule is on is not asked here."""
+    libraries = library_folders(settings)
+    uses: list[FolderUse] = []
+    for folder in settings.airgrabber.folders:
         path = Path(folder.path)
         use: FolderUseKind
-        if any(inside(path, o) for o in [*own, *taken]):
-            use = "covered"
-        elif folder.suggested:
+        if folder.suggested:
             use = "suggested"
-        elif any(inside(path, lib) or inside(lib, path) for lib in libraries):
+        elif any(inside(path, lib) or inside(lib, path) for lib in libraries) or any(
+            inside(path, dest) for dest in destinations
+        ):
             use = "overlap"
-        elif any(inside(o, path) for o in own):
-            use = "holds_own"
         else:
             use = "watched"
-            taken.append(path)
-        uses[index] = use
-    return [FolderUse(folder, uses[i]) for i, folder in enumerate(folders)]
-
-
-def watched_folders(settings: ForgeSettings) -> list[str]:
-    """The folders the renamer watches: the owner's own, then AirGrabber's in use while "Use
-    AirGrabber's downloads" is on."""
-    folders = list(settings.watch_folders)
-    if settings.airgrabber_on:
-        folders += [u.folder.path for u in airgrabber_in_use(settings) if u.use == "watched"]
-    return folders
-
-
-def newly_watched(before: ForgeSettings, after: ForgeSettings) -> list[str]:
-    """The folders `after` watches that `before` didn't."""
-    old = watched_folders(before)
-    return [f for f in watched_folders(after) if not any(_same(f, o) for o in old)]
+        uses.append(FolderUse(folder, use))
+    return uses
 
 
 # -- keeping it up to date ------------------------------------------------------------------------
@@ -276,6 +255,18 @@ class _ForgeSettingsSource(Protocol):
     async def update(self, **changes: Any) -> ForgeSettings: ...
 
     def subscribe(self, listener: Callable[[ForgeSettings], None]) -> Callable[[], None]: ...
+
+
+class _RulesSource(Protocol):
+    """What the sync needs of RuleService."""
+
+    @property
+    def current(self) -> Sequence[Rule]: ...
+
+    @property
+    def airgrabber_rule(self) -> Rule: ...
+
+    async def mark_fresh(self, rule_id: int) -> None: ...
 
 
 class _AirGrabberSettingsSource(Protocol):
@@ -318,6 +309,8 @@ class AirGrabberFolderSync:
         forge_settings: _ForgeSettingsSource,
         airgrabber_settings: _AirGrabberSettingsSource,
         *,
+        rules: _RulesSource | None = None,
+        hold_looks: Callable[[], AbstractAsyncContextManager[None]] | None = None,
         qbittorrent_state: Callable[[], QBittorrentState] = _read_qbittorrent_state,
         is_dir: Callable[[str], bool] = os.path.isdir,
         timeout_s: float = REACH_TIMEOUT_S,
@@ -325,6 +318,8 @@ class AirGrabberFolderSync:
     ) -> None:
         self._forge = forge_settings
         self._airgrabber = airgrabber_settings
+        self._rules = rules  # AirGrabber's rule is marked fresh for a folder it newly watches
+        self._hold_looks = hold_looks  # the renamer's: no look between that mark and the store
         self._qbittorrent_state = qbittorrent_state
         self._is_dir = is_dir
         self._timeout_s = timeout_s
@@ -411,20 +406,44 @@ class AirGrabberFolderSync:
         )
         if self._closed:
             return derived
-        current = self._forge.current
-        self._stored = derived
-        if current.airgrabber == derived:
+        if self._forge.current.airgrabber == derived:
+            self._stored = derived
             return derived
-        changes: dict[str, Any] = {"airgrabber": derived}
-        added = newly_watched(current, current.model_copy(update=changes))
-        if added and current.automatic == "on":
-            # Never move files from a folder that started being watched behind the owner's back.
-            changes["automatic"] = "trial"
-            log.info("A new folder of AirGrabber's downloads is watched: Manual again")
+        before = self._stored
+        self._stored = derived  # the store's own echo is no import (`_forge_changed`)
+        try:
+            added = await self._store(derived)
+        except BaseException:
+            # Nothing stored: the next change of either settings looks again.
+            self._stored, self._seen = before, None
+            raise
+        if added:
+            log.info("A new folder of AirGrabber's downloads is watched: its files wait once")
             if self._activity is not None:
-                self._activity.say(t(BACK_TO_TRIAL, folder=added[0]), level=logging.WARNING)
-        await self._forge.update(**changes)
+                self._activity.say(t(NEW_FOLDER_ONCE, folder=added[0]), level=logging.WARNING)
         return derived
+
+    async def _store(self, derived: AirGrabberDownloads) -> list[str]:
+        """Store `derived`; when it brings AirGrabber's rule a folder, mark that rule fresh
+        first. Both in one step no look comes between (`hold_looks`): a look sees the new folder
+        only with the rule fresh, and can't clear the flag having seen only the old folders.
+        Returns the new folders (none without the rules)."""
+        rules = self._rules
+        hold = self._hold_looks() if self._hold_looks is not None else contextlib.nullcontext()
+        async with hold:
+            current = self._forge.current
+            added: list[str] = []
+            if rules is not None:
+                from app.forge.core.rules import newly_watched  # it imports this module
+
+                after = current.model_copy(update={"airgrabber": derived})
+                added = newly_watched(current, after, rules.current)
+            if added and rules is not None:
+                # Never move files from a folder that started being watched behind the owner's
+                # back (a failure stores nothing).
+                await rules.mark_fresh(rules.airgrabber_rule.id)
+            await self._forge.update(airgrabber=derived)
+        return added
 
     async def _checked(self, folder: AirGrabberFolder) -> AirGrabberFolder:
         if not folder.suggested:

@@ -60,6 +60,7 @@ Clock = Callable[[], datetime]
 
 DASHBOARD_TTL = timedelta(minutes=30)
 DETAILS_TTL = timedelta(hours=24)
+DETAILS_KEPT = 2000  # per kind of details: the oldest stored go first (the phone's search feeds them)
 SHELF_SIZE = 18
 BECAUSE_FROM = 5  # "Because you follow …" picks one of the shows followed last, this many
 PREMIERES_AHEAD = timedelta(days=90)
@@ -219,7 +220,8 @@ async def _as_tuple(items: Awaitable[Iterable[T]]) -> tuple[T, ...]:
 
 
 class _DetailsCache(Generic[T]):
-    """Details by id, kept for `ttl`; concurrent requests for one id share a single fetch.
+    """Details by id, kept for `ttl` (the newest DETAILS_KEPT); concurrent requests for one id
+    share a single fetch.
 
     Failures are not cached. A fetch is cancelled once no caller waits for it any more.
     """
@@ -263,7 +265,13 @@ class _DetailsCache(Generic[T]):
 
     def put(self, item_id: int, value: T) -> None:
         """Keep `value` for `item_id` as a fetch would (a fetch on its way still stores its own)."""
+        self._store(item_id, value)
+
+    def _store(self, item_id: int, value: T) -> None:
+        self._entries.pop(item_id, None)  # stored again: the newest
         self._entries[item_id] = _Entry(value, self._clock())
+        while len(self._entries) > DETAILS_KEPT:
+            del self._entries[next(iter(self._entries))]
 
     def clear(self) -> None:
         """Forget every entry. Fetches still in flight finish for their callers but store
@@ -274,7 +282,7 @@ class _DetailsCache(Generic[T]):
     async def _load(self, item_id: int) -> T:
         value = await self._fetch(item_id)
         if self._in_flight.get(item_id) is asyncio.current_task():  # not cleared meanwhile
-            self._entries[item_id] = _Entry(value, self._clock())
+            self._store(item_id, value)
         return value
 
     def _forget(self, item_id: int, task: asyncio.Task[T]) -> None:
@@ -387,7 +395,7 @@ class DiscoveryService:
             lists, failed = await self._load_shelves("TV", fetchers)
             if not failed and generation == self._generation:
                 self._tv_shelves = _Shelves(today, lists, self._clock())
-        is_tracked = await self._tracked_matcher(profile_id)
+        is_tracked = await self.tracked_matcher(profile_id)
         shelves = {
             name: tuple(DiscoverShowEntry(show=show, is_tracked=is_tracked(show)) for show in shows)
             for name, shows in lists.items()
@@ -718,7 +726,7 @@ class DiscoveryService:
             raise failures[0][1]
         return loaded, tuple(name for name, _ in failures)
 
-    async def _tracked_matcher(self, profile_id: int) -> Callable[[DiscoverShow], bool]:
+    async def tracked_matcher(self, profile_id: int) -> Callable[[DiscoverShow], bool]:
         """Flags a TMDB show as tracked when its TVMaze match (`resolve`) is one the person
         follows, or when its name matches such a show's (see normalize_title)."""
         entries = await self._library.tracked(profile_id=profile_id)
@@ -928,6 +936,10 @@ class DiscoveryService:
     async def search_movies(self, query: str, *, limit: int = 12) -> list[Movie]:
         return await self._tmdb.search_movies(query, limit=limit)
 
+    async def search_shows(self, query: str, *, limit: int = 12) -> list[DiscoverShow]:
+        """TMDB's shows matching `query`, best match first. TMDB errors propagate."""
+        return await self._tmdb.search_tv(query, limit=limit)
+
     async def check_tmdb_key(self, key: str) -> bool:
         """Whether TMDB accepts `key` (not yet saved). Raises TMDBError when TMDB can't be
         reached; see TMDBClient.check_key."""
@@ -943,20 +955,21 @@ class DiscoveryService:
         propagate.
         """
         match, matched_by = await self._find_on_tvmaze(show)
-        log.info(
-            "Matched %s (TMDB id %d) to TVMaze show %d by %s",
-            show.name, show.id, match.id, matched_by,
-        )
+        # Neither its name nor its TMDB id: the phone's search finds shows by what a person typed.
+        log.info("Matched a TMDB show to TVMaze show %d by %s", match.id, matched_by)
         self._tracked_via_tmdb[show.id] = match.id
         return match
 
-    async def track(self, show: DiscoverShow, *, profile_id: int) -> Show:
-        """Add a TMDB show to a person's library through its TVMaze counterpart (`resolve`);
-        returns that show.
+    async def track(
+        self, show: DiscoverShow, *, profile_id: int, match: Show | None = None
+    ) -> Show:
+        """Add a TMDB show to a person's library through its TVMaze counterpart (`resolve`, or
+        `match` when the caller resolved it just now); returns that show.
 
         Raises NoTVMazeMatch when no counterpart is found. TMDB and TVMaze errors propagate.
         """
-        match = await self.resolve(show)
+        if match is None:
+            match = await self.resolve(show)
         tracked = await self._library.track(match.id, profile_id=profile_id)
         self._tracked_via_tmdb[show.id] = tracked.id
         return tracked

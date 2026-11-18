@@ -20,10 +20,13 @@ from app.forge.core.auto import AutoRenamer, NamingChoice
 from app.forge.core.ignored import IgnoreService
 from app.forge.core.matcher import Resolution, Resolver
 from app.forge.core.queue import ItemStatus, Queue, QueueItem
+from app.forge.core.rules import rules_from_settings
+from app.forge.core.settings import ForgeSettingsService
 from app.forge.db.ignored import IgnoredRepo
 from app.forge.db.matches import MatchRepo
 from app.forge.models.history import RunSource
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia
+from app.forge.models.rules import Rule, RuleTarget
 from app.forge.runtime import ForgeRuntime
 from app.i18n import t
 from app.models import PairedPhone
@@ -103,6 +106,21 @@ class DisagreeingResolver(Resolver):
         return Resolution(media=media, candidates=(FILM_GUESS,))
 
 
+class SettingsRules:
+    """RuleService's `current` for the phone: today's setup as rules, as the renamer without a rule
+    service sees it, unless a test sets its own (`rules`)."""
+
+    def __init__(self, settings: ForgeSettingsService) -> None:
+        self._settings = settings
+        self.rules: list[Rule] | None = None
+
+    @property
+    def current(self) -> tuple[Rule, ...]:
+        if self.rules is not None:
+            return tuple(self.rules)
+        return tuple(rules_from_settings(self._settings.current))
+
+
 class Profiles:
     def __init__(self) -> None:
         self.gone = False
@@ -122,6 +140,7 @@ class ForgeOverPhoneCase(RenamerTestCase):
         self.auto = AutoRenamer(self.parts, now=self.clock)
         self.addAsyncCleanup(self.auto.stop)
         self.ignored = IgnoreService(IgnoredRepo(self.db))
+        self.rules = SettingsRules(self.settings)
         self.forge_services = SimpleNamespace(
             queue=self.queue,
             auto=self.auto,
@@ -130,6 +149,7 @@ class ForgeOverPhoneCase(RenamerTestCase):
             tmdb=self.unsure,
             presets=self.parts.presets,
             ignored=self.ignored,
+            rules=self.rules,
             aside_place=None,
             band_naming={},
         )
@@ -999,6 +1019,36 @@ class ReplaceOverPhoneTest(ForgeOverPhoneCase):
         self.assertEqual(
             (self.tmp / "aside" / "Movies" / FILM_TARGET).read_bytes(), b"old copy"
         )
+
+    async def test_replace_from_the_phone_uses_the_rules_destination(self) -> None:
+        item, old = await self.in_library()
+        films = self.tmp / "Films 4K"
+        films.mkdir()
+        # The rule that takes it moves films to a folder of its own, at a drive or share root.
+        self.rules.rules = [
+            Rule(
+                id=1,
+                folder=str(self.folders.downloads),
+                films=RuleTarget(preset="Movie (Folder)", to="folder", folder=str(films)),
+            )
+        ]
+        self.enterContext(
+            mock.patch.object(duplicates_module, "is_root", lambda folder: folder == films)
+        )
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertIs(entry["can_replace"], False)  # the Movies folder isn't the place
+        reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 409)
+        self.assertEqual(reply.body, {"error": "failed", "message": t(NO_ASIDE)})
+        self.assertEqual(old.read_bytes(), b"old copy")
+        self.rules.rules = None  # a library-folder route (today's setup): as before
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertIs(entry["can_replace"], True)
+        await asyncio.gather(*self.forge._reads)
+        reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, {"moved": 1, "message": t(REPLACED)})
+        self.assertEqual(old.read_bytes(), b"video")
 
     async def test_a_library_not_set_up_or_a_refused_replace_says_so(self) -> None:
         item, old = await self.in_library()

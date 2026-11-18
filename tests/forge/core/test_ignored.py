@@ -74,7 +74,7 @@ class MigrationTest(ForgeAsyncTestCase):
         db = await Database.open(path)
         try:
             row = await db.fetch_one("PRAGMA user_version")
-            assert row is not None and row[0] == SCHEMA_VERSION == 4
+            assert row is not None and row[0] == SCHEMA_VERSION == 5
             assert await IgnoredRepo(db).list() == []
             count = await db.fetch_one("SELECT COUNT(*) FROM moves")
             assert count is not None and count[0] == 1

@@ -989,7 +989,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def go_to_spot(self, section: str, spot: str) -> None:
         """Show `section`'s page scrolled to its box `spot` (a part's `spots`), once that shows:
-        a MediaForge page may still be getting ready."""
+        a MediaForge page may still be getting ready. Then the part's `spot_shown(spot)`, when
+        it has one (Auto-rename's `rule:<id>` opens that rule's editor)."""
         self._show_section(section)
         spawn(self._scroll_to_spot(section, spot), name="settings-spot")
 
@@ -997,7 +998,8 @@ class SettingsDialog(ctk.CTkToplevel):
         for _ in range(_SPOT_TRIES):
             if not self.winfo_exists() or self._section != section:
                 return
-            spots: dict[str, tk.Misc] = getattr(self.parts.get(section), "spots", {})
+            part = self.parts.get(section)
+            spots: dict[str, tk.Misc] = getattr(part, "spots", {})
             frame = spots.get(spot)
             if frame is not None and frame.winfo_ismapped():
                 canvas = self._scroll._parent_canvas
@@ -1005,6 +1007,9 @@ class SettingsDialog(ctk.CTkToplevel):
                 box = canvas.bbox("all")
                 if box and box[3] > 0:
                     canvas.yview_moveto(max(0, frame.winfo_rooty() - self._scroll.winfo_rooty()) / box[3])
+                shown: Callable[[str], object] | None = getattr(part, "spot_shown", None)
+                if shown is not None:
+                    shown(spot)  # e.g. a rule's row: its editor opens
                 return
             await asyncio.sleep(_SPOT_WAIT_S)
 

@@ -18,11 +18,14 @@ Bringing it over (`bring_over`), refused while the old MediaForge runs (its mute
    Forge's, later migrations run on the copy; a schema newer than this build is refused and
    said so plainly), its settings rewritten as `ForgeSettings` (the fields AirGrabber owns, the
    TMDB key among them, vanish; the trailer tools are downloaded fresh, D12:
-   `trailer_tools_ok` reset; `imported_from` set; `window_geometry`, now unread, stays);
+   `trailer_tools_ok` reset; `imported_from` set; `window_geometry`, now unread, stays) and its
+   watched folders, presets and Off / Manual / On carried over into rules in the copy
+   (`carry_rules`, `rules_carried` set);
 3. forge.db written from it with SQLite's backup API while Forge runs (the Forge database's
    other connection sees the new rows at its next statement), under Forge's `run_lock` so no
    rename run writes meanwhile; then Forge's settings service is told (`settings.update` with
-   the imported settings: the renamer is reconfigured as after a Settings save);
+   the imported settings: the renamer is reconfigured as after a Settings save), its rules read
+   again first (`rules.reload`, so those listeners see the new rules);
 4. the old TMDB key goes into AirGrabber's settings only when AirGrabber has none (never
    logged); an old right-click menu (it starts the old MediaForge) is rewritten to start this
    AirGrabber (app/forge/context_menu.py: the one time another program's menu is taken over);
@@ -53,7 +56,7 @@ import re
 import sqlite3
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -70,6 +73,7 @@ if TYPE_CHECKING:
     from app.forge.models.history import RunSummary
     from app.forge.models.match import RememberedMatch
     from app.forge.models.preset import Preset
+    from app.forge.models.rules import Rule
     from app.forge.models.settings import ForgeSettings
     from app.models import Settings
 
@@ -322,6 +326,15 @@ class _Matches(Protocol):
     async def list(self) -> list[RememberedMatch]: ...
 
 
+class _Rules(Protocol):
+    @property
+    def current(self) -> tuple[Rule, ...]: ...
+
+    async def reload(
+        self, *, before_telling: Callable[[], Awaitable[object]] | None = None
+    ) -> None: ...
+
+
 class _AirGrabberSettings(Protocol):
     @property
     def current(self) -> Settings: ...
@@ -349,6 +362,9 @@ class ImportTarget(Protocol):
     def matches(self) -> _Matches: ...
 
     @property
+    def rules(self) -> _Rules: ...
+
+    @property
     def airgrabber_settings(self) -> _AirGrabberSettings: ...
 
     @property
@@ -357,13 +373,16 @@ class ImportTarget(Protocol):
 
 async def has_own_data(forge: ImportTarget) -> bool:
     """Whether Forge already has data of its own that an import would replace: a past
-    rename, a remembered match, presets other than the defaults or a chosen setting."""
+    rename, a remembered match, presets other than the defaults, a rule of the owner's (any
+    but AirGrabber's) or a chosen setting."""
     from app.forge.models.preset import DEFAULT_PRESETS
     from app.forge.models.settings import ForgeSettings
 
     if await forge.history.list_runs() or await forge.matches.list():
         return True
     if list(await forge.presets.list()) != list(DEFAULT_PRESETS):
+        return True
+    if any(not rule.airgrabber for rule in forge.rules.current):
         return True
     current, default = forge.settings.current, ForgeSettings()
     return any(getattr(current, name) != getattr(default, name) for name in OWN_FIELDS)
@@ -399,11 +418,14 @@ async def _snapshot(source: Path, target: Path) -> None:
 
 async def _prepare(copy: Path, current: ForgeSettings, label: str) -> _Prepared:
     """Open the snapshot as a Forge database (migrating it), count what it holds and store its
-    settings as Forge's own (dropped fields gone, tools reset, the import marked)."""
+    settings as Forge's own (dropped fields gone, tools reset, the import marked), with its
+    setup carried over into rules."""
+    from app.forge.core.rules_service import carry_rules
     from app.forge.db.database import Database
     from app.forge.db.history import HistoryRepo
     from app.forge.db.matches import MatchRepo
     from app.forge.db.presets import PresetRepo
+    from app.forge.db.rules import RuleRepo
     from app.forge.db.settings import SettingsRepo
 
     try:
@@ -424,6 +446,8 @@ async def _prepare(copy: Path, current: ForgeSettings, label: str) -> _Prepared:
                 "imported_from": label,
             }
         )
+        if await carry_rules(RuleRepo(db), settings):
+            settings = settings.model_copy(update={"rules_carried": True})
         await repo.save(settings)  # the copy (and so forge.db) never holds the old key
         return _Prepared(
             settings=settings,
@@ -538,8 +562,12 @@ async def bring_over(
             except (sqlite3.Error, OSError) as exc:
                 log.error("forge.db couldn't be written (%s)", type(exc).__name__)
                 raise ImportProblem(Problem.FAILED) from exc
-            # Forge's settings service holds them in memory: tell it (the renamer follows).
-            await forge.settings.update(**prepared.settings.model_dump())
+            # Forge's settings service and rules hold them in memory: the rules are read again,
+            # then the settings stored (their listeners, the renamer among them, see the new
+            # rules), then the rules' listeners are told.
+            await forge.rules.reload(
+                before_telling=lambda: forge.settings.update(**prepared.settings.model_dump())
+            )
     tmdb_key = await _take_tmdb_key(forge, prepared.tmdb_key)
     menu = await _take_over_menu(forge, list(prepared.settings.context_menu_presets), registry)
     await asyncio.to_thread(_write_marker, paths, label)

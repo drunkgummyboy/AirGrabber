@@ -72,6 +72,14 @@ _SERIES_END = re.compile(
     r"|season\s*\d{1,3}(?!\d)|complete(?!\w))"
 )
 _YEAR = re.compile(r"(?:19|20)\d\d")
+# What may come before a film's name in a release title: bracketed tags ("[YTS.MX]") and a site
+# ("www.Torrenting.com - "), each followed by separators.
+_LEADING_TAG = re.compile(r"^\s*[\[({][^\])}]*[\])}][\s\-–:._]*")
+_LEADING_SITE = re.compile(
+    r"^\s*(?:www\.[\w-]+(?:\.[\w-]+)*|[\w-]+\.(?:com|org|net|mx|cc|ws|info|io))(?![\w-])"
+    r"[\s\-–:._]*",
+    re.IGNORECASE,
+)
 # The release group: what follows the last '-' up to a space, bracket, parenthesis or dot.
 _GROUP = re.compile(r"[^\s\[\](){}.]+")
 # What follows a '-' without being a group: "WEB-DL", "BluRay-Rip", "x264", "1080p", a number.
@@ -226,9 +234,28 @@ class _Matcher:
             return False
         if any(pattern.search(text) for pattern in self.forbidden):
             return False
+        if self.kind is SearchKind.MOVIE and not self._starts_with_title(title):
+            return False
         if _title_matches(self.title_words, _words(text)):
             return True
         return _mostly_overlap(self.title_words, self._series_words(text))
+
+    def _starts_with_title(self, title: str) -> bool:
+        """A film's release name starts with the film's title (after bracketed tags and a site):
+        its first significant word is a title word, or the start of the title written without
+        spaces ("Spiderman"). "Heart.Of.The.Beast.2026" is no release of "The Beast" (2026)."""
+        if not self.title_words:
+            return True
+        rest, previous = title, None
+        while rest != previous:
+            previous = rest
+            rest = _LEADING_SITE.sub("", _LEADING_TAG.sub("", rest))
+        first = next(
+            (word for word in _words(_normalize(rest)) if word not in _STOPWORDS), None
+        )
+        if first is None:
+            return True
+        return first in self.title_words or "".join(self.title_words).startswith(first)
 
     def _series_words(self, text: str) -> list[str]:
         """The significant words naming the show or film in a normalized release title: those

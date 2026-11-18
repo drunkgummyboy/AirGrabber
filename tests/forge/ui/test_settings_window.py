@@ -237,8 +237,8 @@ class SectionsTests(SettingsWindowCase):
         self.assertEqual(tuple(window.cget("fg_color")), theme.BG)
         self.assertEqual(tuple(window._save_button.cget("fg_color")), theme.ACCENT)
         part = self.library(window)
-        self.assertEqual(tuple(part.use_box.cget("fg_color")), look.ACCENT)
-        self.assertEqual(tuple(part.mode.cget("selected_color")), look.SELECTED)
+        self.assertEqual(tuple(part.watching.cget("progress_color")), look.ACCENT)
+        self.assertEqual(tuple(part.rule_rows[0].switch.cget("progress_color")), look.ACCENT)
         self.assertEqual(tuple(window._items[window.section].cget("fg_color")), theme.ROW_SELECTED)
 
     async def test_on_a_short_screen_the_sidebar_scrolls_and_the_pages_keep_their_width(
@@ -314,11 +314,11 @@ class SaveTests(SettingsWindowCase):
         window, forge = await self.ready()
         library = self.library(window)
         library._needs.set(False)
-        library.set_mode("trial")
+        library.set_watching(True)
         window._save_button.invoke()  # async_command: Save runs on the loop
         await pump_until(self.root, lambda: not window.winfo_exists())
         self.assertEqual(
-            self.stored(forge).updates, [{"automatic": "trial", "notify_needs": False}]
+            self.stored(forge).updates, [{"automatic": "on", "notify_needs": False}]
         )
 
     async def test_airgrabbers_settings_first_then_each_section_in_order(self) -> None:
@@ -378,7 +378,7 @@ class SaveTests(SettingsWindowCase):
             with self.subTest(how=how):
                 window, forge = await self.ready()
                 library = self.library(window)
-                library.remove_watch_folder(READY.watch_folders[0])
+                library.toggle_rule(0, False)
                 library._needs.set(False)
                 if how == "cancel":
                     window.cancel_button.invoke()

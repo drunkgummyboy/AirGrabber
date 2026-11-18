@@ -31,9 +31,13 @@ a borderless pill in the card's colour so a picture behind them can't swallow th
 drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always shown) sits under its
 status with its caption before it ("Name style", `Row.chip_caption`; its tip `Row.tips`' "preset"),
 the status moving up to the title's line; a click on it is the
-band's action "preset" (`chip_box` gives where it is, `action_box` any button's). A click on a
-button stops there: CTk's click on "all" would take back the focus from a menu it opened. `select_bands`: a click on a band selects
-its first line. Sizes come from `Sizes` (the queue's are bigger
+band's action "preset" (`chip_box` gives where it is, `action_box` any button's). A watched
+download's band names the rule that took it (`Row.rule`, "Rule: 4K films") on a small pill in the
+chip's colours right after its destination (on a band that asks, after the question's line when
+there is room, else not at all), cut to `RULE_MAX`, its tip the whole label; a click on it is the
+band's action `RULE_ACTION` (that rule opens in Settings). A click on a button stops there: CTk's
+click on "all" would take back the focus from a menu it opened. `select_bands`: a click on a band
+selects its first line. Sizes come from `Sizes` (the queue's are bigger
 than the confirm window's and History's).
 """
 
@@ -69,6 +73,11 @@ from app.ui.tooltip import Tooltip, add_tooltip
 MONO_FAMILY = "Consolas"  # old file names, as the release list's table
 CHIP_MAX = 190  # a band's preset chip at most (CTk units; a longer name is cut with "…")
 CHIP_HEIGHT = 26
+RULE_MAX = 160  # a band's rule pill at most (CTk units; a longer label is cut with "…")
+RULE_ACTION = "rule"  # a band's rule pill, clicked
+_RULE_PAD = 8  # inside the rule pill, either side of its words
+_RULE_GAP = 10  # between the destination (or the question's line) and the rule pill
+_DEST_MIN = 120  # the destination keeps this much room (or its whole width) beside the rule pill
 _MEASURE_CACHE = 4000  # remembered text widths / fitted texts before starting over
 _FADED = 0.45  # a done band's fill: this much of the list's ground over the band colour
 _ARC_STEPS = 6  # points on a rounded corner's quarter circle
@@ -159,6 +168,7 @@ class Row(BaseModel):
     ask_more: str = ""
     dest: str = ""  # a band's destination ("📦 Moves to Series › …"), after its subtitle
     dest_look: Literal["moves", "stays", "warn"] = "moves"  # link, muted or warning colour
+    rule: str = ""  # a watched band's rule ("Rule: 4K films"), a pill after `dest`: action "rule"
     faded: bool = False  # done today: drawn quieter
     # An episode line's divider: a thin line along its top with these words at its start
     # ("Season 2"), above a new season's first line (its files go to another folder).
@@ -287,7 +297,7 @@ class VirtualList(ctk.CTkFrame):
         self._tip_shown = ""
         # Buttons with a tip of their own as drawn last: (x0, y0, x1, y1, the tip).
         self._tips: list[tuple[int, int, int, int, str]] = []
-        self._on_folders = False  # the pointer is over a band's folder warning
+        self._on_link = False  # the pointer is over what opens Settings (a warning, a rule)
         self.select_bands = False  # a click on a band selects its first line (the queue)
         self.removable = removable
         self.thumbnails = thumbnails
@@ -812,15 +822,27 @@ class VirtualList(ctk.CTkFrame):
         )
         sub_y_px = y0 + box_h * sub_y
         if row.ask:  # under the buttons, its muted words may go further
-            self._draw_ask(p, row, tx, (sub_y_px, avail), (y0 + box_h * _ASK_MORE_Y, end - tx))
+            ended = self._draw_ask(
+                p, row, tx, (sub_y_px, avail), (y0 + box_h * _ASK_MORE_Y, end - tx)
+            )
+            if row.rule:  # after the question's line, only when it fits there whole
+                self._draw_rule(p, row, ended + self._px(_RULE_GAP), sub_y_px, tx + avail)
             return
         subtitle = self._fit(row.subtitle, self._band_sub_font, avail)
         c.create_text(
             tx, sub_y_px, text=subtitle, anchor="w", fill=p.muted, font=self._band_sub_font
         )
-        if row.dest and subtitle == row.subtitle:
+        if subtitle != row.subtitle:  # cut: nothing fits after it
+            return
+        ended = tx + (self._measure(self._band_sub_font, subtitle) if subtitle else 0)
+        pill = self._rule_width(row.rule) + self._px(_RULE_GAP) if row.rule else 0
+        if row.dest:
             used = self._measure(self._band_sub_font, row.subtitle + " ") if row.subtitle else 0
-            dest = self._fit(row.dest, self._band_sub_font, avail - used)
+            room = avail - used
+            wanted = self._measure(self._band_sub_font, row.dest)
+            if pill and room - pill < min(wanted, self._px(_DEST_MIN)):
+                pill = 0  # no room for both: the destination first
+            dest = self._fit(row.dest, self._band_sub_font, room - pill)
             if dest:
                 c.create_text(
                     tx + used,
@@ -831,9 +853,10 @@ class VirtualList(ctk.CTkFrame):
                     font=self._band_sub_font,
                     tags=("band-dest",),
                 )
+                width = self._measure(self._band_sub_font, dest)
+                ended = tx + used + width
                 if row.dest_look == "warn":  # "Choose your … folder": a click opens that spot
                     half = self._px(10)
-                    width = self._measure(self._band_sub_font, dest)
                     self._hits.append(
                         (
                             round(tx + used),
@@ -844,6 +867,34 @@ class VirtualList(ctk.CTkFrame):
                             FOLDERS_ACTION,
                         )
                     )
+        if pill:
+            self._draw_rule(p, row, ended + self._px(_RULE_GAP), sub_y_px, tx + avail)
+
+    def _rule_width(self, label: str) -> int:
+        """The rule pill's width: its words and padding, at most `RULE_MAX`."""
+        pad = self._px(_RULE_PAD)
+        return min(self._measure(self._note_font, label) + 2 * pad, self._px(RULE_MAX))
+
+    def _draw_rule(self, p: _Colours, row: Row, x: float, middle: float, limit: float) -> None:
+        """A band's rule ("Rule: 4K films") on a pill in the chip's colours from `x`, its words
+        cut to fit `RULE_MAX`; left out when it doesn't end by `limit`. A click on it is the
+        band's `RULE_ACTION`, its tip the whole label."""
+        width = self._rule_width(row.rule)
+        if x + width > limit:
+            return
+        pad = self._px(_RULE_PAD)
+        text = self._fit(row.rule, self._note_font, width - 2 * pad)
+        half = (self._note_font.metrics("linespace") + self._px(6)) / 2
+        x0, y0, x1, y1 = round(x), round(middle - half), round(x + width), round(middle + half)
+        self.round_rect(
+            x0, y0, x1, y1, round(half), fill=p.raised, outline=p.line, width=1, tags=("rule",)
+        )
+        self.canvas.create_text(
+            x0 + pad, middle, text=text, anchor="w", fill=p.muted, font=self._note_font,
+            tags=("rule-text",),
+        )  # fmt: skip
+        self._hits.append((x0, y0, x1, y1, row.key, RULE_ACTION))
+        self._tips.append((x0, y0, x1, y1, row.rule))
 
     def _draw_ask(
         self,
@@ -852,9 +903,10 @@ class VirtualList(ctk.CTkFrame):
         x: float,
         line: tuple[float, int],
         under: tuple[float, int],
-    ) -> None:
+    ) -> float:
         """A band's question from `x` on its subtitle's `line` (its y and room; the guess bold),
-        and its muted words after it, or on the line `under` it when both don't fit on one."""
+        and its muted words after it, or on the line `under` it when both don't fit on one.
+        Returns the x where the subtitle's line ends."""
         middle, avail = line
         text, font, bold = row.ask, self._band_sub_font, self._band_sub_bold
         colour = p.muted if row.faded else p.text
@@ -877,16 +929,20 @@ class VirtualList(ctk.CTkFrame):
             )  # fmt: skip
             width = avail
         if not row.ask_more:
-            return
+            return x + width
         gap = self._measure(font, "  ")
         if width + gap + self._measure(font, row.ask_more) <= avail:
             more_x, more_y, room = x + width + gap, middle, avail - width - gap
         else:
             more_x, (more_y, room) = x, under
+        more = self._fit(row.ask_more, font, round(room))
         self.canvas.create_text(
-            more_x, more_y, text=self._fit(row.ask_more, font, round(room)), anchor="w",
-            fill=p.muted, font=font, tags=("band-ask-more",),
+            more_x, more_y, text=more, anchor="w", fill=p.muted, font=font,
+            tags=("band-ask-more",),
         )  # fmt: skip
+        if more_y == middle:
+            return more_x + self._measure(font, more)
+        return x + width
 
     def _draw_buttons(
         self,
@@ -1361,11 +1417,11 @@ class VirtualList(ctk.CTkFrame):
             self._set_hover(None)
         self._point_at(event.x, self.canvas.canvasy(event.y))
         over = any(
-            action == FOLDERS_ACTION and x0 <= event.x <= x1 and y0 <= cy <= y1
+            action in (FOLDERS_ACTION, RULE_ACTION) and x0 <= event.x <= x1 and y0 <= cy <= y1
             for x0, y0, x1, y1, _key, action in self._hits
         )
-        if over != self._on_folders:  # the warning that opens Settings looks clickable
-            self._on_folders = over
+        if over != self._on_link:  # the warning and the rule that open Settings look clickable
+            self._on_link = over
             self.canvas.configure(cursor="hand2" if over else "")
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:

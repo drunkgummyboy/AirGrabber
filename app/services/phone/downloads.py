@@ -1,14 +1,23 @@
 """The phone's downloads: `POST /v1/download` (a tap: AirGrabber chooses, as the PC's button does),
 `POST /v1/releases` and `POST /v1/grab` (holding it: choose by hand).
 
-A phone asks only for what is on its own person's lists or was suggested to it (`Suggestions`, whose
-series are a `kind` of their own: season 1 as a pack), and what's out; a grabbed film stays on the
+A phone asks only for what is on its own person's lists, was suggested to it (`Suggestions`, whose
+series are a `kind` of their own: season 1 as a pack) or was found by its search (`PhoneFind`: a
+film by its TMDB id as `movie` with `"found": true`; a series' `season` as a pack, or one
+`found_episode`, both by the series' TMDB id, never a TVMaze id as `episode`'s), and what's out; a grabbed film stays on the
 lists (a tap then says it was downloaded already, and `again` works), and one taken off a list
 after its grab can still be asked about while Coming up shows it. The releases stay here,
 under short random `ref`s for RELEASE_TTL_S: their links (`download_url`, `magnet_uri`) may hold a
 key or a passkey and never leave the PC. They come best first (`rank_releases`, what `pick_best`
 chooses from); what a tap wouldn't take follows, so "Choose one yourself" also leads somewhere when
 nothing was good enough. Likely fakes are never offered.
+
+A `movie` without `"found": true` is what it was before the search came (the person's list, a
+grabbed film, a suggestion; never put on a list), whatever a search found: an older Companion sends
+no `found`. A found film goes on the phone's person's watchlist (Settings' switch, as every add):
+before a tap's search, whatever it then finds, and after a chosen download's grab worked (a list
+that can't be written then is only logged: the grab went through); looking at the downloads
+doesn't put it there. A film already on the list is left as it is.
 
 A `ref` is used up by its grab, so a double tap grabs once; a grab that failed can be tried again.
 A person since removed gets a plain answer (`person_gone`).
@@ -32,6 +41,7 @@ from app.i18n import t
 from app.models import (
     GrabTarget,
     MediaType,
+    Movie,
     MovieDetails,
     QuickDownloadResult,
     SearchRequest,
@@ -40,6 +50,7 @@ from app.models import (
 from app.services.downloads import DownloadService, GrabError
 from app.services.library import LibraryService
 from app.services.phone.coming_up import GrabbedFilms, person_gone
+from app.services.phone.find import PhoneFind, search_again
 from app.services.phone.server import Handler, Reply, Request, bad_request, error_reply
 from app.services.phone.suggestions import Suggestions
 from app.services.picking import is_likely_fake, rank_releases
@@ -63,6 +74,7 @@ class _Title:
     request: SearchRequest
     target: GrabTarget
     out: bool
+    found_film: Movie | None = None  # a film found by the phone's search: for the watchlist
 
     @property
     def label(self) -> str:
@@ -75,6 +87,7 @@ class _Kept:
     target: GrabTarget
     label: str
     until: float
+    found_film: Movie | None
 
 
 def _whole_number(value: object) -> TypeGuard[int]:
@@ -111,6 +124,7 @@ class PhoneDownloads:
         films: GrabbedFilms,
         suggestions: Suggestions,
         *,
+        find: PhoneFind,
         timeout: float = SEARCH_TIMEOUT,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         clock: Callable[[], float] = time.monotonic,
@@ -125,6 +139,7 @@ class PhoneDownloads:
         self._profiles = profiles
         self._grabbed_films = films
         self._suggestions = suggestions
+        self._find = find
         self._timeout = timeout
         self._now = now
         self._clock = clock
@@ -146,6 +161,9 @@ class PhoneDownloads:
         again = request.body.get("again", False)
         if not isinstance(again, bool):
             return bad_request()
+        assert request.phone is not None
+        if title.found_film is not None:
+            await self._watchlist.add(title.found_film, profile_id=request.phone.profile_id)
         if not title.out:
             return _outcome("nothing_found", _not_out(title.label))
         try:
@@ -168,7 +186,7 @@ class PhoneDownloads:
         items = []
         for release in found:
             ref = secrets.token_urlsafe(_REF_BYTES)
-            self._kept[ref] = _Kept(release, title.target, title.label, until)
+            self._kept[ref] = _Kept(release, title.target, title.label, until, title.found_film)
             items.append(
                 {
                     "ref": ref,
@@ -205,6 +223,12 @@ class PhoneDownloads:
             self._kept[ref] = kept
             return _grab_failed(exc)
         log.info("Phone: chosen download for %s: %s", kept.label, grab.outcome.value)
+        if kept.found_film is not None:
+            assert request.phone is not None
+            try:
+                await self._watchlist.add(kept.found_film, profile_id=request.phone.profile_id)
+            except Exception as exc:  # the grab went through: say so all the same
+                log.warning("Phone: a found film not put on the list: %s", type(exc).__name__)
         return _outcome("grabbed", f"{kept.label} · {grab.message}")
 
     def _in_order(
@@ -249,7 +273,12 @@ class PhoneDownloads:
         body = request.body
         kind, id = body.get("kind"), body.get("id")
         season, number = body.get("season"), body.get("episode")
+        found = body.get("found", False)
+        if not isinstance(found, bool):
+            return bad_request()
         if kind == "movie" and _whole_number(id):
+            if found:
+                return await self._found_film(id)
             return await self._film(id, request.phone.profile_id)
         if (
             kind == "episode"
@@ -260,7 +289,54 @@ class PhoneDownloads:
             return await self._episode(id, season, number, request.phone.profile_id)
         if kind == "series" and _whole_number(id):
             return await self._series(id, request.phone.profile_id)
+        if kind == "season" and _whole_number(id) and _whole_number(season):
+            return await self._found_season(id, season, request.phone.profile_id)
+        if (
+            kind == "found_episode"
+            and _whole_number(id)
+            and _whole_number(season)
+            and _whole_number(number)
+        ):
+            return await self._found_episode(id, season, number, request.phone.profile_id)
         return bad_request()
+
+    async def _found_season(self, tmdb_id: int, season: int, person: int) -> _Title | Reply:
+        """A season of a found (or suggested) series, as a pack; it must have numbered episodes."""
+        details = await self._find.series(tmdb_id, person)
+        if isinstance(details, Reply):
+            return details
+        numbered = [
+            one for one in details.episodes if one.season == season and one.number is not None
+        ]
+        if not numbered:
+            return search_again()
+        aired = sum(one.has_aired(self._now()) for one in numbered)
+        show = details.show
+        return _Title(
+            self._search.season_request(show, season, episodes=aired or None),
+            GrabTarget(media_type=MediaType.TV, media_id=show.id, season=season),
+            aired > 0,
+        )
+
+    async def _found_episode(
+        self, tmdb_id: int, season: int, number: int, person: int
+    ) -> _Title | Reply:
+        """One episode of a found (or suggested) series: its id is TMDB's, never TVMaze's."""
+        details = await self._find.series(tmdb_id, person)
+        if isinstance(details, Reply):
+            return details
+        episode = next(
+            (one for one in details.episodes if one.season == season and one.number == number),
+            None,
+        )
+        if episode is None:
+            return search_again()
+        show = details.show
+        return _Title(
+            episode_request(show, season, number),
+            GrabTarget(media_type=MediaType.TV, media_id=show.id, season=season, episode=number),
+            episode.has_aired(self._now()),
+        )
 
     async def _episode(self, show_id: int, season: int, number: int, person: int) -> _Title | Reply:
         followed = await self._library.tracked(profile_id=person)
@@ -313,6 +389,18 @@ class PhoneDownloads:
             movie_request(movie, MovieDetails(id=movie.id, imdb_id=entry.imdb_id)),
             target,
             is_out(entry, self._now().date()),
+        )
+
+    async def _found_film(self, movie_id: int) -> _Title | Reply:
+        """A film the phone's search found (`"found": true`): for the watchlist as well."""
+        found = await self._find.film(movie_id)
+        if found is None:
+            return search_again()
+        return _Title(
+            movie_request(found.movie, MovieDetails(id=movie_id, imdb_id=found.imdb_id)),
+            GrabTarget(media_type=MediaType.MOVIE, media_id=movie_id),
+            found.out,
+            found_film=found.movie,
         )
 
     async def _grabbed_film(self, target: GrabTarget, person: int) -> _Title | Reply:

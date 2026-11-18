@@ -443,7 +443,7 @@ class RenamerTest(RenamerTestCase):
         await auto.look()
         assert len(notes) == 1  # once a day
 
-    async def test_unreachable_is_logged_once_without_the_full_path(self) -> None:
+    async def test_unreachable_is_logged_once_without_its_name(self) -> None:
         await self.use()
         self.folders.downloads.rmdir()
         clock = Clock()
@@ -455,10 +455,11 @@ class RenamerTest(RenamerTestCase):
             self.folders.downloads.mkdir()
             await auto.look()
             await auto.look()
-        lost = [line for line in logs.output if "Can't reach the folder Downloads" in line]
-        back = [line for line in logs.output if "Can reach the folder Downloads again" in line]
+        lost = [line for line in logs.output if "Can't reach 1 folder(s)" in line]
+        back = [line for line in logs.output if "Can reach 1 folder(s) again" in line]
         assert len(lost) == 1 and len(back) == 1
         assert all(str(self.tmp) not in line for line in logs.output)
+        assert all("Downloads" not in line for line in logs.output)  # not even its name
 
     async def test_done_today_rolls_over_at_midnight(self) -> None:
         await self.use()
@@ -770,7 +771,7 @@ class SilentFolderTest(RenamerTestCase):
         calls: list[Path] = []
         real = watch.candidates
 
-        def silent(root: Path, ignored: object = None) -> list[Path]:
+        def silent(root: Path, ignored: object = None, prune: object = ()) -> list[Path]:
             calls.append(root)
             if not free.is_set():
                 free.wait(10)  # the share took the connection, and says nothing
@@ -800,8 +801,8 @@ class SilentFolderTest(RenamerTestCase):
                 if not result.unreachable:
                     break
             assert result.unreachable == [] and statuses[-1][0] == "watching"
-        assert sum("Can't reach the folder Downloads" in line for line in logs.output) == 1
-        assert sum("Can reach the folder Downloads again" in line for line in logs.output) == 1
+        assert sum("Can't reach 1 folder(s)" in line for line in logs.output) == 1
+        assert sum("Can reach 1 folder(s) again" in line for line in logs.output) == 1
 
     async def test_a_silent_finished_check_never_runs_twice_at_once(self) -> None:
         await self.use()

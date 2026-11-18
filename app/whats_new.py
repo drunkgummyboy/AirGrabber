@@ -20,6 +20,9 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.20.0": (
+        N_("A film's download must now start with its title, so “The Beast” no longer fetches “Heart of the Beast”."),
+    ),
     "3.19.0": (
         N_("Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films."),
         N_("Films stay on your watchlist after they're downloaded, with the day it happened; they're never downloaded twice."),
@@ -299,14 +302,15 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.18.0": (
+    "3.20.0": (
         Feature(
-            N_("Your folders beside Plex"),
+            N_("Rules for your download folders"),
             N_(
-                "With Plex connected, your own folders can be a second shelf, Downloaded: what you "
-                "just downloaded stays apart from Plex, plays from there and counts as had."
+                "Settings → Auto-rename: give each folder its own rule (what it takes, how it's "
+                "named, where it goes), Automatic or Manual. A new or changed rule first shows "
+                "you what's already there."
             ),
-            "shelves.png",
+            "rules.png",
         ),
     ),
 }

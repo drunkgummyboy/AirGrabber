@@ -140,6 +140,9 @@ class _Answer(NamedTuple):
     file: FileReply | None = None  # sent after `data` (its head), in pieces
 
 
+_MOST_DIGITS = 19  # a byte position past this many digits is no file's
+
+
 def _range_parts(headers: Mapping[str, str]) -> tuple[int, str] | None:
     """The request's `Range: bytes=N-…`: N and what follows the dash (as sent); None when there
     is none, or it isn't one."""
@@ -148,9 +151,14 @@ def _range_parts(headers: Mapping[str, str]) -> tuple[int, str] | None:
         return None
     unit, _, spec = wanted.partition("=")
     first, dash, last = spec.partition("-")
-    if unit.strip().lower() != "bytes" or not dash or not first.isascii() or not first.isdigit():
+    if unit.strip().lower() != "bytes" or not dash or not _a_number(first):
         return None
     return int(first), last.strip()
+
+
+def _a_number(text: str) -> bool:
+    """Plain digits a byte position can be (int() refuses the longest texts)."""
+    return text.isascii() and text.isdigit() and len(text) <= _MOST_DIGITS
 
 
 def range_start(headers: Mapping[str, str], size: int) -> int | None | Literal[False]:
@@ -174,7 +182,7 @@ def range_span(headers: Mapping[str, str], size: int) -> tuple[int, int] | None 
     start, last_text = parts
     if not last_text:
         last = size - 1
-    elif last_text.isascii() and last_text.isdigit():
+    elif _a_number(last_text):
         last = min(int(last_text), size - 1)
     else:
         return None

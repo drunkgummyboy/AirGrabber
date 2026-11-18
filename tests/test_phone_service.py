@@ -208,6 +208,7 @@ class PairingTests(ServiceCase):
                 "library": "plex",
                 "folders": False,  # the folders aren't on: no Downloaded shelf
                 "phone_copies": False,  # no copy maker here
+                "find": True,  # this PC can search (`/v1/find`)
             },
         )
         self.assertTrue(body["token"])

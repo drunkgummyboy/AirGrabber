@@ -33,6 +33,7 @@ from app.services.phone.coming_up import ComingUp, GrabbedFilms
 from app.services.phone.copies import FOLDER as COPIES_FOLDER
 from app.services.phone.copies import PhoneCopies
 from app.services.phone.downloads import PhoneDownloads
+from app.services.phone.find import PhoneFind
 from app.services.phone.forge import PhoneForge
 from app.services.phone.library import PhoneLibrary, reachable_copy
 from app.services.phone.play_links import PlayLinks
@@ -259,6 +260,19 @@ class Services:
         grabbed_films = GrabbedFilms(self.download_status)
         suggestions = Suggestions(library, self.watchlist, discovery, self.profiles, settings)
         shortlist = Shortlist(settings, self.profiles, suggestions)
+        # The phone's search: films and series by name, also what the library hasn't; what it
+        # found (by TMDB id, this run only) is what PhoneDownloads may fetch and /v1/follow follow.
+        find = PhoneFind(
+            library,
+            self.watchlist,
+            discovery,
+            downloads,
+            self.profiles,
+            suggestions,
+            settings=settings,
+            plex=self.plex,
+            files=db.library_files,
+        )
         # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
         # ffmpeg (app/services/phone/copies.py); the phone asks, or Send to phone does. A folder
         # library film's (Downloaded's, beside Plex too) is made from its own file that is there
@@ -308,8 +322,10 @@ class Services:
                 self.profiles,
                 grabbed_films,
                 suggestions,
+                find=find,
             ).routes(),
             **suggestions.routes(),
+            **find.routes(),
             **shortlist.routes(),
             **self.phone_sends.routes(),
             **self.phone_forge.routes(),

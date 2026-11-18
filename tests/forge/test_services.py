@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 from unittest import mock
@@ -23,6 +25,7 @@ from app.forge.db.history import HistoryRepo
 from app.forge.models.history import OpKind, OpState, RunSource
 from app.forge.models.media import MediaKind, ParsedMedia
 from app.forge.models.preset import DEFAULT_PRESETS, PresetOptions
+from app.forge.models.rules import Rule
 from app.forge.core.planner import build_plan
 from app.forge.core.queue import QueueEvent
 from app.forge.runtime import FAILED_REASON, NOT_READY_REASON, ForgeRuntime, ForgeState
@@ -34,6 +37,7 @@ from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.core.journal_base import make_inputs
+from tests.forge.core.test_auto_renamer import Tmdb
 
 
 def _no_network(request: httpx.Request) -> httpx.Response:
@@ -349,8 +353,91 @@ class ForgeServicesTest(ForgeAsyncTestCase):
             await services.settings.update(automatic="trial")
             reconfigure.assert_called_once_with()
             await services.settings.update(automatic="trial")  # nothing changed
-            await services.settings.update(watch_folders=[str(self.tmp)])
+            await services.settings.update(series_folder=str(self.tmp))
             self.assertEqual(reconfigure.call_count, 2)
+            # The old watched folders and presets no longer drive watching: the rules do.
+            await services.settings.update(
+                watch_folders=[str(self.tmp)], series_preset="Series (Flat)"
+            )
+            self.assertEqual(reconfigure.call_count, 2)
+
+    async def test_a_rules_save_reconfigures_the_renamer(self) -> None:
+        services = await self.open()
+        downloads = self.tmp / "downloads"
+        downloads.mkdir()
+        with mock.patch.object(services.auto, "reconfigure") as reconfigure:
+            await services.rules.replace_all([Rule(folder=str(downloads))])
+            reconfigure.assert_called_once_with()
+            # Every Save: a mode, preset or destination applies at once too.
+            [rule, airgrabbers] = services.rules.current
+            await services.rules.replace_all([rule.model_copy(update={"mode": "auto"})])
+            self.assertEqual(reconfigure.call_count, 2)
+            await services.rules.mark_fresh(airgrabbers.id)  # a fresh flag isn't a change
+            await services.settings.update(notify_needs=False)  # nor this, against the rules
+            self.assertEqual(reconfigure.call_count, 2)
+
+    async def test_no_extra_look_at_the_start(self) -> None:
+        downloads = self.tmp / "downloads"
+        downloads.mkdir()
+        services = await self.parts.create()
+        try:
+            await services.rules.replace_all([Rule(folder=str(downloads))])
+        finally:
+            await services.aclose()
+        services = await self.open()  # the renamer's view is taken with the rules read
+        with mock.patch.object(services.auto, "reconfigure") as reconfigure:
+            await services.settings.update(notify_needs=False)
+            reconfigure.assert_not_called()
+
+    async def test_a_mode_only_rules_save_applies_at_once(self) -> None:
+        downloads, movies = self.tmp / "downloads", self.tmp / "Movies"
+        for folder in (downloads, movies, self.tmp / "Series"):
+            folder.mkdir()
+        services = await self.open()
+        services.resolver.set_client(Tmdb())  # a film is found as its name says: sure
+        await services.settings.update(
+            series_folder=str(self.tmp / "Series"), movies_folder=str(movies), automatic="on"
+        )
+        await services.rules.replace_all(
+            [Rule(folder=str(downloads), take="films", mode="manual")]
+        )
+
+        async def until(check: Callable[[], bool]) -> None:
+            deadline = time.monotonic() + 10  # far below a look's interval (5 min)
+            while not check():
+                self.assertLess(time.monotonic(), deadline)
+                await asyncio.sleep(0.02)
+
+        def status() -> str:
+            last = services.auto.last_status
+            return last.text if last is not None else ""
+
+        await until(lambda: status() == "Manual: watching 1 folder")
+        await until(lambda: not services.rules.current[0].fresh)  # its first look is done
+        film = downloads / "Dune.2021.1080p.WEB.mkv"
+        film.write_bytes(b"video")
+        an_hour_ago = time.time() - 3600
+        os.utime(film, (an_hour_ago, an_hour_ago))
+        rule = services.rules.current[0]
+        await services.rules.replace_all([rule.model_copy(update={"mode": "auto"})])
+        await until(lambda: status() == "Watching 1 folder")  # told at once, not in 5 minutes
+        await services.auto.scan_now()  # the next looks: seen twice, so finished
+        self.assertTrue((movies / "Dune (2021)" / "Dune (2021).mkv").exists())
+        self.assertFalse(film.exists())
+
+    async def test_forget_gone_reads_the_rules_folders(self) -> None:
+        downloads = self.tmp / "downloads"
+        downloads.mkdir()
+        gone = downloads / "Release" / "gone.mkv"
+        services = await self.parts.create()
+        try:
+            await services.rules.replace_all([Rule(folder=str(downloads))])
+            await services.ignored.ignore(gone, folder=False)
+            self.assertEqual(len(services.ignored.entries), 1)
+        finally:
+            await services.aclose()
+        services = await self.open()  # the file left the rule's folder: forgotten at the start
+        self.assertEqual(services.ignored.entries, ())
 
     async def test_switching_on_in_settings_starts_the_renamer(self) -> None:
         services = await self.open()

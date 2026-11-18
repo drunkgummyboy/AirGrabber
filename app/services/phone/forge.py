@@ -25,8 +25,11 @@ and the library copy's file name, quality and size: app/forge/core/replace_facts
 read in the background (a thread under a time limit, one per drive or share at a time): a request
 never waits for a NAS, and what isn't read yet is null. "Use this one instead" (`replace`) is the
 PC's own: `AutoRenamer.replace` as the owner's run (`RunSource.APP`), the copy there moved aside to
-Duplicates, Undo in the PC's History. It runs only where the PC could without asking: a library
-folder at a drive or share root needs the place chosen on the PC this session (`aside_place`).
+Duplicates, Undo in the PC's History. It runs only where the PC could without asking: where its
+rule sends it (`rules.route_for_item`'s root: a library folder, a rule's own folder, a Stays rule's
+watched folder), and at a drive or share root only with the place chosen on the PC this session
+(`aside_place`). A tap or a replace whose rule's way can't go (no rule takes the file, its library
+folder not chosen: `route_problem`) is refused with that reason.
 "Keep the one I have" (`keep`) is the PC's "Leave this file alone": `services.ignored`, and the
 file leaves the queue.
 
@@ -49,6 +52,7 @@ import logging
 import os
 import re
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -69,7 +73,9 @@ if TYPE_CHECKING:  # Forge's types: only typed here
     from app.forge.core.queue import Queue, QueueItem
     from app.forge.core.auto import NamingChoice
     from app.forge.core.replace_facts import ReplaceFacts
+    from app.forge.core.rules import Route
     from app.forge.models.media import MediaKind
+    from app.forge.models.preset import Preset
     from app.forge.runtime import ForgeRuntime
     from app.forge.services import ForgeServices
     from app.models.tmdb import TMDBTitle
@@ -176,22 +182,35 @@ def _in_library_item(services: ForgeServices, item_id: int, key: str) -> QueueIt
     return item if path_key(item.path) == key else None
 
 
-def _can_replace(services: ForgeServices, item: QueueItem) -> bool:
-    """Whether a replace from the phone can run (no disk asked): a library folder set, and, at a
-    drive or share root, the place for replaced copies chosen on the PC this session."""
-    from app.forge.core.duplicates import aside_folder
-    from app.forge.core.library import library_folder, library_problems
+def _route(services: ForgeServices, item: QueueItem, presets: Sequence[Preset]) -> Route | None:
+    """The way the file goes by its rule (where its name starts: `Route.root`)."""
+    from app.forge.core.rules import route_for_item
 
-    settings = services.settings.current
-    library = library_folder(item.media.kind, settings)
-    if library is None or library_problems(settings):
+    return route_for_item(item, services.rules.current, services.settings.current, presets)
+
+
+def _in_watched(services: ForgeServices, item: QueueItem) -> bool:
+    """Whether the file lies in a folder the rules watch (a file no rule takes says so)."""
+    from app.forge.core.rules import in_watched_folder
+
+    return in_watched_folder(item.path, services.rules.current, services.settings.current)
+
+
+def _can_replace(services: ForgeServices, item: QueueItem, presets: Sequence[Preset]) -> bool:
+    """Whether a replace from the phone can run (no disk asked): its rule's way can go (its
+    destination chosen), and, at a drive or share root, the place for replaced copies chosen on
+    the PC this session."""
+    from app.forge.core.duplicates import aside_folder
+
+    route = _route(services, item, presets)
+    if route is None or route.root is None:  # `route_problem` would say why
         return False
-    return aside_folder(library, services.aside_place) is not None
+    return aside_folder(route.root, services.aside_place) is not None
 
 
 def _band_naming(services: ForgeServices, item: QueueItem) -> NamingChoice | None:
-    """How the PC's queue band names this download (its chip), if the page has said; else the
-    library's preset goes (None)."""
+    """How the PC's queue band names this download (its chip), if the page has said; else its
+    rule's preset goes (None)."""
     return services.band_naming.get(item.id)
 
 
@@ -295,25 +314,36 @@ class PhoneForge:
             ("POST", "/v1/forge/{id}/keep"): manager_only(self._keep),
         }
 
-    async def _facts_now(self, services: ForgeServices, held: list[QueueItem]) -> dict[int, Any]:
+    async def _facts_now(
+        self, services: ForgeServices, held: list[QueueItem], presets: Sequence[Preset]
+    ) -> dict[int, Any]:
         """The facts known now of these downloads already in the library (None: not yet). One
-        not read for its name in the library starts reading in the background; nothing waits."""
-        from app.forge.core.auto import library_naming
+        not read for its name where its rule sends it starts reading in the background; nothing
+        waits. One whose rule's way can't go (its destination not chosen, or its preset gone
+        without a chip on the PC) has none."""
         from app.forge.core.formatter import name_file
+        from app.forge.models.preset import with_options
 
         present = {item.id for item in services.queue.items}
         for gone in [item_id for item_id in self._facts if item_id not in present]:
             del self._facts[gone]
         if not held:
             return {}
-        settings, presets = services.settings.current, await services.presets.list()
         known: dict[int, Any] = {}
         for item in held:
-            rule, library = library_naming(item, settings, presets)
+            route = _route(services, item, presets)
             choice = _band_naming(services, item)
-            if choice is not None:  # the band's chip on the PC: the same library copy
+            if route is None or route.root is None:
+                known[item.id] = None
+                continue
+            if choice is not None:  # the band's chip on the PC: the same copy there
                 rule = choice.rule
-            target = library.joinpath(*name_file(rule, item.media, item.path.suffix).parts)
+            elif route.preset is not None:  # its rule's preset, with the rule's extras
+                rule = with_options(route.preset.format, route.options)
+            else:
+                known[item.id] = None
+                continue
+            target = route.root.joinpath(*name_file(rule, item.media, item.path.suffix).parts)
             cached = self._facts.get(item.id)
             if cached is not None and cached[0] == target:
                 known[item.id] = cached[1]
@@ -355,7 +385,9 @@ class PhoneForge:
         waiting = [i for i in items if _waiting(i)]
         per_show = Counter(match_key(i.parsed) for i in waiting)
         elsewhere = [i for i in items if _elsewhere(i)]
-        facts = await self._facts_now(services, [i for i in elsewhere if held_in_library(i)])
+        held = [i for i in elsewhere if held_in_library(i)]
+        presets = await services.presets.list() if held else []
+        facts = await self._facts_now(services, held, presets)
         return Reply(
             200,
             {
@@ -379,7 +411,7 @@ class PhoneForge:
                         "file_name": i.path.name,
                         "reason": _reason(i),
                         **(
-                            _replace_entry(i, facts[i.id], _can_replace(services, i))
+                            _replace_entry(i, facts[i.id], _can_replace(services, i, presets))
                             if i.id in facts
                             else {}
                         ),
@@ -468,20 +500,21 @@ class PhoneForge:
         """"Use this one instead", as the PC's band does it (without its question: the phone
         asked)."""
         from app.forge.core.duplicates import aside_folder, is_root
-        from app.forge.core.library import library_folder, library_problems
         from app.forge.core.queue import ItemStatus
+        from app.forge.core.rules import route_problem
         from app.forge.models.history import RunSource
 
         item = _in_library_item(services, item_id, key)
         if item is None:
             return _gone()
-        settings = services.settings.current
-        problems = library_problems(settings)
-        if problems:
-            return error_reply(409, "failed", problems[0])
-        library = library_folder(item.media.kind, settings)
+        route = _route(services, item, await services.presets.list())
+        problem = route_problem(route, item.media.kind, watched=_in_watched(services, item))
+        if problem is not None:
+            return error_reply(409, "failed", problem)
+        assert route is not None and route.root is not None  # what `route_problem` checked
+        library = route.root  # its rule's destination (a Stays rule's: its watched folder)
         place = services.aside_place
-        if library is None or aside_folder(library, place) is None:
+        if aside_folder(library, place) is None:
             return error_reply(409, "failed", t(NO_ASIDE))
         choice = _band_naming(services, item)
         result = await services.auto.replace(
@@ -535,9 +568,9 @@ class PhoneForge:
         self, services: ForgeServices, item_id: int, tmdb_id: int, kind: str, key: str
     ) -> Reply:
         from app.forge.clients.tmdb import TmdbError
-        from app.forge.core.library import library_problems
         from app.forge.core.matcher import match_key
         from app.forge.core.queue import ItemStatus
+        from app.forge.core.rules import route_problem
         from app.forge.models.history import RunSource
 
         def the_file() -> QueueItem | None:
@@ -549,9 +582,14 @@ class PhoneForge:
             return _gone()
         if kind != item.parsed.kind.value:
             return bad_request()  # a film's name on an episode, or the other way round
-        problems = library_problems(services.settings.current)
-        if problems:
-            return error_reply(409, "failed", problems[0])
+        # Its rule's way must be able to go (a rule takes it, its destination chosen).
+        problem = route_problem(
+            _route(services, item, await services.presets.list()),
+            item.media.kind,
+            watched=_in_watched(services, item),
+        )
+        if problem is not None:
+            return error_reply(409, "failed", problem)
         known = item.resolution.candidates if item.resolution else ()
         title = next((c for c in known if c.id == tmdb_id), None)
         if title is None:  # it came from a search

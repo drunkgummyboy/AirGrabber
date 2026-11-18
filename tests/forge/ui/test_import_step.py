@@ -296,6 +296,7 @@ def fake_services(current: ForgeSettings | None = None) -> SimpleNamespace:
         presets=None,
         history=None,
         matches=None,
+        rules=None,
         airgrabber_settings=None,
         run_lock=asyncio.Lock(),
     )

@@ -44,6 +44,7 @@ from app.services.download_status import (
     entry_state,
     episode_title,
     expected_in_program,
+    forge_moves,
     grab_outcome,
     is_network_path,
     match_moves,
@@ -1089,6 +1090,58 @@ class RealForgeMovesTests(ServiceTestCase):
         # "Open the folder" opens the new place.
         [episode] = [e for e in overview.entries if e.record.episode == 3]
         self.assertEqual(await self.service.locate(episode), Located(str(season), ""))
+
+
+class ForgeMovesFromTheRulesTests(unittest.IsolatedAsyncioTestCase):
+    """`forge_moves`: the folders Forge's moves are read from are the rules' watched folders, and
+    the ones a row names its place from are the library folders and the rules' destinations
+    (a real RuleService on a temporary forge.db; Forge's old watched folders count no more)."""
+
+    async def test_forge_moves_come_from_the_rules(self) -> None:
+        from types import SimpleNamespace
+        from typing import cast
+
+        from app.forge.core.rules_service import RuleService
+        from app.forge.core.settings import ForgeSettingsService
+        from app.forge.db.database import Database as ForgeDatabase
+        from app.forge.db.rules import RuleRepo
+        from app.forge.db.settings import SettingsRepo
+        from app.forge.models.rules import Rule, RuleTarget
+        from app.forge.runtime import ForgeRuntime
+
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        forge_db = await ForgeDatabase.open(Path(tmp.name) / "forge.db")
+        self.addAsyncCleanup(forge_db.close)
+        settings = await ForgeSettingsService.load(SettingsRepo(forge_db))
+        await settings.update(
+            watch_folders=[r"E:\Old"], series_folder=SERIES, movies_folder=MOVIES
+        )
+        rules = RuleService(RuleRepo(forge_db), settings)
+        await rules.load()
+        films_4k = r"\\nas\video\Movies 4K"
+        await rules.replace_all(
+            [
+                Rule(folder=r"D:\Courses", stays=True),
+                Rule(
+                    folder=r"D:\Downloads",
+                    take="films",
+                    films=RuleTarget(preset="Movie (Folder)", to="folder", folder=films_4k),
+                ),
+            ]
+        )
+        records = mock.Mock()
+        runtime = SimpleNamespace(
+            services=SimpleNamespace(settings=settings, moves=records, rules=rules)
+        )
+        current = forge_moves(cast(ForgeRuntime, runtime))
+        forge = current()
+        assert forge is not None
+        self.assertIs(forge.records, records)
+        self.assertEqual(forge.watch_folders, (r"D:\Courses", r"D:\Downloads"))  # not E:\Old
+        self.assertEqual(forge.library_folders, (SERIES, MOVIES, films_4k))
+        runtime.services = None
+        self.assertIsNone(current())
 
 
 if __name__ == "__main__":

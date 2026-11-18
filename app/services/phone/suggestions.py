@@ -119,7 +119,7 @@ def _once_each(items: Iterable[T], id_of: Callable[[T], int]) -> dict[int, T]:
     return found
 
 
-async def _details_of(fetch: Callable[[int], Awaitable[T]], ids: Iterable[int]) -> dict[int, T]:
+async def details_of(fetch: Callable[[int], Awaitable[T]], ids: Iterable[int]) -> dict[int, T]:
     """What TMDB says of these; one it can't say leaves only that one out."""
     wanted = list(ids)
     results = await asyncio.gather(*(fetch(id) for id in wanted), return_exceptions=True)
@@ -182,8 +182,8 @@ class Suggestions:
         ]
         on_the_list = {entry.movie_id for entry in listed}
         shelf = [movie for movie in await self._shelf_films() if movie.id not in on_the_list]
-        details = await _details_of(self._discovery.movie_details, [movie.id for movie in shelf])
-        entries = [*listed, *(_entry(movie, details.get(movie.id), now) for movie in shelf)]
+        details = await details_of(self._discovery.movie_details, [movie.id for movie in shelf])
+        entries = [*listed, *(as_entry(movie, details.get(movie.id), now) for movie in shelf)]
         plex = await self._library.plex_films()
         genres = await self._genre_names(MediaType.MOVIE)
         return [
@@ -211,7 +211,7 @@ class Suggestions:
         ]
         plex = await self._library.plex_shows()
         if plex.tvdb or plex.imdb:  # the outside ids take a call per show, cached by Discovery
-            details = await _details_of(self._discovery.tv_details, [show.id for show in shows])
+            details = await details_of(self._discovery.tv_details, [show.id for show in shows])
             shows = [
                 show
                 for show in shows
@@ -307,13 +307,13 @@ class Suggestions:
             except TMDBNotFound:
                 return None
             except TMDBError:
-                return _no_lookup(held.title)
-        details = await _details_of(self._discovery.movie_details, [movie_id])
-        return _entry(movie, details.get(movie_id), self._now())
+                return no_lookup(held.title)
+        details = await details_of(self._discovery.movie_details, [movie_id])
+        return as_entry(movie, details.get(movie_id), self._now())
 
-    async def season_one(self, tmdb_id: int, person: int) -> SeasonOne | Reply | None:
-        """A series offered here, by the TVMaze show the rest of the app knows it as. None when
-        it wasn't offered; a Reply says it can't be found out just now."""
+    async def show(self, tmdb_id: int, person: int) -> DiscoverShow | Reply | None:
+        """A series offered here, as TMDB's lists know it. None when it wasn't offered; a Reply
+        says it can't be found out just now."""
         found = self._shows.get(tmdb_id)
         if found is None:
             await self._shelf_shows(person)  # after a restart this run hasn't offered anything yet
@@ -327,17 +327,21 @@ class Suggestions:
             except TMDBNotFound:
                 return None
             except TMDBError:
-                return _no_lookup(held.title)
+                return no_lookup(held.title)
+        return found
+
+    async def season_one(self, tmdb_id: int, person: int) -> SeasonOne | Reply | None:
+        """A series offered here, by the TVMaze show the rest of the app knows it as. None when
+        it wasn't offered; a Reply says it can't be found out just now."""
+        found = await self.show(tmdb_id, person)
+        if found is None or isinstance(found, Reply):
+            return found
         try:
             show = await self._discovery.resolve(found)
         except NoTVMazeMatch:
-            message = t(
-                "AirGrabber can't find {title} to download, so choose something else.",
-                title=found.name,
-            )
-            return error_reply(502, "failed", message)
+            return cant_find(found.name)
         except (TMDBError, TVMazeError):
-            return _no_lookup(found.name)
+            return no_lookup(found.name)
         return await self._state_of_season_one(show, person)
 
     async def _state_of_season_one(self, show: Show, person: int) -> SeasonOne:
@@ -360,14 +364,23 @@ class Suggestions:
         return SeasonOne(show, aired or None, out)
 
 
-def _no_lookup(title: str) -> Reply:
+def no_lookup(title: str) -> Reply:
+    """TMDB or TVMaze can't be asked about it just now."""
     message = t(
         "AirGrabber couldn't look up {title} just now, so try again in a moment.", title=title
     )
     return error_reply(502, "failed", message)
 
 
-def _entry(movie: Movie, details: MovieDetails | None, now: datetime) -> WatchlistEntry:
+def cant_find(title: str) -> Reply:
+    """TVMaze knows no counterpart of a TMDB series: nothing to download it by."""
+    message = t(
+        "AirGrabber can't find {title} to download, so choose something else.", title=title
+    )
+    return error_reply(502, "failed", message)
+
+
+def as_entry(movie: Movie, details: MovieDetails | None, now: datetime) -> WatchlistEntry:
     """A film as a list entry holds it, so that one rule says when any film counts as out."""
     return WatchlistEntry(
         movie=movie,

@@ -1,6 +1,8 @@
-"""After MediaForge moves files into a library folder, Plex scans those folders (one of the
+"""After MediaForge moves files into a library folder or a rule's destination (any folder its
+move records are about, a Stays rule's sorted files too), Plex scans those folders (one of the
 bridges between AirGrabber and Forge, through Forge's move records only, never forge.db): a short
-wait gathers a run's files, then `PlexService.scan_folders` asks for each folder once.
+wait gathers a run's files, then `PlexService.scan_folders` asks for each folder once (one Plex
+doesn't have as a library is left alone there).
 
 What was scanned counts only once the scan went through: a scan that failed is asked again with
 the next move (its moves are read again), and a move heard while a scan runs brings one more scan

@@ -1554,9 +1554,10 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
-    "Your folders beside Plex": "Je mappen naast Plex",
-    "With Plex connected, your own folders can be a second shelf, Downloaded: what you just downloaded stays apart from Plex, plays from there and counts as had.":
-        "Met Plex verbonden kunnen je eigen mappen een tweede plank zijn, Gedownload: wat je net downloadde blijft los van Plex, speelt daarvandaan af en telt als in bezit.",
+    "Rules for your download folders": "Regels voor je downloadmappen",
+    "Settings → Auto-rename: give each folder its own rule (what it takes, how it's named, where it goes), Automatic or Manual. A new or changed rule first shows you what's already there.":
+        "Instellingen → Automatisch hernoemen: geef elke map een eigen regel (wat hij neemt, hoe het heet, waar het heen gaat), Automatisch of Handmatig. Een nieuwe of gewijzigde regel laat je eerst zien wat er al staat.",
+    "A film's download must now start with its title, so “The Beast” no longer fetches “Heart of the Beast”.": "De download van een film moet nu met zijn titel beginnen, dus “The Beast” haalt geen “Heart of the Beast” meer.",
     "Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films.": "Bibliotheek: rustiger kop, kaarten met alleen de poster: ✓ bij series die je volgt, + om te volgen, ⬆ bij lage kwaliteit",
     "Films stay on your watchlist after they're downloaded, with the day it happened; they're never downloaded twice.": "Films blijven na het downloaden op je kijklijst, met de dag erbij; ze worden nooit twee keer gedownload.",
     "Settings → Automatic: films you add to your watchlist only download by themselves when you tick it (off at first).": "Instellingen → Automatisch: films op je kijklijst downloaden alleen vanzelf als je dat aanvinkt (eerst uit).",
@@ -2030,6 +2031,21 @@ NL: dict[str, str] = {
         "Geen downloads gevonden voor {label}, dus probeer het later opnieuw.",
     "That download isn't available any more, so look for downloads again.":
         "Die download is niet meer beschikbaar, dus zoek opnieuw naar downloads.",
+    # app/services/phone/find.py
+    "That search isn't there any more, so search again.":
+        "Die zoekopdracht is er niet meer, dus zoek opnieuw.",
+    "Searching needs a TMDB key: add one in AirGrabber's Settings.":
+        "Zoeken kan alleen met een TMDB-sleutel: voeg er een toe in de Instellingen van AirGrabber.",
+    "TMDB refused the key in AirGrabber's Settings, so check it there.":
+        "TMDB weigerde de sleutel in de Instellingen van AirGrabber, dus controleer hem daar.",
+    "AirGrabber can't find {title} to follow, so choose something else.":
+        "AirGrabber kan {title} niet vinden om te volgen, dus kies iets anders.",
+    "Nothing was found by that name, so try other words.":
+        "Er is niets gevonden met die naam, dus probeer andere woorden.",
+    "AirGrabber couldn't search just now, so try again in a moment.":
+        "AirGrabber kon nu niet zoeken, dus probeer het zo nog eens.",
+    "You already follow {title}.": "Je volgt {title} al.",
+    "You follow {title} now.": "Je volgt {title} nu.",
     "The Forge is still starting, so try again in a moment.":
         "De Forge start nog op, dus probeer het zo opnieuw.",
     "Already sorted, or AirGrabber restarted.":

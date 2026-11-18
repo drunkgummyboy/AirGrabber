@@ -610,7 +610,8 @@ class MalformedPayloadTests(TMDBTestCase):
         self.assertEqual(len(movies), 19)
         self.assertNotIn(broken_id, [movie.id for movie in movies])
         self.assertEqual(len(logs.output), 2)
-        self.assertIn(f"id {broken_id}", logs.output[0])
+        self.assertIn("item 2", logs.output[0])
+        self.assertNotIn(str(broken_id), logs.output[0])  # a TMDB id isn't logged
         self.assertIn("title", logs.output[0])
         self.assertIn("item 20", logs.output[1])
 
@@ -871,7 +872,7 @@ class SecretHygieneTests(TMDBTestCase):
                         self.assertNotIn(key, " ".join(map(str, exc.args)))
 
         logged = self.log_output.getvalue()
-        self.assertIn("/movie/1", logged)  # the retry warnings were captured...
+        self.assertIn("/movie/{id}", logged)  # the retry warnings were captured...
         self.assertNotIn(SECRET, logged)  # ...without the key
         self.assertNotIn(SECRET_TOKEN, logged)
 

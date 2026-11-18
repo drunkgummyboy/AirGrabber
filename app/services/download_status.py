@@ -43,10 +43,11 @@ subtitle_files.py's scan, in a thread with a time limit, kept LOCATE_TTL_S) for 
 (`open_folder`).
 
 Where MediaForge put a finished grab (once Forge runs; `forge`, see `forge_moves`): its move
-records (`ForgeMoveService.moves_from`) out of "Where finished downloads end up" and Forge's
-watched folders are matched to the grabs (`match_moves`: a film by its TMDB id first, then by
+records (`ForgeMoveService.moves_from`) out of "Where finished downloads end up" and the folders
+Forge's rules watch are matched to the grabs (`match_moves`: a film by its TMDB id first, then by
 release name with subtitle_files' `grab_files` rules) and set as `DownloadEntry.moved_to`;
-`locate` then gives that folder. Such a grab shows as finished even when its program reports a
+`locate` then gives that folder, and a row names it from the library folder or rule destination
+it is in (`shown_folder`). Such a grab shows as finished even when its program reports a
 problem for the file that is gone, or no longer has the task (`moved_state`). The records are
 read again when Forge reports a change to them (`subscribe`), at the latest after MOVES_TTL_S.
 Without Forge every entry's `moved_to` stays None.
@@ -225,25 +226,26 @@ class ForgeMoves(NamedTuple):
     """Forge, once it runs: its move records and the folders that matter here."""
 
     records: MoveRecords
-    watch_folders: tuple[str, ...]  # the folders Forge moves downloads out of
-    library_folders: tuple[str, ...]  # the Series and Movies library folders
+    watch_folders: tuple[str, ...]  # the folders Forge's rules watch (it moves downloads out)
+    library_folders: tuple[str, ...]  # the library folders and the rules' destinations
 
 
 ForgeLookup = Callable[[], ForgeMoves | None]
 
 
 def forge_moves(runtime: ForgeRuntime) -> ForgeLookup:
-    """Forge's part for the Downloads page: None until it runs (and when it is off)."""
+    """Forge's part for the Downloads page: None until it runs (and when it is off). The folders
+    come from its rules (`services.rules`), read at every call."""
 
     def current() -> ForgeMoves | None:
         services = runtime.services
         if services is None:
             return None
-        settings = services.settings.current
+        rules = services.rules
         return ForgeMoves(
             services.moves,
-            tuple(settings.watch_folders),
-            tuple(f for f in (settings.series_folder, settings.movies_folder) if f),
+            tuple(rules.watched_folders()),
+            tuple(rules.destination_folders()),
         )
 
     return current

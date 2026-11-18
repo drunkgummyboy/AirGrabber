@@ -133,7 +133,8 @@ def make_shortcut_once(install_dir: Path | None = None) -> bool:
 
 class ForgePage(ctk.CTkFrame):
     """`ForgePage(master, tabs_row=, look=)`; then `show_forge(services)` or `show_problem`. The
-    host sets `on_settings(section)`, `on_needs(count)` (the files waiting in the queue), `on_view(history)`
+    host sets `on_settings(section, spot=None)` (the queue's too: a band's rule opens at its
+    "rule:<id>" spot), `on_needs(count)` (the files waiting in the queue), `on_view(history)`
     (🕘 lit or not) and `on_message(text)` (what the queue says, for the status bar), and tells it
     `set_shown` when the main window shows it or another page."""
 
@@ -223,6 +224,7 @@ class ForgePage(ctk.CTkFrame):
         queue.on_counts = lambda waiting: self.on_needs(waiting)
         queue.on_message = lambda text: self.on_message(text)
         queue.on_choose_folders = self._folders_clicked
+        queue.on_settings = lambda section, spot=None: self.on_settings(section, spot)
         queue.refresh()
         self.set_watch_status(status or services.auto.status([]))
         self.show_view("queue")

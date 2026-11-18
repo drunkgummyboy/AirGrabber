@@ -133,9 +133,12 @@ the new names; nothing is renamed until you click **Rename**. It works while Air
 too. Turn it on or off under ⚙ Settings → **MediaForge → Right-click menu**.
 
 **Renaming on its own**: under ⚙ Settings → **MediaForge → Auto-rename**, choose your Series
-and Movies folders and the folders to watch (AirGrabber's own download folder can be watched for
-you). **Manual** puts the downloads it finds in the queue and moves nothing until you forge them; **On** renames finished
-downloads by itself. Subtitles next to a download move along with it, and the
+and Movies folders and set up rules for the folders to watch (AirGrabber's own download folder has
+a ready-made rule). Each rule says which files it takes (shows, films, 4K or not), how to name them
+and where they go (a library folder, another folder, or sorted inside the folder it watches); the
+first rule from the top that fits a file takes it, and a file no rule fits is left alone. A
+**Manual** rule puts the downloads it finds in the queue and moves nothing until you forge them; an
+**Automatic** one renames finished downloads by itself. Subtitles next to a download move along with it, and the
 Downloads page shows the download as finished with where it went ("Renamed → Series › …").
 
 ### Coming from the old MediaForge

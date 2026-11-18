@@ -576,6 +576,7 @@ class PhoneService:
             "library": self.library_source,
             "folders": folders_on(self._settings.current),
             "phone_copies": self.copies is not None and self.copies.available,
+            "find": True,  # `/v1/find` (find.py); an older PC has no such key
         }
 
     def _plex_details(self) -> dict[str, str] | None:

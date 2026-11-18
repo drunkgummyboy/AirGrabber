@@ -74,10 +74,16 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   imports Forge's types only under `TYPE_CHECKING`; these log ids and counts, never a file's path.
   The other bridge: `app/services/plex_scans.py` hears the same move records and has Plex scan
   the folders they went to (`PlexService.scan_folders`).
-- Where a forged file goes: a preset's `move_to_library` extra (`app/forge/core/library.py`'s `route_inputs`;
-  one-time `carry_move_option` ticks Series (Folder) and Movie (Folder)). On: to the Series / Movies folder, whose
-  absence leaves the file alone and says so. Off: renamed where it is. Downloads Auto-rename finds always move
-  (left in a watched folder they would be found again). The queue's band says which ("📦 Moves to" / "📁 Stays").
+- Where a watched download goes: the first on rule from the top that holds and fits it (`app/forge/core/rules.py`,
+  forge.db's `rules`, v5; `RuleService`), by its preset + changed extras to its destination (a library folder, another
+  folder, or sorted inside its watched folder); a file no rule fits is left alone. A rule's destination is never
+  watched; a Stays rule's past outputs (move records) never come back. Nothing moves unseen: what a new Automatic rule
+  or folder, or an un-pause, finds already there waits as Manual once (`manual_once`, kept across restarts). Logs never
+  name a folder or a rule. `ForgeSettings`' `watch_folders` / `series_preset` / `movies_preset` are read only by the
+  one-time carry-over; `automatic` "off" is the pause switch. Files added by hand: a preset's `move_to_library` extra
+  (`app/forge/core/library.py`'s `route_inputs`; one-time `carry_move_option` ticks Series (Folder) and Movie (Folder)):
+  on, to the Series / Movies folder, whose absence leaves the file alone and says so; off, renamed where it is. The
+  queue's band says which ("📦 Moves to" / "📁 Sorted in", "Rule: …").
 - Subtitles are MediaForge's (`app/forge/core/subtitles.py`, `services.subtitles`): a preset's Subtitles
   extra (right after a rename, on every route, through the executor; a failure never touches the
   rename) and CC ▾ on the queue's done bands and History's rows, drawn on the list's canvas. One try,
@@ -193,7 +199,9 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   orders and each phone's last report in `Settings.phone_orders` / `phone_contents`, this PC's own, titles never logged; the Forge routes refuse others with 403 `not_manager`. `GET /v1/suggestions` is
   what the phone may fetch, without what is had (Plex's or the folders'); its genres are always in English with compound names split
   (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;
-  a tap fetches by the row's id only, never by its text. No library, no phone app (owner, 2026-11-08; Plex or the
+  a tap fetches by the row's id only, never by its text. `/v1/find` (`find.py`) searches TMDB by name; only what it found
+  this run (TMDB ids, a film with `found: true`, a single episode as `found_episode`) can be fetched or followed, and its log never gets the text, a
+  title or a TMDB id. No library, no phone app (owner, 2026-11-08; Plex or the
   user's own folders, `library_source`): without one the page is one line and no code is made, and every route but
   `/v1/pair` / `/v1/hello` answers 409 (`_needs_library`). A Companion that knows the folder library says so on every
   request (`X-Companion-Can: folder-library`, `knows_folders`); one that doesn't sees `no_plex` unless Plex is connected

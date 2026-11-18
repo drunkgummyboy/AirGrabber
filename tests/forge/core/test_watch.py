@@ -94,6 +94,13 @@ class WatchTest(ForgeTestCase):
         b = video(self.tmp / "top.mp4")
         assert sorted(candidates(self.tmp)) == sorted([a, b])
 
+    def test_pruned_folders_are_not_walked(self) -> None:
+        # Where files are moved to (a destination inside a watched folder): never read.
+        keep = video(self.tmp / "top.mkv")
+        video(self.tmp / "Sorted" / "Heat (1995)" / "Heat (1995).mkv")
+        prune = [Path(str(self.tmp / "sorted").upper())]  # as Windows compares folders
+        assert candidates(self.tmp, None, prune) == [keep]
+
     def test_a_vanished_file_is_forgotten(self) -> None:
         clock = Clock(1_000_000)
         file = video(self.tmp / "ep.mkv", clock=clock)

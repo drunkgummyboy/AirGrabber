@@ -9,7 +9,7 @@ import aiosqlite
 
 from app.config import AppPaths
 from app.forge.db.cache import CacheRepo
-from app.forge.db.database import SCHEMA_VERSION, Database, db_path
+from app.forge.db.database import MIGRATIONS, SCHEMA_VERSION, Database, db_path
 from app.forge.db.history import HistoryRepo
 from app.forge.db.matches import MatchRepo
 from app.forge.db.presets import PresetRepo
@@ -114,7 +114,7 @@ async def _schema(path: Path) -> list[tuple[object, ...]]:
 class DatabaseTest(ForgeDbTestCase):
     async def test_open_sets_wal_and_version(self) -> None:
         assert await self.scalar("PRAGMA journal_mode") == "wal"
-        assert await self.scalar("PRAGMA user_version") == SCHEMA_VERSION == 4
+        assert await self.scalar("PRAGMA user_version") == SCHEMA_VERSION == 5
         assert await self.scalar("PRAGMA foreign_keys") == 1
 
     async def test_open_twice_is_idempotent(self) -> None:
@@ -204,7 +204,8 @@ class DatabaseTest(ForgeDbTestCase):
 
 class MediaForgeFileTest(ForgeDbTestCase):
     """A database written by MediaForge 1.3 (schema v2), copied in, opens with its rows and its
-    own tables unchanged; v3 and v4 only add the move records' and the ignored paths' tables."""
+    own tables unchanged; v3, v4 and v5 only add the move records', the ignored paths' and the
+    rules' tables."""
 
     async def test_opens_and_keeps_its_rows(self) -> None:
         path = self.tmp / "mediaforge.db"
@@ -213,7 +214,7 @@ class MediaForgeFileTest(ForgeDbTestCase):
 
         db = await Database.open(path)
         try:
-            assert (await db.fetch_one("PRAGMA user_version") or [None])[0] == SCHEMA_VERSION == 4
+            assert (await db.fetch_one("PRAGMA user_version") or [None])[0] == SCHEMA_VERSION == 5
             assert (await db.fetch_one("SELECT COUNT(*) FROM moves") or [None])[0] == 0
 
             settings = await SettingsRepo(db).load()
@@ -258,6 +259,8 @@ class MediaForgeFileTest(ForgeDbTestCase):
             ("index", "moves_moved_at"),
             ("table", "ignored"),  # v4
             ("index", "sqlite_autoindex_ignored_1"),  # its primary key
+            ("table", "rules"),  # v5
+            ("index", "rules_airgrabber"),
         }
 
     async def test_a_new_forge_db_has_the_same_schema_as_a_migrated_one(self) -> None:
@@ -267,3 +270,33 @@ class MediaForgeFileTest(ForgeDbTestCase):
         new = self.tmp / "forge.db"
         await (await Database.open(new)).close()
         assert await _schema(new) == await _schema(old)
+
+    async def test_v5_adds_only_the_rules_table(self) -> None:
+        path = self.tmp / "v4.db"
+        async with aiosqlite.connect(path) as conn:  # a v4 file, as AirGrabber 3.19 left it
+            await conn.executescript(MIGRATIONS[0])
+            for script in MIGRATIONS[1:4]:
+                await conn.executescript(script)
+            await conn.execute("PRAGMA user_version=4")
+            await conn.execute("INSERT INTO settings (key, value) VALUES ('app', '{}')")
+            await conn.execute(
+                "INSERT INTO ignored (path_key, path, folder, added_at) VALUES ('x', 'X', 1, 1.0)"
+            )
+            await conn.commit()
+        before = await _schema(path)
+
+        db = await Database.open(path)
+        try:
+            assert (await db.fetch_one("PRAGMA user_version") or [None])[0] == 5
+            assert (await db.fetch_one("SELECT COUNT(*) FROM ignored") or [None])[0] == 1
+            assert (await db.fetch_one("SELECT COUNT(*) FROM rules") or [None])[0] == 0
+        finally:
+            await db.close()
+        after = await _schema(path)
+        assert set(before) <= set(after)  # settings, presets, moves, ignored … unchanged
+        added = {(kind, name) for kind, name, _, _ in set(after) - set(before)}
+        assert added == {("table", "rules"), ("index", "rules_airgrabber")}
+        unchanged = {"settings", "presets", "moves", "ignored"}
+        assert {row for row in before if row[2] in unchanged} == {
+            row for row in after if row[2] in unchanged
+        }

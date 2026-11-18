@@ -43,6 +43,7 @@ from app.forge.migration import (
 )
 from app.forge.models.media import TypeHint
 from app.forge.models.preset import Preset
+from app.forge.models.rules import Rule
 from app.forge.runtime import ForgeRuntime
 from app.forge.services import ForgeServices
 from app.models import Settings
@@ -407,6 +408,37 @@ class BringOverTests(ImportCase):
         self.assertFalse(result.menu)
         self.assertEqual(self.forge.settings.current.imported_from, result.imported_from)
 
+    async def test_the_import_makes_rules_from_the_old_settings(self) -> None:
+        old = r"D:\Old downloads"
+        settings = {**OLD_SETTINGS, "watch_folders": [old], "automatic": "on"}
+        make_old_db(self.old_db, OLD_ROWS.replace(json.dumps(OLD_SETTINGS), json.dumps(settings)))
+        await self.forge.rules.replace_all(  # Forge's own rule goes with the rest of its data
+            [*self.forge.rules.current, Rule(folder=r"D:\Mine")]
+        )
+        told: list[object] = []
+        self.forge.rules.subscribe(told.append)
+        # The settings' listeners (the renamer) already see the new rules; the rules' listeners
+        # the new settings.
+        seen_by_settings: list[list[str]] = []
+        self.forge.settings.subscribe(
+            lambda _s: seen_by_settings.append([r.folder for r in self.forge.rules.current])
+        )
+        seen_by_rules: list[str] = []
+        self.forge.rules.subscribe(
+            lambda _r: seen_by_rules.append(self.forge.settings.current.imported_from)
+        )
+        await self.bring()
+        self.assertEqual(seen_by_settings, [[old, ""]])
+        self.assertEqual(seen_by_rules, ["MediaForge 1.3.0, 2026-11-02"])
+        rules = self.forge.rules.current
+        self.assertEqual([(r.folder, r.airgrabber) for r in rules], [(old, False), ("", True)])
+        self.assertEqual({r.mode for r in rules}, {"auto"})
+        self.assertTrue(all(r.fresh for r in rules))  # what is there waits once: nothing unseen
+        self.assertEqual(rules[0].shows.preset, "Series (Folder)")
+        self.assertFalse(rules[1].on)  # imported: AirGrabber's downloads not chosen yet, off
+        self.assertTrue(self.forge.settings.current.rules_carried)
+        self.assertEqual(len(told), 1)  # the page hears the new rules
+
 
 class RefusedTests(ImportCase):
     async def assert_untouched(self) -> None:
@@ -463,6 +495,14 @@ class OwnDataTests(ImportCase):
 
     async def test_a_changed_preset_counts(self) -> None:
         await self.forge.presets.save(Preset(name="Mine", type=TypeHint.TV, format="{n}"))
+        self.assertTrue(await has_own_data(self.forge))
+
+    async def test_a_rule_of_the_owners_counts(self) -> None:
+        self.assertEqual([r.airgrabber for r in self.forge.rules.current], [True])
+        await self.forge.rules.replace_all(
+            [*self.forge.rules.current, Rule(folder=r"D:\Mine", take="films")]
+        )
+        self.assertEqual(self.forge.settings.current.watch_folders, [])
         self.assertTrue(await has_own_data(self.forge))
 
     async def test_a_fake_without_the_parts_is_no_target(self) -> None:

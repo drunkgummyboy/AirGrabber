@@ -19,12 +19,13 @@ Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FO
 
 As the rest of Settings, nothing is stored before Save (D9): `problem()` refuses a preset
 without a name or a name used twice; `save()` stores the presets (merged onto what is stored by
-then, so a preset changed elsewhere meanwhile and untouched here keeps that change), then the
-changed settings (and `last_preset`, the Inbox's remembered preset, when its preset was
-renamed or deleted: `last_preset_after`), then forgets the matches. Cancel and ✕ change
-nothing. After a Save that changed the presets, every listener connected with
-`on_presets_saved` is told (the right-click menu refreshes its entries, F-25); while none is
-connected (the Right-click menu's page wasn't visited) settings_menu's `carry_presets` runs.
+then, so a preset changed elsewhere meanwhile and untouched here keeps that change), has the
+rules for watched folders follow a renamed preset (`rules.presets_renamed`), then the changed
+settings (and `last_preset`, the Inbox's remembered preset, when its preset was renamed or
+deleted: `last_preset_after`), then forgets the matches. Cancel and ✕ change nothing. After a
+Save that changed the presets, every listener connected with `on_presets_saved` is told (the
+right-click menu refreshes its entries, F-25); while none is connected (the Right-click menu's
+page wasn't visited) settings_menu's `carry_presets` runs.
 
 The Settings window imports this module with `settings_pages`: at import time it loads only
 Forge's models (the formatter and the Inbox's option texts load when a section is built), so
@@ -135,7 +136,9 @@ NAME_MISSING = N_("Give this preset a name.")
 NAME_TWICE = N_("Two presets are called “{name}”. Give each its own name.")
 NAME_TAKEN = N_("Another preset is called that already.")
 LIBRARY_TITLE = N_("Library presets")
-LIBRARY_TEXT = N_("The preset that names what is moved into your Series and Movies folders.")
+LIBRARY_TEXT = N_(
+    "The presets a new rule starts with. Each rule keeps its own: change it under Auto-rename."
+)
 LANGUAGE_TITLE = N_("Names language")
 LANGUAGE_TEXT = N_(
     "The language of titles and episode names from TMDB. AirGrabber's own language doesn't "
@@ -466,6 +469,10 @@ class _MatchSource(Protocol):
     async def forget(self, match: RememberedMatch) -> None: ...
 
 
+class _RuleSource(Protocol):
+    async def presets_renamed(self, renamed: Mapping[str, str]) -> None: ...
+
+
 class _SubtitleState(Protocol):
     @property
     def available(self) -> bool: ...
@@ -483,6 +490,9 @@ class _Parts(Protocol):
 
     @property
     def matches(self) -> _MatchSource: ...
+
+    @property
+    def rules(self) -> _RuleSource: ...
 
 
 class _Starter(Protocol):
@@ -1393,6 +1403,9 @@ class NamingSection:
         try:
             saved = await self._save_presets(parts)
             change = None if saved is None else saved[0]
+            rules: _RuleSource | None = getattr(parts, "rules", None)  # a stand-in may have none
+            if change is not None and change.renamed and rules is not None:
+                await rules.presets_renamed(change.renamed)  # the rules follow a renamed preset
             changes = self.changes()
             if saved is not None:  # the queue's remembered presets follow a rename or delete
                 current = parts.settings.current

@@ -30,6 +30,7 @@ from app.services import Services
 from app.i18n import t
 from app.services.downloads import PROGRAM_IN_TORRENT, GrabError, ProgramInTorrent
 from app.services.phone.downloads import RELEASE_TTL_S, PhoneDownloads
+from app.services.phone.find import PhoneFind, search_again
 from app.services.phone.server import Reply, Request
 from app.services.phone.suggestions import Suggestions
 from app.services.quick_download import SEARCH_TIMEOUT, QuickDownloadService
@@ -55,6 +56,9 @@ class DownloadsCase(PhoneCase):
         self.suggestions: Any = mock.Mock(spec=Suggestions)  # nothing was suggested
         self.suggestions.film = mock.AsyncMock(return_value=None)
         self.suggestions.season_one = mock.AsyncMock(return_value=None)
+        self.find: Any = mock.Mock(spec=PhoneFind)  # nothing was found
+        self.find.film = mock.AsyncMock(return_value=None)
+        self.find.series = mock.AsyncMock(return_value=search_again())
         self.use_sources(self.good())
         await self.follow(episode(1, TODAY))
 
@@ -79,6 +83,7 @@ class DownloadsCase(PhoneCase):
             self.profiles,
             self.films,
             self.suggestions,
+            find=self.find,
             timeout=timeout,
             clock=lambda: self.seconds,
             now=lambda: NOW,  # the fixtures' day: what is out is never today's real date's call
@@ -249,6 +254,10 @@ class TapTests(DownloadsCase):
             {"kind": "episode", "id": SEVERANCE, "season": 2},
             {"kind": "episode", "id": SEVERANCE, "season": "2", "episode": 1},
             {**EPISODE_BODY, "again": "yes"},
+            {"kind": "season", "id": 1},
+            {"kind": "season", "id": 1, "season": None},
+            {"kind": "found_episode", "id": 1, "season": 1},
+            {"kind": "found_episode", "id": 1, "season": 1, "episode": "1"},
         ):
             with self.subTest(body):
                 reply = await self.post("/v1/download", body)
@@ -267,6 +276,23 @@ class TapTests(DownloadsCase):
                 self.assertEqual(reply.status, 401)
                 self.assertEqual(reply.body["error"], "not_paired")
                 self.assertIn("connect the phone again", reply.body["message"])
+
+
+class FoundTests(DownloadsCase):
+    async def test_what_the_search_never_found_is_no_longer_there(self) -> None:
+        # The phone's person follows TVMaze show SEVERANCE: a found_episode's id is a TMDB id
+        # and never names it.
+        for path in ("/v1/download", "/v1/releases"):
+            for body in (
+                {"kind": "season", "id": SEVERANCE, "season": 2},
+                {"kind": "found_episode", "id": SEVERANCE, "season": 2, "episode": 1},
+            ):
+                with self.subTest(path=path, body=body):
+                    reply = await self.post(path, body)
+                    self.assertEqual(reply.status, 410)
+                    self.assertEqual(reply.body["error"], "no_longer_there")
+        self.find.series.assert_awaited_with(SEVERANCE, self.person)
+        self.grabs.grab.assert_not_awaited()
 
 
 class ChoosingTests(DownloadsCase):
@@ -481,6 +507,9 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
                 ("POST", "/v1/releases"),
                 ("POST", "/v1/grab"),
                 ("GET", "/v1/suggestions"),
+                ("GET", "/v1/find"),
+                ("GET", "/v1/find/series/{id}"),
+                ("POST", "/v1/follow"),
                 ("GET", "/v1/shortlist"),
                 ("PUT", "/v1/shortlist/{key}"),
                 ("DELETE", "/v1/shortlist/{key}"),

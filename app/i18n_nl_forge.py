@@ -77,6 +77,13 @@ NL: dict[str, str] = {
         "⚠ Kies je map Series in Instellingen › Automatisch hernoemen",
     "⚠ Choose your Movies folder in Settings › Auto-rename":
         "⚠ Kies je map Films in Instellingen › Automatisch hernoemen",
+    "📁 Sorted in {folder}": "📁 Wordt gesorteerd in {folder}",
+    "📁 Was sorted in {folder}": "📁 Gesorteerd in {folder}",
+    "Rule: {name}": "Regel: {name}",
+    "Waits for you: rule “{name}” is Manual": "Wacht op jou: regel “{name}” is Handmatig",
+    "Its rule was changed: check it": "Zijn regel is gewijzigd: kijk het na",
+    "⚠ The preset of rule “{name}” is gone: choose another":
+        "⚠ De voorinstelling van regel “{name}” is weg: kies een andere",
     "Move to library folder": "Naar bibliotheekmap verplaatsen",
     "Move": "Verplaatsen",
     "To library folder": "Naar bibliotheekmap",
@@ -116,14 +123,9 @@ NL: dict[str, str] = {
     "Searching…": "Zoeken…",
     "Nothing found for \"{query}\".": "Niets gevonden voor \"{query}\".",
     "TMDB couldn't be reached. Try again.": "TMDB is niet bereikbaar. Probeer het opnieuw.",
-    # app/forge/core/library.py
-    "Choose a download folder to watch.": "Kies een downloadmap om te bewaken.",
+    # app/forge/core/rules.py (a queued file's way)
     "Choose the Series library folder.": "Kies de bibliotheekmap voor series.",
     "Choose the Movies library folder.": "Kies de bibliotheekmap voor films.",
-    "A watched folder can't be inside a library folder, or the other way round.":
-        "Een bewaakte map kan niet in een bibliotheekmap liggen, of andersom.",
-    "A watched folder can't be inside another watched folder.":
-        "Een bewaakte map kan niet in een andere bewaakte map liggen.",
     # app/forge/core/planner.py
     "already correctly named": "heeft al de juiste naam",
     "Clean junk in: {folder}": "Rommel opruimen in: {folder}",
@@ -207,7 +209,11 @@ NL: dict[str, str] = {
     "Nothing in the library to replace for {n} files: renamed as usual.":
         "Niets in de bibliotheek te vervangen voor {n} bestanden: gewoon hernoemd.",
     "Two downloads would get the same name.": "Twee downloads zouden dezelfde naam krijgen.",
+    "Its rule's preset is gone: choose another in Settings › Auto-rename.":
+        "De voorinstelling van de regel is weg: kies een andere in Instellingen › Automatisch "
+        "hernoemen.",
     "It isn't in a watched folder any more.": "Het staat niet meer in een bewaakte map.",
+    "No rule takes this file.": "Geen regel neemt dit bestand.",
     "TMDB isn't sure which one it is.": "TMDB weet niet zeker welke het is.",
     "Not found at TMDB.": "Niet gevonden bij TMDB.",
     "No TMDB key, or TMDB can't be reached.": "Geen TMDB-sleutel, of TMDB is niet bereikbaar.",
@@ -308,31 +314,34 @@ NL: dict[str, str] = {
     "This puts back {n} items.": "Dit zet {n} onderdelen terug.",
     # app/forge/ui/activity_panel.py
     "Activity": "Activiteit",
-    # app/forge/ui/settings_pages.py: Auto-rename's first box
+    # Off / On (the player's subtitles, the folder library's switch) and Manual (the rules)
     "Off": "Uit",
     "Manual": "Handmatig",
     "On": "Aan",
-    "Manual first: downloads wait in the queue until you forge them; switch to On when you're happy.":
-        "Eerst handmatig: downloads wachten in de wachtrij tot je op Forge klikt; zet het op Aan als je tevreden bent.",
+    # app/forge/ui/settings_pages.py: Auto-rename's first box and its rules
+    "Watching": "Bewaken",
+    "Rules": "Regels",
+    "Checked from the top down. The first rule that fits a file takes it.":
+        "Van boven naar beneden nagelopen. De eerste regel waar een bestand onder valt, neemt het.",
+    "＋ Add a rule": "＋ Regel toevoegen",
+    "Follows AirGrabber's settings. You can turn it off but not delete it.":
+        "Volgt de instellingen van AirGrabber. Je kunt hem uitzetten maar niet verwijderen.",
+    "Edit": "Bewerken",
+    "Couldn't read your presets. Try again in a moment.":
+        "Je voorinstellingen konden niet worden gelezen. Probeer het zo nog eens.",
+    "Show them": "Laat ze zien",
+    "Files no rule fits": "Bestanden waar geen regel bij past",
+    "Add a rule for this folder": "Regel voor deze map toevoegen",
     "MediaForge can rename finished downloads by itself and move them into your Series and "
     "Movies folders.":
         "MediaForge kan klaar gedownloade bestanden zelf hernoemen en naar je mappen voor series "
         "en films verplaatsen.",
-    "Off: nothing happens by itself; you rename files in the queue.":
-        "Uit: er gebeurt niets vanzelf; je hernoemt bestanden in de wachtrij.",
-    "Manual: downloads it finds wait in the queue; nothing moves until you forge them.":
-        "Handmatig: gevonden downloads wachten in de wachtrij; er wordt niets verplaatst tot je op Forge klikt.",
-    "On: sure matches are renamed and moved; the rest waits in the queue.":
-        "Aan: wat TMDB zeker herkent, wordt hernoemd en verplaatst; de rest wacht in de wachtrij.",
-    "Manual and On need these first:": "Voor Handmatig en Aan is eerst dit nodig:",
-    "Download folders to watch": "Downloadmappen om te bewaken",
-    "MediaForge looks in these folders and every folder inside them for finished downloads, when AirGrabber opens and every few minutes.":
-        "MediaForge kijkt in deze mappen en elke map daarin naar voltooide downloads, als AirGrabber opent en om de paar minuten.",
     "Library folders": "Bibliotheekmappen",
-    "Downloads MediaForge finds always move here. Files you add yourself only when their preset "
-    "has Move to library folder on.":
-        "Downloads die MediaForge vindt, gaan altijd hierheen. Bestanden die je zelf toevoegt "
-        "alleen als hun voorinstelling Naar bibliotheekmap verplaatsen aan heeft.",
+    "Rules that move to “Your Series folder” or “Your Movies folder” use these, and so do files "
+    "you add yourself whose preset has Move to library folder on.":
+        "Regels die naar “Je map Series” of “Je map Films” verplaatsen gebruiken deze, en "
+        "bestanden die je zelf toevoegt ook als hun voorinstelling Naar bibliotheekmap "
+        "verplaatsen aan heeft.",
     "None yet": "Nog geen",
     "Not chosen yet": "Nog niet gekozen",
     # app/forge/ui/confirm_window.py
@@ -359,14 +368,13 @@ NL: dict[str, str] = {
     "{n} left as they are, such as: {reason}": "{n} ongemoeid gelaten, bijvoorbeeld: {reason}",
     # app/forge/ui/settings_pages.py
     "MediaForge": "MediaForge",
-    "Choose the preset for each folder under Naming › Library presets.":
-        "Met welke voorinstelling elke soort een naam krijgt: zie Naamgeving.",
+    "New rules start with the presets chosen under Naming › Library presets.":
+        "Nieuwe regels beginnen met de voorinstellingen die bij Naamgeving › Voorinstellingen "
+        "voor de bibliotheek gekozen zijn.",
     "Getting MediaForge ready…": "MediaForge klaarmaken…",
     "MediaForge's settings couldn't be saved. The log has the details.":
         "De instellingen van MediaForge konden niet worden opgeslagen. Het logboek heeft de details.",
-    "Add folder…": "Map toevoegen…",
     "Remove": "Weghalen",
-    "Choose a download folder to watch": "Kies een downloadmap om te bewaken",
     "Choose the Series library folder": "Kies de bibliotheekmap voor series",
     "Choose the Movies library folder": "Kies de bibliotheekmap voor films",
     "Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)":
@@ -377,11 +385,11 @@ NL: dict[str, str] = {
     ),
     "A summary in the evening": "Een overzicht 's avonds",
     "AirGrabber's downloads": "Downloads van AirGrabber",
-    "Watch the folders where AirGrabber's downloads end up. They follow AirGrabber's settings; a "
-    "suggested folder is only watched once you add it.":
-        "Bewaak de mappen waar de downloads van AirGrabber terechtkomen. Ze volgen de "
-        "instellingen van AirGrabber; een voorgestelde map wordt pas bewaakt als je hem toevoegt.",
-    "Use AirGrabber's downloads": "Downloads van AirGrabber gebruiken",
+    "The folders where AirGrabber's downloads end up, as AirGrabber's settings say. AirGrabber's "
+    "rule watches them; a suggested folder is only watched once you add a rule for it.":
+        "De mappen waar de downloads van AirGrabber terechtkomen, zoals de instellingen van "
+        "AirGrabber zeggen. De regel van AirGrabber bewaakt ze; een voorgestelde map wordt pas "
+        "bewaakt als je er een regel voor toevoegt.",
     "Add": "Toevoegen",
     # app/forge/ui/page.py, app/forge/ui/host.py
     "Auto-rename": "Automatisch hernoemen",  # Downloading's "Automatic" is "Automatisch"
@@ -588,8 +596,9 @@ NL: dict[str, str] = {
         "Twee voorinstellingen heten “{name}”. Geef ze elk een eigen naam.",
     "Another preset is called that already.": "Een andere voorinstelling heet al zo.",
     "Library presets": "Voorinstellingen voor de bibliotheek",
-    "The preset that names what is moved into your Series and Movies folders.":
-        "De voorinstelling die de naam geeft aan wat naar je map Series en Films gaat.",
+    "The presets a new rule starts with. Each rule keeps its own: change it under Auto-rename.":
+        "De voorinstellingen waarmee een nieuwe regel begint. Elke regel houdt zijn eigen: "
+        "verander die bij Automatisch hernoemen.",
     "Names language": "Taal van de namen",
     "The language of titles and episode names from TMDB. AirGrabber's own language doesn't "
     "change it.":
@@ -701,39 +710,35 @@ NL: dict[str, str] = {
         "qBittorrent op deze pc bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's downloads here": "{program} bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's films here": "{program} bewaart de films van AirGrabber hier",
-    "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in “Where "
-    "finished downloads end up” in Settings › Where downloads go, or add the folder to the download "
-    "folders to watch.":
+    "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
+    "“Where finished downloads end up” in Settings › Where downloads go, or add a rule for "
+    "the folder.":
         "AirGrabber weet niet waar zijn voltooide downloads op deze pc terechtkomen. Vul “Waar "
-        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan, of voeg de map toe "
-        "aan de downloadmappen om te bewaken.",
-    "AirGrabber sends downloads to {program} on another computer. Add the folder where they "
-    "show up on this PC (a shared network folder) to the download folders to watch, or fill in "
-    "“Where finished downloads end up” in Settings › Where downloads go.":
-        "AirGrabber stuurt downloads naar {program} op een andere computer. Voeg de map waar ze "
-        "op deze pc verschijnen (een gedeelde netwerkmap) toe aan de downloadmappen om te "
-        "bewaken, of vul “Waar voltooide downloads terechtkomen” in bij Instellingen › "
-        "Waar downloads naartoe gaan.",
-    "Download Station keeps AirGrabber's downloads in its own download folder. Add the shared "
-    "folder where they show up on this PC to the download folders to watch, or fill in “Where "
-    "finished downloads end up” in Settings › Where downloads go.":
-        "Download Station bewaart de downloads van AirGrabber in zijn eigen downloadmap. Voeg de "
-        "gedeelde map waar ze op deze pc verschijnen toe aan de downloadmappen om te bewaken, of "
-        "vul “Waar voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan.",
+        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan, of "
+        "voeg een regel voor de map toe.",
+    "AirGrabber sends downloads to {program} on another computer. Add a rule for the folder "
+    "where they show up on this PC (a shared network folder), or fill in “Where finished "
+    "downloads end up” in Settings › Where downloads go.":
+        "AirGrabber stuurt downloads naar {program} op een andere computer. Voeg een regel toe "
+        "voor de map waar ze op deze pc verschijnen (een gedeelde netwerkmap), of vul “Waar "
+        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan.",
+    "Download Station keeps AirGrabber's downloads in its own download folder. Add a rule for "
+    "the shared folder where they show up on this PC, or fill in “Where finished downloads "
+    "end up” in Settings › Where downloads go.":
+        "Download Station bewaart de downloads van AirGrabber in zijn eigen downloadmap. Voeg "
+        "een regel toe voor de gedeelde map waar ze op deze pc verschijnen, of vul “Waar "
+        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan.",
     "Suggested: {reason}": "Voorstel: {reason}",
     "This PC can reach it.": "Deze pc kan erbij.",
     "This PC can't reach it right now.": "Deze pc kan er nu niet bij.",
     "Not checked yet.": "Nog niet nagekeken.",
-    "Watched already: it is in a folder that is watched.":
-        "Al bewaakt: hij staat in een map die al bewaakt wordt.",
-    "Not watched: a folder you added is inside it.":
-        "Niet bewaakt: er staat een map in die je zelf hebt toegevoegd.",
-    "Not watched: it overlaps a library folder.":
-        "Niet bewaakt: hij overlapt met een bibliotheekmap.",
-    "AirGrabber's downloads now also end up in {folder}. Renaming on its own is on Manual again: "
-    "switch it to On when you're happy.":
-        "De downloads van AirGrabber komen nu ook terecht in {folder}. Vanzelf hernoemen staat "
-        "weer op Handmatig: zet het op Aan als je tevreden bent.",
+    "Not watched: it's inside a library folder or a folder a rule moves files to.":
+        "Niet bewaakt: hij ligt in een bibliotheekmap of in een map waar een regel bestanden "
+        "naartoe verplaatst.",
+    "AirGrabber's downloads now also end up in {folder}. What's there now waits in the queue "
+    "once; after that, AirGrabber's rule works as you set it.":
+        "De downloads van AirGrabber komen nu ook terecht in {folder}. Wat daar nu staat, wacht "
+        "één keer in de wachtrij; daarna werkt de regel van AirGrabber zoals je hem hebt ingesteld.",
     # Ignoring files and folders (app/forge/core/ignored.py, queue_rows.py, queue_view.py,
     # settings_pages.py)
     "Leave this file alone": "Dit bestand met rust laten",
@@ -893,4 +898,136 @@ NL: dict[str, str] = {
         "{name}: speelt eerst {language} af; {wanted} zit er ook in",
     "{name}: says {promised}p, but the picture is {height}p":
         "{name}: zegt {promised}p, maar het beeld is {height}p",
+    # app/forge/core/rules.py
+    "✕ Can't save: the folder it watches is inside the folder it moves to, so files would be "
+    "found again and again.":
+        "✕ Kan niet opslaan: de map die hij bewaakt ligt in de map waar hij naartoe verplaatst, "
+        "dus bestanden worden steeds opnieuw gevonden.",
+    "✕ Can't save: the folder it moves to is inside the folder it watches, so files would be "
+    "found again and again.":
+        "✕ Kan niet opslaan: de map waar hij naartoe verplaatst ligt in de map die hij bewaakt, "
+        "dus bestanden worden steeds opnieuw gevonden.",
+    "✕ Can't save: the folder it watches is inside a library folder, so files would be found "
+    "again and again.":
+        "✕ Kan niet opslaan: de map die hij bewaakt ligt in een bibliotheekmap, dus bestanden "
+        "worden steeds opnieuw gevonden.",
+    "✕ Can't save: choose the folder this rule watches.":
+        "✕ Kan niet opslaan: kies de map die deze regel bewaakt.",
+    "✕ Can't save: choose the folder to move them to.":
+        "✕ Kan niet opslaan: kies de map waar ze heen gaan.",
+    "⚠ Can't reach {folder} right now.": "⚠ Kan {folder} nu niet bereiken.",
+    "⚠ Can't reach {folder} right now. Films wait in the queue until it's back.":
+        "⚠ Kan {folder} nu niet bereiken. Films wachten in de wachtrij tot hij er weer is.",
+    "⚠ Can't reach {folder} right now. Shows wait in the queue until it's back.":
+        "⚠ Kan {folder} nu niet bereiken. Series wachten in de wachtrij tot hij er weer is.",
+    "⚠ Can't reach {folder} right now. Files wait in the queue until it's back.":
+        "⚠ Kan {folder} nu niet bereiken. Bestanden wachten in de wachtrij tot hij er weer is.",
+    "⚠ This rule never gets a file: rule {n} above takes the same files first. Drag it higher, "
+    "or change one of them.":
+        "⚠ Deze regel krijgt nooit een bestand: regel {n} hierboven neemt dezelfde bestanden "
+        "eerst. Sleep hem hoger, of verander een van beide.",
+    "⚠ Its preset is gone: choose another.": "⚠ De voorinstelling is weg: kies een andere.",
+    "⚠ Choose your Series folder under Library folders.":
+        "⚠ Kies je map Series onder Bibliotheekmappen.",
+    "⚠ Choose your Movies folder under Library folders.":
+        "⚠ Kies je map Films onder Bibliotheekmappen.",
+    "Rule {n} moves files into this folder. MediaForge won't pick them up again here.":
+        "Regel {n} verplaatst bestanden naar deze map. MediaForge pakt ze hier niet opnieuw op.",
+    "Rule {n} can't be saved yet. Its row says why.":
+        "Regel {n} kan nog niet worden opgeslagen. Zijn rij zegt waarom.",
+    # app/forge/ui/rule_rows.py
+    "Everything from {folder}": "Alles uit {folder}",
+    "Shows from {folder}": "Series uit {folder}",
+    "Films from {folder}": "Films uit {folder}",
+    "Everything in 4K from {folder}": "Alles in 4K uit {folder}",
+    "4K shows from {folder}": "4K-series uit {folder}",
+    "4K films from {folder}": "4K-films uit {folder}",
+    "Everything not in 4K from {folder}": "Alles behalve 4K uit {folder}",
+    "Shows not in 4K from {folder}": "Series niet in 4K uit {folder}",
+    "Films not in 4K from {folder}": "Films niet in 4K uit {folder}",
+    "Everything": "Alles",
+    "Everything in 4K": "Alles in 4K",
+    "4K shows": "4K-series",
+    "4K films": "4K-films",
+    "Everything not in 4K": "Alles behalve 4K",
+    "Shows not in 4K": "Series niet in 4K",
+    "Films not in 4K": "Films niet in 4K",
+    "{n} film fits this rule.": "{n} film valt onder deze regel.",
+    "{n} films fit this rule.": "{n} films vallen onder deze regel.",
+    "{n} episode fits this rule.": "{n} aflevering valt onder deze regel.",
+    "{n} episodes fit this rule.": "{n} afleveringen vallen onder deze regel.",
+    "{n} file doesn't: rule {rule} above takes it.":
+        "{n} bestand valt er niet onder: regel {rule} hierboven neemt het.",
+    "{n} files don't: rule {rule} above takes them.":
+        "{n} bestanden vallen er niet onder: regel {rule} hierboven neemt ze.",
+    "{n} file doesn't: it's in a folder inside this one.":
+        "{n} bestand valt er niet onder: het staat in een map in deze map.",
+    "{n} files don't: they're in folders inside this one.":
+        "{n} bestanden vallen er niet onder: ze staan in mappen in deze map.",
+    "{n} episode doesn't: it's a show.": "{n} aflevering valt er niet onder: het is een serie.",
+    "{n} episodes don't: they're shows.":
+        "{n} afleveringen vallen er niet onder: het zijn series.",
+    "{n} film doesn't: it's a film.": "{n} film valt er niet onder: het is een film.",
+    "{n} films don't: they're films.": "{n} films vallen er niet onder: het zijn films.",
+    "{n} film doesn't: it's not 4K.": "{n} film valt er niet onder: die is niet in 4K.",
+    "{n} films don't: they're not 4K.": "{n} films vallen er niet onder: die zijn niet in 4K.",
+    "{n} episode doesn't: it's not 4K.":
+        "{n} aflevering valt er niet onder: die is niet in 4K.",
+    "{n} episodes don't: they're not 4K.":
+        "{n} afleveringen vallen er niet onder: die zijn niet in 4K.",
+    "{n} film doesn't: it's 4K.": "{n} film valt er niet onder: die is in 4K.",
+    "{n} films don't: they're 4K.": "{n} films vallen er niet onder: die zijn in 4K.",
+    "{n} episode doesn't: it's 4K.": "{n} aflevering valt er niet onder: die is in 4K.",
+    "{n} episodes don't: they're 4K.": "{n} afleveringen vallen er niet onder: die zijn in 4K.",
+    "Rule {rule} takes it.": "Regel {rule} neemt het.",
+    "Rule {rule} takes them.": "Regel {rule} neemt ze.",
+    "No rule takes it.": "Geen regel neemt het.",
+    "No rule takes them.": "Geen regel neemt ze.",
+    "Top folder only": "Alleen de bovenste map",
+    "sorted in this folder": "gesorteerd in deze map",
+    "your Series folder": "je map Series",
+    "your Movies folder": "je map Films",
+    "{n} file in {folder} fits no rule and is left alone.":
+        "{n} bestand in {folder} past bij geen regel en blijft met rust.",
+    "{n} files in {folder} fit no rule and are left alone.":
+        "{n} bestanden in {folder} passen bij geen regel en blijven met rust.",
+    # app/forge/ui/rule_editor.py
+    "Edit rule": "Regel bewerken",
+    "New rule": "Nieuwe regel",
+    "Shown in the queue as “Rule: {name}”. Leave it empty to have one made from your choices.":
+        "In de wachtrij te zien als “Regel: {name}”. Laat het leeg om er een te laten maken "
+        "uit je keuzes.",
+    "Watch this folder": "Deze map bewaken",
+    "Browse…": "Bladeren…",
+    "Choose the folder this rule watches": "Kies de map die deze regel bewaakt",
+    "Also look in the folders inside it (a download that comes in its own folder, a season pack)":
+        "Ook in de mappen erin kijken (een download in een eigen map, een seizoenspakket)",
+    "Only the files directly in this folder": "Alleen de bestanden direct in deze map",
+    "The folders AirGrabber downloads to": "De mappen waar AirGrabber naartoe downloadt",
+    "Take": "Neem",
+    "Anything": "Alles",
+    "4K only": "Alleen 4K",
+    "Not 4K": "Geen 4K",
+    "Forge them with": "Forge ze met",
+    "This preset names them like: {example}": "Deze voorinstelling noemt ze zo: {example}",
+    "Ticked as in the preset. A change here is for this rule only.":
+        "Aangevinkt zoals in de voorinstelling. Een wijziging hier geldt alleen voor deze regel.",
+    "Then": "Daarna",
+    "Move them to": "Verplaats ze naar",
+    "Your Series folder": "Je map Series",
+    "Your Movies folder": "Je map Films",
+    "Choose the folder to move them to": "Kies de map waar ze heen gaan",
+    "Sort them inside this folder": "Sorteer ze in deze map",
+    "(the preset's folders are made here, e.g. {example})":
+        "(de mappen van de voorinstelling komen hier, bijv. {example})",
+    "How": "Hoe",
+    "Done by itself when MediaForge is sure. If it isn't, the file waits for you.":
+        "Gaat vanzelf als MediaForge het zeker weet. Zo niet, dan wacht het bestand op jou.",
+    "Put in the queue with this rule filled in. Nothing happens until you press Forge.":
+        "Komt in de wachtrij met deze regel ingevuld. Er gebeurt niets tot je op Forge drukt.",
+    "Right now in {folder}": "Nu in {folder}",
+    "Looking…": "Kijken…",
+    "Can't reach this folder right now": "Kan deze map nu niet bereiken",
+    "No downloads in this folder right now.": "Nu geen downloads in deze map.",
+    "Delete rule": "Regel verwijderen",
 }

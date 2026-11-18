@@ -303,6 +303,16 @@ class LibraryService:
             return in_plex, in_folders
         return in_plex | in_folders, frozenset()
 
+    async def had_episodes(self, show_id: int) -> frozenset[int]:
+        """Ids of a show's episodes had, Plex's and the folders' together, whoever follows it or
+        nobody (the phone's search); none without a library. ShowDetails holds them only for a
+        followed show. What is had is matched to the shows cache's episodes, so a show it
+        doesn't know has none."""
+        if not self.has_library:
+            return frozenset()
+        in_plex, in_folders = await self._had_ids(show_id)
+        return in_plex | in_folders
+
     async def activity(
         self, *, profile_id: int, now: datetime | None = None
     ) -> dict[int, ShowActivity]:

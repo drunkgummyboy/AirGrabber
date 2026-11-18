@@ -292,6 +292,8 @@ class RangeSpanTests(unittest.TestCase):
             ("bytes=99-", (99, 99)),
             ("bytes=100-", False),
             ("bytes=100-200", False),
+            ("bytes=" + "9" * 5000 + "-", None),  # too long a number: not understood, no error
+            ("bytes=5-" + "9" * 5000, None),
         ):
             with self.subTest(wanted):
                 found = range_span({"range": wanted} if wanted else {}, 100)

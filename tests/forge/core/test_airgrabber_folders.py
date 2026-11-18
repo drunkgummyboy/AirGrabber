@@ -1,15 +1,16 @@
 """MediaForge watches AirGrabber's downloads (app/forge/core/airgrabber_folders.py, B-01): the
-folders derived from AirGrabber's settings in every download mode, what is watched next to the
-owner's own folders and why not, and the sync that keeps them up to date without ever moving
-files from a newly watched folder behind the owner's back."""
+folders derived from AirGrabber's settings in every download mode, what AirGrabber's rule watches
+of them and why not (`airgrabber_uses`), the texts, and the sync that keeps them up to date without ever moving
+files from a newly watched folder behind the owner's back (AirGrabber's rule is marked fresh)."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -20,20 +21,20 @@ from app import i18n
 from app.forge.core import airgrabber_folders as module
 from app.forge.core.activity import ActivityFeed
 from app.forge.core.airgrabber_folders import (
+    NEW_FOLDER_ONCE,
     AirGrabberFolderSync,
-    airgrabber_in_use,
+    airgrabber_uses,
     ask_text,
     derived_folders,
     nas_path,
-    newly_watched,
     pc_path,
     reason_text,
     use_text,
-    watched_folders,
 )
-from app.forge.core.library import library_problems
+from app.forge.core.rules import watched_folders
+from app.forge.models.rules import Rule
 from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, ForgeSettings
-from app.i18n import Language
+from app.i18n import Language, t
 from app.models import DownloadMode, QBittorrentState, RemoteKind, Settings
 from app.services.settings import SettingsService
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
@@ -226,61 +227,54 @@ class DerivedFoldersTests(ForgeTestCase):
 
 
 class InUseTests(ForgeTestCase):
-    """What is watched of AirGrabber's folders next to the owner's own."""
+    """What AirGrabber's rule watches of AirGrabber's folders (`rules.watched_folders` over the
+    carried-over rules: the owner's own folders first)."""
+
+    @staticmethod
+    def watched(settings: ForgeSettings) -> list[str]:
+        from app.forge.core.rules import rules_from_settings
+
+        rules = [
+            r.model_copy(update={"on": settings.airgrabber_on}) if r.airgrabber else r
+            for r in rules_from_settings(settings)
+        ]
+        return watched_folders(rules, settings)
 
     def test_on_for_a_new_setup_off_for_an_imported_one(self) -> None:
         done = folder(r"D:\Done")
         self.assertTrue(forge(done).airgrabber_on)
-        self.assertEqual(watched_folders(forge(done, watch_folders=[r"E:\Mine"])),
+        self.assertEqual(self.watched(forge(done, watch_folders=[r"E:\Mine"])),
                          [r"E:\Mine", r"D:\Done"])
         imported = forge(done, imported_from="MediaForge 1.3.0, 2026-11-02")
         self.assertFalse(imported.airgrabber_on)
-        self.assertEqual(watched_folders(imported), [])
+        self.assertEqual(self.watched(imported), [])
         chosen = imported.model_copy(update={"use_airgrabber_downloads": True})
-        self.assertEqual(watched_folders(chosen), [r"D:\Done"])
+        self.assertEqual(self.watched(chosen), [r"D:\Done"])
         off = forge(done, use_airgrabber_downloads=False)
-        self.assertEqual(watched_folders(off), [])
+        self.assertEqual(self.watched(off), [])
 
     def test_suggestions_are_never_watched(self) -> None:
         suggestion = folder(r"\\192.168.1.20\video\tv", "shows", suggested=True, reachable=True)
         settings = forge(suggestion)
-        self.assertEqual(watched_folders(settings), [])
-        self.assertEqual([u.use for u in airgrabber_in_use(settings)], ["suggested"])
-        # Added by the owner: their own folder; the suggestion reads as covered.
-        added = settings.model_copy(update={"watch_folders": [suggestion.path]})
-        self.assertEqual(watched_folders(added), [suggestion.path])
-        self.assertEqual([u.use for u in airgrabber_in_use(added)], ["covered"])
+        self.assertEqual(self.watched(settings), [])
+        self.assertEqual([u.use for u in airgrabber_uses(settings, [])], ["suggested"])
 
-    def test_clashes_are_left_out_and_say_why(self) -> None:
+    def test_airgrabber_uses_allows_nesting(self) -> None:
+        # The rules for watched folders: a folder inside one of the owner's is watched too.
         settings = forge(
             folder(r"D:\Downloads\tv"),  # inside the owner's D:\Downloads
             folder(r"E:\All", "qbittorrent"),  # holds the owner's E:\All\Mine
+            folder(r"F:\Sorted\in", "films"),  # inside a rule's destination
             folder(r"\\192.168.1.20\video", "shows"),  # holds the library folders
-            folder(r"F:\Films", "films"),
+            folder(SERIES + r"\in", "shows"),  # inside one
+            folder(r"G:\tv", "shows", suggested=True),
+            folder(r"G:\tv\more", "shows"),  # inside another of AirGrabber's: watched too
             watch_folders=[r"D:\Downloads", r"E:\All\Mine"],
         )
-        uses = [u.use for u in airgrabber_in_use(settings)]
-        self.assertEqual(uses, ["covered", "holds_own", "overlap", "watched"])
-        self.assertEqual(watched_folders(settings), [r"D:\Downloads", r"E:\All\Mine", r"F:\Films"])
-        self.assertEqual(library_problems(settings), [])  # nothing of AirGrabber's stops watching
-
-    def test_nested_folders_of_airgrabber_watch_the_outer_one(self) -> None:
-        settings = forge(folder(r"D:\Torrents\Films", "films"), folder(r"D:\Torrents", "qbittorrent"))
-        self.assertEqual([u.use for u in airgrabber_in_use(settings)], ["covered", "watched"])
-        self.assertEqual(watched_folders(settings), [r"D:\Torrents"])
-        self.assertEqual(library_problems(settings), [])
-
-    def test_airgrabbers_folders_count_for_the_library_rules(self) -> None:
-        settings = forge(folder(r"D:\Done"))
-        self.assertEqual(library_problems(settings), [])
-        self.assertIn("Choose a download folder to watch.",
-                      library_problems(settings.model_copy(update={"use_airgrabber_downloads": False})))
-
-    def test_newly_watched(self) -> None:
-        before = forge(folder(r"D:\Done"))
-        after = forge(folder(r"d:\done\\"), folder(r"E:\Films", "films"))
-        self.assertEqual(newly_watched(before, after), [r"E:\Films"])
-        self.assertEqual(newly_watched(after, before), [])
+        uses = [u.use for u in airgrabber_uses(settings, [Path(SERIES), Path(r"F:\Sorted")])]
+        self.assertEqual(
+            uses, ["watched", "watched", "overlap", "overlap", "overlap", "suggested", "watched"]
+        )
 
 
 class TextTests(ForgeTestCase):
@@ -295,24 +289,38 @@ class TextTests(ForgeTestCase):
         self.assertEqual(reason_text(shows), "Download Station saves AirGrabber's downloads here")
         settings = forge(shows)
         self.assertEqual(
-            use_text(airgrabber_in_use(settings)[0]),
+            use_text(airgrabber_uses(settings, [])[0]),
             "Suggested: Download Station saves AirGrabber's downloads here. This PC can't reach "
             "it right now.",
         )
         reached = forge(shows.model_copy(update={"reachable": True}))
-        self.assertTrue(use_text(airgrabber_in_use(reached)[0]).endswith("This PC can reach it."))
+        self.assertTrue(use_text(airgrabber_uses(reached, [])[0]).endswith("This PC can reach it."))
         overlap = forge(folder(SERIES + r"\in"))
         self.assertEqual(
-            use_text(airgrabber_in_use(overlap)[0]),
-            "“Where finished downloads end up” in Settings. Not watched: it "
-            "overlaps a library folder.",
+            use_text(airgrabber_uses(overlap, [])[0]),
+            "“Where finished downloads end up” in Settings. Not watched: it's inside a library "
+            "folder or a folder a rule moves files to.",
         )
         self.assertEqual(ask_text(AirGrabberDownloads()), "")
         other = AirGrabberDownloads(ask="other_computer", program="Transmission")
-        self.assertIn("Transmission on another computer", ask_text(other))
-        for ask in ("finished", "nas_folder"):
-            self.assertIn("Where finished downloads end up",
-                          ask_text(AirGrabberDownloads(ask=ask)))
+        self.assertEqual(
+            ask_text(other),
+            "AirGrabber sends downloads to Transmission on another computer. Add a rule for the "
+            "folder where they show up on this PC (a shared network folder), or fill in “Where "
+            "finished downloads end up” in Settings › Where downloads go.",
+        )
+        self.assertEqual(
+            ask_text(AirGrabberDownloads(ask="finished")),
+            "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
+            "“Where finished downloads end up” in Settings › Where downloads go, or add a rule "
+            "for the folder.",
+        )
+        self.assertEqual(
+            ask_text(AirGrabberDownloads(ask="nas_folder")),
+            "Download Station keeps AirGrabber's downloads in its own download folder. Add a "
+            "rule for the shared folder where they show up on this PC, or fill in “Where "
+            "finished downloads end up” in Settings › Where downloads go.",
+        )
 
     def test_dutch(self) -> None:
         i18n.set_language(Language.NL)
@@ -332,10 +340,12 @@ class FakeForgeSettings:
         self.current = current
         self.updates: list[dict[str, Any]] = []
         self.listeners: list[Callable[[ForgeSettings], None]] = []
+        self.steps: list[str] = []
 
     async def update(self, **changes: Any) -> ForgeSettings:
         await asyncio.sleep(0)
         self.updates.append(changes)
+        self.steps.append("stored")
         self.current = ForgeSettings.model_validate({**self.current.model_dump(), **changes})
         for listener in list(self.listeners):
             listener(self.current)
@@ -361,6 +371,33 @@ class FakeAirGrabberSettings:
         return lambda: self.listeners.remove(listener)
 
 
+class FakeRules:
+    """RuleService's surface for the sync: the rules (AirGrabber's `on` from the settings, as
+    RuleService shows it), AirGrabber's rule, and the fresh marks it was asked for."""
+
+    def __init__(self) -> None:
+        self.forge: FakeForgeSettings | None = None
+        self.marked: list[int] = []
+        self.steps: list[str] = []
+        self.fail = False
+
+    @property
+    def current(self) -> tuple[Rule, ...]:
+        on = self.forge.current.airgrabber_on if self.forge is not None else True
+        return (Rule(id=4, folder=r"E:\Mine"), Rule(id=9, airgrabber=True, on=on))
+
+    @property
+    def airgrabber_rule(self) -> Rule:
+        return self.current[-1]
+
+    async def mark_fresh(self, rule_id: int) -> None:
+        await asyncio.sleep(0)
+        if self.fail:
+            raise OSError("forge.db is locked")
+        self.marked.append(rule_id)
+        self.steps.append("marked fresh")
+
+
 class SyncTests(ForgeAsyncTestCase):
     def make(
         self,
@@ -369,6 +406,8 @@ class SyncTests(ForgeAsyncTestCase):
         *,
         reachable: Callable[[str], bool] = lambda _p: True,
         timeout_s: float = 2.0,
+        rules: FakeRules | None = None,
+        hold_looks: Callable[[], contextlib.AbstractAsyncContextManager[None]] | None = None,
     ) -> tuple[AirGrabberFolderSync, FakeForgeSettings, FakeAirGrabberSettings]:
         self.forge = FakeForgeSettings(current or forge())
         self.airgrabber = FakeAirGrabberSettings(settings)
@@ -386,7 +425,11 @@ class SyncTests(ForgeAsyncTestCase):
             is_dir=reachable,
             timeout_s=timeout_s,
             activity=self.activity,
+            rules=rules,
+            hold_looks=hold_looks,
         )
+        if rules is not None:
+            rules.forge = self.forge
         self.addAsyncCleanup(sync.close)
         return sync, self.forge, self.airgrabber
 
@@ -451,7 +494,7 @@ class SyncTests(ForgeAsyncTestCase):
         await sync.refresh()
         self.assertEqual(asked, [r"\\192.168.1.20\video\tv", r"\\192.168.1.20\video\movies"])
         self.assertEqual([f.reachable for f in fake.current.airgrabber.folders], [True, False])
-        self.assertEqual(watched_folders(fake.current), [])  # suggestions: never watched
+        self.assertEqual(InUseTests.watched(fake.current), [])  # suggestions: never watched
 
     async def test_an_unreachable_suggestion(self) -> None:
         def gone(_path: str) -> bool:
@@ -461,11 +504,13 @@ class SyncTests(ForgeAsyncTestCase):
         await sync.refresh()
         self.assertEqual([f.reachable for f in fake.current.airgrabber.folders], [False])
 
-    async def test_on_goes_back_to_trial_for_a_new_folder(self) -> None:
+    async def test_a_new_folder_makes_airgrabbers_rule_fresh(self) -> None:
         current = forge(folder(r"D:\Done"), automatic="on")
-        sync, fake, ag = self.make(airgrabber(subtitles_folder=r"D:\Done"), current)
+        rules = FakeRules()
+        sync, fake, ag = self.make(airgrabber(subtitles_folder=r"D:\Done"), current, rules=rules)
         await sync.refresh()
-        self.assertEqual(fake.updates, [])  # the same folder: nothing new, stays On
+        self.assertEqual(fake.updates, [])  # the same folder: nothing new
+        self.assertEqual(rules.marked, [])
         ag.change(
             download_mode=DownloadMode.REMOTE,
             remote_kind=RemoteKind.QBITTORRENT,
@@ -474,27 +519,83 @@ class SyncTests(ForgeAsyncTestCase):
             remote_password=SecretStr("generated"),
             movie_remote_destination=r"E:\Films",
         )
-        await sync.refresh()
-        self.assertEqual(fake.current.automatic, "trial")
-        self.assertEqual(fake.updates[-1]["automatic"], "trial")  # in the same update
+        with self.assertLogs(module.log, logging.INFO) as logs:
+            await sync.refresh()
+        self.assertEqual(rules.marked, [rules.airgrabber_rule.id])
+        self.assertEqual(fake.current.automatic, "on")  # the master switch is never touched
+        self.assertNotIn("automatic", fake.updates[-1])
         line = self.activity.lines()[-1]
-        self.assertIn(SAVE_PATH, line.text)  # the first new one
+        self.assertEqual(line.text, t(NEW_FOLDER_ONCE, folder=SAVE_PATH))  # the first new one
         self.assertEqual(line.level, logging.WARNING)
+        written = "\n".join(logs.output)
+        self.assertIn("A new folder of AirGrabber's downloads is watched", written)
+        for path in (SAVE_PATH, r"E:\Films"):
+            self.assertNotIn(path, written)
 
-    async def test_no_trial_when_nothing_new_is_watched(self) -> None:
+    async def test_the_mark_and_the_store_are_one_step_no_look_comes_between(self) -> None:
+        steps: list[str] = []
+
+        @contextlib.asynccontextmanager
+        async def hold_looks() -> AsyncIterator[None]:
+            steps.append("looks held")
+            yield
+            steps.append("looks free")
+
+        rules = FakeRules()
+        rules.steps = steps
+        current = forge(folder(r"D:\Done"), automatic="on")
+        sync, fake, _ = self.make(
+            local_qbittorrent(subtitles_folder=r"D:\Done"), current, rules=rules,
+            hold_looks=hold_looks,
+        )
+        fake.steps = steps
+        await sync.refresh()
+        self.assertEqual(steps, ["looks held", "marked fresh", "stored", "looks free"])
+
+    async def test_a_failed_mark_stores_nothing_and_a_later_look_tries_again(self) -> None:
+        rules = FakeRules()
+        rules.fail = True
+        current = forge(folder(r"D:\Done"), automatic="on")
+        sync, fake, ag = self.make(airgrabber(subtitles_folder=r"D:\Done"), current, rules=rules)
+        sync.start()
+        await sync.settled()
+        ag.change(subtitles_folder=r"E:\New")
+        with self.assertLogs(module.log, logging.ERROR):
+            await sync.settled()
+        self.assertEqual(fake.updates, [])  # not watched: nothing can move from it unseen
+        self.assertEqual(self.activity.lines(), ())
+        rules.fail = False
+        ag.change(weeks_to_show=4)  # any change of AirGrabber's settings looks again
+        await sync.settled()
+        self.assertEqual(paths(fake.current.airgrabber), [r"E:\New"])
+        self.assertEqual(rules.marked, [rules.airgrabber_rule.id])
+
+    async def test_nothing_fresh_when_nothing_new_is_watched(self) -> None:
         for current in (
-            forge(automatic="trial"),
-            forge(automatic="off"),
+            forge(folder(r"D:\Done"), automatic="on"),  # watched already
             forge(automatic="on", use_airgrabber_downloads=False),
             forge(automatic="on", imported_from="MediaForge 1.3.0, 2026-11-02"),
         ):
             with self.subTest(current=current):
-                sync, fake, _ = self.make(airgrabber(subtitles_folder=r"D:\Done"), current)
+                rules = FakeRules()
+                sync, fake, _ = self.make(
+                    airgrabber(subtitles_folder=r"D:\Done", remote_destination=r"E:\Other"),
+                    current,
+                    rules=rules,
+                )
                 await sync.refresh()
-                self.assertEqual(fake.current.automatic, current.automatic)
-                self.assertEqual(paths(fake.current.airgrabber), [r"D:\Done"])
-        sync, fake, _ = self.make(synology(remote_destination="video/tv"), forge(automatic="on"))
+                self.assertEqual(rules.marked, [])
+                self.assertEqual(fake.current.automatic, "on")
+                self.assertEqual(self.activity.lines(), ())
+        rules = FakeRules()
+        sync, fake, _ = self.make(
+            synology(remote_destination="video/tv"), forge(automatic="on"), rules=rules
+        )
         await sync.refresh()  # a suggestion isn't watched
+        self.assertEqual(rules.marked, [])
+        sync, fake, _ = self.make(airgrabber(subtitles_folder=r"D:\Done"), forge(automatic="on"))
+        await sync.refresh()  # without the rules: stored, nothing to mark
+        self.assertEqual(paths(fake.current.airgrabber), [r"D:\Done"])
         self.assertEqual(fake.current.automatic, "on")
 
     async def test_derives_again_after_an_import(self) -> None:

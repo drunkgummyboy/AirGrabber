@@ -1,29 +1,26 @@
-"""AirGrabber's downloads in Settings › Auto-rename (B-01): "Use AirGrabber's downloads" (on for a
-new setup, off for an imported one, stored on Save only; turning it on while On is chosen goes to
-Manual first; a suggestion's Add makes it one of the owner's own folders), listing what is watched
-and why, or what to choose."""
+"""AirGrabber's downloads in Settings › Auto-rename (B-01): AirGrabber's rule's switch is "Use
+AirGrabber's downloads" (on for a new setup, off for an imported one, stored on Save only), the box
+lists AirGrabber's folders and why each is (not) watched, or what to choose, and a suggestion's
+"Add a rule for this folder" adds a rule with AirGrabber's rule's routing."""
 
 from __future__ import annotations
 
 import asyncio
 import gc
 import tkinter as tk
-from types import SimpleNamespace
 from typing import Any
-from unittest import mock
 
 import customtkinter as ctk
 
 from app import i18n
-from app.forge.core.airgrabber_folders import watched_folders
-from app.forge.models.preset import DEFAULT_PRESETS
+from app.forge.core.rules import watched_folders
 from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, ForgeSettings
 from app.forge.ui.settings_pages import SECTION_LIBRARY, LibrarySection
 from app.i18n import Language
 from app.ui.settings_dialog import SettingsDialog
-from tests.forge.ui.settings_kit import forge_settings
 from tests.forge.base import ForgeAsyncTestCase
-from tests.forge.ui.test_settings_library import FakeSettings, labels
+from tests.forge.ui.settings_kit import forge_settings
+from tests.forge.ui.test_settings_library import FakeForge, FakeRules, FakeSettings, labels
 
 SERIES = r"\\nas\video\Series"
 MOVIES = r"\\nas\video\Movies"
@@ -75,35 +72,23 @@ class _TkCase(ForgeAsyncTestCase):
         gc.collect()
 
 
-class _Forge:
-    """ForgeRuntime's surface, started."""
-
-    def __init__(self, settings: FakeSettings) -> None:
-        self.services = SimpleNamespace(
-            settings=settings,
-            presets=SimpleNamespace(list=mock.AsyncMock(return_value=list(DEFAULT_PRESETS))),
-            matches=SimpleNamespace(list=mock.AsyncMock(return_value=[])),
-        )
-        self.reason = ""
-
-    async def start(self) -> Any:
-        return self.services
-
-
 class SettingsSectionTests(_TkCase):
     def ready(
         self, settings: ForgeSettings
     ) -> tuple[SettingsDialog, LibrarySection, FakeSettings]:
         fake = FakeSettings(settings)
-        dialog = forge_settings(self.root, _Forge(fake), section=SECTION_LIBRARY)
+        self.rules = FakeRules(fake)
+        dialog = forge_settings(
+            self.root, FakeForge(fake, rules=self.rules), section=SECTION_LIBRARY
+        )
         part = dialog.parts[SECTION_LIBRARY]
         assert isinstance(part, LibrarySection)
         return dialog, part, fake
 
     @staticmethod
-    def click_use(part: LibrarySection, on: bool) -> None:
-        part._use.set(on)  # pyright: ignore[reportPrivateUsage]
-        part._use_toggled()  # pyright: ignore[reportPrivateUsage]
+    def airgrabbers(part: LibrarySection) -> int:
+        """AirGrabber's rule's place in the list."""
+        return next(i for i, rule in enumerate(part.rule_drafts) if rule.airgrabber)
 
     async def test_lists_airgrabbers_folders_and_why(self) -> None:
         _dialog, part, _fake = self.ready(
@@ -119,65 +104,76 @@ class SettingsSectionTests(_TkCase):
                 "reach it.",
             ],
         )
-        self.assertEqual(labels(part.watch_list), [r"E:\Mine"])
+        self.assertIn("Mine", labels(part.rules_list))  # the owner's own folder: a rule
+        self.assertIn(
+            "The folders where AirGrabber's downloads end up, as AirGrabber's settings say. "
+            "AirGrabber's rule watches them; a suggested folder is only watched once you add a "
+            "rule for it.",
+            labels(part.airgrabber_list.master),
+        )
 
     async def test_says_what_to_choose(self) -> None:
         _dialog, part, _fake = self.ready(with_airgrabber(ask="finished"))
-        self.assertTrue(labels(part.airgrabber_list)[0].startswith("AirGrabber doesn't know"))
+        self.assertEqual(
+            labels(part.airgrabber_list)[0],
+            "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
+            "“Where finished downloads end up” in Settings › Where downloads go, or add a rule "
+            "for the folder.",
+        )
 
-    async def test_nothing_of_airgrabbers_while_not_used(self) -> None:
+    async def test_nothing_of_airgrabbers_while_its_rule_is_off(self) -> None:
         _dialog, part, _fake = self.ready(
             with_airgrabber(DONE, ask="finished", use_airgrabber_downloads=False)
         )
         self.assertNotIn("AirGrabber doesn't know", "\n".join(labels(part.airgrabber_list)))
+        self.assertEqual(part.rule_rows[self.airgrabbers(part)].switch.get(), 0)
 
     async def test_on_for_a_new_setup_and_nothing_saved_untouched(self) -> None:
         dialog, part, fake = self.ready(with_airgrabber(DONE, SUGGESTED))
-        self.assertTrue(part._use.get())  # pyright: ignore[reportPrivateUsage]
-        self.assertEqual(str(part.use_box.cget("text")), "Use AirGrabber's downloads")
+        self.assertEqual(part.rule_rows[self.airgrabbers(part)].switch.get(), 1)
         shown = labels(part.airgrabber_list)
         self.assertEqual(shown[:2], [DONE.path, "qBittorrent on this PC saves AirGrabber's downloads here"])
         self.assertEqual(part.changes(), {})
         self.assertTrue(await dialog._save_all())
         self.assertEqual(fake.updates, [])
+        self.assertEqual(self.rules.saved, [])
         self.assertIsNone(fake.current.use_airgrabber_downloads)
 
-    async def test_off_for_an_imported_one_until_chosen(self) -> None:
+    async def test_off_for_an_imported_one_until_its_switch_is_on(self) -> None:
         dialog, part, fake = self.ready(with_airgrabber(DONE, imported_from=IMPORTED))
-        self.assertFalse(part._use.get())  # pyright: ignore[reportPrivateUsage]
-        self.click_use(part, True)
+        index = self.airgrabbers(part)
+        self.assertEqual(part.rule_rows[index].switch.get(), 0)
+        part.rule_rows[index].switch.toggle()  # clicked
         self.assertEqual(fake.updates, [])  # kept until Save
         self.assertTrue(await dialog._save_all())
         self.assertEqual(fake.updates, [{"use_airgrabber_downloads": True}])
-        self.assertEqual(watched_folders(fake.current), [DONE.path])
+        self.assertEqual(watched_folders(self.rules.current, fake.current), [DONE.path])
 
-    async def test_turning_it_on_while_on_is_trial_first(self) -> None:
-        stored = with_airgrabber(
-            DONE, watch_folders=[r"E:\Mine"], use_airgrabber_downloads=False, automatic="on"
-        )
-        dialog, part, fake = self.ready(stored)
-        self.click_use(part, True)
-        self.assertEqual(part.mode.get(), "Manual")
-        self.assertIn("Manual first", str(part.note_label.cget("text")))
+    async def test_turning_it_off_stores_the_setting(self) -> None:
+        dialog, part, fake = self.ready(with_airgrabber(DONE, automatic="on"))
+        part.toggle_rule(self.airgrabbers(part), False)
+        self.assertEqual(part.changes(), {})  # a rule, not one of the section's fields
+        self.assertTrue(part.rules_changed)
         self.assertTrue(await dialog._save_all())
-        self.assertEqual(fake.updates, [{"use_airgrabber_downloads": True, "automatic": "trial"}])
+        self.assertEqual(fake.updates, [{"use_airgrabber_downloads": False}])
+        self.assertEqual(fake.current.automatic, "on")  # the master switch is untouched
 
-    async def test_turning_it_off_keeps_on(self) -> None:
-        _dialog, part, _fake = self.ready(
-            with_airgrabber(DONE, watch_folders=[r"E:\Mine"], automatic="on")
-        )
-        self.click_use(part, False)
-        self.assertEqual(part.mode.get(), "On")
-        self.assertEqual(part.changes(), {"use_airgrabber_downloads": False})
-
-    async def test_add_a_suggestion(self) -> None:
-        dialog, part, fake = self.ready(with_airgrabber(SUGGESTED, watch_folders=[r"E:\Mine"]))
+    async def test_add_a_rule_for_a_suggestion(self) -> None:
+        dialog, part, _fake = self.ready(with_airgrabber(SUGGESTED, watch_folders=[r"E:\Mine"]))
         self.assertTrue(labels(part.airgrabber_list)[1].startswith("Suggested: Download Station"))
-        part.add_suggested(SUGGESTED.path)
-        self.assertEqual(part.draft()["watch_folders"], [r"E:\Mine", SUGGESTED.path])
-        self.assertIn("Watched already", "\n".join(labels(part.airgrabber_list)))
+        buttons = [b for b in part.airgrabber_list.winfo_children() if isinstance(b, ctk.CTkButton)]
+        self.assertEqual([b.cget("text") for b in buttons], ["Add a rule for this folder"])
+        buttons[0].invoke()
+        self.assertEqual([r.folder for r in part.rule_drafts], [r"E:\Mine", "", SUGGESTED.path])
+        airgrabbers = part.rule_drafts[1]
+        added = part.rule_drafts[2]
+        self.assertEqual(
+            added.model_dump(exclude={"folder", "airgrabber", "id"}),
+            airgrabbers.model_dump(exclude={"folder", "airgrabber", "id"}),
+        )  # AirGrabber's rule's routing
+        self.assertEqual(self.rules.saved, [])  # in the form until Save
         self.assertTrue(await dialog._save_all())
-        self.assertEqual(fake.updates, [{"watch_folders": [r"E:\Mine", SUGGESTED.path]}])
+        self.assertEqual([r.folder for r in self.rules.saved[0]], [r"E:\Mine", "", SUGGESTED.path])
 
     async def test_airgrabbers_folders_derived_meanwhile_show(self) -> None:
         _dialog, part, fake = self.ready(with_airgrabber())
@@ -187,16 +183,17 @@ class SettingsSectionTests(_TkCase):
         await fake.update(airgrabber=AirGrabberDownloads(folders=[DONE]))
         self.assertEqual(labels(part.airgrabber_list)[0], DONE.path)
         self.assertEqual(part.changes(), {})
+        self.assertFalse(part.rules_changed)
 
-    async def test_without_airgrabbers_folders_the_box_ends_under_the_tick_box(self) -> None:
+    async def test_without_airgrabbers_folders_the_box_ends_under_its_text(self) -> None:
         # An empty CTkFrame keeps its default 200 units: the empty list is taken out.
         _dialog, part, fake = self.ready(with_airgrabber())
-        body = part.use_box.master
+        body = part.airgrabber_list.master
         body.update_idletasks()
         self.assertEqual(part.airgrabber_list.winfo_manager(), "")
         empty = body.winfo_reqheight()
         scaling = ctk.ScalingTracker.get_widget_scaling(body)
-        self.assertLess(empty, 200 * scaling)  # the heading, its text and the tick box only
+        self.assertLess(empty, 200 * scaling)  # the heading and its text only
         await fake.update(airgrabber=AirGrabberDownloads(folders=[DONE]))
         body.update_idletasks()
         self.assertEqual(part.airgrabber_list.winfo_manager(), "grid")
