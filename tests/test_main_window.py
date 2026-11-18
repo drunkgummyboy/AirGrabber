@@ -84,6 +84,7 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "remote_destination": "/downloads/tv",
     "download_mode": "app",
     "auto_download_new_shows": True,
+    "auto_download_new_films": True,
     "setup_done": True,
     "get_started_shown": True,
     "auto_update": False,
@@ -910,17 +911,22 @@ class UpgradeFilmTests(unittest.IsolatedAsyncioTestCase):
     async def test_upgrade_opens_the_films_1080p_and_4k_releases(self) -> None:
         from app.models.plex import PlexTitle
 
-        asked: list[tuple[int, bool, str | None]] = []
+        asked: list[tuple[int, bool, str | None, object]] = []
 
-        async def open_movie_id(movie_id: int, *, releases: bool = False, quality: str | None = None) -> bool:
-            asked.append((movie_id, releases, quality))
+        async def open_movie_id(
+            movie_id: int, *, releases: bool = False, quality: str | None = None, send: object = None
+        ) -> bool:
+            asked.append((movie_id, releases, quality, send))
             return True
 
-        window: Any = SimpleNamespace(_movie_windows=SimpleNamespace(open_movie_id=open_movie_id))
+        window: Any = SimpleNamespace(
+            _movie_windows=SimpleNamespace(open_movie_id=open_movie_id),
+            _phone_send=lambda title: None,  # no phone to send to
+        )
         film = PlexTitle(kind="movie", key="h", title="Heat", resolution="720p", tmdb_id=949)
         MainWindow._upgrade_plex_film(window, film)
         await asyncio.sleep(0)
-        self.assertEqual(asked, [(949, True, "1080p+")])
+        self.assertEqual(asked, [(949, True, "1080p+", None)])
 
 
 class LibraryCheckedTests(unittest.TestCase):

@@ -104,6 +104,7 @@ class Services:
         "images",
         "library",
         "phone",
+        "phone_forge",
         "phone_sends",
         "plex",
         "profiles",
@@ -159,8 +160,9 @@ class Services:
             file=paths.root / QUEUE_FILE,
             film_request=functools.partial(_film_request, discovery),
         )
-        # The film watchlists (the selected person's in memory once `load`ed: profiles.load).
-        self.watchlist = WatchlistService(db.watchlist, discovery, downloads)
+        # The film watchlists (the selected person's in memory once `load`ed: profiles.load);
+        # a film added starts with "Download when it's out" as `auto_download_new_films` says.
+        self.watchlist = WatchlistService(db.watchlist, discovery, downloads, settings=settings)
         # The people sharing AirGrabber and who is selected (Services.create `load`s them):
         # each has their own followed series, watchlist and calendar.
         self.profiles = ProfileService(db.profiles, settings, self.watchlist)
@@ -284,6 +286,7 @@ class Services:
             tmdb,
             play_links=play_links,
         )
+        self.phone_forge = PhoneForge(forge, self.profiles)  # closed in aclose()
         phone_routes: dict[tuple[str, str], Route] = {
             **ComingUp(
                 library,
@@ -309,7 +312,7 @@ class Services:
             **suggestions.routes(),
             **shortlist.routes(),
             **self.phone_sends.routes(),
-            **PhoneForge(forge, self.profiles).routes(),
+            **self.phone_forge.routes(),
             **FilmSeries(discovery.film_series).routes(),
             **phone_library.routes(),
         }
@@ -407,16 +410,22 @@ class Services:
             await self.phone.aclose()  # no phone is answered from here on
         finally:
             try:
-                # Before these: Forge uses the HTTP client, and forge.db's aiosqlite thread is no
-                # daemon.
-                await self.plex_scans.aclose()
-                await self.folder_library.aclose()
-                await self.forge.aclose()
+                await self.phone_forge.aclose()  # its background reads stop waiting, whatever failed
             finally:
-                try:
-                    await self._http.aclose()
-                finally:
-                    await self._db.close()
+                await self._close_the_rest()
+
+    async def _close_the_rest(self) -> None:
+        try:
+            # Before these: Forge uses the HTTP client, and forge.db's aiosqlite thread is no
+            # daemon.
+            await self.plex_scans.aclose()
+            await self.folder_library.aclose()
+            await self.forge.aclose()
+        finally:
+            try:
+                await self._http.aclose()
+            finally:
+                await self._db.close()
 
 
 FILM_LOOKUP_S = 15.0  # a kept film's TMDB description, at its turn after a restart

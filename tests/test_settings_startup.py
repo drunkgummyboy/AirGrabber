@@ -20,6 +20,7 @@ from app.models import ProwlarrState, ProwlarrStatus, Settings
 from app.services import SettingsService
 from app.services.startup import SHORTCUT_NAME, StartupError
 from app.ui.settings_dialog import (
+    SECTION_AUTOMATIC,
     SettingsDialog,
     StartupResult,
     WindowsStartup,
@@ -166,11 +167,28 @@ class SettingsDialogStartupTests(unittest.IsolatedAsyncioTestCase):
         dialog._start_with_windows.set(True)
         dialog._keep_in_tray.set(False)
         dialog._auto_new_shows.set(True)
+        dialog._auto_new_films.set(True)
         await dialog._save()
         self.assertEqual(shortcut.calls, [True])
         self.assertTrue(settings.current.start_with_windows)
         self.assertFalse(settings.current.keep_in_tray)
         self.assertTrue(settings.current.auto_download_new_shows)
+        self.assertTrue(settings.current.auto_download_new_films)
+
+    async def test_the_films_switch_shows_the_setting_off_by_default(self) -> None:
+        dialog, settings = self.dialog(FakeShortcut(False), stored=False)
+        self.assertFalse(dialog._auto_new_films.get())
+        boxes: list[ctk.CTkCheckBox] = []
+        widgets: list[Any] = [dialog.page(SECTION_AUTOMATIC)]
+        while widgets:
+            widget = widgets.pop()
+            if isinstance(widget, ctk.CTkCheckBox):
+                boxes.append(widget)
+            widgets.extend(widget.winfo_children())
+        texts = [box.cget("text") for box in boxes]
+        self.assertIn("Download films I add to my watchlist when they're out", texts)
+        await dialog._save()
+        self.assertFalse(settings.current.auto_download_new_films)
 
     async def test_a_failed_change_shows_in_the_error_line(self) -> None:
         shortcut = FakeShortcut(False, fail=True)

@@ -21,11 +21,16 @@ parts keep its photo alive while they show. A hovered or selected line gets a so
 highlight (an RGBA strip, `images.line_highlight`). On a picture the title and subtitle stop at
 `images.card_text_end`, and the status sits on a solid pill.
 
-The queue's bands: the poster, the title and its subtitle with the destination in the link colour,
-the status as a dot and a word, and the band's buttons, which show only while the pointer is over
-the band or one of its lines (`hover_actions`; a band that needs the owner always shows them; a
-button's tip is `Row.tips`). A done band is drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always
-shown) sits under its status, the status moving up to the title's line; a click on it is the
+The queue's bands: the poster, the title and its subtitle with the destination in the link colour
+(or, on a band that asks, its question: `Row.ask` with its bold span and muted words after it,
+on a third line when they don't fit), the status as a dot and short words, and the band's buttons,
+which show only while the pointer is over the band or one of its lines (`hover_actions`; a band
+that needs the owner always shows them; a button's tip is `Row.tips`). The last button is filled
+(the main answer); `Row.quiet` ones are quiet links: underlined muted words without a border, on
+a borderless pill in the card's colour so a picture behind them can't swallow them. A done band is
+drawn quieter (`Row.faded`). A band's `chip` (the queue's preset, always shown) sits under its
+status with its caption before it ("Name style", `Row.chip_caption`; its tip `Row.tips`' "preset"),
+the status moving up to the title's line; a click on it is the
 band's action "preset" (`chip_box` gives where it is, `action_box` any button's). A click on a
 button stops there: CTk's click on "all" would take back the focus from a menu it opened. `select_bands`: a click on a band selects
 its first line. Sizes come from `Sizes` (the queue's are bigger
@@ -69,6 +74,9 @@ _FADED = 0.45  # a done band's fill: this much of the list's ground over the ban
 _ARC_STEPS = 6  # points on a rounded corner's quarter circle
 _STRIPS = 8  # a card line's highlights kept (a size, hovered or selected, light or dark)
 _STATE_PILL = (12, 24)  # the status's pill on a card: its padding left and right, its height
+_QUIET_PAD = 6  # a quiet link's room either side of its words
+_ASK_MORE_Y = 0.87  # a band's question's muted words on a line of their own: there in its box
+_CHIP_TITLE_Y = 0.28  # a band with a chip: its title's line (the status and chip beside it)
 # A line's current file name: this much of the ground over the muted colour (light, dark), about
 # 60 % of the muted colour's contrast and still readable (4:1 and more on the band colours).
 
@@ -126,8 +134,12 @@ class Row(BaseModel):
     # last one filled
     greyed: tuple[tuple[str, str], ...] = ()  # of those, the ones that can't now: (id, why, the tip)
     tips: tuple[tuple[str, str], ...] = ()  # of those, what one says under the pointer: (id, tip)
-    note: str = ""  # a band's quiet text on the right (a time)
+    # Of `actions`, the quiet ones: text-only links in the muted colour ("📂 Show file"), so the
+    # eye goes to the others (the answers). Never filled, even when last.
+    quiet: tuple[str, ...] = ()
+    note: str = ""  # a band's quiet text on the right (a CC request's note)
     chip: str = ""  # a band's preset chip under its status ("Series (Folder) ▾"): action "preset"
+    chip_caption: str = ""  # quiet words before the chip ("Name style"), translated
     code: str = ""  # an episode line's code ("S04E03"), in the link colour (readable accent)
     faint: str = ""  # a line's current (old) file name, on the right
     faint_label: str = ""  # quiet words before it ("Current name:"), translated
@@ -138,7 +150,13 @@ class Row(BaseModel):
     new: bool = False  # the line's title is the file's new name: a "→ " in the link colour before it
     band: int | None = None  # an item line's band: the pointer over either shows its buttons
     state: Literal["", "needs", "ready", "done"] = ""  # a band's status (dot + word)
-    state_text: str = ""  # that status's word, translated
+    state_text: str = ""  # that status's words ("Ready to forge"), translated
+    # A band's question on its subtitle's line, in place of the subtitle and destination ("Is
+    # this Dune (2021)?"): `ask_bold` a span of it drawn bold, `ask_more` muted words after it
+    # (on a line of their own under it when both don't fit on one).
+    ask: str = ""
+    ask_bold: tuple[int, int] | None = None
+    ask_more: str = ""
     dest: str = ""  # a band's destination ("📦 Moves to Series › …"), after its subtitle
     dest_look: Literal["moves", "stays", "warn"] = "moves"  # link, muted or warning colour
     faded: bool = False  # done today: drawn quieter
@@ -366,8 +384,11 @@ class VirtualList(ctk.CTkFrame):
         self._thumb_font = self._font(max(9, sizes.band_title // 2), bold=True)
         self._band_font = self._font(sizes.band_title, bold=True)
         self._band_sub_font = self._font(sizes.band_sub)
+        self._band_sub_bold = self._font(sizes.band_sub, bold=True)
         self._note_font = self._font(sizes.note)
         self._button_font = self._font(sizes.button, bold=sizes.button > 12)
+        self._quiet_font = self._font(sizes.button)  # a quiet link: plain and underlined
+        self._quiet_font.configure(underline=True)
         self._state_font = self._font(sizes.state, bold=True)
         self._line_font = self._font(sizes.line)
         self._label_font = self._font(max(10, sizes.mono - 1))
@@ -717,7 +738,10 @@ class VirtualList(ctk.CTkFrame):
         placed: list[tuple[int, int, int, int, str, str]] = []
         bh = self._px(sizes.button_height)
         for action, label in reversed(row.actions):
-            w = self._measure(self._button_font, label) + 2 * self._px(sizes.button_pad)
+            if action in row.quiet:
+                w = self._measure(self._quiet_font, label) + 2 * self._px(_QUIET_PAD)
+            else:
+                w = self._measure(self._button_font, label) + 2 * self._px(sizes.button_pad)
             by0, by1 = round(middle - bh / 2), round(middle + bh / 2)
             placed.append((right - w, by0, right, by1, action, label))
             right -= w + self._px(8)
@@ -748,38 +772,48 @@ class VirtualList(ctk.CTkFrame):
                 font=self._thumb_font,
                 tags=("band-initials",),
             )
-        right = x1 - self._px(14)
+        right = end = x1 - self._px(14)
         middle = (y0 + y1) / 2
-        buttons = self._band_buttons(row, right, middle)
+        box_h = y1 - y0
+        title_y, sub_y = (0.36, 0.72) if sizes.poster is None else (0.40, 0.64)
+        title_right = right
+        button_y = middle
+        if row.chip:  # two rows: the status and chip by the title, the buttons by the subtitle
+            title_y = _CHIP_TITLE_Y
+            title_right = self._draw_state_and_chip(p, row, right, y0 + box_h * title_y, fill)
+            button_y = y0 + box_h * sub_y
+        buttons = self._band_buttons(row, right, button_y)
         if self.actions_shown(row):
-            self._draw_buttons(p, row, buttons, middle, fill)
+            self._draw_buttons(p, row, buttons, button_y, fill)
         if buttons:
             right = buttons[-1][0] - self._px(14)
-        if row.chip:
-            right = self._draw_state_and_chip(p, row, right, y0, y1, fill)
-        elif row.state_text:
+        if not row.chip and row.state_text:
             right = self._draw_state(p, row, right, middle, fill)
         if row.note:
             c.create_text(
                 right, middle, text=row.note, anchor="e", fill=p.muted, font=self._note_font
             )
             right -= self._measure(self._note_font, row.note) + self._px(12)
+        if not row.chip:
+            title_right = right
         tx = px + poster_w + self._px(12)
         if row.backdrop:  # the text stays where the picture is still faint
-            right = min(right, card_text_end(x0, x1, self.scale))
+            faint = card_text_end(x0, x1, self.scale)
+            right, title_right, end = min(right, faint), min(title_right, faint), min(end, faint)
         avail = right - tx
-        box_h = y1 - y0
-        title_y, sub_y = (0.36, 0.72) if sizes.poster is None else (0.40, 0.64)
         c.create_text(
             tx,
             y0 + box_h * title_y,
-            text=self._fit(row.title, self._band_font, avail),
+            text=self._fit(row.title, self._band_font, title_right - tx),
             anchor="w",
             fill=p.muted if faded else p.text,
             font=self._band_font,
             tags=("band-title",),
         )
         sub_y_px = y0 + box_h * sub_y
+        if row.ask:  # under the buttons, its muted words may go further
+            self._draw_ask(p, row, tx, (sub_y_px, avail), (y0 + box_h * _ASK_MORE_Y, end - tx))
+            return
         subtitle = self._fit(row.subtitle, self._band_sub_font, avail)
         c.create_text(
             tx, sub_y_px, text=subtitle, anchor="w", fill=p.muted, font=self._band_sub_font
@@ -811,6 +845,49 @@ class VirtualList(ctk.CTkFrame):
                         )
                     )
 
+    def _draw_ask(
+        self,
+        p: _Colours,
+        row: Row,
+        x: float,
+        line: tuple[float, int],
+        under: tuple[float, int],
+    ) -> None:
+        """A band's question from `x` on its subtitle's `line` (its y and room; the guess bold),
+        and its muted words after it, or on the line `under` it when both don't fit on one."""
+        middle, avail = line
+        text, font, bold = row.ask, self._band_sub_font, self._band_sub_bold
+        colour = p.muted if row.faded else p.text
+        span = row.ask_bold
+        pieces = (
+            [(text[: span[0]], False), (text[span[0] : span[1]], True), (text[span[1] :], False)]
+            if span is not None
+            else [(text, False)]
+        )
+        pieces = [(piece, marked) for piece, marked in pieces if piece]
+        width = sum(self._measure(bold if marked else font, piece) for piece, marked in pieces)
+        if width <= avail:
+            self._draw_runs(
+                x, middle, pieces, plain=(font, colour), marked=(bold, colour), tag="band-ask"
+            )
+        else:  # too long: one plain line, cut
+            self.canvas.create_text(
+                x, middle, text=self._fit(text, font, avail), anchor="w", fill=colour,
+                font=font, tags=("band-ask",),
+            )  # fmt: skip
+            width = avail
+        if not row.ask_more:
+            return
+        gap = self._measure(font, "  ")
+        if width + gap + self._measure(font, row.ask_more) <= avail:
+            more_x, more_y, room = x + width + gap, middle, avail - width - gap
+        else:
+            more_x, (more_y, room) = x, under
+        self.canvas.create_text(
+            more_x, more_y, text=self._fit(row.ask_more, font, round(room)), anchor="w",
+            fill=p.muted, font=font, tags=("band-ask-more",),
+        )  # fmt: skip
+
     def _draw_buttons(
         self,
         p: _Colours,
@@ -829,6 +906,9 @@ class VirtualList(ctk.CTkFrame):
         tips = dict(row.tips)
         for index, (bx0, by0, bx1, by1, action, label) in enumerate(buttons):
             off = action in greyed
+            if action in row.quiet:
+                self._draw_quiet(p, row, (bx0, by0, bx1, by1), action, label, middle, fill)
+                continue
             primary = filled and index == 0 and not off
             if rounded:
                 self.round_rect(
@@ -868,20 +948,52 @@ class VirtualList(ctk.CTkFrame):
                 if action in tips:
                     self._tips.append((bx0, by0, bx1, by1, tips[action]))
 
+    def _draw_quiet(
+        self,
+        p: _Colours,
+        row: Row,
+        box: tuple[int, int, int, int],
+        action: str,
+        label: str,
+        middle: float,
+        fill: str,
+    ) -> None:
+        """A quiet link: its words underlined in the muted colour, without a border. On a card
+        a borderless pill in the card's fill keeps them readable over its picture."""
+        bx0, by0, bx1, by1 = box
+        if self.sizes.band_radius and fill:  # just around the words, so it isn't a button
+            half = (self._quiet_font.metrics("linespace") + self._px(6)) / 2
+            self.round_rect(
+                bx0 + self._px(2), middle - half, bx1 - self._px(2), middle + half,
+                round(half), fill=fill, width=0, tags=("band-quiet-pill",),
+            )  # fmt: skip
+        greyed = dict(row.greyed)
+        off = action in greyed
+        self.canvas.create_text(
+            (bx0 + bx1) / 2,
+            middle,
+            text=label,
+            fill=p.faint if off else p.muted,
+            font=self._quiet_font,
+            tags=("band-quiet",),
+        )
+        if off:
+            self._greyed.append((bx0, by0, bx1, by1, row.key, action, greyed[action]))
+            return
+        self._hits.append((bx0, by0, bx1, by1, row.key, action))
+        tips = dict(row.tips)
+        if action in tips:
+            self._tips.append((bx0, by0, bx1, by1, tips[action]))
+
     def _draw_state_and_chip(
-        self, p: _Colours, row: Row, right: int, y0: int, y1: int, fill: str
+        self, p: _Colours, row: Row, right: int, middle: float, fill: str
     ) -> int:
-        """The status on the title's line and the preset chip under it, both ending at `right`
-        (one column as wide as the wider); returns the x left of them."""
-        c, box_h = self.canvas, y1 - y0
-        title_y, sub_y = (0.36, 0.72) if self.sizes.poster is None else (0.40, 0.64)
-        state_left = right
-        if row.state_text:
-            state_left = self._draw_state(p, row, right, y0 + box_h * title_y, fill) + self._px(14)
+        """On the title's line (`middle`), ending at `right`: the status, then the chip's caption
+        and the preset chip; returns the x left of them."""
+        c = self.canvas
         pad = self._px(10)
         text = self._fit(row.chip, self._note_font, self._px(CHIP_MAX) - 2 * pad)
         width = self._measure(self._note_font, text) + 2 * pad
-        middle = y0 + box_h * sub_y
         height = self._px(CHIP_HEIGHT)
         cx0, cy0, cy1 = right - width, round(middle - height / 2), round(middle + height / 2)
         self.round_rect(
@@ -892,7 +1004,24 @@ class VirtualList(ctk.CTkFrame):
             tags=("chip-text",),
         )  # fmt: skip
         self._hits.append((cx0, cy0, right, cy1, row.key, "preset"))
-        return min(state_left, cx0) - self._px(14)
+        tip = dict(row.tips).get("preset")
+        if tip:
+            self._tips.append((cx0, cy0, right, cy1, tip))
+        left = cx0
+        if row.chip_caption:  # "Name style", quiet, before the chip (on a pill, as the status)
+            caption_w = self._measure(self._note_font, row.chip_caption)
+            self.round_rect(
+                cx0 - self._px(16) - caption_w, cy0, cx0, cy1, (cy1 - cy0) // 2, fill=fill,
+                width=0, tags=("chip-caption-pill",),
+            )  # fmt: skip
+            c.create_text(
+                cx0 - self._px(8), middle, text=row.chip_caption, anchor="e", fill=p.muted,
+                font=self._note_font, tags=("chip-caption",),
+            )  # fmt: skip
+            left = cx0 - self._px(8) - self._measure(self._note_font, row.chip_caption)
+        if row.state_text:
+            return self._draw_state(p, row, left - self._px(16), middle, fill)
+        return left - self._px(14)
 
     def chip_box(self, key: int) -> tuple[int, int, int, int] | None:
         """Where band `key`'s preset chip was drawn last (canvas coordinates), or None."""

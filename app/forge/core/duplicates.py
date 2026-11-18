@@ -12,7 +12,7 @@ the executor: journaled, so History's Undo puts them back. Nothing is deleted. A
 root (`//NAS/Movies`, `M:/`) has no folder beside it: then the owner chooses one
 (`needs_a_place`, `place_problem`: never inside a library folder) and the copies go there under
 the library folder's name. A top-level "Duplicates" folder in a library folder is never scanned.
-The queue's "Replace the one in the library" (app/forge/core/auto.py's `replace_runs`) moves the
+The queue's "Use this one instead" (app/forge/core/auto.py's `replace_runs`) moves the
 copy it replaces aside by the same rule (`quarantine_target`, `free_aside`, `aside_folder`).
 
 Reading the folders is plain file-system work for a thread (`asyncio.to_thread`); nothing here

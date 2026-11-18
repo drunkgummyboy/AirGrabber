@@ -14,7 +14,9 @@ The poster cards' films (Movies, search results, the watchlist) pass two options
 (no ⋯: the card's round button sits beside the row instead, and a right-click on the main button
 opens the search window) and `outline_unavailable=True` (a film not out yet, "Digital 17 Nov",
 in the grey outline every card uses for "not yet", `later_look`, instead of the filled grey the
-calendar keeps).
+calendar keeps). A watchlist film downloaded already has the "again" base: "Download again…" in a
+plain outline (`again_look`), whose click is the card's own (`on_again`: the Downloads page's
+"Download again…" menu); a run of it shows as any run does.
 
 Hovering "⬇ Download" tells what the one-click download looks for, from Settings ("Looks for
 Full HD (1080p), 2.5–4 GB", `looks_for_text`); once a run grabbed something, the button's tip
@@ -138,8 +140,9 @@ def grabbed_state(result: QuickDownloadResult) -> RunState:
 
 
 # What a card shows without a run: the Download split control, a "Search" button (it opens the
-# search window), or a disabled button such as "Not Aired".
-BaseKind = Literal["download", "search", "unavailable"]
+# search window), a disabled button such as "Not Aired", or "Download again…" (a watchlist film
+# downloaded already: `again_look`).
+BaseKind = Literal["download", "search", "unavailable", "again"]
 # A drawn icon before a disabled base's date (the watchlist): in cinemas, or out to download.
 DateIcon = Literal["cinema", "download"]
 DATE_ICON_SIZE = 1.15  # the icon's side, in the row's font size
@@ -149,13 +152,15 @@ DATE_ICON_GAP = 6  # between the icon and the date (CTk units)
 @dataclass(frozen=True, slots=True)
 class Base:
     kind: BaseKind
-    text: str = ""  # "unavailable" only: "Not Aired", "Digital 15 Oct"...
-    short: tuple[str, ...] = ()  # "unavailable" only: shorter texts, for when `text` won't fit
+    text: str = ""  # "unavailable": "Not Aired", "Digital 15 Oct"...; "again": its text
+    # "unavailable" / "again": shorter texts, for when `text` won't fit
+    short: tuple[str, ...] = ()
     icon: DateIcon | None = None  # "unavailable" only: a drawn icon before the text
     tip: str = ""  # "unavailable" only: the hover tip, in words ("In cinemas from 3 Dec; …")
 
 
-Action = Literal["download", "choose"]  # choose = open the search window
+# choose = open the search window; again = the control's `on_again` (else as choose)
+Action = Literal["download", "choose", "again"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +213,22 @@ def later_look(base: Base) -> Look:
     )
 
 
+def again_look(base: Base) -> Look:
+    """"Download again…" (a watchlist film downloaded already): a plain outline, as the ⋯
+    beside ⬇ Download has it, not the accent's "do it"; its shorter texts ("⬇ Again") where it
+    won't fit, the words in full in the tip then."""
+    return Look(
+        "button",
+        base.text,
+        "transparent",
+        theme.HOVER,
+        theme.BUTTON_TEXT,
+        action="again",
+        short=base.short,
+        border=theme.EDGE,
+    )
+
+
 def control_look(
     base: Base, state: RunState | None, *, outline_unavailable: bool = False
 ) -> Look:
@@ -215,7 +236,7 @@ def control_look(
 
     A run working or done (its outcome) wins over everything; then a disabled base (filled
     grey, or with `outline_unavailable` the grey outline of `later_look`); then an earlier
-    "nothing found".
+    "nothing found"; then "Download again…" (`again_look`).
     """
     if state is not None and state.phase is Phase.WORKING:
         return Look(
@@ -239,6 +260,8 @@ def control_look(
             action="choose",
             border=theme.PENDING,
         )
+    if base.kind == "again":
+        return again_look(base)
     if base.kind == "search":
         return Look("button", t("Search"), action="choose")
     return Look("split", t(DOWNLOAD_TEXT), action="download", short=(DOWNLOAD_SHORT,))
@@ -303,8 +326,8 @@ def control_tip(
 ) -> str:
     """The main button's hover tip ("" = none): what ⬇ Download looks for ("Download · …"
     when the button shows only "⬇"), what a finished run picked, a disabled text in full when
-    the button shows a shorter one, else nothing. `right_click`: a row without ⋯ adds "Right-click
-    to choose a download yourself" to ⬇ Download's tip."""
+    the button shows a shorter one ("Download again…" too), else nothing. `right_click`: a
+    row without ⋯ adds "Right-click to choose a download yourself" to ⬇ Download's tip."""
     if look.action == "download":
         if shortened:
             tip = f"{t(DOWNLOAD_TIP)} · {looks_for}" if looks_for else t(DOWNLOAD_TIP)
@@ -313,6 +336,8 @@ def control_tip(
         if right_click:
             tip = f"{tip}\n{t(RIGHT_CLICK_TIP)}" if tip else t(RIGHT_CLICK_TIP)
         return tip
+    if look.action == "again":  # "Download again…", in full when it doesn't fit
+        return look.text if shortened else ""
     if state is not None and state.phase is Phase.DONE and state.outcome is not None:
         return picked_text(state.quality, state.size_bytes)
     if look.action is None and look.tip:
@@ -471,11 +496,13 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         scale: CardScale = FULL,
         more: bool = True,
         outline_unavailable: bool = False,
+        on_again: Callable[[], None] | None = None,
     ) -> None:
         """`scale`: the card size (poster cards; a share of it on the calendar's full cards).
         `more`: the ⋯ beside ⬇ Download (False: none, a right-click on the main button opens
         the search window). `outline_unavailable`: a disabled base in the grey outline
-        (`later_look`) instead of filled grey."""
+        (`later_look`) instead of filled grey. `on_again`: what a click on "Download again…"
+        (the "again" base) does; without it, it opens the search window."""
         height = scale.px(ROW_HEIGHT)
         super().__init__(master, fg_color="transparent", height=height)
         self.pack_propagate(False)
@@ -485,6 +512,7 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
         self._actions = actions
         self._with_more = more
         self._outline_unavailable = outline_unavailable
+        self._on_again = on_again
         self._look: Look | None = None
         self._width: float | None = None  # unscaled, once laid out
         self._more_width = scale.px(MORE_WIDTH)
@@ -633,7 +661,7 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
                 room -= self._icon_side + DATE_ICON_GAP
             text = fit_text(look.texts, room, self._font.measure)
         self._main.configure(text=text)
-        self._shortened = look.action in ("download", None) and text != look.text
+        self._shortened = look.action in ("download", "again", None) and text != look.text
         self._update_tip()
 
     def _update_tip(self, _event: Any = None) -> None:
@@ -673,6 +701,8 @@ class DownloadControl(ctk.CTkFrame, Generic[T]):
             return
         if look.action == "download":
             self._actions.download(self._item)
+        elif look.action == "again" and self._on_again is not None:
+            self._on_again()
         else:
             self._actions.choose(self._item)
 

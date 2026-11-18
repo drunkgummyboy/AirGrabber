@@ -1,4 +1,5 @@
-"""📱 Send to phone, from a Library card (the owner's wish, 2026-11-08: from the Windows application).
+"""📱 Send to phone, from a Library title's window (the owner's wish, 2026-11-08: from the Windows
+application; on the Library cards themselves until the owner's choice A + 2, mockups/library-calmer.html).
 
 First the person, then, if they have more than one phone, which phone (owner). The person selected in
 AirGrabber comes first when they have a phone. A film goes as it is; a show lists its episodes as the
@@ -58,6 +59,8 @@ if TYPE_CHECKING:
     from app.services.phone.sends import PhoneSends
 
 TITLE_TEXT = N_("Send to phone")
+# A window's "Send to phone" clicked once no phone is there any more (the status bar).
+NO_PHONE_TEXT = N_("No phone is connected")
 TO_TEXT = N_("To")
 ONE_PHONE_TEXT = N_("To {phone} ({person})")
 HOW_TEXT = N_("The phone copies it from Plex the next time the Companion app is open at home.")

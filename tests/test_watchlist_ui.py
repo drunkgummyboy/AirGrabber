@@ -18,19 +18,29 @@ from typing import Any
 import customtkinter as ctk
 
 from app.database import Database
+from app.i18n import month_short
 from app.models import (
     AutoMovieDownloaded,
     AutoMovieGaveUp,
+    CardSize,
+    DownloadRecord,
+    GrabTarget,
+    MediaType,
     Movie,
     MovieDetails,
+    Settings,
+    TorrentRelease,
     WatchlistEntry,
 )
+from app.services.settings import SettingsService
 from app.services.watchlist import WatchlistService
 from app.ui import theme
-from app.ui.download_control import DownloadActions, DownloadStates
+from app.ui.card_scale import CardScale, grid_item_width
+from app.ui.download_control import GAP, DownloadActions, DownloadStates
+from app.ui.poster_card import POSTER_CARD_WIDTH, Badge, row_height, text_width
+from app.ui.text_fit import SLACK
 from app.ui.main_window import AutoNotice, AutoNoticeThrottle, MainWindow, auto_notice
 from app.ui.missing_control import PopupMenu
-from app.ui.poster_card import Badge
 from app.ui.watchlist_button import (
     ADD_TEXT,
     ADD_TIP,
@@ -43,9 +53,14 @@ from app.ui.watchlist_button import (
     watch_text,
 )
 from app.ui.watchlist_cards import (
+    AGAIN_SHORT,
+    AGAIN_TEXT,
+    WatchlistCard,
     WatchlistShelf,
     WatchStatus,
     auto_shown,
+    downloaded_line,
+    downloaded_text,
     film_count,
     imdb_url,
     release_date,
@@ -213,6 +228,41 @@ class WatchStatusTests(unittest.TestCase):
         out = watch_status(entry(digital_release="2026-10-01", auto_download=False), TODAY, NOW)
         self.assertEqual([key for _label, key in watch_menu(out, False)], ["choose", "remove"])
 
+    def test_downloaded(self) -> None:
+        # Downloaded wins over every other state (the grab ended the search).
+        for film in (
+            entry(digital_release="2026-10-01", downloaded=True, auto_download=False),
+            entry(digital_release="2026-11-12", downloaded=True, auto_download=False),
+            entry(digital_release="2026-09-01", downloaded=True, gave_up=True),
+        ):
+            with self.subTest(film.digital_release):
+                self.assertEqual(
+                    watch_status(film, TODAY, NOW),
+                    WatchStatus("Downloaded", "downloaded", "again", auto=False),
+                )
+        status = watch_status(entry(downloaded=True, auto_download=True), TODAY, NOW)
+        # No toggle (switched on it would only download it again), no Auto pill.
+        self.assertEqual(
+            watch_menu(status, True),
+            [("Choose a download yourself", "choose"), ("Remove from watchlist", "remove")],
+        )
+        self.assertFalse(auto_shown(status, True))
+        self.assertEqual(tone_color("downloaded"), theme.TEXT_MUTED)
+
+    def test_downloaded_on_a_day_and_when_the_line_shows(self) -> None:
+        day = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+        film = entry(downloaded=True, downloaded_at=day, auto_download=False)
+        self.assertEqual(downloaded_text(film, TODAY), "Downloaded 17 Oct")
+        self.assertEqual(watch_status(film, TODAY, NOW).text, "Downloaded 17 Oct")
+        last_year = entry(downloaded=True, downloaded_at=day.replace(year=2025))
+        self.assertEqual(downloaded_text(last_year, TODAY), "Downloaded 17 Oct 2025")
+        self.assertEqual(downloaded_text(entry(downloaded=True), TODAY), "Downloaded")
+        # Only with a library, and not beside the cover's library mark.
+        self.assertTrue(downloaded_line(library=True, marked=False))
+        self.assertFalse(downloaded_line(library=True, marked=True))
+        self.assertFalse(downloaded_line(library=False, marked=False))
+        self.assertFalse(downloaded_line(library=False, marked=True))
+
     def test_the_auto_pill_only_while_it_is_looked_for(self) -> None:
         soon = watch_status(entry(digital_release="2026-11-12"), TODAY, NOW)
         self.assertTrue(auto_shown(soon, True))
@@ -321,14 +371,21 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.discovery = FakeDiscovery()
         downloads = downloads_service(self.db, [], Path(tmp.name) / "torrents")
         self.addAsyncCleanup(downloads._http.aclose)
+        self.watchlist_downloads = downloads
         self.watchlist = WatchlistService(self.db.watchlist, self.discovery, downloads)
         self.actions: DownloadActions[Movie] = DownloadActions(
             download=lambda _m: None, choose=lambda _m: None, states=DownloadStates()
         )
 
-    def shelf(self, body: ctk.CTkFrame) -> WatchlistShelf:
+    def shelf(self, body: ctk.CTkFrame, *, library: bool = False) -> WatchlistShelf:
         images: Any = FakeImages()
-        return WatchlistShelf(body, watchlist=self.watchlist, images=images, actions=self.actions)
+        return WatchlistShelf(
+            body,
+            watchlist=self.watchlist,
+            images=images,
+            actions=self.actions,
+            has_library=lambda: library,
+        )
 
     def pump(self) -> None:
         self.root.update()
@@ -376,6 +433,22 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         star.destroy()  # unsubscribes
         await self.watchlist.add(film, profile_id=1)
 
+    async def test_a_click_starts_the_films_switch_as_settings_say(self) -> None:
+        settings = SettingsService(self.db.settings, Settings())
+        watchlist = WatchlistService(
+            self.db.watchlist, self.discovery, self.watchlist_downloads, settings=settings
+        )
+        for movie_id, on in ((1, False), (2, True)):
+            with self.subTest(on=on):
+                await settings.update(auto_download_new_films=on)
+                star = WatchlistStar(self.root, movie=movie(movie_id), watchlist=watchlist)
+                star.invoke()
+                await until(lambda: watchlist.contains(movie_id))
+                stored = watchlist.entry(movie_id)
+                assert stored is not None
+                self.assertEqual(stored.auto_download, on)
+                star.destroy()
+
     async def test_shelf_hides_while_empty_and_follows_the_list(self) -> None:
         body = ctk.CTkFrame(self.root)
         body.pack(fill="both", expand=True)
@@ -387,7 +460,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(shelf.winfo_manager())  # empty
 
         self.discovery.details[1] = MovieDetails(id=1, digital_release=date_today() + timedelta(days=20))
-        await self.watchlist.add(movie(1, "Clayface"), profile_id=1)
+        await self.watchlist.add(movie(1, "Clayface"), auto_download=True, profile_id=1)
         await self.watchlist.add(movie(2, "Sinners", release_date="2026-01-01"), auto_download=False, profile_id=1)
         self.assertEqual(body.pack_slaves()[0], shelf)  # first, above the TMDB shelves
         self.assertEqual(shelf._count.cget("text"), "2 films")
@@ -445,7 +518,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_toggle_changes_the_film(self) -> None:
         self.discovery.details[1] = MovieDetails(id=1, digital_release=date_today() - timedelta(days=1))
-        await self.watchlist.add(movie(1), profile_id=1)
+        await self.watchlist.add(movie(1), auto_download=True, profile_id=1)
         body = ctk.CTkFrame(self.root)
         body.pack()
         shelf = self.shelf(body)
@@ -474,6 +547,133 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card.badges, ())
         card.menu_items()[-1][1]()  # Remove from watchlist
         await until(lambda: self.watchlist.entry(1) is None)
+
+    async def test_a_grab_keeps_the_card_and_it_says_downloaded(self) -> None:
+        self.discovery.details[1] = MovieDetails(id=1, digital_release=date_today() - timedelta(days=1))
+        await self.watchlist.add(movie(1, "Dune"), auto_download=True, profile_id=1)
+        await self.watchlist.add(
+            movie(2, "Sinners", release_date="2026-01-01"), auto_download=True, profile_id=1
+        )
+        body = ctk.CTkFrame(self.root)
+        body.pack()
+        shelf = self.shelf(body)
+        shelf.start()
+        card = shelf.cards[1]
+        self.assertEqual([badge.text for badge in card.badges], ["Auto"])
+        self.assertEqual(list(shelf.cards), [2, 1])  # Dune is out first: it is last already
+        downloads = self.watchlist_downloads
+        release = TorrentRelease(title="Dune.2026.1080p", source="test", info_hash="a" * 40)
+        await downloads.grab(release, GrabTarget(media_type=MediaType.MOVIE, media_id=1))
+        self.pump()
+        self.assertIs(shelf.cards[1], card)  # repainted in place, still on the shelf
+        self.assertEqual(shelf._count.cget("text"), "2 films")
+        assert card.status is not None
+        self.assertEqual((card.status.tone, card.status.bottom), ("downloaded", "again"))
+        # Without a library no have-cue: the year and rating (none known here) stay.
+        self.assertEqual(card.meta_text, "")
+        self.assertEqual(card.badges, ())  # its switch went off with the grab
+        control = card._control
+        self.assertIn(control.main_text, (AGAIN_TEXT, AGAIN_SHORT))
+        self.assertEqual(
+            (control._main.cget("fg_color"), control._main.cget("border_color")),
+            ("transparent", theme.EDGE),
+        )
+        self.assertEqual(control._main.cget("state"), "normal")
+        # ⋯: no "Download when it's out"; choosing and removing stay.
+        self.assertEqual(
+            [label for label, _action in card.menu_items()],
+            ["Choose a download yourself", "Remove from watchlist"],
+        )
+        # The button opens the Downloads page's "Download again…" menu.
+        done: list[tuple[str, int]] = []
+        card._actions = DownloadActions(
+            download=lambda m: done.append(("download", m.id)),
+            choose=lambda m: done.append(("choose", m.id)),
+            states=DownloadStates(),
+        )
+        control._actions = card._actions
+        control._click()
+        opened = PopupMenu._open
+        assert opened is not None
+        self.addCleanup(opened.close)
+        self.assertEqual(
+            opened.labels, ("⬇ Download again automatically", "☰ Choose a release…")
+        )
+        for _label, action in card.again_items():
+            action()
+        self.assertEqual(done, [("download", 1), ("choose", 1)])
+        # The other film is as it was; a restart (the list read again) keeps the look.
+        sinners = shelf.cards[2]
+        assert sinners.status is not None
+        self.assertNotEqual(sinners.status.bottom, "again")
+        await self.watchlist.load()
+        assert card.status is not None
+        self.assertEqual(card.status.bottom, "again")
+
+    async def test_the_downloaded_line_only_with_a_library_and_no_mark(self) -> None:
+        when = datetime.now(UTC)
+        self.discovery.details[1] = MovieDetails(id=1, digital_release=date_today() - timedelta(days=1))
+        await self.watchlist.add(movie(1, "Dune", release_date="2021-09-15"), profile_id=1)
+        await self.db.history.add(
+            DownloadRecord(
+                media_type=MediaType.MOVIE, media_id=1, release_title="Dune", downloaded_at=when
+            )
+        )
+        await self.watchlist.load()
+        body = ctk.CTkFrame(self.root)
+        body.pack()
+        shelf = self.shelf(body, library=True)
+        shelf.start()
+        card = shelf.cards[1]
+        day = when.astimezone().date()
+        self.assertEqual(
+            (card.meta_text, card.meta_color),
+            (f"Downloaded {day:%d} {month_short(day)}", theme.TEXT_MUTED),
+        )
+        card.set_in_plex(True)  # the cover's mark says it: the year and rating again
+        self.assertEqual(card.meta_text, "2021")
+        card.set_in_plex(False)
+        self.assertTrue((card.meta_text or "").startswith("Downloaded "))
+        bare = self.shelf(body)  # no library: no cue at all
+        bare.start()
+        self.assertEqual(bare.cards[1].meta_text, "2021")
+
+    async def test_again_fits_at_every_card_size_in_both_languages(self) -> None:
+        # The words measured with the button's own font, in the room its row really gets.
+        from app.i18n_nl import NL
+
+        await self.watchlist.add(movie(1, "Dune"), profile_id=1)
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="Dune")
+        )
+        await self.watchlist.load()
+        entry_ = self.watchlist.entry(1)
+        assert entry_ is not None
+        images: Any = FakeImages()
+        for size in CardSize:
+            with self.subTest(size=size):
+                scale = CardScale.of(size)
+                frame = ctk.CTkFrame(self.root, width=grid_item_width(POSTER_CARD_WIDTH, scale))
+                frame.pack()
+                card = WatchlistCard(
+                    frame, entry_, images=images, watchlist=self.watchlist,
+                    actions=self.actions, scale=scale,
+                )
+                card.pack()
+                self.pump()
+                control = card._control
+                # The hidden root lays nothing out: the width its row gives it (the card's
+                # text width, less the round ⋯ and the gap), as a <Configure> brings it.
+                width = text_width(scale) - row_height(scale) - scale.px(GAP)
+                scaling = ctk.ScalingTracker.get_widget_scaling(control)
+                control._on_resize(SimpleNamespace(width=round(width * scaling)))
+                assert control._width is not None
+                room = control._width - 2 * control._corner - SLACK
+                for short in (AGAIN_SHORT, NL[AGAIN_SHORT]):
+                    self.assertLessEqual(control._font.measure(short), room, short)
+                self.assertEqual(control.main_text, AGAIN_SHORT)  # whole, never elided
+                self.assertEqual(control._main_tip.text, AGAIN_TEXT)  # the words in full
+                frame.destroy()
 
 
 

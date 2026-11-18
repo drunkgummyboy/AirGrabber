@@ -2,9 +2,9 @@
 `POST /v1/releases` and `POST /v1/grab` (holding it: choose by hand).
 
 A phone asks only for what is on its own person's lists or was suggested to it (`Suggestions`, whose
-series are a `kind` of their own: season 1 as a pack), and what's out; a film just grabbed has
-left every list, but can still be asked about (a tap then says it was downloaded already, and
-`again` works). The releases stay here,
+series are a `kind` of their own: season 1 as a pack), and what's out; a grabbed film stays on the
+lists (a tap then says it was downloaded already, and `again` works), and one taken off a list
+after its grab can still be asked about while Coming up shows it. The releases stay here,
 under short random `ref`s for RELEASE_TTL_S: their links (`download_url`, `magnet_uri`) may hold a
 key or a passkey and never leave the PC. They come best first (`rank_releases`, what `pick_best`
 chooses from); what a tap wouldn't take follows, so "Choose one yourself" also leads somewhere when
@@ -316,7 +316,7 @@ class PhoneDownloads:
         )
 
     async def _grabbed_film(self, target: GrabTarget, person: int) -> _Title | Reply:
-        """A film off the lists: grabbed (a grab takes it off), or just taken off by someone."""
+        """A film off the lists: taken off by someone after its grab, or just taken off."""
         movie_id = target.media_id
         if not self._grabbed_films.concerns(movie_id, person):
             return _gone()

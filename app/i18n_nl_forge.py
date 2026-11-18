@@ -11,8 +11,50 @@ NL: dict[str, str] = {
     # app/forge/ui/queue_rows.py
     "Same folder": "Zelfde map",
     "Needs you": "Wacht op jou",
-    "Renamed": "Hernoemd",
     "Done today": "Vandaag klaar",
+    # A queue band's status, question and answers (the owner's choice "B", 2026-11-17)
+    "Already in your library": "Al in je bibliotheek",
+    "Not sure which film": "Niet zeker welke film",
+    "Not sure which show": "Niet zeker welke serie",
+    "Couldn't forge": "Forgen lukte niet",
+    "Ready to forge": "Klaar om te forgen",
+    "Forged": "Geforged",
+    "Forged {time}": "Geforged {time}",
+    "Name style": "Naamstijl",
+    "You already have this film.": "Je hebt deze film al.",
+    "You already have this episode.": "Je hebt deze aflevering al.",
+    "You already have {n} of these episodes.": "Je hebt {n} van deze afleveringen al.",
+    "Is this {title}?": "Is dit {title}?",
+    "The file name and the film database don't fully agree.":
+        "De bestandsnaam en de filmdatabase zijn het niet helemaal eens.",
+    "The file name and the show database don't fully agree.":
+        "De bestandsnaam en de seriedatabase zijn het niet helemaal eens.",
+    "Which film is this?": "Welke film is dit?",
+    "📂 Show file": "📂 Bestand tonen",
+    "Forge this": "Dit forgen",
+    "Wrong film?": "Verkeerde film?",
+    "Wrong show?": "Verkeerde serie?",
+    "No, pick the right film…": "Nee, kies de juiste film…",
+    "No, pick the right show…": "Nee, kies de juiste serie…",
+    "Pick the film…": "Kies de film…",
+    "Pick the show…": "Kies de serie…",
+    "Yes, forge it": "Ja, forgen",
+    "Leave it alone ▾": "Met rust laten ▾",
+    "Keep the one I have ▾": "Houd die ik heb ▾",
+    "Takes it off the list. Auto-rename won't touch it again.":
+        "Haalt het van de lijst. Automatisch hernoemen komt er niet meer aan.",
+    "Use this one instead": "Gebruik deze in de plaats",
+    "MediaForge's guess changed meanwhile: have another look.":
+        "Wat MediaForge dacht, is intussen veranderd: kijk nog eens.",
+    "The one in your library moves to the Duplicates folder. Nothing is deleted; Undo puts "
+    "both back.":
+        "Die in je bibliotheek gaat naar de map Duplicates. Er wordt niets verwijderd; Ongedaan "
+        "maken zet ze allebei terug.",
+    # app/forge/core/replace_facts.py
+    "In your library: {library} — this download: {download}":
+        "In je bibliotheek: {library} — deze download: {download}",
+    "In your library: {library}": "In je bibliotheek: {library}",
+    "This download: {download}": "Deze download: {download}",
     "Current name:": "Huidige naam:",
     "Drop video files or folders here": "Sleep videobestanden of mappen hierheen",
     "or add them with the buttons above. Nothing is renamed until you click Forge.":
@@ -56,8 +98,6 @@ NL: dict[str, str] = {
         "Kies eerst een bibliotheekmap in Instellingen › Automatisch hernoemen.",
     "{n} left alone: choose a library folder first": "{n} met rust gelaten: kies eerst een bibliotheekmap",
     "several folders": "meerdere mappen",
-    "TMDB isn't sure · {n} file": "TMDB weet het niet zeker · {n} bestand",
-    "TMDB isn't sure · {n} files": "TMDB weet het niet zeker · {n} bestanden",
     "Waiting for you": "Wacht op jou",
     "Done": "Klaar",
     "Rename": "Hernoemen",
@@ -147,8 +187,7 @@ NL: dict[str, str] = {
     "Season lookup for {title} failed": "Seizoen opzoeken mislukt voor {title}",
     # app/forge/core/auto.py
     "Already in the library.": "Staat al in de bibliotheek.",
-    # "Replace the one in the library" (auto.py, executor.py, queue_rows.py, queue_view.py)
-    "Replace the one in the library": "Vervang die in de bibliotheek",
+    # "Use this one instead" (auto.py, executor.py, queue_rows.py, queue_view.py)
     "Replace {name} in the library? The one there now moves to {folder}.":
         "{name} in de bibliotheek vervangen? Die er nu staat, gaat naar {folder}.",
     "Replace these {n} files in the library? The ones there now move to {folder}.":
@@ -177,8 +216,8 @@ NL: dict[str, str] = {
     "No season or episode number in the name.": "Geen seizoen- of afleveringsnummer in de naam.",
     "TMDB doesn't know this episode.": "TMDB kent deze aflevering niet.",
     "No year in the name: is it a movie?": "Geen jaartal in de naam: is het een film?",
-    "You undid this once; click Rename to move it again.":
-        "Je hebt dit eerder ongedaan gemaakt; klik op Hernoemen om het opnieuw te verplaatsen.",
+    "You undid this once; click Forge this to move it again.":
+        "Je hebt dit eerder ongedaan gemaakt; klik op Dit forgen om het opnieuw te verplaatsen.",
     "Look for new downloads now": "Nu naar nieuwe downloads zoeken",
     "Found {n} new file": "{n} nieuw bestand gevonden",
     "Found {n} new files": "{n} nieuwe bestanden gevonden",
@@ -697,12 +736,11 @@ NL: dict[str, str] = {
         "weer op Handmatig: zet het op Aan als je tevreden bent.",
     # Ignoring files and folders (app/forge/core/ignored.py, queue_rows.py, queue_view.py,
     # settings_pages.py)
-    "Ignore": "Negeren",
-    "Ignore this file": "Dit bestand negeren",
-    "Ignore these {n} files": "Deze {n} bestanden negeren",
-    "Ignore this whole folder": "Deze hele map negeren",
-    "Ignored: {name}. MediaForge won't pick it up again.":
-        "Genegeerd: {name}. MediaForge pakt het niet meer op.",
+    "Leave this file alone": "Dit bestand met rust laten",
+    "Leave these {n} files alone": "Deze {n} bestanden met rust laten",
+    "Leave this whole folder alone": "Deze hele map met rust laten",
+    "Left alone: {name}. MediaForge won't pick it up again.":
+        "Met rust gelaten: {name}. MediaForge pakt het niet meer op.",
     "Ignored": "Genegeerd",
     "Files and folders Auto-rename leaves alone.":
         "Bestanden en mappen die automatisch hernoemen met rust laat.",

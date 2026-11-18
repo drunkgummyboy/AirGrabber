@@ -1,7 +1,9 @@
 """`GET /v1/suggestions?kind=movie|series`: what could be fetched for tonight, for the Watch tab.
 
-The phone's person's watchlist first (films only: AirGrabber has no list of wanted series), then
-Discover's films or series out now, at most MAX_ITEMS, without what Plex has. Discover's "coming
+The phone's person's watchlist first (films only: AirGrabber has no list of wanted series; not one
+downloaded already, which stays on the list: as before 2026-11-17, when a grab took it off, it
+shows only if Discover has it), then Discover's films or series out now, at most MAX_ITEMS,
+without what Plex has. Discover's "coming
 soon" shelves stay out, as does what isn't out yet: on Watch it couldn't be downloaded (Coming up
 shows it). Without a TMDB key, or with TMDB down, Discover just adds nothing: never an error.
 
@@ -175,7 +177,9 @@ class Suggestions:
 
     async def _film_items(self, person: int) -> list[dict[str, Any]]:
         now = self._now()
-        listed = await self._watchlist.by_release_of(person)
+        listed = [
+            entry for entry in await self._watchlist.by_release_of(person) if not entry.downloaded
+        ]
         on_the_list = {entry.movie_id for entry in listed}
         shelf = [movie for movie in await self._shelf_films() if movie.id not in on_the_list]
         details = await _details_of(self._discovery.movie_details, [movie.id for movie in shelf])

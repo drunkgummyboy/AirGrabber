@@ -6,7 +6,7 @@ A download is only renamed without a click when its file name and TMDB agree on 
 library folder with the Series preset, movies to the Movies folder with the Movies preset
 (`library_runs`); a file whose name is already taken there waits instead of becoming a "(1)" copy.
 Such a download ("Already in the library", `held_in_library`) can take the library copy's place:
-the queue band's "Replace the one in the library" (`AutoRenamer.replace`, `replace_runs`) moves
+the queue band's "Use this one instead" (`AutoRenamer.replace`, `replace_runs`) moves
 the copy there aside first, to the Duplicates folder by app/forge/core/duplicates.py's rule (a
 share or drive root: the place the owner chose), with its subtitles, in the same journaled run;
 so Undo puts both back. Nothing is deleted.
@@ -181,7 +181,7 @@ def library_naming(
 
 def held_in_library(item: QueueItem) -> bool:
     """Held because the film or episode is in the library already (`QueueItem.in_library`,
-    set by the hold): its band offers "Replace the one in the library"."""
+    set by the hold): its band offers "Use this one instead"."""
     return item.status is ItemStatus.HELD and item.in_library
 
 
@@ -427,7 +427,7 @@ def replace_runs(
     *,
     place: Path | None = None,
 ) -> list[LibraryRun]:
-    """The owner's "Replace the one in the library": as `owner_runs`, but each download takes
+    """The owner's "Use this one instead": as `owner_runs`, but each download takes
     the name it wants and what is there under it moves aside first (`Plan.aside`); `place`: where
     the copies of a share or drive root library folder go (the owner's choice)."""
     return _runs(
@@ -512,7 +512,7 @@ class RenamerParts:
 # --- the renamer ---------------------------------------------------------------------------------
 
 SUMMARY_HOUR = 20  # the evening summary comes from 8 pm
-UNDONE = N_("You undid this once; click Rename to move it again.")
+UNDONE = N_("You undid this once; click Forge this to move it again.")
 SUMMARY_TITLE = "MediaForge"  # the notification's title: a name, not translated
 _NEEDS_OWNER = frozenset({ItemStatus.NEEDS_CHOICE, ItemStatus.HELD, ItemStatus.ERROR})
 _DONE = frozenset({ItemStatus.DONE, ItemStatus.SKIPPED})
@@ -1126,7 +1126,7 @@ class AutoRenamer:
         naming: Mapping[int, NamingChoice] | None = None,
         on_wait: Callable[[bool], None] | None = None,
     ) -> RunResult:
-        """The queue band's "Replace the one in the library", for those of `ids` held as already
+        """The queue band's "Use this one instead", for those of `ids` held as already
         in the library (`held_in_library`; the others are left as they are): the copy there moves
         aside (to the Duplicates folder beside the library folder; for a share or drive root to
         `place`, the owner's choice), then the download is renamed into its place, in one run.

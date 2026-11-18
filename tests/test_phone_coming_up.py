@@ -304,12 +304,14 @@ class ComingUpTests(PhoneCase):
         )
 
     async def grab_film(self) -> DownloadRecord:
-        """A film on the list, seen there by a phone, then grabbed: its rows really go."""
+        """A film on the list, seen there by a phone, then grabbed: it stays on the list,
+        downloaded (its switch off)."""
         await self.want(film(), digital=date(2026, 11, 7))
         self.assertEqual([item["title"] for item in await self.items()], ["Dune"])
         grab = record(MediaType.MOVIE, DUNE, None, None)
         await self.db.history.add(grab)
-        self.assertEqual(await self.db.watchlist.entries(profile_id=self.person), [])
+        [kept] = await self.db.watchlist.entries(profile_id=self.person)
+        self.assertEqual((kept.downloaded, kept.auto_download), (True, False))
         return grab
 
     async def test_downloaded_item_says_so(self) -> None:
@@ -351,6 +353,22 @@ class ComingUpTests(PhoneCase):
         self.downloads_page((grab, DownloadState.READY))
         self.assertEqual([item["state"] for item in await self.items()], ["downloaded"])
         self.downloads_page()
+        self.assertEqual(await self.items(), [])
+
+    async def test_a_film_taken_off_the_list_after_its_grab_leaves_with_the_page(self) -> None:
+        grab = await self.grab_film()
+        await self.db.watchlist.remove(DUNE, profile_id=self.person)
+        self.downloads_page((grab, DownloadState.READY))
+        self.assertEqual(
+            [(item["title"], item["state"]) for item in await self.items()],
+            [("Dune", "downloaded")],
+        )
+        self.downloads_page()
+        self.assertEqual(await self.items(), [])
+
+    async def test_a_film_downloaded_long_ago_is_not_offered_as_still_to_come(self) -> None:
+        await self.db.history.add(record(MediaType.MOVIE, DUNE, None, None))
+        await self.want(film(), digital=date(2026, 11, 7))  # put on the list after its grab
         self.assertEqual(await self.items(), [])
 
     async def test_a_grabbed_film_not_seen_before_is_named_by_its_downloads_page_row(self) -> None:

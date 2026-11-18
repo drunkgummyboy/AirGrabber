@@ -371,7 +371,7 @@ class PerPersonTests(DatabaseCase):
         self.assertTrue(await self.db.watchlist.remove(7, profile_id=SANNE))
         self.assertIsNotNone(await self.db.watchlist.entry(7, profile_id=ME))
 
-    async def test_a_downloaded_film_leaves_every_list(self) -> None:
+    async def test_a_downloaded_film_stays_on_every_list_switched_off(self) -> None:
         for profile_id in (ME, SANNE):
             await self.db.watchlist.add(
                 film(7), profile_id=profile_id, auto_download=True, when=NOW
@@ -380,7 +380,8 @@ class PerPersonTests(DatabaseCase):
             DownloadRecord(media_type=MediaType.MOVIE, media_id=7, release_title="Film.7.1080p")
         )
         for profile_id in (ME, SANNE):
-            self.assertEqual(await self.db.watchlist.entries(profile_id=profile_id), [])
+            [kept] = await self.db.watchlist.entries(profile_id=profile_id)
+            self.assertEqual((kept.downloaded, kept.auto_download), (True, False))
 
     async def test_unfollowing_leaves_what_another_person_follows(self) -> None:
         old = NOW - timedelta(days=200)
@@ -488,7 +489,7 @@ class AutoDownloadUnionTests(DatabaseCase):
         await self.auto.run_once()
         self.assertEqual([target.media_id for _request, target in self.quick.calls], [2])
 
-    async def test_a_film_on_two_lists_is_searched_once_and_leaves_both(self) -> None:
+    async def test_a_film_on_two_lists_is_searched_once_and_stays_on_both(self) -> None:
         for profile_id in (ME, SANNE):
             await self.db.watchlist.add(
                 film(7), profile_id=profile_id, auto_download=True, when=NOW
@@ -499,7 +500,10 @@ class AutoDownloadUnionTests(DatabaseCase):
         self.assertEqual(len(report.movies_downloaded), 1)
         self.assertEqual([target.media_id for _request, target in self.quick.calls], [7])
         for profile_id in (ME, SANNE):
-            self.assertEqual(await self.db.watchlist.entries(profile_id=profile_id), [])
+            [kept] = await self.db.watchlist.entries(profile_id=profile_id)
+            self.assertEqual((kept.downloaded, kept.auto_download), (True, False))
+        await self.auto.run_once()  # never searched again
+        self.assertEqual(len(self.quick.calls), 1)
 
     async def test_a_film_on_someone_elses_list_only(self) -> None:
         await self.db.watchlist.add(film(7), profile_id=SANNE, auto_download=True, when=NOW)

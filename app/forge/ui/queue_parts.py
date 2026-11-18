@@ -411,7 +411,7 @@ def forge_label(pending: int) -> str:
     return "⚒ " + (tn("Forge {n} file", "Forge {n} files", pending) if pending else t("Forge"))
 
 
-IGNORE_FOLDER = N_("Ignore this whole folder")
+IGNORE_FOLDER = N_("Leave this whole folder alone")
 
 
 def _same(a: Path, b: Path) -> bool:

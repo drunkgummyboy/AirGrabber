@@ -40,6 +40,7 @@ from app.ui.download_control import (
     DownloadStates,
     Phase,
     RunState,
+    again_look,
     already_downloaded_text,
     control_look,
     control_tip,
@@ -141,6 +142,26 @@ class ControlLookTests(unittest.TestCase):
     def test_search_base(self) -> None:
         look = control_look(Base("search"), None)
         self.assertEqual((look.layout, look.text, look.action), ("button", "Search", "choose"))
+
+    def test_again_base_is_a_plain_outline_and_a_run_still_wins(self) -> None:
+        base = Base("again", "Download again…", ("⬇ Again",))
+        look = control_look(base, None, outline_unavailable=True)
+        self.assertEqual(look, again_look(base))
+        self.assertEqual((look.layout, look.text, look.action), ("button", "Download again…", "again"))
+        self.assertEqual(look.texts, ("Download again…", "⬇ Again"))  # the short where it won't fit
+        self.assertEqual(
+            (look.color, look.hover, look.text_color, look.border),
+            ("transparent", theme.HOVER, theme.BUTTON_TEXT, theme.EDGE),
+        )
+        self.assertEqual(control_look(base, WORKING).layout, "label")
+        self.assertEqual(control_look(base, done(GrabOutcome.SENT)).text, "✓ Sent")
+        self.assertEqual(control_look(base, NOTHING).text, CHOOSE_TEXT)
+        self.assertEqual(control_look(base, RunState(Phase.DONE)), look)
+        # Its tip: the text in full only when it was shortened.
+        self.assertEqual(control_tip(look, None, "Looks for 4K", shortened=False), "")
+        self.assertEqual(
+            control_tip(look, None, "Looks for 4K", shortened=True), "Download again…"
+        )
 
 
 class FitTextTests(unittest.TestCase):

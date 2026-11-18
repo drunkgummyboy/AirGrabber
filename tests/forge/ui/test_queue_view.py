@@ -37,6 +37,7 @@ from app.forge.core import fsops
 from app.forge.core.executor import ProgressEvent, RunResult
 from app.forge.core.matcher import Resolution
 from app.forge.core.queue import ItemStatus, QueueItem
+from app.forge.core.replace_facts import ReplaceFacts
 from app.forge.core.run_progress import PAGE, RunState
 from app.forge.core.watch import Settling
 from app.forge.models.media import MatchState, MediaKind, ResolvedMedia, TypeHint
@@ -280,7 +281,8 @@ class QueueTest(QueueCase):
         self.assertEqual([r.code for r in after], ["S04E03", "S04E05"])
         self.assertEqual(after[0].faint, "Ted.Lasso.S04E03.1080p.WEB.mkv")
         self.assertEqual(
-            ted.actions[1:], (("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename"))
+            ted.actions[1:],
+            (("choose", "Wrong show?"), ("ignore", "Leave it alone ▾"), ("rename", "Forge this")),
         )
         self.select_band("Dune")  # the card only: the list stays as it is
         await pump(self.root, 0.1)
@@ -293,10 +295,10 @@ class QueueTest(QueueCase):
         dune = next(i for i in self.services.queue.items if i.path.name.startswith("Dune"))
         self.unsure(dune)
         self.view.refresh()
-        self.assertEqual(self.bands(), ["Dune (2021)", "Heat"])  # needs you first
+        self.assertEqual(self.bands(), ["Dune.2021.mkv", "Heat"])  # needs you first
         self.assertEqual(self.view.filter_buttons["needs"].cget("text"), "Needs you 1")
         self.view.set_filter("needs")
-        self.assertEqual(self.bands(), ["Dune (2021)"])
+        self.assertEqual(self.bands(), ["Dune.2021.mkv"])
         self.view.set_filter("ready")
         self.assertEqual(self.bands(), ["Heat"])
         look = app_look()
@@ -337,7 +339,7 @@ class QueueTest(QueueCase):
             str(canvas.tk.call(str(canvas), "itemcget", i, "-text"))
             for i in canvas.find_withtag("band-state")
         ]
-        self.assertEqual(texts, ["Needs you", "Ready"])
+        self.assertEqual(texts, ["Not sure which film", "Ready to forge"])
 
     async def test_custom_rule_renames_the_titles_of_its_kind(self) -> None:
         make_files(self.tmp / "in", ["Dune.2021.mkv", "Ted.Lasso.S04E03.mkv"])
@@ -780,8 +782,8 @@ class QueueTest(QueueCase):
         item.status = ItemStatus.NEEDS_CHOICE
         self.view.refresh()
         [band] = self.rows("band")
-        self.assertEqual((band.title, band.state), ("Shrinking", "needs"))
-        self.assertEqual(band.actions[1:3], (("ignore", "Ignore"), ("choose", "Choose…")))
+        self.assertEqual((band.title, band.state), ("Shrinking.S03E01.1080p.mkv", "needs"))
+        self.assertEqual(band.actions[1:3], (("ignore", "Leave it alone ▾"), ("choose", "Pick the show…")))
         self.view.list.on_action(band.key, "choose")
         await pump(self.root, 0.1)
         self.assertEqual(asked, [item.id])
@@ -803,7 +805,7 @@ class QueueTest(QueueCase):
         self.view.refresh()
         [band] = self.rows("band")
         self.assertEqual(band.state, "needs")
-        self.assertIn(("choose", "Choose…"), band.actions)
+        self.assertIn(("choose", "Wrong show?"), band.actions)
         self.view.list.on_action(band.key, "choose")
         await pump_until(self.root, lambda: all(i.media.tmdb_id == 246 for i in queue.items))
         self.assertEqual(len(asked), 1)
@@ -811,7 +813,69 @@ class QueueTest(QueueCase):
         self.view.refresh()
         [band] = self.rows("band")
         self.assertEqual((band.state, band.title), ("ready", "Avatar: The Last Airbender"))
-        self.assertIn(("choose", "Choose…"), band.actions)
+        self.assertIn(("choose", "Wrong show?"), band.actions)
+
+    async def test_yes_forge_it_takes_the_guess_and_forges_the_band(self) -> None:
+        make_files(self.tmp / "in", ["Beast.2026.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        item = self.item("Beast")
+        guess = TMDBTitle(id=77, title="Heart of the Beast", date="2026-03-01")
+        media = ResolvedMedia.offline(item.parsed, MatchState.UNCERTAIN).model_copy(
+            update={"title": guess.title, "year": 2026, "tmdb_id": 77}
+        )
+        item.resolution = Resolution(media=media, candidates=(guess,))
+        item.status = ItemStatus.NEEDS_CHOICE
+        self.view.refresh()
+        asked: list[str] = []
+
+        async def ask(title: str, message: str, choices: Sequence[str]) -> str | None:
+            asked.append(title)
+            return choices[-1]
+
+        self.view.ask = ask
+        [band] = self.rows("band")
+        self.assertEqual(band.title, "Beast.2026.mkv")
+        self.assertEqual(band.ask, "Is this Heart of the Beast (2026)?")
+        self.assertEqual(band.actions[-1], ("accept", "Yes, forge it"))
+        self.view.list.on_action(band.key, "accept")
+        await pump_until(self.root, lambda: item.status is ItemStatus.DONE)
+        self.assertNotIn("Some matches are uncertain", asked)  # yes was the answer
+        self.assertEqual((item.media.tmdb_id, item.media.match_state), (77, MatchState.REMEMBERED))
+        self.assertEqual(item.path.name, "Heart of the Beast (2026).mkv")
+
+    async def test_yes_does_nothing_once_the_guess_changed_or_while_busy(self) -> None:
+        make_files(self.tmp / "in", ["Beast.2026.mkv"])
+        await self.add_and_settle(self.tmp / "in")
+        await self.choose("Movie (Flat)")
+        item = self.item("Beast")
+        guess = TMDBTitle(id=77, title="Heart of the Beast", date="2026-03-01")
+        media = ResolvedMedia.offline(item.parsed, MatchState.UNCERTAIN).model_copy(
+            update={"title": guess.title, "year": 2026, "tmdb_id": 77}
+        )
+        item.resolution = Resolution(media=media, candidates=(guess,))
+        item.status = ItemStatus.NEEDS_CHOICE
+        self.view.refresh()
+        [band] = self.rows("band")
+        ids, asked = self.view._bands[band.key], self.view._guesses[band.key]
+        self.assertEqual(asked, 77)
+        said: list[str] = []
+        self.view.on_message = said.append
+        other = TMDBTitle(id=78, title="Beast", date="2026-01-01")
+        item.resolution = Resolution(
+            media=media.model_copy(update={"title": "Beast", "tmdb_id": 78}), candidates=(other,)
+        )  # changed after the band was drawn
+        await self.view.accept_band(ids, asked)
+        self.assertIs(item.status, ItemStatus.NEEDS_CHOICE)  # nothing taken, nothing forged
+        self.assertEqual(said, ["MediaForge's guess changed meanwhile: have another look."])
+        self.view.refresh()
+        [band] = self.rows("band")
+        self.assertEqual(self.view._guesses[band.key], 78)
+        self.view.busy = True  # Preview, Forge or Undo going: ignored like those
+        await self.view.accept_band(ids, 78)
+        self.assertEqual((item.status, item.media.match_state),
+                         (ItemStatus.NEEDS_CHOICE, MatchState.UNCERTAIN))  # fmt: skip
+        self.view.busy = False
 
     async def test_the_preset_bar_hides_behind_auto_and_manual(self) -> None:
         view = self.view
@@ -1500,7 +1564,7 @@ class WatchedTest(QueueCase):
         await self.watched(downloads, "VisionQuest.S01E02.Theseus.mkv")
         [band] = self.rows("band")
         self.assertIn("📦 Moves to Series › VisionQuest › VisionQuest - Season 01", band.dest)
-        self.assertEqual(band.state_text, "Ready")
+        self.assertEqual(band.state_text, "Ready to forge")
 
     async def test_held_files_need_you_with_their_reason(self) -> None:
         downloads, _, _ = await self.library()
@@ -1509,15 +1573,15 @@ class WatchedTest(QueueCase):
         self.view.refresh()
         await pump(self.root, 0.1)
         [band] = self.rows("band")
-        self.assertEqual(band.state_text, "Needs you")
+        self.assertEqual(band.state_text, "Waiting for you")
         self.assertTrue(band.subtitle.startswith("No year in the name: is it a movie?"))
-        self.assertEqual(band.actions[-1], ("rename", "Rename"))
+        self.assertEqual(band.actions[-1], ("rename", "Forge this"))
 
     async def test_on_manual_downloads_are_ready(self) -> None:
         downloads, _, _ = await self.library(automatic="trial")
         await self.watched(downloads, "Dune.2021.mkv")
         [band] = self.rows("band")
-        self.assertEqual((band.state, band.state_text), ("ready", "Ready"))
+        self.assertEqual((band.state, band.state_text), ("ready", "Ready to forge"))
         self.assertTrue(band.dest.startswith("📦 Moves to"))
         self.assertEqual(self.view.filter_buttons["all"].cget("text"), "All 1")
         self.assertEqual(self.view.filter_buttons["ready"].cget("text"), "Ready 1")
@@ -1613,7 +1677,8 @@ class WatchedTest(QueueCase):
 
         self.view.ask = replace
         [band] = self.rows("band")
-        self.assertIn(("replace", "Replace the one in the library"), band.actions)
+        self.assertIn(("replace", "Use this one instead"), band.actions)
+        self.assertNotIn("rename", dict(band.actions))  # Forge this would make a second copy
         self.view.list.on_action(band.key, "replace")
         aside = old.parents[2] / "Duplicates" / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
         item = self.services.queue.get(item_id)
@@ -1623,7 +1688,7 @@ class WatchedTest(QueueCase):
             asked,
             [
                 (
-                    "Replace the one in the library",
+                    "Use this one instead",
                     "Replace Dune (2021) in the library? The one there now moves to Duplicates.",
                     ["Replace", "Cancel"],
                 )
@@ -1631,6 +1696,44 @@ class WatchedTest(QueueCase):
         )
         self.assertEqual(old.read_bytes(), b"video")
         self.assertEqual(aside.read_bytes(), b"old copy")
+
+    async def test_keep_the_one_i_have_leaves_alone_only_the_copy_in_the_library(self) -> None:
+        downloads, _old, item_id = await self.in_the_library()
+        [other] = await self.watched(downloads, "Dune.2021.1080p.mkv")
+        self.services.queue.hold(other, "Two downloads would get the same name.")
+        self.view.refresh()
+        [band] = self.rows("band")  # one film, one band
+        self.assertEqual(set(self.view._bands[band.key]), {item_id, other})
+        asked: list[list[int]] = []
+        self.enterContext(mock.patch.object(
+            self.view, "ignore_menu", lambda ids, key=None: asked.append(list(ids))
+        ))  # fmt: skip
+        self.view._on_band_action(band.key, "ignore")
+        self.assertEqual(asked, [[item_id]])  # the other one keeps its own answer
+
+    async def test_a_band_in_the_library_tells_both_copies_once_read(self) -> None:
+        read: list[tuple[int, Path]] = []
+
+        async def fake_disk(item: QueueItem, target: Path) -> ReplaceFacts:
+            read.append((item.id, target))
+            return ReplaceFacts(library_quality="1080p", library_size=4 * 1024**3,
+                                download_quality="2160p", download_size=18 * 1024**3)  # fmt: skip
+
+        self.view.read_facts = fake_disk
+        _downloads, old, item_id = await self.in_the_library()
+        await pump_until(self.root, lambda: self.rows("band")[0].ask_more != "")
+        [band] = self.rows("band")
+        self.assertEqual((band.state_text, band.ask), ("Already in your library", "You already have this film."))
+        self.assertEqual(
+            band.ask_more, "In your library: 1080p · 4.0 GB — this download: 2160p · 18.0 GB"
+        )
+        self.assertEqual(read, [(item_id, old)])  # under the name it would get there
+        # The phone's "Use this one instead" hears how this band names it (its chip).
+        choice = self.services.band_naming[item_id]
+        self.assertEqual(choice.preset.name, self.view.choice_for(self.item("Dune")).label)
+        self.view.refresh()
+        await pump(self.root, 0.1)
+        self.assertEqual(len(read), 1)  # read once
 
     async def test_cancel_leaves_the_library_copy_alone(self) -> None:
         downloads, old, _item_id = await self.in_the_library()
@@ -1934,7 +2037,7 @@ class IgnoreTest(QueueCase):
         await pump(self.root, 0.1)
         for band in self.rows("band"):
             with self.subTest(band=band.title):
-                self.assertEqual(band.actions[1], ("ignore", "Ignore"))
+                self.assertEqual(band.actions[1], ("ignore", "Leave it alone ▾"))
 
     async def test_a_click_on_ignore_opens_its_menu_under_the_button(self) -> None:
         _downloads, _course, [clip] = await self.course()
@@ -1952,7 +2055,7 @@ class IgnoreTest(QueueCase):
         menu = PopupMenu._open
         assert menu is not None
         self.assertTrue(menu.is_open)
-        self.assertEqual(menu.labels, ("Ignore this file",))
+        self.assertEqual(menu.labels, ("Leave this file alone",))
         box = vlist.action_box(band, "ignore")
         assert box is not None
         left, top, _width, height = vlist.screen_box(box)
@@ -1968,7 +2071,7 @@ class IgnoreTest(QueueCase):
     async def test_a_file_directly_in_the_watched_folder_has_no_folder_choice(self) -> None:
         _downloads, _course, [clip] = await self.course()
         labels = [label for label, _ in self.view.ignore_choices([clip])]
-        self.assertEqual(labels, ["Ignore this file"])
+        self.assertEqual(labels, ["Leave this file alone"])
 
     async def test_ignore_this_file(self) -> None:
         downloads, course, [clip] = await self.course()
@@ -1976,7 +2079,7 @@ class IgnoreTest(QueueCase):
         await pump(self.root, 0.05)
         self.assertIsNotNone(PopupMenu._open)
         assert PopupMenu._open is not None
-        self.assertEqual(PopupMenu._open.labels, ("Ignore this file",))
+        self.assertEqual(PopupMenu._open.labels, ("Leave this file alone",))
         PopupMenu._open.close()
         [(_label, ignore)] = self.view.ignore_choices([clip])
         ignore()
@@ -1985,12 +2088,12 @@ class IgnoreTest(QueueCase):
         self.assertEqual((entry.path, entry.folder), (downloads / "Holiday.Clip.2023.mp4", False))
         self.assertTrue(all(self.services.queue.get(i) is not None for i in course))
         lines = [line.text for line in self.services.activity.lines()]
-        self.assertIn("Ignored: Holiday.Clip.2023.mp4. MediaForge won't pick it up again.", lines)
+        self.assertIn("Left alone: Holiday.Clip.2023.mp4. MediaForge won't pick it up again.", lines)
 
     async def test_ignore_this_whole_folder(self) -> None:
         downloads, course, [clip] = await self.course()
         labels = [label for label, _ in self.view.ignore_choices(course[1:])]
-        self.assertEqual(labels, ["Ignore this file", "Ignore this whole folder"])
+        self.assertEqual(labels, ["Leave this file alone", "Leave this whole folder alone"])
         _file, (_label, whole) = self.view.ignore_choices(course[1:])
         whole()
         await pump_until(self.root, lambda: all(self.services.queue.get(i) is None for i in course))
@@ -1998,14 +2101,14 @@ class IgnoreTest(QueueCase):
         self.assertEqual((entry.path, entry.folder), (downloads / "Python Course", True))
         self.assertIsNotNone(self.services.queue.get(clip))  # the rest stays
         lines = [line.text for line in self.services.activity.lines()]
-        self.assertIn("Ignored: Python Course. MediaForge won't pick it up again.", lines)
+        self.assertIn("Left alone: Python Course. MediaForge won't pick it up again.", lines)
 
     async def test_a_dropped_file_can_be_ignored_but_not_its_folder(self) -> None:
         make_files(self.tmp / "in" / "Sub", ["Holiday.Clip.mp4"])
         await self.add_and_settle(self.tmp / "in")
         [item] = self.services.queue.items
         labels = [label for label, _ in self.view.ignore_choices([item.id])]
-        self.assertEqual(labels, ["Ignore this file"])  # not under a watched folder
+        self.assertEqual(labels, ["Leave this file alone"])  # not under a watched folder
 
     async def test_nothing_while_a_run_goes_or_for_done_files(self) -> None:
         _downloads, _course, [clip] = await self.course()
@@ -2021,10 +2124,10 @@ class IgnoreTest(QueueCase):
         set_language(Language.NL)
         _downloads, course, _clip = await self.course()
         labels = [label for label, _ in self.view.ignore_choices(course[1:])]
-        self.assertEqual(labels, ["Dit bestand negeren", "Deze hele map negeren"])
+        self.assertEqual(labels, ["Dit bestand met rust laten", "Deze hele map met rust laten"])
         self.assertEqual(
             [label for label, _ in self.view.ignore_choices(course)][0],
-            "Deze 2 bestanden negeren",
+            "Deze 2 bestanden met rust laten",
         )
 
 

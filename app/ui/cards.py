@@ -300,7 +300,11 @@ class RoundButton(tk.Canvas):
         self._text = self.create_text(0, 0, text=self._label, anchor="center")
         self.bind("<Enter>", lambda _event: self._hover(True), add="+")
         self.bind("<Leave>", lambda _event: self._hover(False), add="+")
-        self.bind("<Button-1>", lambda _event: self._command(), add="+")
+        # On the release, inside the button, like any button: on the press, customtkinter's own
+        # <Button-1> for every widget (bind_all, after this one) gave this canvas the focus
+        # right after the command ran, so a menu it had just opened lost the focus and closed
+        # again at once.
+        self.bind("<ButtonRelease-1>", self._released, add="+")
         self.rescale()
         theme.on_mode_change(self, self.rescale)
 
@@ -365,6 +369,11 @@ class RoundButton(tk.Canvas):
     def _paint(self) -> None:
         if self._images is not None:
             self.itemconfigure(self._ring, image=self._images[1 if self._hovered else 0])
+
+    def _released(self, event: Any) -> None:
+        """The button let go of: its command, unless the pointer left it first."""
+        if 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
+            self._command()
 
     def invoke(self) -> None:
         self._command()

@@ -369,7 +369,7 @@ class RenamerTest(RenamerTestCase):
         await self.two_looks(auto, clock)
         assert file.exists()
         held = [i for i in self.queue.items if i.status is ItemStatus.HELD]
-        assert [i.message for i in held] == ["You undid this once; click Rename to move it again."]
+        assert [i.message for i in held] == ["You undid this once; click Forge this to move it again."]
         # Remembered in the settings, saved in forge.db.
         stored = await self.settings_repo.load()
         assert stored.kept_back == [os.path.normcase(str(file))]

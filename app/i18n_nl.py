@@ -168,6 +168,10 @@ NL: dict[str, str] = {
     "You can still change this for each show.": "Je kunt dit nog per serie aanpassen.",
     "Download new episodes for shows I start following":
         "Nieuwe afleveringen downloaden van series die ik ga volgen",
+    "New films on your watchlist": "Nieuwe films op je kijklijst",
+    "You can still change this for each film.": "Je kunt dit nog per film aanpassen.",
+    "Download films I add to my watchlist when they're out":
+        "Films die ik op mijn kijklijst zet downloaden zodra ze uit zijn",
     "TMDB key": "TMDB-sleutel",
     "A free code from themoviedb.org that lets AirGrabber ask TMDB for this information. Without it, the Movies and Discover pages stay empty. Your shows and the Calendar work without it.":
         "Een gratis code van themoviedb.org waarmee AirGrabber deze informatie aan TMDB kan vragen. Zonder sleutel blijven de pagina's Films en Ontdekken leeg. Je series en de Kalender werken ook zonder.",
@@ -643,6 +647,8 @@ NL: dict[str, str] = {
     "~{date}": "~{date}",
     "Not out yet": "Nog niet uit",
     "Remove from watchlist": "Van je kijklijst halen",
+    "Downloaded {date}": "Gedownload {date}",
+    "⬇ Again": "⬇ Opnieuw",
     "In cinemas from {date}; not out to download yet": "In de bioscoop vanaf {date}; nog niet te downloaden",
     "Expected to download around {date}, about 2 months after the cinema ({cinema})":
         "Verwacht te downloaden rond {date}, zo'n 2 maanden na de bioscoop ({cinema})",
@@ -1055,6 +1061,8 @@ NL: dict[str, str] = {
     "Couldn't follow {name}: TVmaze doesn't know it": "Kon {name} niet volgen: TVmaze kent het niet",
     "Couldn't find {name} on TVmaze": "Kon {name} niet vinden op TVmaze",
     "Show more ({n})": "Meer tonen ({n})",
+    "See more": "Meer tonen",
+    "Couldn't load more of {title} right now.": "Meer van {title} kon nu niet geladen worden.",
     "Continue watching": "Verder kijken",
     "Nothing from Plex yet": "Nog niets uit Plex",
     "AirGrabber reads Plex every half hour; Settings → Library → Check now reads it at once.":
@@ -1549,6 +1557,12 @@ NL: dict[str, str] = {
     "Your folders beside Plex": "Je mappen naast Plex",
     "With Plex connected, your own folders can be a second shelf, Downloaded: what you just downloaded stays apart from Plex, plays from there and counts as had.":
         "Met Plex verbonden kunnen je eigen mappen een tweede plank zijn, Gedownload: wat je net downloadde blijft los van Plex, speelt daarvandaan af en telt als in bezit.",
+    "Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films.": "Bibliotheek: rustiger kop, kaarten met alleen de poster: ✓ bij series die je volgt, + om te volgen, ⬆ bij lage kwaliteit",
+    "Films stay on your watchlist after they're downloaded, with the day it happened; they're never downloaded twice.": "Films blijven na het downloaden op je kijklijst, met de dag erbij; ze worden nooit twee keer gedownload.",
+    "Settings → Automatic: films you add to your watchlist only download by themselves when you tick it (off at first).": "Instellingen → Automatisch: films op je kijklijst downloaden alleen vanzelf als je dat aanvinkt (eerst uit).",
+    "MediaForge asks in plain words: “You already have this film” → Keep the one I have, or Use this one instead.": "MediaForge vraagt het in gewone woorden: “Je hebt deze film al” → Houd die ik heb, of Gebruik deze in de plaats.",
+    "Movies: See more under each section loads the next films.": "Films: Meer tonen onder elke rij laadt de volgende films.",
+    "The ⋯ menus on cards stay open again instead of closing at once.": "De ⋯-menu's op kaarten blijven weer open in plaats van meteen te sluiten.",
     "MediaForge's progress bar now shows on every page while it renames, so you can keep browsing.":
         "De voortgangsbalk van MediaForge staat nu op elke pagina terwijl hij hernoemt, dus je kunt verder kijken.",
     "Calendar suggestions take one line each now, so many more fit on a day.":
@@ -1946,6 +1960,7 @@ NL: dict[str, str] = {
     "What's on your phone": "Wat er op je telefoon staat",
     "What's on it…": "Wat staat erop…",
     "Send to phone": "Naar telefoon sturen",
+    "No phone is connected": "Er is geen telefoon verbonden",
     "To": "Naar",
     "To {phone} ({person})": "Naar {phone} ({person})",
     "The phone copies it from Plex the next time the Companion app is open at home.": "De telefoon kopieert het uit Plex zodra de Companion-app weer thuis openstaat.",
@@ -1985,6 +2000,10 @@ NL: dict[str, str] = {
     "Sent {n} episodes to {phone}.": "{n} afleveringen naar {phone} gestuurd.",
     "⬆ Upgrade": "⬆ Verbeteren",
     "Find a better copy: 1080p or 4K": "Zoek een betere versie: 1080p of 4K",
+    # The Library page's follow mark and round ↻ (mockups/library-calmer.html).
+    "Follow": "Volgen",
+    "Following": "Volgend",
+    "Check now": "Nu controleren",
     "Scan this with the Companion app": "Scan dit met de Companion-app",
     "That code has expired, so click Connect a phone for a new one.":
         "Die code is verlopen, dus klik op Telefoon verbinden voor een nieuwe.",
@@ -2015,6 +2034,26 @@ NL: dict[str, str] = {
         "De Forge start nog op, dus probeer het zo opnieuw.",
     "Already sorted, or AirGrabber restarted.":
         "Al geregeld, of AirGrabber is opnieuw gestart.",
+    "Moved the old copy to the Duplicates folder and put this one in its place. Undo on the PC "
+    "puts both back.":
+        "Het oude exemplaar staat nu in de map Duplicates en deze staat op zijn plek. Ongedaan "
+        "maken op de pc zet ze allebei terug.",
+    "Moved the old copy to the folder chosen on the PC and put this one in its place. Undo on "
+    "the PC puts both back.":
+        "Het oude exemplaar staat nu in de map die op de pc is gekozen en deze staat op zijn "
+        "plek. Ongedaan maken op de pc zet ze allebei terug.",
+    "Put this one in the library; there was no old copy to move.":
+        "Deze staat nu in de bibliotheek; er was geen oud exemplaar om te verplaatsen.",
+    "Couldn't put this one in its place, so sort it out on the PC.":
+        "Deze op zijn plek zetten lukte niet, dus los het op op de pc.",
+    "Your library folder is the top of a drive or share, so choose on the PC where replaced "
+    "copies go first.":
+        "Je bibliotheekmap is de bovenste map van een schijf of share, dus kies eerst op de pc "
+        "waar vervangen exemplaren heen gaan.",
+    "Left this download alone. The one in your library stays.":
+        "Deze download wordt met rust gelaten. Die in je bibliotheek blijft.",
+    "Couldn't leave this download alone, so sort it out on the PC.":
+        "Deze download met rust laten lukte niet, dus los het op op de pc.",
     "TMDB can't be reached just now, so try again in a moment.":
         "TMDB is nu niet bereikbaar, dus probeer het zo opnieuw.",
     "TMDB doesn't know that title, so search for it again.":

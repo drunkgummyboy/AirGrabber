@@ -291,16 +291,15 @@ class ViewTests(DialogTestCase):
         tabs = [(tab.name.cget("text"), tab.count.cget("text").strip(), tab.selected) for tab in view.kind_tabs.values()]
         self.assertEqual(tabs, [("Shows", str(PAGE_SIZE + 5), True), ("Films", "1", False)])
         self.assertEqual(
-            [chip.cget("text") for chip in view.filter_chips.values()],
+            [chip.text for chip in view.filter_chips.values()],
             ["All", "Not followed", "With gaps", "Ended"],
         )
         card = next(c for c in view.cards if c.title.title == "Show 001")
-        assert card.follow_button is not None
-        self.assertEqual(card.follow_button.cget("text"), "+ Follow")
-        card.follow_button.invoke()
+        self.assertEqual(card.follow_state, "idle")  # its mark's "+"
+        card.press_follow()
         await self.settle()
         self.assertEqual(service.followed, ["Show 001"])
-        self.assertEqual(card.follow_button.cget("text"), "✓ Following")
+        self.assertTrue(card.following)
         view.search.insert(0, "show 064")
         view._searched()
         await self.settle()
@@ -312,7 +311,7 @@ class ViewTests(DialogTestCase):
         await self.settle()
         self.assertEqual([tab.selected for tab in view.kind_tabs.values()], [False, True])
         self.assertEqual(
-            [chip.cget("text") for chip in view.filter_chips.values()],
+            [chip.text for chip in view.filter_chips.values()],
             ["All", "4K", "Recently added"],
         )
         self.assertEqual([c.title.title for c in view.cards], [])  # the search still holds
@@ -320,11 +319,14 @@ class ViewTests(DialogTestCase):
         view._searched()
         await self.settle()
         [film] = view.cards
-        self.assertIsNone(film.follow_button)
+        self.assertIsNone(film.follow_state)
         view.filter_chips[LibraryFilter.UHD].invoke()  # the 4K chip
         await self.settle()
         self.assertEqual([c.title.title for c in view.cards], ["Dune"])
-        self.assertEqual(view.filter_chips[LibraryFilter.UHD].cget("fg_color"), theme.ACCENT)
+        self.assertTrue(view.filter_chips[LibraryFilter.UHD].selected)
+        self.assertEqual(
+            view.filter_chips[LibraryFilter.UHD].underline.cget("fg_color"), theme.BRAND
+        )
         view.sort_menu.set("A–Z")
         view._choose_sort("A–Z")  # as the menu's pick
         await self.settle()
@@ -392,7 +394,6 @@ class ViewTests(DialogTestCase):
         )
         service = FakeService(LibraryContents(films=films, checked_at=NOW))
         upgraded: list[str] = []
-        sent: list[str] = []
         view = LibraryView(
             self.root,
             service=service,  # type: ignore[arg-type]
@@ -402,8 +403,6 @@ class ViewTests(DialogTestCase):
             on_open_show=mock.AsyncMock(return_value=True),
             on_open_film=lambda found: None,
             on_upgrade_film=lambda found: upgraded.append(found.title),
-            on_send=lambda found: sent.append(found.title),
-            can_send=lambda: True,
         )
         view.pack(fill="both", expand=True)
         self.keep(view)
@@ -412,17 +411,14 @@ class ViewTests(DialogTestCase):
         await self.settle()
         cards = {card.title.title: card for card in view.cards}
         heat, dune = cards["Heat"], cards["Dune"]
-        assert heat.upgrade_button is not None
-        self.assertEqual(heat.upgrade_button.cget("text"), "⬆ Upgrade")
-        self.assertIsNotNone(heat.send_button)  # the round phone beside it
-        self.assertIsNone(dune.upgrade_button)
-        assert dune.send_button is not None
-        self.assertEqual(dune.send_button.cget("text"), "Send to phone")  # no emoji box
-        heat.upgrade_button.invoke()
+        self.assertTrue(heat.can_upgrade)
+        self.assertEqual(heat.badge_text, "⬆ Upgrade")  # an amber pill on its cover
+        self.assertFalse(dune.can_upgrade)
+        heat.press_upgrade()
         self.assertEqual(upgraded, ["Heat"])
 
     async def test_a_card_is_the_other_pages_poster_card(self) -> None:
-        # The same size whatever its title or buttons, the gaps as a pill in the corner.
+        # The same size whatever its title or marks, the gaps as a pill in the corner.
         from app.ui.card_scale import FULL
         from app.ui.poster_card import PosterCard, card_size
         from app.ui.views.library_view import LibraryCard
@@ -437,7 +433,7 @@ class ViewTests(DialogTestCase):
             self.keep(made)
             return made
 
-        show = card("Reacher", following=False, tag="2 gaps", on_send=lambda: None)
+        show = card("Reacher", following=False, tag="2 gaps")
         long = card("Georgie & Mandy's First Marriage and a Much Longer Title Than Fits", following=True)
         film = card("Dune")
         await self.settle()
@@ -450,20 +446,11 @@ class ViewTests(DialogTestCase):
         self.assertIsNone(film.badge_text)
         self.assertTrue(long.title_text.endswith("…"))
         self.assertEqual(show.meta_text, "1 season · 1 episode")
-        assert long.follow_button is not None
-        self.assertEqual(long.follow_button.cget("text"), "✓ Following")
-        self.assertIsNone(film.follow_button)
-        # The send button: a round one the row's height, with a drawn phone (no emoji: it
-        # showed as a box), and it follows a new Windows scaling with its card.
-        from app.ui.cards import RoundButton, phone_icon
-
-        phone = show.send_button
-        assert isinstance(phone, RoundButton)
-        self.assertEqual((phone.text, phone._icon), ("", phone_icon))
-        self.assertEqual(phone.winfo_reqwidth(), phone.winfo_reqheight())
-        assert show.follow_button is not None
-        self.assertEqual(phone.winfo_reqheight(), show.follow_button.winfo_reqheight())
-        self.assertIn(phone.rescale, show._rescales)
+        self.assertTrue(long.following)
+        self.assertEqual(show.follow_state, "idle")
+        self.assertIsNone(film.follow_state)
+        # The follow mark follows a new Windows scaling and light ↔ dark with its card.
+        self.assertIn(show._draw_mark, show._rescales)
 
 
 class FolderPosterTests(unittest.IsolatedAsyncioTestCase):

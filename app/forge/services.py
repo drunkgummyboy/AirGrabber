@@ -37,7 +37,7 @@ from app.forge.clients.tmdb import ForgeTmdb
 from app.forge.clients.trailers import ToolInstallError, TrailerService
 from app.forge.core.activity import ActivityFeed
 from app.forge.core.airgrabber_folders import AirGrabberFolderSync, watched_folders
-from app.forge.core.auto import AutoRenamer, RenamerParts
+from app.forge.core.auto import AutoRenamer, NamingChoice, RenamerParts
 from app.forge.core.file_check import FileCheck
 from app.forge.core.duplicates import (
     Duplicate,
@@ -246,9 +246,12 @@ class ForgeServices:
         self.run_lock = asyncio.Lock()  # one rename run at a time: the owner's or the renamer's
         # What the runs are doing now: the dock on every page of the main window.
         self.run_progress = RunProgress()
-        # Where the copies the queue's "Replace the one in the library" replaces go while a library
+        # Where the copies the queue's "Use this one instead" replaces go while a library
         # folder is a share or drive root: asked once, kept for this session only (never saved).
         self.aside_place: Path | None = None
+        # How the queue page's bands name the downloads held as already in the library (their
+        # chip), kept up by the page: the phone's "Use this one instead" names them the same.
+        self.band_naming: dict[int, NamingChoice] = {}
         self.auto = AutoRenamer(
             RenamerParts(
                 queue=self.queue,

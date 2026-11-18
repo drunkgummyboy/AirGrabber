@@ -39,13 +39,16 @@ LibraryRepository.auto_due leaves both out), and a film in Plex is skipped (its 
 it is). None of it is shown: without Plex AirGrabber marks nothing as had.
 
 Then, unless a grab failed, the watchlist films whose "Download when it's out" switch is on
-(on anyone's list, each film once):
+(on anyone's list, each film once; a film added starts with it as Settings'
+`auto_download_new_films` says, off by default):
 their release dates are refreshed from TMDB when stale, and the films that are out and not
 searched within the last few hours (`app.services.watchlist.is_due`) are fetched the same way,
 at most MAX_MOVIES_PER_RUN. Nothing found: the try is counted, and a film searched for long
-enough is given up (its switch goes off). A downloaded film leaves the watchlist. A release
-that can't be grabbed counts as a try, and a failed grab ends the run, as above. A film found downloaded already (from before it was put on the list)
-has its switch turned off instead of being searched again and again.
+enough is given up (its switch goes off). A downloaded film stays on the watchlist with its
+switch off on every list (HistoryRepository.add) and is never searched for again (`is_due`
+leaves out what the download history has). A release that can't be grabbed counts as a try,
+and a failed grab ends the run, as above. A film found downloaded already by its search (grabbed
+meanwhile) has its switch turned off instead of being searched again and again.
 
 Log hygiene: only episode labels ("Severance S02E04"), film titles and outcomes are logged,
 never a release or a URL.
@@ -434,7 +437,7 @@ class AutoDownloadService:
                 )
                 self._emit(AutoError(message=run.error))
                 break
-            if result.already_downloaded:  # in the history from before it was put on the list
+            if result.already_downloaded:  # grabbed since this run listed it
                 log.info("Auto-download %s: downloaded before, switching it off", title)
                 await watchlist.switch_off(movie.id)
                 continue

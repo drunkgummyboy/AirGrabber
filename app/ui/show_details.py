@@ -109,6 +109,8 @@ from app.ui.title_info import (
     join_meta,
     rating_text,
     rounded_mask,
+    SendToPhone,
+    send_button,
     target_code,
 )
 from app.ui.tooltip import add_tooltip
@@ -882,9 +884,12 @@ class ShowDetailsWindow(TitleInfoWindow):
         on_fix_match: Callable[[TvTarget], None] | None = None,
         playback: PlaybackService | None = None,
         player: PlayerHost | None = None,
+        send: SendToPhone | None = None,
     ) -> None:
         """`profile_id`: the person the window shows the show for (followed or not, its Track
         button and switch; ShowWindows closes it when another person is selected).
+        `send`: "Send to phone" among the actions (opened from the Library page while a phone
+        is connected; `set_send` adds it later).
         `playback` + `player`: "▶ Play" while the show is in Plex or in the user's own folders
         (its titles in both found by `PlaybackService.show`); a click opens the episode picker
         (app/ui/play_control.py) with the episodes of both, each played from where it is in the
@@ -931,7 +936,9 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._rows_task: asyncio.Task[None] | None = None
         self._season_trailer_task: asyncio.Task[None] | None = None
         self._tracking = False
-        self._buttons_look: tuple[bool, bool, bool, str | None, str | None] | None = None
+        self._buttons_look: tuple[bool, bool, bool, str | None, str | None, bool] | None = None
+        self._send = send
+        self.send_button: ctk.CTkButton | None = None
         self._playback = playback
         self._play = (
             Play(playback, player, status) if playback is not None and player is not None else None
@@ -1058,17 +1065,29 @@ class ShowDetailsWindow(TitleInfoWindow):
         if url is not None:
             self.masthead.set_trailer(url, t(SEASON_TRAILER, n=season))
 
+    def set_send(self, send: SendToPhone) -> None:
+        """"Send to phone" among the actions from now on (the window opened again from the
+        Library page)."""
+        self._send = send
+        if self._details is not None:
+            self._paint_buttons(self._details)
+
     def _paint_buttons(self, details: ShowDetails) -> None:
         """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
-        the hover tip says so); ▶ Play while the show is in Plex or the folders; then IMDb."""
+        the hover tip says so); ▶ Play while the show is in Plex or the folders; "Send to
+        phone" when opened from the Library page while a phone is connected; then IMDb."""
         imdb_url = details.show.imdb_url
         play_key = self._titles.key if self._titles is not None else None
-        look = (details.tracked, details.auto_download, self._tracking, imdb_url, play_key)
+        sendable = self._send is not None
+        look = (
+            details.tracked, details.auto_download, self._tracking, imdb_url, play_key, sendable
+        )
         if look == self._buttons_look:
             return
         self._buttons_look = look
         self._auto_switch = None
         self.play_button = None
+        self.send_button = None
         items: list[Any] = []
         if details.tracked:
             following = ctk.CTkButton(
@@ -1108,6 +1127,13 @@ class ShowDetailsWindow(TitleInfoWindow):
                 self._buttons, self.play, height=dialog_kit.BUTTON_HEIGHT
             )
             items.append(self.play_button)
+        if self._send is not None:
+            self.send_button = send_button(
+                self._buttons, self._send_pressed, height=dialog_kit.BUTTON_HEIGHT,
+                font=theme.font(15), radius=dialog_kit.BUTTON_RADIUS,
+                hover_color=theme.SURFACE, text_color=theme.TEXT,
+            )
+            items.append(self.send_button)
         if imdb_url is not None:
 
             def open_imdb() -> None:
@@ -1120,6 +1146,10 @@ class ShowDetailsWindow(TitleInfoWindow):
         """"▶ Play": the episode picker, then the chosen episode in the app's player."""
         if self._play is not None and self._titles is not None:
             self._play.pick(self, self._titles)
+
+    def _send_pressed(self) -> None:
+        if self._send is not None:
+            self._send(self)  # the dialog opens over this window
 
     # -- loading -----------------------------------------------------------------------------
 
@@ -1588,14 +1618,24 @@ class ShowWindows:
         layout: InfoLayout = self._releases.settings.current.info_layout
         return layout
 
-    def open_show(self, show: Show, *, target: TvTarget | None = None) -> None:
+    def open_show(
+        self,
+        show: Show,
+        *,
+        target: TvTarget | None = None,
+        send: SendToPhone | None = None,
+    ) -> None:
         """Open the details of a TVMaze show, or raise its window; with `target` (☰ Choose…)
-        on that episode's (or season pack's) releases."""
+        on that episode's (or season pack's) releases. `send`: "Send to phone" among its
+        actions (the Library page's, while a phone is connected); an open window gets it too
+        and keeps it."""
         window = self._live().get(show.id)
         if window is None:
-            window = self._windows[show.id] = self._new_window(show)
+            window = self._windows[show.id] = self._new_window(show, send)
         else:
             window.raise_window()
+            if send is not None:
+                window.set_send(send)
         if target is not None:
             window.choose(target)
 
@@ -1604,7 +1644,9 @@ class ShowWindows:
         episode."""
         self.open_show(target.show, target=target)
 
-    def _new_window(self, show: Show) -> ShowDetailsWindow:
+    def _new_window(
+        self, show: Show, send: SendToPhone | None = None
+    ) -> ShowDetailsWindow:
         return ShowDetailsWindow(
             self._master,
             show,
@@ -1619,6 +1661,7 @@ class ShowWindows:
             on_fix_match=self._fix_match,
             playback=self._playback,
             player=self._player,
+            send=send,
         )
 
     def open_discover(self, show: DiscoverShow) -> None:

@@ -83,5 +83,5 @@ class Plan(BaseModel, frozen=True):
     clean_roots: tuple[Path, ...] = ()
     prune_dirs: tuple[Path, ...] = ()
     leftovers: tuple[PlannedLeftovers, ...] = ()
-    aside: tuple[PlannedAside, ...] = ()  # "Replace the one in the library": the copies there
+    aside: tuple[PlannedAside, ...] = ()  # "Use this one instead": the copies there
     options: PresetOptions = PresetOptions()

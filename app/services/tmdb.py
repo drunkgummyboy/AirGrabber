@@ -17,7 +17,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 import httpx
 from pydantic import ValidationError
@@ -63,6 +63,9 @@ _V4_TOKEN_PREFIX = "eyJ"
 _IMDB_ID = re.compile(r"tt\d{1,10}")
 # What `film_page` appends to a film's /movie/{id}.
 FILM_PAGE_PARTS = "credits,videos,release_dates,external_ids"
+# TMDB's lists: 20 results a page, and no page after 500 (a later one is refused).
+PAGE_SIZE = 20
+MAX_PAGE = 500
 
 
 class TMDBError(Exception):
@@ -83,6 +86,25 @@ class TMDBNotFound(TMDBError):
 
 class TMDBBadReply(TMDBError):
     """TMDB answered, but the body isn't JSON or doesn't have the expected shape."""
+
+
+@dataclass(frozen=True, slots=True)
+class ResultPage(Generic[T]):
+    """One page of a TMDB list and how many pages the list has (None: TMDB didn't say)."""
+
+    items: tuple[T, ...]
+    page: int
+    total_pages: int | None
+
+    @property
+    def is_last(self) -> bool:
+        """No page follows this one: TMDB says so, it is page MAX_PAGE, or (without a total)
+        the page wasn't full."""
+        if self.page >= MAX_PAGE:
+            return True
+        if self.total_pages is not None:
+            return self.page >= self.total_pages
+        return len(self.items) < PAGE_SIZE
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,14 +166,23 @@ class TMDBClient:
         """This week's trending films (first page, at most 20)."""
         return await self._list("/trending/movie/week", {}, _movie)
 
+    async def trending_movies_page(self, page: int) -> ResultPage[Movie]:
+        """Page `page` (1 to MAX_PAGE) of this week's trending films (the Movies page's See
+        more)."""
+        return await self._page("/trending/movie/week", {}, _movie, page)
+
     async def digital_releases(self, start: date, end: date, *, page: int = 1) -> list[Movie]:
         """Films released digitally in the client's region between `start` and `end`.
 
         One page (at most 20) of TMDB's results, most popular first. TMDB lists a film when any
         of its digital releases falls in the window, later re-releases included.
         """
-        if page < 1:
-            raise ValueError("page must be at least 1")
+        return list((await self.digital_releases_page(start, end, page=page)).items)
+
+    async def digital_releases_page(
+        self, start: date, end: date, *, page: int = 1
+    ) -> ResultPage[Movie]:
+        """`digital_releases`' page `page` (1 to MAX_PAGE) with the list's number of pages."""
         params = {
             "sort_by": "popularity.desc",
             "with_release_type": "4",
@@ -159,9 +190,7 @@ class TMDBClient:
             "release_date.gte": start.isoformat(),
             "release_date.lte": end.isoformat(),
         }
-        if page > 1:
-            params["page"] = str(page)
-        return await self._list("/discover/movie", params, _movie)
+        return await self._page("/discover/movie", params, _movie, page)
 
     async def search_movies(self, query: str, *, limit: int = 12) -> list[Movie]:
         """Films matching `query`, TMDB's best match first."""
@@ -400,6 +429,20 @@ class TMDBClient:
         self, path: str, params: Mapping[str, str], convert: Callable[[object], T]
     ) -> list[T]:
         return _parse_results(path, await self._get_json(path, params), convert)
+
+    async def _page(
+        self, path: str, params: Mapping[str, str], convert: Callable[[object], T], page: int
+    ) -> ResultPage[T]:
+        """Page `page` of a list (no `page` parameter for the first, as `_list` asks it)."""
+        if not 1 <= page <= MAX_PAGE:
+            raise ValueError(f"page must be from 1 to {MAX_PAGE}")
+        query = {**params, "page": str(page)} if page > 1 else dict(params)
+        payload = await self._get_json(path, query)
+        items = tuple(_parse_results(path, payload, convert))
+        total = payload.get("total_pages") if isinstance(payload, dict) else None
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            total = None
+        return ResultPage(items, page, total)
 
     async def _get_json(
         self, path: str, params: Mapping[str, str], *, language: str | None = None

@@ -175,6 +175,7 @@ class SectionTests(unittest.TestCase):
             "keep_in_tray": SECTION_AUTOMATIC,
             "start_with_windows": SECTION_AUTOMATIC,
             "auto_download_new_shows": SECTION_AUTOMATIC,
+            "auto_download_new_films": SECTION_AUTOMATIC,
             "subtitles_folder": SECTION_WHERE,
             "tmdb_api_key": SECTION_INFO,
             "card_size": SECTION_LOOKS,

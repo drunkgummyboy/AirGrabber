@@ -12,10 +12,13 @@ from pathlib import Path
 
 from app import i18n
 from app.forge.core.matcher import Resolution
+from app.forge.core.replace_facts import ReplaceFacts
 from app.forge.core.queue import ItemStatus, QueueItem
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia
+from app.models.tmdb import TMDBTitle
 from app.forge.ui import queue_rows
 from app.forge.ui.queue_rows import (
+    ACCEPT_ACTION,
     DONE_TODAY,
     EXPLORER_ACTION,
     REPLACE_ACTION,
@@ -87,9 +90,29 @@ def sections(rows: QueueRows) -> list[str]:
 
 
 def unsure(item: QueueItem) -> QueueItem:
+    """TMDB isn't sure, and has no guess."""
     item.status = ItemStatus.NEEDS_CHOICE
     item.resolution = Resolution(media=ResolvedMedia.offline(item.parsed, MatchState.UNCERTAIN))
     return item
+
+
+def guessed(item: QueueItem, title: str, year: int | None, tmdb_id: int = 7) -> QueueItem:
+    """TMDB isn't sure; its top result is `title` (`year`)."""
+    item.status = ItemStatus.NEEDS_CHOICE
+    media = ResolvedMedia.offline(item.parsed, MatchState.UNCERTAIN).model_copy(
+        update={"title": title, "year": year, "tmdb_id": tmdb_id}
+    )
+    result = TMDBTitle(id=tmdb_id, title=title, date=f"{year}-01-01" if year else None)
+    item.resolution = Resolution(media=media, candidates=(result,))
+    return item
+
+
+READY_ACTIONS = (
+    ("explorer", "📂 Show file"),
+    ("choose", "Wrong show?"),
+    ("ignore", "Leave it alone ▾"),
+    ("rename", "Forge this"),
+)
 
 
 class QueueRowsTests(ForgeTestCase):
@@ -110,7 +133,7 @@ class QueueRowsTests(ForgeTestCase):
         ted = next(b for b in bands(rows) if b.title == "Ted Lasso")
         self.assertEqual(ted.subtitle, "Season 4 · 2 episodes")
         self.assertEqual(ted.dest, "📁 Stays here, in Ted Lasso › Ted Lasso - Season 04")
-        self.assertEqual((ted.state, ted.state_text), ("ready", "Ready"))
+        self.assertEqual((ted.state, ted.state_text), ("ready", "Ready to forge"))
         lines = rows.rows[rows.rows.index(ted) + 1 :]
         self.assertEqual([r.code for r in lines], ["S04E03", "S04E05"])  # by episode
         self.assertEqual(lines[0].faint, "Ted.Lasso.S04E03.1080p.WEB.mkv")
@@ -118,11 +141,16 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual({r.faint_label for r in lines}, {"Current name:"})
         self.assertEqual({r.new for r in lines}, {False})  # an episode's title is its name
         self.assertEqual({r.band for r in lines}, {ted.key})  # hovered with their band
+        self.assertEqual(ted.actions, READY_ACTIONS)
+        self.assertEqual(ted.quiet, ("explorer", "choose", "ignore"))  # links; Forge this a button
         self.assertEqual(
-            ted.actions,
-            (("explorer", "📂"), ("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename")),
+            ted.tips,
+            (
+                ("explorer", "Open in Explorer"),
+                ("ignore", "Takes it off the list. Auto-rename won't touch it again."),
+            ),
         )
-        self.assertEqual(ted.tips, (("explorer", "Open in Explorer"),))
+        self.assertEqual(ted.ask, "")  # nothing to ask
         self.assertEqual(rows.bands[ted.key], [items[2].id, items[0].id])
         self.assertEqual(rows.targets[items[2].id].parent.name, "Ted Lasso - Season 04")
         dune = bands(rows)[0]
@@ -151,19 +179,69 @@ class QueueRowsTests(ForgeTestCase):
         ]
         rows = build(items)
         shrinking, arrival = bands(rows)
-        self.assertEqual(shrinking.title, "Shrinking")
-        self.assertEqual((shrinking.state, shrinking.state_text), ("needs", "Needs you"))
+        # Not one guess: which show is it?
+        self.assertEqual(shrinking.title, "Shrinking.S03E01.1080p.mkv")  # what the file says
+        self.assertEqual((shrinking.state, shrinking.state_text), ("needs", "Not sure which show"))
+        self.assertEqual((shrinking.ask, shrinking.ask_bold), ("Which show is this?", None))
         self.assertEqual(
             shrinking.actions,
-            (("explorer", "📂"), ("ignore", "Ignore"), ("choose", "Choose…"), ("rename", "Rename")),
+            (
+                ("explorer", "📂 Show file"),
+                ("ignore", "Leave it alone ▾"),
+                ("choose", "Pick the show…"),
+            ),
         )
-        self.assertEqual((shrinking.subtitle, shrinking.dest), ("TMDB isn't sure · 1 file", ""))
+        self.assertEqual(shrinking.quiet, ("explorer", "ignore"))
+        self.assertEqual(shrinking.dest, "")
         self.assertEqual(arrival.title, "Arrival")
         self.assertEqual(rows.needs, 1)
 
-    def test_an_unsure_film_names_its_year(self) -> None:
-        [band] = bands(build([unsure(movie(self.folder, "Dune.2021.mkv", "Dune", 2021))]))
-        self.assertEqual(band.title, "Dune (2021)")
+    def test_an_unsure_film_asks_whether_it_is_the_guess(self) -> None:
+        item = guessed(movie(self.folder, "Heart.of.the.Beast.2026.2160p.mkv", "Heart", 2026),
+                       "Heart of the Beast", 2026)  # fmt: skip
+        [band] = bands(build([item]))
+        self.assertEqual(band.title, "Heart.of.the.Beast.2026.2160p.mkv")
+        self.assertEqual(band.state_text, "Not sure which film")
+        self.assertEqual(band.ask, "Is this Heart of the Beast (2026)?")
+        self.assertEqual(band.ask[slice(*band.ask_bold or (0, 0))], "Heart of the Beast (2026)")
+        self.assertEqual(band.ask_more, "The file name and the film database don't fully agree.")
+        self.assertEqual(
+            band.actions,
+            (
+                ("explorer", "📂 Show file"),
+                ("ignore", "Leave it alone ▾"),
+                ("choose", "No, pick the right film…"),
+                (ACCEPT_ACTION, "Yes, forge it"),
+            ),
+        )
+        self.assertEqual(band.quiet, ("explorer", "ignore"))  # the answers are buttons
+        rows = build([item])
+        self.assertEqual(rows.guesses, {bands(rows)[0].key: 7})  # the id Yes takes
+
+    def test_an_unsure_show_asks_by_its_name(self) -> None:
+        item = guessed(episode(self.folder, "Shrinking.S03E01.mkv", "Shrinking", 3, 1),
+                       "Shrinking", 2023)  # fmt: skip
+        [band] = bands(build([item]))
+        self.assertEqual((band.state_text, band.ask), ("Not sure which show", "Is this Shrinking?"))
+        self.assertEqual(band.ask_more, "The file name and the show database don't fully agree.")
+        self.assertEqual(band.actions[-2:], (
+            ("choose", "No, pick the right show…"), (ACCEPT_ACTION, "Yes, forge it"),
+        ))  # fmt: skip
+
+    def test_a_download_held_for_its_match_asks_too(self) -> None:
+        downloads = self.tmp / "dl"
+        item = guessed(movie(downloads, "Dune.2021.mkv", "Dune", 2021, watched=downloads),
+                       "Dune: Part One", 2021)  # fmt: skip
+        item.status, item.message = ItemStatus.HELD, "TMDB isn't sure which one it is."
+        [band] = bands(build([item]))
+        self.assertEqual(band.ask, "Is this Dune: Part One (2021)?")
+        self.assertEqual(band.actions[-1], (ACCEPT_ACTION, "Yes, forge it"))
+        missing = movie(downloads, "Home.Video.mkv", "Home Video", None, watched=downloads)
+        missing.status, missing.message = ItemStatus.HELD, "Not found at TMDB."
+        missing.match_problem = True
+        [band] = bands(build([missing]))
+        self.assertEqual((band.ask, band.ask_more), ("Which film is this?", "Not found at TMDB."))
+        self.assertEqual(band.actions[-1], ("choose", "Pick the film…"))
 
     def test_the_filter_shows_what_it_says_and_counts_everything(self) -> None:
         items = [
@@ -172,8 +250,8 @@ class QueueRowsTests(ForgeTestCase):
             movie(self.folder, "Ran.1985.mkv", "Ran", 1985, status=DONE),
         ]
         for show, titles in (
-            ("all", ["Dune (2021)", "Heat", "Ran"]),
-            ("needs", ["Dune (2021)"]),
+            ("all", ["Dune.2021.mkv", "Heat", "Ran"]),
+            ("needs", ["Dune.2021.mkv"]),
             ("ready", ["Heat"]),
         ):
             with self.subTest(show=show):
@@ -191,7 +269,17 @@ class QueueRowsTests(ForgeTestCase):
         ]
         rows = build(items, chip=lambda item: f"{item.media.title} preset ▾")
         self.assertEqual([b.chip for b in bands(rows)], ["Ran preset ▾", ""])  # none when done
+        self.assertEqual([b.chip_caption for b in bands(rows)], ["Name style", ""])
+        tips = [dict(b.tips).get("preset") for b in bands(rows)]
+        self.assertEqual(tips, ["Ran (1985).mkv", None])  # the name this band's file gets
         self.assertEqual([b.chip for b in bands(build(items))], ["", ""])  # not asked
+
+    def test_the_chip_tip_shows_the_whole_new_name(self) -> None:
+        item = movie(self.folder, "Heart.of.the.Beast.2026.mkv", "Heart of the Beast", 2026)
+        [band] = bands(build([item], rule=rule(movies=MOVIE_FOLDER), chip=lambda _i: "Movie ▾"))
+        self.assertEqual(
+            dict(band.tips)["preset"], "Heart of the Beast (2026)\\Heart of the Beast (2026).mkv"
+        )
 
     def test_done_today_is_at_the_end_faded_with_undo(self) -> None:
         at = time.mktime((2026, 11, 1, 14, 5, 0, 0, 0, -1))
@@ -207,10 +295,13 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(heading.subtitle, "2")
         self.assertLess(rows.rows.index(bands(rows)[0]), rows.rows.index(heading))
         done = bands(rows)[1:]
-        self.assertTrue(all(b.actions == (("explorer", "📂"), ("undo", "Undo")) for b in done))
+        self.assertTrue(
+            all(b.actions == (("explorer", "📂 Show file"), ("undo", "Undo")) for b in done)
+        )
+        self.assertTrue(all(b.quiet == ("explorer",) for b in done))
         self.assertTrue(all(b.faded and b.state == "done" for b in done))
-        self.assertEqual([b.state_text for b in done], ["Renamed", "Renamed"])
-        self.assertEqual([b.note for b in done], ["14:05", ""])
+        self.assertEqual([b.state_text for b in done], ["Forged 14:05", "Forged"])
+        self.assertEqual([b.note for b in done], ["", ""])  # the time is in the status
         lines = [r for r in rows.rows if r.kind == "item" and r.faded]
         self.assertEqual({r.faint for r in lines}, {"Dune.2021.mkv", "Heat.1995.1080p.mkv"})
         self.assertEqual({r.status for r in lines}, {"done", "skipped"})
@@ -293,7 +384,7 @@ class QueueRowsTests(ForgeTestCase):
         [band] = bands(rows)
         self.assertEqual(band.dest, "📦 Moves to Series › VisionQuest › VisionQuest - Season 01")
         self.assertEqual(rows.targets[item.id].parents[1], series / "VisionQuest")
-        self.assertEqual((band.state, band.state_text), ("ready", "Ready"))
+        self.assertEqual((band.state, band.state_text), ("ready", "Ready to forge"))
         self.assertEqual(rows.needs, 0)
         self.assertEqual(rows.waiting, 1)  # no decision to make, but Forge still to click
 
@@ -303,7 +394,7 @@ class QueueRowsTests(ForgeTestCase):
         dropped = movie(self.folder, "Heat.1995.mkv", "Heat", 1995)
         rows = build([watched, dropped])
         dune, heat = bands(rows)
-        self.assertEqual((dune.state, dune.state_text), ("ready", "Ready"))
+        self.assertEqual((dune.state, dune.state_text), ("ready", "Ready to forge"))
         self.assertEqual(heat.state, "ready")
         self.assertEqual(rows.counts, {"all": 2, "needs": 0, "ready": 2})
         self.assertEqual([b.title for b in bands(build([watched], show="ready"))], ["Dune"])
@@ -315,9 +406,19 @@ class QueueRowsTests(ForgeTestCase):
         item.status, item.message = ItemStatus.HELD, "No year in the name: is it a movie?"
         rows = build([item])
         [band] = bands(rows)
-        self.assertEqual(band.state, "needs")
+        self.assertEqual((band.state, band.state_text), ("needs", "Waiting for you"))
         self.assertEqual(band.subtitle, "No year in the name: is it a movie? · 1 file")
-        self.assertEqual(band.actions[-1], ("rename", "Rename"))
+        self.assertEqual(band.ask, "")  # the reason is its subtitle
+        self.assertEqual(
+            band.actions,
+            (
+                ("explorer", "📂 Show file"),
+                ("choose", "Wrong film?"),
+                ("ignore", "Leave it alone ▾"),
+                ("rename", "Forge this"),
+            ),
+        )
+        self.assertEqual(band.quiet, ("explorer", "choose"))
         item.message = ""
         [band] = bands(build([item]))
         self.assertTrue(band.subtitle.startswith("Waiting for you · "))
@@ -328,20 +429,76 @@ class QueueRowsTests(ForgeTestCase):
         item.status, item.message = ItemStatus.HELD, "Already in the library."
         item.in_library = True
         [band] = bands(build([item]))
+        self.assertEqual((band.state, band.state_text), ("needs", "Already in your library"))
+        self.assertEqual((band.ask, band.ask_more), ("You already have this film.", ""))
         self.assertEqual(
-            [key for key, _label in band.actions],
-            [EXPLORER_ACTION, "ignore", "choose", REPLACE_ACTION, "rename"],
+            band.actions,
+            (
+                (EXPLORER_ACTION, "📂 Show file"),
+                ("choose", "Wrong film?"),
+                ("ignore", "Keep the one I have ▾"),
+                (REPLACE_ACTION, "Use this one instead"),
+            ),
+        )  # no Forge this: it would make a second copy
+        self.assertEqual(band.quiet, (EXPLORER_ACTION, "choose"))
+        self.assertEqual(
+            dict(band.tips)[REPLACE_ACTION],
+            "The one in your library moves to the Duplicates folder. Nothing is deleted; Undo "
+            "puts both back.",
         )
-        self.assertIn((REPLACE_ACTION, "Replace the one in the library"), band.actions)
         item.message, item.in_library = "No year in the name: is it a movie?", False
         [band] = bands(build([item]))
         self.assertNotIn(REPLACE_ACTION, [key for key, _label in band.actions])
+
+    def test_a_band_already_in_the_library_tells_both_copies(self) -> None:
+        downloads = self.tmp / "dl"
+        item = movie(downloads, "Dune.2021.2160p.mkv", "Dune", 2021, watched=downloads)
+        item.status, item.in_library = ItemStatus.HELD, True
+        facts = ReplaceFacts(
+            library_name="Dune (2021).mkv",
+            library_size=round(4.2 * 1024**3),
+            library_quality="1080p",
+            download_size=round(18.6 * 1024**3),
+            download_quality="2160p",
+        )
+        [band] = bands(build([item], facts=lambda _item: facts))
+        self.assertEqual(
+            band.ask_more, "In your library: 1080p · 4.2 GB — this download: 2160p · 18.6 GB"
+        )
+        [band] = bands(build([item], facts=lambda _item: None))  # not read yet
+        self.assertEqual(band.ask_more, "")
+
+    def test_a_show_with_several_episodes_in_the_library_counts_them(self) -> None:
+        downloads = self.tmp / "dl"
+        items = [
+            episode(downloads, f"Show.S01E0{n}.mkv", "Show", 1, n, watched=downloads)
+            for n in (1, 2, 3)
+        ]
+        for item in items[:2]:
+            item.status, item.in_library = ItemStatus.HELD, True
+        items[2].status, items[2].message = ItemStatus.HELD, "TMDB doesn't know this episode."
+        rows = build(items, facts=lambda _item: ReplaceFacts(download_size=1))
+        [band] = bands(rows)
+        self.assertEqual((band.ask, band.ask_more), ("You already have 2 of these episodes.", ""))
+        # Keep the one I have leaves alone only the files in the library; no facts for two.
+        self.assertEqual(rows.keeps, {band.key: [items[0].id, items[1].id]})
+        self.assertEqual(rows.held, {})
+        self.assertEqual(band.actions[-2][1], "Keep the one I have ▾")
+        items[1].status, items[1].in_library = ItemStatus.HELD, False
+        rows = build(items, facts=lambda _item: ReplaceFacts(download_size=5 * 1024**2))
+        [band] = bands(rows)
+        self.assertEqual(band.ask, "You already have this episode.")
+        self.assertEqual(rows.keeps, {band.key: [items[0].id]})
+        self.assertEqual(rows.held, {items[0].id: (items[0], rows.targets[items[0].id])})
+        self.assertEqual(band.ask_more, "This download: 5 MB")
 
     def test_a_failed_rename_needs_you(self) -> None:
         item = movie(self.folder, "Dune.2021.mkv", "Dune", 2021, status=ItemStatus.ERROR)
         item.message = "Access is denied"
         [band] = bands(build([item]))
         self.assertEqual((band.state, band.subtitle), ("needs", "Access is denied · 1 file"))
+        self.assertEqual(band.state_text, "Couldn't forge")
+        self.assertEqual(band.actions[-2:], (("ignore", "Leave it alone ▾"), ("rename", "Try again")))
 
     def test_keys_never_clash_with_item_ids(self) -> None:
         items = [
@@ -399,16 +556,22 @@ class QueueRowsTests(ForgeTestCase):
         self.assertEqual(sections(rows), [i18n.t(DONE_TODAY)])
         self.assertEqual(i18n.t(DONE_TODAY), "Vandaag klaar")
         heat, show, dune = bands(rows)
-        self.assertEqual(heat.state_text, "Wacht op jou")
-        self.assertEqual(show.state_text, "Klaar")
-        self.assertEqual(dune.state_text, "Hernoemd")
+        self.assertEqual(heat.state_text, "Niet zeker welke film")
+        self.assertEqual(heat.ask, "Welke film is dit?")
+        self.assertEqual(show.state_text, "Klaar om te forgen")
+        self.assertEqual(dune.state_text, "Geforged")
         self.assertEqual(show.subtitle, "Seizoenen 1–2 · 2 afleveringen")
         self.assertEqual(show.dest, "📁 Blijft in zijn map")
         self.assertEqual(
             show.actions,
-            (("explorer", "📂"), ("ignore", "Negeren"), ("choose", "Kiezen…"), ("rename", "Hernoemen")),
+            (
+                ("explorer", "📂 Bestand tonen"),
+                ("choose", "Verkeerde serie?"),
+                ("ignore", "Met rust laten ▾"),
+                ("rename", "Dit forgen"),
+            ),
         )
-        self.assertEqual(dune.actions, (("explorer", "📂"), ("undo", "Ongedaan maken")))
+        self.assertEqual(dune.actions, (("explorer", "📂 Bestand tonen"), ("undo", "Ongedaan maken")))
         self.assertEqual(dune.tips, (("explorer", "Openen in Verkenner"),))
         self.assertEqual(dune.subtitle, "Film · 2021")
         self.assertEqual({r.faint_label for r in rows.rows if r.kind == "item"}, {"Huidige naam:"})

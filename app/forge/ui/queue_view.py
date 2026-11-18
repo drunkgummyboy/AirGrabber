@@ -22,15 +22,23 @@ Then a row with the filter All / Needs you / Ready with their counts at its left
 they're forged", `remove_after_forge`, saved at once), Preview and the big Forge button at its right (gone while a run goes: then the run's dock shows
 centred under the list, its progress with Cancel on it), and one list of shows and films
 (`queue_rows`), filtered by that:
-a band per show with its episodes under it, a band per film; each band's status as a dot
-and a word with its preset chip under it (always shown on a band not done; a click opens the
-presets that fit and sets that band's), its buttons (Ignore, Choose…, Rename, a done band's Undo)
-only under the pointer, except on a band that needs the owner. A click on a band selects it.
-"Choose…" opens the match picker. "Ignore" opens a small menu: "Ignore this file" (its files)
-and, when they sit in a subfolder of a watched folder, "Ignore this whole folder" (the download's
-own folder right under the watched one, `core.ignored.top_folder`); Auto-rename leaves them
-alone from then on (`services.ignored`, listed in Settings › Auto-rename) and their rows
-leave the queue. Forge renames everything not
+a band per show with its episodes under it, a band per film; each band's status as a dot and
+short words saying why ("Already in your library", "Not sure which film", "Ready to forge",
+"Forged 14:32"), with "Name style" and its preset chip under it (always shown on a band not done;
+its tip the name the band's file gets; a click opens the presets that fit and sets that band's).
+A band that needs the owner asks a question and its buttons are the answers (queue_rows'
+docstring; mockups/forge-band-buttons.html, "B"): "Use this one instead" (`replace_band`), "Yes,
+forge it" (`accept_band`: the guess taken as the match picker takes it, then forged), "No, pick
+the right film…" / "Wrong film?" (the match picker), "Forge this" / "Try again" (this band only);
+a ready band's buttons show only under the pointer; "📂 Show file" and the extras are quiet links.
+A click on a band selects it. Under the question of a download already in the library, the two
+copies' quality and size (app/forge/core/replace_facts.py, read once per name in a thread under a
+time limit, `read_facts` replaceable in tests). "Leave it alone ▾" (and "Keep the one I have ▾")
+opens a small menu: "Leave this file alone" (its files) and, when they sit in a subfolder of a
+watched folder, "Leave this whole folder alone" (the download's own folder right under the
+watched one, `core.ignored.top_folder`); Auto-rename leaves them alone from then on
+(`services.ignored`, listed in Settings › Auto-rename) and their rows leave the queue. Forge
+renames everything not
 waiting for the owner in one go: dropped files where they are, or in their library folder with
 the band's Move to library folder on (without that folder chosen they are left alone, and say so),
 each band with its own preset (or its Custom rule) in one run, and watched downloads always into
@@ -101,6 +109,7 @@ from app.forge.core.library import inside, library_folder, route_inputs
 from app.forge.core.parser import VIDEO_EXTENSIONS
 from app.forge.core.planner import PlanPart, build_mixed_plan, describe, identity_of
 from app.forge.core.queue import ItemStatus, QueueEvent, QueueItem
+from app.forge.core.replace_facts import ReplaceFacts, replace_facts
 from app.forge.core.run_progress import PAGE, RunSteps
 from app.forge.models.history import OpKind, RunSource
 from app.forge.models.media import MediaKind, TypeHint
@@ -112,8 +121,12 @@ from app.forge.ui.duplicates_window import DuplicatesWindow
 from app.forge.ui.look import Pair, app_look
 from app.forge.ui.match_picker import MatchPicker
 from app.forge.ui.queue_rows import (
+    ACCEPT_ACTION,
+    CHOOSE_ACTION,
     EXPLORER_ACTION,
     FINISHED,
+    FORGE_ACTION,
+    IGNORE_ACTION,
     NEEDS_OWNER,
     REPLACE_ACTION,
     REPLACE_LABEL,
@@ -123,6 +136,7 @@ from app.forge.ui.queue_rows import (
     build_queue_rows,
     empty_texts,
     episode_code,
+    is_unsure,
     item_kind,
 )
 from app.forge.ui.subtitle_control import CC_ACTION, CcLook, SubtitleDesk, VideoTarget
@@ -217,7 +231,7 @@ CLEAR_ALL_TEXT = N_("Clear everything")
 REMOVE_AFTER_TEXT = N_("Remove files from the queue after they're forged")
 SETTLING_TICK_MS = 30_000  # the empty queue's "ready in about 8 min" counts down this often
 LOOKING_TEXT = N_("Looking for duplicates in your library…")
-# A band's "Replace the one in the library" (`replace_band`): the question, and the folder picker
+# A band's "Use this one instead" (`replace_band`): the question, and the folder picker
 # for a library folder at a share or drive root.
 REPLACE_QUESTION = N_("Replace {name} in the library? The one there now moves to {folder}.")
 REPLACE_QUESTION_MORE = N_(
@@ -225,6 +239,8 @@ REPLACE_QUESTION_MORE = N_(
 )
 REPLACE_BUTTON = N_("Replace")
 WHERE_REPLACED_GO = N_("Where should the copies you replace go?")
+# "Yes, forge it" clicked while the band's guess had changed since it was shown: nothing forged.
+GUESS_CHANGED = N_("MediaForge's guess changed meanwhile: have another look.")
 
 def _one_at_a_time[**P](
     method: Callable[Concatenate[QueueView, P], Awaitable[None]],
@@ -315,6 +331,12 @@ class QueueView(ctk.CTkFrame):
         self.ask: AskFn = self._ask  # the questions, replaceable in tests
         self.ask_folder: Callable[[], str] = self._ask_folder  # the folder picker, the same
         self.ask_name: AskTextFn = self._ask_name
+        # "Use this one instead"'s facts per item: (the name it would get, them), the read being
+        # replaceable in tests (a fake disk).
+        self._facts: dict[int, tuple[Path, ReplaceFacts | None]] = {}
+        self._keeps: dict[int, list[int]] = {}  # band → its files in the library (Keep's menu)
+        self._guesses: dict[int, int] = {}  # band → the TMDB id its question names
+        self.read_facts: Callable[[QueueItem, Path], Awaitable[ReplaceFacts]] = replace_facts
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
@@ -1541,7 +1563,38 @@ class QueueView(ctk.CTkFrame):
             today=date.today(),
             chip=self.chip_text,
             cc=self._cc_look,
+            facts=self._facts_for,
         )
+
+    def _facts_for(self, item: QueueItem) -> ReplaceFacts | None:
+        """What a band already in the library says of the two copies, once read."""
+        known = self._facts.get(item.id)
+        return known[1] if known is not None else None
+
+    def _ask_facts(self, built: QueueRows) -> None:
+        """Read the copies' facts of the downloads already in the library not read yet (or whose
+        name in the library changed with their band's preset); a refresh shows them."""
+        # The phone names a download in the library as its band does (one pass, few items).
+        self.services.band_naming = self._library_naming(
+            [item for item in self.services.queue.items if held_in_library(item)]
+        )
+        if self._facts:  # the ones gone from the queue (one pass, not a lookup per id)
+            present = {item.id for item in self.services.queue.items}
+            for gone in [item_id for item_id in self._facts if item_id not in present]:
+                del self._facts[gone]
+        for item, target in built.held.values():
+            known = self._facts.get(item.id)
+            if known is None or not _same(known[0], target):
+                self._facts[item.id] = (target, None)
+                self.spawn(self._read_facts(item, target))
+
+    async def _read_facts(self, item: QueueItem, target: Path) -> None:
+        facts = await self.read_facts(item, target)
+        known = self._facts.get(item.id)
+        if known is None or known[0] != target or not self.winfo_exists():
+            return
+        self._facts[item.id] = (target, facts)
+        self._schedule_refresh(0)
 
     def _show(self, built: QueueRows, started: float) -> None:
         """Show built rows; `started` is when the work began (perf_counter), for the pace of
@@ -1549,7 +1602,9 @@ class QueueView(ctk.CTkFrame):
         every configure."""
         items = self.services.queue.items
         self._targets, self._bands = built.targets, built.bands
+        self._keeps, self._guesses = built.keeps, built.guesses
         self.list.set_rows(built.rows)
+        self._ask_facts(built)
         if built.rows:
             self._settling_shown = None  # files there: the settling line isn't shown
             if self.empty_state.winfo_manager():
@@ -1709,23 +1764,25 @@ class QueueView(ctk.CTkFrame):
 
     def _on_band_action(self, key: int, action: str) -> None:
         ids = self._bands.get(key, [])
-        if action == "rename":
+        if action == FORGE_ACTION:
             self.spawn(self.forge(only=ids))
+        elif action == ACCEPT_ACTION:
+            self.spawn(self.accept_band(ids, self._guesses.get(key)))
         elif action == "undo":
             self.spawn(self.undo_band(ids))
         elif action == REPLACE_ACTION:
             self.spawn(self.replace_band(ids))
         elif action == CC_ACTION:
             self.cc_menu(ids, key)
-        elif action == "ignore":
-            self.ignore_menu(ids, key)
+        elif action == IGNORE_ACTION:  # "Keep the one I have ▾": only the files in the library
+            self.ignore_menu(self._keeps.get(key, ids), key)
         elif action == "preset":
             self._chip_menu(key, ids)
         elif action == EXPLORER_ACTION:
             self.spawn(self.open_in_explorer(ids))
         elif action == FOLDERS_ACTION:
             self.on_choose_folders()
-        elif action == "choose":
+        elif action == CHOOSE_ACTION:
             self.spawn(self._pick_band_match(ids))
 
     async def open_in_explorer(self, ids: Sequence[int]) -> None:
@@ -1783,8 +1840,9 @@ class QueueView(ctk.CTkFrame):
     # --- ignoring ----------------------------------------------------------------------------
 
     def ignore_choices(self, ids: Sequence[int]) -> list[tuple[str, Callable[[], None]]]:
-        """The Ignore menu of a band's files: this file (or these files) and, when they sit in
-        one subfolder of a watched folder, that whole folder. Nothing while a run goes."""
+        """The Leave-it-alone menu of a band's files (its "Leave it alone ▾" or "Keep the one I
+        have ▾"): this file (or these files) and, when they sit in one subfolder of a watched
+        folder, that whole folder. Nothing while a run goes."""
         queue = self.services.queue
         items = [
             item
@@ -1793,7 +1851,7 @@ class QueueView(ctk.CTkFrame):
         ]
         if not items or self.running:
             return []
-        files = tn("Ignore this file", "Ignore these {n} files", len(items))
+        files = tn("Leave this file alone", "Leave these {n} files alone", len(items))
         choices: list[tuple[str, Callable[[], None]]] = [
             (files, lambda: self._spawn_ignore(self.ignore_files(items)))
         ]
@@ -1805,7 +1863,7 @@ class QueueView(ctk.CTkFrame):
         return choices
 
     def ignore_menu(self, ids: Sequence[int], key: int | None = None) -> None:
-        """The Ignore button of band `key`: its menu under the button, left edges lined up so
+        """Band `key`'s Leave-it-alone button: its menu under the button, left edges lined up so
         the band's chip stays in sight (at the pointer when the button isn't drawn)."""
         choices = self.ignore_choices(ids)
         box = self.list.action_box(key, "ignore") if key is not None else None
@@ -1980,8 +2038,9 @@ class QueueView(ctk.CTkFrame):
         return True
 
     async def _pick_band_match(self, ids: Sequence[int]) -> None:
-        """A band's Choose…: one question, shown for a file TMDB isn't sure about if it has one, and
-        the answer goes for all its files."""
+        """A band's "Wrong film?" / "No, pick the right film…" / "Pick the film…" (the match
+        picker): one question, shown for a file TMDB isn't sure about if it has one, and the
+        answer goes for all its files."""
         queue = self.services.queue
         items = [item for item in map(queue.get, ids) if item is not None]
         if not items:
@@ -1990,6 +2049,38 @@ class QueueView(ctk.CTkFrame):
         choice = await MatchPicker.ask(self, first, self.services, look=self.look)
         if choice != "cancel":
             await queue.choose_match_for([first.id, *(i.id for i in items)], choice)
+
+    async def accept_band(self, ids: Sequence[int], asked: int | None) -> None:
+        """A band's "Yes, forge it" to the guess its question named (`asked`, a TMDB id, from
+        when the band was built): taken as the match picker takes a choice (remembered for the
+        file's name, for all the band's files), then the band is forged. A guess that isn't among
+        TMDB's results is taken as is ("Use top results"). If the band's guess changed since it
+        was shown, nothing happens but a refresh and a word in the status line. While Preview,
+        Forge or Undo goes (or a run), ignored like those."""
+        if self.busy or self.running or asked is None:
+            return
+        queue = self.services.queue
+        items = [item for item in map(queue.get, ids) if item is not None]
+        first = next((i for i in items if is_unsure(i)), None)
+        if first is None or first.media.tmdb_id != asked:
+            log.info("A band's guess changed before its Yes; nothing forged")
+            self.on_message(t(GUESS_CHANGED))
+            self._schedule_refresh(0)
+            return
+        unsure = [i for i in items if is_unsure(i)]
+        wanted = asked
+        candidates = first.resolution.candidates if first.resolution is not None else ()
+        guess = next((c for c in candidates if c.id == wanted), None)
+        if guess is not None:
+            await queue.choose_match_for([first.id, *(i.id for i in items)], guess)
+        else:
+            for item in unsure:
+                if item.status is ItemStatus.NEEDS_CHOICE:
+                    item.status = ItemStatus.READY
+        if not self.winfo_exists():
+            return
+        log.info("Took the guess for a band of %d file(s)", len(items))
+        await self.forge(only=ids)
 
     async def _settle_uncertain(self, only: Sequence[int] | None = None) -> bool:
         wanted = None if only is None else set(only)
@@ -2204,7 +2295,8 @@ class QueueView(ctk.CTkFrame):
 
     def _pending(self, only: Sequence[int] | None) -> list[QueueItem]:
         """What Forge renames: a band's files, or (Forge for all) everything except downloads
-        that wait for the owner (those go through their own band's Rename only)."""
+        that wait for the owner (those go through their own band's Forge this / Try again / Yes,
+        forge it only)."""
         pending = [
             i
             for i in self.pending_items()
@@ -2217,7 +2309,7 @@ class QueueView(ctk.CTkFrame):
 
     @_one_at_a_time
     async def forge(self, only: Sequence[int] | None = None) -> None:
-        """Rename every pending file, or only those in `only` (a band's Rename)."""
+        """Rename every pending file, or only those in `only` (a band's Forge this)."""
         await self.settled()
         if not self._pending(only) or not await self._settle_uncertain(only):
             return
@@ -2353,7 +2445,7 @@ class QueueView(ctk.CTkFrame):
 
     @_one_at_a_time
     async def replace_band(self, ids: Sequence[int]) -> None:
-        """A band's "Replace the one in the library", for its downloads held because the film or
+        """A band's "Use this one instead", for its downloads held because the film or
         episode is there already: asked first ("… The one there now moves to Duplicates."), then
         the copy there moves aside and the download takes its place, in one run
         (`services.auto.replace`): its Undo (the card's or History's) puts both back."""

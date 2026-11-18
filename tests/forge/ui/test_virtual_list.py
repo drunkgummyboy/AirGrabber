@@ -509,6 +509,99 @@ class QueueBandTests(TkCase):
         self.assertEqual(vlist.poster_size, (round(58 * scale), round(86 * scale)))
 
 
+ASKING = Row(
+    key=-20,
+    kind="band",
+    title="Beast.2026.mkv",
+    subtitle="Waiting for you · 1 file",
+    badge="Beast",
+    actions=(
+        ("explorer", "📂 Show file"),
+        ("ignore", "Leave it alone ▾"),
+        ("choose", "No, pick it…"),
+        ("accept", "Yes, forge it"),
+    ),
+    quiet=("explorer", "ignore"),
+    tips=(("explorer", "Open in Explorer"), ("preset", "Beast (2026)\\Beast (2026).mkv")),
+    chip="Movie ▾",
+    chip_caption="Name style",
+    state="needs",
+    state_text="Not sure which film",
+    ask="Is this Beast (2026)?",
+    ask_bold=(8, 20),
+    ask_more="Names differ.",
+)
+
+
+class QuestionBandTests(TkCase):
+    """A band that asks (the owner's choice "B"): its question, quiet links and answers."""
+
+    async def asking_list(self, row: Row = ASKING, width: int = 1500) -> VirtualList:
+        holder = ctk.CTkFrame(self.root, width=width, height=300)
+        holder.place(x=0, y=0)
+        holder.pack_propagate(False)
+        self.addCleanup(holder.destroy)
+        vlist = VirtualList(holder, row_height=40, band_height=120, sizes=QUEUE_SIZES)
+        vlist.pack(fill="both", expand=True)
+        self.root.deiconify()
+        self.root.geometry(f"{width + 20}x320+0+0")
+        vlist.set_rows([row])
+        await pump(self.root, 0.05)
+        return vlist
+
+    async def test_the_answers_are_buttons_and_the_extras_quiet_links(self) -> None:
+        vlist = await self.asking_list()
+        canvas = vlist.canvas
+        quiet = {cget(canvas, i, "text"): cget(canvas, i, "fill") for i in canvas.find_withtag("band-quiet")}
+        self.assertEqual(set(quiet), {"📂 Show file", "Leave it alone ▾"})
+        muted = theme.pick(theme.TEXT_MUTED).upper()
+        self.assertEqual({fill.upper() for fill in quiet.values()}, {muted})
+        [link] = [i for i in canvas.find_withtag("band-quiet") if cget(canvas, i, "text") == "📂 Show file"]
+        self.assertTrue(tkfont.Font(font=cget(canvas, link, "font")).actual("underline"))
+        answers = [cget(canvas, i, "text") for i in canvas.find_withtag("band-button-text")]
+        self.assertEqual(answers, ["Yes, forge it", "No, pick it…"])  # the main one first
+        fills = [cget(canvas, i, "fill").upper() for i in canvas.find_withtag("band-button")]
+        self.assertEqual(fills[0], theme.pick(app_look().ACCENT).upper())  # only it is filled
+        self.assertNotEqual(fills[1], fills[0])
+        for action in ("explorer", "ignore", "choose", "accept"):  # the links take clicks too
+            self.assertIsNotNone(vlist.action_box(-20, action))
+        tips = [tip for *_box, tip in vlist._tips]
+        self.assertIn("Open in Explorer", tips)
+
+    async def test_the_question_has_its_guess_bold_and_its_muted_words_after_it(self) -> None:
+        vlist = await self.asking_list()
+        canvas = vlist.canvas
+        asked = canvas.find_withtag("band-ask")
+        self.assertEqual("".join(cget(canvas, i, "text") for i in asked), "Is this Beast (2026)?")
+        weights = [tkfont.Font(font=cget(canvas, i, "font")).actual("weight") for i in asked]
+        self.assertEqual(weights, ["normal", "bold", "normal"])
+        [more] = canvas.find_withtag("band-ask-more")
+        self.assertEqual(cget(canvas, more, "text"), "Names differ.")
+        self.assertEqual(cget(canvas, more, "fill").upper(), theme.pick(theme.TEXT_MUTED).upper())
+        self.assertEqual(canvas.bbox(more)[1], canvas.bbox(asked[0])[1])  # on the same line
+        self.assertEqual(canvas.find_withtag("band-dest"), ())  # in the subtitle's place
+
+    async def test_muted_words_that_dont_fit_go_under_the_question(self) -> None:
+        long = ASKING.model_copy(update={"ask_more": "So many words " * 12})
+        vlist = await self.asking_list(long, width=1100)
+        canvas = vlist.canvas
+        [more] = canvas.find_withtag("band-ask-more")
+        first = canvas.find_withtag("band-ask")[0]
+        self.assertGreater(canvas.bbox(more)[1], canvas.bbox(first)[3] - 4)
+        self.assertEqual(canvas.bbox(more)[0], canvas.bbox(first)[0])
+        self.assertTrue(cget(canvas, more, "text").endswith("…"))
+
+    async def test_the_chip_has_its_caption_and_tells_the_new_name(self) -> None:
+        vlist = await self.asking_list()
+        canvas = vlist.canvas
+        [caption] = canvas.find_withtag("chip-caption")
+        self.assertEqual(cget(canvas, caption, "text"), "Name style")
+        box = vlist.chip_box(-20)
+        assert box is not None
+        self.assertLess(canvas.bbox(caption)[2], box[0])  # before the chip
+        self.assertIn((*box, "Beast (2026)\\Beast (2026).mkv"), vlist._tips)
+
+
 class OptionButtonTests(TkCase):
     async def test_toggles_and_tells_every_click(self) -> None:
         heard: list[bool] = []

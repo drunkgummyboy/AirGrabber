@@ -5,10 +5,13 @@ Series come from the calendar of the person the phone follows, films from that p
 or it would never get its button; a film further off than the window waits, and one without a date
 comes last. A special has no episode number to download by, and isn't listed.
 
-A grab takes a film off every list, so a grabbed film is listed from the PC's Downloads page, for
-as long as that page has it, and for a moment before the page has looked again (`GrabbedFilms`).
-The history doesn't say whose grab it was: what the lists looked like while the film was on them
-does, as far as this run has seen them. A film not seen on any list shows on every phone.
+A grabbed film stays on the lists (its switch off, `WatchlistEntry.downloaded`), but Coming up
+lists it only while it is on its way or done there: while the PC's Downloads page has it, and for
+a moment before the page has looked again; after that it has been fetched and leaves Coming up,
+as before 2026-11-17, when a grab took it off every list. A film taken off the list after its grab
+is listed from the Downloads page in the same way (`GrabbedFilms`). The history doesn't say whose
+grab it was: what the lists looked like while the film was on them does, as far as this run has
+seen them. A film not seen on any list shows on every phone.
 
 `state` says what the PC says, from the same sources:
 
@@ -120,7 +123,7 @@ class _SeenFilm:
 
 
 class GrabbedFilms:
-    """What's known of the films on the lists, kept for when a grab has taken them off."""
+    """What's known of the films on the lists, kept for when one is taken off after its grab."""
 
     def __init__(self, status: DownloadStatusService) -> None:
         self._status = status
@@ -300,7 +303,10 @@ class ComingUp:
                 page=page,
             )
             fetched_long_ago = day is not None and day < start and state == "downloaded"
-            if not fetched_long_ago or entry.movie.id in rows:
+            # Downloaded (it stays on the list): only while the Downloads page has it or it's on
+            # its way, as a grab off the list is shown; else it was fetched and has left.
+            fetched = entry.downloaded and state != "downloading"
+            if not (fetched_long_ago or fetched) or entry.movie.id in rows:
                 items.append(_film_item(entry.movie, day, state))
         on_the_list = {entry.movie.id for entry in lists.get(person, ())}
         for movie_id in self._films_grabbed_lately(rows):

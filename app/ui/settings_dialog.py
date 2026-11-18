@@ -240,6 +240,9 @@ START_TEXT = N_("Start AirGrabber when Windows starts")
 NEW_SHOWS_TITLE = N_("New shows")
 NEW_SHOWS_TEXT = N_("You can still change this for each show.")
 NEW_SHOWS_SWITCH = N_("Download new episodes for shows I start following")
+NEW_FILMS_TITLE = N_("New films on your watchlist")
+NEW_FILMS_TEXT = N_("You can still change this for each film.")
+NEW_FILMS_SWITCH = N_("Download films I add to my watchlist when they're out")
 WAIT_TITLE = N_("Wait after an episode airs")
 WAIT_TEXT = N_(
     "Automatic downloads wait this long, so good releases can turn up. The first ones are more "
@@ -633,6 +636,7 @@ _FIELD_SECTIONS: dict[str, str] = {
     "keep_in_tray": SECTION_AUTOMATIC,
     "start_with_windows": SECTION_AUTOMATIC,
     "auto_download_new_shows": SECTION_AUTOMATIC,
+    "auto_download_new_films": SECTION_AUTOMATIC,
     "auto_wait_hours": SECTION_AUTOMATIC,
     "stuck_swap_hours": SECTION_AUTOMATIC,
     "tmdb_api_key": SECTION_INFO,
@@ -847,6 +851,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._startup_shown = self._startup.is_enabled()
         self._start_with_windows = ctk.BooleanVar(value=self._startup_shown)
         self._auto_new_shows = ctk.BooleanVar(value=current.auto_download_new_shows)
+        self._auto_new_films = ctk.BooleanVar(value=current.auto_download_new_films)
         self._auto_wait = ctk.StringVar(value=t(WAIT_HOURS, n=current.auto_wait_hours))
         self._stuck_swap = ctk.StringVar(value=stuck_name(current.stuck_swap_hours))
         self._finished_folder = ctk.StringVar(value=current.subtitles_folder)
@@ -1327,6 +1332,10 @@ class SettingsDialog(ctk.CTkToplevel):
         shows = page.box(t(NEW_SHOWS_TITLE), t(NEW_SHOWS_TEXT))
         shows.add(
             self._checkbox(shows.body, t(NEW_SHOWS_SWITCH), self._auto_new_shows), sticky="w"
+        )
+        films = page.box(t(NEW_FILMS_TITLE), t(NEW_FILMS_TEXT))
+        films.add(
+            self._checkbox(films.body, t(NEW_FILMS_SWITCH), self._auto_new_films), sticky="w"
         )
         wait = page.box(t(WAIT_TITLE), t(WAIT_TEXT))
         hours = [t(WAIT_HOURS, n=n) for n in AUTO_WAIT_CHOICES]
@@ -2152,6 +2161,7 @@ class SettingsDialog(ctk.CTkToplevel):
             auto_update=self._auto_update.get(),
             keep_in_tray=self._keep_in_tray.get(),
             auto_download_new_shows=self._auto_new_shows.get(),
+            auto_download_new_films=self._auto_new_films.get(),
             auto_wait_hours=self._wait_hours(),
             stuck_swap_hours=self._stuck_hours(),
             subtitles_folder=self._finished_folder.get(),

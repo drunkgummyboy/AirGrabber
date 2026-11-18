@@ -57,6 +57,8 @@ from app.ui.title_info import (
     join_meta,
     rating_text,
     release_text,
+    SendToPhone,
+    send_button,
 )
 from app.ui.watchlist_button import WatchlistButton
 
@@ -143,8 +145,10 @@ class MovieDetailsWindow(TitleInfoWindow):
         playback: PlaybackService | None = None,
         player: PlayerHost | None = None,
         status: StatusReporter | None = None,
+        send: SendToPhone | None = None,
     ) -> None:
-        """`releases`: what its
+        """`send`: "Send to phone" among the actions (opened from the Library page while a
+        phone is connected; `set_send` adds it later). `releases`: what its
         releases panel works with (without it there is none). `in_plex(tmdb_id, imdb_id)`:
         where the film is had (library_words' HaveSource: in Plex, beside Plex only in the
         user's own folders, or with the folders alone in them), None when it isn't (the quiet ✓
@@ -176,6 +180,7 @@ class MovieDetailsWindow(TitleInfoWindow):
         )
         self._details: MovieDetails | None = None
         self._extras: TitleExtras | None = None
+        self._send: SendToPhone | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._state_task: asyncio.Task[None] | None = None
 
@@ -216,6 +221,10 @@ class MovieDetailsWindow(TitleInfoWindow):
         self.plex_mark: ctk.CTkLabel | None = None
         # In Plex (and ▶ Play offered): "▶ Play" after the download row (made only then).
         self.play_button: ctk.CTkButton | None = None
+        # Opened from the Library page while a phone is connected: "Send to phone".
+        self.send_button: ctk.CTkButton | None = None
+        if send is not None:
+            self.set_send(send, show=False)
         self._show_buttons()
         self._paint()
 
@@ -238,9 +247,27 @@ class MovieDetailsWindow(TitleInfoWindow):
             panel.focus_table()
         return panel
 
+    def set_send(self, send: SendToPhone, *, show: bool = True) -> None:
+        """"Send to phone" after the watchlist button from now on (the window opened again from
+        the Library page); `show`: the actions laid out again now."""
+        self._send = send
+        if self.send_button is None:
+            self.send_button = send_button(
+                self.buttons, self._send_pressed, height=ROW_HEIGHT,
+                font=theme.font(CONTROL_FONT_SIZE, bold=True), radius=CONTROL_RADIUS,
+                hover_color=theme.HOVER, text_color=theme.BUTTON_TEXT,
+            )
+        if show:
+            self._show_buttons()
+
+    def _send_pressed(self) -> None:
+        if self._send is not None:
+            self._send(self)  # the dialog opens over this window
+
     def _show_buttons(self) -> None:
         """⬇ Auto (+ ☰ Choose… in "tabs"), ▶ Play while it is in Plex, the watchlist button,
-        IMDb, and the ✓ while it is in Plex."""
+        "Send to phone" (from the Library page, while a phone is connected), IMDb, and the ✓
+        while it is in Plex."""
         if self._is_in_plex and self.plex_mark is None:
             self.plex_mark = mark_label(
                 self.buttons, HAVE_MARK, theme.TEXT_MUTED, dot=False, height=ROW_HEIGHT
@@ -257,7 +284,10 @@ class MovieDetailsWindow(TitleInfoWindow):
             )
         plex = [self.plex_mark] if self.plex_mark is not None else []
         play = [self.play_button] if self.play_button is not None and playable else []
-        self.buttons.set_items([self.download, *play, self.watch_button, self.imdb_button, *plex])
+        send = [self.send_button] if self.send_button is not None else []
+        self.buttons.set_items(
+            [self.download, *play, self.watch_button, *send, self.imdb_button, *plex]
+        )
         if not self._is_in_plex and self.plex_mark is not None:
             self.plex_mark.destroy()
             self.plex_mark = None
@@ -431,15 +461,24 @@ class MovieWindows:
         return layout
 
     async def open_movie_id(
-        self, movie_id: int, *, releases: bool = False, quality: str | None = None
+        self,
+        movie_id: int,
+        *,
+        releases: bool = False,
+        quality: str | None = None,
+        send: SendToPhone | None = None,
     ) -> bool:
         """Open (or raise) the window of a film known only by its TMDB id (a grab on the
-        Downloads page), once TMDB has described it; `releases`: on its releases. False when
-        TMDB can't (no key, offline, too slow): the caller falls back to IMDb or says so.
-        `quality`: the releases' VERSION chip (with `releases`)."""
+        Downloads page, a Library film), once TMDB has described it; `releases`: on its
+        releases. False when TMDB can't (no key, offline, too slow): the caller falls back to
+        IMDb or says so. `quality`: the releases' VERSION chip (with `releases`). `send`: "Send
+        to phone" among its actions (the Library page's, while a phone is connected); an open
+        window gets it too and keeps it."""
         window = self._live().get(movie_id)
         if window is not None:
             window.raise_window()
+            if send is not None:
+                window.set_send(send)
             if releases:
                 window.show_releases(quality)
             return True
@@ -450,23 +489,32 @@ class MovieWindows:
             log.info("Film %d: no TMDB description to open its window: %s", movie_id, exc)
             return False
         if exists(self._master):
-            self.open_movie(movie, releases=releases, quality=quality)
+            self.open_movie(movie, releases=releases, quality=quality, send=send)
         return True
 
     def open_movie(
-        self, movie: Movie, *, releases: bool = False, quality: str | None = None
+        self,
+        movie: Movie,
+        *,
+        releases: bool = False,
+        quality: str | None = None,
+        send: SendToPhone | None = None,
     ) -> None:
         """Open the film's window, or raise it; `releases`: on its releases ("☰ Choose…"),
-        `quality`: on that VERSION chip."""
+        `quality`: on that VERSION chip; `send`: "Send to phone" (see `open_movie_id`)."""
         window = self._live().get(movie.id)
         if window is None:
-            window = self._windows[movie.id] = self._new_window(movie)
+            window = self._windows[movie.id] = self._new_window(movie, send)
         else:
             window.raise_window()
+            if send is not None:
+                window.set_send(send)
         if releases:
             window.show_releases(quality)
 
-    def _new_window(self, movie: Movie) -> MovieDetailsWindow:
+    def _new_window(
+        self, movie: Movie, send: SendToPhone | None = None
+    ) -> MovieDetailsWindow:
         return MovieDetailsWindow(
             self._master,
             movie,
@@ -480,6 +528,7 @@ class MovieWindows:
             playback=self._playback,
             player=self._player,
             status=self._status,
+            send=send,
         )
 
     def close(self) -> None:

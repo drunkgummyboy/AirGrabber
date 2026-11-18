@@ -4,6 +4,7 @@ Tk root."""
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import tkinter as tk
 import unittest
@@ -289,6 +290,29 @@ class ShowCardWidgetTests(unittest.IsolatedAsyncioTestCase):
         card.pack(side="left")
         self.root.update()
         return card
+
+    async def test_a_real_click_on_the_menu_button_keeps_its_menu_open(self) -> None:
+        """⋯ opens on the release: on the press, customtkinter's bind_all <Button-1> handed the
+        focus back to the button after the menu took it, and the menu closed at once."""
+        card = self.card(Show(id=7, name="Severance"))
+        self.root.deiconify()
+        self.root.update()
+        button = card.menu_button
+        button.event_generate("<Button-1>", x=3, y=3)
+        self.root.update()
+        self.assertIsNone(PopupMenu._open)  # nothing on the press
+        button.event_generate("<ButtonRelease-1>", x=3, y=3)
+        opened = PopupMenu._open
+        assert opened is not None
+        self.addCleanup(opened.close)
+        for _ in range(10):  # the menu's focus check runs 50 ms after a focus change
+            await asyncio.sleep(0.02)
+            self.root.update()
+        self.assertTrue(opened.is_open)
+        opened.close()
+        button.event_generate("<Button-1>", x=3, y=3)
+        button.event_generate("<ButtonRelease-1>", x=button.winfo_width() + 5, y=3)
+        self.assertIsNone(PopupMenu._open)  # let go outside: nothing
 
     async def test_a_show_with_missing_episodes(self) -> None:
         show = Show(id=7, name="Severance", imdb_id="tt11280740")

@@ -19,6 +19,8 @@ import httpx
 from app.models import DiscoverShow, MediaType, Movie, MovieDetails
 from app.models.tmdb import TMDBSeason, TMDBTitle, TMDBTitleIds
 from app.services.tmdb import (
+    MAX_PAGE,
+    ResultPage,
     TMDBAuthError,
     TMDBClient,
     TMDBError,
@@ -177,6 +179,53 @@ class RequestShapeTests(TMDBTestCase):
         with self.assertRaises(ValueError):
             await client.digital_releases(date(2026, 9, 28), date(2026, 10, 12), page=0)
         self.assertEqual(len(server.requests), 1)
+
+    async def test_later_pages_say_how_many_there_are(self) -> None:
+        """See more: `*_page` asks for page N (none for the first) and reads total_pages."""
+        raw = load("see_more_trending_page2.json")
+        server = FakeTMDB(ok(raw))
+        client = self.client(server)
+        result = await client.trending_movies_page(2)
+        self.assert_request(server.requests[0], "/trending/movie/week", {"page": "2"})
+        self.assertEqual([m.id for m in result.items], [item["id"] for item in raw["results"]])
+        self.assertEqual((result.page, result.total_pages, result.is_last), (2, 500, False))
+        await client.trending_movies_page(1)
+        self.assert_request(server.requests[1], "/trending/movie/week", {})
+        result = await client.digital_releases_page(date(2026, 9, 28), date(2026, 10, 12), page=3)
+        self.assert_request(
+            server.requests[2],
+            "/discover/movie",
+            {
+                "sort_by": "popularity.desc",
+                "with_release_type": "4",
+                "region": "US",
+                "release_date.gte": "2026-09-28",
+                "release_date.lte": "2026-10-12",
+                "page": "3",
+            },
+        )
+        for bad in (0, MAX_PAGE + 1):
+            with self.subTest(page=bad), self.assertRaises(ValueError):
+                await client.trending_movies_page(bad)
+        self.assertEqual(len(server.requests), 3)
+
+    def test_the_last_page(self) -> None:
+        full = tuple(range(20))
+        self.assertTrue(ResultPage(full, 3, 3).is_last)
+        self.assertFalse(ResultPage(full, 2, 3).is_last)
+        self.assertTrue(ResultPage((), 4, 3).is_last)  # past the end
+        self.assertTrue(ResultPage(full, MAX_PAGE, 9000).is_last)  # TMDB stops at 500
+        self.assertFalse(ResultPage(full, 2, None).is_last)  # no total: a full page goes on
+        self.assertTrue(ResultPage(full[:5], 2, None).is_last)
+
+    async def test_a_page_without_a_usable_total(self) -> None:
+        for total in (None, "7", True, -1):
+            with self.subTest(total=total):
+                payload: dict[str, Any] = {"page": 2, "results": []}
+                if total is not None:
+                    payload["total_pages"] = total
+                result = await self.client(FakeTMDB(ok(payload))).trending_movies_page(2)
+                self.assertIsNone(result.total_pages)
 
     async def test_search_movies_strips_query(self) -> None:
         server = FakeTMDB(ok(page()))

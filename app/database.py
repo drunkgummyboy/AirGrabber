@@ -438,8 +438,8 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     # v3: the movie watchlist. A film is kept as the JSON of the TMDB list entry it was saved
     # with (the `Movie` model), so its card draws without TMDB; the release dates come from
-    # TMDB's details and are refreshed now and then. A film leaves the list once it is
-    # downloaded (HistoryRepository.add).
+    # TMDB's details and are refreshed now and then. (Until 2026-11-17 a film left the list once
+    # it was downloaded; since then it stays, its switch off: HistoryRepository.add.)
     """
     CREATE TABLE watchlist (
         movie_id           INTEGER PRIMARY KEY,             -- TMDB movie id
@@ -1688,8 +1688,10 @@ class HistoryRepository:
         the old grab's Downloads page marks go (taken off the page, had by the torrent
         program): the page lists it again and waits for its program like any fresh grab.
 
-        A film's grab also takes it off every person's watchlist, in the same transaction and
-        however it was grabbed: a downloaded film is on the shared PC, it leaves every list.
+        A film's grab keeps it on every person's watchlist (it stays until they remove it), but
+        in the same transaction and however it was grabbed its "Download when it's out" switch
+        goes off on every list, its automatic tries and give-up forgotten (`_GRABBED_FILM_SQL`):
+        the automatic downloads never fetch it again.
         """
         values = record.model_dump(mode="json", exclude={"id"})
         columns = [column for column in HISTORY_COLUMNS if column != "id"]
@@ -1730,7 +1732,9 @@ class HistoryRepository:
                 )
                 await conn.execute("DELETE FROM seen_downloads WHERE history_id = ?", (history_id,))
             if record.media_type is MediaType.MOVIE:
-                await conn.execute("DELETE FROM watchlist WHERE movie_id = ?", (record.media_id,))
+                await conn.execute(
+                    f"{_GRABBED_FILM_SQL} WHERE movie_id = ?", (record.media_id,)
+                )
             return row is None
 
     async def has_episode(self, show_id: int, season: int, episode: int | None) -> bool:
@@ -1876,9 +1880,27 @@ class HistoryRepository:
         ]
 
 
-_WATCHLIST_SQL = """
+# Whether a watchlist row's film is in the download history (`WatchlistEntry.downloaded`).
+_FILM_DOWNLOADED = """
+    EXISTS (
+        SELECT 1 FROM download_history AS h
+        WHERE h.media_type = 'movie' AND h.media_id = watchlist.movie_id
+    )
+"""
+
+# When a watchlist row's film was last grabbed (NULL: never; `WatchlistEntry.downloaded_at`).
+_FILM_DOWNLOADED_AT = """
+    (
+        SELECT h.downloaded_at FROM download_history AS h
+        WHERE h.media_type = 'movie' AND h.media_id = watchlist.movie_id
+        ORDER BY julianday(h.downloaded_at) DESC LIMIT 1
+    )
+"""
+
+_WATCHLIST_SQL = f"""
     SELECT movie_id, movie, added_at, auto_download, imdb_id, digital_release,
-           theatrical_release, details_at, tries, first_try, last_try, gave_up
+           theatrical_release, details_at, tries, first_try, last_try, gave_up,
+           {_FILM_DOWNLOADED} AS downloaded, {_FILM_DOWNLOADED_AT} AS downloaded_at
     FROM watchlist
     WHERE profile_id = :profile
 """
@@ -1890,7 +1912,8 @@ def _films_sql(where: str = "") -> str:
     SELECT movie_id, movie, MIN(added_at) AS added_at, MAX(auto_download) AS auto_download,
            imdb_id, digital_release, theatrical_release, MAX(details_at) AS details_at,
            MAX(tries) AS tries, MIN(first_try) AS first_try, MAX(last_try) AS last_try,
-           MAX(gave_up) AS gave_up
+           MAX(gave_up) AS gave_up, {_FILM_DOWNLOADED} AS downloaded,
+           {_FILM_DOWNLOADED_AT} AS downloaded_at
     FROM watchlist
     {where}
     GROUP BY movie_id
@@ -1904,13 +1927,21 @@ _FILM_SQL = _films_sql("WHERE movie_id = :id")
 # A film onto a person's list (:profile). When someone else has it already, the film's own
 # columns (release dates, the automatic tries, given up) come from their row: they are the
 # film's, not a person's; a film given up starts with its switch off, as given-up films have
-# it. (The WHERE keeps SQLite from reading ON CONFLICT as the join's ON.)
+# it, and so does a film downloaded already (it would only be fetched again). (The WHERE keeps
+# SQLite from reading ON CONFLICT as the join's ON.)
 _ADD_FILM_SQL = """
     INSERT INTO watchlist (profile_id, movie_id, title, movie, added_at, auto_download, imdb_id,
                            digital_release, theatrical_release, details_at, tries, first_try,
                            last_try, gave_up)
     SELECT :profile, :id, :title, :movie, :when,
-           CASE WHEN COALESCE(o.gave_up, 0) THEN 0 ELSE :auto END,
+           CASE
+               WHEN COALESCE(o.gave_up, 0) THEN 0
+               WHEN EXISTS (
+                   SELECT 1 FROM download_history AS h
+                   WHERE h.media_type = 'movie' AND h.media_id = :id
+               ) THEN 0
+               ELSE :auto
+           END,
            COALESCE(o.imdb_id, :imdb_id), o.digital_release, o.theatrical_release, o.details_at,
            COALESCE(o.tries, 0), o.first_try, o.last_try, COALESCE(o.gave_up, 0)
     FROM (SELECT 1) AS one
@@ -1930,6 +1961,13 @@ _FORGET_TRIES_SQL = (
     "WHERE movie_id = ?"
 )
 
+# A film was downloaded (HistoryRepository.add, a backup's grabs): it stays on every list, its
+# switch off and its automatic search over (tries and give-up forgotten). Add the WHERE.
+_GRABBED_FILM_SQL = (
+    "UPDATE watchlist SET auto_download = 0, tries = 0, first_try = NULL, last_try = NULL, "
+    "gave_up = 0"
+)
+
 
 def _watchlist_entry(row: sqlite3.Row) -> WatchlistEntry:
     return WatchlistEntry(
@@ -1944,6 +1982,8 @@ def _watchlist_entry(row: sqlite3.Row) -> WatchlistEntry:
         first_try=row["first_try"],
         last_try=row["last_try"],
         gave_up=bool(row["gave_up"]),
+        downloaded="downloaded" in row.keys() and bool(row["downloaded"]),
+        downloaded_at=row["downloaded_at"] if "downloaded_at" in row.keys() else None,
     )
 
 
@@ -2045,10 +2085,13 @@ class WatchlistRepository:
     async def try_again(self, movie_id: int) -> None:
         """The Downloads page's "Try again" on a film given up: its switch on again on every
         list that has it (giving up turned them all off) and its tries forgotten, as switching
-        it on does; the next automatic run includes it."""
+        it on does; the next automatic run includes it. A film downloaded meanwhile keeps its
+        switch off (it would only be fetched again)."""
         async with self._db.transaction() as conn:
             await conn.execute(
-                "UPDATE watchlist SET auto_download = 1 WHERE movie_id = ?", (movie_id,)
+                "UPDATE watchlist SET auto_download = 1 "
+                f"WHERE movie_id = ? AND NOT {_FILM_DOWNLOADED}",
+                (movie_id,),
             )
             await conn.execute(_FORGET_TRIES_SQL, (movie_id,))
 
@@ -2081,13 +2124,13 @@ class WatchlistRepository:
     async def record_try(self, movie_id: int, when: datetime, *, give_up: bool) -> None:
         """Count one more automatic try at a film (on every list that has it); with `give_up`
         the automatic downloads stop looking and every switch of it goes off. Ignored for a
-        film that is on nobody's list."""
+        film that is on nobody's list, and for one downloaded meanwhile (its search is over)."""
         async with self._db.transaction() as conn:
             await conn.execute(
                 "UPDATE watchlist SET tries = tries + 1, first_try = COALESCE(first_try, :when), "
                 "last_try = :when, gave_up = :give_up, "
                 "auto_download = CASE WHEN :give_up THEN 0 ELSE auto_download END "
-                "WHERE movie_id = :id",
+                f"WHERE movie_id = :id AND NOT {_FILM_DOWNLOADED}",
                 {"id": movie_id, "when": _utc(when), "give_up": give_up},
             )
 
@@ -2634,16 +2677,22 @@ _RESTORE_GRAB_SQL = """
                AND julianday(h.downloaded_at) = julianday(:downloaded_at))
     )
 """
-# A film from a backup onto a person's watchlist, unless it was downloaded (a downloaded film
-# leaves every list) or is on their list already.
+# A film from a backup onto a person's watchlist, unless it is on their list already; one
+# downloaded (here, or in the backup's history) comes with its switch off, as a grab leaves it.
+# (The WHERE keeps SQLite from reading ON CONFLICT as part of the SELECT.)
 _RESTORE_FILM_SQL = """
     INSERT INTO watchlist (profile_id, movie_id, title, movie, added_at, auto_download, imdb_id,
                            digital_release, theatrical_release)
-    SELECT :profile_id, :movie_id, :title, :movie, :added_at, :auto_download, :imdb_id,
-           :digital_release, :theatrical_release
-    WHERE NOT EXISTS (
-        SELECT 1 FROM download_history WHERE media_type = 'movie' AND media_id = :movie_id
-    )
+    SELECT :profile_id, :movie_id, :title, :movie, :added_at,
+           CASE
+               WHEN EXISTS (
+                   SELECT 1 FROM download_history
+                   WHERE media_type = 'movie' AND media_id = :movie_id
+               ) THEN 0
+               ELSE :auto_download
+           END,
+           :imdb_id, :digital_release, :theatrical_release
+    WHERE 1
     ON CONFLICT (profile_id, movie_id) DO NOTHING
 """
 
@@ -2806,7 +2855,8 @@ class BackupRepository:
         "I already have this" marks (shared) become the backup's with `replace`, or when nobody
         here followed it yet; a show anyone here follows keeps the episodes stored here. Either
         way the backup's download history is added to this one (no grab twice); a downloaded
-        film leaves every watchlist. A newly followed show is synced from TVMaze at the next
+        film stays on the watchlists with its switch off, as a grab leaves it (HistoryRepository
+        .add). A newly followed show is synced from TVMaze at the next
         sync. `when`: the moment marks, cleared grabs and new people are stamped with.
         """
         async with self._db.transaction() as conn:
@@ -2951,9 +3001,9 @@ class BackupRepository:
                     "ON CONFLICT (history_id) DO NOTHING",
                     (cursor.lastrowid, _utc(when)),
                 )
-            if downloaded_films:  # as HistoryRepository.add: a downloaded film leaves every list
+            if downloaded_films:  # as HistoryRepository.add: kept, the switch off everywhere
                 await conn.execute(
-                    "DELETE FROM watchlist WHERE movie_id IN (SELECT value FROM json_each(?))",
+                    f"{_GRABBED_FILM_SQL} WHERE movie_id IN (SELECT value FROM json_each(?))",
                     (json.dumps(sorted(downloaded_films)),),
                 )
 

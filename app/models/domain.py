@@ -344,9 +344,24 @@ class MovieDashboard(DomainModel):
     plex_connected: bool = False
     in_plex: frozenset[int] = frozenset()
     in_folders: frozenset[int] = frozenset()
+    # The shelves (by name) whose TMDB list has more after the films shown: See more
+    # (`DiscoveryService.more_movies`).
+    more: frozenset[str] = frozenset()
+    # Which fetch of TMDB's lists these are: See more goes on from it (`more_movies`' `listing`).
+    listing: int = 0
 
     def is_had(self, movie_id: int) -> bool:
         return movie_id in self.in_plex or movie_id in self.in_folders
+
+
+class MoviePage(DomainModel):
+    """A movie shelf's next films (the Movies page's See more, `DiscoveryService.more_movies`):
+    `more` while TMDB's list goes on after them; the films had as in MovieDashboard."""
+
+    movies: tuple[Movie, ...] = ()
+    more: bool = False
+    in_plex: frozenset[int] = frozenset()
+    in_folders: frozenset[int] = frozenset()
 
 
 class SearchKind(StrEnum):
@@ -643,6 +658,10 @@ class WatchlistEntry(DomainModel):
     first_try: UtcDatetime | None = None
     last_try: UtcDatetime | None = None
     gave_up: bool = False  # the automatic downloads stopped looking (the switch went off)
+    # In the download history (read with the row, never stored): a grab keeps a film on the
+    # lists, its switch off; the card says it was downloaded, the automatic downloads skip it.
+    downloaded: bool = False
+    downloaded_at: UtcDatetime | None = None  # its latest grab, when `downloaded` (if known)
 
     @property
     def movie_id(self) -> int:

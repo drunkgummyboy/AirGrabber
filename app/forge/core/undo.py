@@ -7,7 +7,7 @@ removed, one moved along goes back. What is still beside the video after that (a
 owner changed since, or put there) goes back with it under the old name; when that name is taken
 it stays where it is, as it is the owner's.
 
-A replace ("Replace the one in the library") moved the library's copy aside in the same run,
+A replace ("Use this one instead") moved the library's copy aside in the same run,
 right before its replacement's rename: a card's Undo of that file, or History's tick on it, takes
 that move too (`_aside_of`), so both go back.
 """

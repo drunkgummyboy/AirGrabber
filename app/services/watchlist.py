@@ -4,9 +4,12 @@
 startup and at every switch: `load`, app/services/profiles.py), so cards can ask `contains()`
 while they are built, and tells its listeners after every change. A change names the person
 whose list it is (`profile_id`): one for someone else's list (a click just before a switch) is
-stored but leaves the list in memory alone. A film leaves every list once it is downloaded,
-however that happens: `HistoryRepository.add` deletes its rows and the service, hearing the grab
-from `DownloadService`, drops it here.
+stored but leaves the list in memory alone. A downloaded film stays on every list until its
+person removes it, however it was downloaded: `HistoryRepository.add` switches its "Download when
+it's out" off on every list (its tries and give-up forgotten), and the service, hearing the grab
+from `DownloadService`, marks it so here (`WatchlistEntry.downloaded`, the switch off) and tells
+its listeners, so the shelf repaints its card as downloaded. The automatic downloads never search
+for a downloaded film (`is_due`), nor is one listed as given up.
 
 When a film counts as out (`available_on`): its digital release date, as TMDB's details give it
 for the client's region; without one, its theatrical release (else TMDB's own release date)
@@ -16,7 +19,8 @@ The automatic downloads (`AutoDownloadService`) fetch the films whose "Download 
 switch is on, on anyone's list, once they are out (`is_due`): at most one search per film every
 RETRY_AFTER, and after GIVE_UP_AFTER of searches without a good enough release since the first
 one, the film is given up (every switch of it goes off; the card offers the manual Download).
-The tries are the film's, not a person's: a film on two lists is searched for once.
+The tries are the film's, not a person's: a film on two lists is searched for once. A film added
+to a list starts with its switch as Settings' `auto_download_new_films` says (off by default).
 
 Release dates are re-read from TMDB (`refresh_release_dates`, every film on anyone's list) when
 a film is added and when they are older than REFRESH_AFTER; without a TMDB key that is simply
@@ -30,12 +34,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from app.database import WatchlistRepository
 from app.models import FIRST_PROFILE_ID, GrabTarget, MediaType, Movie, WatchlistEntry
 from app.services.discovery import DiscoveryService
 from app.services.downloads import DownloadService
 from app.services.tmdb import TMDBAuthError, TMDBError, TMDBNotConfigured
+
+if TYPE_CHECKING:
+    from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
 
@@ -67,8 +75,10 @@ def is_out(entry: WatchlistEntry, today: date) -> bool:
 
 def is_due(entry: WatchlistEntry, now: datetime) -> bool:
     """Whether the automatic downloads should search for the film now: its switch is on, it
-    isn't given up, it is out, and its last search was at least RETRY_AFTER ago."""
-    if not entry.auto_download or entry.gave_up or not is_out(entry, now.date()):
+    isn't given up or downloaded, it is out, and its last search was at least RETRY_AFTER ago."""
+    if not entry.auto_download or entry.gave_up or entry.downloaded:
+        return False
+    if not is_out(entry, now.date()):
         return False
     return entry.last_try is None or now - entry.last_try >= RETRY_AFTER
 
@@ -100,8 +110,15 @@ def due_order(entry: WatchlistEntry) -> tuple[int, datetime, date, int]:
     )
 
 
-def _release_order(entry: WatchlistEntry) -> tuple[date, str, int]:
-    return (available_on(entry) or date.max, entry.movie.title.casefold(), entry.movie_id)
+def _release_order(entry: WatchlistEntry) -> tuple[bool, date, str, int]:
+    """Downloaded films after the others (they would crowd the ones still to come out of the
+    shelf's top), each group by the day it counts as out, earliest first; no date last."""
+    return (
+        entry.downloaded,
+        available_on(entry) or date.max,
+        entry.movie.title.casefold(),
+        entry.movie_id,
+    )
 
 
 class WatchlistService:
@@ -114,9 +131,12 @@ class WatchlistService:
         discovery: DiscoveryService,
         downloads: DownloadService,
         *,
+        settings: SettingsService | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
-        """`clock` returns the current UTC instant (tests move it)."""
+        """`settings`: read for `auto_download_new_films` whenever a film is added. `clock`
+        returns the current UTC instant (tests move it)."""
+        self._settings = settings
         self._repository = repository
         self._discovery = discovery
         self._clock = clock
@@ -183,7 +203,8 @@ class WatchlistService:
 
     def by_release(self) -> tuple[WatchlistEntry, ...]:
         """The films on the list in memory by the day they count as out, earliest first; films
-        without a date last. The shelf shows them in this order."""
+        without a date last; downloaded films after all the others, in the same order
+        (`_release_order`). The shelf shows them in this order."""
         return tuple(sorted(self._entries.values(), key=_release_order))
 
     async def by_release_of(self, profile_id: int) -> tuple[WatchlistEntry, ...]:
@@ -211,9 +232,16 @@ class WatchlistService:
 
     # -- changes ---------------------------------------------------------------------------------
 
-    async def add(self, movie: Movie, *, profile_id: int, auto_download: bool = True) -> None:
-        """Put a film on a person's list (its switch on by default), then read its release
-        dates from TMDB. A film already on their list is left as it is."""
+    async def add(
+        self, movie: Movie, *, profile_id: int, auto_download: bool | None = None
+    ) -> None:
+        """Put a film on a person's list, then read its release dates from TMDB. Its "Download
+        when it's out" switch: `auto_download`; None (every click) = Settings'
+        `auto_download_new_films` (off by default; without settings off). A film already on
+        their list is left as it is."""
+        if auto_download is None:
+            settings = self._settings
+            auto_download = settings is not None and settings.current.auto_download_new_films
         added = await self._repository.add(
             movie, profile_id=profile_id, auto_download=auto_download, when=self._clock()
         )
@@ -238,8 +266,13 @@ class WatchlistService:
         await self._reload(movie_id)
 
     async def given_up(self) -> list[WatchlistEntry]:
-        """The films the automatic downloads gave up on, on anyone's list (each once)."""
-        return [film for film in await self._repository.films() if film.gave_up]
+        """The films the automatic downloads gave up on, on anyone's list (each once); not one
+        downloaded since."""
+        return [
+            film
+            for film in await self._repository.films()
+            if film.gave_up and not film.downloaded
+        ]
 
     async def try_again(self, movie_id: int) -> None:
         """A film given up starts afresh: its switch on again on every list that has it, its
@@ -257,7 +290,7 @@ class WatchlistService:
         """Count an automatic search for a film that grabbed nothing (on every list that has
         it); returns whether the film was given up with it (`should_give_up`)."""
         film = await self._repository.film(movie_id)
-        if film is None:
+        if film is None or film.downloaded:  # downloaded meanwhile: its search is over
             return False
         when = when or self._clock()
         give_up = should_give_up(film, when)
@@ -267,12 +300,13 @@ class WatchlistService:
 
     async def refresh_release_dates(self, *, force: bool = False) -> None:
         """Read the release dates of every film on anyone's list whose dates are stale
-        (`needs_refresh`; every film with `force`) from TMDB, one after another. Without a TMDB
-        key, or with one TMDB rejects, nothing is read; other TMDB failures skip that film
-        until the next call."""
+        (`needs_refresh`; every film with `force`) from TMDB, one after another; never those
+        of a downloaded film (nothing waits for its release any more). Without a TMDB key, or
+        with one TMDB rejects, nothing is read; other TMDB failures skip that film until the
+        next call."""
         now = self._clock()
         for film in await self._repository.films():
-            if not (force or needs_refresh(film, now)):
+            if film.downloaded or not (force or needs_refresh(film, now)):
                 continue
             if not await self._refresh(film.movie_id):
                 return
@@ -313,9 +347,23 @@ class WatchlistService:
         self._notify()
 
     def _on_grab(self, target: GrabTarget) -> None:
-        """A film was grabbed (its rows are gone already: HistoryRepository.add): it leaves."""
+        """A film was grabbed: it stays, marked downloaded with its switch off and its search
+        over, as HistoryRepository.add left its rows in the same transaction."""
         if target.media_type is not MediaType.MOVIE:
             return
-        if self._entries.pop(target.media_id, None) is not None:
-            log.info("Watchlist: TMDB id %d was downloaded, it leaves the list", target.media_id)
-            self._notify()
+        entry = self._entries.get(target.media_id)
+        if entry is None:
+            return
+        self._entries[target.media_id] = entry.model_copy(
+            update={
+                "downloaded": True,
+                "downloaded_at": self._clock(),  # the history's own moment, near enough
+                "auto_download": False,
+                "tries": 0,
+                "first_try": None,
+                "last_try": None,
+                "gave_up": False,
+            }
+        )
+        log.info("Watchlist: TMDB id %d was downloaded, it stays on the list", target.media_id)
+        self._notify()

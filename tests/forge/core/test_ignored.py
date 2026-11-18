@@ -121,11 +121,12 @@ class ServiceTest(ForgeDbTestCase):
         folder = Path(r"C:\Users\Alex\Downloads\Python Course")
         with self.assertLogs("app.forge.core.ignored", logging.INFO) as logged:
             await service.ignore(folder, folder=True)
-        assert "Alex" not in "\n".join(logged.output)  # the last name only
+        written = "\n".join(logged.output)
+        assert "Alex" not in written and "Python Course" not in written  # no name, no path
         assert [line.text for line in feed.lines()] == [
-            "Ignored: Python Course. MediaForge won't pick it up again."
+            "Left alone: Python Course. MediaForge won't pick it up again."
         ]
-        assert t(IGNORED_LINE, name="x") == "Ignored: x. MediaForge won't pick it up again."
+        assert t(IGNORED_LINE, name="x") == "Left alone: x. MediaForge won't pick it up again."
         assert [e.path for e in service.entries] == [folder]
         assert service.snapshot().ignored(folder / "01.mp4")
         assert heard[-1] == service.entries
@@ -142,7 +143,7 @@ class ServiceTest(ForgeDbTestCase):
         feed = ActivityFeed()
         service = IgnoreService(IgnoredRepo(self.db), activity=feed)
         await service.ignore(DL / "clip.mp4", folder=False)
-        assert feed.lines()[-1].text == "Genegeerd: clip.mp4. MediaForge pakt het niet meer op."
+        assert feed.lines()[-1].text == "Met rust gelaten: clip.mp4. MediaForge pakt het niet meer op."
 
 
 class GoneTest(ForgeTestCase):

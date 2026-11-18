@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.19.0": (
+        N_("Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films."),
+        N_("Films stay on your watchlist after they're downloaded, with the day it happened; they're never downloaded twice."),
+        N_("Settings → Automatic: films you add to your watchlist only download by themselves when you tick it (off at first)."),
+        N_("MediaForge asks in plain words: “You already have this film” → Keep the one I have, or Use this one instead."),
+        N_("Movies: See more under each section loads the next films."),
+        N_("The ⋯ menus on cards stay open again instead of closing at once."),
+    ),
     "3.18.0": (
         N_("MediaForge's progress bar now shows on every page while it renames, so you can keep browsing."),
         N_("Calendar suggestions take one line each now, so many more fit on a day."),

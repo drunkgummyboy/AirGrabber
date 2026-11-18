@@ -31,6 +31,8 @@ FORGE_ROUTES = (
     ("GET", "/v1/forge"),
     ("GET", "/v1/forge/1/search?query=Dune"),
     ("POST", "/v1/forge/1/choose"),
+    ("POST", "/v1/forge/1/replace"),
+    ("POST", "/v1/forge/1/keep"),
 )
 
 

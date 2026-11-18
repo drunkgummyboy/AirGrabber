@@ -3,8 +3,9 @@ automatically".
 
 `GivenUpService` (`services.given_up`) lists the episodes the automatic downloads gave up on after
 trying (`LibraryRepository.auto_given_up`: still followed with the switch on, not grabbed, not
-in Plex) and the watchlist films they gave up on (on anyone's list; one Plex has is left out, as
-the automatic downloads skip it), the latest give-up (its last try) first, at most GIVEN_UP_MAX.
+in Plex) and the watchlist films they gave up on (on anyone's list, not downloaded since: a grab
+ends a film's search, `WatchlistService.given_up`; one Plex has is left out, as the automatic
+downloads skip it), the latest give-up (its last try) first, at most GIVEN_UP_MAX.
 No schema of its own: `auto_attempts.gave_up` and the watchlist's `gave_up`.
 
 `try_again` clears the give-up (an episode's tries forgotten, `gave_up = 0, tries = 0`; a film's

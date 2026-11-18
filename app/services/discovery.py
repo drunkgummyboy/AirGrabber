@@ -17,7 +17,7 @@ import logging
 import unicodedata
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -31,6 +31,7 @@ from app.models import (
     Movie,
     MovieDashboard,
     MovieDetails,
+    MoviePage,
     Show,
     TitleExtras,
     TitleInfo,
@@ -41,7 +42,14 @@ from app.models import (
 from app.models.plex import PlexFilms, PlexShows
 from app.services.library import LibraryService
 from app.services.release_dates import ReleaseDates
-from app.services.tmdb import TMDBAuthError, TMDBClient, TMDBError, TMDBNotConfigured
+from app.services.tmdb import (
+    MAX_PAGE,
+    ResultPage,
+    TMDBAuthError,
+    TMDBClient,
+    TMDBError,
+    TMDBNotConfigured,
+)
 from app.services.tvmaze import TVMazeClient
 
 log = logging.getLogger(__name__)
@@ -60,6 +68,11 @@ UPCOMING_AHEAD = timedelta(days=21)
 # Pages of TMDB's digital-release lists fetched per shelf: re-releases are filtered out
 # afterwards, so one page (20 films) could leave a shelf short.
 DIGITAL_PAGES = 2
+# The movie dashboard's shelves, by name (MovieDashboard's fields, `more_movies`' `shelf`).
+MOVIE_SHELVES = ("just_dropped", "trending", "upcoming")
+# The movie dashboard's last fetches whose See more state is kept (`MovieDashboard.listing`):
+# the cached one and the ones after it that weren't cached (a shelf failed) or are newer.
+PAGINGS_KEPT = 4
 # TVMaze search hits checked for a name + year match when no external id resolves.
 TRACK_SEARCH_LIMIT = 5
 CAST_LIMIT = 8  # the info window's cast row
@@ -180,6 +193,25 @@ class _Shelves(Generic[T]):
     day: date  # the local day the date windows were computed for
     lists: Mapping[str, tuple[T, ...]]
     stored_at: datetime
+    listing: int = 0  # the movie dashboard's: its See more state (`_MoviePaging`)
+
+
+@dataclass(slots=True)
+class _MoviePaging:
+    """See more on the movie shelves, for the lists the last TMDB fetch of the dashboard gave
+    (a fresh fetch starts over): its day (the date windows), the films it fetched beyond
+    SHELF_SIZE (the start of page 2), the shelves whose TMDB list goes on after it, and the
+    pages fetched since, by (shelf, page): their films and whether the list goes on."""
+
+    day: date
+    spare: Mapping[str, tuple[Movie, ...]] = field(default_factory=dict)
+    goes_on: frozenset[str] = frozenset()
+    pages: dict[tuple[str, int], tuple[tuple[Movie, ...], bool]] = field(default_factory=dict)
+
+    @property
+    def more(self) -> frozenset[str]:
+        """The shelves with films after the dashboard's."""
+        return self.goes_on | {name for name, films in self.spare.items() if films}
 
 
 async def _as_tuple(items: Awaitable[Iterable[T]]) -> tuple[T, ...]:
@@ -285,6 +317,9 @@ class DiscoveryService:
         self._clock = clock
         self._tv_shelves: _Shelves[DiscoverShow] | None = None
         self._movie_shelves: _Shelves[Movie] | None = None
+        # See more's state per fetch of the movie dashboard's lists (`MovieDashboard.listing`).
+        self._movie_pagings: dict[int, _MoviePaging] = {}
+        self._listings = 0
         # Bumped by clear_cache(), so dashboards fetched across a clear aren't stored.
         self._generation = 0
         self._movie_details = _DetailsCache("tmdb-movie", tmdb.movie_details, DETAILS_TTL, clock)
@@ -314,6 +349,7 @@ class DiscoveryService:
         """Forget every cached TMDB list and details (e.g. after the API key changed)."""
         self._tv_shelves = None
         self._movie_shelves = None
+        self._movie_pagings.clear()
         self._generation += 1
         self._movie_details.clear()
         self._tv_details.clear()
@@ -417,7 +453,9 @@ class DiscoveryService:
         none without a library."""
         return await self._library.plex_shows()
 
-    async def movie_dashboard(self, *, force: bool = False) -> MovieDashboard:
+    async def movie_dashboard(
+        self, *, force: bool = False, also: Iterable[int] = ()
+    ) -> MovieDashboard:
         """Films first released digitally in the last 14 days, trending films, and films first
         released digitally in the next 21 days; 18 at most each.
 
@@ -425,60 +463,189 @@ class DiscoveryService:
         Cached like `tv_dashboard`, filtered; whether there is a library and the shelves'
         films had (`in_plex`, the main source's; `in_folders`, beside Plex the folders' own;
         none without a library) are recomputed on every call, as the TV dashboard's tracked
-        flags are.
+        flags are; `also`: more films (TMDB ids) to say that of (the ones See more added).
+        `more`: the shelves See more can go on with; `listing`: these lists' fetch, which
+        `more_movies` goes on from (the cached lists' own, also after a newer fetch).
         """
         today = self._today()
-        lists = None if force else self._fresh(self._movie_shelves, today)
+        cached = self._movie_shelves
+        lists = None if force else self._fresh(cached, today)
+        listing = cached.listing if lists is not None and cached is not None else 0
         failed: tuple[str, ...] = ()
         if lists is None:
             generation = self._generation
+            fetched: dict[str, tuple[list[Movie], bool]] = {}
+
+            def shelf(
+                name: str, fetch: Callable[[], Awaitable[tuple[list[Movie], bool]]]
+            ) -> Callable[[], Awaitable[list[Movie]]]:
+                async def run() -> list[Movie]:
+                    fetched[name] = await fetch()
+                    return fetched[name][0]
+
+                return run
+
             fetchers: dict[str, Callable[[], Awaitable[list[Movie]]]] = {
-                "just_dropped": lambda: self._first_digital_releases(
-                    today - JUST_DROPPED_SINCE, today
+                "just_dropped": shelf(
+                    "just_dropped",
+                    lambda: self._first_digital_releases(*self._window("just_dropped", today)),
                 ),
-                "trending": self._tmdb.trending_movies,
-                "upcoming": lambda: self._first_digital_releases(
-                    today + timedelta(days=1), today + UPCOMING_AHEAD
+                "trending": shelf("trending", self._trending_first),
+                "upcoming": shelf(
+                    "upcoming",
+                    lambda: self._first_digital_releases(*self._window("upcoming", today)),
                 ),
             }
             lists, failed = await self._load_shelves("Movie", fetchers)
-            if not failed and generation == self._generation:
-                self._movie_shelves = _Shelves(today, lists, self._clock())
-        plex = await self._library.plex_films()
+            self._listings += 1
+            listing = self._listings
+            paging = _MoviePaging(
+                today,
+                spare={name: tuple(fetched[name][0][SHELF_SIZE:]) for name in lists},
+                goes_on=frozenset(name for name in lists if fetched[name][1]),
+            )
+            if generation == self._generation:
+                self._keep_paging(listing, paging)
+                if not failed:
+                    self._movie_shelves = _Shelves(today, lists, self._clock(), listing)
+        paging_of = self._movie_pagings.get(listing)
         on_shelves = {movie.id for movies in lists.values() for movie in movies}
-        had = {movie_id for movie_id in on_shelves if plex.has(movie_id)}
-        in_folders = frozenset(movie_id for movie_id in had if plex.only_in_folders(movie_id))
+        in_plex, in_folders = await self._films_had(on_shelves | set(also))
         return MovieDashboard(
             just_dropped=lists.get("just_dropped", ()),
             trending=lists.get("trending", ()),
             upcoming=lists.get("upcoming", ()),
             failed=failed,
             plex_connected=self._library.has_library,
-            in_plex=frozenset(had - in_folders),
+            in_plex=in_plex,
             in_folders=in_folders,
+            more=paging_of.more & set(lists) if paging_of is not None else frozenset(),
+            listing=listing,
         )
 
-    async def _first_digital_releases(self, start: date, end: date) -> list[Movie]:
-        """Films whose FIRST digital release in the region falls in [start, end], most popular
-        first.
+    def _keep_paging(self, listing: int, paging: _MoviePaging) -> None:
+        """Keep a fetch's See more state: the cached lists' and the PAGINGS_KEPT newest."""
+        self._movie_pagings[listing] = paging
+        cached = self._movie_shelves.listing if self._movie_shelves is not None else 0
+        for old in sorted(self._movie_pagings)[:-PAGINGS_KEPT]:
+            if old != cached:
+                del self._movie_pagings[old]
 
-        TMDB lists a film when any of its digital releases falls in the window, so re-releases
-        show up there too. The first DIGITAL_PAGES pages are fetched and every film's first
-        digital release decides: a film is dropped only when it is known and outside the
-        window. Films without a known digital date, or whose details fail to load, are kept.
-        The dates come from the films' details (through the shared details cache) and are kept
-        a day, across starts too (`ReleaseDates`). A failing page fails the shelf; a missing or
-        rejected key propagates, also from the details.
+    async def more_movies(self, shelf: str, page: int, *, listing: int = 0) -> MoviePage:
+        """Page `page` (2, 3, …) of a movie shelf: the films after the dashboard's (the Movies
+        page's See more), in TMDB's order, not checked against what the shelf shows already.
+
+        `listing`: the dashboard's (`MovieDashboard.listing`), whose fetch it goes on from: its
+        date windows, its films beyond SHELF_SIZE (page 2 starts with them) and the pages
+        asked since (asked again, a page comes from memory). A listing no longer kept (or 0)
+        goes on from today's windows, without those films.
+
+        Trending: TMDB's page `page`. The digital shelves: DIGITAL_PAGES of TMDB's pages per
+        page (page 2: TMDB's 3 and 4), filtered as the dashboard's are. `more`: TMDB's list
+        goes on after it. The films had as in `movie_dashboard`. TMDB errors propagate.
         """
-        await self._release_dates.load()
-        pages = await asyncio.gather(
-            *(self._tmdb.digital_releases(start, end, page=n) for n in range(1, DIGITAL_PAGES + 1)),
+        if shelf not in MOVIE_SHELVES:
+            raise ValueError(f"no movie shelf {shelf!r}")
+        if page < 2:
+            raise ValueError("See more starts at page 2")
+        paging = self._movie_pagings.get(listing)
+        if paging is None:  # not kept (or cleared): today's windows, nothing beyond 18
+            paging = _MoviePaging(self._today(), goes_on=frozenset(MOVIE_SHELVES))
+            self._keep_paging(listing, paging)
+        found = paging.pages.get((shelf, page))
+        if found is None:
+            generation = self._generation
+            spare = paging.spare.get(shelf, ()) if page == 2 else ()
+            if page == 2 and shelf not in paging.goes_on:
+                films: list[Movie] = []
+                goes_on = False  # TMDB's list ended with the dashboard's pages: the spare only
+            else:
+                films, goes_on = await self._next_films(shelf, page, paging.day)
+            found = ((*spare, *films), goes_on)
+            if generation == self._generation and self._movie_pagings.get(listing) is paging:
+                paging.pages[(shelf, page)] = found
+        movies, goes_on = found
+        in_plex, in_folders = await self._films_had(movie.id for movie in movies)
+        return MoviePage(movies=movies, more=goes_on, in_plex=in_plex, in_folders=in_folders)
+
+    async def _films_had(self, ids: Iterable[int]) -> tuple[frozenset[int], frozenset[int]]:
+        """Of the films `ids`, the ones had: (the main source's, beside Plex the folders' own)."""
+        plex = await self._library.plex_films()
+        had = {movie_id for movie_id in ids if plex.has(movie_id)}
+        in_folders = frozenset(movie_id for movie_id in had if plex.only_in_folders(movie_id))
+        return frozenset(had - in_folders), in_folders
+
+    def _window(self, shelf: str, day: date) -> tuple[date, date]:
+        """A digital shelf's date window, for the local day `day`."""
+        if shelf == "just_dropped":
+            return day - JUST_DROPPED_SINCE, day
+        return day + timedelta(days=1), day + UPCOMING_AHEAD
+
+    async def _trending_first(self) -> tuple[list[Movie], bool]:
+        """The trending shelf's first page, and whether TMDB has more (its `total_pages`)."""
+        result = await self._tmdb.trending_movies_page(1)
+        return list(result.items), not result.is_last
+
+    async def _next_films(self, shelf: str, page: int, day: date) -> tuple[list[Movie], bool]:
+        """`more_movies`' TMDB request(s) for a shelf's page `page` (2 or later), and whether
+        the list goes on after them."""
+        if shelf == "trending":
+            if page > MAX_PAGE:
+                return [], False
+            result = await self._tmdb.trending_movies_page(page)
+            return list(result.items), not result.is_last
+        start, end = self._window(shelf, day)
+        first = (page - 1) * DIGITAL_PAGES + 1
+        numbers = range(first, min(first + DIGITAL_PAGES, MAX_PAGE + 1))
+        if not numbers:
+            return [], False
+        results = await asyncio.gather(
+            *(self._tmdb.digital_releases_page(start, end, page=n) for n in numbers),
             return_exceptions=True,
         )
-        if (error := _first_failure(pages)) is not None:
+        if (error := _first_failure(results)) is not None:
             raise error
+        pages = [result for result in results if isinstance(result, ResultPage)]
+        films = await self._first_digital_only([result.items for result in pages], start, end)
+        return films, not any(result.is_last for result in pages)
+
+    async def _first_digital_releases(self, start: date, end: date) -> tuple[list[Movie], bool]:
+        """Films whose FIRST digital release in the region falls in [start, end], most popular
+        first, and whether TMDB's list goes on after them (its `total_pages`).
+
+        TMDB lists a film when any of its digital releases falls in the window, so re-releases
+        show up there too. The first DIGITAL_PAGES pages are fetched and filtered
+        (`_first_digital_only`). A failing page fails the shelf; a missing or rejected key
+        propagates, also from the details.
+        """
+        results = await asyncio.gather(
+            *(
+                self._tmdb.digital_releases_page(start, end, page=n)
+                for n in range(1, DIGITAL_PAGES + 1)
+            ),
+            return_exceptions=True,
+        )
+        if (error := _first_failure(results)) is not None:
+            raise error
+        pages = [result for result in results if isinstance(result, ResultPage)]
+        films = await self._first_digital_only([page.items for page in pages], start, end)
+        return films, bool(pages) and not any(page.is_last for page in pages)
+
+    async def _first_digital_only(
+        self, pages: Sequence[Sequence[Movie]], start: date, end: date
+    ) -> list[Movie]:
+        """The films of TMDB's digital-release `pages` (in order, each once) whose first
+        digital release falls in [start, end] or isn't known.
+
+        Every film's first digital release decides: a film is dropped only when it is known and
+        outside the window. Films without a known digital date, or whose details fail to load,
+        are kept. The dates come from the films' details (through the shared details cache)
+        and are kept a day, across starts too (`ReleaseDates`). A missing or rejected key
+        propagates from the details.
+        """
+        await self._release_dates.load()
         candidates: dict[int, Movie] = {}
-        for movie in (movie for page in pages if isinstance(page, list) for movie in page):
+        for movie in (movie for page in pages for movie in page):
             candidates.setdefault(movie.id, movie)  # popularity can shift a film to page 2
         keep = await asyncio.gather(
             *(self._first_digital_in(movie, start, end) for movie in candidates.values()),

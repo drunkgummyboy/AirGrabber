@@ -17,6 +17,18 @@ on once the film is out ("Out now" / "No good release found in 30 days" in amber
 for a good release (searched 2 h ago)" muted). Its cover and title open the film's info window
 (`on_open`; on IMDb without one).
 
+A downloaded film stays on the list until it is removed (owner, 2026-11-17; its switch went off
+with the grab, app/services/watchlist.py), after the films still to come (`by_release`). Instead
+of ⬇ Download it has the outlined "⬇ Again" ("Download again…" where it fits, the words in its
+tip), which opens the Downloads page's "Download again…" menu (⬇ Download again automatically /
+☰ Choose a release…, `again_items`). No "Auto" pill and no "Download when it's out" in its ⋯ menu
+(switched on it would only download it again); "Choose a download yourself" and "Remove from
+watchlist" stay. A run of it shows on the button as any run does. Under its title, only while
+there is a library (`has_library`; CLAUDE.md: without one no have-cues, not even for
+AirGrabber's own grabs) and the cover has no library mark (in Plex / in the folders: the mark
+says it), the muted "Downloaded 17 Nov" (its latest grab; no ✓, the date sets it apart from
+the folders' "✓ Downloaded"); else the year and rating (`downloaded_line`).
+
 The cards are drawn at the page's `CardScale` (Settings, Card size); the shelf rebuilds its grid
 when the size changed since it was built.
 """
@@ -59,6 +71,7 @@ from app.ui.media_cards import (
     tmdb_rating,
 )
 from app.ui.missing_control import MenuItem, popup_menu
+from app.ui.row_actions import again_items
 from app.ui.poster_card import (
     POSTER_CARD_WIDTH,
     Badge,
@@ -85,9 +98,14 @@ UNKNOWN_TEXT = N_("Release date unknown")
 GAVE_UP_SHORT = N_("No good release found")
 GUESS_TEXT = N_("~{date}")  # the "not yet" button's date when it is AirGrabber's own guess
 REMOVE_TEXT = N_("Remove from watchlist")
+DOWNLOADED_TEXT = N_("Downloaded")  # under the title of a film downloaded already (no date)
+DOWNLOADED_ON_TEXT = N_("Downloaded {date}")  # … on that day ("Downloaded 17 Nov")
+AGAIN_TEXT = N_("Download again…")  # its main button, as the Downloads page's menu says it
+AGAIN_SHORT = N_("⬇ Again")  # … where that won't fit (every card size, in both languages)
 
-Tone = Literal["soon", "out", "waiting", "gave_up"]
-BottomRow = Literal["later", "download"]  # later: the grey "not yet" button with the date
+Tone = Literal["soon", "out", "waiting", "gave_up", "downloaded"]
+# later: the grey "not yet" button with the date; again: "Download again…" (downloaded already)
+BottomRow = Literal["later", "download", "again"]
 WatchMenuKey = Literal["auto", "choose", "remove"]
 
 
@@ -172,10 +190,13 @@ class WatchStatus:
 
 
 def watch_status(entry: WatchlistEntry, today: date, now: datetime) -> WatchStatus:
-    """Given up → "No good release found in 30 days" + Download; not out yet → when it comes out
-    on the "not yet" button, the menu's toggle; out and looked for automatically → "Waiting for
-    a good release (searched 2 h ago)" + Download, the menu's toggle; out and not looked for →
-    "Out now" + Download."""
+    """Downloaded already → "Downloaded" + "Download again…", no toggle; given up → "No good
+    release found in 30 days" + Download; not out yet → when it comes out on the "not yet"
+    button, the menu's toggle; out and looked for automatically → "Waiting for a good release
+    (searched 2 h ago)" + Download, the menu's toggle; out and not looked for → "Out now" +
+    Download."""
+    if entry.downloaded:
+        return WatchStatus(downloaded_text(entry, today), "downloaded", "again", auto=False)
     if entry.gave_up:
         text = t("No good release found in {days} days", days=GIVE_UP_AFTER.days)
         return WatchStatus(text, "gave_up", "download", auto=False, short=(t(GAVE_UP_SHORT),))
@@ -195,13 +216,30 @@ def watch_status(entry: WatchlistEntry, today: date, now: datetime) -> WatchStat
     return WatchStatus(t(OUT_NOW_TEXT), "out", "download", auto=False)
 
 
+def downloaded_text(entry: WatchlistEntry, today: date) -> str:
+    """"Downloaded 17 Nov" (its latest grab, the local day; with the year when it isn't this
+    year's); "Downloaded" when the moment isn't known."""
+    if entry.downloaded_at is None:
+        return t(DOWNLOADED_TEXT)
+    day = entry.downloaded_at.astimezone().date()
+    return t(DOWNLOADED_ON_TEXT, date=release_day(day, today))
+
+
+def downloaded_line(*, library: bool, marked: bool) -> bool:
+    """Whether a downloaded film's card says "Downloaded 17 Nov" under its title: only while
+    there is a library, and not when its cover has the library mark (that says it); else the
+    year and rating."""
+    return library and not marked
+
+
 def watch_menu(status: WatchStatus, auto_download: bool) -> list[tuple[str, WatchMenuKey]]:
-    """A watchlist card's ⋯ menu: "☑ / ☐ Download when it's out" (while the status offers it),
-    "Choose a download yourself" (once it can be downloaded), "Remove from watchlist"."""
+    """A watchlist card's ⋯ menu: "☑ / ☐ Download when it's out" (while the status offers it;
+    never for a downloaded film), "Choose a download yourself" (once it can be downloaded, or
+    again), "Remove from watchlist"."""
     items: list[tuple[str, WatchMenuKey]] = []
     if status.auto:
         items.append((toggle_text(t(AUTO_TEXT), auto_download), "auto"))
-    if status.bottom == "download":
+    if status.bottom in ("download", "again"):
         items.append((t(MORE_TIP), "choose"))
     items.append((t(REMOVE_TEXT), "remove"))
     return items
@@ -246,7 +284,10 @@ class WatchlistCard(PosterCard):
         now: Callable[[], datetime] = _utc_now,
         scale: CardScale = FULL,
         on_open: Callable[[Movie], None] | None = None,
+        has_library: Callable[[], bool] = lambda: False,
     ) -> None:
+        """`has_library`: whether there is a library now (Plex or the folders), read at every
+        paint (a downloaded film's "Downloaded 17 Nov", `downloaded_line`)."""
         movie = entry.movie
         self._year_rating = year_rating_line(
             movie.year, tmdb_rating(movie.vote_average, movie.vote_count)
@@ -268,6 +309,7 @@ class WatchlistCard(PosterCard):
         self._actions = actions
         self._today = today
         self._now = now
+        self._has_library = has_library
         self._status: WatchStatus | None = None
 
         # One row: the main button (the Download control: "17 Nov" or ⬇ Download) and ⋯.
@@ -294,6 +336,7 @@ class WatchlistCard(PosterCard):
             scale=scale,
             more=False,
             outline_unavailable=True,
+            on_again=self._open_again,
         )
         self._control.pack(side="left", fill="both", expand=True)
 
@@ -332,6 +375,7 @@ class WatchlistCard(PosterCard):
         elif not in_plex and self.plex_mark is not None:
             self.plex_mark.destroy()
             self.plex_mark = None
+        self._paint_meta()  # a downloaded film's line gives way to the mark
 
     def _paint(self) -> None:
         entry = self._entry
@@ -339,16 +383,32 @@ class WatchlistCard(PosterCard):
         auto = auto_shown(status, entry.auto_download)
         self._set_badges([Badge(t(AUTO_PILL_TEXT), theme.BRAND, t(AUTO_TEXT))] if auto else [])
         if status == self._status:
+            self._paint_meta()  # the library may have come or gone
             return
         self._status = status
         if status.bottom == "later":
-            self._set_meta(self._year_rating)
             self._control.set_base(
                 Base("unavailable", status.text, status.short, icon=status.icon, tip=status.tip)
             )
+        elif status.bottom == "again":
+            self._control.set_base(Base("again", t(AGAIN_TEXT), (t(AGAIN_SHORT),)))
+        else:
+            self._control.set_base(Base("download"))
+        self._paint_meta()
+
+    def _paint_meta(self) -> None:
+        """The line under the title for the status (see the module docstring)."""
+        status = self._status
+        if status is None:
+            return
+        marked = getattr(self, "plex_mark", None) is not None
+        if status.bottom == "later" or (
+            status.bottom == "again"
+            and not downloaded_line(library=self._has_library(), marked=marked)
+        ):
+            self._set_meta(self._year_rating)
         else:
             self._set_meta(status.texts, tone_color(status.tone))
-            self._control.set_base(Base("download"))
 
     # -- the menu ------------------------------------------------------------------------------
 
@@ -364,6 +424,17 @@ class WatchlistCard(PosterCard):
 
     def _open_menu(self) -> None:
         popup_menu(self.menu_button, self.menu_items())
+
+    def again_items(self) -> list[MenuItem]:
+        """"Download again…"'s menu, as the Downloads page has it: download it again
+        automatically (the one-click download, also when grabbed before) or choose a release."""
+        movie = self._movie
+        return again_items(
+            lambda: self._actions.download(movie), lambda: self._actions.choose(movie)
+        )
+
+    def _open_again(self) -> None:
+        popup_menu(self._control, self.again_items(), align="left")
 
     def _toggle_auto(self) -> None:
         on = not self._entry.auto_download
@@ -403,13 +474,16 @@ class WatchlistShelf(ctk.CTkFrame):
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_open: Callable[[Movie], None] | None = None,
         plex: Callable[[], Awaitable[PlexFilms]] | None = None,
+        has_library: Callable[[], bool] = lambda: False,
     ) -> None:
         """`card_scale`: the card size to draw the cards at, read at every rebuild. `on_open`:
         what a click on a card's cover or title does (the film's info window). `plex`: the
-        films in Plex (none without it)."""
+        films in Plex (none without it). `has_library`: whether there is a library now (the
+        cards' "Downloaded 17 Nov")."""
         super().__init__(master, fg_color="transparent")
         self._on_open = on_open
         self._plex = plex
+        self._has_library = has_library
         self._in_plex = PlexFilms()
         self._plex_task: asyncio.Task[None] | None = None
         self._watchlist = watchlist
@@ -501,6 +575,7 @@ class WatchlistShelf(ctk.CTkFrame):
                 actions=self._actions,
                 scale=scale,
                 on_open=self._on_open,
+                has_library=self._has_library,
             )
         self._order = [entry.movie_id for entry in entries]
         grid.relayout()

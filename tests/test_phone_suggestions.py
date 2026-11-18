@@ -14,6 +14,7 @@ import httpx
 from app.i18n import t
 from app.models import (
     DiscoverShow,
+    DownloadRecord,
     Episode,
     GrabTarget,
     MediaType,
@@ -31,6 +32,7 @@ from app.services.phone.server import Reply, Request
 from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import MAX_ITEMS, Suggestions
 from app.services.tmdb import (
+    ResultPage,
     TMDBAuthError,
     TMDBClient,
     TMDBError,
@@ -87,6 +89,17 @@ class SuggestionsCase(DownloadsCase):
             "tv_premieres",
         ):
             setattr(self.tmdb, name, mock.AsyncMock(return_value=[]))
+        # The movie dashboard asks for pages (with TMDB's page count): from the list mocks above.
+
+        async def trending_page(page: int) -> ResultPage[Movie]:
+            return ResultPage(tuple(await self.tmdb.trending_movies()), page, None)
+
+        async def digital_page(start: date, end: date, *, page: int = 1) -> ResultPage[Movie]:
+            films = await self.tmdb.digital_releases(start, end, page=page)
+            return ResultPage(tuple(films), page, None)
+
+        self.tmdb.trending_movies_page = mock.AsyncMock(side_effect=trending_page)
+        self.tmdb.digital_releases_page = mock.AsyncMock(side_effect=digital_page)
         self.tmdb.movie_details = mock.AsyncMock(
             side_effect=lambda id: MovieDetails(id=id, digital_release=OUT_LAST_YEAR)
         )
@@ -285,6 +298,22 @@ class WhatIsSuggestedTests(SuggestionsCase):
 
 
 class WhatPlexHasTests(SuggestionsCase):
+    async def test_a_downloaded_film_on_the_list_is_not_suggested_from_it(self) -> None:
+        await self.want(film(1), digital=OUT_LAST_YEAR)
+        await self.want(film(2), digital=OUT_LAST_YEAR)
+        await self.want(film(3), digital=OUT_LAST_YEAR)
+        for movie_id in (1, 3):  # downloaded: they stay on the list
+            await self.db.history.add(
+                DownloadRecord(media_type=MediaType.MOVIE, media_id=movie_id, release_title="x")
+            )
+        self.tmdb.trending_movies.return_value = [film(3)]
+        self.tmdb.movie_details.side_effect = lambda id: MovieDetails(
+            id=id, digital_release=OUT_LAST_YEAR
+        )
+        # As when a grab took it off the list: Discover's own still shows (it doesn't look at
+        # the download history).
+        self.assertEqual(await self.ids("movie"), [2, 3])
+
     async def test_suggestions_leave_out_what_plex_has(self) -> None:
         await self.want(film(1), digital=OUT_LAST_YEAR)
         await self.want(film(2), digital=OUT_LAST_YEAR)

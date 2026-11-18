@@ -4,26 +4,35 @@ docs/folder-library/; app/services/plex_library.py gives it its contents).
 
 Two shelves, never mixed (docs/folder-library/2026-11-16-alongside-plex-design.md): "Plex", what
 Plex has, and "Downloaded", what your own folders hold. With both on, a two-way switch with
-each shelf's count (`ShelfSwitch`) sits under the header, above Continue watching and the
-Shows / Films tabs, which are the chosen shelf's; with one source on there is no switch and the
-page is that shelf's. The chosen shelf is kept while the app runs (a shelf gone for a while
-gives way to the other, and comes back when it is back). Opening the Downloaded shelf (a click
-on it, or the page shown on it) has the folders read again soon (`read_downloaded`: cheap,
-unchanged files aren't read again), so a file moved by hand leaves it quickly.
+each shelf's count (`ShelfSwitch`) sits right beside the title; the Shows / Films tabs under it
+are the chosen shelf's; with one source on there is no switch and the page is that shelf's. The
+chosen shelf is kept while the app runs (a shelf gone for a while gives way to the other, and
+comes back when it is back). Opening the Downloaded shelf (a click on it, or the page shown on
+it) has the folders read again soon (`read_downloaded`: cheap, unchanged files aren't read
+again), so a file moved by hand leaves it quickly.
 
-At the top (the owner's choice A, mockups/library-filters.html): "Library" with a round search box
-at its right; under them the Shows and Films tabs with their counts, a line under the chosen one;
-then the filters as chips (shows: All / Not followed / With gaps / Ended; films: All / 4K /
-Recently added) and, at the right, Sort ▾ (Recently added / A–Z / Year). "From Plex · checked
-08:53" ("From your folders · …" with the folder library) goes to the main window's footer
-(`on_checked`). The cards follow the card size (Settings › Looks): the poster
-from the Plex server (`posters`: an ImageCache fetching through PlexService.poster), the title
-(two lines' room on every card, so a row's cards line up; longer ends in "…"),
-"3 seasons · 34 episodes" or the year and quality, an amber "2 gaps" pill and, for a show,
-"+ Follow" / "✓ Following" with a round phone button (a drawn phone: an emoji shows as a box
-there) while a phone is connected: the same PosterCard as the other pages' cards. A poster or title opens the show's window or the film's info window. PAGE_SIZE
-cards at first, "Show more" adds the next ones below those shown (made once; a search, filter,
-sort or tab change makes them anew): a library of a thousand films stays quick.
+The top in two rows (the owner's choice A + 2, mockups/library-calmer.html; it was four rows,
+mockups/library-filters.html). Row 1: "Library", the shelf switch beside it, then at the right
+the round search box and a round ↻ (`resync`, tip "Check now"; faint while it checks). Row 2,
+under Continue watching: the Shows and Films tabs with their counts, a line under the chosen
+one; a thin upright line; the filters as quiet words (`FilterChip`; shows: All / Not followed /
+With gaps / Ended; films: All / 4K / Recently added), muted, the chosen one in the text's
+colour with a thin line under it; at the right Sort ▾ (Recently added / A–Z / Year); one thin
+line under the whole row. "From Plex · checked 08:53" ("From your folders · …" with the folder
+library) goes to the main window's footer (`on_checked`).
+
+The cards (`LibraryCard`, the same PosterCard as the other pages' cards) are the poster only,
+with no button row, as Get started's cards; they follow the card size (Settings › Looks): the
+poster from the Plex server (`posters`: an ImageCache fetching through PlexService.poster), the
+title (two lines' room on every card, so a row's cards line up; longer ends in "…"), "3 seasons
+· 34 episodes" or the year and quality. On the cover: an amber "2 gaps" pill in the top-left
+corner; a show's follow mark in the top-right corner (a round "+" that follows it, "…" while
+it is added, a green "✓" once followed); a film below 1080p's amber "⬆ Upgrade" pill (a click:
+`on_upgrade_film`). A click anywhere else on the poster or title opens the show's window or the
+film's info window, where "Send to phone" is while a phone is connected (the main window's
+`_phone_send`; the cards had a round phone button until A + 2). PAGE_SIZE cards at first, "Show
+more" adds the next ones below those shown (made once; a search, filter, sort or tab change
+makes them anew): a library of a thousand films stays quick.
 
 Above the tabs, "Continue watching" (app/ui/continue_watching.py): what Plex says to go on with
 (`continue_watching`, read at every load and whenever the page is shown again, and after the
@@ -50,6 +59,7 @@ import logging
 import ntpath
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import customtkinter as ctk
@@ -81,27 +91,27 @@ from app.services.plex_library import (
     shown_shows,
 )
 from app.ui import theme
-from app.ui.card_scale import FULL, CardScale, grid_item_width
-from app.ui.cards import RoundButton, phone_icon
+from app.ui.card_scale import FULL, TEXT_MIN, CardScale, grid_item_width
+from app.ui.cards import RoundButton
 from app.ui.continue_watching import ContinueRow
-from app.ui.dialog_kit import secondary_button
-from app.ui.download_control import CORNER_RADIUS as ROW_CORNER_RADIUS
-from app.ui.download_control import GAP as ROW_GAP
 from app.ui.missing_control import MISSING_COLOR
 from app.ui.play_control import PLAY_TEXT
 from app.ui.poster_card import (
+    BADGE_HEIGHT,
+    BADGE_INSET,
     POSTER_CARD_WIDTH,
+    Badge,
     PosterCard,
-    TrackButton,
+    TrackState,
     pill_image,
     rgb,
     row_font_size,
     row_height,
 )
 from app.ui.scrollable import ScrollableFrame
-from app.ui.shelf_filter import CHIP_FONT_SIZE, CHIP_GAP, CHIP_HEIGHT, CHIP_PAD, chip_color
+from app.ui.shelf_filter import CHIP_FONT_SIZE, CHIP_HEIGHT, chip_color
 from app.ui.tasks import spawn
-from app.ui.tooltip import Tooltip
+from app.ui.tooltip import Tooltip, add_tooltip
 from app.ui.views.base import BaseView, StatusReporter
 from app.ui.widgets import FlexGrid, MessagePanel, elided, hairline
 
@@ -116,11 +126,12 @@ SHOWS_TAB = N_("Shows")
 FILMS_TAB = N_("Films")
 SEARCH_TEXT = N_("Search your library…")
 SORT_TEXT = N_("Sort")
-FOLLOWING_TEXT = N_("✓ Following")
+# The follow mark's tips (a show card's top-right corner).
+FOLLOW_TIP = N_("Follow")
+FOLLOWING_TIP = N_("Following")
 ADDING_TEXT = N_("Adding…")
 UPGRADE_TEXT = N_("⬆ Upgrade")
 UPGRADE_TIP = N_("Find a better copy: 1080p or 4K")
-SEND_TIP = N_("Send to phone")
 FOLLOW_FAILED = N_("Couldn't follow {name}: TVmaze doesn't know it")
 OPEN_FAILED = N_("Couldn't find {name} on TVmaze")
 MORE_TEXT = N_("Show more ({n})")
@@ -131,10 +142,11 @@ EMPTY_FOLDERS_TEXT = N_(
     "AirGrabber reads your folders every 6 hours; Settings → Library → Check now reads them at once."
 )
 UNRECOGNISED_TITLE = N_("Couldn't recognise ({n})")
-# The header's button: Plex or the folders read again now, then the page.
-RESYNC_TEXT = N_("↻ Check now")
-RESYNCING_TEXT = N_("Checking…")
-RESYNC_WIDTH = 130
+# The header's round ↻: Plex or the folders read again now, then the page (its tip says so).
+RESYNC_GLYPH = "↻"
+RESYNC_TIP = N_("Check now")
+RESYNCING_TIP = N_("Checking…")
+RESYNC_FONT_SIZE = 20
 UNRECOGNISED_TEXT = N_("These files' names don't say which film or episode they are.")
 TIDY_TEXT = N_("Tidy up in MediaForge")
 TIDY_TIP = N_("Adds these files to MediaForge's queue, where you can name and sort them")
@@ -155,6 +167,14 @@ SEARCH_HEIGHT = 34
 TAB_FONT_SIZE = 15
 COUNT_FONT_SIZE = 12
 UNDERLINE = 3  # the chosen tab's line
+FILTER_UNDERLINE = 2  # the chosen filter's line, under its word
+FILTER_UNDERLINE_GAP = 2  # between the word and its line
+FILTER_UNDERLINE_ROOM = FILTER_UNDERLINE + FILTER_UNDERLINE_GAP
+FILTER_GAP = 14  # between two filters
+WORD_HEIGHT = 20  # a filter word's label
+SEPARATOR_HEIGHT = 16  # the thin line between the tabs and the filters
+TAB_NAME_HEIGHT = 28  # a tab name's label (CTk's default)
+TAB_NAME_PAD = 6  # under a tab's name, above its line
 SHELF_FONT_SIZE = 13
 SHELF_RADIUS = 10  # the shelf switch's track
 SHELF_PAD = 3  # the track's room around its two shelves
@@ -162,6 +182,28 @@ HOVER_CHECK_MS = 60  # the pointer left the card or one of its parts: still on i
 PLAY_AT = 0.42  # ▶ Play's place on the cover, from the card's top
 PLAY_PAD_X = 16  # ▶ Play's pill: its room left and right of the text (at the card's scale)
 PLAY_TAG = "play"  # ▶ Play's canvas items
+MARK_TAG = "follow"  # the follow mark's canvas items
+MARK_FONT_SIZE = 14  # its sign (at XL), a little larger than the gaps pill's words
+
+
+@dataclass(frozen=True, slots=True)
+class MarkLook:
+    """The follow mark: its sign, the sign's colour, the circle's edge and the hover tip."""
+
+    text: str
+    color: theme.Color
+    edge: theme.Color
+    tip: str
+
+
+def mark_look(state: TrackState) -> MarkLook:
+    """Followed: a green ✓ on a green edge (as ✓ Following); not followed: a muted "+" on a
+    quiet edge; while it is added: "…"."""
+    if state == "tracked":
+        return MarkLook("✓", theme.SUCCESS, theme.SUCCESS, t(FOLLOWING_TIP))
+    if state == "busy":
+        return MarkLook("…", theme.TEXT_MUTED, theme.EDGE, t(ADDING_TEXT))
+    return MarkLook("+", theme.TEXT_MUTED, theme.EDGE, t(FOLLOW_TIP))
 
 
 class LibraryPlay(Protocol):
@@ -179,6 +221,12 @@ class LibraryPlay(Protocol):
 ContinueSource = Callable[[Shelf], Awaitable[Sequence[PlexContinue]]]  # a shelf's row
 
 
+def level(height: int) -> int:
+    """The room under a thing `height` units tall on the tabs' row that centres it on the
+    tabs' names (each name TAB_NAME_PAD and the UNDERLINE above the row's line)."""
+    return UNDERLINE + TAB_NAME_PAD + (TAB_NAME_HEIGHT - height) // 2
+
+
 class KindTab(ctk.CTkFrame):
     """Shows or Films: its name, its count in a small pill, and a line under it while chosen."""
 
@@ -189,12 +237,12 @@ class KindTab(ctk.CTkFrame):
         self.name = ctk.CTkLabel(
             self, text=name, width=0, font=theme.font(TAB_FONT_SIZE, bold=True), cursor="hand2"
         )
-        self.name.grid(row=0, column=0, padx=(2, 0), pady=(4, 6))
+        self.name.grid(row=0, column=0, padx=(2, 0), pady=(4, TAB_NAME_PAD))
         self.count = ctk.CTkLabel(
             self, text="", width=0, font=theme.font(COUNT_FONT_SIZE, bold=True), height=20,
             corner_radius=10, cursor="hand2",
         )
-        self.count.grid(row=0, column=1, padx=(7, 2), pady=(4, 6))
+        self.count.grid(row=0, column=1, padx=(7, 2), pady=(4, TAB_NAME_PAD))
         self.underline = ctk.CTkFrame(
             self, width=1, height=UNDERLINE, corner_radius=1, fg_color="transparent"
         )
@@ -223,6 +271,53 @@ class KindTab(ctk.CTkFrame):
         self.name.configure(text_color=theme.TEXT if on or self._hover else theme.TEXT_MUTED)
         fill, _hover = chip_color(on)
         self.count.configure(fg_color=fill, text_color=theme.ON_ACCENT if on else theme.TEXT_MUTED)
+        self.underline.configure(fg_color=theme.BRAND if on else "transparent")
+
+
+class FilterChip(ctk.CTkFrame):
+    """One filter as a quiet word (a lighter tab): muted, the chosen one in the text's colour
+    with a thin line under it in the tabs' colour; under the pointer the text's colour too."""
+
+    def __init__(self, master: Any, text: str, font: ctk.CTkFont, command: Callable[[], None]) -> None:
+        super().__init__(master, fg_color="transparent", cursor="hand2")
+        self.selected = False
+        self._hover = False
+        self._command = command
+        self.label = ctk.CTkLabel(
+            self, text=text, width=0, height=WORD_HEIGHT, font=font, cursor="hand2"
+        )
+        self.label.grid(row=0, column=0, padx=1)
+        self.underline = ctk.CTkFrame(
+            self, width=1, height=FILTER_UNDERLINE, corner_radius=1, fg_color="transparent"
+        )
+        self.underline.grid(row=1, column=0, sticky="ew", pady=(FILTER_UNDERLINE_GAP, 0))
+        for widget in (self, self.label):
+            widget.bind("<Button-1>", lambda _event: command(), add="+")
+            widget.bind("<Enter>", lambda _event: self._set_hover(True), add="+")
+            widget.bind("<Leave>", lambda _event: self._set_hover(False), add="+")
+        self._paint()
+
+    @property
+    def text(self) -> str:
+        return str(self.label.cget("text"))
+
+    def invoke(self) -> None:
+        """As a click on it."""
+        self._command()
+
+    def set_selected(self, selected: bool) -> None:
+        if selected != self.selected:
+            self.selected = selected
+            self._paint()
+
+    def _set_hover(self, inside: bool) -> None:
+        if inside != self._hover:
+            self._hover = inside
+            self._paint()
+
+    def _paint(self) -> None:
+        on = self.selected
+        self.label.configure(text_color=theme.TEXT if on or self._hover else theme.TEXT_MUTED)
         self.underline.configure(fg_color=theme.BRAND if on else "transparent")
 
 
@@ -306,11 +401,15 @@ class ShelfSwitch(ctk.CTkFrame):
 
 class LibraryCard(PosterCard):
     """One show or film, as the other pages' poster cards (the same size, the title and its line
-    on the cover's faded bottom): for a show "2 seasons · 34 episodes", an amber "2 gaps" pill in
-    the corner (as My shows' "2 missing") and the row of a Discover card, + Follow / ✓ Following
-    (TrackButton) with the round phone button beside it; for a film its year and quality, and as
-    its row "⬆ Upgrade" (below 1080p, `on_upgrade`) with the round phone beside it, or "Send to
-    phone" alone, or no row (the text at the bottom, as Get started's cards)."""
+    on the cover's faded bottom) but without a button row: the poster only, as Get started's
+    cards (the owner's choice A + 2, mockups/library-calmer.html). For a show "2 seasons · 34
+    episodes", an amber "2 gaps" pill in the top-left corner (as My shows' "2 missing") and in
+    the top-right corner the follow mark (`following`): a small round "+" (a click follows the
+    show, `on_follow`), "…" while it is added, a green "✓" once followed (a click on it does
+    nothing, as the disabled ✓ Following button it replaced). For a film its year and quality,
+    and below 1080p an amber "⬆ Upgrade" pill in the top-left corner (a click: `on_upgrade`).
+    Both are drawn on the cover's canvas, as ▶ Play on hover; a click on them never opens the
+    title."""
 
     def __init__(
         self,
@@ -324,14 +423,12 @@ class LibraryCard(PosterCard):
         following: bool | None = None,
         on_open: Callable[[], object],
         on_follow: Callable[[], object] | None = None,
-        on_send: Callable[[], object] | None = None,
         on_upgrade: Callable[[], object] | None = None,
         on_play: Callable[[], object] | None = None,
     ) -> None:
-        """`on_send`: Send to phone (the round phone beside the main button, or a film's own
-        row); None: no phone to send to. `on_upgrade`: a film below 1080p's "⬆ Upgrade".
-        `on_play`: "▶ Play" over the cover while the pointer is on the card."""
-        has_row = following is not None or on_send is not None or on_upgrade is not None
+        """`following`: a show's follow mark (None: no mark, a film). `on_follow`: a click on
+        its "+". `on_upgrade`: a film below 1080p's "⬆ Upgrade" pill. `on_play`: "▶ Play" over
+        the cover while the pointer is on the card."""
         url = poster_url(title)
         super().__init__(
             master,
@@ -339,14 +436,22 @@ class LibraryCard(PosterCard):
             meta=line,
             poster=lambda _width: url,
             images=posters,
-            extra_height=0 if has_row else -row_height(scale),
+            extra_height=-row_height(scale),  # no button row: the text at the bottom
             scale=scale,
             meta_row=True,
         )
         self.title = title
         self._set_open(on_open)
-        if tag:
-            self._set_badge(tag, MISSING_COLOR)
+        badges = [Badge(tag, MISSING_COLOR)] if tag else []
+        self._on_upgrade = on_upgrade
+        self._upgrade_index: int | None = None  # the "⬆ Upgrade" pill among the badges
+        if on_upgrade is not None:
+            self._upgrade_index = len(badges)
+            badges.append(Badge(t(UPGRADE_TEXT), MISSING_COLOR, t(UPGRADE_TIP)))
+        self._set_badges(badges)
+        if self._upgrade_index is not None:
+            for item in self._badge_items[self._upgrade_index]:
+                self._sheet.tag_bind(item, "<Button-1>", self._upgrade_pressed, add="+")
         self._on_play: Callable[[], object] | None = None
         self.play_items: tuple[int, int] | None = None  # ▶ Play's pill and text on the sheet
         self._play_photo: ImageTk.PhotoImage | None = None
@@ -355,61 +460,148 @@ class LibraryCard(PosterCard):
         self._play_on = False  # shown (its items' state)
         if on_play is not None:
             self._hover_play(on_play)
-        self.follow_button: TrackButton | None = None
-        self.send_button: ctk.CTkButton | RoundButton | None = None
-        self.upgrade_button: ctk.CTkButton | None = None
-        if not has_row:
+        self._on_follow = on_follow
+        self._follow_state: TrackState | None = None
+        self.mark_items: tuple[int, int] | None = None  # the follow mark's circle and text
+        self._mark_photo: ImageTk.PhotoImage | None = None
+        self._mark_hot = False  # the pointer is on the mark
+        self._mark_cursor = ""
+        self._mark_tip: Tooltip | None = None
+        if following is not None:
+            self._follow_mark("tracked" if following else "idle")
+
+    # -- the follow mark -----------------------------------------------------------------------
+
+    def _follow_mark(self, state: TrackState) -> None:
+        """The round mark in the cover's top-right corner, as big as the gaps pill is tall."""
+        canvas = self._sheet
+        self._follow_state = state
+        self._mark_font = theme.font(self.scale.font(MARK_FONT_SIZE, TEXT_MIN), bold=True)
+        self.mark_items = (
+            canvas.create_image(0, 0, anchor="nw", tags=(MARK_TAG,)),
+            canvas.create_text(0, 0, anchor="center", tags=(MARK_TAG,)),
+        )
+        canvas.tag_bind(MARK_TAG, "<Button-1>", self._mark_pressed)
+        canvas.tag_bind(MARK_TAG, "<Enter>", lambda _event: self._set_mark_hot(True))
+        canvas.tag_bind(MARK_TAG, "<Leave>", lambda _event: self._set_mark_hot(False))
+        self._follow_scale(self._draw_mark)  # a new scaling, light ↔ dark
+        self._draw_mark()
+
+    def _draw_mark(self) -> None:
+        """The mark at the card's scaling and in the current light / dark colours: a circle on
+        the card's colour with an edge, as the badges are drawn."""
+        state, items = self._follow_state, self.mark_items
+        if state is None or items is None:
             return
-        row = ctk.CTkFrame(self, fg_color="transparent", height=row_height(scale))
-        row.pack_propagate(False)
-        self._pack_action(row)
+        canvas, scaling, scale = self._sheet, self.scaling, self.scale
+        font = self._badge_font  # the mark is as tall as the gaps pill
+        side = max(1, round(scale.text_height(BADGE_HEIGHT, int(font.cget("size"))) * scaling))
+        inset = round(scale.px(BADGE_INSET) * scaling)
+        x = round(self._units[0] * scaling) - inset - side
+        look = mark_look(state)
+        edge = theme.ACCENT if self._mark_hot and state == "idle" else look.edge
+        circle = pill_image((side, side), max(1, round(scaling)), rgb(self, theme.BG), rgb(self, edge))
+        self._mark_photo = ImageTk.PhotoImage(circle, master=canvas)
+        image, label = items
+        canvas.coords(image, x, inset)
+        canvas.itemconfigure(image, image=self._mark_photo)
+        canvas.coords(label, x + side / 2, inset + side / 2)
+        canvas.itemconfigure(
+            label, text=look.text, fill=theme.pick(look.color),
+            font=self._mark_font.create_scaled_tuple(scaling),
+        )
 
-        def send() -> None:
-            if on_send is not None:
-                on_send()
+    @property
+    def follow_state(self) -> TrackState | None:
+        """The follow mark's state: "idle" (+), "busy" (…), "tracked" (✓); None: no mark."""
+        return self._follow_state
 
-        def follow() -> None:
-            if on_follow is not None:
-                on_follow()
+    @property
+    def following(self) -> bool:
+        return self._follow_state == "tracked"
 
-        def upgrade() -> None:
-            if on_upgrade is not None:
-                on_upgrade()
+    def set_following(self, following: bool) -> None:
+        self._set_follow_state("tracked" if following else "idle")
 
-        if following is not None or on_upgrade is not None:
-            if on_send is not None:
-                phone = RoundButton(
-                    row, icon=phone_icon, size=row_height(scale),
-                    font=theme.font(row_font_size(scale)), command=send,
-                )
-                phone.pack(side="right", padx=(scale.px(ROW_GAP), 0))
-                Tooltip(phone, t(SEND_TIP))
-                self._follow_scale(phone.rescale)
-                self.send_button = phone
-            if following is not None:
-                self.follow_button = TrackButton(
-                    row, busy_text=t(ADDING_TEXT), command=follow, scale=scale
-                )
-                self.follow_button.pack(side="left", fill="both", expand=True)
-                self.set_following(following)
-            else:  # a film below 1080p: "do it", the filled accent like Follow
-                self.upgrade_button = ctk.CTkButton(
-                    row, text=t(UPGRADE_TEXT), height=row_height(scale),
-                    corner_radius=scale.px(ROW_CORNER_RADIUS),
-                    font=theme.font(row_font_size(scale), bold=True), fg_color=theme.ACCENT,
-                    hover_color=theme.ACCENT_HOVER, text_color=theme.ON_ACCENT, command=upgrade,
-                )
-                self.upgrade_button.pack(side="left", fill="both", expand=True)
-                Tooltip(self.upgrade_button, t(UPGRADE_TIP))
-        elif on_send is not None:
-            self.send_button = ctk.CTkButton(
-                row, text=t(SEND_TIP), height=row_height(scale),
-                corner_radius=scale.px(ROW_CORNER_RADIUS),
-                font=theme.font(row_font_size(scale), bold=True), fg_color="transparent",
-                border_width=1, border_color=theme.EDGE, hover_color=theme.HOVER,
-                text_color=theme.BUTTON_TEXT, command=send,
-            )
-            self.send_button.pack(fill="both", expand=True)
+    def set_busy(self) -> None:
+        """While Track looks the show up and adds it."""
+        self._set_follow_state("busy")
+
+    def _set_follow_state(self, state: TrackState) -> None:
+        if self._follow_state is None or state == self._follow_state:
+            return
+        self._follow_state = state
+        self._draw_mark()
+        if self._mark_hot:
+            self._mark_entered()  # the cursor and the tip of the new state
+
+    def press_follow(self) -> None:
+        """A click on the mark: its "+" follows the show; "…" and "✓" do nothing (as the
+        disabled ✓ Following button didn't)."""
+        if self._follow_state == "idle" and self._on_follow is not None:
+            self._on_follow()
+
+    def _mark_pressed(self, _event: Any = None) -> None:
+        self.press_follow()
+
+    def _set_mark_hot(self, hot: bool) -> None:
+        """The pointer on the mark: its tip, and on a "+" the hand and the accent's edge."""
+        if hot == self._mark_hot:
+            return
+        self._mark_hot = hot
+        canvas = self._sheet
+        if hot:
+            self._mark_cursor = str(canvas.cget("cursor"))
+            self._mark_entered()
+        else:
+            canvas.configure(cursor=self._mark_cursor)
+            if self._mark_tip is not None:
+                self._mark_tip.rest_on(None, "")
+        self._draw_mark()
+
+    def _mark_entered(self) -> None:
+        state, items = self._follow_state, self.mark_items
+        if state is None or items is None:
+            return
+        canvas = self._sheet
+        canvas.configure(cursor="hand2" if state == "idle" else "arrow")
+        if self._mark_tip is None:
+            self._mark_tip = Tooltip(canvas, "")
+        box = canvas.bbox(items[0])
+        if box is None:
+            return
+        left, top = canvas.winfo_rootx(), canvas.winfo_rooty()
+        area = (left + box[0], top + box[1], left + box[2], top + box[3])
+        self._mark_tip.rest_on(area, mark_look(state).tip)
+
+    def _over_mark(self) -> bool:
+        items = self.mark_items
+        if items is None:
+            return False
+        return bool(set(self._sheet.find_withtag("current")) & set(items))
+
+    # -- the "⬆ Upgrade" pill ------------------------------------------------------------------
+
+    @property
+    def can_upgrade(self) -> bool:
+        """The card has the "⬆ Upgrade" pill (a film below 1080p)."""
+        return self._upgrade_index is not None
+
+    def press_upgrade(self) -> None:
+        """A click on "⬆ Upgrade": the film's info window on its 1080p and 4K releases."""
+        if self._on_upgrade is not None:
+            self._on_upgrade()
+
+    def _upgrade_pressed(self, _event: Any = None) -> None:
+        self.press_upgrade()
+
+    def _over_upgrade(self) -> bool:
+        index = self._upgrade_index
+        if index is None or index >= len(self._badge_items):
+            return False
+        return bool(set(self._sheet.find_withtag("current")) & set(self._badge_items[index]))
+
+    # -- ▶ Play on hover -----------------------------------------------------------------------
 
     def _hover_play(self, on_play: Callable[[], object]) -> None:
         """"▶ Play" drawn on the cover (an accent pill, as the Download row's filled buttons),
@@ -428,7 +620,7 @@ class LibraryCard(PosterCard):
         canvas.tag_bind(PLAY_TAG, "<Leave>", lambda _event: self._set_play_hot(False))
         self._follow_scale(self._draw_play)  # a new scaling, light ↔ dark
         self._draw_play()
-        # The card's own frame: leaving through the action row, or the page scrolled under the
+        # The card's own frame: leaving across its border, or the page scrolled under the
         # pointer, reaches it too.
         tk.Misc.bind(self, "<Enter>", lambda _event: self.hover(True), "+")
         tk.Misc.bind(self, "<Leave>", lambda _event: self.after(HOVER_CHECK_MS, self._left), "+")
@@ -497,8 +689,9 @@ class LibraryCard(PosterCard):
             self._on_play()
 
     def _clicked(self, event: Any) -> None:
-        """A click on the cover opens the title, except on ▶ Play (its own tag binding)."""
-        if self._over_play():
+        """A click on the cover opens the title, except on ▶ Play, the follow mark or "⬆
+        Upgrade" (each its own tag binding)."""
+        if self._over_play() or self._over_mark() or self._over_upgrade():
             return
         super()._clicked(event)
 
@@ -515,21 +708,6 @@ class LibraryCard(PosterCard):
         if not inside:
             self.hover(False)
 
-    def set_following(self, following: bool) -> None:
-        if self.follow_button is not None:
-            self.follow_button.set_state("tracked" if following else "idle")
-
-    def set_busy(self) -> None:
-        """While Track looks the show up and adds it."""
-        if self.follow_button is not None:
-            self.follow_button.set_state("busy")
-
-    @property
-    def following(self) -> bool:
-        return self.follow_button is not None and self.follow_button.cget("text") == t(
-            FOLLOWING_TEXT
-        )
-
 
 class LibraryView(BaseView):
     def __init__(
@@ -543,8 +721,6 @@ class LibraryView(BaseView):
         on_open_show: Callable[[PlexTitle], Awaitable[bool]],
         on_open_film: Callable[[PlexTitle], None],
         on_upgrade_film: Callable[[PlexTitle], None] | None = None,
-        on_send: Callable[[PlexTitle], None] | None = None,
-        can_send: Callable[[], bool] = lambda: False,
         card_scale: Callable[[], CardScale] = lambda: FULL,
         on_checked: Callable[[str], None] = lambda text: None,
         continue_watching: ContinueSource | None = None,
@@ -556,18 +732,18 @@ class LibraryView(BaseView):
         read_downloaded: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        """`on_open_show(title)`: opens the show's window; False when TVmaze knows none.
-        `on_open_film(title)`: the film's info window. `on_send(title)`: the Send to phone
-        window, on the cards while `can_send()` (a phone is connected), read at every render.
-        `on_checked(text)`: "From Plex · checked 08:53" (the shelf's) after every load (the
+        """`on_open_show(title)`: opens the show's window (with "Send to phone" in it while a
+        phone is connected: the main window's); False when TVmaze knows none.
+        `on_open_film(title)`: the film's info window (the same). `on_upgrade_film(title)`: a
+        film below 1080p's "⬆ Upgrade" pill. `on_checked(text)`: "From Plex · checked 08:53" (the shelf's) after every load (the
         footer's). `continue_watching(shelf)`: the shelf's Continue watching row (None: no
         row; raises PlexError); `play`: ▶ Play (the row's cards, the cards' hover button; None:
         neither). `unrecognised()`: the folder library's files it couldn't recognise (read at
         every render of the Downloaded shelf); `on_tidy(paths)`: "Tidy up in MediaForge"
         (None: no section). `reach()`: the folder library's lines on folders it couldn't read
         (translated; read at every render of the Downloaded shelf). `resync()`: the header's
-        "↻ Check now" (Plex's and the folders' checks, whichever are on; None: no button); the
-        page loads again after it. `read_downloaded()`: the Downloaded shelf was opened, the
+        round ↻, "Check now" (Plex's and the folders' checks, whichever are on; None: no
+        button); the page loads again after it. `read_downloaded()`: the Downloaded shelf was opened, the
         folders are to be read again soon (FolderLibraryService.check_soon)."""
         super().__init__(master, **kwargs)
         self._service = service
@@ -577,8 +753,6 @@ class LibraryView(BaseView):
         self._on_open_show = on_open_show
         self._on_open_film = on_open_film
         self._on_upgrade_film = on_upgrade_film
-        self._on_send = on_send
-        self._can_send = can_send
         self._card_scale = card_scale
         self._on_checked = on_checked
         self._continue_watching = continue_watching
@@ -588,7 +762,8 @@ class LibraryView(BaseView):
         self._reach = reach
         self._resync = resync
         self._read_downloaded = read_downloaded
-        self.resync_button: ctk.CTkButton | None = None
+        self.resync_button: RoundButton | None = None
+        self._resyncing = False
         self.reach_labels: list[ctk.CTkLabel] = []
         self.unrecognised_section: ctk.CTkFrame | None = None
         self._file_fonts: tuple[ctk.CTkFont, ctk.CTkFont] | None = None  # made once, as needed
@@ -610,59 +785,67 @@ class LibraryView(BaseView):
         self.cards: list[LibraryCard] = []
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(5, weight=1)
-        # "Library" and the search box; under them (row 1) the shelf switch, with both shelves.
+        self.grid_rowconfigure(3, weight=1)
+        # Row 1 (the owner's choice A + 2, mockups/library-calmer.html): "Library", right beside it
+        # the shelf switch (with both shelves, made then: `_show_shelves`), then at the right
+        # the search box and the round ↻.
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=15, pady=(5, 0))
-        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(2, weight=1)
+        self.header = header
         ctk.CTkLabel(
             header, text=t(TITLE), font=theme.font(20, bold=True), text_color=theme.TEXT
         ).grid(row=0, column=0, sticky="w")
-        if resync is not None:
-            self.resync_button = secondary_button(
-                header, t(RESYNC_TEXT), self.resync, width=RESYNC_WIDTH
-            )
-            self.resync_button.grid(row=0, column=1, sticky="w", padx=(14, 0))
         self.search = ctk.CTkEntry(
             header, width=SEARCH_WIDTH, height=SEARCH_HEIGHT, corner_radius=SEARCH_HEIGHT // 2,
             placeholder_text="🔍  " + t(SEARCH_TEXT), fg_color=theme.SURFACE,
             border_color=theme.CHIP_HOVER, text_color=theme.TEXT,
         )
-        self.search.grid(row=0, column=2, sticky="e")
+        self.search.grid(row=0, column=3, sticky="e")
         self.search.bind("<KeyRelease>", self._search_typed, add="+")
+        self._resync_tip: Tooltip | None = None
+        if resync is not None:
+            self.resync_button = RoundButton(
+                header, text=RESYNC_GLYPH, size=SEARCH_HEIGHT,
+                font=theme.font(RESYNC_FONT_SIZE), command=self.resync,
+                edge=theme.CHIP_HOVER, text_color=theme.TEXT_MUTED,
+            )
+            self.resync_button.grid(row=0, column=4, sticky="e", padx=(10, 0))
+            self._resync_tip = add_tooltip(self.resync_button, t(RESYNC_TIP))
 
         # Continue watching, above the tabs: hidden until Plex names something.
         self.continue_row = ContinueRow(self, posters=posters, on_play=self._resume)
-        self.continue_row.grid(row=2, column=0, sticky="ew", padx=15, pady=(8, 0))
+        self.continue_row.grid(row=1, column=0, sticky="ew", padx=15, pady=(8, 0))
         self.continue_row.grid_remove()
 
-        # The Shows and Films tabs on a thin line.
+        # Row 2: the Shows and Films tabs, a thin upright line, the filters as quiet words and
+        # Sort ▾ at the right; one hairline under the whole row.
         tabs = ctk.CTkFrame(self, fg_color="transparent")
-        tabs.grid(row=3, column=0, sticky="ew", padx=15, pady=(6, 0))
+        tabs.grid(row=2, column=0, sticky="ew", padx=15, pady=(10, 12))
         self.kind_tabs_row = tabs
-        tabs.grid_columnconfigure(2, weight=1)
+        tabs.grid_columnconfigure(4, weight=1)
         self.kind_tabs: dict[LibraryKindTab, KindTab] = {}
         kinds = ((LibraryKindTab.SHOWS, SHOWS_TAB), (LibraryKindTab.FILMS, FILMS_TAB))
         for column, (kind, name) in enumerate(kinds):
             tab = KindTab(tabs, t(name), functools.partial(self.set_kind, kind))
-            tab.grid(row=0, column=column, sticky="w", padx=(0, 26))
+            tab.grid(row=0, column=column, sticky="sw", padx=(0, 22))
             self.kind_tabs[kind] = tab
-        ctk.CTkFrame(tabs, height=1, corner_radius=0, fg_color=theme.CHIP_HOVER).grid(
-            row=1, column=0, columnspan=3, sticky="ew"
+        # The words, the separator and Sort ▾ are centred on the tabs' names (`level`).
+        # (1-pixel lines are plain Tk frames: a CTkFrame that thin isn't drawn.)
+        holder = ctk.CTkFrame(
+            tabs, width=1, height=SEPARATOR_HEIGHT, corner_radius=0, fg_color="transparent"
         )
-        self._show_kinds()
-
-        # The filters as chips, Sort ▾ at the right.
-        bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=4, column=0, sticky="ew", padx=15, pady=(12, 10))
-        bar.grid_columnconfigure(0, weight=1)
+        holder.grid(row=0, column=2, sticky="s", padx=(0, 16), pady=(0, level(SEPARATOR_HEIGHT)))
+        hairline(holder, theme.CHIP_HOVER).place(x=0, y=0, width=1, relheight=1)
         self._chip_font = theme.font(CHIP_FONT_SIZE)
-        self._chip_row = ctk.CTkFrame(bar, fg_color="transparent")
-        self._chip_row.grid(row=0, column=0, sticky="w")
-        self.filter_chips: dict[LibraryFilter, ctk.CTkButton] = {}
+        self._chip_row = ctk.CTkFrame(tabs, fg_color="transparent")
+        self._chip_row.grid(
+            row=0, column=3, sticky="sw", pady=(0, level(WORD_HEIGHT) - FILTER_UNDERLINE_ROOM)
+        )
+        self.filter_chips: dict[LibraryFilter, FilterChip] = {}
         self._make_chips()
-        sort = ctk.CTkFrame(bar, fg_color="transparent")
-        sort.grid(row=0, column=1, sticky="e")
+        sort = ctk.CTkFrame(tabs, fg_color="transparent")
+        sort.grid(row=0, column=5, sticky="se", pady=(0, level(CHIP_HEIGHT)))
         ctk.CTkLabel(
             sort, text=t(SORT_TEXT), font=self._chip_font, text_color=theme.TEXT_MUTED
         ).pack(side="left", padx=(0, 8))
@@ -675,13 +858,16 @@ class LibraryView(BaseView):
         )
         self.sort_menu.set(t(SORT_NAMES[self._sort]))
         self.sort_menu.pack(side="left")
+        self.tabs_line = hairline(tabs, theme.CHIP_HOVER)
+        self.tabs_line.grid(row=1, column=0, columnspan=6, sticky="ew")
+        self._show_kinds()
 
         self._body = ScrollableFrame(self, fg_color="transparent")
-        self._body.grid(row=5, column=0, sticky="nsew", padx=15, pady=(0, 5))
+        self._body.grid(row=3, column=0, sticky="nsew", padx=15, pady=(0, 5))
         self._body.grid_columnconfigure(0, weight=1)
         # The folders the folder library couldn't read: always in sight, right above the footer.
         self._reach_row = ctk.CTkFrame(self, fg_color="transparent")
-        self._reach_row.grid(row=6, column=0, sticky="ew", padx=19, pady=(0, 4))
+        self._reach_row.grid(row=4, column=0, sticky="ew", padx=19, pady=(0, 4))
         self._reach_row.grid_remove()
         self._grid: FlexGrid | None = None
         # What the grid shows from (the last render's search, filter and sort) and its size.
@@ -694,30 +880,22 @@ class LibraryView(BaseView):
         return SHOW_FILTERS if self._kind is LibraryKindTab.SHOWS else FILM_FILTERS
 
     def _make_chips(self) -> None:
-        """The chips of the chosen tab's filters (shows' and films' differ)."""
+        """The words of the chosen tab's filters (shows' and films' differ)."""
         for chip in self.filter_chips.values():
             chip.destroy()
         self.filter_chips = {}
         for choice in self._filters():
-            text = t(FILTER_NAMES[choice])
-            chip = ctk.CTkButton(
-                self._chip_row, text=text,
-                width=round(self._chip_font.measure(text)) + 2 * CHIP_PAD, height=CHIP_HEIGHT,
-                corner_radius=CHIP_HEIGHT // 2, font=self._chip_font,
-                command=functools.partial(self._choose_filter, choice),
+            chip = FilterChip(
+                self._chip_row, t(FILTER_NAMES[choice]), self._chip_font,
+                functools.partial(self._choose_filter, choice),
             )
-            chip.pack(side="left", padx=(0, CHIP_GAP))
+            chip.pack(side="left", padx=(0, FILTER_GAP))
             self.filter_chips[choice] = chip
         self._paint_chips()
 
     def _paint_chips(self) -> None:
         for choice, chip in self.filter_chips.items():
-            on = choice is self._filter
-            fill, hover = chip_color(on)
-            chip.configure(
-                fg_color=fill, hover_color=hover,
-                text_color=theme.ON_ACCENT if on else theme.BUTTON_TEXT,
-            )
+            chip.set_selected(choice is self._filter)
 
     def _show_kinds(self) -> None:
         """The tabs' counts and which one is chosen."""
@@ -754,8 +932,8 @@ class LibraryView(BaseView):
                 self.shelf_switch.grid_remove()
             return
         if self.shelf_switch is None:
-            self.shelf_switch = ShelfSwitch(self, self.set_shelf)
-            self.shelf_switch.grid(row=1, column=0, sticky="w", padx=15, pady=(10, 0))
+            self.shelf_switch = ShelfSwitch(self.header, self.set_shelf)
+            self.shelf_switch.grid(row=0, column=1, sticky="w", padx=(16, 0))
         counts = {
             shelf: len(contents.shows) + len(contents.films)
             for shelf, contents in self._by_shelf.items()
@@ -955,7 +1133,6 @@ class LibraryView(BaseView):
             self.more_button.grid(row=1, column=0, pady=(6, 16))
 
     def _card(self, grid: FlexGrid, item: LibraryShow | PlexTitle, scale: CardScale) -> LibraryCard:
-        send = self._on_send if self._on_send is not None and self._can_send() else None
         play = self._play
         if isinstance(item, LibraryShow):
             title = item.title
@@ -963,11 +1140,9 @@ class LibraryView(BaseView):
                 grid, title, posters=self._posters, scale=scale, line=show_line(title),
                 tag=gaps_text(item.gaps), following=item.following,
                 on_open=lambda: self._open_show(title),
-                on_send=(lambda: send(title)) if send is not None else None,
+                on_follow=lambda: self._follow(card, item),
                 on_play=(lambda: play.pick(self.winfo_toplevel(), title)) if play else None,
             )
-            if card.follow_button is not None:
-                card.follow_button.configure(command=lambda: self._follow(card, item))
             return card
         line = film_line(item)
         if item.resolution:
@@ -976,7 +1151,6 @@ class LibraryView(BaseView):
         return LibraryCard(
             grid, item, posters=self._posters, scale=scale, line=line,
             on_open=lambda: self._on_open_film(item),
-            on_send=(lambda: send(item)) if send is not None else None,
             on_upgrade=(lambda: upgrade(item)) if upgrade is not None else None,
             on_play=(lambda: play.film(item)) if play is not None else None,
         )
@@ -1074,13 +1248,17 @@ class LibraryView(BaseView):
 
     # -- actions -------------------------------------------------------------------------------
 
+    @property
+    def resyncing(self) -> bool:
+        """The header's ↻ is checking (a click on it does nothing meanwhile)."""
+        return self._resyncing
+
     def resync(self) -> None:
-        """The header's "↻ Check now": the sources read again (both shelves' together), then
-        the page (a click while one runs does nothing)."""
-        button = self.resync_button
-        if self._resync is None or button is None or button.cget("state") == "disabled":
+        """The header's ↻ ("Check now"): the sources read again (both shelves' together), then
+        the page (a click while one runs does nothing; the ↻ faint meanwhile)."""
+        if self._resync is None or self.resync_button is None or self._resyncing:
             return
-        button.configure(state="disabled", text=t(RESYNCING_TEXT))
+        self._show_resyncing(True)
         self._start(self._resynced(self._resync), "LibraryView.resync")
 
     async def _resynced(self, resync: Callable[[], Awaitable[None]]) -> None:
@@ -1089,9 +1267,17 @@ class LibraryView(BaseView):
             if self.winfo_exists():
                 await self.load()
         finally:
-            button = self.resync_button
-            if button is not None and button.winfo_exists():
-                button.configure(state="normal", text=t(RESYNC_TEXT))
+            self._show_resyncing(False)
+
+    def _show_resyncing(self, busy: bool) -> None:
+        self._resyncing = busy
+        button, tip = self.resync_button, self._resync_tip
+        if button is None or not button.winfo_exists():
+            return
+        button.set_look(text_color=theme.TEXT_FAINT if busy else theme.TEXT_MUTED)
+        button.configure(cursor="arrow" if busy else "hand2")
+        if tip is not None:
+            tip.set_text(t(RESYNCING_TIP if busy else RESYNC_TIP))
 
     def _start(self, coro: Any, name: str) -> None:
         task: asyncio.Task[Any] = spawn(coro, name=name)
@@ -1106,18 +1292,27 @@ class LibraryView(BaseView):
         self._start(run(), "LibraryView.open")
 
     def _follow(self, card: LibraryCard, show: LibraryShow) -> None:
-        if card.follow_button is None or card.following:
+        """The card's "+": the show followed (its mark "…" meanwhile, then "✓")."""
+        if card.follow_state != "idle":
             return
         card.set_busy()
 
         async def run() -> None:
-            followed = await self._service.follow(
-                show.title, profile_id=self._settings.current.current_profile
-            )
-            if not card.winfo_exists():
-                return
-            card.set_following(followed)
-            if not followed:
+            followed = False
+            try:
+                followed = await self._service.follow(
+                    show.title, profile_id=self._settings.current.current_profile
+                )
+            finally:
+                # A failure of any kind (spawn logs and reports a raised one) or a cancel gives
+                # the "+" back; never a mark left on "…". Quitting may have destroyed Tk already:
+                # then there's nothing to put back (and the cancel stays a cancel).
+                try:
+                    if card.winfo_exists():
+                        card.set_following(followed)
+                except tk.TclError:
+                    pass
+            if not followed and card.winfo_exists():
                 self._report(t(FOLLOW_FAILED, name=show.title.title))
 
         self._start(run(), "LibraryView.follow")
@@ -1127,6 +1322,12 @@ class LibraryView(BaseView):
             self._status(text, clear_after_ms=6000)
         except tk.TclError:
             pass
+
+    def _set_scaling(self, *args: Any, **kwargs: Any) -> None:
+        """Windows' scaling changed: the round ↻ (a plain canvas CTk doesn't scale) follows."""
+        super()._set_scaling(*args, **kwargs)
+        if self.resync_button is not None:
+            self.resync_button.rescale()
 
     def destroy(self) -> None:
         for task in list(self._tasks):

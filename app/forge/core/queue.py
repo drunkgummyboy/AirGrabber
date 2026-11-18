@@ -320,8 +320,8 @@ class Queue:
         self, item_id: int, reason: str, *, match_problem: bool = False, in_library: bool = False
     ) -> None:
         """A watched download waits for the owner, for `reason`. `match_problem`: choosing a
-        match settles it. `in_library`: it is in the library already (its band offers "Replace
-        the one in the library"). Every hold says this anew, so a later reason replaces it."""
+        match settles it. `in_library`: it is in the library already (its band offers "Use this
+        one instead"). Every hold says this anew, so a later reason replaces it."""
         item = self.get(item_id)
         if item is None:
             return

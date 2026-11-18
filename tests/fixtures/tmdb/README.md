@@ -19,3 +19,8 @@ show, person and video key in them is made up; the image paths are only there to
 - `extras_tv_aggregate_credits.json`: `/tv/7171/aggregate_credits`: an actor with two parts
   (the one with the most episodes counts) and one without any
 - `extras_find_tv.json`: `/find/tt9900071?external_source=imdb_id`
+
+`see_more_trending_page2.json` (the Movies page's See more) was **built by hand** in the shape of
+`movie_trending.json`: `/trending/movie/week?page=2`, `total_pages` 500, the 6th film of the
+recorded first page again (popularity moves a film between pages) and 19 made-up films (ids
+8100001–8100019, no posters).

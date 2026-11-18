@@ -1,4 +1,4 @@
-"""MediaForge's "Replace the one in the library" (round 2, item 26): a watched download held as
+"""MediaForge's "Use this one instead" (round 2, item 26): a watched download held as
 "Already in the library" takes the library copy's place. The copy there moves aside first, to the
 Duplicates folder beside the library folder (app/forge/core/duplicates.py's rule), with its
 subtitles; then the download is renamed in as usual. One run, so Undo (a card's or History's)

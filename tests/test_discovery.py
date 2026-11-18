@@ -21,7 +21,9 @@ from app.models import (
     DiscoverShowEntry,
     DownloadRecord,
     MediaType,
+    MovieDashboard,
     MovieDetails,
+    MoviePage,
     Show,
     TVDetails,
 )
@@ -115,6 +117,9 @@ class FakeAPIs:
             ("just_dropped", 1): self.just_dropped,
             ("upcoming", 1): self.upcoming,
         }
+        # /trending/movie/week's later pages (See more); a missing page is empty, an int is a
+        # status.
+        self.trending: dict[int, Any] = {}
         # /movie/<id> payloads; any other film has no release data (digital date unknown).
         self.movie_details: dict[int, Any] = {SPIDER_MAN: load("tmdb/movie_details.json")}
         self.shows: dict[int, Any] = {LINK_CLICK_TVMAZE: load("tvmaze/lookup_imdb.json")}
@@ -152,6 +157,10 @@ class FakeAPIs:
             shelf = "upcoming" if start > self.today() else "just_dropped"
             number = int(params.get("page", "1"))
             payload = self.digital.get((shelf, number), results_page([], number))
+            if isinstance(payload, int):
+                return httpx.Response(payload)
+        elif path == MOVIE_TRENDING and (number := int(params.get("page", "1"))) > 1:
+            payload = self.trending.get(number, results_page([], number))
             if isinstance(payload, int):
                 return httpx.Response(payload)
         elif path.startswith("/3/movie/"):
@@ -603,6 +612,165 @@ class DigitalShelfTests(DiscoveryTestCase):
         self.assertEqual(len(self.server.requests), requests)
         await self.service.movie_dashboard(force=True)  # lists again, details from the cache
         self.assertEqual(len(self.server.requests), requests + 5)
+
+
+class SeeMoreTests(DiscoveryTestCase):
+    """more_movies: a movie shelf's next films (the Movies page's See more)."""
+
+    listing = 0  # the last dashboard's, as the Movies page keeps it
+
+    async def dash(self, **options: Any) -> MovieDashboard:
+        dashboard = await self.service.movie_dashboard(**options)
+        self.listing = dashboard.listing
+        return dashboard
+
+    async def more(self, shelf: str, page: int) -> MoviePage:
+        return await self.service.more_movies(shelf, page, listing=self.listing)
+
+    def trending_ids(self) -> list[int]:
+        return ids(self.server.tmdb[MOVIE_TRENDING]["results"])
+
+    def asked_pages(self, path: str) -> list[str]:
+        return [r.url.params["page"] for r in self.server.of(path) if "page" in r.url.params]
+
+    def digital_page(self, number: int, films: list[Any], total: int) -> dict[str, Any]:
+        return {"page": number, "results": films, "total_pages": total, "total_results": 99}
+
+    async def test_trending_page_2_is_the_spare_films_then_tmdbs_page_2(self) -> None:
+        self.server.trending[2] = load("tmdb/see_more_trending_page2.json")
+        dashboard = await self.dash()
+        # Each shelf showed 18 of the 20 it fetched: all three have more.
+        self.assertEqual(dashboard.more, {"just_dropped", "trending", "upcoming"})
+
+        page = await self.more("trending", 2)
+
+        second = self.server.trending[2]["results"]
+        self.assertEqual([m.id for m in page.movies], self.trending_ids()[18:] + ids(second))
+        self.assertTrue(page.more)  # total_pages 500
+        self.assertEqual(self.asked_pages(MOVIE_TRENDING), ["2"])
+        added = page.movies[3]
+        self.assertEqual((added.id, added.title, added.genre_ids), (8100001, "Trending Page Two 1", (28, 53)))
+        # Asked again: from memory.
+        requests = len(self.server.requests)
+        self.assertEqual(await self.more("trending", 2), page)
+        self.assertEqual(len(self.server.requests), requests)
+
+    async def test_later_pages_and_the_last_one(self) -> None:
+        await self.dash()
+        self.server.trending[3] = {
+            "page": 3, "results": [{"id": 8200001, "title": "Last"}], "total_pages": 3,
+        }
+        page = await self.more("trending", 3)
+        self.assertEqual(([m.id for m in page.movies], page.more), ([8200001], False))
+        self.assertEqual(self.asked_pages(MOVIE_TRENDING), ["3"])
+        # Without a total TMDB's page says it: a short one is the last.
+        self.server.trending[4] = {"page": 4, "results": [{"id": 8200002, "title": "Short"}]}
+        self.assertFalse((await self.more("trending", 4)).more)
+
+    async def test_a_digital_shelf_whose_list_ended_gives_its_spare_films_only(self) -> None:
+        dashboard = await self.dash()  # its page 2 was empty
+        requests = len(self.server.requests)
+        page = await self.more("just_dropped", 2)
+        fetched = ids(self.server.just_dropped["results"])
+        self.assertEqual([m.id for m in page.movies], fetched[18:])
+        self.assertEqual([m.id for m in dashboard.just_dropped], fetched[:18])
+        self.assertFalse(page.more)
+        self.assertEqual(len(self.server.requests), requests)  # nothing asked of TMDB
+
+    async def test_a_digital_shelf_goes_on_two_tmdb_pages_at_a_time_filtered(self) -> None:
+        extra = [{"id": 9000 + n, "title": f"Extra {n}"} for n in range(20)]
+        self.server.digital[("just_dropped", 2)] = self.digital_page(2, extra, 4)  # of 4
+        dashboard = await self.dash()
+        self.assertIn("just_dropped", dashboard.more)
+        third = [{"id": 9100 + n, "title": f"Third {n}"} for n in range(20)]
+        fourth = [{"id": 9200 + n, "title": f"Fourth {n}"} for n in range(5)]
+        self.server.digital[("just_dropped", 3)] = self.digital_page(3, third, 4)
+        self.server.digital[("just_dropped", 4)] = self.digital_page(4, fourth, 4)
+        self.server.movie_details[9101] = digital_details(9101, self.today - timedelta(days=400))
+        dropped_since = (self.today - timedelta(days=14)).isoformat()
+        today = self.today.isoformat()
+        self.now += timedelta(days=1)  # a day later: still the dashboard's windows
+
+        page = await self.more("just_dropped", 2)
+
+        page_1 = ids(self.server.just_dropped["results"])
+        spare = (page_1 + ids(extra))[18:]  # what the dashboard had beyond 18
+        kept = [i for i in ids(third) if i != 9101] + ids(fourth)  # 9101: a re-release
+        self.assertEqual([m.id for m in page.movies], spare + kept)
+        self.assertFalse(page.more)  # page 4 of 4
+        asked = sorted(
+            (r.url.params["page"], r.url.params["release_date.gte"], r.url.params["release_date.lte"])
+            for r in self.server.of(MOVIE_DISCOVER)
+            if r.url.params.get("page") in ("3", "4")
+        )
+        self.assertEqual(asked, [("3", dropped_since, today), ("4", dropped_since, today)])
+
+    async def test_a_fresh_dashboard_starts_over(self) -> None:
+        self.server.trending[2] = load("tmdb/see_more_trending_page2.json")
+        await self.dash()
+        await self.more("trending", 2)
+        await self.dash(force=True)  # Refresh
+        page = await self.more("trending", 2)
+        self.assertEqual(self.asked_pages(MOVIE_TRENDING), ["2", "2"])
+        self.assertEqual([m.id for m in page.movies][:2], self.trending_ids()[18:])
+        # Cleared (a new key): no spare films are known, TMDB's page 2 is asked again.
+        self.service.clear_cache()
+        page = await self.more("trending", 2)
+        self.assertEqual([m.id for m in page.movies], ids(self.server.trending[2]["results"]))
+        self.assertEqual(self.asked_pages(MOVIE_TRENDING), ["2", "2", "2"])
+
+    async def test_a_failing_page_raises_and_is_asked_again(self) -> None:
+        await self.dash()
+        self.server.trending[2] = 500
+        with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(TMDBError):
+            await self.more("trending", 2)
+        self.server.trending[2] = load("tmdb/see_more_trending_page2.json")
+        page = await self.more("trending", 2)
+        self.assertEqual(len(page.movies), 22)
+
+    async def test_the_films_had(self) -> None:
+        self.server.trending[2] = load("tmdb/see_more_trending_page2.json")
+        await self.db.plex.replace(PlexScan(films=frozenset({(8100002, None)})), self.now)
+        await self.settings.update(plex_token=TOKEN)
+        await self.dash()
+        page = await self.more("trending", 2)
+        self.assertEqual((page.in_plex, page.in_folders), ({8100002}, frozenset()))
+        # The page's quiet reload asks the dashboard about the films See more added.
+        dashboard = await self.dash(also=[8100002, 8100003])
+        self.assertEqual(dashboard.in_plex, {8100002})
+
+    async def test_page_1_goes_on_by_tmdbs_count_not_the_films_read(self) -> None:
+        results = self.server.tmdb[MOVIE_TRENDING]["results"]
+        results[3] = {"title": "No id"}  # malformed: skipped, 19 films read of 20
+        self.server.trending[2] = load("tmdb/see_more_trending_page2.json")
+        with self.assertLogs("app.services.tmdb", "WARNING"):
+            dashboard = await self.dash()
+        self.assertIn("trending", dashboard.more)  # total_pages 500
+        page = await self.more("trending", 2)
+        self.assertEqual(self.asked_pages(MOVIE_TRENDING), ["2"])  # not the spare film only
+        self.assertEqual(len(page.movies), 1 + 20)
+
+    async def test_cached_lists_keep_their_own_see_more(self) -> None:
+        self.server.trending[2] = load("tmdb/see_more_trending_page2.json")
+        first = await self.dash()
+        self.server.failures[MOVIE_TRENDING] = 500
+        with self.assertLogs(LOGGER, "WARNING"):
+            refreshed = await self.dash(force=True)  # Trending fails: not cached
+        self.assertNotEqual(refreshed.listing, first.listing)
+        self.assertNotIn("trending", refreshed.more)
+        del self.server.failures[MOVIE_TRENDING]
+        again = await self.dash()  # the cached lists, with their own See more
+        self.assertEqual((again.listing, again.trending), (first.listing, first.trending))
+        self.assertIn("trending", again.more)
+        page = await self.more("trending", 2)
+        self.assertEqual([m.id for m in page.movies][:2], self.trending_ids()[18:])
+
+    async def test_only_the_movie_shelves_from_page_2(self) -> None:
+        await self.dash()
+        with self.assertRaises(ValueError):
+            await self.more("trending", 1)
+        with self.assertRaises(ValueError):
+            await self.more("watchlist", 2)
 
 
 class ReleaseDateFileTests(DiscoveryTestCase):

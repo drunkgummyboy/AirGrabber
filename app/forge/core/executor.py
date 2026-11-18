@@ -7,7 +7,7 @@ promised) is said in the Activity strip as a warning.
 With `moves` (ForgeMoveService), a rename into the Series or Movies folder also writes a move
 record in the same journal step, with what the caller's `media` (by item id) says the file is.
 
-A plan's `aside` ("Replace the one in the library"): right before a file's rename, the library's
+A plan's `aside` ("Use this one instead"): right before a file's rename, the library's
 copies it replaces move aside (each a journaled rename, its subtitles along), so undoing the run
 puts them back too. One that can't move fails that file: it stays where it was. When anything
 after a move aside fails (the next copy, the file's own rename, Stop during its copy, or the run

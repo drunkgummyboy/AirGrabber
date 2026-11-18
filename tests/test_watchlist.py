@@ -1,5 +1,5 @@
 """The movie watchlist: schema v3, WatchlistRepository, the pure release / due rules,
-WatchlistService (cache, listeners, TMDB release dates, leaving the list on a grab) and the
+WatchlistService (cache, listeners, TMDB release dates, staying on the list on a grab) and the
 watchlist part of AutoDownloadService's runs."""
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from app.models import (
     MediaType,
     Movie,
     MovieDetails,
+    ProfileColour,
     QuickDownloadResult,
     SearchKind,
     SearchRequest,
@@ -253,16 +254,60 @@ class RepositoryTests(WatchlistTestCase):
         await self.db.watchlist.set_auto_download(1, True, profile_id=1)
         self.assertEqual(await self.db.watchlist.entries(profile_id=1), [])
 
-    async def test_a_film_grab_takes_it_off_the_list_an_episode_grab_does_not(self) -> None:
+    async def test_a_film_grab_keeps_it_on_every_list_with_its_switch_off(self) -> None:
+        await self.db.profiles.add("Sam", ProfileColour.GREEN, when=NOW)
         await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
         await self.db.watchlist.add(movie(2), auto_download=True, when=NOW, profile_id=1)
+        await self.db.watchlist.add(movie(2), auto_download=True, when=NOW, profile_id=2)
+        await self.db.watchlist.record_try(2, NOW, give_up=False)
         await self.db.history.add(
             DownloadRecord(media_type=MediaType.TV, media_id=1, season=1, release_title="x")
         )
         await self.db.history.add(
             DownloadRecord(media_type=MediaType.MOVIE, media_id=2, release_title="y")
         )
-        self.assertEqual([e.movie_id for e in await self.db.watchlist.entries(profile_id=1)], [1])
+        for person in (1, 2):
+            film = await self.db.watchlist.entry(2, profile_id=person)
+            assert film is not None
+            self.assertEqual(
+                (film.downloaded, film.auto_download, film.tries, film.first_try, film.last_try,
+                 film.gave_up),
+                (True, False, 0, None, None, False),
+            )
+        # An episode grab of a show with the same id leaves film 1 as it was.
+        other = await self.row(1)
+        assert other is not None
+        self.assertEqual((other.downloaded, other.auto_download), (False, True))
+        [one, two] = await self.db.watchlist.films()
+        self.assertEqual((one.downloaded, two.downloaded, two.auto_download), (False, True, False))
+
+    async def test_a_downloaded_film_is_never_switched_on_or_given_up_by_itself(self) -> None:
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="y")
+        )
+        await self.db.watchlist.record_try(1, NOW, give_up=True)  # a run that listed it before
+        await self.db.watchlist.try_again(1)
+        stored = await self.row(1)
+        assert stored is not None
+        self.assertEqual((stored.auto_download, stored.tries, stored.gave_up), (False, 0, False))
+        # Put on another list after its grab: its switch starts off.
+        await self.db.profiles.add("Sam", ProfileColour.GREEN, when=NOW)
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=2)
+        added = await self.db.watchlist.entry(1, profile_id=2)
+        assert added is not None
+        self.assertEqual((added.downloaded, added.auto_download), (True, False))
+
+    async def test_no_new_column_a_downloaded_film_is_a_plain_row(self) -> None:
+        # An older version started on this data simply shows the film (its switch off).
+        await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="y")
+        )
+        rows = await self.db.fetch_all("SELECT * FROM watchlist")
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("downloaded", rows[0].keys())
+        self.assertEqual(rows[0]["auto_download"], 0)
 
     async def test_an_unreadable_row_is_skipped_not_fatal(self) -> None:
         await self.db.watchlist.add(movie(1), auto_download=True, when=NOW, profile_id=1)
@@ -353,7 +398,7 @@ class ServiceTests(WatchlistTestCase):
             id=1, imdb_id="tt1234567", digital_release="2026-12-01", theatrical_release="2026-10-30"
         )
         with self.assertLogs(LOGGER, "INFO"):
-            await self.service.add(movie(1), profile_id=1)
+            await self.service.add(movie(1), auto_download=True, profile_id=1)
         self.assertTrue(self.service.contains(1))
         stored = self.service.entry(1)
         assert stored is not None
@@ -371,6 +416,34 @@ class ServiceTests(WatchlistTestCase):
         assert stored is not None
         self.assertEqual((stored.auto_download, stored.details_at), (False, None))
         self.assertEqual(self.changes, 1)
+
+    async def test_a_film_added_starts_as_the_setting_says(self) -> None:
+        settings = SettingsService(self.db.settings, Settings())
+        service = WatchlistService(
+            self.db.watchlist,
+            self.discovery,
+            self.downloads,
+            settings=settings,
+            clock=lambda: self.now,
+        )
+        self.assertFalse(Settings().auto_download_new_films)  # off by default
+        await service.add(movie(1), profile_id=1)
+        await settings.update(auto_download_new_films=True)
+        await service.add(movie(2), profile_id=1)
+        await service.add(movie(3), auto_download=False, profile_id=1)  # given: as given
+        rows = [await self.row(movie_id) for movie_id in (1, 2, 3)]
+        self.assertEqual([row.auto_download if row else None for row in rows], [False, True, False])
+        await settings.update(auto_download_new_films=False)
+        first = await self.row(1)
+        second = await self.row(2)
+        assert first is not None and second is not None
+        self.assertEqual((first.auto_download, second.auto_download), (False, True))  # kept
+
+    async def test_without_settings_a_film_added_starts_off(self) -> None:
+        await self.service.add(movie(1), profile_id=1)
+        stored = await self.row(1)
+        assert stored is not None
+        self.assertFalse(stored.auto_download)
 
     async def test_adding_twice_changes_nothing(self) -> None:
         await self.service.add(movie(1), profile_id=1)
@@ -458,9 +531,10 @@ class ServiceTests(WatchlistTestCase):
         assert stored is not None
         self.assertEqual(stored.digital_release, date(2026, 12, 1))
 
-    async def test_a_grab_from_anywhere_takes_the_film_off_the_list(self) -> None:
+    async def test_a_grab_from_anywhere_keeps_the_film_marked_downloaded(self) -> None:
         await self.service.add(movie(1), profile_id=1)
         await self.service.add(movie(2), profile_id=1)
+        await self.service.record_try(1)
         changes = self.changes
         heard: list[str] = []
         self.downloads.subscribe(lambda: heard.append("pages"))
@@ -469,17 +543,88 @@ class ServiceTests(WatchlistTestCase):
         )
         await self.downloads.grab(release, GrabTarget(media_type=MediaType.MOVIE, media_id=1))
         self.assertEqual(len(self.opened), 1)  # the magnet went to the torrent program
-        self.assertFalse(self.service.contains(1))
-        self.assertIsNone(await self.row(1))
-        self.assertTrue(self.service.contains(2))
+        self.assertTrue(self.service.contains(1))
+        kept = self.service.entry(1)
+        assert kept is not None
+        self.assertEqual(
+            (kept.downloaded, kept.auto_download, kept.tries, kept.last_try, kept.gave_up),
+            (True, False, 0, None, False),
+        )
+        stored = await self.row(1)
+        assert stored is not None and stored.downloaded_at is not None
+        # As the database has it (the moment: the history's own, memory's is the clock's).
+        self.assertEqual(
+            stored.model_copy(update={"downloaded_at": None}),
+            kept.model_copy(update={"downloaded_at": None}),
+        )
+        self.assertEqual(kept.downloaded_at, NOW)
+        self.assertEqual(sorted(e.movie_id for e in self.service.entries()), [1, 2])
         self.assertEqual(self.changes, changes + 1)
         self.assertEqual(heard, ["pages"])
         # An episode of a show with the same id leaves the list alone.
+        changes = self.changes
         await self.downloads.grab(
             release.model_copy(update={"info_hash": "b" * 40}),
             GrabTarget(media_type=MediaType.TV, media_id=2, season=1, episode=1),
         )
-        self.assertTrue(self.service.contains(2))
+        other = self.service.entry(2)
+        assert other is not None
+        self.assertFalse(other.downloaded)
+        self.assertEqual(self.changes, changes)
+        # Read again (a restart): still there, still downloaded.
+        await self.service.load()
+        again = self.service.entry(1)
+        assert again is not None
+        self.assertTrue(again.downloaded)
+
+    async def test_downloaded_films_come_last_on_the_shelf_and_their_dates_arent_read(
+        self,
+    ) -> None:
+        for movie_id, digital in ((1, date(2026, 10, 1)), (2, date(2026, 11, 1)), (3, None)):
+            self.discovery.details[movie_id] = MovieDetails(id=movie_id, digital_release=digital)
+            await self.service.add(movie(movie_id, release_date=None), profile_id=1)
+        self.assertEqual([e.movie_id for e in self.service.by_release()], [1, 2, 3])
+        when = NOW - timedelta(days=2)
+        await self.db.history.add(
+            DownloadRecord(
+                media_type=MediaType.MOVIE, media_id=1, release_title="y", downloaded_at=when
+            )
+        )
+        await self.service.load()
+        # Each group keeps its order: the ones still to come, then the downloaded.
+        self.assertEqual([e.movie_id for e in self.service.by_release()], [2, 3, 1])
+        stored = self.service.entry(1)
+        assert stored is not None
+        self.assertEqual(stored.downloaded_at, when)
+        self.discovery.calls.clear()
+        await self.service.refresh_release_dates(force=True)
+        self.assertEqual(sorted(self.discovery.calls), [2, 3])  # none for the downloaded film
+        self.now += REFRESH_AFTER
+        self.discovery.calls.clear()
+        await self.service.refresh_release_dates()
+        self.assertNotIn(1, self.discovery.calls)
+
+    async def test_a_grab_of_a_film_on_someone_elses_list_changes_nothing_here(self) -> None:
+        await self.db.profiles.add("Sam", ProfileColour.GREEN, when=NOW)
+        await self.service.add(movie(1), profile_id=2)
+        changes = self.changes
+        release = TorrentRelease(title="Dune.2026.1080p", source="test", info_hash="c" * 40)
+        await self.downloads.grab(release, GrabTarget(media_type=MediaType.MOVIE, media_id=1))
+        self.assertFalse(self.service.contains(1))
+        self.assertEqual(self.changes, changes)
+        theirs = await self.db.watchlist.entry(1, profile_id=2)
+        assert theirs is not None
+        self.assertEqual((theirs.downloaded, theirs.auto_download), (True, False))
+
+    async def test_a_downloaded_film_is_not_listed_as_given_up(self) -> None:
+        await self.service.add(movie(1), profile_id=1)
+        await self.db.watchlist.record_try(1, NOW, give_up=True)
+        self.assertEqual([f.movie_id for f in await self.service.given_up()], [1])
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="y")
+        )
+        self.assertEqual(await self.service.given_up(), [])
+        self.assertFalse(await self.service.record_try(1))
 
     async def test_failing_listener_is_logged_and_others_still_hear(self) -> None:
         def broken() -> None:
@@ -564,7 +709,7 @@ class AutoRunTests(WatchlistTestCase):
         await self.service.add(film, auto_download=auto, profile_id=1)
         return film
 
-    async def test_an_out_film_is_downloaded_and_leaves_the_list(self) -> None:
+    async def test_an_out_film_is_downloaded_and_stays_on_the_list(self) -> None:
         film = await self.add(1, "Dune: Part Three", imdb_id="tt15239678")
         report = await self.auto.run_once()
         expected = AutoMovieDownloaded(title="Dune: Part Three", quality="1080p")
@@ -577,10 +722,30 @@ class AutoRunTests(WatchlistTestCase):
         self.assertIs(request.kind, SearchKind.MOVIE)
         self.assertEqual(request.imdb_id, "tt15239678")
         self.assertEqual(target, GrabTarget(media_type=MediaType.MOVIE, media_id=1))
-        self.assertFalse(self.service.contains(1))
+        kept = self.service.entry(1)
+        assert kept is not None
+        self.assertEqual((kept.downloaded, kept.auto_download), (True, False))
         self.now += timedelta(hours=5)
         self.assertEqual(await self.auto.run_once(), AutoDownloadReport())
         self.assertEqual(len(self.quick.calls), 1)
+
+    async def test_a_downloaded_watchlist_film_is_never_searched_even_switched_on(self) -> None:
+        await self.add(1, "Dune: Part Three")
+        await self.add(2, "Weapons")
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="Dune.1080p")
+        )
+        # Even a switch turned on afterwards (by hand, or by an older version) fetches nothing.
+        await self.service.set_auto_download(1, True, profile_id=1)
+        stored = self.service.entry(1)
+        assert stored is not None
+        self.assertEqual((stored.downloaded, stored.auto_download), (True, True))
+        await self.auto.run_once()
+        self.assertEqual(self.quick.titles, ["Weapons"])
+        self.now += RETRY_AFTER
+        self.quick.calls.clear()
+        await self.auto.run_once()
+        self.assertEqual(self.quick.titles, [])  # Weapons downloaded too: nothing left to fetch
 
     async def test_not_out_yet_switched_off_or_without_dates_is_not_searched(self) -> None:
         await self.add(1, "Soon", digital=TODAY + timedelta(days=1))
@@ -673,20 +838,36 @@ class AutoRunTests(WatchlistTestCase):
         await self.auto.run_once()
         self.assertEqual(sorted(self.quick.titles), ["Film 1", "Film 2"])
 
-    async def test_a_film_downloaded_before_it_was_listed_is_switched_off(self) -> None:
+    async def test_a_film_downloaded_before_it_was_listed_starts_switched_off(self) -> None:
         await self.db.history.add(
             DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="Old.1080p")
         )
         await self.add(1, "Old Favourite")
-        report = await self.auto.run_once()
-        self.assertEqual(report, AutoDownloadReport())
         stored = self.service.entry(1)
         assert stored is not None
-        self.assertFalse(stored.auto_download)
-        self.assertEqual(stored.tries, 0)
+        self.assertEqual((stored.downloaded, stored.auto_download), (True, False))
+        self.assertEqual(await self.auto.run_once(), AutoDownloadReport())
         self.now += RETRY_AFTER
         await self.auto.run_once()
+        self.assertEqual(self.quick.calls, [])
+
+    async def test_a_film_grabbed_after_the_run_listed_it_is_switched_off(self) -> None:
+        await self.add(1, "Old Favourite")
+        due = await self.service.due(NOW, MAX_MOVIES_PER_RUN)
+        self.assertEqual([e.movie_id for e in due], [1])
+        # Grabbed by hand between the run's listing and its search: the search says so.
+        await self.db.history.add(
+            DownloadRecord(media_type=MediaType.MOVIE, media_id=1, release_title="Old.1080p")
+        )
+        async with self.db.transaction() as conn:  # as if something had switched it on again
+            await conn.execute("UPDATE watchlist SET auto_download = 1")
+        with mock.patch.object(self.service, "due", return_value=due):
+            report = await self.auto.run_once()
+        self.assertEqual(report, AutoDownloadReport())
         self.assertEqual(len(self.quick.calls), 1)
+        stored = self.service.entry(1)
+        assert stored is not None
+        self.assertEqual((stored.auto_download, stored.tries), (False, 0))
 
     async def test_release_dates_are_refreshed_by_the_run(self) -> None:
         await self.add(1, "Delayed", digital=TODAY + timedelta(days=3))

@@ -18,6 +18,7 @@ from unittest import mock
 
 import httpx
 
+from app.i18n import t
 from app.i18n_nl import NL
 from app.models import CalendarEntry, Settings, Show, TitleExtras
 from app.models.plex import PlexScan, PlexTitle, PlexVideo
@@ -44,6 +45,7 @@ from app.ui.library_words import HaveSource
 from app.ui.movie_details import MovieDetailsWindow, MovieWindows
 from app.ui.play_control import PLAY_TEXT, EpisodePicker, Play, episode_line
 from app.ui.show_details import ShowDetailsWindow, ShowWindows
+from app.ui.title_info import SendToPhone
 from tests.test_backup_dialog import DialogTestCase
 from app.services.folder_library.playing import is_folder_video
 from tests.test_folder_playing import DUNE as DUNE_FOLDER
@@ -886,7 +888,12 @@ class PickerTests(DialogTestCase):
 
 class FilmWindowTests(DialogTestCase):
     async def window(
-        self, *, in_plex: bool, fake: FakePlayback, player: FakePlayer | None = None
+        self,
+        *,
+        in_plex: bool,
+        fake: FakePlayback,
+        player: FakePlayer | None = None,
+        send: SendToPhone | None = None,
     ) -> tuple[MovieDetailsWindow, Status]:
         actions = mock.MagicMock()
         actions.states.get.return_value = None
@@ -907,11 +914,42 @@ class FilmWindowTests(DialogTestCase):
             status=status,
         )
         self.addCleanup(windows.close)
-        windows.open_movie(FILM)
+        self.windows = windows
+        windows.open_movie(FILM, send=send)
         for _ in range(3):
             await self.settle()
         [window] = windows._live().values()
         return window, status
+
+    async def test_send_to_phone_from_the_library_only(self) -> None:
+        # The Library page's cards had it until the owner's choice A + 2: now its windows.
+        from app.ui.title_info import SEND_TEXT
+
+        window, _status = await self.window(in_plex=True, fake=FakePlayback())
+        self.assertIsNone(window.send_button)  # opened from elsewhere: none
+        sent: list[str] = []
+        overs: list[Any] = []
+
+        def send(over: Any) -> None:
+            sent.append("dune")
+            overs.append(over)
+
+        self.windows.open_movie(FILM, send=send)  # again, from the Library
+        await self.settle()
+        button = window.send_button
+        assert button is not None
+        self.assertEqual(button.cget("text"), t(SEND_TEXT))
+        self.assertIsNotNone(button.cget("image"))  # a drawn phone: 📱 is a box in Tk
+        items = list(window.buttons.items)
+        self.assertEqual(items.index(button), items.index(window.watch_button) + 1)
+        button.invoke()
+        self.assertEqual(sent, ["dune"])
+        self.assertEqual(overs, [window])  # the dialog opens over this window
+        self.windows.open_movie(FILM)  # from elsewhere again: it keeps it
+        await self.settle()
+        self.assertIs(window.send_button, button)
+        self.assertIn(button, window.buttons.items)
+        self.assertEqual(NL[SEND_TEXT], "Naar telefoon sturen")
 
     async def test_play_only_while_in_plex(self) -> None:
         window, _status = await self.window(in_plex=False, fake=FakePlayback())
@@ -981,7 +1019,12 @@ class FilmWindowTests(DialogTestCase):
 
 
 class ShowWindowTests(DialogTestCase):
-    async def window(self, fake: FakePlayback, player: FakePlayer | None = None) -> ShowDetailsWindow:
+    async def window(
+        self,
+        fake: FakePlayback,
+        player: FakePlayer | None = None,
+        send: SendToPhone | None = None,
+    ) -> ShowDetailsWindow:
         shows = ShowWindows(
             self.root,
             library=cast_to(Any, MarkedLibrary()),
@@ -997,12 +1040,46 @@ class ShowWindowTests(DialogTestCase):
             player=player or FakePlayer(),
         )
         self.addCleanup(shows.close)
-        shows.open_show(SHOW)
+        self.shows = shows
+        shows.open_show(SHOW, send=send)
         for _ in range(4):
             await self.settle()
         window = shows._live().get(SHOW.id)
         assert isinstance(window, ShowDetailsWindow)
         return window
+
+    async def test_send_to_phone_from_the_library(self) -> None:
+        from app.ui.title_info import SEND_TEXT
+
+        sent: list[str] = []
+        overs: list[Any] = []
+
+        def send(over: Any) -> None:
+            sent.append("severance")
+            overs.append(over)
+
+        window = await self.window(FakePlayback(), send=send)
+        button = window.send_button
+        assert button is not None
+        self.assertEqual(button.cget("text"), t(SEND_TEXT))
+        items = list(window._buttons.items)
+        assert window.play_button is not None
+        self.assertEqual(items.index(button), items.index(window.play_button) + 1)  # before IMDb
+        button.invoke()
+        self.assertEqual(sent, ["severance"])
+        self.assertEqual(overs, [window])  # the dialog opens over this window
+        self.shows.open_show(SHOW)  # from elsewhere: it keeps it
+        await self.settle()
+        assert window.send_button is not None
+        self.assertIn(window.send_button, window._buttons.items)
+        # Opened from elsewhere first: none, until the Library opens it again.
+        other = await self.window(FakePlayback(), send=None)
+        self.assertIsNone(other.send_button)
+        self.shows.open_show(SHOW, send=lambda over: sent.append("again"))
+        await self.settle()
+        assert other.send_button is not None
+        other.send_button.invoke()
+        self.assertEqual(sent, ["severance", "again"])
 
     async def test_play_opens_the_episode_picker(self) -> None:
         player = FakePlayer()

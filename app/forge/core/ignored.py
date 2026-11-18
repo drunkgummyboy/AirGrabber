@@ -1,5 +1,5 @@
-"""Ignored files and folders: what Auto-rename leaves alone (the owner's "Ignore" in the queue,
-listed in MediaForge Settings › Auto-rename).
+"""Ignored files and folders: what Auto-rename leaves alone (the owner's "Leave it alone ▾" or
+"Keep the one I have ▾" in the queue, listed in MediaForge Settings › Auto-rename).
 
 IgnoreService wraps `app.forge.db.ignored.IgnoredRepo` (`app/forge/ui` never sees the database
 package) and keeps what is ignored in memory as an `IgnoreList`: a frozen snapshot the renamer
@@ -10,11 +10,11 @@ Auto-rename; a file added by hand is never refused.
 and at every look of the renamer: moved or deleted (only when that folder can be reached: a NAS
 that's off says nothing about what is on it), or under a folder that isn't watched any more.
 
-`top_folder(path, watched)`: the folder "Ignore this whole folder" means, the download's own
+`top_folder(path, watched)`: the folder "Leave this whole folder alone" means, the download's own
 folder right under the watched folder (a course, a season pack); None for a file directly in
 the watched folder.
 
-Paths are never logged: a file's or folder's last name only.
+Logs say only whether a file or a folder was ignored: never its name or path.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from app.i18n import N_, t
 
 log = logging.getLogger(__name__)
 
-IGNORED_LINE = N_("Ignored: {name}. MediaForge won't pick it up again.")
+IGNORED_LINE = N_("Left alone: {name}. MediaForge won't pick it up again.")
 
 IgnoreListener = Callable[[tuple[IgnoredPath, ...]], None]
 
@@ -124,7 +124,7 @@ class IgnoreService:
         entry = await self._repository.add(path, folder=folder)
         others = [e for e in self._entries if ignore_key(e.path) != ignore_key(path)]
         self._set((*others, entry))
-        log.info("Ignoring %s %s", "folder" if folder else "file", entry.name)
+        log.info("Ignoring a %s", "folder" if folder else "file")  # never its name or path
         self._say(t(IGNORED_LINE, name=entry.name))
         return entry
 
@@ -133,7 +133,7 @@ class IgnoreService:
         removed = await self._repository.remove(path)
         self._set(tuple(e for e in self._entries if ignore_key(e.path) != ignore_key(path)))
         if removed:
-            log.info("No longer ignoring %s", path.name or path.anchor)
+            log.info("No longer ignoring an entry")  # never its name or path
         return removed
 
     async def forget_gone(self, watched: Iterable[Path]) -> int:

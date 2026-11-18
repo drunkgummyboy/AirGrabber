@@ -108,11 +108,12 @@ from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_searc
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.show_details import ShowWindows
 from app.ui.phone_contents import PhoneContentsWindow
-from app.ui.send_to_phone import SendToPhoneDialog, episodes_reader
+from app.ui.send_to_phone import NO_PHONE_TEXT, SendToPhoneDialog, episodes_reader
 from app.ui.spotlight import SwitchPart
 from app.ui.spotlight_band import SpotlightBand
 from app.ui.sync_loader import PLEX_SYNC_TEXT, SyncLoader
 from app.ui.tasks import on_task_error, spawn
+from app.ui.title_info import SendToPhone
 from app.ui.tooltip import add_tooltip
 from app.ui.torrent_app_status import QBITTORRENT
 from app.ui.tray_menu import downloads_line, pause_until, resume_text, today_line
@@ -169,6 +170,7 @@ _OFF_PAGE_SETTINGS = frozenset(
         "movie_remote_destination",
         "download_mode",
         "auto_download_new_shows",
+        "auto_download_new_films",
         "setup_done",
         "get_started_shown",
         "auto_update",
@@ -836,8 +838,6 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_open_show=self._open_plex_show,
             on_open_film=self._open_plex_film,
             on_upgrade_film=self._upgrade_plex_film,
-            on_send=self._send_to_phone,
-            can_send=self._can_send_to_phone,
             card_scale=self._card_scale,
             on_checked=self._show_library_checked,
             # Continue watching above the tabs, and ▶ Play on its cards and on hover.
@@ -848,7 +848,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             on_tidy=self._tidy_up,
             # The folders it couldn't read, in the Settings box's words.
             reach=self._folder_reach_lines,
-            # "↻ Check now" in the header: Plex and / or the folders read again now.
+            # The header's round ↻ ("Check now"): Plex and / or the folders read again now.
             resync=self._resync_library,
             # The Downloaded shelf opened: the folders read again soon.
             read_downloaded=self._read_downloaded,
@@ -1024,12 +1024,20 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._forge.handle(ForgeRequest(paths=tuple(paths)))
 
     async def _open_plex_show(self, title: PlexTitle) -> bool:
-        """A Library show card: its window (looked up on TVmaze when AirGrabber didn't know it)."""
+        """A Library show card: its window (looked up on TVmaze when AirGrabber didn't know it),
+        with "Send to phone" while there is a phone to send to."""
         show = await self._services.plex_library.show(title)
         if show is None or not self.winfo_exists():
             return False
-        self._show_windows.open_show(show)
+        self._show_windows.open_show(show, send=self._phone_send(title))
         return True
+
+    def _phone_send(self, title: PlexTitle) -> SendToPhone | None:
+        """A Library title's window's "Send to phone", opening over that window (None: no phone
+        to send to now)."""
+        if not self._can_send_to_phone():
+            return None
+        return lambda window: self._send_to_phone(title, over=window)
 
     def _show_phone_button(self) -> None:
         """📱 beside the name button while there is a phone to look at (connected, with a
@@ -1068,20 +1076,24 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
 
     def _can_send_to_phone(self) -> bool:
-        """A Library card gets 📱 while the phone connection has a phone to send to, with
-        either library (Plex, or your folders: the phone copies those from this PC)."""
+        """A Library title's window gets "Send to phone" while the phone connection has a phone
+        to send to, with either library (Plex, or your folders: the phone copies those from
+        this PC)."""
         phone = self._services.phone
         if library_source(self._services.settings.current) is None:
             return False
         return phone.available and bool(phone.phones())
 
-    def _send_to_phone(self, title: PlexTitle) -> None:
-        """A Library card's 📱: the Send to phone window (app/ui/send_to_phone.py)."""
+    def _send_to_phone(self, title: PlexTitle, *, over: tk.Misc | None = None) -> None:
+        """A Library title's window's "Send to phone": the Send to phone window
+        (app/ui/send_to_phone.py) over `over` (that window; None: this one). The phone gone
+        meanwhile (disconnected, switched off): the status bar says so."""
         phone = self._services.phone
-        if not phone.phones():
+        if not phone.available or not phone.phones():
+            self.set_status(t(NO_PHONE_TEXT), clear_after_ms=6000)
             return
         SendToPhoneDialog(
-            self,
+            over.winfo_toplevel() if over is not None else self,
             title=title,
             phones=phone.phones(),
             people=phone.people,
@@ -1096,19 +1108,25 @@ class MainWindow(AsyncCTk, ctk.CTk):
         )
 
     def _upgrade_plex_film(self, title: PlexTitle) -> None:
-        """A Library film's "⬆ Upgrade": its info window on its 1080p and 4K releases."""
+        """A Library film's "⬆ Upgrade": its info window on its 1080p and 4K releases (with
+        "Send to phone" too, as from its cover)."""
         if title.tmdb_id is not None:
             spawn(
                 self._movie_windows.open_movie_id(
-                    title.tmdb_id, releases=True, quality=UPGRADE_KEY
+                    title.tmdb_id, releases=True, quality=UPGRADE_KEY,
+                    send=self._phone_send(title),
                 ),
                 name="library-upgrade",
             )
 
     def _open_plex_film(self, title: PlexTitle) -> None:
-        """A Library film card: its info window (TMDB), else its IMDb page."""
+        """A Library film card: its info window (TMDB; "Send to phone" in it while there is a
+        phone to send to), else its IMDb page."""
         if title.tmdb_id is not None:
-            spawn(self._movie_windows.open_movie_id(title.tmdb_id), name="library-film")
+            spawn(
+                self._movie_windows.open_movie_id(title.tmdb_id, send=self._phone_send(title)),
+                name="library-film",
+            )
         elif title.imdb_id is not None:
             webbrowser.open(IMDB_TITLE_URL.format(title.imdb_id))
 

@@ -1,5 +1,5 @@
 """Movie discovery: the user's watchlist first (stored data, no TMDB needed), then TMDB's
-shelves: just dropped digitally, trending, upcoming digital releases."""
+shelves: just dropped digitally, trending, upcoming digital releases, each with See more."""
 
 from __future__ import annotations
 
@@ -11,13 +11,14 @@ import customtkinter as ctk
 from app.i18n import N_, t
 from app.models import Movie
 from app.services import DiscoveryService, ImageCache, SettingsService, WatchlistService
+from app.services.library_source import has_library
 from app.ui import library_words, theme
 from app.ui.card_scale import FULL, CardScale
 from app.ui.download_control import DownloadActions
 from app.ui.media_cards import MovieCard
 from app.ui.shelf_filter import MOVIE_GENRES, Genre, genres_of
 from app.ui.views.base import StatusReporter
-from app.ui.views.shelves import Shelf, ShelvesView
+from app.ui.views.shelves import MoreItems, Shelf, ShelvesView
 from app.ui.watchlist_cards import WatchlistShelf
 from app.ui.widgets import destroy_tree
 
@@ -30,7 +31,12 @@ class MovieView(ShelvesView[Movie]):
     filters TMDB's shelves only, and "Hide what I already have" (offered only while there is a
     library: Plex, the folder library, or both, app/services/library_source.py; the only thing
     that counts as had) hides the films in it (their cards' library mark).
+
+    TMDB's shelves have See more (ShelvesView's): the next films of the shelf's list
+    (`DiscoveryService.more_movies`), the watchlist shelf none.
     """
+
+    _see_more = True
 
     _body_pady = (0, 5)
     _hide_owned_setting = "hide_owned_movies"
@@ -77,6 +83,11 @@ class MovieView(ShelvesView[Movie]):
         # The last load's films had: the main source's, and beside Plex the folders' own.
         self._in_plex: frozenset[int] = frozenset()
         self._in_folders: frozenset[int] = frozenset()
+        # The same for the films See more added, as their pages said (a quiet reload asks
+        # the dashboard about them again), and the dashboard's lists they go on from.
+        self._more_in_plex: frozenset[int] = frozenset()
+        self._more_in_folders: frozenset[int] = frozenset()
+        self._listing = 0
         self.watchlist_shelf = WatchlistShelf(
             self._body,
             watchlist=watchlist,
@@ -85,6 +96,7 @@ class MovieView(ShelvesView[Movie]):
             card_scale=card_scale,
             on_open=on_open_movie,
             plex=discovery.plex_films,
+            has_library=lambda: has_library(settings.current),
         )
 
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -106,10 +118,16 @@ class MovieView(ShelvesView[Movie]):
         ).pack(side="right")
 
     async def _fetch_shelves(self, *, force: bool) -> list[Shelf[Movie]]:
-        dashboard = await self._discovery.movie_dashboard(force=force)
+        # A quiet reload keeps what See more added: whether those are had too.
+        added = [movie.id for movie in self._added_items()]
+        dashboard = await self._discovery.movie_dashboard(force=force, also=added)
         self._plex_connected = dashboard.plex_connected
         self._in_plex = dashboard.in_plex
         self._in_folders = dashboard.in_folders
+        self._listing = dashboard.listing
+        # The dashboard said it of `added` now; a page added meanwhile keeps its own.
+        self._more_in_plex -= set(added)
+        self._more_in_folders -= set(added)
         failed = set(dashboard.failed)
         return [
             Shelf(
@@ -118,6 +136,8 @@ class MovieView(ShelvesView[Movie]):
                 theme.SECTION_NEW,
                 dashboard.just_dropped,
                 "just_dropped" in failed,
+                "just_dropped",
+                "just_dropped" in dashboard.more,
             ),
             Shelf(
                 "🔥",
@@ -125,6 +145,8 @@ class MovieView(ShelvesView[Movie]):
                 theme.SECTION_HOT,
                 dashboard.trending,
                 "trending" in failed,
+                "trending",
+                "trending" in dashboard.more,
             ),
             Shelf(
                 "📅",
@@ -132,8 +154,29 @@ class MovieView(ShelvesView[Movie]):
                 theme.TEXT_MUTED,
                 dashboard.upcoming,
                 "upcoming" in failed,
+                "upcoming",
+                "upcoming" in dashboard.more,
             ),
         ]
+
+    async def _fetch_more(self, shelf: Shelf[Movie], page: int) -> MoreItems[Movie]:
+        result = await self._discovery.more_movies(shelf.key, page, listing=self._listing)
+
+        def accept() -> None:
+            self._more_in_plex |= result.in_plex
+            self._more_in_folders |= result.in_folders
+
+        return MoreItems(result.movies, result.more, accept)
+
+    def _forget_added(self) -> None:
+        self._more_in_plex = frozenset()
+        self._more_in_folders = frozenset()
+
+    def _from_folders(self, item: Movie) -> bool:
+        return item.id in self._in_folders or item.id in self._more_in_folders
+
+    def _identity(self, item: Movie) -> object:
+        return item.id
 
     async def load(self) -> None:
         self.watchlist_shelf.start()  # shown at once: stored data, no TMDB needed
@@ -144,7 +187,7 @@ class MovieView(ShelvesView[Movie]):
 
     def _is_owned(self, item: Movie) -> bool:
         """Had, in Plex or in the folders: the only thing that counts as had."""
-        return item.id in self._in_plex or item.id in self._in_folders
+        return item.id in self._in_plex or item.id in self._more_in_plex or self._from_folders(item)
 
     def _hide_owned_offered(self) -> bool:
         """Only with a library: without one nothing counts as had, so there is nothing to
@@ -172,5 +215,5 @@ class MovieView(ShelvesView[Movie]):
             scale=self._scale,
             on_open=self._on_open_movie,
             in_plex=self._is_owned(item),
-            from_folders=item.id in self._in_folders,
+            from_folders=self._from_folders(item),
         )

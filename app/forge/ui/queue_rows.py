@@ -3,11 +3,30 @@ ui/queue_view.py; the view itself is app/forge/ui/queue_view.py).
 
 Files become `Row`s for the fast list (app/forge/ui/widgets/virtual_list.py): shows and films in
 one list, one band per show with its episodes as short lines under it, one band per film with
-its file. Every band has a status (`Row.state` and its word): "Needs you" (TMDB isn't sure, or a
-watched download is held back or failed), "Ready" or "Done" (renamed today, faded, with its
-Undo). The filter
-(`show`) is All (needs you first, then the rest by name, then today's done ones under their
-heading), Needs you or Ready, and every count is worked out whichever is shown.
+its file. Every band has a state (`Row.state`: needs, ready or done, its colour) and short words
+saying why (`Row.state_text`): "Already in your library", "Not sure which film", "Waiting for
+you", "Couldn't forge", "Ready to forge" or "Forged 14:32" (renamed today, faded, with its Undo).
+Its preset chip has the caption "Name style" and, as its tip, the name this band's first file
+gets ("Dune (2021)\\Dune (2021).mkv").
+
+A band that needs the owner asks in a sentence what it needs to know (`Row.ask`, the owner's
+choice "B", mockups/forge-band-buttons.html) and its buttons are the answers, the main one last
+(filled):
+- already in the library (`held_in_library`): "You already have this film." with the two copies'
+  quality and size after it (app/forge/core/replace_facts.py, `facts`); "Keep the one I have ▾"
+  (the Leave-it-alone menu) and "Use this one instead" (`REPLACE_ACTION`);
+- not sure what it is (TMDB isn't sure, or a watched download held because its match is wrong
+  or missing, `is_unsure`): "Is this Dune (2021)?"; "No, pick the right film…" (the match picker)
+  and "Yes, forge it" (`ACCEPT_ACTION`); without a guess "Which film is this?" and "Pick the
+  film…";
+- held back for another reason, or failed: the reason as its subtitle; "Leave it alone ▾" and
+  "Forge this" (held) or "Try again" (failed).
+A ready band has "Forge this" (only under the pointer). Small extras are quiet links (`Row.quiet`):
+"📂 Show file" on every band, "Wrong film?" / "Wrong show?" (the picker), and a ready or unsure
+band's "Leave it alone ▾". A done band keeps CC ▾ and Undo.
+
+The filter (`show`) is All (needs you first, then the rest by name, then today's done ones under
+their heading), Needs you or Ready, and every count is worked out whichever is shown.
 
 No Tk here: the rows' texts are translated when they are built (the language is set once at
 startup).
@@ -27,7 +46,8 @@ from typing import Literal
 from app.forge.core.auto import held_in_library
 from app.forge.core.formatter import name_file
 from app.forge.core.queue import ItemStatus, QueueItem
-from app.forge.models.media import MediaKind
+from app.forge.core.replace_facts import ReplaceFacts, facts_text
+from app.forge.models.media import MatchState, MediaKind
 from app.forge.ui.name_diff import name_changes
 from app.forge.ui.subtitle_control import CC_ACTION, CC_LABEL, CcLook
 from app.forge.ui.widgets.virtual_list import Row
@@ -44,23 +64,59 @@ NEEDS_OWNER = (ItemStatus.NEEDS_CHOICE, ItemStatus.HELD, ItemStatus.ERROR)
 _WAITING = (ItemStatus.HELD, ItemStatus.ERROR)  # held back or failed, with a reason
 
 CURRENT_NAME = N_("Current name:")  # before a line's current file name, so it isn't taken for the new one
-NEEDS_YOU = N_("Needs you")
-READY = N_("Ready")
-DONE = N_("Renamed")
 DONE_TODAY = N_("Done today")
-IGNORE = N_("Ignore")  # a band's menu: Auto-rename leaves the file (or its folder) alone
-EXPLORER_ACTION = "explorer"  # every band's first button, a glyph with this tip
-EXPLORER_LABEL = "📂"
+
+# A band's status: a dot and these words, in its state's colour.
+IN_LIBRARY_STATUS = N_("Already in your library")
+UNSURE_FILM_STATUS = N_("Not sure which film")
+UNSURE_SHOW_STATUS = N_("Not sure which show")
+WAITING_STATUS = N_("Waiting for you")
+FAILED_STATUS = N_("Couldn't forge")
+READY_STATUS = N_("Ready to forge")
+DONE_STATUS = N_("Forged")
+DONE_AT_STATUS = N_("Forged {time}")
+NAME_STYLE = N_("Name style")  # the caption before a band's preset chip
+
+# A band's question (`Row.ask`).
+HAVE_FILM = N_("You already have this film.")
+HAVE_EPISODE = N_("You already have this episode.")
+HAVE_EPISODES = N_("You already have {n} of these episodes.")
+IS_THIS = N_("Is this {title}?")
+UNSURE_FILM = N_("The file name and the film database don't fully agree.")
+UNSURE_SHOW = N_("The file name and the show database don't fully agree.")
+WHICH_FILM = N_("Which film is this?")
+WHICH_SHOW = N_("Which show is this?")
+
+# A band's buttons: (id, words). The ids are QueueView._on_band_action's.
+EXPLORER_ACTION = "explorer"  # every band's first link
+SHOW_FILE = N_("📂 Show file")
 OPEN_IN_EXPLORER = N_("Open in Explorer")
+FORGE_ACTION = "rename"  # forge only this band
+FORGE_THIS = N_("Forge this")
+TRY_AGAIN = N_("Try again")
+CHOOSE_ACTION = "choose"  # the match picker
+WRONG_FILM = N_("Wrong film?")
+WRONG_SHOW = N_("Wrong show?")
+PICK_OTHER_FILM = N_("No, pick the right film…")
+PICK_OTHER_SHOW = N_("No, pick the right show…")
+PICK_FILM = N_("Pick the film…")
+PICK_SHOW = N_("Pick the show…")
+# Yes to the guess the band asks about: taken as the match picker would, then forged
+# (QueueView.accept_band).
+ACCEPT_ACTION = "accept"
+YES_FORGE = N_("Yes, forge it")
+IGNORE_ACTION = "ignore"  # a menu: Auto-rename leaves the file (or its folder) alone
+LEAVE_ALONE = N_("Leave it alone ▾")
+KEEP_MINE = N_("Keep the one I have ▾")
+LEAVE_TIP = N_("Takes it off the list. Auto-rename won't touch it again.")
 # A band held as already in the library: the download takes the library copy's place, which
 # moves aside (QueueView.replace_band).
 REPLACE_ACTION = "replace"
-REPLACE_LABEL = N_("Replace the one in the library")
-STATE_WORDS: dict[State, str] = {
-    "needs": NEEDS_YOU,
-    "ready": READY,
-    "done": DONE,
-}
+REPLACE_LABEL = N_("Use this one instead")
+REPLACE_TIP = N_(
+    "The one in your library moves to the Duplicates folder. Nothing is deleted; Undo puts "
+    "both back."
+)
 
 # Where a band's files go, after its subtitle. A glyph and a colour apart, to see it at a glance.
 MOVES_TO = N_("📦 Moves to {folder}")
@@ -158,6 +214,15 @@ class QueueRows:
     bands: dict[int, list[int]] = field(default_factory=dict[int, list[int]])  # band → items
     counts: dict[Show, int] = field(default_factory=dict[Show, int])  # files per filter
     kinds: dict[Kind, int] = field(default_factory=dict[Kind, int])  # files not renamed, per kind
+    # A band shown that asks about a download already in the library, with one such file: its
+    # item and the name it would get there (item id → both), for "Use this one instead"'s facts.
+    held: dict[int, tuple[QueueItem, Path]] = field(
+        default_factory=dict[int, tuple[QueueItem, Path]]
+    )
+    # Band → the files "Keep the one I have ▾" leaves alone: only those in the library.
+    keeps: dict[int, list[int]] = field(default_factory=dict[int, list[int]])
+    # Band → the TMDB id its "Is this …?" names: "Yes, forge it" takes exactly that one.
+    guesses: dict[int, int] = field(default_factory=dict[int, int])
 
     @property
     def needs(self) -> int:
@@ -244,17 +309,138 @@ def _film_line(group: Sequence[QueueItem]) -> str:
     return text + (f" · {_files(len(group))}" if len(group) > 1 else "")
 
 
+def is_unsure(item: QueueItem) -> bool:
+    """Not sure what it is: TMDB wasn't, or a watched download was held because its match is
+    wrong or missing (not one already in the library)."""
+    if item.status is ItemStatus.NEEDS_CHOICE:
+        return True
+    return (
+        item.status is ItemStatus.HELD
+        and not item.in_library
+        and (item.match_problem or item.media.match_state is MatchState.UNCERTAIN)
+    )
+
+
+def guess_of(item: QueueItem) -> bool:
+    """Whether an unsure file has a guess to ask about (TMDB's top result)."""
+    return item.media.tmdb_id is not None
+
+
 def _subtitle(state: State, group: Sequence[QueueItem], episodes: bool) -> str:
     if state == "needs":
-        if any(i.status is ItemStatus.NEEDS_CHOICE for i in group):
-            return tn("TMDB isn't sure · {n} file", "TMDB isn't sure · {n} files", len(group))
-        waiting = [i for i in group if i.status in _WAITING]
-        reason = waiting[0].message if waiting and waiting[0].message else t("Waiting for you")
+        waiting = [i for i in group if i.status in _WAITING and i.message]
+        reason = waiting[0].message if waiting else t(WAITING_STATUS)
         return f"{reason} · {_files(len(group))}"
     if episodes:
         count = tn("{n} episode", "{n} episodes", len(group))
         return " · ".join(x for x in (_seasons(group), count) if x)
     return _film_line(group)
+
+
+@dataclass(frozen=True, slots=True)
+class _Band:
+    """What a band says and offers: its status words, its question and its buttons."""
+
+    state_text: str
+    actions: tuple[tuple[str, str], ...]
+    quiet: tuple[str, ...] = ()
+    tips: tuple[tuple[str, str], ...] = ()
+    ask: str = ""
+    ask_bold: tuple[int, int] | None = None
+    ask_more: str = ""
+    names_file: bool = False  # the question names the guess: the title is what the file says
+    guess: int | None = None  # the TMDB id "Is this …?" names
+
+
+def _have(group: Sequence[QueueItem], episodes: bool, facts: ReplaceFacts | None) -> _Band:
+    """A band held as already in the library: do you want this download instead?"""
+    held = [i for i in group if held_in_library(i)]
+    more = ""
+    if episodes and len(held) > 1:
+        ask = t(HAVE_EPISODES, n=number(len(held)))
+    else:
+        ask = t(HAVE_EPISODE if episodes else HAVE_FILM)
+        if len(held) == 1 and facts is not None:
+            more = facts_text(facts)
+    return _Band(
+        state_text=t(IN_LIBRARY_STATUS),
+        actions=(
+            (CHOOSE_ACTION, t(WRONG_SHOW if episodes else WRONG_FILM)),
+            (IGNORE_ACTION, t(KEEP_MINE)),
+            (REPLACE_ACTION, t(REPLACE_LABEL)),
+        ),
+        quiet=(CHOOSE_ACTION,),
+        tips=((IGNORE_ACTION, t(LEAVE_TIP)), (REPLACE_ACTION, t(REPLACE_TIP))),
+        ask=ask,
+        ask_more=more,
+    )
+
+
+def _ask_unsure(group: Sequence[QueueItem], episodes: bool) -> _Band:
+    """A band not sure what it is: is it TMDB's guess?"""
+    first = next(i for i in group if is_unsure(i))
+    status = t(UNSURE_SHOW_STATUS if episodes else UNSURE_FILM_STATUS)
+    leave = (IGNORE_ACTION, t(LEAVE_ALONE))
+    tips = ((IGNORE_ACTION, t(LEAVE_TIP)),)
+    if not guess_of(first):
+        return _Band(
+            state_text=status,
+            actions=(leave, (CHOOSE_ACTION, t(PICK_SHOW if episodes else PICK_FILM))),
+            quiet=(IGNORE_ACTION,),
+            tips=tips,
+            ask=t(WHICH_SHOW if episodes else WHICH_FILM),
+            ask_more=first.message if first.status is ItemStatus.HELD else "",
+            names_file=True,
+        )
+    name = first.media.title if episodes else first.media.ny
+    ask = t(IS_THIS, title=name)
+    start = ask.find(name)
+    return _Band(
+        state_text=status,
+        actions=(
+            leave,
+            (CHOOSE_ACTION, t(PICK_OTHER_SHOW if episodes else PICK_OTHER_FILM)),
+            (ACCEPT_ACTION, t(YES_FORGE)),
+        ),
+        quiet=(IGNORE_ACTION,),
+        tips=tips,
+        ask=ask,
+        ask_bold=(start, start + len(name)) if start >= 0 else None,
+        ask_more=t(UNSURE_SHOW if episodes else UNSURE_FILM),
+        names_file=True,
+        guess=first.media.tmdb_id,
+    )
+
+
+def _band_look(
+    state: State,
+    group: Sequence[QueueItem],
+    episodes: bool,
+    facts: Callable[[QueueItem], ReplaceFacts | None] | None,
+) -> _Band:
+    """A band not done: its status words, question and buttons (📂 goes before them all)."""
+    wrong = (CHOOSE_ACTION, t(WRONG_SHOW if episodes else WRONG_FILM))
+    leave = (IGNORE_ACTION, t(LEAVE_ALONE))
+    leave_tip = (IGNORE_ACTION, t(LEAVE_TIP))
+    if state == "ready":
+        return _Band(
+            state_text=t(READY_STATUS),
+            actions=(wrong, leave, (FORGE_ACTION, t(FORGE_THIS))),
+            quiet=(CHOOSE_ACTION, IGNORE_ACTION),
+            tips=(leave_tip,),
+        )
+    held = next((i for i in group if held_in_library(i)), None)
+    if held is not None:
+        return _have(group, episodes, facts(held) if facts is not None else None)
+    if any(is_unsure(i) for i in group):
+        return _ask_unsure(group, episodes)
+    failed = any(i.status is ItemStatus.ERROR for i in group)
+    return _Band(
+        state_text=t(FAILED_STATUS if failed else WAITING_STATUS),
+        actions=(wrong, leave, (FORGE_ACTION, t(TRY_AGAIN if failed else FORGE_THIS))),
+        quiet=(CHOOSE_ACTION,),
+        tips=(leave_tip,),
+    )
 
 
 def build_queue_rows(
@@ -267,6 +453,7 @@ def build_queue_rows(
     today: date | None = None,
     chip: Callable[[QueueItem], str] | None = None,
     cc: Callable[[Sequence[QueueItem]], CcLook | None] | None = None,
+    facts: Callable[[QueueItem], ReplaceFacts | None] | None = None,
 ) -> QueueRows:
     """The queue's rows for the filter `show`, with every filter's count.
 
@@ -276,6 +463,8 @@ def build_queue_rows(
     and naming rule: those always move.
     Only today's finished files are shown when `today` is set. `chip`: a band's preset chip
     (from its first file; none on a done band). `cc`: how a done band's CC ▾ shows (None: not).
+    `facts`: the library copy's and the download's quality and size for a download already in
+    the library (None: not known yet).
     """
     out = QueueRows()
     rendered = {}
@@ -348,24 +537,32 @@ def build_queue_rows(
         band_key = -next(keys)
         out.bands[band_key] = [i.id for i in group]
         greyed: tuple[tuple[str, str], ...] = ()
+        note = ""
         if state == "done":
             times = [i.finished_at for i in group if i.finished_at]
-            note = time.strftime("%H:%M", time.localtime(max(times))) if times else ""
+            at = time.strftime("%H:%M", time.localtime(max(times))) if times else ""
             actions: tuple[tuple[str, str], ...] = (("undo", t("Undo")),)
             look = cc(group) if cc is not None else None
             if look is not None:
                 actions = ((CC_ACTION, CC_LABEL), *actions)
-                note = look.note or note
+                note = look.note
                 greyed = ((CC_ACTION, look.tip),) if look.greyed else ()
+            done = t(DONE_AT_STATUS, time=at) if at else t(DONE_STATUS)
+            said = _Band(state_text=done, actions=actions)
         else:
-            note = ""
-            # Ignore (a menu: this file / this whole folder) first, the main button last; 📂 goes
-            # before them all, below. Choose… on every band: any match can turn out wrong, also a
-            # remembered one that looks settled.
-            actions = (("ignore", t(IGNORE)), ("choose", t("Choose…")), ("rename", t("Rename")))
-            if any(held_in_library(i) for i in group):
-                actions = (*actions[:-1], (REPLACE_ACTION, t(REPLACE_LABEL)), actions[-1])
-        actions = ((EXPLORER_ACTION, EXPLORER_LABEL), *actions)
+            said = _band_look(state, group, episodes, facts)
+            in_library = [i for i in group if held_in_library(i)]
+            if state == "needs" and in_library:
+                out.keeps[band_key] = [i.id for i in in_library]
+                if len(in_library) == 1:
+                    out.held[in_library[0].id] = (in_library[0], out.targets[in_library[0].id])
+            if said.guess is not None:
+                out.guesses[band_key] = said.guess
+        actions = ((EXPLORER_ACTION, t(SHOW_FILE)), *said.actions)
+        title = first.title if episodes or state != "needs" else first.ny
+        if said.names_file:  # the question names the guess: the title is what the file says
+            title = group[0].parsed.source_name if len(group) == 1 else group[0].parsed.title
+        band_chip = chip(group[0]) if chip is not None and state != "done" else ""
         dest, dest_look = _destination(
             state,
             first.kind,
@@ -377,7 +574,7 @@ def build_queue_rows(
             Row(
                 key=band_key,
                 kind="band",
-                title=first.title if episodes or state != "needs" else first.ny,
+                title=title,
                 subtitle=_subtitle(state, group, episodes),
                 dest=dest,
                 dest_look=dest_look,
@@ -385,12 +582,22 @@ def build_queue_rows(
                 art=first.poster_path,
                 backdrop=first.backdrop_path,
                 actions=actions,
+                quiet=(EXPLORER_ACTION, *said.quiet),
                 greyed=greyed,
-                tips=((EXPLORER_ACTION, t(OPEN_IN_EXPLORER)),),
+                tips=(
+                    (EXPLORER_ACTION, t(OPEN_IN_EXPLORER)),
+                    *said.tips,
+                    # The chip's tip: the name this band's first file gets ("Dune (2021)\…").
+                    *((("preset", "\\".join(rendered[group[0].id].parts)),) if band_chip else ()),
+                ),
                 note=note,
-                chip=chip(group[0]) if chip is not None and state != "done" else "",
+                chip=band_chip,
+                chip_caption=t(NAME_STYLE) if band_chip else "",
                 state=state,
-                state_text=t(STATE_WORDS[state]),
+                state_text=said.state_text,
+                ask=said.ask,
+                ask_bold=said.ask_bold,
+                ask_more=said.ask_more,
                 faded=state == "done",
             )
         )

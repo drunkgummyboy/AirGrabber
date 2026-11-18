@@ -72,6 +72,7 @@ SETTINGS_A: dict[str, Any] = {
     "remote_destination": "video/tv",
     "movie_remote_destination": "video/movies",
     "excluded_keywords": "cam, ts",
+    "auto_download_new_films": True,
     "setup_done": True,
     "last_run_version": "2.0.9",
     "tray_notice_shown": True,
@@ -263,6 +264,7 @@ class PureTests(unittest.TestCase):
         self.assertEqual(kept["download_dir"], r"D:\Downloads\Alex")  # paths stay
         self.assertEqual(kept["remote_username"], "alex")
         self.assertEqual(kept["excluded_keywords"], ["cam", "ts"])
+        self.assertIs(kept["auto_download_new_films"], True)
 
     def test_settings_with_secrets(self) -> None:
         kept = settings_for_backup(Settings.model_validate(SETTINGS_A), include_secrets=True)
@@ -493,6 +495,7 @@ class RoundTripTests(BackupTestCase):
         self.assertIs(result.downloads_kept, KeptDownloads.NONE)  # a NAS carries over
         self.assertEqual(settings.remote_url, "http://192.168.1.20:5000")
         self.assertEqual(settings.quality_tv, "720p")
+        self.assertTrue(settings.auto_download_new_films)
         # Not in the file: B's key stays, B's markers stay.
         self.assertEqual(settings.tmdb_api_key.get_secret_value(), "tmdb-key-of-b")
         self.assertEqual(settings.remote_password.get_secret_value(), "")
@@ -564,9 +567,12 @@ class ModeTests(BackupTestCase):
         self.assertEqual(await have_marks(b.db, 1), frozenset())  # B's (none) stay
         self.assertEqual(await have_marks(b.db, 3), {301})
         self.assertEqual(len(await b.db.library.episodes(1)), 7)  # B's own episodes stay
-        # Heat was downloaded on PC A: it leaves the list; Arrival keeps B's switch.
-        self.assertEqual(await self.films(b), {10: True, 11: True, 20: False})
-        self.assertFalse(b.watchlist.contains(12))
+        # Heat was downloaded on PC A: it stays, its switch off (as a grab leaves it); Arrival
+        # keeps B's switch.
+        self.assertEqual(await self.films(b), {10: True, 11: True, 12: False, 20: False})
+        heat = b.watchlist.entry(12)
+        assert heat is not None
+        self.assertEqual((heat.downloaded, heat.auto_download), (True, False))
         self.assertEqual(b.settings.current.language, Language.EN)
         self.assertEqual(b.settings.current.quality_tv, "1080p")
         self.assertEqual(
@@ -589,8 +595,31 @@ class ModeTests(BackupTestCase):
         self.assertEqual(b.settings.current.language, Language.NL)
         self.assertEqual(b.settings.current.quality_tv, "720p")
         self.assertEqual((result.counts.shows_added, result.counts.shows_removed), (1, 1))
-        self.assertEqual((result.counts.films_added, result.counts.films_removed), (1, 1))
+        # Past Lives and Heat (downloaded, so no longer taken off by the history) leave.
+        self.assertEqual((result.counts.films_added, result.counts.films_removed), (1, 2))
         self.assertTrue(result.settings_replaced)
+
+    async def test_a_downloaded_film_on_the_list_travels_with_its_switch_off(self) -> None:
+        a = await self.pc_a()
+        await a.db.watchlist.add(movie(12, "Heat"), auto_download=True, when=NOW, profile_id=1)
+        await a.backup.save(self.file, include_secrets=False)  # (added after its grab: off)
+        b = await self.place("b")
+        await b.db.watchlist.add(movie(12, "Heat"), auto_download=True, when=NOW, profile_id=1)
+        result = await b.backup.load(await b.backup.open(self.file), LoadMode.REPLACE)
+        self.assertEqual(await self.films(b), {10: True, 11: False, 12: False})
+        heat = await b.db.watchlist.entry(12, profile_id=1)
+        assert heat is not None
+        self.assertTrue(heat.downloaded)
+        self.assertEqual(result.counts.films_removed, 0)
+        # Onto an empty PC, even a backup's film whose switch was on comes switched off.
+        c = await self.place("c")
+        backup = await c.backup.open(self.file)
+        films = tuple(
+            film.model_copy(update={"auto_download": True}) if film.movie.id == 12 else film
+            for film in backup.watchlist
+        )
+        await c.backup.load(backup.model_copy(update={"watchlist": films}), LoadMode.ADD)
+        self.assertEqual(await self.films(c), {10: True, 11: False, 12: False})
 
     async def test_the_auto_switch_keeps_its_moment(self) -> None:
         a = await self.saved_backup()

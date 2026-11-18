@@ -11,12 +11,16 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest import mock
 
 from app.config import AppPaths
 from app.forge.clients.tmdb import TmdbError
-from app.forge.core.auto import AutoRenamer
+from app.forge.core import duplicates as duplicates_module
+from app.forge.core.auto import AutoRenamer, NamingChoice
+from app.forge.core.ignored import IgnoreService
 from app.forge.core.matcher import Resolution, Resolver
 from app.forge.core.queue import ItemStatus, Queue, QueueItem
+from app.forge.db.ignored import IgnoredRepo
 from app.forge.db.matches import MatchRepo
 from app.forge.models.history import RunSource
 from app.forge.models.media import MatchState, MediaKind, ParsedMedia, ResolvedMedia
@@ -25,7 +29,15 @@ from app.i18n import t
 from app.models import PairedPhone
 from app.models.tmdb import TMDBTitle
 from app.services import Services
-from app.services.phone.forge import PhoneForge, path_key
+from app.services.phone.forge import (
+    KEPT,
+    NO_ASIDE,
+    NOT_REPLACED,
+    REPLACED,
+    REPLACED_TO_PLACE,
+    PhoneForge,
+    path_key,
+)
 from app.services.phone.server import Reply, Request
 from app.services.profiles import ProfileService
 from tests.forge.core.test_auto_renamer import Clock, RenamerTestCase, Tmdb
@@ -109,18 +121,22 @@ class ForgeOverPhoneCase(RenamerTestCase):
         self.clock = Clock()
         self.auto = AutoRenamer(self.parts, now=self.clock)
         self.addAsyncCleanup(self.auto.stop)
+        self.ignored = IgnoreService(IgnoredRepo(self.db))
         self.forge_services = SimpleNamespace(
             queue=self.queue,
             auto=self.auto,
             run_lock=self.run_lock,
             settings=self.settings,
             tmdb=self.unsure,
+            presets=self.parts.presets,
+            ignored=self.ignored,
+            aside_place=None,
+            band_naming={},
         )
         self.runtime = SimpleNamespace(services=self.forge_services, reason="")
         self.profiles = Profiles()
-        self.routes = PhoneForge(
-            cast(ForgeRuntime, self.runtime), cast(ProfileService, self.profiles)
-        ).routes()
+        self.forge = PhoneForge(cast(ForgeRuntime, self.runtime), cast(ProfileService, self.profiles))
+        self.routes = self.forge.routes()
         self.phone = PairedPhone(
             id="phone-1", name="Pixel", token_hash="0" * 64, profile_id=1, paired_at=NOW
         )
@@ -626,10 +642,12 @@ class TakenNameTest(ForgeOverPhoneCase):
         self.assertIs(item.status, ItemStatus.HELD)
         body = await self.listing()
         self.assertEqual(body["waiting"], [])
+        [entry] = body["elsewhere"]
         self.assertEqual(
-            body["elsewhere"],
-            [{"file_name": SHOW_NAME, "reason": t("Already in the library.")}],
-        )
+            (entry["file_name"], entry["reason"], entry["can_replace"], entry["kind"]),
+            (SHOW_NAME, t("Already in the library."), True, "episode"),
+        )  # "Use this one instead" is offered there now
+        await asyncio.gather(*self.forge._reads)
         self.assertEqual(await self.history.list_runs(), [])
 
     async def test_two_files_for_one_name_move_the_tapped_one_and_hold_the_other(self) -> None:
@@ -847,6 +865,8 @@ class SourceNameTest(ForgeOverPhoneCase):
                 ("GET", "/v1/forge"),
                 ("GET", "/v1/forge/{id}/search"),
                 ("POST", "/v1/forge/{id}/choose"),
+                ("POST", "/v1/forge/{id}/replace"),
+                ("POST", "/v1/forge/{id}/keep"),
             },
         )
         (self.tmp / "app").mkdir()
@@ -855,3 +875,246 @@ class SourceNameTest(ForgeOverPhoneCase):
             self.assertLessEqual(set(self.routes), set(services.phone._routes_factory()))
         finally:
             await services.aclose()
+
+
+DUNE = ResolvedMedia(
+    parsed=ParsedMedia(source_name=FILM_NAME, kind=MediaKind.MOVIE, title="Dune", year=2021,
+                       quality="2160p"),
+    title="Dune",
+    year=2021,
+    episode_title=None,
+    match_state=MatchState.CONFIDENT,
+    tmdb_id=8,
+)  # fmt: skip
+
+
+class ReplaceOverPhoneTest(ForgeOverPhoneCase):
+    """"Use this one instead" and "Keep the one I have" from the phone: a download held because
+    Dune is in the Movies folder already (made-up files in a temporary folder)."""
+
+    async def in_library(self) -> tuple[QueueItem, Path]:
+        old = self.folders.movies / FILM_TARGET
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old copy")
+        [item] = await self.watched(FILM_NAME)
+        item.resolution = Resolution(media=DUNE.model_copy(update={"parsed": item.parsed}))
+        self.queue.hold(item.id, t("Already in the library."), in_library=True)
+        return item, old
+
+    async def post(self, action: str, item: QueueItem | str, **body: Any) -> Reply:
+        item_id = item if isinstance(item, str) else str(item.id)
+        if not isinstance(item, str):
+            body.setdefault("path_key", path_key(item.path))
+        path = f"/v1/forge/{item_id}/{action}"
+        return await self.routes["POST", f"/v1/forge/{{id}}/{action}"](
+            Request("POST", path, {"id": item_id}, body, self.phone)
+        )
+
+    async def test_the_list_says_what_replace_would_swap_without_waiting_for_the_disk(self) -> None:
+        item, _old = await self.in_library()
+        first = await self.listing()
+        [entry] = first["elsewhere"]
+        self.assertEqual(
+            entry,
+            {
+                "file_name": FILM_NAME,
+                "reason": t("Already in the library."),
+                "id": item.id,
+                "path_key": path_key(item.path),
+                "can_replace": True,
+                "kind": "movie",
+                "size_bytes": None,  # not read yet: the request never waits
+                "quality": "2160p",
+                "replaces": {"file_name": None, "size_bytes": None, "quality": None},
+            },
+        )
+        await asyncio.gather(*self.forge._reads)
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertEqual(entry["size_bytes"], len(b"video"))
+        self.assertEqual(
+            entry["replaces"], {"file_name": "Dune (2021).mkv", "size_bytes": 8, "quality": None}
+        )
+        self.assertEqual(self.forge._reads, set())  # read once
+        sent = json.dumps(entry)
+        self.assertNotIn(self.tmp.name, sent)
+        self.assertNotIn(self.folders.movies.name, sent)
+
+    async def test_another_hold_isnt_offered(self) -> None:
+        [item] = await self.watched(FILM_NAME)
+        self.queue.hold(item.id, "Two downloads would get the same name.")
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertEqual(set(entry), {"file_name", "reason"})
+        reply = await self.post("replace", item)
+        self.assertEqual((reply.status, reply.body["error"]), (410, "no_longer_there"))
+
+    async def test_replace_puts_the_download_in_the_old_copys_place(self) -> None:
+        item, old = await self.in_library()
+        with self.assertLogs("app.services.phone.forge", logging.INFO) as logs:
+            reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, {"moved": 1, "message": t(REPLACED)})
+        self.assertEqual(old.read_bytes(), b"video")
+        aside = self.folders.movies.parent / "Duplicates" / "Movies" / FILM_TARGET
+        self.assertEqual(aside.read_bytes(), b"old copy")
+        self.assertIs(item.status, ItemStatus.DONE)
+        self.assertEqual(await self.scalar("SELECT source FROM runs"), "app")  # undo on the PC
+        written = "\n".join(logs.output)
+        for secret in (FILM_NAME, "Dune", self.tmp.name):
+            self.assertNotIn(secret, written)
+        again = await self.post("replace", item)
+        self.assertEqual((again.status, again.body["error"]), (410, "no_longer_there"))
+
+    async def test_a_wrong_key_or_id_moves_nothing(self) -> None:
+        item, old = await self.in_library()
+        for reply in (
+            await self.post("replace", item, path_key="0" * 32),
+            await self.post("replace", "999", path_key=path_key(item.path)),
+            await self.post("keep", item, path_key="0" * 32),
+        ):
+            self.assertEqual((reply.status, reply.body["error"]), (410, "no_longer_there"))
+        for reply in (await self.post("replace", "x1"), await self.post("keep", item, path_key=3)):
+            self.assertEqual(reply.status, 400)
+        self.assertEqual(old.read_bytes(), b"old copy")
+        self.assertIs(item.status, ItemStatus.HELD)
+
+    async def test_a_share_root_library_without_a_place_is_left_to_the_pc(self) -> None:
+        item, old = await self.in_library()
+        movies = self.folders.movies
+        self.enterContext(  # as if the Movies folder were \\NAS\Movies: nothing beside it
+            mock.patch.object(duplicates_module, "is_root", lambda folder: folder == movies)
+        )
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertIs(entry["can_replace"], False)  # a tap could only be refused
+        reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 409)
+        self.assertEqual(reply.body, {"error": "failed", "message": t(NO_ASIDE)})
+        self.assertEqual(old.read_bytes(), b"old copy")
+        self.forge_services.aside_place = self.tmp / "aside"  # chosen on the PC this session
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertIs(entry["can_replace"], True)
+        await asyncio.gather(*self.forge._reads)
+        reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, {"moved": 1, "message": t(REPLACED_TO_PLACE)})
+        self.assertEqual(
+            (self.tmp / "aside" / "Movies" / FILM_TARGET).read_bytes(), b"old copy"
+        )
+
+    async def test_a_library_not_set_up_or_a_refused_replace_says_so(self) -> None:
+        item, old = await self.in_library()
+        await self.settings.update(movies_folder="")
+        reply = await self.post("replace", item)
+        self.assertEqual((reply.status, reply.body["error"]), (409, "failed"))
+        await self.use("trial")
+
+        async def refused(ids: Any, **kwargs: Any) -> Any:
+            from app.forge.core.executor import RunResult
+
+            return RunResult(failed=1)
+
+        self.enterContext(mock.patch.object(self.auto, "replace", refused))
+        reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 409)
+        self.assertEqual(reply.body, {"error": "failed", "message": t(NOT_REPLACED)})
+        self.assertEqual(old.read_bytes(), b"old copy")
+
+    async def test_keep_leaves_the_download_alone_like_the_pc(self) -> None:
+        item, old = await self.in_library()
+        reply = await self.post("keep", item)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, {"message": t(KEPT)})
+        self.assertIsNone(self.queue.get(item.id))
+        self.assertTrue(self.ignored.snapshot().ignored(item.path))  # Auto-rename won't again
+        self.assertEqual(old.read_bytes(), b"old copy")
+        self.assertTrue(item.path.exists())  # nothing moved or deleted
+        again = await self.post("keep", item)
+        self.assertEqual(again.status, 410)
+
+    async def test_a_forge_not_started_says_starting(self) -> None:
+        self.runtime.services = None
+        for action in ("replace", "keep"):
+            reply = await self.post(action, "1", path_key="x")
+            self.assertEqual((reply.status, reply.body["error"]), (503, "forge_starting"))
+
+    async def test_two_taps_at_once_replace_once(self) -> None:
+        item, old = await self.in_library()
+        first, second = await asyncio.gather(
+            self.post("replace", item), self.post("replace", item)
+        )
+        self.assertEqual(sorted([first.status, second.status]), [200, 410])
+        self.assertEqual(old.read_bytes(), b"video")
+
+
+class ReplaceRoundThreeTest(ReplaceOverPhoneTest):
+    """Review 3: a replace judged by what moved, the PC's click first, the band's chip, a close."""
+
+    async def test_a_replace_with_remove_after_forge_on_or_off_says_it_moved(self) -> None:
+        for remove in (True, False):
+            with self.subTest(remove_after_forge=remove):
+                await self.settings.update(remove_after_forge=remove)
+                item, old = await self.in_library()
+                reply = await self.post("replace", item)
+                self.assertEqual(reply.status, 200)
+                self.assertEqual(reply.body, {"moved": 1, "message": t(REPLACED)})
+                self.assertEqual(self.queue.get(item.id) is None, remove)  # left the queue
+                self.assertEqual(old.read_bytes(), b"video")
+                await asyncio.gather(*self.forge._reads)
+                for leftover in (self.folders.movies, self.folders.movies.parent / "Duplicates"):
+                    for path in sorted(leftover.rglob("*"), reverse=True):
+                        path.unlink() if path.is_file() else path.rmdir()
+                self.queue.clear()
+
+    async def test_the_pcs_own_click_first_answers_no_longer_there(self) -> None:
+        real = self.auto.replace
+
+        async def pc_first(ids: Any, **kwargs: Any) -> Any:
+            await real(ids, source=RunSource.APP)  # the PC's "Use this one instead" landed first
+            return await real(ids, **kwargs)
+
+        for remove in (False, True):
+            with self.subTest(remove_after_forge=remove):
+                await self.settings.update(remove_after_forge=remove)
+                item, old = await self.in_library()
+                runs = await self.scalar("SELECT COUNT(*) FROM runs")
+                with mock.patch.object(self.auto, "replace", pc_first):
+                    reply = await self.post("replace", item)
+                self.assertEqual((reply.status, reply.body["error"]), (410, "no_longer_there"))
+                self.assertEqual(old.read_bytes(), b"video")  # moved once, by the PC
+                self.assertEqual(await self.scalar("SELECT COUNT(*) FROM runs"), cast(int, runs) + 1)  # one
+                for leftover in (self.folders.movies, self.folders.movies.parent / "Duplicates"):
+                    for path in sorted(leftover.rglob("*"), reverse=True):
+                        path.unlink() if path.is_file() else path.rmdir()
+                self.queue.clear()
+
+    async def test_the_band_chip_on_the_pc_names_the_copy_the_phone_replaces(self) -> None:
+        flat = self.folders.movies / "Dune (2021).mkv"  # what Movie (Flat) names it
+        flat.write_bytes(b"flat copy")
+        item, folder_copy = await self.in_library()
+        preset = next(p for p in await self.parts.presets.list() if p.name == "Movie (Flat)")
+        self.forge_services.band_naming = {
+            item.id: NamingChoice(preset, preset.rule, preset.options)
+        }
+        await self.listing()
+        await asyncio.gather(*self.forge._reads)
+        [entry] = (await self.listing())["elsewhere"]
+        self.assertEqual(entry["replaces"]["size_bytes"], len(b"flat copy"))
+        reply = await self.post("replace", item)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(flat.read_bytes(), b"video")  # the chip's name, as on the PC
+        self.assertEqual(folder_copy.read_bytes(), b"old copy")  # the other copy untouched
+
+    async def test_closing_stops_the_background_reads(self) -> None:
+        await self.in_library()
+        started = asyncio.Event()
+
+        async def asleep(*args: Any, **kwargs: Any) -> Any:
+            started.set()
+            await asyncio.Event().wait()
+
+        with mock.patch("app.forge.core.replace_facts.replace_facts", asleep):
+            await self.listing()
+            await asyncio.wait_for(started.wait(), 5)
+            [task] = self.forge._reads
+            await self.forge.aclose()
+        self.assertTrue(task.cancelled())
+        self.assertEqual(self.forge._reads, set())

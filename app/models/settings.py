@@ -458,6 +458,9 @@ class Settings(BaseModel):
     movie_download_dir: Path | None = None
     # Newly followed shows get their "download new episodes automatically" switch turned on.
     auto_download_new_shows: bool = False
+    # Films added to a watchlist get their "Download when it's out" switch turned on (off by
+    # default, owner 2026-11-17; a film already on a list keeps its switch).
+    auto_download_new_films: bool = False
     # How long the automatic downloads wait after an episode airs (proper releases need time to
     # turn up; the first ones are more often fakes): one of AUTO_WAIT_CHOICES.
     auto_wait_hours: Annotated[int, BeforeValidator(_wait_hours)] = 2

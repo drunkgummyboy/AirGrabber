@@ -69,6 +69,7 @@ from app.models import CastMember, InfoLayout, MovieDetails
 from app.ui import dialog_kit, theme
 from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM, NO_DRAG, Borderless, clearance, make_borderless
 from app.ui.branding import set_window_icon
+from app.ui.icons import IconButton, phone_icon
 from app.ui.poster_card import rgb
 from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
 from app.ui.scrollable import ScrollableFrame
@@ -176,6 +177,14 @@ RELEASES_TAB = N_("Releases")
 CAST_TAB = N_("Cast")
 BACK_TEXT = N_("← Episodes")
 CHOOSE_FIRST_TEXT = N_("Click ☰ Choose… on an episode to see its releases here.")
+# A Library title's window while a phone is connected (`send_button`): its drawn phone (📱
+# shows as a box in a Tk button), square, and its room beside the words.
+SEND_TEXT = N_("Send to phone")
+# The windows' "Send to phone" (from the Library page): called with the window it was clicked in,
+# which the Send to phone dialog opens over.
+SendToPhone = Callable[[tk.Misc], None]
+SEND_ICON = 18
+SEND_PAD = 16  # left and right inside the button
 # TMDB's film statuses in plain words (shown when a film isn't out yet).
 _FILM_STATUSES = {
     "Rumored": N_("Rumoured"),
@@ -985,6 +994,41 @@ class Masthead(tk.Canvas):
 
 
 # -- genre pills, the actions, the cast ---------------------------------------------------------
+
+
+def send_button(
+    master: Any,
+    command: Callable[[], None],
+    *,
+    height: int,
+    font: ctk.CTkFont,
+    radius: int,
+    hover_color: theme.Pair,
+    text_color: theme.Pair,
+) -> IconButton:
+    """The actions' outlined "Send to phone" (the Library page's cards had it until the owner's
+    choice A + 2, mockups/library-calmer.html), with a drawn phone before the words; as tall,
+    round and coloured as the window's other outlined buttons."""
+    text = t(SEND_TEXT)
+    button = IconButton(
+        master,
+        draw=phone_icon,
+        icon_size=SEND_ICON,
+        color=text_color,
+        width=round(font.measure(text)) + SEND_ICON + 6 + 2 * SEND_PAD,
+        height=height,
+        corner_radius=radius,
+        font=font,
+        fg_color="transparent",
+        hover_color=hover_color,
+        text_color=text_color,
+        border_width=1,
+        border_color=theme.EDGE,
+        compound="left",
+        command=command,
+    )
+    button.configure(text=text)
+    return button
 
 
 class GenrePills(ctk.CTkFrame):
