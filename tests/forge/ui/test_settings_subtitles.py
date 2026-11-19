@@ -325,6 +325,34 @@ class StoreTests(TkCase):
         self.assertEqual(self.source.checked, ["NEWKEY"])
         self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "NEWKEY")
 
+    async def test_other_changes_dont_wait_for_the_own_keys_check(self) -> None:
+        # Round 2, 1: OpenSubtitles' check runs before the settings lock is taken.
+        release = asyncio.Event()
+
+        class Slow(FakeSubtitleSource):
+            async def check_key(self, key: str) -> None:
+                await release.wait()
+                await super().check_key(key)
+
+        self.source = Slow()
+        part = self.section()
+        assert part.own_key and part.key_field and part.hearing
+        part.own_key.entry.insert(0, "NEWKEY")
+        part.key_field.commit_now()
+        await asyncio.sleep(0.05)  # the check is out
+        part.hearing._dropdown_callback("Either")
+        await asyncio.wait_for(
+            self._stored(lambda c: c.subtitles_hearing_impaired is HearingImpaired.EITHER), 2
+        )
+        self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "")
+        release.set()
+        await settle()
+        self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "NEWKEY")
+
+    async def _stored(self, done: Any) -> None:
+        while not done(self.stored.current):
+            await asyncio.sleep(0.01)
+
     async def test_a_refused_key_stores_nothing_and_says_why(self) -> None:
         self.source.key_error = KeyRejected("OpenSubtitles refused your own API key")
         part = self.section()

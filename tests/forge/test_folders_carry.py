@@ -108,25 +108,23 @@ class CarryTests(ForgeAsyncTestCase):
         self.assertFalse(forge.current.folders_carried)
         self.assertNotIn("Series", logged.output[0])  # the type only, never a folder
 
-    def test_a_carried_folder_is_checked_soon(self) -> None:
-        # Final review Minor 3: AirGrabber's start (app/services) asks the folder library, never
-        # Forge's core; check_soon itself does nothing while the folders don't count.
+    def test_the_ready_hook_only_attaches_the_moves(self) -> None:
+        # The carried folder's check is asked for by the carry itself (Round 2, 4:
+        # tests/forge/test_services.py), not when Forge is ready: a start failing after the
+        # carry would lose it.
         from types import SimpleNamespace
 
         from app.services import Services
 
-        for added in (True, False):
-            with self.subTest(added=added):
-                calls: list[str] = []
-                folders = SimpleNamespace(
-                    attach=lambda _moves: calls.append("attach"),
-                    check_soon=lambda: calls.append("check_soon"),
-                )
-                started = SimpleNamespace(moves=object(), library_folders_added=added)
-                Services._forge_ready_for_folders(
-                    SimpleNamespace(folder_library=folders), started  # type: ignore[arg-type]
-                )
-                self.assertEqual(calls, ["attach", "check_soon"] if added else ["attach"])
+        calls: list[str] = []
+        folders = SimpleNamespace(
+            attach=lambda _moves: calls.append("attach"),
+            check_soon=lambda: calls.append("check_soon"),
+        )
+        Services._forge_ready_for_folders(
+            SimpleNamespace(folder_library=folders), SimpleNamespace(moves=object())  # type: ignore[arg-type]
+        )
+        self.assertEqual(calls, ["attach"])
 
     def test_same_folder(self) -> None:
         self.assertTrue(same_folder(r"D:\Films", "d:/films/"))

@@ -1,4 +1,4 @@
-"""The ignored files and folders (`ignored`, schema v4): what Auto-rename leaves alone.
+"""The ignored files and folders (`ignored`, schema v4): what Watch folders leaves alone.
 
 Paths are matched by `ignore_key` (os.path.normcase, without a trailing slash): the way Windows
 compares them. One row per path: ignoring it again only updates how it is shown.

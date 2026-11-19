@@ -113,7 +113,7 @@ PICK_SHOW = N_("Pick the show…")
 # (QueueView.accept_band).
 ACCEPT_ACTION = "accept"
 YES_FORGE = N_("Yes, forge it")
-IGNORE_ACTION = "ignore"  # a menu: Auto-rename leaves the file (or its folder) alone
+IGNORE_ACTION = "ignore"  # a menu: Watch folders leaves the file (or its folder) alone
 LEAVE_ALONE = N_("Leave it alone ▾")
 KEEP_MINE = N_("Keep the one I have ▾")
 LEAVE_TIP = N_("Takes it off the list. Sorting won't touch it again.")

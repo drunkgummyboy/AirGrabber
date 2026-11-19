@@ -260,6 +260,9 @@ class Services:
             settings, db.library_files, db.folders, tmdb, library, plex=self.plex
         )
         forge.when_ready(self._forge_ready_for_folders)
+        # MediaForge's one-time carry added a destination to the folder lists: checked soon
+        # (asked at once: a start that fails after the carry won't carry again).
+        forge.when_folders_added(self.folder_library.check_soon)
         # The Companion app's way in, on the home network; off until turned on in Settings
         # (`run` from the UI). What it may ask besides pairing comes from `routes_factory`.
         grabbed_films = GrabbedFilms(self.download_status)
@@ -428,12 +431,8 @@ class Services:
         return self.remote
 
     def _forge_ready_for_folders(self, started: ForgeServices) -> None:
-        """Forge started: the folder library hears its moves, and when its one-time carry just
-        added a MediaForge destination to the folder lists, the folders are checked soon
-        (`check_soon` does nothing while they don't count)."""
+        """Forge started: the folder library hears its moves."""
         self.folder_library.attach(started.moves)
-        if started.library_folders_added:
-            self.folder_library.check_soon()
 
     async def aclose(self) -> None:
         try:

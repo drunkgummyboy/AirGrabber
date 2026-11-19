@@ -97,13 +97,14 @@ from app.ui.dialog_kit import (
     activate_later,
     place_over,
     primary_button,
+    screen_area,
     secondary_button,
     text_label,
 )
 from app.ui.phone_app import PhoneAppDialog
 from app.ui.phone_settings import PhoneBox
 from app.ui.plex_compare import PlexCompareBox
-from app.ui.folder_library_settings import FolderLibraryBox
+from app.ui.folder_library_settings import FolderLibraryBox, FoldersBusy
 from app.ui.folders_page import FoldersPage
 from app.ui.plex_settings import FoldersLine, PlexAccountBox, PlexBox
 from app.ui.prowlarr_panel import PANEL_PAD_X, ProwlarrPanel, shows_remote_fields
@@ -120,18 +121,22 @@ from app.ui.remote_program_form import (
 )
 from app.ui.settings_layout import (
     BOX_GAP,
-    BOX_INNER,
     MAX_PAGE_HEIGHT,
     PAGE_BOTTOM,
-    PAGE_WIDTH,
     TEXT_SIZE,
+    WIDE_PAGE_WIDTH,
     PageSlot,
     SettingsBox,
     SettingsPage,
+    box_inner,
     build_layout,
     fill_sidebar,
     fit_window,
+    fitting_page_width,
     page_height,
+    page_width,
+    use_page_width,
+    wrap_toggle,
 )
 from app.ui.settings_pages_registry import (
     FORGE,
@@ -156,7 +161,7 @@ from app.ui.settings_chips import ChipList
 from app.ui.settings_layout import SCREEN_RESERVE as SCREEN_RESERVE
 from app.ui.settings_layout import dialog_height as dialog_height
 from app.ui.settings_layout import sidebar_width as _sidebar_width
-from app.ui.settings_overview import Card, OverviewCards, overview_cards
+from app.ui.settings_overview import SORTING_UNAVAILABLE, Card, OverviewCards, overview_cards
 from app.ui.settings_search import Match, Place, SettingsSearch, places
 from app.ui.tasks import spawn
 from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
@@ -328,14 +333,13 @@ _BACKUP_BUTTON_WIDTH = 190
 # -- sizes (logical, unscaled CTk units) ---------------------------------------------------------
 
 # The sidebar, the pages and their boxes: app/ui/settings_layout.py; the names this dialog uses
-# below.
-_PAGE_WIDTH = PAGE_WIDTH
+# below. The page's width is the open window's (`page_width()` / `box_inner()`, decided as it
+# opens from the screen it opens on).
 _PAGE_BOTTOM = PAGE_BOTTOM
 _SPOT_TRIES = 100  # looks for a spot of a page still getting ready, this many times
 _SPOT_WAIT_S = 0.05
 _BOX_GAP = BOX_GAP
 _TEXT_SIZE = TEXT_SIZE
-_BOX_INNER = BOX_INNER
 _INDENT = 30  # under a radio button's text
 _TEST_BUTTON_WIDTH = 160
 _UPDATE_BUTTON_WIDTH = 180
@@ -345,12 +349,20 @@ _RESTART_BUTTON_WIDTH = 150
 _SIZE_ENTRY_WIDTH = 70
 _QUALITY_MENU_WIDTH = 230
 _REMOTE_LABEL_WIDTH = 130
-# The NAS / other computer form under its radio button (or the magnet note), with some slack.
-_REMOTE_FIELD_WIDTH = _BOX_INNER - _INDENT - _REMOTE_LABEL_WIDTH - 10
 _REMOTE_GAP = 12  # above that form
 _PANEL_INSET = PANEL_PAD_X + 1  # the Prowlarr panel's border and padding
 _PANEL_LABEL_WIDTH = 120
-_PANEL_FIELD_WIDTH = _BOX_INNER - 2 * _PANEL_INSET - _PANEL_LABEL_WIDTH
+
+
+def _remote_field_width() -> int:
+    """The NAS / other computer form's fields under its radio button (or the magnet note), with
+    some slack."""
+    return box_inner() - _INDENT - _REMOTE_LABEL_WIDTH - 10
+
+
+def _panel_field_width() -> int:
+    """The Prowlarr panel's fields."""
+    return box_inner() - 2 * _PANEL_INSET - _PANEL_LABEL_WIDTH
 
 # (stable id, label) of the websites AirGrabber searches itself, in the order the search runs
 # them. Prowlarr (searched last) has its own panel.
@@ -588,6 +600,43 @@ def sidebar_width() -> int:
     return _sidebar_width(PAGE_ORDER)
 
 
+def _screen_width(master: Any, window: Any) -> float:
+    """The width (logical) of the screen's work area `master` is on (where Settings opens)."""
+    left, _top, right, _bottom = screen_area(master)
+    scaling = float(ctk.ScalingTracker.get_window_scaling(window))
+    return (right - left) / scaling
+
+
+def _inside(widget: tk.Misc, frame: tk.Misc) -> bool:
+    """Whether `widget` is `frame` or shows inside it: inside its children, or placed into it
+    (the remote program's form is the page's, gridded into a box: `grid(in_=…)`)."""
+    found: tk.Misc | None = widget
+    while found is not None:
+        if found is frame:
+            return True
+        found = _holder(found)
+    return False
+
+
+def _holder(widget: tk.Misc) -> tk.Misc | None:
+    """What `widget` shows in: where it is gridded / packed / placed, else its master."""
+    try:
+        manager = str(widget.winfo_manager())
+        info: dict[str, Any] = {}
+        if manager == "grid":
+            info = dict(widget.grid_info())  # type: ignore[attr-defined]
+        elif manager == "pack":
+            info = dict(widget.pack_info())  # type: ignore[attr-defined]
+        elif manager == "place":
+            info = dict(widget.place_info())  # type: ignore[attr-defined]
+    except (tk.TclError, KeyError):
+        info = {}
+    holder = info.get("in")
+    if isinstance(holder, tk.Misc) and holder is not widget:
+        return holder
+    return widget.master
+
+
 def _paint_background(widget: ctk.CTkFrame, color: theme.Color) -> None:
     """Give a transparent CTk frame that sits inside a box but belongs to the page (the remote
     form, the Prowlarr panel) the box's colour; its transparent children follow."""
@@ -636,12 +685,20 @@ class SettingsDialog(ctk.CTkToplevel):
         when either is given (Plex's boxes, Playing's too, with `plex`; the folders' on Folders).
         `problem_reports`: the "Something not working?" box shows when it is given."""
         super().__init__(master, fg_color=theme.BG)
+        # The pages' width, decided once for the screen it opens on (logical units): as wide as
+        # it fits, so that the whole window fits a 1366 x 768 screen at 150 % too. Every page,
+        # MediaForge's later ones too, is built for it.
+        use_page_width(fitting_page_width(_screen_width(master, self), sidebar_width()))
         self._forge = forge
         # The MediaForge parts built so far, by page (a part with boxes on two pages under both).
         self.parts: dict[str, ForgeSectionPart] = {}
         # Stores every change of this window, says a refusal in its box, shows the Undo bar.
         self.committer = Committer(self, describe=_describe)
         self._texts: list[TextCommit] = []  # the text fields, shown again by `_show_stored`
+        # ✕ / Escape: the fields' stores under way (`close`), and the texts refused then (a
+        # second ✕ closes without storing them).
+        self._closing: asyncio.Task[None] | None = None
+        self._refused_at_close: dict[TextCommit, list[str]] = {}
         # Imported here: AirGrabber's start doesn't load Forge's pages (INTEGRATION.md 3.6).
         self._forge_parts: Mapping[str, ForgePart] = {}
         if forge is not None:
@@ -657,6 +714,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.plex_box: PlexBox | None = None
         self.folder_box: FolderLibraryBox | None = None  # Folders' "Count what's in them"
         self.folders_page: FoldersPage | None = None  # Folders' Series and Movies boxes
+        self._folders_busy = FoldersBusy()  # the two share it: one change of the folders at a time
         self.folders_line: FoldersLine | None = None  # Plex & library's line about them
         self.plex_compare: PlexCompareBox | None = None
         self.plex_account: PlexAccountBox | None = None
@@ -689,6 +747,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.overview: OverviewCards | None = None  # Overview's cards
         self._overview_task: asyncio.Task[None] | None = None
         self._plex_status: PlexStatus | None = None  # Plex's, once read (the Overview's)
+        self._forge_start_ended = False  # MediaForge's start ended while this window was open
         current = settings.current
 
         self.title(t("Settings"))
@@ -981,6 +1040,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
             forge_facts = overview_facts(self._forge)  # the rules only, while it runs
             reason = self._forge.reason
+            if forge_facts is None and not reason and self._forge_start_ended:
+                reason = t(SORTING_UNAVAILABLE)  # not "getting ready" for ever
         torrent: TorrentAppStatus | None = getattr(self, "_torrent", None)
         local: TorrentAppStatus | None = getattr(self, "_local_torrent", None)
         return overview_cards(
@@ -1026,6 +1087,7 @@ class SettingsDialog(ctk.CTkToplevel):
         except tk.TclError:
             alive = False
         if alive:
+            self._forge_start_ended = True
             self.refresh_overview()
 
     def _build_quick_setup(self, page: _Page) -> bool:
@@ -1046,7 +1108,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._torrent = TorrentAppStatus(
             app.body,
             torrent_app=self._torrent_app,
-            wraplength=_BOX_INNER - _INDENT - INSTALL_BUTTON_WIDTH - 16,
+            wraplength=box_inner() - _INDENT - INSTALL_BUTTON_WIDTH - 16,
             reinstall=True,
         )
         self._torrent_row = app.take_row()
@@ -1062,7 +1124,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._local_torrent = TorrentAppStatus(
             remote.body,
             torrent_app=self._torrent_app,
-            wraplength=_BOX_INNER - _INDENT - INSTALL_BUTTON_WIDTH - 16,
+            wraplength=box_inner() - _INDENT - INSTALL_BUTTON_WIDTH - 16,
             reinstall=True,
         )
         self._local_torrent_row = remote.take_row()
@@ -1127,7 +1189,7 @@ class SettingsDialog(ctk.CTkToplevel):
             settings=self._settings.current,
             run_test=self._test_remote,
             label_width=_REMOTE_LABEL_WIDTH,
-            field_width=_REMOTE_FIELD_WIDTH,
+            field_width=_remote_field_width(),
             describe=_describe,
             films=True,
             stored=lambda: self._settings.current,
@@ -1157,6 +1219,7 @@ class SettingsDialog(ctk.CTkToplevel):
             self.committer,
             folders=self._folder_library,
             destinations=destinations,
+            busy=self._folders_busy,
         )
         return True
 
@@ -1183,7 +1246,9 @@ class SettingsDialog(ctk.CTkToplevel):
         folder_library = self._folder_library
         if folder_library is None:
             return False
-        self.folder_box = FolderLibraryBox(page, folder_library, self._settings, self.committer)
+        self.folder_box = FolderLibraryBox(
+            page, folder_library, self._settings, self.committer, busy=self._folders_busy
+        )
         return True
 
     def _show_local_line(self, settings: Settings) -> None:
@@ -1198,11 +1263,20 @@ class SettingsDialog(ctk.CTkToplevel):
         """A download choice and remote program stored elsewhere (qBittorrent's setup pointed
         AirGrabber at its Web UI, an Undo): the choice, its rows and the form follow."""
         self._show_local_line(updated)
-        if not set_up_by_airgrabber(updated):
+        own = set_up_by_airgrabber(updated)
+        if not own:
             self._local_torrent.grid_remove()
         if self._mode.get() != updated.download_mode.value:
             self._mode.set(updated.download_mode.value)
             self._form_in_folder = False
+            self._show_download_rows()
+        elif (
+            own
+            and updated.download_mode is DownloadMode.REMOTE
+            and not self._local_torrent.winfo_manager()
+        ):
+            # Pointed at AirGrabber's own qBittorrent by the form, an Undo or its setup: its
+            # status shows (and the Overview's card says it) without a visit to the page.
             self._show_download_rows()
         self._remote_form.show_stored(updated)
         self._refresh_folder_note()
@@ -1381,7 +1455,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 t(QUALITY_NOTE),
                 size=_TEXT_SIZE,
                 color=theme.TEXT_MUTED,
-                wraplength=_PAGE_WIDTH,
+                wraplength=page_width(),
             ),
             gap=_BOX_GAP,
         )
@@ -1448,7 +1522,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 groups.body,
                 names=getattr(self._settings.current, field),
                 on_change=functools.partial(self._groups_changed, groups, field),
-                width=_BOX_INNER,
+                width=box_inner(),
                 committer=self.committer,
             )
             groups.add(chips, gap=10, sticky="ew")
@@ -1591,7 +1665,7 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         self._tmdb_check.pack(side="left", padx=(10, 0))
         result = box.frame_row(gap=8)
-        self._tmdb_result = text_label(result, "", size=_TEXT_SIZE, wraplength=_BOX_INNER - 200)
+        self._tmdb_result = text_label(result, "", size=_TEXT_SIZE, wraplength=box_inner() - 200)
         self._tmdb_dot = text_label(result, "·", size=_TEXT_SIZE, color=theme.TEXT_MUTED)
         self._tmdb_guide = ctk.CTkLabel(
             result,
@@ -1832,7 +1906,7 @@ class SettingsDialog(ctk.CTkToplevel):
             t(ACCENT_RESTART_TEXT),
             size=_TEXT_SIZE,
             color=theme.WARNING,
-            wraplength=_BOX_INNER - _RESTART_BUTTON_WIDTH - 12,
+            wraplength=box_inner() - _RESTART_BUTTON_WIDTH - 12,
         ).pack(side="left", fill="x", expand=True)
         if self._on_restart is not None:
             primary_button(
@@ -1912,7 +1986,7 @@ class SettingsDialog(ctk.CTkToplevel):
             t(RESTART_TEXT),
             size=_TEXT_SIZE,
             color=theme.WARNING,
-            wraplength=_BOX_INNER - _RESTART_BUTTON_WIDTH - 12,
+            wraplength=box_inner() - _RESTART_BUTTON_WIDTH - 12,
         ).pack(side="left", fill="x", expand=True)
         if self._on_restart is not None:
             self._restart_button = primary_button(
@@ -1946,7 +2020,7 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         self._update_button.pack(side="left", anchor="n")
         self._update_result = text_label(
-            line, "", size=SMALL_SIZE, wraplength=_BOX_INNER - _UPDATE_BUTTON_WIDTH - 12
+            line, "", size=SMALL_SIZE, wraplength=box_inner() - _UPDATE_BUTTON_WIDTH - 12
         )
         self._update_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
         self._version_clicks: list[float] = []
@@ -1978,7 +2052,7 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         self.report_button.pack(side="left", anchor="n")
         self.report_result = text_label(
-            row, "", size=SMALL_SIZE, wraplength=_BOX_INNER - _GO_BACK_BUTTON_WIDTH - 12
+            row, "", size=SMALL_SIZE, wraplength=box_inner() - _GO_BACK_BUTTON_WIDTH - 12
         )
         self.report_result.pack(side="left", padx=(12, 0), fill="x", expand=True)
         return True
@@ -2158,7 +2232,7 @@ class SettingsDialog(ctk.CTkToplevel):
             checkbox=lambda master, text, variable: self._checkbox(
                 master, text, variable, self._sites_changed
             ),
-            width=_BOX_INNER,
+            width=box_inner(),
             label_width=_PANEL_LABEL_WIDTH,
             expanded=shows_remote_fields(url),
         )
@@ -2183,7 +2257,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._prowlarr_button, self._prowlarr_result = self._test_row(
             panel.remote_row(""),
             lambda: self._start_test("prowlarr", self._test_prowlarr),
-            field_width=_PANEL_FIELD_WIDTH,
+            field_width=_panel_field_width(),
         )
         panel.refresh()
 
@@ -2304,8 +2378,9 @@ class SettingsDialog(ctk.CTkToplevel):
         variable: ctk.BooleanVar,
         command: Callable[[], object] | None = None,
     ) -> ctk.CTkSwitch:
-        """An on/off (spec §6: every on/off in Settings is a switch)."""
-        return ctk.CTkSwitch(
+        """An on/off (spec §6: every on/off in Settings is a switch); its text wraps inside a
+        box."""
+        switch = ctk.CTkSwitch(
             master,
             text=text,
             variable=variable,
@@ -2315,6 +2390,8 @@ class SettingsDialog(ctk.CTkToplevel):
             progress_color=theme.ACCENT,
             text_color=theme.TEXT,
         )
+        wrap_toggle(switch, box_inner())
+        return switch
 
     def _tick(
         self, box: _Box, text: str, variable: ctk.BooleanVar, field: str
@@ -2587,10 +2664,59 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def close(self) -> None:
         """✕ and Escape: what a text field holds unstored is stored (as leaving it would), then
-        the window closes."""
+        the window closes. When a text is refused then, the window stays on that box's page,
+        its red line saying why; ✕ / Escape again closes without storing that text (and a ✕
+        while the texts are still being stored closes at once)."""
+        if not self.winfo_exists():
+            return
+        if self._closing is not None:
+            self.destroy()
+            return
+        started = self.committer.flush(skip=self._refused_at_close)
+        if not started:
+            self.destroy()
+            return
+        self._closing = spawn(self._close_once_stored(started), name="settings-close")
+
+    def close_now(self) -> None:
+        """Close at once (an update or going back restarts AirGrabber, the main window goes to
+        the tray): what a text field holds is stored meanwhile, a refusal unseen."""
         if self.winfo_exists():
             self.committer.flush()
             self.destroy()
+
+    async def _close_once_stored(
+        self, started: list[tuple[TextCommit, asyncio.Future[Any]]]
+    ) -> None:
+        try:
+            await asyncio.wait([task for _field, task in started])
+        finally:
+            self._closing = None
+        if not self.winfo_exists():
+            return
+        refused = [
+            field
+            for field, task in started
+            if not task.cancelled() and task.exception() is None and task.result() is False
+        ]
+        if not refused:
+            self.destroy()
+            return
+        # Added to the ones refused at an earlier close (not instead of them): two fields
+        # refused in turn would otherwise keep the window from ever closing.
+        self._refused_at_close.update({field: field.texts for field in refused})
+        self._show_refused(refused[0])
+
+    def _show_refused(self, field: TextCommit) -> None:
+        """The page of the box `field` is in, scrolled to the box (its red line says why)."""
+        entry = field.entries[0]
+        for section, page in self._pages.items():
+            for box in page.settings_boxes:
+                if _inside(entry, box.frame):
+                    self._show_section(section)
+                    self._scroll_to_frame(box.frame)
+                    entry.focus_set()
+                    return
 
     def _trace(self, variable: tk.Variable, callback: Callable[..., object]) -> None:
         self._traces.append((variable, variable.trace_add("write", callback)))
@@ -2610,9 +2736,13 @@ class SettingsDialog(ctk.CTkToplevel):
         self._tests.clear()
         if self._preview_task is not None:
             self._preview_task.cancel()
+        if self._closing is not None:  # closed meanwhile: what was being stored still lands
+            self._closing.cancel()
+            self._closing = None
         if self._overview_task is not None:
             self._overview_task.cancel()
         for stop in getattr(self, "_stop_overview", ()):
             stop()
         self._texts.clear()
+        use_page_width(WIDE_PAGE_WIDTH)  # the next window decides its own
         super().destroy()

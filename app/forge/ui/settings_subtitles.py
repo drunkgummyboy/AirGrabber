@@ -45,7 +45,7 @@ from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, BUTTON_RADIUS, DETAIL_SIZE, SMALL_SIZE, text_label
 from app.ui.missing_control import popup_menu
 from app.ui.settings_commit import Committer, Refused, TextCommit, commit_fields
-from app.ui.settings_layout import BOX_INNER
+from app.ui.settings_layout import box_inner
 from app.ui.tasks import spawn
 
 if TYPE_CHECKING:
@@ -678,7 +678,15 @@ class SubtitlesSection:
         self.account_box = account
         hint = ctk.CTkFrame(account.body, fg_color="transparent")
         account.add(hint, gap=2, sticky="w")
-        text_label(hint, t(ACCOUNT_HINT), size=_TEXT_SIZE, color=theme.TEXT_MUTED).pack(side="left")
+        # It wraps beside the link (which keeps its line).
+        sign_up_width = int(theme.font(_TEXT_SIZE, underline=True).measure(t(SIGN_UP_TEXT)))
+        text_label(
+            hint,
+            t(ACCOUNT_HINT),
+            size=_TEXT_SIZE,
+            color=theme.TEXT_MUTED,
+            wraplength=box_inner() - sign_up_width - 12,
+        ).pack(side="left")
         link(hint, t(SIGN_UP_TEXT), SIGNUP_URL, size=_TEXT_SIZE).pack(side="left", padx=(4, 0))
         self.account = AccountRow(
             account.body,
@@ -687,7 +695,7 @@ class SubtitlesSection:
             password=current.opensubtitles_password.get_secret_value(),
             look=look,
             on_signed_in=lambda _account: self._show_quota(),
-            field_width=BOX_INNER,
+            field_width=box_inner(),
         )
         account.add(self.account)
         account.subheading(t(OWN_KEY_LABEL))
@@ -696,7 +704,7 @@ class SubtitlesSection:
             subtitles=parts.subtitles,
             key=current.opensubtitles_own_key.get_secret_value(),
             look=look,
-            field_width=BOX_INNER,
+            field_width=box_inner(),
         )
         account.add(self.own_key, gap=6)
         settings = parts.airgrabber_settings
@@ -742,15 +750,22 @@ class SubtitlesSection:
         box: SettingsBox,
         *,
         check: Callable[[], Awaitable[None]] | None = None,
+        verify: Callable[[], Awaitable[None]] | None = None,
         **fields: Any,
     ) -> asyncio.Task[bool] | None:
-        """Store `fields` of AirGrabber's settings as one change (`check` first)."""
+        """Store `fields` of AirGrabber's settings as one change (`verify`, then `check`
+        first: `commit_fields`)."""
         parts = self._parts
         if parts is None:
             return None
         return spawn(
             commit_fields(
-                self._committer, parts.airgrabber_settings, box, check=check, **fields
+                self._committer,
+                parts.airgrabber_settings,
+                box,
+                check=check,
+                verify=verify,
+                **fields,
             ),
             name="forge-subtitles-commit",
         )
@@ -792,19 +807,23 @@ class SubtitlesSection:
 
     async def _store_own_key(self, box: SettingsBox, own_key: OwnKeyRow, key: str) -> bool:
         """One key at a time; a key typed after this one while its check was out wins (this
-        one is dropped, never stored over it)."""
+        one is dropped, never stored over it). OpenSubtitles' check runs before the settings
+        are taken for the store: other settings changes don't wait for it."""
         async with self._key_lock:
             if key != self._key_latest:
                 return False
 
             async def check() -> None:
+                if key != self._key_latest:  # a newer key was typed during the check: dropped
+                    raise Refused("")  # (nothing said, no red line taken: the newer one is next)
+
+            async def verify() -> None:
                 problem = await own_key.verify(key)  # does OpenSubtitles take it?
+                await check()
                 if problem is not None:
                     raise Refused(f"{t(OWN_KEY_LABEL)}: {problem}")
-                if key != self._key_latest:  # a newer key was typed during the check: dropped
-                    raise Refused("")  # (nothing to say: the newer one is stored next)
 
-            task = self._commit(box, check=check, opensubtitles_own_key=key)
+            task = self._commit(box, check=check, verify=verify, opensubtitles_own_key=key)
             return await task if task is not None else False
 
     def _stored_elsewhere(self, current: Settings) -> None:

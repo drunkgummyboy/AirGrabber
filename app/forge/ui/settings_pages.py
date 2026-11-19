@@ -95,7 +95,7 @@ from app.i18n import N_, t
 from app.ui import dialog_kit, theme
 from app.forge.models.media import MediaKind
 from app.ui.settings_commit import Committer, Refused
-from app.ui.settings_layout import BOX_INNER, PageLink
+from app.ui.settings_layout import PageLink, box_inner, wrap_toggle
 from app.ui.settings_overview import ForgeFacts
 from app.ui.settings_pages_registry import (
     PAGE_ACCOUNTS,
@@ -203,15 +203,18 @@ FIELDS: tuple[str, ...] = (
 
 _BUTTON_WIDTH = 110  # the boxes' buttons
 _ROW_GAP = 8
-# The wraps follow the page's width (BOX_INNER: inside a box's border and padding).
-_LIST_WRAP = BOX_INNER - 122  # a folder's path next to its button
-_STATUS_WRAP = BOX_INNER - 142  # the renamer's status between its light and the switch
+# The wraps follow the page's width (`box_inner()`: inside a box's border and padding, the
+# open window's): each is so much less (`_wrap`).
+_LIST_WRAP = 122  # a folder's path next to its button
+# The renamer's status between its light and the switch: the light, the switch's track and
+# slack (the switch's text is measured, `_status_wrap`).
+_STATUS_SIDES = 74
 _STOP_WIDTH = 150  # "Stop ignoring"
 _SUGGEST_WIDTH = 210  # "Add a rule for this folder"
 _ADD_RULE_WIDTH = 140
-_IGNORED_WRAP = BOX_INNER - 162  # an ignored name next to its Stop ignoring button
-_ROUTE_WRAP = BOX_INNER - 102  # a rule's preset and destination under its folder
-_NOTE_WRAP = BOX_INNER - 72  # a note under a rule's row
+_IGNORED_WRAP = 162  # an ignored name next to its Stop ignoring button
+_ROUTE_WRAP = 102  # a rule's preset and destination under its folder
+_NOTE_WRAP = 72  # a note under a rule's row
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
 _CHIP_SIZE = dialog_kit.SMALL_SIZE
 _NOTE_COLOURS: dict[str, theme.Color] = {
@@ -221,6 +224,18 @@ _NOTE_COLOURS: dict[str, theme.Color] = {
 }
 _UNFIT_WIDTH = 460
 _UNFIT_LIST_MAX = 360  # the list's height, at most; a longer one scrolls
+_MIN_WRAP = 80
+
+
+def _wrap(less: int) -> int:
+    """A wrap `less` narrower than a box's inside (the open window's page), never under
+    _MIN_WRAP (0 would mean no wrap at all)."""
+    return max(_MIN_WRAP, box_inner() - less)
+
+
+def _measured(text: str, *, size: int = _TEXT_SIZE, bold: bool = False) -> int:
+    """`text`'s width (logical) in a label of this size, and a little slack for rounding."""
+    return int(theme.font(size, bold=bold).measure(text)) + 4
 
 
 class _Starter(Protocol):
@@ -478,7 +493,9 @@ class LibrarySection:
             text_color=theme.TEXT,
             anchor="w",
             justify="left",
-            wraplength=_STATUS_WRAP,
+            wraplength=_wrap(
+                _STATUS_SIDES + _measured(t(WATCHING), size=dialog_kit.DETAIL_SIZE, bold=True)
+            ),
         )
         self.status_label.pack(side="left", fill="x", expand=True)
 
@@ -505,7 +522,7 @@ class LibrarySection:
             text_color=theme.TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=_LIST_WRAP,
+            wraplength=_wrap(_LIST_WRAP),
         )
         self.unfit_label.pack(side="left")
         self.show_them = ctk.CTkButton(
@@ -601,8 +618,9 @@ class LibrarySection:
         variable: tk.BooleanVar,
         command: Callable[[], None] | None = None,
     ) -> ctk.CTkSwitch:
-        """An on/off of When sorting (spec §6: every on/off in Settings is a switch)."""
-        return ctk.CTkSwitch(
+        """An on/off of When sorting (spec §6: every on/off in Settings is a switch); its text
+        wraps inside the box."""
+        switch = ctk.CTkSwitch(
             master,
             text=text,
             variable=variable,
@@ -612,6 +630,8 @@ class LibrarySection:
             progress_color=self._look.ACCENT,
             text_color=theme.TEXT,
         )
+        wrap_toggle(switch, box_inner())
+        return switch
 
     def _ask_folder(self, title: str, start: str) -> str:
         # Native modal dialog: the event loop pauses until it closes (as Settings' Browse).
@@ -992,7 +1012,8 @@ class LibrarySection:
             text_color=theme.TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=_ROUTE_WRAP,
+            # Beside the preset's name on the same line.
+            wraplength=_wrap(_ROUTE_WRAP + 8 + _measured(look.preset)),
         )
         destination.pack(side="left", padx=(8, 0))
         labels += [preset, destination, mode]
@@ -1007,7 +1028,7 @@ class LibrarySection:
                     PAGE_FOLDERS,
                     color=_NOTE_COLOURS[level],
                     size=_TEXT_SIZE,
-                    wraplength=_NOTE_WRAP,
+                    wraplength=_wrap(_NOTE_WRAP),
                 )
             else:
                 note = ctk.CTkLabel(
@@ -1017,7 +1038,7 @@ class LibrarySection:
                     text_color=_NOTE_COLOURS[level],
                     anchor="w",
                     justify="left",
-                    wraplength=_NOTE_WRAP,
+                    wraplength=_wrap(_NOTE_WRAP),
                 )
             note.grid(row=row_no, column=2, columnspan=3, sticky="w", padx=(4, 0), pady=(2, 0))
             note_labels.append(note)
@@ -1065,10 +1086,12 @@ class LibrarySection:
         """One change, after the one before it: `rules` makes the new list from the one shown
         (None: no change of the rules), `changes` the settings. Shown at once; refused (said in
         `box`) when a rule would have a refusal; stored as Save did; Undo stores what was
-        before. False when it wasn't stored (the page shows what is stored again)."""
-        async with self._changing:
-            if self._settings is None:
-                return False
+        before. False when it wasn't stored (the page shows what is stored again). MediaForge's
+        settings are taken one change at a time (`Committer.lock`): Naming's, whose renamed
+        presets the rules follow, never lands between the rules read here and their store."""
+        if self._settings is None:
+            return False
+        async with self._committer.lock(self._settings), self._changing:
             # A change made just before the window closed is still stored; only the page
             # isn't touched then.
             alive = bool(self.rules_list.winfo_exists())
@@ -1114,8 +1137,9 @@ class LibrarySection:
     async def _store_locked(
         self, rules: Sequence[Rule] | None, changes: Mapping[str, Any]
     ) -> bool:
-        """Undo's store: after any change still being stored."""
-        async with self._changing:
+        """Undo's store: after any change still being stored (here or Naming's)."""
+        assert self._settings is not None
+        async with self._committer.lock(self._settings), self._changing:
             return await self._store(rules, changes)
 
     async def _store(self, rules: Sequence[Rule] | None, changes: Mapping[str, Any]) -> bool:
@@ -1489,7 +1513,7 @@ class LibrarySection:
                 text_color=theme.TEXT,
                 anchor="w",
                 justify="left",
-                wraplength=_IGNORED_WRAP,
+                wraplength=_wrap(_IGNORED_WRAP),
             )
             label.grid(row=row_no, column=0, sticky="w", pady=pady)
             add_tooltip(label, str(entry.path))
@@ -1532,7 +1556,7 @@ class LibrarySection:
                 text_color=theme.TEXT if on and use.use == "watched" else theme.TEXT_MUTED,
                 anchor="w",
                 justify="left",
-                wraplength=_LIST_WRAP,
+                wraplength=_wrap(_LIST_WRAP),
             ).grid(row=row_no, column=0, sticky="w", pady=pady)
             if use.use == "suggested" and not self._watched_by_a_rule(use.folder.path):
                 button = self._button(
@@ -1549,7 +1573,7 @@ class LibrarySection:
                 text_color=theme.TEXT_MUTED,
                 anchor="w",
                 justify="left",
-                wraplength=_LIST_WRAP,
+                wraplength=_wrap(_LIST_WRAP),
             ).grid(row=row_no + 1, column=0, sticky="w")
             row_no += 2
         ask = ask_text(draft.airgrabber) if on else ""
@@ -1560,7 +1584,7 @@ class LibrarySection:
                 PAGE_FOLDERS,
                 color=theme.WARNING,
                 size=_TEXT_SIZE,
-                wraplength=_LIST_WRAP,
+                wraplength=_wrap(_LIST_WRAP),
             ).grid(
                 row=row_no,
                 column=0,

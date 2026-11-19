@@ -1350,7 +1350,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         for it (`quit_app`)."""
         dialog, self._settings_dialog = self._settings_dialog, None
         if dialog is not None:
-            dialog.close()
+            dialog.close_now()
         self.tray.close_window()
 
     def quit_app(self) -> None:
@@ -2118,10 +2118,11 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
     def _close_settings(self) -> None:
         """Close an open Settings as its ✕ does (what a text field holds unstored is stored
-        first), before an update or going back restarts AirGrabber."""
+        first), but at once, before an update or going back restarts AirGrabber: a refused
+        text doesn't keep it open."""
         dialog, self._settings_dialog = self._settings_dialog, None
         if dialog is not None and dialog.winfo_exists():
-            dialog.close()
+            dialog.close_now()
 
     def _start_update(self) -> None:
         if self._update_task is not None and not self._update_task.done():

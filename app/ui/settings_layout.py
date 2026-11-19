@@ -33,12 +33,20 @@ SIDEBAR_PAD = 12
 ITEM_HEIGHT = 36
 ICON_WIDTH = 30
 ITEM_PAD = (8, 4, 10)  # left of the icon, between icon and name, right of the name
-# The page column's content: the boxes' outer width. With the sidebar a dialog is about 1060
-# wide (the owner's wish for a wider window, 2026-11-19), so it fits a 1920 x 1080 screen at
-# 175 % (1097 wide); it was 580 (880, for 1366 x 768 at 150 %).
-PAGE_WIDTH = 760
+# The page column's content: the boxes' outer width (`page_width()`). WIDE_PAGE_WIDTH where the
+# screen has room: with the sidebar a dialog is then about 1035 wide (the owner's wish for a
+# wider window, 2026-11-19), which fits a 1920 x 1080 screen at 175 % (1097 wide). On a narrower
+# screen the page narrows to fit (`fitting_page_width`), down to NARROW_PAGE_WIDTH, the old width
+# (a dialog about 855 wide: 1366 x 768 at 150 % is 910).
+WIDE_PAGE_WIDTH = 760
+NARROW_PAGE_WIDTH = 580
 PAGE_PAD_LEFT = 22
 PAGE_PAD_RIGHT = 8  # the scrollbar has its own inset
+SCROLLBAR_ROOM = 24  # the pages' scrollbar beside them (about 23), with a little slack
+# What the window holds beside the page and the sidebar: the 1-pixel line, the page's padding
+# and its scrollbar.
+PAGE_SIDES = 1 + PAGE_PAD_LEFT + PAGE_PAD_RIGHT + SCROLLBAR_ROOM
+SCREEN_EDGES = 20  # left free across the screen: the window's own edges
 # The page (and the sidebar, level with it) starts under the close button (no title bar,
 # app/ui/borderless.py): what scrolls never passes under it.
 PAGE_TOP = CLOSE_ROOM + CLOSE_GAP
@@ -52,9 +60,52 @@ BOX_PAD_Y = 16
 BOX_GAP = 14  # between boxes
 FIRST_BOX_GAP = 18  # under a page's muted line
 TEXT_SIZE = SMALL_SIZE + 1  # a box's explanation
-BOX_INNER = PAGE_WIDTH - 2 * (BOX_PAD_X + 1)  # inside a box's border and padding
+BOX_INSET = 2 * (BOX_PAD_X + 1)  # a box's border and padding, both sides
 CONTROL_GAP = 12  # between a box's explanation and its controls
 REFUSAL_ROW = 999  # a box's refusal line: under everything in it (Tk allows rows < 10000)
+
+_page_width = WIDE_PAGE_WIDTH  # the open window's (`use_page_width`)
+
+
+def page_width() -> int:
+    """The page's content width (logical) of the Settings window open now: what every wrap and
+    box width on its pages is made from (WIDE_PAGE_WIDTH when none is open)."""
+    return _page_width
+
+
+def box_inner() -> int:
+    """The width inside a box's border and padding (logical), for `page_width()`."""
+    return _page_width - BOX_INSET
+
+
+def use_page_width(width: int) -> None:
+    """The page width of the window that opens now (between NARROW_PAGE_WIDTH and
+    WIDE_PAGE_WIDTH): set once before its pages are built, and back to WIDE_PAGE_WIDTH when it
+    closes."""
+    global _page_width
+    _page_width = max(NARROW_PAGE_WIDTH, min(WIDE_PAGE_WIDTH, int(width)))
+
+
+def fitting_page_width(screen_width: float, sidebar: int) -> int:
+    """The widest page (logical) with which a window with a `sidebar` wide sidebar fits a screen
+    `screen_width` wide (logical) less its edges: WIDE_PAGE_WIDTH where there is room, never
+    narrower than NARROW_PAGE_WIDTH."""
+    room = math.floor(screen_width) - SCREEN_EDGES - sidebar - PAGE_SIDES
+    return max(NARROW_PAGE_WIDTH, min(WIDE_PAGE_WIDTH, room))
+
+
+TOGGLE_MARK = 48  # a switch's track (a tick's box) and the gap to its text, with slack
+
+
+def wrap_toggle(toggle: Any, room: int) -> None:
+    """Let a switch's (or tick's) text wrap so that the whole toggle stays within `room`
+    (logical): a long text (Dutch's, at the narrowest page) goes on to a second line instead of
+    being cut off at the box's edge. CTk has no wrap for it: its text label's own."""
+    label = getattr(toggle, "_text_label", None)
+    if label is None:
+        return
+    scaling = ctk.ScalingTracker.get_widget_scaling(toggle)
+    label.configure(wraplength=max(1, round((room - TOGGLE_MARK) * scaling)), justify="left")
 
 
 def dialog_height(wanted: int, screen_height: int, *, reserve: int = SCREEN_RESERVE) -> int:
@@ -137,7 +188,7 @@ class SettingsBox:
             return
         if self._refusal is None:
             self._refusal = text_label(
-                self.body, "", size=TEXT_SIZE, color=theme.DANGER, wraplength=BOX_INNER
+                self.body, "", size=TEXT_SIZE, color=theme.DANGER, wraplength=box_inner()
             )
         self._refusal.configure(text=shown)
         self._refusal.grid(row=REFUSAL_ROW, column=0, sticky="w", pady=(CONTROL_GAP - 4, 0))
@@ -145,7 +196,7 @@ class SettingsBox:
     def text(self, text: str, *, indent: int = 0) -> ctk.CTkLabel:
         """A muted explanation line in this box (not placed yet)."""
         return text_label(
-            self.body, text, size=TEXT_SIZE, color=theme.TEXT_MUTED, wraplength=BOX_INNER - indent
+            self.body, text, size=TEXT_SIZE, color=theme.TEXT_MUTED, wraplength=box_inner() - indent
         )
 
     def add(
@@ -199,7 +250,7 @@ class SettingsPage:
             anchor="w",
         ).grid(row=0, column=0, sticky="w")
         text_label(
-            self.frame, note, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=PAGE_WIDTH
+            self.frame, note, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=page_width()
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._first_row = 2
         self._first_gap = FIRST_BOX_GAP  # above the first block
@@ -334,9 +385,10 @@ class PageLink(ctk.CTkLabel):
         *,
         color: theme.Color | None = None,
         size: int = TEXT_SIZE,
-        wraplength: int = BOX_INNER,
+        wraplength: int | None = None,
     ) -> None:
-        """`color`: the text's (the link colour without it; a warning's amber)."""
+        """`color`: the text's (the link colour without it; a warning's amber). `wraplength`:
+        a box's inner width without it."""
         super().__init__(
             master,
             text=text,
@@ -345,7 +397,7 @@ class PageLink(ctk.CTkLabel):
             cursor="hand2",
             anchor="w",
             justify="left",
-            wraplength=wraplength,
+            wraplength=box_inner() if wraplength is None else wraplength,
         )
         self.page = page
         self.bind("<Button-1>", lambda _event: self.click(), add="+")
@@ -537,7 +589,7 @@ def build_layout(window: Any, sidebar: int) -> SettingsLayout:
     theme.on_mode_change(line, paint_line)
     scroll = ScrollableFrame(
         body,
-        width=PAGE_WIDTH,
+        width=page_width(),
         height=200,
         fg_color="transparent",
         scrollbar_button_color=theme.SCROLLBAR,

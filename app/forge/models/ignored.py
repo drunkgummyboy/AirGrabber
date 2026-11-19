@@ -1,5 +1,5 @@
-"""What Auto-rename leaves alone: files and folders the owner chose to ignore (forge.db `ignored`,
-schema v4). Ignoring only applies to watching and Auto-rename; a file added by hand is never
+"""What Watch folders leaves alone: files and folders the owner chose to ignore (forge.db `ignored`,
+schema v4). Ignoring only applies to watching (Settings › Sorting); a file added by hand is never
 refused."""
 
 from __future__ import annotations

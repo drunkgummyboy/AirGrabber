@@ -519,6 +519,17 @@ class FolderRulesTests(ServiceTestCase):
         self.assertEqual(service.status.slow, ())
         self.assertEqual(self.walks.count(str(slow)), 1)
 
+    async def test_check_soon_after_close_does_nothing(self) -> None:
+        # Round 2, 5: Forge's carry may ask after the folder library has closed.
+        service = self.make()
+        await service.switch_on([str(self.films)], [])
+        await service.aclose()
+        self.time.sleeps.clear()
+        service.check_soon()
+        self.assertIsNone(service._soon)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.time.sleeps, [])
+
     async def test_files_still_arriving_bring_a_check_soon(self) -> None:
         self.assertEqual(QUIET_S, watch.QUIET_S)  # MediaForge's
         self.touch(self.films, "Arrival (2016)/Arrival (2016).mkv", mtime=NOW - 10)

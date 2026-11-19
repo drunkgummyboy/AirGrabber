@@ -116,7 +116,7 @@ class FakeMatches:
 
 
 class FakeRules:
-    """RuleService's surface the section uses: presets_renamed (recorded); and what Auto-rename
+    """RuleService's surface the section uses: presets_renamed (recorded); and what Sorting
     reads when a test visits it (`current`: AirGrabber's rule only, `airgrabber_rule`,
     `subscribe`)."""
 
@@ -615,6 +615,39 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         self.assertEqual(part.editing.preset.name, "Movie (Flat)")  # still edited, as it was
         self.assertEqual(part._name.get(), "Movie (Flat)")
 
+    async def test_undo_keeps_what_was_typed_since_the_change(self) -> None:
+        # Round 2, 8 (Task 2 M8): only a field still showing the undone value is refilled.
+        dialog, part, forge = await self.ready()
+        self.select(part, "Movie (Flat)")
+        part._format.set("{n} [{y}]")
+        await self.typed(part)  # the change Undo takes back: the format
+        self.assertEqual(self.stored(forge).stored[2].format, "{n} [{y}]")
+        part._name.set("Films")  # typed since, not stored yet
+        self.assertTrue(await dialog.committer.run_undo())
+        self.assertEqual(self.stored(forge).stored, list(DEFAULT_PRESETS))
+        self.assertEqual(part._format.get(), "{ny}")  # refilled: it showed the undone value
+        self.assertEqual(part._name.get(), "Films")  # kept as typed
+        assert part.editing is not None
+        self.assertEqual(part.editing.origin, "Movie (Flat)")  # still the one edited
+        self.assertTrue(part.name_field.pending)
+        await self.typed(part)  # left or Enter: the typed name is stored on the right preset
+        self.assertEqual(self.stored(forge).names[2], "Films")
+        self.assertEqual(self.stored(forge).stored[2].format, "{ny}")
+
+    async def test_undo_of_a_rename_keeps_a_name_typed_since(self) -> None:
+        dialog, part, forge = await self.ready()
+        self.select(part, "Movie (Flat)")
+        part._name.set("Films")
+        await self.typed(part)
+        part._name.set("Films 4K")  # typed on, not stored
+        self.assertTrue(await dialog.committer.run_undo())
+        self.assertEqual(self.stored(forge).names[2], "Movie (Flat)")
+        self.assertEqual(part._name.get(), "Films 4K")
+        assert part.editing is not None
+        self.assertEqual(part.editing.origin, "Movie (Flat)")
+        await self.typed(part)
+        self.assertEqual(self.stored(forge).names[2], "Films 4K")
+
     async def test_a_second_new_preset_gets_a_number(self) -> None:
         _dialog, part, forge = await self.ready()
         part.new_preset()
@@ -732,6 +765,18 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         await self.typed(part)
         self.assertEqual(self.stored(forge).names[0], "Plain")
         self.assertEqual(part._presets_box.refusal, "")
+
+    async def test_a_refused_name_typed_back_loses_its_red_line(self) -> None:
+        # Round 2, 2: the name field typed back to the stored name after a refusal.
+        dialog, part, forge = await self.ready()
+        part._name.set("series (flat)")  # another preset's name
+        await self.typed(part)
+        self.assertNotEqual(part._presets_box.refusal, "")
+        part._name.set("Auto")  # back to what is stored
+        await self.typed(part)
+        self.assertEqual(part._presets_box.refusal, "")
+        self.assertEqual(self.stored(forge).replaced, [])  # nothing was stored
+        self.assertFalse(dialog.committer.can_undo)
 
     async def test_closing_stores_what_was_typed_and_stops_listening(self) -> None:
         dialog, part, forge = await self.ready(matches=[OFFICE])

@@ -40,7 +40,7 @@ from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, DETAIL_SIZE, primary_button, secondary_button
 from app.ui.people import person_name
 from app.ui.phone_app import GET_APP_BUTTON, GET_APP_TITLE, PhoneAppDialog
-from app.ui.settings_layout import BOX_INNER, SettingsBox, SettingsPage
+from app.ui.settings_layout import SettingsBox, SettingsPage, box_inner
 from app.ui.tasks import spawn
 
 if TYPE_CHECKING:
@@ -174,7 +174,7 @@ class PhoneBox:
             text_color=colour,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER,
+            wraplength=box_inner(),
         )
 
     # -- following the service -------------------------------------------------------------------
@@ -261,7 +261,7 @@ class PhoneBox:
             text_color=theme.TEXT,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER - RENAME_WIDTH - DISCONNECT_WIDTH - 2 * NAME_GAP,
+            wraplength=box_inner() - RENAME_WIDTH - DISCONNECT_WIDTH - 2 * NAME_GAP,
         )
         name.grid(row=0, column=0, sticky="w")
         self.name_labels[phone.id] = name

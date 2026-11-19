@@ -335,8 +335,8 @@ class FolderLibraryService:
 
     def check_soon(self, delay_s: float = 0) -> None:
         """One check about `delay_s` seconds from now; one waiting at a time (the earliest).
-        Nothing while the folders are off (no timer either)."""
-        if not self._on():
+        Nothing while the folders are off or once the service is closed (no timer either)."""
+        if self._closed or not self._on():
             return
         loop = asyncio.get_running_loop()
         due = loop.time() + delay_s

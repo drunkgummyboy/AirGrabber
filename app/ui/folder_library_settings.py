@@ -25,6 +25,8 @@ and stops when it goes. A switch outlives the window: the service runs it as its
 from __future__ import annotations
 
 import asyncio
+import functools
+import logging
 import tkinter as tk
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
@@ -42,7 +44,7 @@ from app.ui.library_words import SLOW_TEXT as SLOW_TEXT
 from app.ui.library_words import reach_lines
 from app.ui.missing_control import mark_dot
 from app.ui.settings_commit import Committer, Refused
-from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
+from app.ui.settings_layout import TEXT_SIZE, SettingsBox, SettingsPage, box_inner
 from app.ui.tasks import spawn
 from app.ui.watchlist_cards import searched_ago
 
@@ -84,7 +86,12 @@ EPISODE_ONE, EPISODE_MORE = N_("{n} episode"), N_("{n} episodes")
 UNRECOGNISED_ONE = N_("{n} file couldn't be recognised: it's listed on the Library page.")
 UNRECOGNISED_MORE = N_("{n} files couldn't be recognised: they're listed on the Library page.")
 
+# An Undo clicked while another change of the folders runs (a switch-off's clear, a list read).
+UNDO_WAITS_TEXT = N_("Not undone: another change of the folders is still under way.")
+
 CHECK_WIDTH = 140
+
+log = logging.getLogger(__name__)
 
 
 class FolderLibrary(Protocol):
@@ -145,8 +152,59 @@ async def read_and_switch_on(
     return outcome in ("on", "off")
 
 
+class FoldersBusy:
+    """One busy state for the Folders page's lists (app/ui/folders_page.py) and this box's
+    switch: while either's change runs, neither starts one (a list edit during switching off
+    would switch counting on again), and neither's Undo runs (`undoing`: refused meanwhile).
+    Each draws again when it changes (`subscribe`)."""
+
+    def __init__(self) -> None:
+        self._working = 0
+        self._listeners: list[Callable[[], None]] = []
+
+    @property
+    def busy(self) -> bool:
+        return self._working > 0
+
+    def begin(self) -> None:
+        self._working += 1
+        self._notify()
+
+    def end(self) -> None:
+        self._working -= 1
+        self._notify()
+
+    async def undoing[T](self, undo: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        """Run an Undo as a change of its own; refused while another change runs (it would
+        store over that one: a list read back during switching off switches counting on)."""
+        if self.busy:
+            raise Refused(t(UNDO_WAITS_TEXT))
+        self.begin()
+        try:
+            return await undo()
+        finally:
+            self.end()
+
+    def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return unsubscribe
+
+    def _notify(self) -> None:
+        for listener in list(self._listeners):
+            try:  # a failing one mustn't leave both parts busy (the count already moved)
+                listener()
+            except Exception:
+                log.exception("A Folders busy listener failed")
+
+
 class FolderLibraryBox:
-    """The "Count what's in them" box on Settings → Folders (see the module docstring)."""
+    """The "Count what's in them" box on Settings → Folders (see the module docstring).
+    `busy`: the state it shares with the page's lists (its own when not given)."""
 
     def __init__(
         self,
@@ -156,8 +214,10 @@ class FolderLibraryBox:
         committer: Committer,
         *,
         clock: Callable[[], datetime] = _now,
+        busy: FoldersBusy | None = None,
     ) -> None:
         self._folders = folders
+        self._busy = busy if busy is not None else FoldersBusy()
         self._settings = settings
         self._committer = committer
         self._clock = clock
@@ -183,7 +243,11 @@ class FolderLibraryBox:
         self.content.grid_columnconfigure(0, weight=1)
         self.check_button: ctk.CTkButton | None = None  # while on (`show`)
         # The service's status, and the lists (a folder added on the page enables the switch).
-        self._stop = [folders.subscribe(self.refresh), settings.subscribe(lambda _s: self.refresh())]
+        self._stop = [
+            folders.subscribe(self.refresh),
+            settings.subscribe(lambda _s: self.refresh()),
+            self._busy.subscribe(self.refresh),  # a list change on the page runs, or ended
+        ]
         # Tk's own bind: CTkFrame.bind would bind its canvas.
         tk.Misc.bind(self.content, "<Destroy>", self._on_destroy, add="+")
         self.show()
@@ -229,8 +293,9 @@ class FolderLibraryBox:
 
     @property
     def busy(self) -> bool:
-        """A switch or a check runs: the folders can't change meanwhile."""
-        return self._switching or self._folders.status.checking
+        """A switch (on or off), a list change on the page or a check runs: the folders can't
+        change meanwhile."""
+        return self._switching or self._busy.busy or self._folders.status.checking
 
     def _beside_plex(self) -> bool:
         """Plex is connected: the folders are the second shelf."""
@@ -282,7 +347,7 @@ class FolderLibraryBox:
             text_color=theme.TEXT,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER - CHECK_WIDTH - 40,
+            wraplength=box_inner() - CHECK_WIDTH - 40,
         ).grid(row=0, column=0, sticky="w")
         busy = self.busy
         self.check_button = secondary_button(
@@ -305,7 +370,7 @@ class FolderLibraryBox:
             text_color=theme.TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER,
+            wraplength=box_inner(),
         )
 
     def _dot_line(self, text: str, colour: theme.Color) -> ctk.CTkLabel:
@@ -318,7 +383,7 @@ class FolderLibraryBox:
             text_color=theme.TEXT,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER - 20,
+            wraplength=box_inner() - 20,
         )
 
     # -- actions -------------------------------------------------------------------------------
@@ -333,6 +398,7 @@ class FolderLibraryBox:
             self.show()
             return None
         self._switching = True
+        self._busy.begin()
         self.show()
         return self._run(self._switch(on), "folder-library-switch")
 
@@ -341,13 +407,19 @@ class FolderLibraryBox:
         try:
             return await self._committer.commit(
                 self._counting_on if on else self._counting_off,
-                self._counting_off if on else self._counting_on,
+                functools.partial(self._undo_switch, not on),
                 box=self.box,
             )
         finally:
             self._switching = False
+            self._busy.end()
             if _exists(self.content):
                 self.show()
+
+    async def _undo_switch(self, on: bool) -> bool:
+        """The switch's Undo: switched back the same way, as a change of the folders (refused
+        while another runs)."""
+        return await self._busy.undoing(self._counting_on if on else self._counting_off)
 
     async def _counting_on(self) -> bool:
         current = self._settings.current

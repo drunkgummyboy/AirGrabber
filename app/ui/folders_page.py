@@ -25,8 +25,10 @@ kind (`ForgeSettings.series_folder` / `movies_folder`, through `Destinations`: t
   read); otherwise it is stored as it is (nothing is read or counted). A destination change is
   refused when a rule on Sorting would be (`Destinations.problem`), and stored as Sorting stores
   its settings (the rules that watch more wait once: nothing moves unseen). Not while a change,
-  a switch or a check runs. A change of both whose second half fails puts the first back (the
-  box says why the change failed, not why putting it back did); Undo puts the destination back
+  a switch (on or off: one busy state with "Count what's in them", `FoldersBusy`) or a check
+  runs; an Undo is refused while another change of the folders runs. A change of both whose
+  second half fails puts the first back (the box says why the change failed, not why putting
+  it back did); Undo puts the destination back
   first, then the list, and the destination again as the change left it when the list is
   refused: never half a change.
 - MediaForge may not be started: the page starts it on its first visit (`page_shown`) and shows
@@ -55,10 +57,10 @@ import customtkinter as ctk
 from app.i18n import N_, t
 from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, SMALL_SIZE
-from app.ui.folder_library_settings import FolderLibrary, read_and_switch_on
+from app.ui.folder_library_settings import FolderLibrary, FoldersBusy, read_and_switch_on
 from app.ui.missing_control import mark_dot
 from app.ui.settings_commit import Committer, Refused
-from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
+from app.ui.settings_layout import TEXT_SIZE, SettingsBox, SettingsPage, box_inner
 from app.ui.settings_pages_registry import FOLDERS_SPOT
 from app.ui.settings_search import add_words
 from app.ui.tasks import spawn
@@ -102,9 +104,12 @@ REMOVE_SIDE = 26
 ICON_WIDTH = 24
 SORT_WIDTH = 150
 MARK_HEIGHT = 22
-# The path's room in a folder row: the box's inside less the 📁, the mark or "Sort into this
-# one", ✕ and the row's padding.
-PATH_WIDTH = BOX_INNER - 2 * ROW_PAD - ICON_WIDTH - SORT_WIDTH - REMOVE_SIDE - 40
+
+
+def path_width() -> int:
+    """The path's room in a folder row: the box's inside (the open window's page) less the 📁,
+    the mark or "Sort into this one", ✕ and the row's padding."""
+    return box_inner() - 2 * ROW_PAD - ICON_WIDTH - SORT_WIDTH - REMOVE_SIDE - 40
 
 
 class Destinations(Protocol):
@@ -175,15 +180,17 @@ class FoldersPage:
         folders: FolderLibrary | None = None,
         destinations: Destinations | None = None,
         pick_folder: Callable[[tk.Misc], str] = _ask_folder,
+        busy: FoldersBusy | None = None,
     ) -> None:
         """`folders`: the folder library (None: the lists are stored as they are); `destinations`:
-        MediaForge's (None: no marks); `pick_folder(owner)`: a folder the user picked ("")."""
+        MediaForge's (None: no marks); `pick_folder(owner)`: a folder the user picked ("");
+        `busy`: the state the lists share with "Count what's in them"'s switch (own if None)."""
         self._settings = settings
         self._committer = committer
         self._folders = folders
         self._destinations = destinations
         self._pick_folder = pick_folder
-        self._working = 0  # changes from here under way
+        self._busy = busy if busy is not None else FoldersBusy()  # changes under way
         self._started = False  # `page_shown` asked MediaForge to start
         self._draw_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -213,7 +220,10 @@ class FoldersPage:
             )
             box.add(add, gap=4, sticky="w")
         self.spots: dict[str, tk.Misc] = {FOLDERS_SPOT: self.boxes["series"].frame}
-        self._stop: list[Callable[[], None]] = [settings.subscribe(lambda _s: self.refresh())]
+        self._stop: list[Callable[[], None]] = [
+            settings.subscribe(lambda _s: self.refresh()),
+            self._busy.subscribe(self.refresh),  # the count switch runs, or ended
+        ]
         if folders is not None:
             self._stop.append(folders.subscribe(self.refresh))
         if destinations is not None:
@@ -278,8 +288,9 @@ class FoldersPage:
 
     @property
     def busy(self) -> bool:
-        """A change from here, or the folder library's switch or check, is under way."""
-        return self._working > 0 or (self._folders is not None and self._folders.status.checking)
+        """A change from here, "Count what's in them"'s switch (on or off) or the folder
+        library's check is under way."""
+        return self._busy.busy or (self._folders is not None and self._folders.status.checking)
 
     def _counting(self) -> bool:
         return self._folders is not None and self._folders.status.on
@@ -340,7 +351,7 @@ class FoldersPage:
                 text_color=colour,
                 anchor="w",
                 justify="left",
-                wraplength=BOX_INNER - 20,
+                wraplength=box_inner() - 20,
             )
             label.grid(row=row_no, column=0, sticky="w", pady=(0 if row_no == 0 else 8, 0))
             self.notes[kind] = label
@@ -374,7 +385,7 @@ class FoldersPage:
             row=0, column=0, padx=(ROW_PAD, 4), pady=4
         )
         font = theme.font(TEXT_SIZE)
-        room = PATH_WIDTH
+        room = path_width()
         if not listed:  # only the destination: "not counted", with why as its tip
             small = theme.font(SMALL_SIZE)
             cue = ctk.CTkLabel(
@@ -495,7 +506,7 @@ class FoldersPage:
     ) -> asyncio.Task[bool]:
         """One change of `kind`'s list (None: unchanged) and destinations (None: unchanged),
         stored together; Undo stores both as they were."""
-        self._working += 1
+        self._busy.begin()
         self.show()
         return self._run(self._store(kind, new_list, marks), "FoldersPage.change")
 
@@ -531,6 +542,9 @@ class FoldersPage:
             return changed
 
         async def undo() -> bool:
+            return await self._busy.undoing(undo_now)  # refused while another change runs
+
+        async def undo_now() -> bool:
             # The destination first (checked against the rules, cheap), then the list; a list
             # that can't go back (a folder that can't be read) takes the destination along.
             changed = False
@@ -548,7 +562,7 @@ class FoldersPage:
         try:
             return await self._committer.commit(apply, undo, box=self.boxes[kind])
         finally:
-            self._working -= 1
+            self._busy.end()
             if _exists(self._anchor):
                 self.show()
 

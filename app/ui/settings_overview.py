@@ -33,7 +33,7 @@ from app.ui import theme
 from app.ui.dialog_kit import DETAIL_SIZE, SMALL_SIZE
 from app.ui.plex_settings import problem_text
 from app.ui.remote_program_form import remote_host
-from app.ui.settings_layout import PAGE_WIDTH, TEXT_SIZE, SettingsPage
+from app.ui.settings_layout import TEXT_SIZE, SettingsPage, page_width
 from app.ui.settings_pages_registry import (
     PAGE_ACCOUNTS,
     PAGE_AUTOMATIC,
@@ -78,6 +78,9 @@ class ForgeFacts(NamedTuple):
 # -- texts ----------------------------------------------------------------------------------------
 
 TORRENT_LOOKING = N_("On this PC: looking for the torrent program…")
+TORRENT_INSTALLING = N_("On this PC: installing qBittorrent…")
+TORRENT_SETTING_UP = N_("On this PC: setting up qBittorrent…")
+TORRENT_REINSTALLING = N_("On this PC: reinstalling qBittorrent…")
 TORRENT_APP_READY = N_("{program} on this PC, ready")
 TORRENT_APP_FOUND = N_("{program} on this PC")
 TORRENT_APP_MISSING = N_("On this PC: no torrent program found yet")
@@ -114,6 +117,8 @@ SORTING_NO_RULE = N_("Watching, but no rule is on")
 SORTING_PAUSED = N_("Paused · {rules}")
 RULE_ONE, RULE_MORE = N_("{n} rule on"), N_("{n} rules on")
 SORTING_WAITING = N_("Getting MediaForge ready…")
+# A start that ended without MediaForge and without a reason (the Settings window says it).
+SORTING_UNAVAILABLE = N_("MediaForge isn't available.")
 
 NO_LANGUAGE = N_("No language chosen")
 
@@ -140,14 +145,13 @@ DOESNT_START = N_("doesn't start with Windows")
 
 # The websites AirGrabber searches itself (Prowlarr apart), as the Sites box lists them.
 _BUILT_IN = tuple(cls.name for cls in (ApibayIndexer, EztvIndexer, BitsearchIndexer, YtsIndexer))
-_LOOKING = frozenset(
-    {
-        TorrentStatus.LOOKING,
-        TorrentStatus.INSTALLING,
-        TorrentStatus.SETTING_UP,
-        TorrentStatus.REINSTALLING,
-    }
-)
+# Busy on this PC: no verdict yet, but each says what it is doing.
+_BUSY: dict[TorrentStatus, str] = {
+    TorrentStatus.LOOKING: TORRENT_LOOKING,
+    TorrentStatus.INSTALLING: TORRENT_INSTALLING,
+    TorrentStatus.SETTING_UP: TORRENT_SETTING_UP,
+    TorrentStatus.REINSTALLING: TORRENT_REINSTALLING,
+}
 _FAILED = frozenset(
     {TorrentStatus.FAILED, TorrentStatus.SETUP_FAILED, TorrentStatus.REINSTALL_FAILED}
 )
@@ -158,8 +162,8 @@ _FAILED = frozenset(
 def _program(status: TorrentStatus | None, name: str, ready: str) -> Card:
     """The torrent program on this PC as the Torrent program page's status line has it
     (app/ui/torrent_app_status.py's `torrent_look`): `ready` is the line while all is well."""
-    if status is None or status in _LOOKING:  # not known yet (or busy): no dot of a verdict
-        return Card(PAGE_TORRENT, "off", t(TORRENT_LOOKING))
+    if status is None or status in _BUSY:  # not known yet (or busy): no dot of a verdict
+        return Card(PAGE_TORRENT, "off", t(_BUSY[status or TorrentStatus.LOOKING]))
     if status is TorrentStatus.MISSING:
         return Card(PAGE_TORRENT, "warn", t(TORRENT_APP_MISSING))
     if status in _FAILED:
@@ -380,13 +384,16 @@ CARD_GAP = 12  # between the cards, both ways
 CARD_PAD_X = 14
 CARD_PAD_Y = 12
 CARD_RADIUS = 12
-# Each card's line wraps inside its half of the page.
-_LINE_WRAP = (PAGE_WIDTH - CARD_GAP) // 2 - 2 * (CARD_PAD_X + 1)
 DOTS: dict[CardState, theme.Color] = {
     "ok": theme.SUCCESS,
     "warn": theme.WARNING,
     "off": theme.TEXT_FAINT,
 }
+
+
+def line_wrap() -> int:
+    """Where a card's line wraps: inside its half of the page (the open window's)."""
+    return (page_width() - CARD_GAP) // 2 - 2 * (CARD_PAD_X + 1)
 
 
 class CardView(ctk.CTkFrame):
@@ -404,6 +411,7 @@ class CardView(ctk.CTkFrame):
         )
         self.card = card
         self._on_open = on_open
+        self._hovered = False
         # The dot is a coloured "●" (a text: CTk repaints it on a theme switch, and it needs no
         # image of the screen it is on).
         head = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
@@ -433,7 +441,7 @@ class CardView(ctk.CTkFrame):
             text_color=theme.TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=_LINE_WRAP,
+            wraplength=line_wrap(),
             cursor="hand2",
         )
         self.line.pack(fill="x", padx=CARD_PAD_X, pady=(2, CARD_PAD_Y))
@@ -445,7 +453,18 @@ class CardView(ctk.CTkFrame):
     def click(self) -> None:
         self._on_open(self.card.page)
 
+    def show(self, card: Card) -> None:
+        """Show `card` (the same page's, changed) in place: its dot, line and edge."""
+        if card == self.card:
+            return
+        self.card = card
+        self._edge = theme.WARNING if card.state == "warn" else theme.PANEL_EDGE
+        self.configure(border_color=theme.EDGE if self._hovered else self._edge)
+        self.dot.configure(text_color=DOTS[card.state])
+        self.line.configure(text=card.line)
+
     def _hover(self, hovered: bool) -> None:
+        self._hovered = hovered
         if self.winfo_exists():
             self.configure(border_color=theme.EDGE if hovered else self._edge)
 
@@ -462,11 +481,18 @@ class OverviewCards:
         self.views: dict[str, CardView] = {}
 
     def show(self, cards: Sequence[Card]) -> None:
-        """Draw `cards` (nothing changes when they are the same)."""
+        """Draw `cards`: nothing changes when they are the same; for the same pages only the
+        cards that changed are drawn again, in place (a whole redraw of the ten took 60-160 ms
+        on the Tk thread, each status or settings change)."""
         cards = list(cards)
         if cards == self.cards or not self.frame.winfo_exists():
             return
+        same_pages = [card.page for card in cards] == [card.page for card in self.cards]
         self.cards = cards
+        if same_pages and len(self.views) == len(cards):
+            for card in cards:
+                self.views[card.page].show(card)
+            return
         for view in self.views.values():
             view.destroy()
         self.views = {}

@@ -15,11 +15,13 @@ change stores itself when it is made, through one `Committer`.
   those fields while Undo is offered takes the Undo away: it would put a value back over it.
 - `TextCommit` (`text_commit` for one field): a text field stores on Enter, or when the
   keyboard leaves it for another control of the window (`defocus_on_click`: a click anywhere
-  takes it), and only when its text differs from what is stored. Focus leaving for another
+  takes it), and only when its text differs from what is stored (typed back to what is stored
+  after a refusal, the same then: its own red line goes). Focus leaving for another
   program stores nothing and keeps the text. While it has the keyboard or holds unstored text
   it is "editing": a value stored elsewhere meanwhile doesn't overwrite it. Fields that belong
   together (a size's min and max, an account's name and password) are one TextCommit: moving
-  between them isn't leaving. The window closing stores what the fields hold (`flush`).
+  between them isn't leaving. The window closing stores what the fields hold (`flush`); a text
+  refused then keeps the window open (app/ui/settings_dialog.py's `close`).
 
 Actions (Install, Check, Test, Sign in, Connect, Backup, Restart …) aren't changes: they show
 their own results and never the bar. A window closed while a commit's `await` runs is fine:
@@ -31,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import tkinter as tk
-from collections.abc import Awaitable, Callable, Hashable, Sequence
+from collections.abc import Awaitable, Callable, Hashable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
 import customtkinter as ctk
@@ -55,7 +57,9 @@ Undo = Callable[[], Awaitable[bool | None]]
 
 
 class Refused(Exception):
-    """A change a part won't store, with why (translated): said in red in its box."""
+    """A change a part won't store, with why (translated): said in red in its box. An empty
+    text drops the change quietly: nothing is said and no red line is taken away (a newer
+    change of the same control is on its way)."""
 
     def __init__(self, text: str) -> None:
         super().__init__(text)
@@ -220,7 +224,8 @@ class Committer:
         try:
             changed = await apply()
         except Refused as exc:
-            self._refuse(box, exc.text, source)
+            if exc.text:
+                self._refuse(box, exc.text, source)
             return False
         except ValidationError as exc:
             self._refuse(box, self._describe(exc), source)
@@ -272,6 +277,12 @@ class Committer:
         if _alive(box.frame):
             box.refuse(text, source=source)
 
+    def refused(self, box: SettingsBox, error: Refused, *, source: Hashable = None) -> None:
+        """Say a refusal found before a commit ran (`commit_fields`' `verify`) in `box`, as
+        `source`'s (an empty text says nothing)."""
+        if error.text:
+            self._refuse(box, error.text, source)
+
     def undo(self) -> None:
         """The bar's Undo: the last change's values from before, stored the same way."""
         if self._last is not None:
@@ -291,12 +302,21 @@ class Committer:
         self._fields.append(field)
         return field
 
-    def flush(self) -> None:
+    def flush(
+        self, *, skip: Mapping[TextCommit, Sequence[str]] | None = None
+    ) -> list[tuple[TextCommit, asyncio.Future[Any]]]:
         """Store each text field that holds unstored text (the window closes: nothing is left
-        pending)."""
+        pending), but not a field of `skip` that still holds the texts given there (refused when
+        the window was closed before). Returns the stores started whose outcome can be awaited
+        (True: stored, False: refused), each with its field."""
+        started: list[tuple[TextCommit, asyncio.Future[Any]]] = []
         for field in self._fields:
-            field.commit_now()
-        self._fields.clear()
+            if skip is not None and field in skip and field.texts == list(skip[field]):
+                continue
+            task = field.store()
+            if task is not None:
+                started.append((field, task))
+        return started
 
 
 class SettingsStore(Protocol):
@@ -316,12 +336,22 @@ async def commit_fields(
     box: SettingsBox,
     *,
     check: Callable[[], Awaitable[None]] | None = None,
+    verify: Callable[[], Awaitable[None]] | None = None,
     **fields: Any,
 ) -> bool:
     """Store `fields` of `service` as one change; Undo stores the values they had before (read
     once the change before it, on the same service, has stored: `Committer.lock`). A store
     from elsewhere that changes these fields while Undo is offered ends the Undo.
-    `check`: a part's own check first (raises Refused)."""
+    `check`: a part's own check first (raises Refused), quick: it runs holding the lock.
+    `verify`: a slow check (a network one) run before the lock is taken, so the service's
+    other changes don't wait for it (raises Refused)."""
+    source = tuple(sorted(fields))
+    if verify is not None:
+        try:
+            await verify()
+        except Refused as exc:
+            committer.refused(box, exc, source=source)
+            return False
     lock = committer.lock(service)
     before: dict[str, Any] = {}
 
@@ -341,7 +371,7 @@ async def commit_fields(
 
     async with lock:
         return await committer.commit(
-            apply, undo, box=box, source=tuple(sorted(fields)), watch=(service, tuple(fields))
+            apply, undo, box=box, source=source, watch=(service, tuple(fields))
         )
 
 
@@ -366,6 +396,7 @@ class TextCommit:
         self._commit = commit
         self._strip = strip
         self._seen = list(stored())  # what was stored when last looked (`show`)
+        self._refused = False  # its last store was refused: its red line shows
         for entry in self.entries:
             entry.bind("<Return>", lambda _event: self.commit_now(), add="+")
             entry.bind("<KP_Enter>", lambda _event: self.commit_now(), add="+")
@@ -411,18 +442,34 @@ class TextCommit:
         )
 
     def commit_now(self) -> None:
-        if not all(_alive(entry) for entry in self.entries) or not self.pending:
-            return
-        sent = self.texts
+        self.store()
+
+    def store(self) -> asyncio.Future[Any] | None:
+        """Store what it holds when that isn't stored (`commit_now`); the store's task when its
+        `commit` gives one (True: stored, False: refused)."""
+        if not all(_alive(entry) for entry in self.entries):
+            return None
+        if not self.pending:
+            if self._refused:  # typed back to what is stored: its refusal goes (only its own)
+                return self._send(list(self._stored()))  # the same values: nothing changes
+            return None
+        return self._send(self.texts)
+
+    def _send(self, sent: list[str]) -> asyncio.Future[Any] | None:
         started = self._commit(sent)
-        if isinstance(started, asyncio.Future):
-            started.add_done_callback(functools.partial(self._landed, sent))
+        if not isinstance(started, asyncio.Future):
+            return None
+        started.add_done_callback(functools.partial(self._landed, sent))
+        return started
 
     def _landed(self, sent: list[str], task: asyncio.Future[Any]) -> None:
         """Its own store landed: the field shows what is stored, in the stored form (the
         model may have rewritten it: "CAM" → "cam", a path's "/" as "\\", "2.50" → "2.5"), unless
         something was typed since or the store was refused."""
-        if task.cancelled() or task.exception() is not None or task.result() is not True:
+        if task.cancelled() or task.exception() is not None:
+            return
+        self._refused = task.result() is False
+        if task.result() is not True:
             return
         if not all(_alive(entry) for entry in self.entries) or self.texts != sent:
             return

@@ -333,8 +333,13 @@ class MenuSection:
 
     async def _presets_saved(self, change: PresetsChange) -> None:
         """Naming stored changed presets: the chosen ones follow a rename and drop a deleted
-        one, and a menu that starts this copy is rewritten. Raises on a failure (Naming logs
+        one, and a menu that starts this copy is rewritten, after a change of the menu under
+        way (one at a time: neither writes over the other). Raises on a failure (Naming logs
         it; the menu catches up at the next Forge start)."""
+        async with self._changing:
+            await self._follow_presets(change)
+
+    async def _follow_presets(self, change: PresetsChange) -> None:
         parts = self._parts
         if parts is None:
             return

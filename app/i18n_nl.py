@@ -1411,6 +1411,11 @@ NL: dict[str, str] = {
     "Version {version} · updates by themselves": "Versie {version} · werkt zichzelf bij",
     "Version {version} · updates when you choose": "Versie {version} · bijwerken wanneer jij wilt",
     "On this PC: looking for the torrent program…": "Op deze pc: torrentprogramma zoeken…",
+    "Not undone: another change of the folders is still under way.":
+        "Niet ongedaan gemaakt: er loopt nog een andere wijziging van de mappen.",
+    "On this PC: installing qBittorrent…": "Op deze pc: qBittorrent installeren…",
+    "On this PC: setting up qBittorrent…": "Op deze pc: qBittorrent instellen…",
+    "On this PC: reinstalling qBittorrent…": "Op deze pc: qBittorrent opnieuw installeren…",
     "qBittorrent on this PC still asks about each download":
         "qBittorrent op deze pc vraagt nog bij elke download iets",
     "On this PC: close qBittorrent to finish setting it up":

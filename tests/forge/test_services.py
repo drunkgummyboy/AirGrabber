@@ -587,6 +587,35 @@ class ForgeRuntimeTest(ForgeAsyncTestCase):
         self.assertIsNotNone(services)
         self.assertIs(runtime.state, ForgeState.READY)
 
+    async def test_a_carried_folder_is_heard_even_when_the_start_fails_after_it(self) -> None:
+        # Round 2, 4: the carry is done once (`folders_carried`); its check mustn't hang on the
+        # rest of the start.
+        runtime = self.runtime()
+        heard: list[str] = []
+        runtime.when_folders_added(lambda: heard.append("added"))
+        with (
+            mock.patch(
+                "app.forge.services.carry_library_folders", mock.AsyncMock(return_value=True)
+            ),
+            mock.patch.object(
+                ForgeServices, "_renamer_view", side_effect=RuntimeError("a later step")
+            ),
+            self.assertLogs("app.forge.runtime", logging.ERROR),
+        ):
+            self.assertIsNone(await runtime.start())
+        self.assertIs(runtime.state, ForgeState.FAILED)
+        self.assertEqual(heard, ["added"])
+
+    async def test_a_carry_that_added_nothing_asks_for_nothing(self) -> None:
+        runtime = self.runtime()
+        heard: list[str] = []
+        runtime.when_folders_added(lambda: heard.append("added"))
+        with mock.patch(
+            "app.forge.services.carry_library_folders", mock.AsyncMock(return_value=False)
+        ):
+            self.assertIsNotNone(await runtime.start())
+        self.assertEqual(heard, [])
+
     async def test_a_failed_start_says_so_and_can_be_tried_again(self) -> None:
         blocker = self.data_dir / "forge"
         blocker.write_text("not a folder", encoding="utf-8")  # forge.db can't be made
@@ -651,6 +680,8 @@ class AirGrabberServicesTest(ForgeAsyncTestCase):
         try:
             self.assertIsInstance(services.forge, ForgeRuntime)
             self.assertIs(services.forge.state, ForgeState.OFF)
+            # A carried folder is checked soon (Round 2, 4).
+            self.assertIn(services.folder_library.check_soon, services.forge._on_folders_added)
             self.assertFalse((self.data_dir / "forge").exists())  # not opened until started
             with mock.patch("app.forge.runtime._parser_ready", return_value=True):
                 forge = await services.forge.start()

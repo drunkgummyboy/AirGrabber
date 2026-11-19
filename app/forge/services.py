@@ -206,9 +206,6 @@ class ForgeServices:
         self.tmdb = tmdb
         self.images = images
         self.activity = ActivityFeed()  # the Activity strip's translated lines
-        # Whether this start's one-time carry added a destination to AirGrabber's folder lists
-        # (app/forge/core/folders_carry.py): AirGrabber's start then has the folders checked soon.
-        self.library_folders_added = False
         match_repo = MatchRepo(db)
         # The move records: a rename into a library folder or a rule's destination (a Stays
         # rule's watched folder too) is recorded in its journal step (the executor asks `note`
@@ -320,8 +317,13 @@ class ForgeServices:
         tmdb_client: TMDBClient,
         images: ImageCache,
         airgrabber_settings: SettingsService,
+        *,
+        folders_added: Callable[[], None] | None = None,
     ) -> ForgeServices:
-        """Open forge.db and build every service. The database is closed again if this fails."""
+        """Open forge.db and build every service. The database is closed again if this fails.
+        `folders_added`: called as soon as the one-time carry added a destination to
+        AirGrabber's folder lists (app/forge/core/folders_carry.py), whatever the rest of the
+        start does: AirGrabber has the folders checked soon (the carry happens only once)."""
         async with contextlib.AsyncExitStack() as cleanup:  # unwinds only if creation fails
             db = await Database.open(db_path(paths))
             cleanup.push_async_callback(db.close)
@@ -348,9 +350,11 @@ class ForgeServices:
             )
             await carry_subtitles(settings, services.presets, airgrabber_settings)
             await carry_move_option(settings, services.presets)
-            services.library_folders_added = await carry_library_folders(
-                settings, airgrabber_settings
-            )
+            if await carry_library_folders(settings, airgrabber_settings) and folders_added:
+                try:
+                    folders_added()
+                except Exception:
+                    log.exception("Asking for a folder check after the carry failed")
             await services.rules.load()  # today's setup carried over into rules once
             services._renamer_settings = services._renamer_view()  # with the rules read
             await services.ignored.load()

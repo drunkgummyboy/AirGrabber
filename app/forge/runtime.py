@@ -97,6 +97,7 @@ class ForgeRuntime:
         self._starting: asyncio.Future[ForgeServices | None] | None = None
         self._on_ready: list[ReadyCallback] = []
         self._on_start_end: list[Callable[[], None]] = []  # `when_start_ends`, once each
+        self._on_folders_added: list[Callable[[], None]] = []  # `when_folders_added`
         self._closed = False
 
     @property
@@ -128,6 +129,19 @@ class ForgeRuntime:
                 self._on_start_end.remove(callback)
 
         return forget
+
+    def when_folders_added(self, callback: Callable[[], None]) -> None:
+        """Call `callback` when a start's one-time carry added a MediaForge destination to
+        AirGrabber's folder lists (`ForgeServices.create`'s `folders_added`), even when that
+        start fails afterwards: the carry isn't done again."""
+        self._on_folders_added.append(callback)
+
+    def _folders_added(self) -> None:
+        for callback in list(self._on_folders_added):
+            try:
+                callback()
+            except Exception:
+                log.exception("A MediaForge folders-added callback failed")
 
     def when_ready(self, callback: ReadyCallback) -> None:
         """Call `callback` with the services once Forge has started, before the renamer starts
@@ -177,7 +191,12 @@ class ForgeRuntime:
             from app.forge.services import ForgeServices
 
             services = await ForgeServices.create(
-                self._paths, self._http, self._tmdb_client, self._images, self._airgrabber_settings
+                self._paths,
+                self._http,
+                self._tmdb_client,
+                self._images,
+                self._airgrabber_settings,
+                folders_added=self._folders_added,
             )
         except Exception as exc:
             # The type only: a message or traceback could name paths with the user's name.
@@ -214,6 +233,7 @@ class ForgeRuntime:
         services, self._services = self._services, None
         self._on_ready.clear()
         self._on_start_end.clear()
+        self._on_folders_added.clear()
         if services is None:
             return
         try:

@@ -100,7 +100,7 @@ CREATE INDEX moves_op ON moves(op_id);
 CREATE INDEX moves_moved_at ON moves(moved_at);
 """
 
-# v4 (AirGrabber 3.0.1): what Auto-rename leaves alone (app/forge/db/ignored.py). `path_key` is
+# v4 (AirGrabber 3.0.1): what Watch folders leaves alone (app/forge/db/ignored.py). `path_key` is
 # the path's `ignored.ignore_key` (os.path.normcase, no trailing slash); `folder` 1 = everything
 # under the folder; `added_at` a Unix time.
 _SCHEMA_V4 = """

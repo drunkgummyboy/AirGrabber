@@ -313,6 +313,9 @@ class FormTests(GuiTestCase):
         self.assertEqual(form.changes()["remote_url"], "")
         self.assertEqual(form.changes()["remote_destination"], "")
         self.assertTrue(form.changes()["remote_verify_tls"])
+        # "Verify the certificate" is an on/off: a switch (spec §6), here and in the welcome.
+        self.assertIsInstance(form._verify, ctk.CTkSwitch)
+        self.assertEqual(form._verify.get(), 1)
         self.assertEqual(form._address._entry.get(), ADDRESS_HINTS[RemoteKind.SYNOLOGY])
         self.assertFalse(form.ready)
 

@@ -45,7 +45,7 @@ from app.ui.folder_library_settings import FILM_MORE, FILM_ONE, SERIES_MORE, SER
 from app.ui.missing_control import mark_dot
 from app.ui.plex_connect import PlexConnectWindow
 from app.ui.settings_commit import Committer, commit_fields
-from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
+from app.ui.settings_layout import TEXT_SIZE, SettingsBox, SettingsPage, box_inner, wrap_toggle
 from app.ui.tasks import spawn
 from app.services import open_with
 from app.ui.watchlist_cards import searched_ago
@@ -252,6 +252,7 @@ class PlexBox:
                 text_color=theme.TEXT,
                 command=lambda: self.set_open_with(self._open_with.get()),
             )
+            wrap_toggle(self.open_with_box, box_inner())  # a long text (Dutch's) wraps
             explorer.add(self.open_with_box, gap=10, sticky="w")
         # Filled by `show`.
         self.connect_button: ctk.CTkButton | None = None
@@ -348,7 +349,7 @@ class PlexBox:
             text_color=theme.TEXT,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER - 20,
+            wraplength=box_inner() - 20,
         )
         place(self.status_label)
         if status.problem is PlexProblem.SIGNED_OUT:
@@ -386,7 +387,7 @@ class PlexBox:
             text_color=theme.TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER,
+            wraplength=box_inner(),
         )
 
     def _connect_button(self) -> ctk.CTkButton:
@@ -670,7 +671,7 @@ class FoldersLine:
             text_color=theme.TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=BOX_INNER - 200,
+            wraplength=box_inner() - 200,
         )
         self.label.pack(side="left")
         self.link = ctk.CTkLabel(

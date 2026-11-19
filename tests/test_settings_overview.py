@@ -140,6 +140,14 @@ class CardsTests(unittest.TestCase):
             "On this PC: close qBittorrent to finish setting it up",
         )
         self.assertNotIn("on this PC on this PC", card(PAGE_TORRENT, app, torrent=TorrentStatus.FOUND).line)
+        # Round 2, 10: installing or setting up says so, not "looking for" (still no verdict).
+        for status, line in (
+            (TorrentStatus.INSTALLING, "On this PC: installing qBittorrent…"),
+            (TorrentStatus.SETTING_UP, "On this PC: setting up qBittorrent…"),
+            (TorrentStatus.REINSTALLING, "On this PC: reinstalling qBittorrent…"),
+        ):
+            with self.subTest(status=status):
+                self.assertEqual(card(PAGE_TORRENT, app, torrent=status), Card(PAGE_TORRENT, "off", line))
         remote = Settings(download_mode=DownloadMode.REMOTE)
         self.assertEqual(
             card(PAGE_TORRENT, remote),
@@ -176,6 +184,10 @@ class CardsTests(unittest.TestCase):
         for status in (TorrentStatus.SETUP_FAILED, TorrentStatus.SETUP_WAITING, TorrentStatus.FAILED):
             with self.subTest(status=status):
                 self.assertEqual(card(PAGE_TORRENT, local, local_torrent=status).state, "warn")
+        self.assertEqual(
+            card(PAGE_TORRENT, local, local_torrent=TorrentStatus.SETTING_UP).line,
+            "On this PC: setting up qBittorrent…",
+        )
 
     def test_cards_follow_the_settings_quality_and_sources(self) -> None:
         found = card(PAGE_QUALITY, Settings(quality_tv="1080p", quality_movie="1080p"))
@@ -340,16 +352,59 @@ class OverviewWindowTests(DialogCase):
         dialog._torrent.show(TorrentStatus.READY, "qBittorrent")  # from here on: redrawn
         self.assertIs(seen[-1], TorrentStatus.READY)
 
+    async def test_the_torrent_card_knows_airgrabbers_own_qbittorrent_without_a_visit(
+        self,
+    ) -> None:
+        # Round 2, 10: at the window's start, and when the form, an Undo or the setup points
+        # AirGrabber at its own qBittorrent later (the download choice staying the same).
+        own = {
+            "remote_kind": RemoteKind.QBITTORRENT,
+            "remote_username": USERNAME,
+            "remote_url": "http://127.0.0.1:8181",
+        }
+        dialog, _settings = self.dialog(download_mode=DownloadMode.REMOTE, **own)
+        await settle()
+        self.assertEqual(dialog.section, PAGE_OVERVIEW)
+        looking = "On this PC: looking for the torrent program…"
+        cards = {c.page: c for c in dialog.overview_now()}
+        self.assertNotEqual(cards[PAGE_TORRENT].line, looking)
+        self.assertIs(dialog._local_torrent.status, TorrentStatus.MISSING)  # the fake finds none
+        dialog, settings = self.dialog(
+            download_mode=DownloadMode.REMOTE,
+            remote_kind=RemoteKind.QBITTORRENT,
+            remote_username="me",
+            remote_url="http://192.168.1.20:8080",
+        )
+        await settle()
+        await settings.update(**own)
+        await settle()
+        cards = {c.page: c for c in dialog.overview_now()}
+        self.assertEqual(cards[PAGE_TORRENT].line, "On this PC: no torrent program found yet")
+
     async def test_the_cards_follow_a_change(self) -> None:
         dialog, settings = self.dialog(auto_download_new_shows=False, auto_download_new_films=False)
         overview = dialog.overview
         assert overview is not None
         self.assertEqual(overview.card(PAGE_AUTOMATIC), Card(PAGE_AUTOMATIC, "off", "Off for new shows and films"))
+        views = dict(overview.views)
         await settings.update(auto_download_new_shows=True)
         await settle()
         found = overview.card(PAGE_AUTOMATIC)
         assert found is not None
         self.assertEqual(found.state, "ok")
+        # Drawn again in place, the other cards untouched (no rebuild of all ten per change).
+        self.assertEqual(overview.views, views)
+        changed = overview.views[PAGE_AUTOMATIC]
+        self.assertIs(changed.card, found)
+        self.assertEqual(changed.line.cget("text"), found.line)
+        self.assertEqual(tuple(changed.dot.cget("text_color")), tuple(theme.SUCCESS))
+        # Drawn again while the mouse is on it: it keeps the hover edge (review M5).
+        changed._hover(True)
+        await settings.update(auto_download_new_films=True)
+        await settle()
+        self.assertEqual(tuple(changed.cget("border_color")), tuple(theme.EDGE))
+        changed._hover(False)
+        self.assertEqual(tuple(changed.cget("border_color")), tuple(theme.PANEL_EDGE))
 
     async def test_release_groups_as_chips_store_the_same_tuple(self) -> None:
         dialog, settings = self.dialog(preferred_groups="ntb")
@@ -500,6 +555,22 @@ class WholeWindowTests(RegistryCase):
         self.assertEqual(len(other.ends), 1)
         closed.destroy()
         self.assertEqual(other.ends, [])
+
+    async def test_a_start_that_fails_without_a_reason_says_mediaforge_isnt_available(
+        self,
+    ) -> None:
+        # Never "Getting MediaForge ready…" for ever once the start has ended.
+        forge = EndingForge(FakeSettings(READY), started=False)
+        dialog, _forge = self.open(forge=forge)
+        await settle()
+        overview = dialog.overview
+        assert overview is not None
+        forge.end(reason="")
+        await settle()
+        self.assertEqual(
+            overview.card(PAGE_SORTING),
+            Card(PAGE_SORTING, "warn", "MediaForge isn't available."),
+        )
 
     async def test_amber_folders_card_with_mediaforge_running(self) -> None:
         dialog, _forge = self.open(READY.model_copy(update={"movies_folder": ""}))

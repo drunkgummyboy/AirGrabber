@@ -20,7 +20,7 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.ui import theme
-from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, Fold, SettingsBox, SettingsPage
+from app.ui.settings_layout import TEXT_SIZE, Fold, SettingsBox, SettingsPage, box_inner
 from app.ui.settings_search import add_words
 
 TITLE_TEXT = N_("What does a library add?")
@@ -94,7 +94,7 @@ class PlexCompareBox:
             for line in lines:
                 row += 1
                 text = t(line.text)
-                wrap = BOX_INNER - 2 * MARK_WIDTH - 8
+                wrap = box_inner() - 2 * MARK_WIDTH - 8
                 self._label(text, colour=theme.TEXT, wrap=wrap).grid(
                     row=row, column=0, sticky="w", pady=(6, 0)
                 )

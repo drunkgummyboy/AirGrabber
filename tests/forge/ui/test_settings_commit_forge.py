@@ -111,6 +111,49 @@ class RuleSwitchTests(TkMixin, ForgeDbTestCase):
         self.assertFalse(part.rule_rows[0].switch.get())
         dialog.destroy()
 
+    async def test_a_preset_renamed_during_a_rule_change_isnt_written_over(self) -> None:
+        # Round 2, 7 (Task 2 M5): Sorting builds the rules it stores before its awaits; a
+        # Naming rename landing in between must not be written back to the old name.
+        import contextlib
+
+        from tests.forge.ui.test_settings_naming import FakeMatches
+
+        gate = asyncio.Event()
+        held: list[bool] = []
+
+        @contextlib.asynccontextmanager
+        async def hold_looks() -> Any:
+            if not held:  # the first store (Sorting's) waits here, its rules already built
+                held.append(True)
+                await gate.wait()
+            yield
+
+        self.rules.hold_looks_with(hold_looks)
+        forge = FakeForge(cast(FakeSettings, self.settings), rules=cast(FakeRules, self.rules))
+        assert forge.services is not None
+        forge.services.presets = FakePresets()  # Naming stores them
+        forge.services.matches = FakeMatches()
+        dialog = forge_settings(self.root, forge, section=PAGE_SORTING)
+        sorting = dialog.parts[PAGE_SORTING]
+        assert isinstance(sorting, LibrarySection)
+        dialog.show_section(PAGE_NAMING)
+        naming = dialog.parts[PAGE_NAMING]
+        assert isinstance(naming, NamingSection)
+        await pump_until(self.root, lambda: naming.ready)
+        toggled = sorting.toggle_rule(0, True)  # its rules are built, its store waits
+        await asyncio.sleep(0.05)
+        naming.select_preset(next(d for d in naming._drafts if d.preset.name == "Series (Folder)"))
+        naming._name.set("Shows")
+        naming.name_field.commit_now()
+        await asyncio.sleep(0.05)
+        gate.set()
+        self.assertTrue(await toggled)
+        await settle()
+        stored = await RuleRepo(self.db).list()
+        self.assertTrue(stored[0].on)
+        self.assertEqual(stored[0].shows.preset, "Shows")  # the rename stands
+        dialog.destroy()
+
 
 class NamingAndMenuTests(TkMixin, ForgeDbTestCase):
     async def asyncSetUp(self) -> None:
@@ -137,6 +180,76 @@ class NamingAndMenuTests(TkMixin, ForgeDbTestCase):
         self.assertIn("Films", cast(FakePresets, forge.parts.presets).names)
         self.assertEqual(settings.current.context_menu_presets, ["Films"])  # the menu followed
         self.assertIn("Films", menu.ticked())
+        dialog.destroy()
+
+    async def test_a_rename_landing_during_a_menu_change_isnt_written_over(self) -> None:
+        # Round 2, 7 (Task 2 M4): Naming's presets reach the menu after its change under way.
+        settings = FakeSettings(ForgeSettings(context_menu_presets=["Movie (Flat)"]))
+        gate = asyncio.Event()
+
+        class SlowList(FakePresets):
+            calls = 0
+
+            async def list(self) -> list[Any]:
+                SlowList.calls += 1
+                found = await super().list()  # read now, answered later (a slow forge.db)
+                if SlowList.calls == 3:  # the menu's store (its page and Naming's read first)
+                    await gate.wait()
+                return found
+
+        forge = NamingForge(settings, SlowList())
+        dialog = forge_settings(self.root, forge, section=PAGE_WINDOWS)
+        menu = dialog.parts[PAGE_WINDOWS]
+        assert isinstance(menu, MenuSection)
+        await pump_until(self.root, lambda: menu.ready)
+        dialog.show_section(PAGE_NAMING)
+        naming = dialog.parts[PAGE_NAMING]
+        assert isinstance(naming, NamingSection)
+        await pump_until(self.root, lambda: naming.ready)
+        self.assertEqual(SlowList.calls, 2)
+        ticked = menu.set_ticked(["Movie (Folder)", "Movie (Flat)"])  # its store reads the presets
+        await asyncio.sleep(0.05)
+        naming.select_preset(next(d for d in naming._drafts if d.preset.name == "Movie (Flat)"))
+        naming._name.set("Films")
+        naming.name_field.commit_now()
+        await asyncio.sleep(0.05)
+        gate.set()
+        assert ticked is not None
+        self.assertTrue(await ticked)
+        await settle()
+        self.assertEqual(settings.current.context_menu_presets, ["Movie (Folder)", "Films"])
+        self.assertEqual(menu.ticked(), ["Movie (Folder)", "Films"])
+        dialog.destroy()
+
+    async def test_undo_of_a_delete_puts_the_preset_back_into_the_menus_choice(self) -> None:
+        # Round 2, 9 (Task 2 M9): with a ticked subset, Undo within the bar's time.
+        settings = FakeSettings(
+            ForgeSettings(context_menu_presets=["Movie (Flat)", "Movie (Folder)"])
+        )
+        forge = NamingForge(settings, FakePresets())
+        dialog = forge_settings(self.root, forge, section=PAGE_WINDOWS)
+        menu = dialog.parts[PAGE_WINDOWS]
+        assert isinstance(menu, MenuSection)
+        await pump_until(self.root, lambda: menu.ready)
+        dialog.show_section(PAGE_NAMING)
+        naming = dialog.parts[PAGE_NAMING]
+        assert isinstance(naming, NamingSection)
+        await pump_until(self.root, lambda: naming.ready)
+        naming.select_preset(next(d for d in naming._drafts if d.preset.name == "Movie (Flat)"))
+        deleted = naming.delete_preset()
+        assert deleted is not None
+        self.assertTrue(await deleted)
+        await settle()
+        self.assertEqual(settings.current.context_menu_presets, ["Movie (Folder)"])
+        self.assertTrue(await dialog.committer.run_undo())
+        await settle()
+        assert forge.parts is not None
+        self.assertIn("Movie (Flat)", cast(FakePresets, forge.parts.presets).names)
+        # Both chosen again (the menu keeps its choice in the presets' order).
+        self.assertEqual(
+            sorted(settings.current.context_menu_presets), ["Movie (Flat)", "Movie (Folder)"]
+        )
+        self.assertEqual(menu.ticked(), ["Movie (Folder)", "Movie (Flat)"])
         dialog.destroy()
 
     async def test_menu_on_without_presets_is_refused_inline(self) -> None:

@@ -59,7 +59,7 @@ from app.forge.ui.matches_window import MatchesWindow
 from app.i18n import N_, t, tn
 from app.ui import dialog_kit, theme
 from app.ui.settings_commit import Committer, Refused, command, commit_fields, text_commit
-from app.ui.settings_layout import BOX_INNER, Fold, PageLink
+from app.ui.settings_layout import Fold, PageLink, box_inner, wrap_toggle
 from app.ui.settings_pages_registry import PAGE_SORTING
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
@@ -212,12 +212,10 @@ FIELDS: tuple[str, ...] = ("series_preset", "movies_preset", "tmdb_language")
 # Which preset type takes over a Series / Movies choice whose preset is deleted here.
 _CHOICE_TYPES: dict[str, TypeHint] = {"series_preset": TypeHint.TV, "movies_preset": TypeHint.MOVIE}
 
-_BOX_INNER = BOX_INNER  # the page's width inside a box's border and padding
 _LIST_WIDTH = 170  # the presets list
 _LIST_PAD = 4
 _ITEM_HEIGHT = 32
 _COLUMN_GAP = 18  # between the list and the editor
-_EDITOR_WIDTH = _BOX_INNER - _LIST_WIDTH - _COLUMN_GAP
 _ROW_GAP = 8
 _CAPTION_GAP = 12  # above an editor field's caption
 _LABEL_WIDTH = 90  # "Series" / "Movies"
@@ -226,7 +224,6 @@ _BUTTON_WIDTH = 110
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
 _FORMAT_GAP = 14  # above and below the line between the editor and the format
 _TABLE_INSET = 3  # between a table's border and its rows
-_TABLE_WIDTH = _BOX_INNER - 2 * (_TABLE_INSET + 1)  # a row's width
 _ROW_HEIGHT = 26
 _ROW_RADIUS = 5
 _CELL_PAD = 8  # at both sides of a cell's text
@@ -237,6 +234,30 @@ _EXAMPLE_COLUMN = 262  # the examples table's left column
 _MONO_FAMILY = "Consolas"  # the format and the codes, as in release_panel
 _MONO_SIZE = 12
 _FORMAT_FONT_SIZE = 14  # the format field
+
+
+# The widths follow the page's (`box_inner()`: inside a box's border and padding, the open
+# window's).
+def _editor_width() -> int:
+    return box_inner() - _LIST_WIDTH - _COLUMN_GAP
+
+
+def _table_width() -> int:
+    """A format table's row."""
+    return box_inner() - 2 * (_TABLE_INSET + 1)
+
+
+_SWITCH_ROOM = 36 + 6 + 6  # a switch's track, the gap to its text, slack for rounding
+_SWITCH_GAP = 12  # between the two columns of extras
+
+
+def _two_columns_fit(texts: Sequence[str]) -> bool:
+    """Whether the extras' switches (`texts`, in their order) fit two to a line in the editor."""
+    font = theme.font(_TEXT_SIZE)
+    widths = [int(font.measure(text)) + _SWITCH_ROOM for text in texts]
+    left = max(widths[0::2], default=0)
+    right = max(widths[1::2], default=0)
+    return left + _SWITCH_GAP + right + _SWITCH_GAP <= _editor_width()
 
 
 # -- the right-click menu's hook ----------------------------------------------------------------
@@ -629,7 +650,7 @@ class FormatTable(ctk.CTkFrame):
         self.cell_font = cell_font
         self._column = column
         self.left_room = column - 2 * _CELL_PAD - _FIT_MARGIN
-        self.right_room = _TABLE_WIDTH - column - 2 * _CELL_PAD - _FIT_MARGIN
+        self.right_room = _table_width() - column - 2 * _CELL_PAD - _FIT_MARGIN
         self.rows: list[TableRow] = []
         self._lines: dict[TableRow, ctk.CTkFrame] = {}
         self._body = ctk.CTkFrame(self, fg_color="transparent")
@@ -739,7 +760,7 @@ class NamingSection:
         self.new_button = self._button(side, t(NEW_PRESET), command(self.new_preset), width=_LIST_WIDTH)
         self.new_button.grid(row=1, column=0, sticky="ew", pady=(_ROW_GAP + 2, 0))
 
-        self.editor = ctk.CTkFrame(area, fg_color="transparent", width=_EDITOR_WIDTH)
+        self.editor = ctk.CTkFrame(area, fg_color="transparent", width=_editor_width())
         self.editor.grid(row=0, column=1, sticky="new", padx=(_COLUMN_GAP, 0))
         self.editor.grid_columnconfigure(0, weight=1)
         self._editor_row = 0
@@ -776,13 +797,16 @@ class NamingSection:
         self._place(checks, gap=2, sticky="w")
         self._options: dict[str, tk.BooleanVar] = {}
         self.option_boxes: dict[str, ctk.CTkSwitch] = {}
+        # Moving is first and on its own line; the others in two columns where they fit beside
+        # each other in the editor (the open window's page), else one below the other.
+        columns = 2 if _two_columns_fit([t(label) for label in OPTION_LABELS.values()][1:]) else 1
         for index, (key, label) in enumerate(OPTION_LABELS.items()):
             variable = tk.BooleanVar(master=frame, value=False)
             box = self._switch(checks, t(label), variable, self._options_clicked)
-            if index == 0:  # moving is first and on its own line: the others fit in two columns
+            if index == 0:
                 box.grid(row=0, column=0, columnspan=2, sticky="w", pady=(2, 0))
             else:
-                row_no, column = divmod(index - 1, 2)
+                row_no, column = divmod(index - 1, columns)
                 box.grid(row=row_no + 1, column=column, sticky="w", padx=(0, 12), pady=(2, 0))
             self._options[key] = variable
             self.option_boxes[key] = box
@@ -909,8 +933,9 @@ class NamingSection:
     def _switch(
         self, master: Any, text: str, variable: tk.BooleanVar, command: Callable[[], None]
     ) -> ctk.CTkSwitch:
-        """An extra's on/off (spec §6: every on/off in Settings is a switch)."""
-        return ctk.CTkSwitch(
+        """An extra's on/off (spec §6: every on/off in Settings is a switch); a text longer
+        than the editor wraps."""
+        switch = ctk.CTkSwitch(
             master,
             text=text,
             variable=variable,
@@ -920,6 +945,8 @@ class NamingSection:
             progress_color=self._look.ACCENT,
             text_color=theme.TEXT,
         )
+        wrap_toggle(switch, _editor_width())
+        return switch
 
     def _entry(
         self, variable: tk.StringVar, master: Any = None, font: ctk.CTkFont | None = None
@@ -959,7 +986,7 @@ class NamingSection:
             text_color=color,
             anchor="w",
             justify="left",
-            wraplength=_BOX_INNER if master else _EDITOR_WIDTH,
+            wraplength=box_inner() if master else _editor_width(),
         )
 
     def _table(self, headers: tuple[str, str], column: int) -> FormatTable:
@@ -1196,9 +1223,10 @@ class NamingSection:
         stored = self._stored_of(self._editing)
         return stored.format if stored is not None else ""
 
-    def _commit_typed(self, _text: str) -> None:
-        """The name or the format field left or Enter: the presets as they show are stored."""
-        self.commit_presets()
+    def _commit_typed(self, _text: str) -> asyncio.Task[bool] | None:
+        """The name or the format field left or Enter: the presets as they show are stored
+        (the task: the field then knows whether it was refused)."""
+        return self.commit_presets()
 
     def _refresh_presets(self) -> None:
         self._fill_preset_list()
@@ -1495,7 +1523,10 @@ class NamingSection:
         return spawn(self._commit_presets(self._parts), name="forge-naming-presets")
 
     async def _commit_presets(self, parts: _Parts) -> bool:
-        async with self._changing:  # also when the window just closed: it is still stored
+        # MediaForge's settings one change at a time (`Committer.lock`, as Sorting's changes and
+        # the choices here take it), then the presets'; also when the window just closed.
+        forge = self._committer.lock(parts.settings)
+        async with forge, self._changing:
             before = list(self._stored)
             done: builtins.list[tuple[PresetsChange, dict[str, Any]]] = []
 
@@ -1507,7 +1538,7 @@ class NamingSection:
                 return True
 
             async def undo() -> bool:
-                async with self._changing:
+                async with forge, self._changing:
                     return await self._restore_presets(parts, before, done)
 
             return await self._committer.commit(apply, undo, box=self._presets_box)
@@ -1548,7 +1579,12 @@ class NamingSection:
             # The type only: a message could hold a preset's or a folder's name.
             log.error("MediaForge's naming settings couldn't be saved (%s)", type(exc).__name__)
             raise Refused(_save_failed()) from exc
+        menu = list(parts.settings.current.context_menu_presets)
         await _tell(change, parts)
+        if list(parts.settings.current.context_menu_presets) != menu:
+            # The right-click menu's choice followed (a deleted preset dropped): Undo puts it
+            # back with the presets.
+            was["context_menu_presets"] = menu
         return change, was
 
     async def _restore_presets(
@@ -1558,8 +1594,9 @@ class NamingSection:
         done: Sequence[tuple[PresetsChange, dict[str, Any]]],
     ) -> bool:
         """Undo: the presets as they were stored before (`before`), the rules renamed back, the
-        settings the change moved (For new rules, the remembered presets) as they were; the
-        listeners hear it as a rename back (and a new preset's removal)."""
+        settings the change moved (For new rules, the remembered presets, the right-click
+        menu's choice) as they were; the listeners hear it as a rename back (and a new
+        preset's removal)."""
         if not done:
             return False
         change, was = done[-1]
@@ -1590,14 +1627,29 @@ class NamingSection:
         """Take `stored` as what is stored; the page shows it, keeping its drafts (the editor's
         and the Series / Movies choices) where their names are stored (`renamed`: a draft's
         name → its stored one, an Undo's). `refill`: the editor shows the stored preset again
-        (an Undo); else what it holds stays as typed."""
+        (an Undo), except a name or format typed since the change it undoes (the field no longer
+        shows what that change stored): that stays as typed, to be stored when it is left;
+        else what it holds stays as typed."""
         renamed = renamed or {}
-        by_name = {renamed.get(d.preset.name, d.preset.name): d for d in self._drafts}
+        # An Undo finds a draft by what it was stored as: its name field may hold newer text.
+        by_name = {
+            renamed.get(key, key): d
+            for d in self._drafts
+            for key in [d.origin if refill and d.origin is not None else d.preset.name]
+        }
         editing = self._editing
+        typed: dict[str, str] = {}
+        if refill and editing is not None and self.waiting_label.winfo_exists():
+            if self.name_field.pending:
+                typed["name"] = editing.preset.name
+            if self.format_field.pending:
+                typed["format"] = editing.preset.format
         drafts: list[PresetDraft] = []
         for preset in stored:
             draft = by_name.pop(preset.name, None) or PresetDraft(preset.name, preset)
             draft.origin, draft.preset = preset.name, preset
+            if draft is editing and typed:
+                draft.preset = preset.model_copy(update=typed)
             drafts.append(draft)
         self._stored = list(stored)
         self._drafts = drafts

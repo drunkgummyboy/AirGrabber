@@ -290,18 +290,15 @@ class RemoteProgramForm(ctk.CTkFrame):
         self._program.grid(row=0, column=1, sticky="w", pady=self._pady(0))
         row = len(labels)  # the rows under the fields
 
-        self._verify = ctk.CTkCheckBox(
+        # An on/off: a switch, as every on/off in Settings (spec §6; the welcome's too).
+        self._verify = ctk.CTkSwitch(
             self,
             text=t(FIELD_LABELS["remote_verify_tls"]),
             width=0,
             height=BUTTON_HEIGHT,
-            checkbox_width=22,
-            checkbox_height=22,
-            corner_radius=6,
             font=theme.font(DETAIL_SIZE),
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            border_color=theme.EDGE,
+            progress_color=theme.ACCENT,
+            text_color=theme.TEXT,
             command=self._verify_clicked,
         )
         if settings.remote_verify_tls:

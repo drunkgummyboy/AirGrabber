@@ -550,7 +550,7 @@ class PhoneForge:
 
     async def _keep_now(self, services: ForgeServices, item_id: int, key: str) -> Reply:
         """"Keep the one I have": this download left alone, as the PC's "Leave this file alone"
-        (Auto-rename never picks it up again; Settings › Sorting lists it)."""
+        (MediaForge's watching never picks it up again; Settings › Sorting lists it)."""
         item = _in_library_item(services, item_id, key)
         if item is None:
             return _gone()

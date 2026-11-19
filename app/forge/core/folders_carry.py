@@ -42,7 +42,7 @@ async def carry_library_folders(
     is appended to that list. Marked as carried, so a folder taken out of a list later stays
     out. A failure is logged and tried at the next start; it never stops Forge. True when a
     folder was added (AirGrabber's start then has the folders checked soon, while they count:
-    `ForgeServices.library_folders_added`)."""
+    `ForgeServices.create`'s `folders_added`)."""
     forge = forge_settings.current
     if forge.folders_carried:
         return False

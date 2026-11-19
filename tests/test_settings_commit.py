@@ -19,6 +19,7 @@ from app.ui.settings_pages_registry import (
     PAGE_LOOKS,
     PAGE_PAGES,
     PAGE_QUALITY,
+    PAGE_TORRENT,
     PAGE_WINDOWS,
 )
 from tests.test_settings_dialog import DialogCase, click, find, labels, settle
@@ -128,6 +129,28 @@ class CommitTests(DialogCase):
         await settle()
         self.assertEqual(settings.current.size_movie_min_gb, 2)
         self.assertEqual(box.refusal, "")
+
+    async def test_a_refused_text_typed_back_to_the_stored_one_loses_its_red_line(self) -> None:
+        # Round 2, 2: only its own: another control's refusal in the same box stays.
+        dialog, settings = self.dialog(size_movie_min_gb=1, quality_movie=QualityProfile.HD)
+        box = dialog.box(PAGE_QUALITY, "Movies")
+        field = dialog._size_fields["movie"]
+        dialog._size_movie_min.set("lots")
+        field.commit_now()
+        await settle()
+        refused = "Movies size: Use a number, like 2.5"
+        self.assertEqual(box.refusal, refused)
+        box.refuse("Another control's refusal.", source="other")
+        dialog._size_movie_min.set("1")  # back to what is stored
+        self.assertFalse(field.pending)
+        field.left(dialog)
+        await settle()
+        self.assertEqual(box.refusal, "Another control's refusal.")
+        self.assertEqual(settings.current.size_movie_min_gb, 1)
+        bar = dialog.committer.bar
+        assert bar is not None
+        self.assertFalse(bar.shown)  # nothing was stored
+        self.assertFalse(dialog.committer.can_undo)
 
     async def test_a_stored_change_keeps_another_controls_refusal(self) -> None:
         # Triage T2 M2: picking a quality doesn't hide the sizes' red line (still refused).
@@ -264,6 +287,114 @@ class CommitTests(DialogCase):
         await settle()
         self.assertFalse(dialog.winfo_exists())
         self.assertEqual(settings.current.blocked_groups, ("evo",))
+
+    async def test_escape_inside_a_field_stores_its_text_and_closes(self) -> None:
+        dialog, settings = self.dialog(excluded_keywords="")
+        from tests.forge.tk import press
+
+        self.root.deiconify()
+        self.root.attributes("-alpha", 0.0)
+        dialog.attributes("-alpha", 0.0)
+        dialog.deiconify()
+        dialog.show_section(PAGE_QUALITY)
+        dialog.update()
+        entry = dialog._word_fields["excluded_keywords"].entries[0]
+        entry.insert(0, "cam")  # typed in the field
+        # `press` puts the keyboard in the field and presses Escape there with nothing in
+        # between: a check of the focus after an update could lose it to another window.
+        press(entry._entry, "<Escape>")
+        await settle()
+        self.assertFalse(dialog.winfo_exists())
+        self.assertEqual(settings.current.excluded_keywords, ("cam",))
+
+    # -- a text refused as the window closes (round 2) -------------------------------------------
+
+    async def test_a_text_refused_at_close_keeps_the_window_open_on_its_box(self) -> None:
+        dialog, settings = self.dialog()
+        dialog.show_section(PAGE_LOOKS)
+        dialog._size_tv_min.set("5")
+        dialog._size_tv_max.set("3")  # not stored yet: ✕ stores it, and it is refused
+        dialog.tk.eval(str(dialog.protocol("WM_DELETE_WINDOW")))  # ✕
+        await settle()
+        self.assertTrue(dialog.winfo_exists())
+        self.assertEqual(dialog.section, PAGE_QUALITY)  # its page shows, with the red line
+        self.assertEqual(
+            dialog.box(PAGE_QUALITY, "Series").refusal,
+            "Series size: The first number can't be bigger than the second",
+        )
+        self.assertIsNone(settings.current.size_tv_max_gb)
+        # Closed again: it goes without storing that text (another field's text is stored).
+        dialog._excluded.set("cam")
+        dialog.close()  # Escape's
+        await settle()
+        self.assertFalse(dialog.winfo_exists())
+        self.assertIsNone(settings.current.size_tv_max_gb)
+        self.assertEqual(settings.current.excluded_keywords, ("cam",))
+
+    async def test_two_fields_refused_in_turn_never_keep_the_window_open(self) -> None:
+        # Review I1: each close's refusals are added to the earlier ones, so one is never sent
+        # again on the next close and the window always goes on the next ✕ / Escape.
+        dialog, settings = self.dialog()
+        dialog._size_tv_min.set("5")
+        dialog._size_tv_max.set("3")
+        dialog.close()  # the Series size is refused
+        await settle()
+        self.assertTrue(dialog.winfo_exists())
+        dialog._size_movie_min.set("5")
+        dialog._size_movie_max.set("3")
+        dialog.close()  # Series not sent again; the Movies size is refused
+        await settle()
+        self.assertTrue(dialog.winfo_exists())
+        dialog.close()  # neither is sent again: it goes
+        await settle()
+        self.assertFalse(dialog.winfo_exists())
+        self.assertIsNone(settings.current.size_tv_max_gb)
+        self.assertIsNone(settings.current.size_movie_max_gb)
+
+    async def test_a_refused_remote_form_field_is_shown_at_close(self) -> None:
+        # Review M1: the form is the page's, placed into its box (grid in_=): still found.
+        from unittest import mock
+
+        dialog, settings = self.dialog(download_mode=DownloadMode.REMOTE)
+        address = dialog._remote_form._address
+        address.delete(0, "end")
+        address.insert(0, "nota url")  # typed, not stored yet
+        dialog.show_section(PAGE_LOOKS)  # the user went elsewhere meanwhile
+        with mock.patch.object(type(address), "focus_set", autospec=True) as focused:
+            dialog.close()
+            await settle()
+        self.assertTrue(dialog.winfo_exists())
+        self.assertEqual(dialog.section, PAGE_TORRENT)
+        focused.assert_called_once_with(address)
+        self.assertIn("Use a full address", dialog._remote_box.refusal)
+        self.assertEqual(settings.current.remote_url, "")
+
+    async def test_a_text_changed_after_its_refusal_is_tried_again_at_close(self) -> None:
+        dialog, settings = self.dialog()
+        dialog._size_tv_min.set("5")
+        dialog._size_tv_max.set("3")
+        dialog.close()
+        await settle()
+        self.assertTrue(dialog.winfo_exists())
+        dialog._size_tv_max.set("4")  # still refused: the window stays again
+        dialog.close()
+        await settle()
+        self.assertTrue(dialog.winfo_exists())
+        dialog._size_tv_max.set("8")  # fixed: stored, and the window goes
+        dialog.close()
+        await settle()
+        self.assertFalse(dialog.winfo_exists())
+        self.assertEqual((settings.current.size_tv_min_gb, settings.current.size_tv_max_gb), (5, 8))
+
+    async def test_closing_at_once_isnt_held_by_a_refusal(self) -> None:
+        # An update, going back or the main window's ✕ (MainWindow: `close_now`).
+        dialog, settings = self.dialog()
+        dialog._size_tv_min.set("5")
+        dialog._size_tv_max.set("3")
+        dialog.close_now()
+        self.assertFalse(dialog.winfo_exists())
+        await settle()  # the refusal lands on a closed window: nothing raises
+        self.assertIsNone(settings.current.size_tv_max_gb)
 
     # -- text the model rewrites (review C1) -----------------------------------------------------
 
@@ -475,6 +606,66 @@ class CommitterTests(DialogCase):
         self.assertFalse(committer.can_undo)
         self.assertFalse(await committer.run_undo())
         self.assertEqual(settings.current.auto_wait_hours, 12)
+
+    async def test_a_slow_verify_doesnt_hold_the_services_other_changes(self) -> None:
+        # Round 2, 1: the own OpenSubtitles key's network check runs before the lock.
+        box = SettingsBox(self.root, "A box")
+        committer = Committer()  # no window: no bar
+        settings = SettingsService(FakeRepo(), Settings())  # type: ignore[arg-type]
+        release = asyncio.Event()
+        started = asyncio.Event()
+
+        async def verify() -> None:
+            started.set()
+            await release.wait()
+
+        slow = asyncio.create_task(
+            commit_fields(committer, settings, box, verify=verify, opensubtitles_own_key="KEY")
+        )
+        await started.wait()
+        other = commit_fields(committer, settings, box, theme_mode=ThemeMode.LIGHT)
+        self.assertTrue(await asyncio.wait_for(other, timeout=1))  # didn't wait for the check
+        self.assertIs(settings.current.theme_mode, ThemeMode.LIGHT)
+        self.assertFalse(slow.done())
+        release.set()
+        self.assertTrue(await slow)
+        self.assertEqual(settings.current.opensubtitles_own_key.get_secret_value(), "KEY")
+
+    async def test_a_refused_verify_is_said_as_its_fields_and_stores_nothing(self) -> None:
+        box = SettingsBox(self.root, "A box")
+        committer = Committer()  # no window: no bar
+        settings = SettingsService(FakeRepo(), Settings())  # type: ignore[arg-type]
+
+        async def verify() -> None:
+            raise Refused("Not that key.")
+
+        self.assertFalse(
+            await commit_fields(committer, settings, box, verify=verify, opensubtitles_own_key="K")
+        )
+        self.assertEqual(box.refusal, "Not that key.")
+        self.assertEqual(settings.current.opensubtitles_own_key.get_secret_value(), "")
+        self.assertFalse(committer.can_undo)
+        self.assertTrue(await commit_fields(committer, settings, box, opensubtitles_own_key="K"))
+        self.assertEqual(box.refusal, "")  # the same control stored: its refusal goes
+
+    async def test_a_dropped_change_says_nothing_and_clears_nothing(self) -> None:
+        # Round 2, 3: an older own key dropped for a newer one (Refused("")).
+        box = SettingsBox(self.root, "A box")
+        committer = Committer()  # no window: no bar
+        box.refuse("The account is refused.", source="account")
+        box.refuse("The key is refused.", source="key")
+        both = "The account is refused.\nThe key is refused."
+
+        async def dropped() -> None:
+            raise Refused("")
+
+        self.assertFalse(await committer.commit(dropped, None, box=box, source="key"))
+        self.assertEqual(box.refusal, both)
+        settings = SettingsService(FakeRepo(), Settings())  # type: ignore[arg-type]
+        self.assertFalse(
+            await commit_fields(committer, settings, box, verify=dropped, auto_wait_hours=6)
+        )
+        self.assertEqual(box.refusal, both)
 
     async def test_a_text_field_with_hints(self) -> None:
         entry = ctk.CTkEntry(self.root, placeholder_text="hint")

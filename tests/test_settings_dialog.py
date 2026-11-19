@@ -57,6 +57,7 @@ from app.ui.settings_dialog import (
     theme_from_name,
     theme_name,
 )
+from app.ui.settings_layout import NARROW_PAGE_WIDTH, WIDE_PAGE_WIDTH, page_width
 from app.ui.settings_pages_registry import (
     PAGE_ACCOUNTS,
     PAGE_LOOKS,
@@ -296,6 +297,13 @@ class FakeShortcut:
         raise AssertionError("not changed here")
 
 
+def descendants(widget: Any) -> list[Any]:
+    found: list[Any] = []
+    for child in widget.winfo_children():
+        found += [child, *descendants(child)]
+    return found
+
+
 def labels(widget: Any) -> list[str]:
     found: list[str] = []
     for child in widget.winfo_children():
@@ -379,14 +387,45 @@ class DialogTests(DialogCase):
                 self.assertEqual(texts[0], section)
                 self.assertTrue(texts[1])
 
-    async def test_fits_a_1920x1080_screen_at_175_percent(self) -> None:
-        dialog, _settings = self.dialog()
+    def on_a_screen(self, width: float) -> SettingsDialog:
+        """The dialog opened over a main window on a screen `width` wide (logical units)."""
+        scaling = ctk.ScalingTracker.get_window_scaling(self.root)
+        area = (0, 0, round(width * scaling), round(1000 * scaling))
+        with mock.patch("app.ui.settings_dialog.screen_area", return_value=area):
+            dialog, _settings = self.dialog()
+        return dialog
+
+    @staticmethod
+    def width(dialog: SettingsDialog) -> float:
         dialog.update_idletasks()
-        scaling = ctk.ScalingTracker.get_window_scaling(dialog)
-        width = dialog.winfo_reqwidth() / scaling
+        return int(dialog.winfo_reqwidth()) / float(ctk.ScalingTracker.get_window_scaling(dialog))
+
+    async def test_fits_a_1920x1080_screen_at_175_percent(self) -> None:
+        dialog = self.on_a_screen(1920 / 1.75)  # 1097
+        width = self.width(dialog)
         self.assertLessEqual(width, 1920 / 1.75 - 20)  # room for the window's own edges
         self.assertGreaterEqual(width, 1000)  # the wider window (the owner's wish, 2026-11-19)
+        self.assertEqual(page_width(), WIDE_PAGE_WIDTH)
         self.assertGreaterEqual(sidebar_width(), 220)
+
+    async def test_fits_a_1366x768_screen_at_150_percent(self) -> None:
+        # Its pages narrow (not below the old width): the whole window fits the screen.
+        dialog = self.on_a_screen(1366 / 1.5)  # 910
+        self.assertLessEqual(self.width(dialog), 1366 / 1.5 - 20)
+        self.assertLess(page_width(), WIDE_PAGE_WIDTH)
+        self.assertGreaterEqual(page_width(), NARROW_PAGE_WIDTH)
+        # What its pages wrap at follows: the Quality page's note, a box's explanation.
+        note = next(
+            child for child in descendants(dialog.page(PAGE_QUALITY))
+            if isinstance(child, ctk.CTkLabel) and child.cget("text") == QUALITY_NOTE
+        )
+        self.assertEqual(int(note.cget("wraplength")), page_width())
+        dialog.destroy()
+        self.assertEqual(page_width(), WIDE_PAGE_WIDTH)  # the next window decides its own
+
+    async def test_never_narrower_than_the_old_page(self) -> None:
+        self.on_a_screen(700)
+        self.assertEqual(page_width(), NARROW_PAGE_WIDTH)
 
     async def test_the_quality_page(self) -> None:
         dialog, settings = self.dialog(

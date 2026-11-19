@@ -539,18 +539,20 @@ class WaysInTests(SettingsWindowCase):
         window: Any = SimpleNamespace(
             tray=SimpleNamespace(close_window=lambda: calls.append("tray"))
         )
-        window._settings_dialog = SimpleNamespace(close=lambda: calls.append("close"))
+        window._settings_dialog = SimpleNamespace(close_now=lambda: calls.append("close"))
         MainWindow._close_window(window)
         self.assertEqual(calls, ["close", "tray"])  # hidden with it, it would keep the grab
+        self.assertIsNone(window._settings_dialog)
 
     async def test_an_update_or_going_back_closes_settings_as_its_cross_does(self) -> None:
-        # Text typed but not stored yet is stored first (`close` flushes), then the restart.
+        # Text typed but not stored yet is stored first (`close_now` flushes), then the restart;
+        # at once (a refused text doesn't keep the window open then).
         for start in (MainWindow._start_update, MainWindow._start_going_back):
             calls: list[str] = []
             window: Any = SimpleNamespace(
                 _update_task=SimpleNamespace(done=lambda: False),  # one already running: stop
                 _settings_dialog=SimpleNamespace(
-                    close=lambda: calls.append("close"), winfo_exists=lambda: True
+                    close_now=lambda: calls.append("close"), winfo_exists=lambda: True
                 ),
             )
             start(window)  # an update under way: nothing happens
@@ -562,4 +564,3 @@ class WaysInTests(SettingsWindowCase):
             self.assertIsNone(window._settings_dialog)
             await window._update_task
             self.assertEqual(calls, ["close"])
-        self.assertIsNone(window._settings_dialog)

@@ -297,6 +297,146 @@ class FoldersPageTests(FoldersPageCase):
         self.assertEqual(settings.current.series_folders, (SERIES, OLD_SERIES))
         self.assertEqual(page.add_buttons["film"].cget("state"), "normal")
 
+    async def test_an_undo_during_switching_off_is_refused(self) -> None:
+        # Round 2 A, fix round 1 (review Important 1): a folder added, counting switched off
+        # within the bar's time, Undo clicked during the switch-off's clear: counting stays off.
+        from app.ui.folder_library_settings import (
+            UNDO_WAITS_TEXT,
+            FolderLibraryBox,
+            FoldersBusy,
+        )
+        from app.ui.folders_page import FoldersPage
+
+        settings = service(
+            Settings(folder_library_on=True, series_folders=(SERIES,), film_folders=(FILMS,))
+        )
+        gate = asyncio.Event()
+        slow = {"off": False}
+
+        class SlowOff(FakeFolders):
+            async def switch_off(self) -> None:
+                if slow["off"]:
+                    await gate.wait()  # the database clear
+                await super().switch_off()
+
+        folders = SlowOff(settings, FolderLibraryStatus(on=True, films=1, checked_at=NOW))
+        busy = FoldersBusy()
+        self.frame = ctk.CTkFrame(self.root)
+        self.keep(self.frame)
+        self.committer = Committer()
+        page = FoldersPage(
+            SettingsPage(self.frame, "Folders", ""),
+            settings,
+            self.committer,
+            folders=folders,
+            pick_folder=lambda _owner: OLD_SERIES,
+            busy=busy,
+        )
+        count = FolderLibraryBox(
+            SettingsPage(self.frame, "Folders", ""), folders, settings, self.committer, busy=busy
+        )
+        await self.settle()
+        self.assertTrue(await self.done(page, page.add("series")))  # its Undo is offered
+        self.assertTrue(self.committer.can_undo)
+        slow["off"] = True
+        switching = count.set_counting(False)
+        await self.settle()
+        self.assertFalse(await self.committer.run_undo())  # the bar's Undo, clicked now
+        self.assertEqual(page.boxes["series"].refusal, UNDO_WAITS_TEXT)
+        gate.set()
+        assert switching is not None
+        self.assertTrue(await switching)
+        await page.loaded()
+        await count.loaded()
+        await self.settle()
+        self.assertFalse(settings.current.folder_library_on)  # not switched on again
+        self.assertEqual([call[0] for call in folders.calls], ["on", "off"])  # the add's read only
+        self.assertEqual(settings.current.series_folders, (SERIES, OLD_SERIES))
+        self.assertFalse(busy.busy)
+        # Not busy: the switch's own Undo runs, as a change of the folders.
+        self.assertTrue(await self.committer.run_undo())
+        self.assertTrue(settings.current.folder_library_on)
+        self.assertFalse(busy.busy)
+
+    async def test_a_failing_busy_listener_leaves_nothing_busy(self) -> None:
+        from app.ui.folder_library_settings import FoldersBusy
+
+        busy = FoldersBusy()
+        heard: list[bool] = []
+
+        def broken() -> None:
+            raise RuntimeError("gone")
+
+        busy.subscribe(broken)
+        busy.subscribe(lambda: heard.append(busy.busy))
+        with self.assertLogs("app.ui.folder_library_settings", "ERROR"):
+            busy.begin()
+        self.assertEqual(heard, [True])  # the others still hear it
+        with self.assertLogs("app.ui.folder_library_settings", "ERROR"):
+            busy.end()
+        self.assertFalse(busy.busy)
+
+    async def test_the_lists_and_the_count_switch_are_busy_together(self) -> None:
+        # Round 2, 6: a list edit during switching off would switch counting on again.
+        from app.ui.folder_library_settings import FolderLibraryBox, FoldersBusy
+
+        settings = service(
+            Settings(folder_library_on=True, series_folders=(SERIES,), film_folders=(FILMS,))
+        )
+        gate = asyncio.Event()
+
+        class SlowOff(FakeFolders):
+            async def switch_off(self) -> None:
+                await gate.wait()  # the database clear
+                await super().switch_off()
+
+        folders = SlowOff(settings, FolderLibraryStatus(on=True, films=1, checked_at=NOW))
+        busy = FoldersBusy()
+        from app.ui.folders_page import FoldersPage
+
+        self.frame = ctk.CTkFrame(self.root)
+        self.keep(self.frame)
+        self.committer = Committer()
+        page = FoldersPage(
+            SettingsPage(self.frame, "Folders", ""),
+            settings,
+            self.committer,
+            folders=folders,
+            pick_folder=lambda _owner: OLD_SERIES,
+            busy=busy,
+        )
+        count = FolderLibraryBox(
+            SettingsPage(self.frame, "Folders", ""), folders, settings, self.committer, busy=busy
+        )
+        await self.settle()
+        switching = count.set_counting(False)
+        await self.settle()
+        self.assertTrue(page.busy)
+        self.assertEqual(page.add_buttons["series"].cget("state"), "disabled")
+        self.assertIsNone(page.add("series"))  # even called: nothing changes
+        self.assertIsNone(page.remove("film", FILMS))
+        gate.set()
+        assert switching is not None
+        self.assertTrue(await switching)
+        await page.loaded()
+        await self.settle()
+        self.assertFalse(settings.current.folder_library_on)
+        self.assertEqual(folders.calls, [("off",)])  # never switched on again
+        self.assertFalse(page.busy)
+        self.assertEqual(page.add_buttons["series"].cget("state"), "normal")
+        # And the other way: a list change under way holds the switch.
+        folders.gate = asyncio.Event()
+        await settings.update(folder_library_on=True)
+        folders.set(FolderLibraryStatus(on=True, films=1, checked_at=NOW))
+        task = page.add("series")
+        await asyncio.sleep(0)  # the change is under way, its read waits
+        self.assertTrue(count.busy)
+        self.assertIsNone(count.set_counting(False))
+        folders.gate.set()
+        self.assertTrue(await self.done(page, task))
+        await count.loaded()
+        self.assertFalse(count.busy)
+
     async def test_lists_usable_while_forge_is_not_ready(self) -> None:
         from app.ui.folders_page import WAITING_TEXT
 
@@ -517,6 +657,32 @@ class WithMediaForgeTests(FoldersPageCase):
         await pump_until(
             self.root, lambda: NOT_READY_TEXT in texts(dialog.folders_page.boxes["film"].frame)
         )
+
+    async def test_closing_the_window_during_a_change_stores_all_of_it(self) -> None:
+        # The window goes while a change's first half (the list) is being stored: nothing
+        # raises, and the change still lands whole (the list and the destination), not half.
+        from app.ui.settings_pages_registry import PAGE_FOLDERS
+        from tests.test_settings_commit import SlowRepository
+
+        repository = SlowRepository()
+        settings = SettingsService(repository, Settings())  # type: ignore[arg-type]
+        stored = FakeForgeSettings(ForgeSettings(series_folder=""))
+        dialog = self.dialog(FakeForge(stored), settings)
+        dialog.show_section(PAGE_FOLDERS)
+        page = dialog.folders_page
+        await pump_until(self.root, lambda: page.destination("series") == "")
+        page._pick_folder = lambda _owner: SERIES
+        task = page.add("series")  # the first folder: the destination too
+        assert task is not None
+        await asyncio.sleep(0.05)  # the list's store waits
+        self.assertEqual(settings.current.series_folders, ())
+        dialog.close()
+        self.assertFalse(dialog.winfo_exists())
+        repository.go.set()
+        self.assertTrue(await task)
+        await self.settle()
+        self.assertEqual(settings.current.series_folders, (SERIES,))
+        self.assertEqual(stored.current.series_folder, SERIES)
 
     async def test_finished_downloads_folder_commits(self) -> None:
         from app.ui.settings_dialog import FOLDER_HINT, FOLDER_LABEL
