@@ -1001,7 +1001,7 @@ class FilmsLocationTests(DownloadTestCase):
         self.serve(ITORRENTS, CACHED)
         result = await self.service.grab(release(), FILM)
         self.assertIs(result.outcome, GrabOutcome.OPENED)
-        self.assertEqual(Path(self.opened[0]).parent, self.cache)
+        self.assertEqual(Path(self.opened[0]).parent, Path(os.path.realpath(self.cache)))
         self.assertFalse(self.films.exists())
         self.assertEqual(self.remote_calls(), 0)
 
