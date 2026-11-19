@@ -1,4 +1,4 @@
-"""Backup & move (Settings → Backup; the welcome's "Moving from another PC?"): the people, their
+"""Backup & move (Settings → Updates & backup; the welcome's "Moving from another PC?"): the people, their
 followed shows and film watchlists, the download history and the settings in one file
 (app/models/backup.py), and loading such a file here or on another PC.
 

@@ -3,7 +3,7 @@
 For now it exists only on a PC whose data folder holds the file ENABLED_MARKER: without it there
 is no Settings page, `run` returns at once and nothing starts, whatever the settings say. Setting
 OPEN_TO_EVERYONE to True opens it up. The hidden switch (the owner, 2026-11-10): seven quick clicks on
-"Version …" in Settings → Updates write or delete that file (`switch_here`); it counts from the next
+"Version …" in Settings → Updates & backup write or delete that file (`switch_here`); it counts from the next
 start, and the paired phones stay in the settings either way.
 
 Off (the default) it does nothing: no port, no certificate. On, it runs the HTTPS server
@@ -117,13 +117,14 @@ CODE_REFUSED_TEXT = N_(
 )
 BAD_PAIRING_TEXT = N_("AirGrabber couldn't read that code, so scan it again.")
 NEEDS_LIBRARY_TEXT = N_(
-    "Connect Plex or choose your own folders in Settings → Library first to use the phone app."
+    "Connect Plex in Settings → Plex & library or choose your own folders in Settings → "
+    "Folders first to use the phone app."
 )
 # For a Companion that doesn't know the folder library: what it has always been told.
 NO_PLEX_TEXT = N_("AirGrabber isn't connected to Plex, so connect Plex in AirGrabber on your PC.")
 NO_LIBRARY_TEXT = N_(
     "AirGrabber has no library yet, so connect Plex or choose your folders in AirGrabber's "
-    "Settings → Library."
+    "Settings → Plex & library or Settings → Folders."
 )
 PHONE_NAME_TEXT = N_("Phone")
 

@@ -1,21 +1,21 @@
-"""Settings › Right-click menu: MediaForge in Explorer's right-click menu, on or off, which
-presets it shows, and whose menu Explorer has now (the old MediaForge's Settings › Right-click
-menu, `ui/settings_view.py`'s `_build_menu`).
+"""Settings › Windows › Explorer's right-click menu (one box): MediaForge in Explorer's right-click
+menu, on or off, which presets it shows, and whose menu Explorer has now (the old MediaForge's
+Settings › Right-click menu, `ui/settings_view.py`'s `_build_menu`).
 
-Like the other Forge sections (app/forge/ui/settings_pages.py) its changes wait for Settings'
-Save (D9): Save stores the chosen presets (`ForgeSettings.context_menu_presets`, [] = every
-preset, so presets added later appear too) and writes or removes the menu
-(app/forge/context_menu.py); Cancel and ✕ change nothing. The box starts ticked only when the menu
-starts this copy. A menu that starts another copy or the old MediaForge is never removed here;
-ticking the box and saving replaces it (the owner's own choice). Two .reg files can be saved: the
-menu as ticked, and, while MediaForge's very first (HKLM) menu is still there, the file that
-removes it (an administrator runs it).
+Like the other Forge parts (app/forge/ui/settings_pages.py) each change stores itself through
+the window's Committer: a click on the tick or on a preset stores the chosen presets
+(`ForgeSettings.context_menu_presets`, [] = every preset, so presets added later appear too) and
+writes or removes the menu (app/forge/context_menu.py); the menu on with no preset ticked is
+refused (said in the box, the tick goes back). Undo puts the menu and the presets back as they
+were. The box starts ticked only when the menu starts this copy. A menu that starts another copy
+or the old MediaForge is never removed here; ticking the box replaces it (the owner's own
+choice). Two .reg files can be saved: the menu as ticked, and, while MediaForge's very first
+(HKLM) menu is still there, the file that removes it (an administrator runs it).
 
-A Save in Naming that renamed or deleted presets (F-24's `on_presets_saved`, told before this
-section saves) carries the chosen presets along (`context_menu.follow_presets`) and rewrites the
-menu when it starts this copy; `carry_presets` does the same while this page hasn't been built
-(Settings builds a page on its first visit). The menu also catches up at every Forge start
-(`context_menu.refresh_from`).
+A change in Naming that renamed or deleted presets (F-24's `on_presets_saved`) carries the
+chosen presets along (`context_menu.follow_presets`) and rewrites the menu when it starts this
+copy; `carry_presets` does the same while this page hasn't been built (Settings builds a page on
+its first visit). The menu also catches up at every Forge start (`context_menu.refresh_from`).
 
 The registry is injectable (tests pass a fake; tests/forge/base.py guards the real one).
 """
@@ -38,25 +38,24 @@ from app.forge.ui.settings_naming import PresetsChange, on_presets_saved
 from app.forge.ui.look import app_look
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
+from app.ui.settings_commit import Committer, Refused, command
 from app.ui.tasks import spawn
 
 if TYPE_CHECKING:
     from app.forge.models.preset import Preset
     from app.forge.models.settings import ForgeSettings
+    from app.forge.ui.settings_pages import PartSlots
     from app.ui.settings_layout import SettingsPage
 
 log = logging.getLogger(__name__)
 
-# -- its place in Settings (FORGE_SECTIONS in app/forge/ui/settings_pages.py) ------------------
-
-SECTION_MENU = N_("Right-click menu")
-MENU_ICON = "🖱"
-MENU_NOTE = N_("Start MediaForge from Explorer: right-click files or folders.")
-
 # -- texts ----------------------------------------------------------------------------------------
 
 GETTING_READY = N_("Getting MediaForge ready…")
-MENU_TITLE = N_("In the right-click menu")
+# A start that ended without Forge and without a reason (AirGrabber is closing): never "getting
+# ready" for ever.
+UNAVAILABLE = N_("MediaForge isn't available.")
+MENU_TITLE = N_("Explorer's right-click menu")
 MENU_TEXT = N_(
     "Adds a MediaForge submenu to Explorer's right-click menu for files and folders (on "
     "Windows 11 it's under \"Show more options\"). No administrator rights needed."
@@ -89,14 +88,14 @@ STATUS: dict[MenuState, str] = {
     MenuState.ON: N_("✓ MediaForge is in the right-click menu."),
     MenuState.OFF: N_("MediaForge isn't in the right-click menu."),
     MenuState.STALE: N_(
-        "The menu points to an old location of Python. Save puts it right."
+        "The menu points to an old location of Python. Untick the box and tick it again to put "
+        "it right."
     ),
     MenuState.OTHER_COPY: N_(
-        "The menu starts another copy of AirGrabber. Tick the box and Save to point it at "
-        "this one."
+        "The menu starts another copy of AirGrabber. Tick the box to point it at this one."
     ),
     MenuState.OLD_MEDIAFORGE: N_(
-        "The menu starts the old MediaForge. Tick the box and Save to point it at AirGrabber."
+        "The menu starts the old MediaForge. Tick the box to point it at AirGrabber."
     ),
 }
 
@@ -140,8 +139,8 @@ AskSave = Callable[[str, str], str]  # (title, file name) → the chosen path, o
 
 
 async def carry_presets(parts: _Parts, change: PresetsChange) -> None:
-    """Naming's Save stored changed presets while this page isn't built: the chosen ones follow
-    and a menu that starts this copy is rewritten, as `MenuSection._presets_saved` does."""
+    """Naming stored changed presets while this page isn't built: the chosen ones follow and a
+    menu that starts this copy is rewritten, as `MenuSection._presets_saved` does."""
     stored = list(parts.settings.current.context_menu_presets)
     chosen = context_menu.follow_presets(stored, change.names, change.renamed, change.removed)
     if chosen != stored:
@@ -150,7 +149,7 @@ async def carry_presets(parts: _Parts, change: PresetsChange) -> None:
 
 
 class MenuSection:
-    """The Right-click menu page's contents; changes wait for Save (`problem` / `save`)."""
+    """The right-click menu's box (Settings › Windows); each click stores itself."""
 
     def __init__(
         self,
@@ -160,9 +159,12 @@ class MenuSection:
         registry: MenuRegistry | None = None,
         main_py: Path = MAIN_PY,
         ask_save: AskSave | None = None,
+        committer: Committer | None = None,
     ) -> None:
         self._page = page
         self._forge = forge
+        self._committer = committer if committer is not None else Committer()
+        self._changing = asyncio.Lock()  # one change at a time
         self._look = app_look()
         self._registry = registry
         self._main_py = main_py
@@ -181,30 +183,44 @@ class MenuSection:
         self.waiting_label = self.waiting.text(t(GETTING_READY))
         self.waiting.add(self.waiting_label, gap=0, sticky="w")
 
+        # One box: the tick and whose menu it is, the presets in it, the .reg files.
         menu = page.box(t(MENU_TITLE), t(MENU_TEXT))
+        self._menu_box = menu
         self._on = tk.BooleanVar(master=frame, value=False)
-        self.on_box = self._checkbox(menu.body, t(SHOW_MENU), self._on)
+        # The on/off is a switch (spec §6); the presets in it stay ticks (a list of choices).
+        self.on_box: ctk.CTkSwitch = ctk.CTkSwitch(
+            menu.body,
+            text=t(SHOW_MENU),
+            variable=self._on,
+            command=command(self._clicked),
+            height=dialog_kit.BUTTON_HEIGHT,
+            font=theme.font(dialog_kit.DETAIL_SIZE),
+            progress_color=self._look.ACCENT,
+            text_color=theme.TEXT,
+        )
         menu.add(self.on_box, gap=_ROW_GAP + 2, sticky="w")
         self.status_label = menu.text("")
         menu.add(self.status_label, gap=_ROW_GAP, sticky="w")
 
-        presets = page.box(t(PRESETS_TITLE), t(PRESETS_TEXT))
-        self.presets_frame = ctk.CTkFrame(presets.body, fg_color="transparent")
-        presets.add(self.presets_frame, gap=_ROW_GAP + 2, sticky="w")
+        menu.subheading(t(PRESETS_TITLE))
+        menu.add(menu.text(t(PRESETS_TEXT)), gap=2, sticky="w")
+        self.presets_frame = ctk.CTkFrame(menu.body, fg_color="transparent")
+        menu.add(self.presets_frame, gap=_ROW_GAP + 2, sticky="w")
 
-        files = page.box(t(FILES_TITLE), t(FILES_TEXT))
-        self.reg_button = self._button(files.body, t(SAVE_REG), self.save_reg_file)
-        files.add(self.reg_button, gap=_ROW_GAP + 2, sticky="w")
-        self.legacy_label = files.text(t(LEGACY_TEXT))
+        menu.subheading(t(FILES_TITLE))
+        menu.add(menu.text(t(FILES_TEXT)), gap=2, sticky="w")
+        self.reg_button = self._button(menu.body, t(SAVE_REG), self.save_reg_file)
+        menu.add(self.reg_button, gap=_ROW_GAP + 2, sticky="w")
+        self.legacy_label = menu.text(t(LEGACY_TEXT))
         self.legacy_label.configure(text_color=theme.WARNING)
-        self._legacy_row = files.add(self.legacy_label, gap=_ROW_GAP + 4, sticky="w")
-        self.legacy_button = self._button(files.body, t(SAVE_LEGACY), self.save_legacy_file)
-        files.add(self.legacy_button, gap=_ROW_GAP, sticky="w")
-        self.file_label = files.text("")
+        self._legacy_row = menu.add(self.legacy_label, gap=_ROW_GAP + 4, sticky="w")
+        self.legacy_button = self._button(menu.body, t(SAVE_LEGACY), self.save_legacy_file)
+        menu.add(self.legacy_button, gap=_ROW_GAP, sticky="w")
+        self.file_label = menu.text("")
         self.file_label.configure(text_color=theme.WARNING)
-        self._file_row = files.take_row()
+        self._file_row = menu.take_row()
 
-        self._content = [menu, presets, files]
+        self._content = [menu]
         for box in self._content:
             box.frame.grid_remove()
         self.legacy_label.grid_remove()
@@ -223,12 +239,19 @@ class MenuSection:
         button.configure(text_color=theme.BUTTON_TEXT)
         return button
 
-    def _checkbox(self, master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
-        # As Auto-rename's options (app/forge/ui/settings_pages.py).
+    def _checkbox(
+        self,
+        master: Any,
+        text: str,
+        variable: tk.BooleanVar,
+        command: Callable[[], None] | None = None,
+    ) -> ctk.CTkCheckBox:
+        # A preset's tick in the menu's list.
         return ctk.CTkCheckBox(
             master,
             text=text,
             variable=variable,
+            command=command,
             width=0,
             height=dialog_kit.BUTTON_HEIGHT,
             checkbox_width=22,
@@ -266,7 +289,7 @@ class MenuSection:
             return
         if parts is None:
             # NOT_READY (guessit missing) or FAILED: say why; nothing here can be changed.
-            self.waiting_label.configure(text=self._forge.reason or t(GETTING_READY))
+            self.waiting_label.configure(text=self._forge.reason or t(UNAVAILABLE))
             return
         try:
             names = [preset.name for preset in await parts.presets.list()]
@@ -309,10 +332,9 @@ class MenuSection:
             self._disconnect = None
 
     async def _presets_saved(self, change: PresetsChange) -> None:
-        """Naming's Save stored changed presets (before this section's Save runs): the chosen
-        ones follow a rename and drop a deleted one, and a menu that starts this copy is
-        rewritten. The form keeps the ticks not saved yet. Raises on a failure (Naming's Save
-        logs it; the menu catches up at the next Forge start)."""
+        """Naming stored changed presets: the chosen ones follow a rename and drop a deleted
+        one, and a menu that starts this copy is rewritten. Raises on a failure (Naming logs
+        it; the menu catches up at the next Forge start)."""
         parts = self._parts
         if parts is None:
             return
@@ -364,7 +386,7 @@ class MenuSection:
         for index, name in enumerate(self._names):
             variable = tk.BooleanVar(master=self.presets_frame, value=name in shown)
             self._ticks[name] = variable
-            self._checkbox(self.presets_frame, name, variable).grid(
+            self._checkbox(self.presets_frame, name, variable, command(self._clicked)).grid(
                 row=index // _COLUMNS,
                 column=index % _COLUMNS,
                 sticky="w",
@@ -376,16 +398,20 @@ class MenuSection:
     def on(self) -> bool:
         return bool(self._on.get())
 
-    def set_on(self, on: bool) -> None:
+    def set_on(self, on: bool) -> asyncio.Task[bool] | None:
+        """Tick or untick the box (as clicking it): stored."""
         self._on.set(on)
+        return self._clicked()
 
     def ticked(self) -> list[str]:
         """The ticked presets, in the presets' order."""
         return [name for name, variable in self._ticks.items() if variable.get()]
 
-    def set_ticked(self, names: list[str]) -> None:
+    def set_ticked(self, names: list[str]) -> asyncio.Task[bool] | None:
+        """Tick these presets and untick the others (as clicking them): stored."""
         for name, variable in self._ticks.items():
             variable.set(name in names)
+        return self._clicked()
 
     @staticmethod
     def _chosen(ticked: list[str], names: list[str]) -> list[str]:
@@ -394,18 +420,77 @@ class MenuSection:
         kept = [name for name in names if name in ticked]
         return [] if len(kept) == len(names) else kept
 
-    def changes(self) -> dict[str, Any]:
-        """What Save would change: "on" (the menu) and / or "context_menu_presets"."""
+    def _clicked(self) -> asyncio.Task[bool] | None:
+        """The box or a preset clicked: the menu and the presets as ticked now, stored."""
         if self._parts is None:
-            return {}
-        found: dict[str, Any] = {}
-        if self.on != self.state.ours:
-            found["on"] = self.on
-        ticked = self.ticked()
+            return None
+        return spawn(self._change(self.on, self.ticked()), name="forge-menu-change")
+
+    async def _change(self, on: bool, ticked: list[str]) -> bool:
+        async with self._changing:  # also when the window just closed: it is still stored
+            if self._parts is None:
+                return False
+            was_on = self.state.ours
+            was_ticked = context_menu.menu_presets(self._names, self._stored)
+            stored = await self._committer.commit(
+                lambda: self._store(on, ticked),
+                lambda: self._store_locked(was_on, was_ticked),
+                box=self._menu_box,
+            )
+            if not stored and self._alive():  # the ticks show what is stored
+                self._on.set(self.state.ours)
+                self.set_ticks(context_menu.menu_presets(self._names, self._stored))
+            return stored
+
+    def set_ticks(self, names: list[str]) -> None:
+        for name, variable in self._ticks.items():
+            variable.set(name in names)
+
+    async def _store_locked(self, on: bool, ticked: list[str]) -> bool:
+        async with self._changing:
+            return await self._store(on, ticked)
+
+    async def _store(self, on: bool, ticked: list[str]) -> bool:
+        """Store the chosen presets and put the menu right: written when it is to be on and was
+        off, another program's, stale or showing other presets; removed when it is to be off
+        and starts this copy. Refused with the menu on and no preset ticked."""
+        parts = self._parts
+        assert parts is not None
+        if on and self._names and not ticked:
+            raise Refused(t(PICK_ONE))
         shown = context_menu.menu_presets(self._names, self._stored)
-        if ticked and ticked != shown:  # none ticked is no choice (`problem` says so when on)
-            found["context_menu_presets"] = self._chosen(ticked, self._names)
-        return found
+        presets_changed = bool(ticked) and ticked != shown
+        if on == self.state.ours and not presets_changed and self.state is not MenuState.STALE:
+            return False
+        registry, main_py = self._registry, self._main_py
+        try:
+            # The presets as they are now (a Naming change may have renamed one).
+            names = [preset.name for preset in await parts.presets.list()]
+            chosen = self._chosen(ticked, names)
+            if presets_changed:
+                await parts.settings.update(context_menu_presets=chosen)
+            else:
+                chosen = list(parts.settings.current.context_menu_presets)
+            if on:
+                await asyncio.to_thread(
+                    context_menu.write_menu, names, chosen, registry, main_py=main_py
+                )
+            elif self.state.ours:
+                await asyncio.to_thread(context_menu.remove_own, registry, main_py=main_py)
+            state, legacy = await self._read_menu()
+        except Exception as exc:
+            # The type only: a message could name a path with the user's name in it.
+            log.error("The right-click menu couldn't be changed (%s)", type(exc).__name__)
+            raise Refused(t(SAVE_FAILED)) from exc
+        log.info("Right-click menu saved (%s)", state)
+        self._names = names
+        self._stored = list(parts.settings.current.context_menu_presets)
+        self.state, self.legacy = state, legacy
+        if self._alive():
+            self._show(state, legacy)
+            self._fill_presets(self._stored)
+            self._on.set(state.ours)
+        return True
 
     # --- the .reg files -----------------------------------------------------------------------------
 
@@ -434,53 +519,8 @@ class MenuSection:
             return
         self.file_label.grid_remove()
 
-    # --- Save -------------------------------------------------------------------------------------
+def build_menu(slots: PartSlots, forge: Any, committer: Committer) -> MenuSection:
+    """The Windows page's part (FORGE_PARTS, app/forge/ui/settings_pages.py)."""
+    from app.ui.settings_pages_registry import PAGE_WINDOWS
 
-    def problem(self) -> str | None:
-        """A menu that is to be on with no preset ticked can't be saved."""
-        if self._parts is None or not self._names or not self.on:
-            return None
-        return t(PICK_ONE) if not self.ticked() else None
-
-    async def save(self) -> str | None:
-        """Store the chosen presets and put the menu right: written when it is to be on and was
-        off, another program's, stale or showing other presets; removed when it is to be off
-        and starts this copy."""
-        parts = self._parts
-        if parts is None:
-            return None
-        changes = self.changes()
-        if not changes and self.state is not MenuState.STALE:
-            return None
-        on, ticked = self.on, self.ticked()
-        registry, main_py = self._registry, self._main_py
-        try:
-            # The presets as they are now (a Naming change saved first may have renamed one).
-            names = [preset.name for preset in await parts.presets.list()]
-            chosen = self._chosen(ticked, names)
-            if "context_menu_presets" in changes:
-                await parts.settings.update(context_menu_presets=chosen)
-            if on:
-                await asyncio.to_thread(
-                    context_menu.write_menu, names, chosen, registry, main_py=main_py
-                )
-            elif self.state.ours:
-                await asyncio.to_thread(context_menu.remove_own, registry, main_py=main_py)
-            state, legacy = await self._read_menu()
-        except Exception as exc:
-            # The type only: a message could name a path with the user's name in it.
-            log.error("The right-click menu couldn't be changed (%s)", type(exc).__name__)
-            return t(SAVE_FAILED)
-        log.info("Right-click menu saved (%s)", state)
-        if self._alive():
-            self._names = names
-            self._stored = list(parts.settings.current.context_menu_presets)
-            self._show(state, legacy)
-            self._fill_presets(self._stored)
-            self._on.set(state.ours)
-        return None
-
-
-def build_menu(page: SettingsPage, forge: Any) -> MenuSection:
-    """FORGE_SECTIONS' builder (app/forge/ui/settings_pages.py)."""
-    return MenuSection(page, forge)
+    return MenuSection(slots[PAGE_WINDOWS], forge, committer=committer)

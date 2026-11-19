@@ -1019,28 +1019,29 @@ class PageTests(PageCase):
         return dialog
 
     async def test_the_settings_window_has_the_page(self) -> None:
-        from app.ui.settings_dialog import SECTION_PHONE
+        from app.ui.settings_pages_registry import PAGE_PHONE
 
         dialog = self.settings_window(self.service)
-        self.assertIn(SECTION_PHONE, dialog.sections)
-        self.assertIn(FIREWALL_TEXT, texts(dialog.page(SECTION_PHONE)))
+        self.assertIn(PAGE_PHONE, dialog.sections)
+        self.assertIn(FIREWALL_TEXT, texts(dialog.page(PAGE_PHONE)))
 
     async def test_without_the_marker_the_settings_window_has_no_page(self) -> None:
-        from app.ui.settings_dialog import SECTION_PHONE
+        from app.ui.settings_pages_registry import PAGE_PHONE
 
         (self.root / ENABLED_MARKER).unlink()
         dialog = self.settings_window(self.make_service())
-        self.assertNotIn(SECTION_PHONE, dialog.sections)
-        self.assertNotIn(SECTION_PHONE, dialog._items)
-        self.assertNotIn(SECTION_PHONE, texts(dialog._sidebar))
+        self.assertNotIn(PAGE_PHONE, dialog.sections)
+        self.assertNotIn(PAGE_PHONE, dialog._items)
+        self.assertNotIn(PAGE_PHONE, texts(dialog._sidebar))
         self.assertIsNone(dialog.phone_box)
 
     async def test_seven_quick_clicks_on_the_version_switch_the_phone_features(self) -> None:
-        from app.ui.settings_dialog import PHONE_OFF_TITLE, PHONE_ON_TITLE, SECTION_UPDATES
+        from app.ui.settings_dialog import PHONE_OFF_TITLE, PHONE_ON_TITLE
+        from app.ui.settings_pages_registry import PAGE_UPDATES
 
         marker = self.root / ENABLED_MARKER
         dialog = self.settings_window(self.service)
-        dialog.page(SECTION_UPDATES)
+        dialog.page(PAGE_UPDATES)
         for n in range(6):
             dialog.version_clicked(now=100.0 + n)
         await self.settle()

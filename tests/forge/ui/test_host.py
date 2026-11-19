@@ -29,8 +29,7 @@ from app.forge.services import ForgeServices
 from app.forge.ui.confirm_window import ConfirmWindow
 from app.forge.ui.host import GUESSIT, NOT_READY_TEXT, ForgeHost
 from app.forge.ui.page import ForgePage
-from app.forge.ui.settings_menu import SECTION_MENU
-from app.forge.ui.settings_pages import SECTION_LIBRARY
+from app.ui.settings_pages_registry import PAGE_SORTING, PAGE_WINDOWS
 from app.services.images import ImageCache
 from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient
@@ -209,16 +208,16 @@ class SettingsTests(HostCase):
     """Settings is the main window's: the host asks for it. On the real window:
     tests/forge/ui/test_page_in_main_window.py."""
 
-    async def test_the_status_line_asks_for_settings_at_auto_rename(self) -> None:
+    async def test_the_status_line_asks_for_settings_at_sorting(self) -> None:
         page = await self.open()
         assert page.status_button is not None
         page.status_button.invoke()
-        self.host.open_settings(SECTION_MENU)
-        self.assertEqual(self.settings_asked, [SECTION_LIBRARY, SECTION_MENU])
+        self.host.open_settings(PAGE_WINDOWS)
+        self.assertEqual(self.settings_asked, [PAGE_SORTING, PAGE_WINDOWS])
 
     async def test_nothing_once_shut(self) -> None:
         await self.host.shutdown()
-        self.host.open_settings(SECTION_MENU)
+        self.host.open_settings(PAGE_WINDOWS)
         self.assertEqual(self.settings_asked, [])
 
 

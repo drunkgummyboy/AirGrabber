@@ -1,9 +1,9 @@
-"""Settings › MediaForge › Auto-rename's rule editor: one rule in a small window of its own,
-modal over Settings, one question per line (docs/forge/2026-11-18-rules-design.md, the mockup's
-section 2): name, the folder it watches (and its subfolders), what it takes, the preset and
-extras per kind, then (move / sort inside the folder) and how (Automatic / Manual). It only
-shows and asks: Save hands `draft()` to `on_save` (the form keeps it until Settings' Save;
-refusals show on the rule's row), Delete calls `on_delete`, Cancel changes nothing.
+"""Settings › Sorting's rule editor: one rule in a small window of its own, modal over Settings,
+one question per line (docs/forge/2026-11-18-rules-design.md, the mockup's section 2): name, the
+folder it watches (and its subfolders), what it takes, the preset and extras per kind, then
+(move / sort inside the folder) and how (Automatic / Manual). Save hands `draft()` to `on_save`,
+which stores it (Settings' instant saving) or says why it can't: then the editor stays open with
+that reason in red under the questions. Delete calls `on_delete`, Cancel changes nothing.
 
 - The extras are ticked as in the chosen preset with this rule's changes on top; `draft()` keeps
   only the ticks that differ from the preset (RuleTarget.extras), so a preset edited later still
@@ -172,7 +172,8 @@ class RuleEditor(ctk.CTkToplevel):
     """`rule` at `index` of `rules` (`index == len(rules)`: a new rule); `presets` the stored
     presets; `airgrabber_folders` the folders AirGrabber's rule watches (shown, checked);
     `peek(folder)` the live check's reading; `ask_folder(title, start)` the folder picker;
-    `on_save(rule)` / `on_delete()` (None: no Delete, as for AirGrabber's rule and a new one)."""
+    `on_save(rule)` (returns why it can't be stored, else None) / `on_delete()` (None: no
+    Delete, as for AirGrabber's rule and a new one)."""
 
     def __init__(
         self,
@@ -186,7 +187,7 @@ class RuleEditor(ctk.CTkToplevel):
         airgrabber_folders: Sequence[str],
         peek: Peek,
         ask_folder: AskFolder,
-        on_save: Callable[[Rule], None],
+        on_save: Callable[[Rule], str | None],
         on_delete: Callable[[], None] | None,
     ) -> None:
         look = app_look()
@@ -897,12 +898,18 @@ class RuleEditor(ctk.CTkToplevel):
         return self._closed
 
     def save(self) -> None:
-        """Save: the draft to `on_save`, and close."""
+        """Save: the draft to `on_save`, and close; a draft it refuses keeps the editor open,
+        the reason under the questions."""
         if self._closed:
             return
         draft = self.draft()
+        refused = self._on_save(draft)
+        if refused:
+            self.notes_label.configure(text=refused, text_color=theme.DANGER)
+            if not self.notes_label.winfo_manager():
+                self.notes_label.grid()
+            return
         self._close()
-        self._on_save(draft)
 
     def cancel(self) -> None:
         """Cancel / Esc / ✕: nothing changes."""

@@ -11,11 +11,12 @@ PC that AirGrabber set up is started when it isn't running (app/services/qbittor
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from app.i18n import t
-from app.models import RemoteKind, RemoteStatus
+from app.models import RemoteKind, RemoteStatus, Settings
 from app.services.qbittorrent import QBittorrentClient
 from app.services.qbittorrent_local import (
     LocalQBittorrent,
@@ -35,6 +36,9 @@ from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
 from app.services.transmission import TransmissionClient
 
+if TYPE_CHECKING:
+    from app.database import SettingsRepository
+
 
 def make_clients(
     settings: SettingsService, http: HttpClients
@@ -47,6 +51,16 @@ def make_clients(
     }
 
 
+class _Snapshot(SettingsService):
+    """Settings that are never stored: what a Test connection tries (Settings' form)."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(cast("SettingsRepository", None), settings)
+
+    async def update(self, **changes: Any) -> Settings:
+        raise RuntimeError("a snapshot of the settings is never stored")
+
+
 class RemoteDownloads:
     def __init__(
         self,
@@ -57,8 +71,11 @@ class RemoteDownloads:
         starter: QBittorrentStarter | None = None,  # starts AirGrabber's qBittorrent on this PC
     ) -> None:
         self._settings = settings
+        # Clients for other settings (a test of what Settings' form holds); None with fakes.
+        self._http: HttpClients | None = None
         if clients is None:
-            clients = make_clients(settings, HttpClients(transport=transport))
+            self._http = HttpClients(transport=transport)
+            clients = make_clients(settings, self._http)
         self._clients = dict(clients)
         self._starter = starter
 
@@ -74,16 +91,26 @@ class RemoteDownloads:
     def client(self) -> RemoteClient:
         """The client for the program Settings names now; for the qBittorrent on this PC that
         AirGrabber set up (with a `starter`) one that starts qBittorrent when it isn't running."""
-        settings = self._settings.current
-        client = self._clients[settings.remote_kind]
+        return self._client_for(self._settings.current, self._clients)
+
+    def _client_for(
+        self, settings: Settings, clients: Mapping[RemoteKind, RemoteClient]
+    ) -> RemoteClient:
+        client = clients[settings.remote_kind]
         port = local_port(settings.remote_url)
         if self._starter is not None and port is not None and set_up_by_airgrabber(settings):
             return LocalQBittorrent(client, self._starter, port)
         return client
 
-    async def test(self) -> str:
-        """Settings' "Test connection": e.g. "qBittorrent v5.0.2". Raises RemoteError."""
-        return await self.client().test()
+    async def test(self, settings: Settings | None = None) -> str:
+        """"Test connection": e.g. "qBittorrent v5.0.2". Raises RemoteError. `settings`: test
+        those instead of the stored ones (Settings' form as it is, nothing stored)."""
+        if settings is None:
+            return await self.client().test()
+        clients = self._clients
+        if self._http is not None:
+            clients = make_clients(_Snapshot(settings), self._http)
+        return await self._client_for(settings, clients).test()
 
     async def status(self, hashes: Collection[str] = ()) -> RemoteStatus:
         """The tasks of the program Settings names now (see RemoteStatusClient.status).

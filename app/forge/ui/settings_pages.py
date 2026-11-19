@@ -1,20 +1,24 @@
-"""MediaForge's Settings sections: the MediaForge group of AirGrabber's one Settings window
-(app/ui/settings_dialog.py; docs/forge/INTEGRATION.md 3.7, docs/forge/PAGE.md).
+"""MediaForge's parts of AirGrabber's one Settings window (app/ui/settings_dialog.py, its pages in
+app/ui/settings_pages_registry.py; docs/settings/2026-11-19-settings-redesign.md §2).
 
-The window's sidebar lists FORGE_SECTIONS in order under FORGE_GROUP, and it builds each one with
-its `build(page, forge)` when its page is first shown. A later Forge section is one more line in
-FORGE_SECTIONS (its own module, imported lazily by its builder); the window doesn't change.
+`FORGE_PARTS` holds, per page with a MediaForge part, how it is built and the words Settings'
+search finds it by before then. The window builds a page's part with its `build(slots, forge)`
+when the page is first shown (Forge starts then); a part may put boxes on another page too (its
+`owner` there: Accounts & keys' OpenSubtitles box is the Subtitles part), built with it whichever
+of its pages is shown first. The Folders page is AirGrabber's (app/ui/folders_page.py): it marks
+MediaForge's Series and Movies folders in its lists through `LibraryDestinations`.
 
-A builder gets the window's page for its section (app/ui/settings_layout.py's `SettingsPage`:
-heading and muted line done; `box()` / `add()` below them) and AirGrabber's ForgeRuntime, and
-returns a ForgeSectionPart. The sections built so far apply on the window's Save (D9): `problem()`
-is asked of each before anything is stored, then each `save()`; Cancel and ✕ change nothing. A
-section waits for `forge.start()` (Forge may not have started yet) and says so while Forge is
-NOT_READY or FAILED.
+A builder gets the places for its boxes (`slots`: per page, an app/ui/settings_layout.py
+`PageSlot`, used like a `SettingsPage`: `box()` / `add()`), AirGrabber's ForgeRuntime and the
+window's Committer (app/ui/settings_commit.py), and returns a ForgeSectionPart. Each change
+stores itself through the Committer when it is made (spec §3): what the old Save's `problem()`
+refused is refused then, in red in its box, and nothing is stored; a stored change shows the
+window's Undo bar. A part waits for `forge.start()` (Forge may not have started yet) and says so
+while Forge is NOT_READY or FAILED.
 
-The first section, **Auto-rename**, is everything about renaming on its own (the owner's decision:
-no page of its own beside it; the queue's status line opens this section), in the rules for
-watched folders' look A (docs/forge/2026-11-18-rules-design.md, mockups/forge-rules.html):
+The Sorting part is everything about sorting on its own (the queue's status line opens its page),
+in the rules for watched folders' look A (docs/forge/2026-11-18-rules-design.md,
+mockups/forge-rules.html):
 
 - the status box: the renamer's light and status, live (`AutoRenamer.watch_status`), and the
   "Watching" switch, the pause for all rules (`automatic`: off = "off"; on = "on", or the stored
@@ -33,20 +37,28 @@ watched folders' look A (docs/forge/2026-11-18-rules-design.md, mockups/forge-ru
   rule and a new one have no Delete. `spots` holds each stored rule's row as `rule:<id>`: Settings scrolls there and calls
   `spot_shown`, which opens its editor (the queue's rule label);
 - what is ignored (the queue's Ignore: each entry's name, its path as a tooltip, with "Stop
-  ignoring", applied on Save like the rest; app/forge/core/ignored.py's IgnoreService,
-  `services.ignored`);
+  ignoring", at once; app/forge/core/ignored.py's IgnoreService, `services.ignored`);
 - AirGrabber's folders and why each is (not) watched by its rule (B-01,
   app/forge/core/airgrabber_folders.py), a suggestion's "Add a rule for this folder" (a rule with
   AirGrabber's rule's routing, last), and what to choose;
-- the Series and Movies library folders (Browse), which rules moving to "your Series / Movies
-  folder" use; the presets a new rule starts with are Naming's;
-- the options: cleaning up the download folder, the "needs you" notification, the evening summary
-  and whether forged files leave the queue (`remove_after_forge`).
+- (the Series and Movies library folders, which rules moving to "your Series / Movies folder"
+  use, are marked in the Folders page's lists: `LibraryDestinations`; the presets a new rule
+  starts with are Naming's, the Rules box says so);
+- When sorting: cleaning up the download folder, the "needs you" notification, the evening
+  summary and whether forged files leave the queue (`remove_after_forge`), each a switch.
 
-Everything waits for Save: a rule with a refusal stops it (`rules.refusal`, its row says why);
-Save stores the changed settings, then the rules as a whole (`RuleService.replace_all`: fresh
-flags worked out there, so nothing moves unseen from a new folder), then the stop-ignorings. A
-rules change saved elsewhere meanwhile (an import) shows unless the list was changed here. While
+What points elsewhere is a link to the page that fixes it (spec §6, `PageLink`): a rule's
+"⚠ Choose your Series folder under Folders." and what AirGrabber's downloads ask to fill in lead
+to Folders, "…under Naming › For new rules" to Naming. `overview_facts` is what Settings'
+Overview shows of MediaForge while it runs (it never starts it, nor reads anything).
+
+Each change stores itself (`_change`, one at a time): a rule's switch, a drag, the editor's Save
+or Delete, "Add a rule for this folder", the Watch folders switch, a When sorting tick. A change that leaves a rule with a refusal (`rules.refusal`) is refused (the
+editor's Save keeps the editor open and says why). The rules and the settings are stored as
+today's Save did, in one step through `RuleService.save` (fresh flags worked out there and the
+rules that will watch more marked first: nothing moves unseen from a new folder); Undo stores
+the rules and settings from before the same way. A rules change stored elsewhere meanwhile (an
+import) shows. While
 the old MediaForge is installed the renamer's guard keeps it idle and the status says so. Its
 foot (`LibrarySection.foot`, hidden while empty) holds "Bring over…" while the old MediaForge's
 data can still be imported (app/forge/ui/import_step.py's BringOverBox, F-26) and, while the old
@@ -76,16 +88,23 @@ from app.forge.ui import settings_menu as _menu
 from app.forge.ui import settings_naming as _naming
 from app.forge.ui import settings_subtitles as _subtitles
 from app.forge.ui.rule_rows import row_look, unfit_line
-from app.forge.ui.settings_menu import MENU_ICON, MENU_NOTE, SECTION_MENU, build_menu
-from app.forge.ui.settings_naming import NAMING_ICON, NAMING_NOTE, SECTION_NAMING, build_naming
-from app.forge.ui.settings_subtitles import (
-    SECTION_SUBTITLES,
-    SUBTITLES_ICON,
-    SUBTITLES_NOTE,
-    build_subtitles,
-)
+from app.forge.ui.settings_menu import build_menu
+from app.forge.ui.settings_naming import build_naming
+from app.forge.ui.settings_subtitles import build_subtitles
 from app.i18n import N_, t
 from app.ui import dialog_kit, theme
+from app.forge.models.media import MediaKind
+from app.ui.settings_commit import Committer, Refused
+from app.ui.settings_layout import BOX_INNER, PageLink
+from app.ui.settings_overview import ForgeFacts
+from app.ui.settings_pages_registry import (
+    PAGE_ACCOUNTS,
+    PAGE_FOLDERS,
+    PAGE_NAMING,
+    PAGE_SORTING,
+    PAGE_SUBTITLES,
+    PAGE_WINDOWS,
+)
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 
@@ -105,44 +124,38 @@ log = logging.getLogger(__name__)
 
 # -- the registry -------------------------------------------------------------------------------
 
-FORGE_GROUP = N_("MediaForge")  # the sidebar group's label
-SECTION_LIBRARY = N_("Auto-rename")
-
 
 class ForgeSectionPart(Protocol):
-    """What the Settings window asks of a built Forge section when Save is clicked."""
+    """A built Forge part, as the Settings window sees it (its changes store themselves)."""
 
-    def problem(self) -> str | None:
-        """Why Save can't store this section's changes (translated), or None. Asked before
-        anything is stored."""
-        ...
-
-    async def save(self) -> str | None:
-        """Store this section's changes; a translated reason when that failed, else None."""
+    @property
+    def ready(self) -> bool:
+        """Whether its boxes show (Forge has started)."""
         ...
 
 
-ForgeSectionBuilder = Callable[["SettingsPage", "ForgeRuntime"], ForgeSectionPart]
+# Per page (its key), the place on it for a part's boxes.
+PartSlots = Mapping[str, "SettingsPage"]
+ForgePartBuilder = Callable[[PartSlots, "ForgeRuntime", Committer], ForgeSectionPart]
 
 
-class ForgeSection(NamedTuple):
-    icon: str  # the sidebar's icon
-    note: str  # the page's muted line, an N_() text
-    build: ForgeSectionBuilder
+class ForgePart(NamedTuple):
+    """A page's MediaForge part: how it is built (None: by `owner`'s part, with it), and what
+    Settings' search finds it by before then (N_() texts)."""
+
+    build: ForgePartBuilder | None
+    words: tuple[str, ...]
+    owner: str | None = None  # the page whose part puts this page's boxes too
 
 
 # -- texts ----------------------------------------------------------------------------------------
 
-LIBRARY_NOTE = N_(
-    "MediaForge can rename finished downloads by itself and move them into your Series and "
-    "Movies folders."
-)
 GETTING_READY = N_("Getting MediaForge ready…")
+# A start that ended without Forge and without a reason (AirGrabber is closing): never "getting
+# ready" for ever.
+UNAVAILABLE = N_("MediaForge isn't available.")
 SAVE_FAILED = N_("MediaForge's settings couldn't be saved. The log has the details.")
-BROWSE = N_("Browse")
-CHOOSE_SERIES = N_("Choose the Series library folder")
-CHOOSE_MOVIES = N_("Choose the Movies library folder")
-WATCHING = N_("Watching")
+WATCHING = N_("Watch folders")
 RULES_TITLE = N_("Rules")
 RULES_HINT = N_("Checked from the top down. The first rule that fits a file takes it.")
 ADD_RULE = N_("＋ Add a rule")
@@ -152,20 +165,15 @@ PRESETS_UNREAD = N_("Couldn't read your presets. Try again in a moment.")
 SHOW_THEM = N_("Show them")
 UNFIT_TITLE = N_("Files no rule fits")
 CLOSE = N_("Close")
-LIBRARY_TITLE = N_("Library folders")
-LIBRARY_TEXT = N_(
-    "Rules that move to “Your Series folder” or “Your Movies folder” use these, and so do files "
-    "you add yourself whose preset has Move to library folder on."
-)
-LIBRARY_FOLDERS_SPOT = "library-folders"
+RULE_REFUSED = N_("Rule {n}: {why}")  # a change refused: that rule's row's reason
 RULE_SPOT_PREFIX = "rule:"
 RULE_SPOT = RULE_SPOT_PREFIX + "{id}"  # a stored rule's row (`spots`; `spot_shown` opens its editor)
-LIBRARY_POINTER = N_("New rules start with the presets chosen under Naming › Library presets.")
-OPTIONS_TITLE = N_("Options")
+LIBRARY_POINTER = N_("New rules start with the presets chosen under Naming › For new rules.")
+OPTIONS_TITLE = N_("When sorting")
 CLEAN_TEXT = N_("Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)")
 NEEDS_TEXT = N_("Tell me when files need me")
 SUMMARY_TEXT = N_("A summary in the evening")
-REMOVE_TEXT = N_("Remove files from the queue after they're forged (Undo stays in History)")
+REMOVE_TEXT = N_("Take sorted files off the list (Undo stays in History)")
 AIRGRABBER_TITLE = N_("AirGrabber's downloads")
 AIRGRABBER_HINT = N_(
     "The folders where AirGrabber's downloads end up, as AirGrabber's settings say. AirGrabber's "
@@ -173,7 +181,7 @@ AIRGRABBER_HINT = N_(
 )
 ADD_RULE_FOR = N_("Add a rule for this folder")
 IGNORED_TITLE = N_("Ignored")
-IGNORED_TEXT = N_("Files and folders Auto-rename leaves alone.")
+IGNORED_TEXT = N_("Files and folders Sorting leaves alone.")
 NOTHING_IGNORED = N_("Nothing ignored.")
 STOP_IGNORING = N_("Stop ignoring")
 FOLDER_MARK = "📁"  # before an ignored folder
@@ -181,12 +189,11 @@ GRIP = "⠿"  # drags a rule up or down
 LOCK = "🔒"  # AirGrabber's rule (dragged the same way)
 EDIT_MARK = "✎"
 
-# What this section edits of the settings; Save stores only the ones changed here. The rules
-# are stored as a whole (`services.rules`); AirGrabber's rule's switch is
-# `use_airgrabber_downloads` (RuleService does that).
+# What this section edits of the settings, each stored as it changes. The rules are stored as
+# a whole (`services.rules`); AirGrabber's rule's switch is `use_airgrabber_downloads`
+# (RuleService does that). The library folders are the Folders page's (`LibraryDestinations`):
+# the rules' notes and refusals read them as stored.
 FIELDS: tuple[str, ...] = (
-    "series_folder",
-    "movies_folder",
     "automatic",
     "clean_downloads",
     "notify_needs",
@@ -194,18 +201,17 @@ FIELDS: tuple[str, ...] = (
     "remove_after_forge",
 )
 
-_BUTTON_WIDTH = 110  # the dialog's Browse buttons
+_BUTTON_WIDTH = 110  # the boxes' buttons
 _ROW_GAP = 8
-_LABEL_WIDTH = 90  # "Series" / "Movies"
-_PATH_WRAP = 330  # a folder's path next to its label and button (CTk units)
-_LIST_WRAP = 420  # a folder's path next to its button
-_STATUS_WRAP = 400  # the renamer's status between its light and the switch
+# The wraps follow the page's width (BOX_INNER: inside a box's border and padding).
+_LIST_WRAP = BOX_INNER - 122  # a folder's path next to its button
+_STATUS_WRAP = BOX_INNER - 142  # the renamer's status between its light and the switch
 _STOP_WIDTH = 150  # "Stop ignoring"
 _SUGGEST_WIDTH = 210  # "Add a rule for this folder"
 _ADD_RULE_WIDTH = 140
-_IGNORED_WRAP = 380  # an ignored name next to its Stop ignoring button
-_ROUTE_WRAP = 440  # a rule's preset and destination under its folder
-_NOTE_WRAP = 470  # a note under a rule's row
+_IGNORED_WRAP = BOX_INNER - 162  # an ignored name next to its Stop ignoring button
+_ROUTE_WRAP = BOX_INNER - 102  # a rule's preset and destination under its folder
+_NOTE_WRAP = BOX_INNER - 72  # a note under a rule's row
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
 _CHIP_SIZE = dialog_kit.SMALL_SIZE
 _NOTE_COLOURS: dict[str, theme.Color] = {
@@ -243,6 +249,8 @@ class IgnoredSource(Protocol):
     def subscribe(
         self, listener: Callable[[tuple[IgnoredPath, ...]], None]
     ) -> Callable[[], None]: ...
+
+    async def ignore(self, path: Path, *, folder: bool) -> IgnoredPath: ...
 
     async def stop_ignoring(self, path: Path) -> bool: ...
 
@@ -325,6 +333,68 @@ def ignored_text(entry: IgnoredPath) -> str:
     return f"{FOLDER_MARK}  {entry.name}" if entry.folder else entry.name
 
 
+def rules_refusal(
+    rules: Sequence[Rule], settings: ForgeSettings, *, presets: Sequence[str] = ()
+) -> str | None:
+    """Why these rules and settings can't be stored (`rules.refusal`): the first refused rule's
+    number and its row's reason ("Rule 2: ✕ Can't save: …"), or None. `presets`: their names
+    (only the warnings need them, never a refusal)."""
+    from app.forge.core.rules import refusal, rule_notes  # not at import time: see the top
+
+    found = refusal(rules, settings)
+    if found is None:
+        return None
+    notes = rule_notes(rules, settings, presets=presets)
+    for number, row in enumerate(notes, 1):
+        why = next((note.text for note in row if note.level == "refuse"), None)
+        if why is not None:
+            return t(RULE_REFUSED, n=number, why=why)
+    return found
+
+
+def _folder_notes() -> frozenset[str]:
+    """A rule's notes that a choice on the Folders page fixes (translated, as shown)."""
+    from app.forge.core.rules import NO_MOVIES_FOLDER, NO_SERIES_FOLDER  # not at import time
+
+    return frozenset({t(NO_SERIES_FOLDER), t(NO_MOVIES_FOLDER)})
+
+
+# -- the Overview ---------------------------------------------------------------------------------
+
+
+def overview_facts(forge: _Starter) -> ForgeFacts | None:
+    """What Settings' Overview shows of MediaForge (app/ui/settings_overview.py), from what its
+    services hold now; None while it isn't running (this never starts it, nor reads forge.db).
+    A kind needs its library folder when a rule that is on sends it there (the owner's ruling,
+    2026-11-19: presets don't count, so the card is the same whichever pages were visited)."""
+    source_settings: SettingsSource | None = getattr(forge.services, "settings", None)
+    if source_settings is None:
+        return None
+    services = forge.services
+    settings = source_settings.current
+    source: RulesSource | None = getattr(services, "rules", None)
+    if source is not None:
+        rules: Sequence[Rule] = list(source.current)
+    else:
+        from app.forge.core.rules import rules_from_settings  # not at import time
+
+        rules = rules_from_settings(settings)
+    needs = {MediaKind.EPISODE: False, MediaKind.MOVIE: False}
+    for rule in rules:
+        if rule.on and not rule.stays:
+            for kind in rule.kinds():
+                if rule.target(kind).to == "library":
+                    needs[kind] = True
+    return ForgeFacts(
+        watching=settings.automatic != "off",
+        rules_on=sum(1 for rule in rules if rule.on),
+        series_folder=settings.series_folder,
+        movies_folder=settings.movies_folder,
+        needs_series=needs[MediaKind.EPISODE],
+        needs_movies=needs[MediaKind.MOVIE],
+    )
+
+
 def _rule_editor(master: Any, **options: Any) -> Any:
     """The rule editor (imported here: it loads the renamer, which Settings' start doesn't)."""
     from app.forge.ui.rule_editor import RuleEditor
@@ -332,19 +402,26 @@ def _rule_editor(master: Any, **options: Any) -> Any:
     return RuleEditor(master, **options)
 
 
-# -- Auto-rename ----------------------------------------------------------------------------------
+# -- Sorting --------------------------------------------------------------------------------------
 
 
 class LibrarySection:
-    """The Auto-rename section's contents. Changes stay in the form until Save (`problem` / `save`);
-    a change saved elsewhere meanwhile (a folder AirGrabber's settings brought, rules an import
-    brought) shows here unless the same setting, or the rules list, was changed in the form."""
+    """The Sorting page's contents. Each change stores itself (`_change`); a change stored
+    elsewhere meanwhile (a folder AirGrabber's settings brought, a library folder the Folders page
+    marked, rules an import brought, an Undo) shows here."""
 
     def __init__(
-        self, page: SettingsPage, forge: _Starter, *, ask_folder: AskFolder | None = None
+        self,
+        page: SettingsPage,
+        forge: _Starter,
+        *,
+        ask_folder: AskFolder | None = None,
+        committer: Committer | None = None,
     ) -> None:
         self._page = page
         self._forge = forge
+        self._committer = committer if committer is not None else Committer()
+        self._changing = asyncio.Lock()  # one change at a time: each starts from the last
         self._look = app_look()
         self.ask_folder: AskFolder = ask_folder if ask_folder is not None else self._ask_folder
         self.open_editor: Callable[..., Any] = _rule_editor  # the rule editor (tests: a recorder)
@@ -353,9 +430,9 @@ class LibrarySection:
         self._unsubscribe: Callable[[], None] | None = None
         self._task: asyncio.Task[None] | None = None
         self._presets_task: asyncio.Task[None] | None = None
-        self._baseline: dict[str, Any] = {}  # what the form showed of the stored settings
-        self._folders: dict[str, str] = {"series": "", "movies": ""}
+        self._baseline: dict[str, Any] = {}  # the settings as stored (as last heard)
         self._automatic = "off"
+        self._watching_as = "on"  # what the switch turns watching back on to (the last value)
         self._renamer: StatusSource | None = None
         self._unwatch: Callable[[], None] | None = None
         self._rules: RulesSource | None = None
@@ -363,8 +440,8 @@ class LibrarySection:
         self._unsubscribe_presets: Callable[[], None] | None = None
         self._presets: list[Preset] | None = None  # None until read
         self._opening: asyncio.Task[None] | None = None  # an editor waiting for the presets
-        self.rule_drafts: list[Rule] = []
-        self._rules_baseline: tuple[Rule, ...] = ()  # what the form showed of the stored rules
+        self.rule_drafts: list[Rule] = []  # the rules shown: as stored, or as being stored
+        self._rules_baseline: tuple[Rule, ...] = ()  # the rules as stored (as last heard)
         self.rule_rows: list[RuleRowWidgets] = []
         self._drag: int | None = None  # the row being dragged
         self._refresh_after_drag = False
@@ -377,7 +454,7 @@ class LibrarySection:
         self.waiting.add(self.waiting_label, gap=0, sticky="w")
 
         # The light and the status, and the switch that pauses all watching.
-        status = page.box()
+        status = page.box(search_title=t(WATCHING))
         status_row = status.frame_row(gap=0)
         self.light = ctk.CTkLabel(
             status_row, text="●", font=theme.font(14), text_color=theme.TEXT_MUTED
@@ -393,6 +470,7 @@ class LibrarySection:
             command=self._watching_clicked,
         )
         self.watching.pack(side="right")
+        self._status_box = status
         self.status_label = ctk.CTkLabel(
             status_row,
             text="",
@@ -406,6 +484,7 @@ class LibrarySection:
 
         # The rules, in their order.
         rules = page.box(t(RULES_TITLE), t(RULES_HINT))
+        self._rules_box = rules
         self.add_rule_button = self._button(rules.body, t(ADD_RULE), self.add_rule)
         self.add_rule_button.configure(width=_ADD_RULE_WIDTH)
         # Beside the box's name, at the right (the heading's own cell).
@@ -442,13 +521,37 @@ class LibrarySection:
         )
         self.show_them.pack(side="left", padx=(6, 0))
         unfit_row.grid_remove()
+        self.naming_link = PageLink(rules.body, t(LIBRARY_POINTER), PAGE_NAMING)
+        rules.add(self.naming_link, gap=_ROW_GAP, sticky="w")
 
-        # What Auto-rename leaves alone (the queue's Ignore); Stop ignoring waits for Save.
+        # When sorting.
+        options = page.box(t(OPTIONS_TITLE))
+        self._options_box = options
+        self._clean = tk.BooleanVar(master=frame, value=True)
+        self._needs = tk.BooleanVar(master=frame, value=True)
+        self._summary = tk.BooleanVar(master=frame, value=True)
+        self._remove = tk.BooleanVar(master=frame, value=False)
+        for text, variable, field in (
+            (CLEAN_TEXT, self._clean, "clean_downloads"),
+            (NEEDS_TEXT, self._needs, "notify_needs"),
+            (SUMMARY_TEXT, self._summary, "daily_summary"),
+            (REMOVE_TEXT, self._remove, "remove_after_forge"),
+        ):
+            switch = self._switch(
+                options.body,
+                t(text),
+                variable,
+                functools.partial(self._option_clicked, field, variable),
+            )
+            options.add(switch, gap=_ROW_GAP, sticky="w")
+
+        # What Sorting leaves alone (the queue's Ignore); Stop ignoring stores at once.
         self._ignored: IgnoredSource | None = None
         self._ignored_entries: tuple[IgnoredPath, ...] = ()
-        self._unignore: list[Path] = []  # stopped ignoring in the form (stored on Save)
+        self._unignore: list[Path] = []  # being stopped (hidden until the service says so)
         self._unsubscribe_ignored: Callable[[], None] | None = None
         ignored = page.box(t(IGNORED_TITLE), t(IGNORED_TEXT))
+        self._ignored_box = ignored
         # Never empty (an empty CTkFrame keeps its default 200 units): "Nothing ignored." then.
         self.ignored_list = ctk.CTkFrame(ignored.body, fg_color="transparent")
         self.ignored_list.grid_columnconfigure(0, weight=1)
@@ -461,57 +564,9 @@ class LibrarySection:
         self.airgrabber_list = ctk.CTkFrame(airgrabber.body, fg_color="transparent")
         self.airgrabber_list.grid_columnconfigure(0, weight=1)
         airgrabber.add(self.airgrabber_list, gap=_ROW_GAP)
+        self.spots: dict[str, tk.Misc] = {}  # go_to_spot: the rules' rows (`rule:<id>`)
 
-        # The library folders.
-        library = page.box(t(LIBRARY_TITLE), t(LIBRARY_TEXT))
-        self.spots: dict[str, tk.Misc] = {LIBRARY_FOLDERS_SPOT: library.frame}  # go_to_spot
-        rows = library.frame_row()
-        rows.grid_columnconfigure(1, weight=1)
-        self.folder_labels: dict[str, ctk.CTkLabel] = {}
-        self.browse_buttons: dict[str, ctk.CTkButton] = {}
-        kinds: tuple[Literal["series", "movies"], ...] = ("series", "movies")
-        for row_no, kind in enumerate(kinds):
-            ctk.CTkLabel(
-                rows,
-                text=t("Series") if kind == "series" else t("Movies"),
-                width=_LABEL_WIDTH,
-                anchor="w",
-                font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
-                text_color=theme.TEXT,
-            ).grid(row=row_no, column=0, sticky="w", pady=(0 if row_no == 0 else _ROW_GAP, 0))
-            label = ctk.CTkLabel(
-                rows,
-                text="",
-                anchor="w",
-                justify="left",
-                wraplength=_PATH_WRAP,
-                font=theme.font(_TEXT_SIZE),
-            )
-            label.grid(
-                row=row_no, column=1, sticky="ew", padx=(8, 10),
-                pady=(0 if row_no == 0 else _ROW_GAP, 0),
-            )
-            button = self._button(rows, t(BROWSE), functools.partial(self.choose_library, kind))
-            button.grid(row=row_no, column=2, sticky="e", pady=(0 if row_no == 0 else _ROW_GAP, 0))
-            self.folder_labels[kind] = label
-            self.browse_buttons[kind] = button
-        library.add(library.text(t(LIBRARY_POINTER)), gap=_ROW_GAP, sticky="w")
-
-        # Options.
-        options = page.box(t(OPTIONS_TITLE))
-        self._clean = tk.BooleanVar(master=frame, value=True)
-        self._needs = tk.BooleanVar(master=frame, value=True)
-        self._summary = tk.BooleanVar(master=frame, value=True)
-        self._remove = tk.BooleanVar(master=frame, value=False)
-        for text, variable in (
-            (CLEAN_TEXT, self._clean),
-            (NEEDS_TEXT, self._needs),
-            (SUMMARY_TEXT, self._summary),
-            (REMOVE_TEXT, self._remove),
-        ):
-            options.add(self._checkbox(options.body, t(text), variable), gap=_ROW_GAP, sticky="w")
-
-        self._content: list[SettingsBox] = [status, rules, ignored, airgrabber, library, options]
+        self._content: list[SettingsBox] = [status, rules, options, ignored, airgrabber]
 
         # The foot: hidden until something is put in it (F-27's "Remove the old MediaForge").
         self.foot = ctk.CTkFrame(frame, fg_color="transparent")
@@ -529,27 +584,33 @@ class LibrarySection:
 
     # --- widgets -------------------------------------------------------------------------------
 
-    def _button(self, master: Any, text: str, command: Callable[[], None]) -> ctk.CTkButton:
+    def _button(self, master: Any, text: str, command: Callable[[], object]) -> ctk.CTkButton:
+        def clicked() -> None:
+            command()  # what it starts (a change's task) isn't the button's
+
         button = dialog_kit.secondary_button(
-            master, text, command, width=_BUTTON_WIDTH, look=self._look
+            master, text, clicked, width=_BUTTON_WIDTH, look=self._look
         )
         button.configure(text_color=theme.BUTTON_TEXT)
         return button
 
-    def _checkbox(self, master: Any, text: str, variable: tk.BooleanVar) -> ctk.CTkCheckBox:
-        return ctk.CTkCheckBox(
+    def _switch(
+        self,
+        master: Any,
+        text: str,
+        variable: tk.BooleanVar,
+        command: Callable[[], None] | None = None,
+    ) -> ctk.CTkSwitch:
+        """An on/off of When sorting (spec §6: every on/off in Settings is a switch)."""
+        return ctk.CTkSwitch(
             master,
             text=text,
             variable=variable,
-            width=0,
+            command=command,
             height=dialog_kit.BUTTON_HEIGHT,
-            checkbox_width=22,
-            checkbox_height=22,
-            corner_radius=6,
             font=theme.font(dialog_kit.DETAIL_SIZE),
-            fg_color=self._look.ACCENT,
-            hover_color=self._look.ACCENT_HOVER,
-            border_color=self._look.EDGE,
+            progress_color=self._look.ACCENT,
+            text_color=theme.TEXT,
         )
 
     def _ask_folder(self, title: str, start: str) -> str:
@@ -574,7 +635,7 @@ class LibrarySection:
             return
         if services is None:
             # NOT_READY (guessit missing) or FAILED: say why; nothing here can be changed.
-            self.waiting_label.configure(text=self._forge.reason or t(GETTING_READY))
+            self.waiting_label.configure(text=self._forge.reason or t(UNAVAILABLE))
             return
         self._ready(services.settings)
 
@@ -704,10 +765,10 @@ class LibrarySection:
         )
 
     def _show(self, name: str, value: Any) -> None:
-        if name in ("series_folder", "movies_folder"):
-            self._folders[name.removesuffix("_folder")] = value
-        elif name == "automatic":
+        if name == "automatic":
             self._automatic = value
+            if value != "off":
+                self._watching_as = value
         elif name == "clean_downloads":
             self._clean.set(value)
         elif name == "notify_needs":
@@ -718,10 +779,8 @@ class LibrarySection:
             self._remove.set(value)
 
     def draft(self) -> dict[str, Any]:
-        """What the form holds of the settings, field by field."""
+        """What the page shows of the settings, field by field."""
         return {
-            "series_folder": self._folders["series"],
-            "movies_folder": self._folders["movies"],
             "automatic": self._automatic,
             "clean_downloads": bool(self._clean.get()),
             "notify_needs": bool(self._needs.get()),
@@ -729,28 +788,22 @@ class LibrarySection:
             "remove_after_forge": bool(self._remove.get()),
         }
 
-    def changes(self) -> dict[str, Any]:
-        """The fields changed in the form (what Save stores of the settings)."""
-        if self._settings is None:
-            return {}
-        return {
-            name: value for name, value in self.draft().items() if value != self._baseline[name]
-        }
-
     @property
     def rules_changed(self) -> bool:
-        """Whether the rules list was changed in the form (Save then stores it whole). A fresh
-        flag the renamer set or cleared meanwhile is no change (RuleService works those out)."""
+        """Whether the rules shown aren't the stored ones (a change being stored). A fresh flag
+        the renamer set or cleared meanwhile is no change (RuleService works those out)."""
         return not _same_rules(self.rule_drafts, self._rules_baseline)
 
     def _draft_settings(self) -> ForgeSettings:
+        """The stored settings with what the page shows (a change being stored); the library
+        folders as stored (the Folders page's)."""
         assert self._settings is not None
         return self._settings.current.model_copy(update=self.draft())
 
     def _saved_elsewhere(self, updated: ForgeSettings) -> None:
-        """Settings stored meanwhile (or by this form's Save): show each one the form hasn't
-        changed; a field changed here keeps the form's value. AirGrabber's rule's switch is a
-        setting too: an untouched list follows it."""
+        """Settings stored (here, elsewhere, or by an Undo): each shows, unless a change of it
+        is being stored. AirGrabber's rule's switch is a setting too: the list follows it, and
+        the rules' notes follow the library folders."""
         if not self.waiting_label.winfo_exists():
             return
         draft = self.draft()
@@ -762,8 +815,8 @@ class LibrarySection:
         self._take_stored_rules(self._stored_rules())
 
     def _rules_saved_elsewhere(self, rules: tuple[Rule, ...]) -> None:
-        """Rules stored meanwhile (an import, or this form's Save): shown unless the list was
-        changed here."""
+        """Rules stored (an import, a change here, an Undo): shown unless a change of the list
+        is being stored."""
         if not self.waiting_label.winfo_exists():
             return
         self._take_stored_rules(tuple(rules))
@@ -775,8 +828,7 @@ class LibrarySection:
         self._refresh()
 
     def _refresh(self) -> None:
-        """The switch, the rules, the ignored entries, AirGrabber's folders and the library
-        folders."""
+        """The switch, the rules, the ignored entries and AirGrabber's folders."""
         if self._automatic == "off":
             self.watching.deselect()
         else:
@@ -784,11 +836,6 @@ class LibrarySection:
         self._refresh_rules()
         self._refresh_ignored()
         self._refresh_airgrabber()
-        for kind, folder in self._folders.items():
-            self.folder_labels[kind].configure(
-                text=folder or t("Not chosen yet"),
-                text_color=theme.TEXT if folder else theme.TEXT_MUTED,
-            )
 
     # --- the rules -----------------------------------------------------------------------------
 
@@ -950,16 +997,28 @@ class LibrarySection:
         destination.pack(side="left", padx=(8, 0))
         labels += [preset, destination, mode]
         note_labels: list[ctk.CTkLabel] = []
+        to_folders = _folder_notes()
         for row_no, (level, text) in enumerate(notes, start=2):
-            note = ctk.CTkLabel(
-                frame,
-                text=text,
-                font=theme.font(_TEXT_SIZE),
-                text_color=_NOTE_COLOURS[level],
-                anchor="w",
-                justify="left",
-                wraplength=_NOTE_WRAP,
-            )
+            note: ctk.CTkLabel
+            if text in to_folders:  # "⚠ Choose your Series folder under Folders.": a link there
+                note = PageLink(
+                    frame,
+                    text,
+                    PAGE_FOLDERS,
+                    color=_NOTE_COLOURS[level],
+                    size=_TEXT_SIZE,
+                    wraplength=_NOTE_WRAP,
+                )
+            else:
+                note = ctk.CTkLabel(
+                    frame,
+                    text=text,
+                    font=theme.font(_TEXT_SIZE),
+                    text_color=_NOTE_COLOURS[level],
+                    anchor="w",
+                    justify="left",
+                    wraplength=_NOTE_WRAP,
+                )
             note.grid(row=row_no, column=2, columnspan=3, sticky="w", padx=(4, 0), pady=(2, 0))
             note_labels.append(note)
         return RuleRowWidgets(frame, grip, switch, labels, edit, note_labels)
@@ -983,26 +1042,134 @@ class LibrarySection:
             self.unfit_window.close()
         self.unfit_window = UnfitWindow(self._page.frame.winfo_toplevel(), names)
 
-    # --- changing the rules (kept in the form until Save) ----------------------------------------
+    # --- storing a change ---------------------------------------------------------------------
+
+    def _start(
+        self,
+        box: SettingsBox,
+        *,
+        rules: Callable[[list[Rule]], list[Rule] | None] | None = None,
+        changes: Mapping[str, Any] | None = None,
+    ) -> asyncio.Task[bool]:
+        return spawn(
+            self._change(box, rules=rules, changes=changes or {}), name="forge-sorting-change"
+        )
+
+    async def _change(
+        self,
+        box: SettingsBox,
+        *,
+        rules: Callable[[list[Rule]], list[Rule] | None] | None = None,
+        changes: Mapping[str, Any],
+    ) -> bool:
+        """One change, after the one before it: `rules` makes the new list from the one shown
+        (None: no change of the rules), `changes` the settings. Shown at once; refused (said in
+        `box`) when a rule would have a refusal; stored as Save did; Undo stores what was
+        before. False when it wasn't stored (the page shows what is stored again)."""
+        async with self._changing:
+            if self._settings is None:
+                return False
+            # A change made just before the window closed is still stored; only the page
+            # isn't touched then.
+            alive = bool(self.rules_list.winfo_exists())
+            before_rules = list(self.rule_drafts)
+            new_rules = rules(list(before_rules)) if rules is not None else None
+            # As stored (a tick or a switch shows its new value already).
+            before = {name: self._baseline.get(name) for name in changes}
+            if new_rules is None and all(before[n] == v for n, v in changes.items()):
+                return True
+            if new_rules is not None:
+                self.rule_drafts = list(new_rules)
+            if alive:
+                for name, value in changes.items():
+                    self._show(name, value)
+                self._refresh()
+            undo_rules = before_rules if new_rules is not None else None
+            stored = await self._committer.commit(
+                functools.partial(self._store, new_rules, dict(changes)),
+                functools.partial(self._store_locked, undo_rules, before),
+                box=box,
+            )
+            if not stored:
+                if new_rules is not None and self.rule_drafts == new_rules:
+                    self.rule_drafts = before_rules
+                if self.rules_list.winfo_exists():
+                    for name, value in before.items():
+                        if self.draft()[name] == changes[name]:
+                            self._show(name, value)
+                    self._refresh()
+            return stored
+
+    def refusal_of(
+        self, rules: Sequence[Rule] | None, changes: Mapping[str, Any] | None = None
+    ) -> str | None:
+        """Why these rules and settings can't be stored (`rules.refusal`): the first refused
+        rule's number and its row's reason ("Rule 2: ✕ Can't save: …"), or None."""
+        if self._settings is None:
+            return None
+        settings = self._settings.current.model_copy(update=dict(changes or {}))
+        wanted = list(rules if rules is not None else self.rule_drafts)
+        return rules_refusal(wanted, settings, presets=self._preset_names())
+
+    async def _store_locked(
+        self, rules: Sequence[Rule] | None, changes: Mapping[str, Any]
+    ) -> bool:
+        """Undo's store: after any change still being stored."""
+        async with self._changing:
+            return await self._store(rules, changes)
+
+    async def _store(self, rules: Sequence[Rule] | None, changes: Mapping[str, Any]) -> bool:
+        """Store the rules (None: as they are) and the settings `changes` in one step, as Save
+        did (`RuleService.save`). Refused when a rule would have a refusal or forge.db
+        couldn't be written."""
+        problem = self.refusal_of(rules, changes)
+        if problem is not None:
+            raise Refused(problem)
+        assert self._settings is not None
+        try:
+            if self._rules is not None:
+                # Both in one step no look comes between; the rules that now watch what a look
+                # skipped (a destination gone from under their folder) are marked fresh first.
+                saved = tuple(await self._rules.save(rules, dict(changes)))
+                if rules is not None:  # with their ids (a new rule's), as stored
+                    self.rule_drafts, self._rules_baseline = list(saved), saved
+            elif changes:
+                await self._settings.update(**changes)
+        except Exception as exc:  # a bad value, or forge.db couldn't be written
+            # The type only: a message could name a folder (with the user's name in it).
+            log.error("MediaForge's settings couldn't be saved (%s)", type(exc).__name__)
+            raise Refused(t(SAVE_FAILED)) from exc
+        if self.rules_list.winfo_exists():
+            self._refresh()
+        return True
+
+    # --- changing the rules -------------------------------------------------------------------
 
     def _switch_clicked(self, index: int, switch: ctk.CTkSwitch) -> None:
         self.toggle_rule(index, bool(switch.get()))
 
-    def toggle_rule(self, index: int, on: bool) -> None:
-        """A rule's switch: on or off (AirGrabber's: "Use AirGrabber's downloads")."""
-        if not 0 <= index < len(self.rule_drafts):
-            return
-        self.rule_drafts[index] = self.rule_drafts[index].model_copy(update={"on": on})
-        self._refresh()
+    def toggle_rule(self, index: int, on: bool) -> asyncio.Task[bool]:
+        """A rule's switch: on or off (AirGrabber's: "Use AirGrabber's downloads"), stored."""
 
-    def move_rule(self, src: int, dst: int) -> None:
-        """The rule at `src` to `dst` (a drag): the rules after it close up."""
-        count = len(self.rule_drafts)
-        if not (0 <= src < count and 0 <= dst < count) or src == dst:
-            return
-        rule = self.rule_drafts.pop(src)
-        self.rule_drafts.insert(dst, rule)
-        self._refresh()
+        def change(rules: list[Rule]) -> list[Rule] | None:
+            if not 0 <= index < len(rules):
+                return None
+            rules[index] = rules[index].model_copy(update={"on": on})
+            return rules
+
+        return self._start(self._rules_box, rules=change)
+
+    def move_rule(self, src: int, dst: int) -> asyncio.Task[bool]:
+        """The rule at `src` to `dst` (a drag): the rules after it close up; stored."""
+
+        def change(rules: list[Rule]) -> list[Rule] | None:
+            count = len(rules)
+            if not (0 <= src < count and 0 <= dst < count) or src == dst:
+                return None
+            rules.insert(dst, rules.pop(src))
+            return rules
+
+        return self._start(self._rules_box, rules=change)
 
     def _row_at(self, y_root: int) -> int | None:
         """The row under the screen's `y_root`: above the first is the first, below the last the
@@ -1126,14 +1293,22 @@ class LibrarySection:
             return next((i for i, r in enumerate(self.rule_drafts) if r.id == opened.id), None)
         return None
 
-    def _edited(self, index: int, opened: Rule, new: bool, rule: Rule) -> None:
-        """The editor's Save: in the opened rule's place (a new rule last)."""
-        if new:
-            self.rule_saved(len(self.rule_drafts), rule)
-            return
-        place = self._place_of(index, opened)
-        if place is not None:
-            self.rule_saved(place, rule)
+    def _edited(self, index: int, opened: Rule, new: bool, rule: Rule) -> str | None:
+        """The editor's Save: in the opened rule's place (a new rule last), stored. Why it
+        can't be (the editor stays open and says so), or None."""
+        place = len(self.rule_drafts) if new else self._place_of(index, opened)
+        if place is None:
+            return None
+        rules = list(self.rule_drafts)
+        if place >= len(rules):
+            rules.append(rule)
+        else:
+            rules[place] = rule
+        problem = self.refusal_of(rules)
+        if problem is not None:
+            return problem
+        self.rule_saved(place, rule)
+        return None
 
     def _deleted(self, index: int, opened: Rule) -> None:
         place = self._place_of(index, opened)
@@ -1160,23 +1335,28 @@ class LibrarySection:
             films=RuleTarget(preset=settings.movies_preset),
         )
 
-    def rule_saved(self, index: int, rule: Rule) -> None:
-        """The editor's Save: the rule at `index` (a new one last), kept until Settings' Save."""
-        if not self.rules_list.winfo_exists():
-            return
-        if index >= len(self.rule_drafts):
-            self.rule_drafts.append(rule)
-        else:
-            self.rule_drafts[index] = rule
-        self._refresh()
+    def rule_saved(self, index: int, rule: Rule) -> asyncio.Task[bool]:
+        """The editor's Save: the rule at `index` (a new one last), stored."""
 
-    def delete_rule(self, index: int) -> None:
-        """The editor's Delete rule (never AirGrabber's)."""
-        if not 0 <= index < len(self.rule_drafts) or self.rule_drafts[index].airgrabber:
-            return
-        del self.rule_drafts[index]
-        if self.rules_list.winfo_exists():
-            self._refresh()
+        def change(rules: list[Rule]) -> list[Rule]:
+            if index >= len(rules):
+                rules.append(rule)
+            else:
+                rules[index] = rule
+            return rules
+
+        return self._start(self._rules_box, rules=change)
+
+    def delete_rule(self, index: int) -> asyncio.Task[bool]:
+        """The editor's Delete rule (never AirGrabber's), stored."""
+
+        def change(rules: list[Rule]) -> list[Rule] | None:
+            if not 0 <= index < len(rules) or rules[index].airgrabber:
+                return None
+            del rules[index]
+            return rules
+
+        return self._start(self._rules_box, rules=change)
 
     def _airgrabber_draft(self) -> Rule | None:
         rule = next((rule for rule in self.rule_drafts if rule.airgrabber), None)
@@ -1189,11 +1369,12 @@ class LibrarySection:
             not rule.airgrabber and _same_folder(rule.folder, folder) for rule in self.rule_drafts
         )
 
-    def add_rule_for(self, folder: str) -> None:
+    def add_rule_for(self, folder: str) -> asyncio.Task[bool] | None:
         """A suggestion's "Add a rule for this folder": a rule watching it, with AirGrabber's
-        rule's routing (what it takes, presets, extras, destinations, mode), last."""
+        rule's routing (what it takes, presets, extras, destinations, mode), last; stored (new,
+        so its first look shows what is already there: nothing moves unseen)."""
         if self._settings is None or self._watched_by_a_rule(folder):
-            return
+            return None
         airgrabber = self._airgrabber_draft()
         if airgrabber is None:
             rule = self._new_rule().model_copy(update={"folder": folder})
@@ -1208,8 +1389,11 @@ class LibrarySection:
                     "fresh": False,
                 }
             )
-        self.rule_drafts.append(rule)
-        self._refresh()
+
+        def change(rules: list[Rule]) -> list[Rule]:
+            return [*rules, rule]
+
+        return self._start(self._rules_box, rules=change)
 
     def spot_shown(self, spot: str) -> None:
         """Settings scrolled to `spot`: a rule's row (`rule:<id>`) opens its editor."""
@@ -1227,7 +1411,7 @@ class LibrarySection:
 
     @property
     def ignored_shown(self) -> list[IgnoredPath]:
-        """The ignored entries the box lists (without those stopped in the form)."""
+        """The ignored entries the box lists (without those being stopped)."""
         stopped = {os.path.normcase(str(path)) for path in self._unignore}
         return [
             e for e in self._ignored_entries if os.path.normcase(str(e.path)) not in stopped
@@ -1235,14 +1419,45 @@ class LibrarySection:
 
     @property
     def unignored(self) -> list[Path]:
-        """What Save stops ignoring."""
+        """What is being stopped now."""
         return list(self._unignore)
 
-    def stop_ignoring(self, path: Path) -> None:
-        """Stop ignoring `path` (stored on Save, like the rest of the section)."""
-        if all(os.path.normcase(str(path)) != os.path.normcase(str(p)) for p in self._unignore):
+    def stop_ignoring(self, path: Path) -> asyncio.Task[bool] | None:
+        """Stop ignoring `path`, at once (Undo ignores it again)."""
+        source = self._ignored
+        key = os.path.normcase(str(path))
+        entry = next(
+            (e for e in self._ignored_entries if os.path.normcase(str(e.path)) == key), None
+        )
+        if source is None or entry is None:
+            return None
+        if all(key != os.path.normcase(str(p)) for p in self._unignore):
             self._unignore.append(path)
         self._refresh_ignored()
+        return spawn(self._stop_ignoring(source, entry), name="forge-stop-ignoring")
+
+    async def _stop_ignoring(self, source: IgnoredSource, entry: IgnoredPath) -> bool:
+        async def apply() -> bool:
+            try:
+                return await source.stop_ignoring(entry.path)
+            except Exception as exc:  # forge.db
+                log.error("Stopping to ignore failed (%s)", type(exc).__name__)
+                raise Refused(t(SAVE_FAILED)) from exc
+
+        async def undo() -> bool:
+            try:
+                await source.ignore(entry.path, folder=entry.folder)
+            except Exception as exc:  # forge.db
+                log.error("Ignoring again failed (%s)", type(exc).__name__)
+                raise Refused(t(SAVE_FAILED)) from exc
+            return True
+
+        stored = await self._committer.commit(apply, undo, box=self._ignored_box)
+        key = os.path.normcase(str(entry.path))
+        self._unignore = [p for p in self._unignore if os.path.normcase(str(p)) != key]
+        if self.ignored_list.winfo_exists():
+            self._refresh_ignored()
+        return stored
 
     def _ignored_changed(self, entries: tuple[IgnoredPath, ...]) -> None:
         """Ignored (or stopped) elsewhere meanwhile: the list follows."""
@@ -1338,14 +1553,13 @@ class LibrarySection:
             ).grid(row=row_no + 1, column=0, sticky="w")
             row_no += 2
         ask = ask_text(draft.airgrabber) if on else ""
-        if ask:
-            ctk.CTkLabel(
+        if ask:  # what to fill in ("Finished downloads" in Settings › Folders): a link there
+            PageLink(
                 self.airgrabber_list,
-                text=ask,
-                font=theme.font(_TEXT_SIZE),
-                text_color=theme.WARNING,
-                anchor="w",
-                justify="left",
+                ask,
+                PAGE_FOLDERS,
+                color=theme.WARNING,
+                size=_TEXT_SIZE,
                 wraplength=_LIST_WRAP,
             ).grid(
                 row=row_no,
@@ -1362,64 +1576,19 @@ class LibrarySection:
         else:
             self.airgrabber_list.grid_remove()
 
-    # --- the other changes (kept in the form until Save) -------------------------------------------
+    # --- the other changes ------------------------------------------------------------------------
 
     def _watching_clicked(self) -> None:
         self.set_watching(bool(self.watching.get()))
 
-    def set_watching(self, on: bool) -> None:
-        """The "Watching" switch: off pauses every rule; on watches again (the stored value when
-        it is watching already, else On: each rule's own mode decides)."""
-        stored = self._baseline.get("automatic", "off")
-        self._automatic = (stored if stored != "off" else "on") if on else "off"
-        self._refresh()
+    def set_watching(self, on: bool) -> asyncio.Task[bool]:
+        """The "Watch folders" switch: off pauses every rule; on watches again (as it did before
+        it was paused, else On: each rule's own mode decides); stored."""
+        value = self._watching_as if on else "off"
+        return self._start(self._status_box, changes={"automatic": value})
 
-    def choose_library(self, kind: Literal["series", "movies"]) -> None:
-        title = CHOOSE_SERIES if kind == "series" else CHOOSE_MOVIES
-        chosen = self.ask_folder(t(title), self._folders[kind])
-        if not chosen or not self.waiting_label.winfo_exists():
-            return
-        self._folders[kind] = str(Path(chosen))
-        self._refresh()
-
-    # --- Save -------------------------------------------------------------------------------------
-
-    def problem(self) -> str | None:
-        """A rule with a refusal never saves (its row says why: `rules.refusal`). Unchanged
-        settings and rules never stop Save (AirGrabber's own settings can still be saved)."""
-        if self._settings is None or not (self.changes() or self.rules_changed):
-            return None
-        from app.forge.core.rules import refusal  # not at import time
-
-        return refusal(self.rule_drafts, self._draft_settings())
-
-    async def save(self) -> str | None:
-        changes = self.changes()
-        stopped = list(self._unignore)
-        rules_changed = self.rules_changed
-        if self._settings is None or not (changes or stopped or rules_changed):
-            return None
-        drafts = list(self.rule_drafts)
-        try:
-            if self._rules is not None and (changes or rules_changed):
-                # Both in one step no look comes between; the rules that now watch what a look
-                # skipped (a destination gone from under their folder) are marked fresh first.
-                saved = tuple(await self._rules.save(drafts if rules_changed else None, changes))
-                if rules_changed:
-                    self.rule_drafts, self._rules_baseline = list(saved), saved
-            elif changes:
-                await self._settings.update(**changes)
-            if stopped and self._ignored is not None:
-                for path in stopped:
-                    await self._ignored.stop_ignoring(path)
-                self._unignore = [p for p in self._unignore if p not in stopped]
-        except Exception as exc:  # a bad value, or forge.db couldn't be written
-            # The type only: a message could name a folder (with the user's name in it).
-            log.error("MediaForge's settings couldn't be saved (%s)", type(exc).__name__)
-            return t(SAVE_FAILED)
-        if self.rules_list.winfo_exists():
-            self._refresh()
-        return None
+    def _option_clicked(self, field: str, variable: tk.BooleanVar) -> None:
+        self._start(self._options_box, changes={field: bool(variable.get())})
 
 
 class UnfitWindow(ctk.CTkToplevel):
@@ -1491,41 +1660,167 @@ class UnfitWindow(ctk.CTkToplevel):
             pass
 
 
-def _build_library(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:
-    return LibrarySection(page, forge)
+# -- Folders --------------------------------------------------------------------------------------
 
-
-# Settings' MediaForge group, in the sidebar's order.
-# What Settings' search finds a MediaForge page by before its first visit (its boxes' titles and
-# a few words in them); once built, the page's own boxes are searched.
-FORGE_SEARCH: dict[str, tuple[str, ...]] = {
-    SECTION_LIBRARY: (
-        RULES_TITLE,
-        AIRGRABBER_TITLE,
-        IGNORED_TITLE,
-        LIBRARY_TITLE,
-        OPTIONS_TITLE,
-    ),
-    SECTION_NAMING: (
-        _naming.PRESETS_TITLE,
-        _naming.LIBRARY_TITLE,
-        _naming.LANGUAGE_TITLE,
-        _naming.MATCHES_TITLE,
-        N_("Trailer"),
-        N_("Poster"),
-    ),
-    SECTION_SUBTITLES: (
-        _subtitles.LANGUAGES_TITLE,
-        _subtitles.HEARING_TITLE,
-        _subtitles.ACCOUNT_LABEL,
-        _subtitles.OWN_KEY_LABEL,
-    ),
-    SECTION_MENU: (_menu.MENU_TITLE, _menu.PRESETS_TITLE, _menu.FILES_TITLE),
+DestinationKind = Literal["series", "film"]  # as the Folders page's lists (series / film folders)
+_DESTINATION_FIELDS: dict[DestinationKind, str] = {
+    "series": "series_folder",
+    "film": "movies_folder",
 }
 
-FORGE_SECTIONS: dict[str, ForgeSection] = {
-    SECTION_LIBRARY: ForgeSection("📁", LIBRARY_NOTE, _build_library),
-    SECTION_NAMING: ForgeSection(NAMING_ICON, NAMING_NOTE, build_naming),
-    SECTION_SUBTITLES: ForgeSection(SUBTITLES_ICON, SUBTITLES_NOTE, build_subtitles),
-    SECTION_MENU: ForgeSection(MENU_ICON, MENU_NOTE, build_menu),
+
+class LibraryDestinations:
+    """MediaForge's Series and Movies folders (`ForgeSettings.series_folder` / `movies_folder`,
+    where rules moving to "your Series / Movies folder" and files added by hand with Move to
+    library folder go) as Settings' Folders page marks them in its lists (app/ui/folders_page.py's
+    `Destinations`). `start()` starts Forge if nothing has yet; until it is ready nothing is
+    known (`ready`), and when it can't start `reason` says why. A change is refused when it
+    leaves a rule with a refusal (`rules_refusal`, as Sorting's changes) and stored as Sorting
+    stores its settings (`RuleService.save`: the rules that will watch more are marked first,
+    nothing moves unseen). Logs never name a folder."""
+
+    def __init__(self, forge: _Starter) -> None:
+        self._forge = forge
+        self._listeners: list[Callable[[], None]] = []
+        self._unsubscribe: Callable[[], None] | None = None
+        self._failed = False
+        self._closed = False
+
+    def _settings(self) -> SettingsSource | None:
+        settings: SettingsSource | None = getattr(self._forge.services, "settings", None)
+        return settings
+
+    @property
+    def ready(self) -> bool:
+        return self._settings() is not None
+
+    @property
+    def reason(self) -> str:
+        """Why MediaForge isn't there ("" while it is getting ready or once it is)."""
+        return (self._forge.reason or t(UNAVAILABLE)) if self._failed else ""
+
+    def folder(self, kind: DestinationKind) -> str:
+        """Where sorted files of `kind` go ("": not chosen, or not known yet)."""
+        settings = self._settings()
+        if settings is None:
+            return ""
+        value: str = getattr(settings.current, _DESTINATION_FIELDS[kind])
+        return value
+
+    def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """`listener` hears Forge getting ready (or failing) and every change of the folders."""
+        self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return unsubscribe
+
+    def _tell(self) -> None:
+        for listener in list(self._listeners):
+            listener()
+
+    async def start(self) -> bool:
+        """Forge started (if nothing has yet); True once the folders are known."""
+        if self._forge.services is None:
+            await self._forge.start()
+        settings = self._settings()
+        if self._closed:
+            return settings is not None
+        if settings is None:
+            self._failed = True
+        elif self._unsubscribe is None:
+            self._unsubscribe = settings.subscribe(lambda _settings: self._tell())
+        self._tell()
+        return settings is not None
+
+    def close(self) -> None:
+        """The page went: nothing is heard any more."""
+        self._closed = True
+        self._listeners.clear()
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+    def _changes(self, folders: Mapping[DestinationKind, str]) -> dict[str, str]:
+        return {_DESTINATION_FIELDS[kind]: folder for kind, folder in folders.items()}
+
+    def problem(self, folders: Mapping[DestinationKind, str]) -> str | None:
+        """Why these folders can't be the destinations (a rule would be refused), or None."""
+        services, source = self._forge.services, self._settings()
+        if source is None:
+            return None
+        settings = source.current.model_copy(update=self._changes(folders))
+        rules: RulesSource | None = getattr(services, "rules", None)
+        if rules is not None:
+            stored: Sequence[Rule] = list(rules.current)
+        else:
+            from app.forge.core.rules import rules_from_settings  # not at import time
+
+            stored = rules_from_settings(settings)
+        return rules_refusal(stored, settings)
+
+    async def store(self, folders: Mapping[DestinationKind, str]) -> bool:
+        """Store these destinations (False: they are so already). Raises Refused when a rule
+        would be refused or forge.db couldn't be written (nothing stored then)."""
+        services, source = self._forge.services, self._settings()
+        if source is None:
+            return False
+        changes = {
+            name: value
+            for name, value in self._changes(folders).items()
+            if getattr(source.current, name) != value
+        }
+        if not changes:
+            return False
+        problem = self.problem(folders)
+        if problem is not None:
+            raise Refused(problem)
+        rules: RulesSource | None = getattr(services, "rules", None)
+        try:
+            if rules is not None:
+                await rules.save(None, changes)
+            else:
+                await source.update(**changes)
+        except Exception as exc:  # a bad value, or forge.db couldn't be written
+            log.error("MediaForge's library folders couldn't be saved (%s)", type(exc).__name__)
+            raise Refused(t(SAVE_FAILED)) from exc
+        return True
+
+
+def build_sorting(
+    slots: PartSlots, forge: ForgeRuntime, committer: Committer
+) -> ForgeSectionPart:
+    """Sorting's part."""
+    return LibrarySection(slots[PAGE_SORTING], forge, committer=committer)
+
+
+# Per page with a MediaForge part (app/ui/settings_pages_registry.py): its builder and what
+# Settings' search finds it by before its first visit (its boxes' titles and a few words in
+# them); once built, the page's own boxes are searched.
+FORGE_PARTS: dict[str, ForgePart] = {
+    PAGE_SORTING: ForgePart(
+        build_sorting, (WATCHING, RULES_TITLE, OPTIONS_TITLE, IGNORED_TITLE, AIRGRABBER_TITLE)
+    ),
+    PAGE_NAMING: ForgePart(
+        build_naming,
+        (
+            _naming.PRESETS_TITLE,
+            _naming.LIBRARY_TITLE,
+            _naming.LANGUAGE_TITLE,
+            _naming.MATCHES_TITLE,
+            N_("Trailer"),
+            N_("Poster"),
+        ),
+    ),
+    PAGE_SUBTITLES: ForgePart(
+        build_subtitles, (_subtitles.LANGUAGES_TITLE, _subtitles.HEARING_TITLE)
+    ),
+    PAGE_ACCOUNTS: ForgePart(
+        None,
+        (_subtitles.OPENSUBTITLES_TITLE, _subtitles.OWN_KEY_LABEL),
+        owner=PAGE_SUBTITLES,
+    ),
+    PAGE_WINDOWS: ForgePart(build_menu, (_menu.MENU_TITLE, _menu.PRESETS_TITLE, _menu.FILES_TITLE)),
 }

@@ -1,7 +1,7 @@
 """Getting a TMDB API key, step by step, with a Check of the pasted key.
 
 TmdbKeyGuide is the reusable part (step 3 of the first-run welcome); TmdbKeyDialog shows it on
-its own, for the "How do I get a free key?" link in Settings → Movie & show info.
+its own, for the "How do I get a free key?" link in Settings → Accounts & keys (the TMDB box).
 """
 
 from __future__ import annotations

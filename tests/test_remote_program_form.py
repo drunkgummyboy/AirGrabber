@@ -1,5 +1,5 @@
 """The NAS / other computer form: its pure helpers (the magnet note too), the widget, Settings →
-"Where downloads go" (three choices; in folder mode the form under the magnet note), the
+Torrent program (three choices; in folder mode the form under the magnet note), the
 welcome's third option card, and RemoteDownloads picking the client."""
 
 from __future__ import annotations
@@ -40,13 +40,9 @@ from app.ui.remote_program_form import (
     remote_host,
     result_look,
 )
-from app.ui.settings_dialog import (
-    SECTION_WHERE,
-    SettingsDialog,
-    download_dir_to_save,
-    download_settings,
-    section_for_field,
-)
+from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_pages_registry import PAGE_TORRENT
+from tests.test_settings_dialog import settle
 from app.ui.welcome_dialog import REMOTE_NOTE, REMOTE_TITLE, changes_error, download_changes
 from tests.people import FakePeople
 
@@ -134,16 +130,6 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(FIELD_LABELS["movie_remote_destination"], "Films folder")
         self.assertEqual(FILMS_LABEL, "Films folder")
         self.assertEqual(FILMS_HINT, "Leave empty to use the same folder")
-
-    def test_a_hidden_folder_entry_keeps_the_stored_folder(self) -> None:
-        stored = Path("E:/films")
-        self.assertEqual(download_dir_to_save(DownloadMode.FOLDER, " F:/films ", stored), "F:/films")
-        self.assertEqual(download_dir_to_save(DownloadMode.FOLDER, "", stored), "")
-        for mode in (DownloadMode.APP, DownloadMode.REMOTE):
-            self.assertEqual(download_dir_to_save(mode, "F:/films", stored), stored)
-            self.assertIsNone(download_dir_to_save(mode, "F:/films", None))
-        self.assertEqual(section_for_field("movie_download_dir"), SECTION_WHERE)
-        self.assertEqual(section_for_field("movie_remote_destination"), SECTION_WHERE)
 
     def test_folder_note_with_a_program(self) -> None:
         self.assertEqual(
@@ -444,7 +430,7 @@ class SettingsGeneralTests(GuiTestCase):
         dialog, _settings = self.dialog(download_mode=DownloadMode.APP)
         radios = [
             w.cget("text")
-            for w in _descendants(dialog.page(SECTION_WHERE))
+            for w in _descendants(dialog.page(PAGE_TORRENT))
             if isinstance(w, ctk.CTkRadioButton)
         ]
         self.assertEqual(
@@ -508,19 +494,23 @@ class SettingsGeneralTests(GuiTestCase):
         self.assertEqual(self.container(dialog._remote_form), dialog._folder_box.body)
         self.assertFalse(self.shown(dialog._folder_link))
         self.assertEqual(dialog._mode.get(), DownloadMode.FOLDER.value)  # still folder mode
-        # Set it up there and test: saved first, then the note names it.
+        # Set it up there: each field stores itself, then the note names it.
         form = dialog._remote_form
         form._program.set("Transmission")
+        form._program_changed("Transmission")  # what picking it in the menu does
         form._address.insert(0, "http://192.168.1.30:9091")
-        form._start_test()
-        assert form._test_task is not None
-        await form._test_task
-        self.assertEqual(form._result.cget("text"), "✓ Transmission 9.9")
+        form.text_fields[0].commit_now()  # the address: Enter, or leaving it
+        await settle()
         self.assertIs(settings.current.download_mode, DownloadMode.FOLDER)
+        self.assertIs(settings.current.remote_kind, RemoteKind.TRANSMISSION)
         self.assertEqual(settings.current.remote_url, "http://192.168.1.30:9091")
         self.assertTrue(
             dialog._folder_note.cget("text").endswith("sent to Transmission at 192.168.1.30.")
         )
+        form._start_test()
+        assert form._test_task is not None
+        await form._test_task
+        self.assertEqual(form._result.cget("text"), "✓ Transmission 9.9")
         # Another choice folds it away again.
         for mode in (DownloadMode.APP, DownloadMode.FOLDER):
             dialog._mode.set(mode.value)
@@ -528,27 +518,33 @@ class SettingsGeneralTests(GuiTestCase):
         self.assertFalse(self.shown(dialog._remote_form))
         self.assertEqual(dialog._folder_link.cget("text"), "Change")
 
-    async def test_a_bad_address_in_folder_mode_opens_the_form(self) -> None:
+    async def test_a_bad_address_in_folder_mode_is_refused_in_the_folder_box(self) -> None:
         dialog, settings = self.dialog()
+        dialog._reveal_remote_form()
         dialog._remote_form._address.insert(0, "nas:8080")
-        await dialog._save()
+        dialog._remote_form.text_fields[0].commit_now()
+        await settle()
         self.assertTrue(dialog.winfo_exists())
-        self.assertEqual(dialog.section, SECTION_WHERE)
         self.assertEqual(
-            dialog._error.cget("text"), "Address: Use a full address like https://nas.local:5001"
+            dialog._folder_box.refusal, "Address: Use a full address like https://nas.local:5001"
         )
         self.assertTrue(self.shown(dialog._remote_form))
         self.assertEqual(self.container(dialog._remote_form), dialog._folder_box.body)
         self.assertEqual(settings.current.remote_url, "")
+        self.assertEqual(dialog._remote_form.address, "nas:8080")  # kept as typed
 
-    async def test_save_stores_the_form_and_the_mode(self) -> None:
+    async def test_each_field_and_the_mode_store_themselves(self) -> None:
         dialog, settings = self.dialog()
         dialog._mode.set(DownloadMode.REMOTE.value)
+        dialog._mode_changed()  # what the radio button's click does
         form = dialog._remote_form
         form._program.set("Transmission")
+        form._program_changed("Transmission")
         form._address.insert(0, "http://192.168.1.30:9091")
         form._destination.insert(0, "/downloads/tv")
-        await dialog._save()
+        for field in form.text_fields:
+            field.commit_now()
+        await settle()
         current = settings.current
         self.assertIs(current.download_mode, DownloadMode.REMOTE)
         self.assertIs(current.remote_kind, RemoteKind.TRANSMISSION)
@@ -576,11 +572,12 @@ class SettingsGeneralTests(GuiTestCase):
         # The remote form has its own films row.
         self.assertIsNotNone(dialog._remote_form._films)
 
-    async def test_save_stores_the_films_folder(self) -> None:
+    async def test_the_films_folder_stores_itself(self) -> None:
         dialog, settings = self.dialog()
         films = self.folder / "films"
         dialog._movie_dir.insert(0, f"  {films}  ")
-        await dialog._save()
+        dialog._movie_dir_field.commit_now()
+        await settle()
         self.assertEqual(settings.current.movie_download_dir, films)
         self.assertEqual(settings.current.download_dir, self.folder)
 
@@ -588,43 +585,55 @@ class SettingsGeneralTests(GuiTestCase):
         dialog, settings = self.dialog(movie_download_dir=self.folder / "films")
         self.assertEqual(dialog._movie_dir.get(), str(self.folder / "films"))
         dialog._movie_dir.delete(0, "end")
-        await dialog._save()
+        dialog._movie_dir_field.commit_now()
+        await settle()
         self.assertIsNone(settings.current.movie_download_dir)
 
-    async def test_a_hidden_films_folder_keeps_the_stored_one(self) -> None:
-        stored = self.folder / "films"
-        dialog, settings = self.dialog(movie_download_dir=stored, download_mode=DownloadMode.APP)
-        dialog._movie_dir.delete(0, "end")
-        await dialog._save()
-        self.assertEqual(settings.current.movie_download_dir, stored)
-
-    async def test_save_stores_the_films_destination(self) -> None:
+    async def test_an_emptied_watch_folder_is_refused(self) -> None:
         dialog, settings = self.dialog()
-        dialog._mode.set(DownloadMode.REMOTE.value)
+        dialog._download_dir.set("")
+        dialog._download_dir_field.commit_now()
+        await settle()
+        self.assertEqual(
+            dialog._folder_box.refusal, "Save .torrent files to a folder: Choose a folder"
+        )
+        self.assertEqual(settings.current.download_dir, self.folder)
+
+    async def test_the_films_destination_stores_itself_and_follows_elsewhere(self) -> None:
+        dialog, settings = self.dialog()
         form = dialog._remote_form
-        form._program.set("qBittorrent")
-        form._address.insert(0, "http://192.168.1.20:8080")
-        form._destination.insert(0, "/downloads/tv")
         assert form._films is not None
         form._films.insert(0, " /downloads/movies ")
-        await dialog._store()  # Save's storing, without closing the dialog
-        current = settings.current
-        self.assertEqual(current.remote_destination, "/downloads/tv")
-        self.assertEqual(current.movie_remote_destination, "/downloads/movies")
-        self.assertEqual(dialog._download_shown, download_settings(current))
+        form.text_fields[-1].commit_now()
+        await settle()
+        self.assertEqual(settings.current.movie_remote_destination, "/downloads/movies")
         # A change made elsewhere (qBittorrent's setup) shows in the form.
         await settings.update(movie_remote_destination="")
         self.assertEqual(form._films.get(), "")
 
-    async def test_test_saves_first_then_tests_the_chosen_program(self) -> None:
+    async def test_a_change_elsewhere_keeps_a_field_being_typed(self) -> None:
+        dialog, settings = self.dialog()
+        form = dialog._remote_form
+        form._username.insert(0, "beau")  # typed, not stored yet
+        await settings.update(
+            remote_kind=RemoteKind.QBITTORRENT,
+            remote_url="http://127.0.0.1:8080",
+            remote_username="airgrabber",
+        )
+        self.assertEqual(form._program.get(), "qBittorrent")
+        self.assertEqual(form.address, "http://127.0.0.1:8080")
+        self.assertEqual(form._username.get(), "beau")
+
+    async def test_test_tries_the_form_without_storing_it(self) -> None:
         dialog, settings = self.dialog()
         form = dialog._remote_form
         form._program.set("qBittorrent")
         form._address.insert(0, "http://192.168.1.20:8080")
         form._start_test()
+        self.assertEqual(form._result.cget("text"), "Testing…")
         assert form._test_task is not None
         await form._test_task
-        self.assertEqual(settings.current.remote_url, "http://192.168.1.20:8080")
+        self.assertEqual(settings.current.remote_url, "")  # nothing stored by the test
         self.assertEqual(self.clients[RemoteKind.QBITTORRENT].tests, 1)
         self.assertEqual(form._result.cget("text"), "✓ qBittorrent 9.9")
 

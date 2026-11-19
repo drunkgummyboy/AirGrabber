@@ -1,4 +1,4 @@
-"""Settings → Advanced: the Prowlarr panel. A status line (connected / not running / not
+"""Settings → Quality & sources, in the Sites box: the Prowlarr panel. A status line (connected / not running / not
 installed …), "Install Prowlarr" when it is missing, "Use Prowlarr", "Open Prowlarr", and a link
 that shows the fields for a Prowlarr on another computer (rows from `remote_row`, filled by the
 Settings dialog)."""
@@ -33,10 +33,10 @@ from app.ui.tasks import spawn
 
 PROWLARR_URL = "https://prowlarr.com"
 
-# Logical (unscaled) CTk units.
-PANEL_PAD_X = 18
-PANEL_PAD_Y = 16
-_PANEL_RADIUS = 12
+# Logical (unscaled) CTk units. The panel sits inside the Sites box (no border or padding of
+# its own: not a box inside a box).
+PANEL_PAD_X = 0
+PANEL_PAD_Y = 0
 _LINE_GAP = 10  # between the panel's lines
 _REMOTE_GAP = 14  # above the "another computer" fields, and between them
 _CONTROL_GAP = 16  # between the controls of one line
@@ -126,7 +126,7 @@ def _alive(widget: tk.Misc) -> bool:
 
 
 class ProwlarrPanel(ctk.CTkFrame):
-    """The bordered Prowlarr block. `refresh()` reads the status (again); `on_status` hears every
+    """The Prowlarr block, in the Sites box under the built-in sites. `refresh()` reads the status (again); `on_status` hears every
     status shown (the dialog then shows a URL and key saved meanwhile)."""
 
     def __init__(
@@ -143,13 +143,7 @@ class ProwlarrPanel(ctk.CTkFrame):
     ) -> None:
         """`width` is the panel's outer width; `label_width` the label column of the
         "another computer" rows (logical units)."""
-        super().__init__(
-            master,
-            fg_color="transparent",
-            border_width=1,
-            border_color=theme.PANEL_EDGE,
-            corner_radius=_PANEL_RADIUS,
-        )
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self._prowlarr = prowlarr
         self._on_status = on_status
         self._address = ""
@@ -167,7 +161,7 @@ class ProwlarrPanel(ctk.CTkFrame):
         title = ctk.CTkFrame(body, fg_color="transparent")
         title.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
-            title, text="Prowlarr", font=theme.font(16, bold=True), text_color=theme.TEXT
+            title, text="Prowlarr", font=theme.font(DETAIL_SIZE, bold=True), text_color=theme.TEXT
         ).pack(side="left")
         ctk.CTkLabel(
             title, text=t(TITLE_NOTE), font=theme.font(DETAIL_SIZE), text_color=theme.TEXT_MUTED

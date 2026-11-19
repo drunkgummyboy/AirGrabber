@@ -7,7 +7,7 @@ TRUST_PER_REDO kept ones, is trusted: the picker ranks it right after the user's
 groups (`picking.group_rank`). A blocked group is never learned.
 
 Blocked (`block_group`): "Wrong or fake?" in a download's ⋯ menu. The group goes on
-`blocked_groups` (Settings › Advanced), off the preferred and learned ones, and its releases are
+`blocked_groups` (Settings › Quality & sources), off the preferred and learned ones, and its releases are
 never shown or picked again (`search.passes_settings`).
 
 Nothing here logs a release title.

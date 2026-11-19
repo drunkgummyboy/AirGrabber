@@ -136,10 +136,14 @@ FOLLOW_FAILED = N_("Couldn't follow {name}: TVmaze doesn't know it")
 OPEN_FAILED = N_("Couldn't find {name} on TVmaze")
 MORE_TEXT = N_("Show more ({n})")
 EMPTY_TITLE = N_("Nothing from Plex yet")
-EMPTY_TEXT = N_("AirGrabber reads Plex every half hour; Settings → Library → Check now reads it at once.")
+EMPTY_TEXT = N_(
+    "AirGrabber reads Plex every half hour; Settings → Plex & library → Check now reads it at "
+    "once."
+)
 EMPTY_FOLDERS_TITLE = N_("Nothing from your folders yet")
 EMPTY_FOLDERS_TEXT = N_(
-    "AirGrabber reads your folders every 6 hours; Settings → Library → Check now reads them at once."
+    "AirGrabber reads your folders every 6 hours; Settings → Folders → Check now reads them "
+    "at once."
 )
 UNRECOGNISED_TITLE = N_("Couldn't recognise ({n})")
 # The header's round ↻: Plex or the folders read again now, then the page (its tip says so).

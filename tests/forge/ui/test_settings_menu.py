@@ -1,6 +1,8 @@
-"""Settings › Right-click menu (app/forge/ui/settings_menu.py): on / off, which presets, whose menu Explorer has, the .reg files, changes kept
-until Save (D9), Naming's saved presets carried along. The registry is a fake
-(tests/forge/test_context_menu.py's); the guard in tests/forge/base.py keeps the real one out."""
+"""Settings › Windows › Explorer's right-click menu (app/forge/ui/settings_menu.py, one box): on /
+off, which presets, whose menu Explorer has, the .reg files, each click stored at once (the menu
+on with no preset ticked refused in the box; Undo puts it back), Naming's stored presets carried
+along. The registry is a fake (tests/forge/test_context_menu.py's); the guard in
+tests/forge/base.py keeps the real one out."""
 
 from __future__ import annotations
 
@@ -25,18 +27,25 @@ from app.forge.ui.settings_menu import (
     PICK_ONE,
     READ_FAILED,
     SAVE_FAILED,
-    SECTION_MENU,
     STATUS,
     MenuSection,
 )
 from app.forge.ui.settings_naming import PresetsChange
-from app.forge.ui.settings_pages import FORGE_SECTIONS
+from app.forge.ui.settings_pages import FORGE_PARTS
 from app.i18n import Language, t
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_pages_registry import PAGE_ORDER, PAGE_WINDOWS
 from tests.forge.ui.settings_kit import forge_settings
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.test_context_menu import FakeRegistry, old_mediaforge_menu
 from tests.forge.tk import pump
+from tests.test_settings_dialog import settle
+
+
+async def done(task: "asyncio.Task[bool] | None") -> bool:
+    """A click's change, stored."""
+    assert task is not None
+    return await task
 
 NAMES = ["Auto", "Series (Folder)", "Movie (Folder)"]
 NOT_READY_TEXT = "MediaForge isn't ready yet (test)."
@@ -158,8 +167,8 @@ class MenuSettingsTests(ForgeAsyncTestCase):
         )
 
     async def dialog(self, forge: FakeForge) -> tuple[SettingsDialog, MenuSection]:
-        dialog = forge_settings(self.root, forge, section=SECTION_MENU)
-        part = dialog.parts[SECTION_MENU]
+        dialog = forge_settings(self.root, forge, section=PAGE_WINDOWS)
+        part = dialog.parts[PAGE_WINDOWS]
         assert isinstance(part, MenuSection)
         part.ask_save = self._ask_save
         for _ in range(50):
@@ -191,30 +200,44 @@ class MenuSettingsTests(ForgeAsyncTestCase):
 
     # --- the section ---------------------------------------------------------------------------
 
-    async def test_the_section_comes_last_in_the_mediaforge_group(self) -> None:
-        dialog, _part, _parts = await self.ready()
-        self.assertEqual(list(FORGE_SECTIONS)[-1], SECTION_MENU)
-        self.assertEqual(dialog.section, SECTION_MENU)
-        self.assertEqual(labels(dialog.page(SECTION_MENU))[0], "Right-click menu")
+    async def test_one_box_on_windows_the_last_mediaforge_part(self) -> None:
+        dialog, part, _parts = await self.ready()
+        forge_pages = [page for page in PAGE_ORDER if page in FORGE_PARTS]
+        self.assertEqual(forge_pages[-1], PAGE_WINDOWS)
+        self.assertEqual(dialog.section, PAGE_WINDOWS)
+        texts = labels(dialog.page(PAGE_WINDOWS))
+        self.assertEqual(texts[0], "Windows")
+        order = [
+            texts.index(text)
+            for text in (
+                "In the background",
+                "Explorer's right-click menu",
+                "Presets in the menu",
+                "Registry files",
+            )
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(len(part._content), 1)  # the tick, the presets and the files together
+        for widget in (part.on_box, part.presets_frame, part.reg_button):
+            self.assertIs(widget.master, part._content[0].body)
 
     async def test_off_shows_every_preset_ticked(self) -> None:
         dialog, part, _parts = await self.ready()
         self.assertFalse(part.on)
         self.assertEqual(part.state, MenuState.OFF)
         self.assertEqual(part.ticked(), NAMES)
-        texts = labels(dialog.page(SECTION_MENU))
+        texts = labels(dialog.page(PAGE_WINDOWS))
         self.assertIn(t(STATUS[MenuState.OFF]), texts)
         self.assertNotIn(t(GETTING_READY), texts)
         self.assertFalse(part.legacy_button.winfo_manager())  # no old HKLM menu here
-        self.assertEqual(part.changes(), {})
 
     async def test_waits_for_forge_and_says_when_it_cant_start(self) -> None:
         forge = FakeForge(self.parts(), started=False)
         forge.gate = asyncio.get_running_loop().create_future()
         dialog, part = await self.dialog(forge)
         self.assertFalse(part.ready)
-        self.assertIn(t(GETTING_READY), labels(dialog.page(SECTION_MENU)))
-        self.assertTrue(await dialog._save_all())  # nothing to save yet: Save still works
+        self.assertIn(t(GETTING_READY), labels(dialog.page(PAGE_WINDOWS)))
+        self.assertIsNone(part.set_on(True))  # nothing to change yet
         forge.gate.set_result(None)
         await pump(self.root, 0.2)
         self.assertTrue(part.ready)
@@ -231,79 +254,91 @@ class MenuSettingsTests(ForgeAsyncTestCase):
         self.assertNotIn("locked", "\n".join(logs.output))
         self.assertEqual(str(part.waiting_label.cget("text")), t(READ_FAILED))
 
-    # --- on / off, on Save only ------------------------------------------------------------------
+    # --- on / off, at once ------------------------------------------------------------------------
 
-    async def test_turning_it_on_waits_for_save(self) -> None:
+    async def test_turning_it_on_writes_it_at_once(self) -> None:
         dialog, part, parts = await self.ready()
-        part.set_on(True)
-        self.assertEqual(self.registry.keys, {})  # nothing written yet
-        self.assertEqual(part.changes(), {"on": True})
-        self.assertTrue(await dialog._save_all())
+        task = part.set_on(True)
+        self.assertEqual(self.registry.keys, {})  # in a moment
+        assert task is not None
+        self.assertTrue(await task)
         self.assertEqual(self.verbs(), [f"Forge: {name}" for name in NAMES])
         self.assertTrue(all(f'"{MAIN_PY}" --forge --confirm' in c for c in self.registry.commands()))
         self.assertEqual(parts.settings.updates, [])  # every preset: [] stays []
         self.assertEqual(part.state, MenuState.ON)
-        self.assertIn(t(STATUS[MenuState.ON]), labels(dialog.page(SECTION_MENU)))
-        self.assertEqual(part.changes(), {})
+        self.assertIn(t(STATUS[MenuState.ON]), labels(dialog.page(PAGE_WINDOWS)))
+        bar = dialog.committer.bar
+        assert bar is not None
+        self.assertTrue(bar.shown)
 
-    async def test_cancel_changes_nothing(self) -> None:
-        dialog, part, parts = await self.ready()
-        part.set_on(True)
-        part.set_ticked(["Auto"])
-        dialog.destroy()
-        await pump(self.root, 0.1)
+    async def test_undo_takes_it_off_again(self) -> None:
+        dialog, part, _parts = await self.ready()
+        task = part.set_on(True)
+        assert task is not None
+        await task
+        self.assertTrue(await dialog.committer.run_undo())
         self.assertEqual(self.registry.keys, {})
+        self.assertEqual(part.state, MenuState.OFF)
+        self.assertFalse(part.on)
+
+    async def test_closing_leaves_what_was_stored(self) -> None:
+        dialog, part, parts = await self.ready()
+        task = part.set_on(True)
+        dialog.destroy()
+        assert task is not None
+        await task  # stored all the same; nothing of the closed page touched
+        await pump(self.root, 0.1)
+        self.assertEqual(len(self.verbs()), 3)
         self.assertEqual(parts.settings.updates, [])
 
     async def test_chosen_presets_are_stored_and_shown_in_the_menu(self) -> None:
-        dialog, part, parts = await self.ready()
-        part.set_on(True)
-        part.set_ticked(["Movie (Folder)", "Auto"])
-        self.assertTrue(await dialog._save_all())
+        _dialog, part, parts = await self.ready()
+        await done(part.set_on(True))
+        await done(part.set_ticked(["Movie (Folder)", "Auto"]))
         self.assertEqual(parts.settings.updates, [{"context_menu_presets": ["Auto", "Movie (Folder)"]}])
         self.assertEqual(self.verbs(), ["Forge: Auto", "Forge: Movie (Folder)"])
         # Ticking every one again stores [] (presets added later appear too).
-        part.set_ticked(NAMES)
-        self.assertTrue(await dialog._save_all())
+        await done(part.set_ticked(NAMES))
         self.assertEqual(parts.settings.current.context_menu_presets, [])
         self.assertEqual(len(self.verbs()), 3)
 
-    async def test_on_with_no_preset_ticked_cant_be_saved(self) -> None:
-        dialog, part, _parts = await self.ready()
-        part.set_on(True)
-        part.set_ticked([])
-        self.assertEqual(part.problem(), t(PICK_ONE))
-        self.assertFalse(await dialog._save_all())
-        self.assertEqual(self.registry.keys, {})
-        part.set_on(False)  # off: no preset needed, and nothing stored
-        self.assertIsNone(part.problem())
-        self.assertEqual(part.changes(), {})
+    async def test_on_with_no_preset_ticked_is_refused_in_its_box(self) -> None:
+        _dialog, part, parts = await self.ready()
+        await done(part.set_on(True))
+        writes = self.registry.writes
+        self.assertFalse(await done(part.set_ticked([])))
+        self.assertEqual(part._menu_box.refusal, t(PICK_ONE))
+        self.assertEqual(self.registry.writes, writes)  # nothing stored
+        self.assertEqual(parts.settings.updates, [])
+        self.assertEqual(part.ticked(), NAMES)  # the ticks go back
+        self.assertTrue(await done(part.set_on(False)))  # off needs no preset
+        self.assertEqual(part._menu_box.refusal, "")
 
     async def test_turning_it_off_removes_this_copys_menu(self) -> None:
         self.registry.put(this_copys_menu(["Auto"]))
-        dialog, part, _parts = await self.ready(ForgeSettings(context_menu_presets=["Auto"]))
+        _dialog, part, _parts = await self.ready(ForgeSettings(context_menu_presets=["Auto"]))
         self.assertEqual(part.state, MenuState.ON)
         self.assertTrue(part.on)
         self.assertEqual(part.ticked(), ["Auto"])
-        part.set_on(False)
-        self.assertTrue(await dialog._save_all())
+        await done(part.set_on(False))
         self.assertEqual(self.registry.keys, {})
         self.assertEqual(part.state, MenuState.OFF)
 
-    async def test_an_unchanged_form_writes_nothing(self) -> None:
+    async def test_opening_writes_nothing(self) -> None:
         self.registry.put(this_copys_menu(NAMES))
-        dialog, part, parts = await self.ready()
-        self.assertTrue(await dialog._save_all())
+        _dialog, _part, parts = await self.ready()
+        await settle()
         self.assertEqual(self.registry.writes, 0)
         self.assertEqual(parts.settings.updates, [])
 
-    async def test_a_stale_menu_is_put_right_on_save(self) -> None:
+    async def test_a_stale_menu_is_put_right_by_ticking_it_again(self) -> None:
         self.registry.put(this_copys_menu(["Auto"], python=Path(r"C:\Old\Python312\python.exe")))
         dialog, part, _parts = await self.ready()
         self.assertEqual(part.state, MenuState.STALE)
         self.assertTrue(part.on)
-        self.assertIn(t(STATUS[MenuState.STALE]), labels(dialog.page(SECTION_MENU)))
-        self.assertTrue(await dialog._save_all())
+        self.assertIn(t(STATUS[MenuState.STALE]), labels(dialog.page(PAGE_WINDOWS)))
+        await done(part.set_on(False))
+        await done(part.set_on(True))
         self.assertEqual(part.state, MenuState.ON)
         self.assertNotIn(r"C:\Old", " ".join(self.registry.commands()))
 
@@ -312,29 +347,27 @@ class MenuSettingsTests(ForgeAsyncTestCase):
         dialog, part, _parts = await self.ready()
         self.assertEqual(part.state, MenuState.OLD_MEDIAFORGE)
         self.assertFalse(part.on)
-        self.assertIn(t(STATUS[MenuState.OLD_MEDIAFORGE]), labels(dialog.page(SECTION_MENU)))
-        part.set_ticked(["Auto"])  # a preset change alone never touches its menu
-        self.assertTrue(await dialog._save_all())
+        self.assertIn(t(STATUS[MenuState.OLD_MEDIAFORGE]), labels(dialog.page(PAGE_WINDOWS)))
+        await done(part.set_ticked(["Auto"]))  # a preset change alone: not its menu
         self.assertEqual(self.registry.writes, 0)
         self.assertEqual(part.state, MenuState.OLD_MEDIAFORGE)
-        part.set_on(True)  # the owner's own choice: it is replaced
-        self.assertTrue(await dialog._save_all())
+        await done(part.set_on(True))  # the owner's own choice: it is replaced
         self.assertEqual(part.state, MenuState.ON)
 
     async def test_a_registry_that_cant_be_written(self) -> None:
-        dialog, part, _parts = await self.ready()
+        _dialog, part, _parts = await self.ready()
         self.registry.fail_writes = True
-        part.set_on(True)
         with self.assertLogs("app.forge.ui.settings_menu", "ERROR") as logs:
-            self.assertFalse(await dialog._save_all())
+            self.assertFalse(await done(part.set_on(True)))
         self.assertNotIn("access denied", "\n".join(logs.output))
-        self.assertEqual(str(dialog._error.cget("text")), t(SAVE_FAILED))
+        self.assertEqual(part._menu_box.refusal, t(SAVE_FAILED))
+        self.assertFalse(part.on)  # the tick goes back
 
     # --- the .reg files -----------------------------------------------------------------------------
 
     async def test_saves_the_menu_as_a_reg_file(self) -> None:
         _dialog, part, _parts = await self.ready()
-        part.set_ticked(["Auto"])
+        part.set_ticks(["Auto"])  # shown, not stored
         self.save_to = str(self.tmp / "menu.reg")
         part.save_reg_file()
         self.assertEqual(self.saved[0][1], "MediaForge menu.reg")
@@ -345,6 +378,7 @@ class MenuSettingsTests(ForgeAsyncTestCase):
         self.assertNotIn("\r\r\n", text)
         self.assertIn('"MUIVerb"="Forge: Auto"', text)
         self.assertNotIn("Forge: Series", text)
+        await settle()
         self.assertEqual(self.registry.keys, {})  # only the file
 
     async def test_the_old_menus_removal_file_shows_only_while_it_is_there(self) -> None:
@@ -373,8 +407,7 @@ class MenuSettingsTests(ForgeAsyncTestCase):
     async def test_a_preset_renamed_in_naming_is_carried_along(self) -> None:
         self.registry.put(this_copys_menu(["Auto", "Series (Folder)"]))
         settings = ForgeSettings(context_menu_presets=["Auto", "Series (Folder)"])
-        dialog, part, parts = await self.ready(settings)
-        part.set_ticked(["Auto"])  # not saved yet: kept
+        _dialog, part, parts = await self.ready(settings)
         change = PresetsChange(
             names=("Auto", "Plex Series", "New one"),
             renamed={"Series (Folder)": "Plex Series"},
@@ -383,9 +416,9 @@ class MenuSettingsTests(ForgeAsyncTestCase):
         await part._presets_saved(change)
         self.assertEqual(parts.settings.current.context_menu_presets, ["Auto", "Plex Series"])
         self.assertEqual(self.verbs(), ["Forge: Auto", "Forge: Plex Series"])
-        self.assertEqual(part.ticked(), ["Auto"])  # the unsaved untick stays
+        self.assertEqual(part.ticked(), ["Auto", "Plex Series"])
         parts.presets.names = list(change.names)
-        self.assertTrue(await dialog._save_all())
+        await done(part.set_ticked(["Auto"]))
         self.assertEqual(self.verbs(), ["Forge: Auto"])
 
     async def test_naming_changes_leave_another_programs_menu_alone(self) -> None:

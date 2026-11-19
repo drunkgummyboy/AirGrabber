@@ -47,14 +47,14 @@ class RunProgressTest(unittest.TestCase):
         self.assertEqual(len(self.heard), 1)
 
     def test_two_runs_the_newest_report_wins_and_idle_only_when_neither_runs(self) -> None:
-        self.progress.report("Waiting for Auto-rename to finish…", 0.0, source=PAGE)
+        self.progress.report("Waiting for Sorting to finish…", 0.0, source=PAGE)
         self.progress.report("Renaming 1 of 3", 0.0, source=AUTO)
         self.assertEqual(self.progress.state.text, "Renaming 1 of 3")
         self.progress.report("Renaming 2 of 3", 0.33, source=AUTO)
         self.progress.idle(AUTO)
         state = self.progress.state
         self.assertTrue(state.running)  # the page's run still waits
-        self.assertEqual((state.text, state.source), ("Waiting for Auto-rename to finish…", PAGE))
+        self.assertEqual((state.text, state.source), ("Waiting for Sorting to finish…", PAGE))
         self.progress.idle(PAGE)
         self.assertFalse(self.progress.state.running)
 

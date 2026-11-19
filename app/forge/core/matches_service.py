@@ -22,5 +22,9 @@ class MatchService:
     async def forget(self, match: RememberedMatch) -> None:
         await self._repository.forget(match.kind, match.norm_title, match.year)
 
+    async def remember(self, match: RememberedMatch) -> None:
+        """Remember `match` again (Settings' Undo of a Forget)."""
+        await self._repository.remember(match)
+
     async def clear(self) -> None:
         await self._repository.clear()

@@ -33,7 +33,7 @@ from app.forge.ui.activity_panel import ActivityPanel
 from app.forge.ui.history_view import HistoryView
 from app.forge.ui.page import AUTO_OFF, GETTING_READY, ForgePage, make_shortcut_once
 from app.forge.ui.queue_view import QueueView
-from app.forge.ui.settings_pages import SECTION_LIBRARY
+from app.ui.settings_pages_registry import PAGE_SORTING
 from app.i18n import Language, current_language, set_language, t
 from app.services.images import ImageCache
 from app.services.settings import SettingsService
@@ -358,7 +358,7 @@ class FitTests(PageCase):
 
 class StatusLineTests(PageCase):
     async def test_it_fits_the_smallest_main_window_with_the_presets_switch(self) -> None:
-        for language, words in ((Language.EN, "Auto-rename off"), (Language.NL, "Automatisch uit")):
+        for language, words in ((Language.EN, "Sorting off"), (Language.NL, "Sorteren uit")):
             set_language(language)
             page = await self.make_page()
             self.switch.grid_remove()  # this test's stand-in: the real row has nothing there now
@@ -393,22 +393,22 @@ class StatusLineTests(PageCase):
         page.set_watch_status(WatchStatus("off", guard))
         self.assertEqual(page.status_shown, guard)
 
-    async def test_a_click_opens_settings_at_auto_rename(self) -> None:
+    async def test_a_click_opens_settings_at_sorting(self) -> None:
         page = await self.make_page()
         asked: list[str | None] = []
         page.on_settings = asked.append
         assert page.status_button is not None
         page.status_button.invoke()
-        self.assertEqual(asked, [SECTION_LIBRARY])
-        self.assertEqual(t(SECTION_LIBRARY), "Auto-rename")
+        self.assertEqual(asked, [PAGE_SORTING])
+        self.assertEqual(t(PAGE_SORTING), "Sorting")
 
     async def test_a_bands_rule_opens_settings_at_that_rule(self) -> None:
         page = await self.make_page()
         asked: list[tuple[str | None, str | None]] = []
         page.on_settings = lambda section, spot=None: asked.append((section, spot))
         assert page.queue is not None
-        page.queue.on_settings(SECTION_LIBRARY, "rule:3")  # what a band's rule label asks
-        self.assertEqual(asked, [(SECTION_LIBRARY, "rule:3")])
+        page.queue.on_settings(PAGE_SORTING, "rule:3")  # what a band's rule label asks
+        self.assertEqual(asked, [(PAGE_SORTING, "rule:3")])
 
     async def test_a_long_status_is_cut_and_never_moves_the_switch(self) -> None:
         page = await self.make_page()
@@ -721,7 +721,7 @@ class DutchTests(PageCase):
         page = await self.make_page()
         self.root.geometry("1600x800")
         await pump(self.root, 0.2)
-        self.assertEqual(page.status_shown, "Automatisch uit")
+        self.assertEqual(page.status_shown, "Sorteren uit")
         page.toggle_history()
         await pump(self.root, 0.05)
         assert page.activity_button is not None

@@ -96,6 +96,7 @@ class ForgeRuntime:
         self._services: ForgeServices | None = None
         self._starting: asyncio.Future[ForgeServices | None] | None = None
         self._on_ready: list[ReadyCallback] = []
+        self._on_start_end: list[Callable[[], None]] = []  # `when_start_ends`, once each
         self._closed = False
 
     @property
@@ -116,6 +117,18 @@ class ForgeRuntime:
         """Forge's services; None until `start()` has finished (and when Forge is off)."""
         return self._services
 
+    def when_start_ends(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Call `callback` once the start under way (or the next one) has ended, whether Forge
+        is ready, stays off (NOT_READY) or FAILED: what Settings' Overview waits for. Returns
+        what forgets it again (a closed window must not be kept for a start that never comes)."""
+        self._on_start_end.append(callback)
+
+        def forget() -> None:
+            if callback in self._on_start_end:
+                self._on_start_end.remove(callback)
+
+        return forget
+
     def when_ready(self, callback: ReadyCallback) -> None:
         """Call `callback` with the services once Forge has started, before the renamer starts
         (so its status and notifications can be wired first); at once when it has already."""
@@ -134,6 +147,17 @@ class ForgeRuntime:
         return await asyncio.shield(self._starting)
 
     async def _start(self) -> ForgeServices | None:
+        try:
+            return await self._start_once()
+        finally:
+            callbacks, self._on_start_end = self._on_start_end, []
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    log.exception("A MediaForge start-end callback failed")
+
+    async def _start_once(self) -> ForgeServices | None:
         if self._closed:
             return None
         self._state = ForgeState.STARTING
@@ -189,6 +213,7 @@ class ForgeRuntime:
         self._state = ForgeState.CLOSED
         services, self._services = self._services, None
         self._on_ready.clear()
+        self._on_start_end.clear()
         if services is None:
             return
         try:

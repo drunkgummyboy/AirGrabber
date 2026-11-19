@@ -1,14 +1,17 @@
 """Settings' search box (above the sidebar): type "trailer" or "Plex", pick a match, and the window
 shows its page scrolled to that box.
 
-What it searches: every built page's boxes, by their title and the words in them (labels, tick
-boxes, switches, choices), and each page's own title; a MediaForge page not built yet by the words
-its sections list (`FORGE_SEARCH` in app/forge/ui/settings_pages.py). Whole words don't matter:
-every word typed has to appear somewhere in a match, ignoring case."""
+What it searches: every page's boxes, by their title (a box without a bold name by its search
+title, `SettingsPage.box`) and the words in them (labels, tick boxes, switches, choices, and the
+words a box lists for itself: `add_words`, e.g. an old name), and each page's own title; a
+MediaForge part not built yet by the words it lists (`FORGE_PARTS` in
+app/forge/ui/settings_pages.py). Whole words don't matter: every word typed has to appear
+somewhere in a match, ignoring case."""
 
 from __future__ import annotations
 
 import tkinter as tk
+import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
@@ -21,6 +24,23 @@ PLACEHOLDER = N_("Search settings")
 NO_MATCH = N_("Nothing found")
 MAX_RESULTS = 8
 RESULT_HEIGHT = 30
+
+
+# The words a box is also found by (`add_words`), by its frame; gone with the frame.
+_WORDS: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+
+
+def add_words(frame: Any, *words: str) -> None:
+    """`frame` (a box's) is also found by `words` (N_() texts, translated here): its old name,
+    what it is about."""
+    _WORDS[frame] = " ".join([_WORDS.get(frame, ""), *(t(word) for word in words)]).strip()
+
+
+def _listed(frame: Any) -> str:
+    try:
+        return _WORDS.get(frame, "")
+    except TypeError:  # not a widget (no words of its own)
+        return ""
 
 
 class Match(NamedTuple):
@@ -71,7 +91,7 @@ def places(
     for section, boxes in pages.items():
         found.append(Place(Match(section, "", None), t(section)))
         for title, frame in boxes:
-            words = " ".join([title, *_texts(frame)])
+            words = " ".join([title, *_texts(frame), _listed(frame)])
             found.append(Place(Match(section, title, frame), f"{t(section)} {words}"))
     for section, listed in unbuilt.items():
         found.append(
@@ -81,12 +101,18 @@ def places(
 
 
 def search(query: str, everything: Iterable[Place], limit: int = MAX_RESULTS) -> list[Match]:
-    """The places whose words hold every word of `query`, boxes before whole pages, each once."""
+    """The places whose words hold every word of `query`, boxes before whole pages (a box whose
+    title holds them first), each once."""
     wanted = query.casefold().split()
     if not wanted:
         return []
     hits = [p.match for p in everything if all(w in p.words.casefold() for w in wanted)]
-    hits.sort(key=lambda match: match.title == "")  # a box first, then a page
+
+    def rank(match: Match) -> tuple[bool, bool]:
+        titled = all(w in match.title.casefold() for w in wanted)
+        return (match.title == "", not titled)
+
+    hits.sort(key=rank)  # a box first (named so first), then a page
     seen: set[tuple[str, str]] = set()
     unique: list[Match] = []
     for match in hits:

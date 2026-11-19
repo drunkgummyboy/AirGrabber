@@ -722,7 +722,7 @@ class QueueTest(QueueCase):
             task = asyncio.get_running_loop().create_task(self.view.forge())
             await pump(self.root, 0.3)
             state = self.services.run_progress.state
-            self.assertEqual(state.text, "Waiting for Auto-rename to finish…")
+            self.assertEqual(state.text, "Waiting for Sorting to finish…")
             assert state.cancel is not None
             state.cancel()  # the dock's Cancel on another page
         finally:
@@ -1086,12 +1086,12 @@ class QueueTest(QueueCase):
         try:
             task = asyncio.get_running_loop().create_task(self.view.forge())
             await pump(self.root, 0.3)
-            self.assertEqual(self.view.progress.text, "Waiting for Auto-rename to finish…")
+            self.assertEqual(self.view.progress.text, "Waiting for Sorting to finish…")
         finally:
             lock.release()
         await task
         self.assertTrue((self.tmp / "in" / "Heat (1995).mkv").exists())
-        after = shown[shown.index("Waiting for Auto-rename to finish…") + 1 :]
+        after = shown[shown.index("Waiting for Sorting to finish…") + 1 :]
         self.assertTrue(after and after[0].startswith("Renaming 1 of 1"))
 
     async def test_trailers_ask_for_their_tools_first(self) -> None:
@@ -1463,7 +1463,8 @@ class QueueTest(QueueCase):
         self.assertEqual(len(self.bands()), 2)
 
     async def test_the_queue_tick_and_the_settings_tick_are_one_setting(self) -> None:
-        from app.forge.ui.settings_pages import SECTION_LIBRARY, LibrarySection
+        from app.forge.ui.settings_pages import LibrarySection
+        from app.ui.settings_pages_registry import PAGE_SORTING
         from tests.forge.ui.settings_kit import forge_settings
         from tests.forge.ui.test_settings_library import FakeForge
 
@@ -1472,20 +1473,21 @@ class QueueTest(QueueCase):
         forge = FakeForge(cast(Any, settings))
         self.clear_menu().buttons[2].invoke()  # ticked here: saved at once
         await pump_until(self.root, lambda: settings.current.remove_after_forge)
-        dialog = forge_settings(self.root, forge, section=SECTION_LIBRARY)
-        part = dialog.parts[SECTION_LIBRARY]
+        dialog = forge_settings(self.root, forge, section=PAGE_SORTING)
+        part = dialog.parts[PAGE_SORTING]
         assert isinstance(part, LibrarySection)
         self.assertTrue(part._remove.get())  # Settings shows it
-        part._remove.set(False)  # and un-ticked there: saved on Save
-        self.assertTrue(await dialog._save_all())
+        part._remove.set(False)  # and un-ticked there: stored at once
+        part._option_clicked("remove_after_forge", part._remove)  # what the tick's click does
+        await pump_until(self.root, lambda: not settings.current.remove_after_forge)
         dialog.destroy()
         self.assertFalse(settings.current.remove_after_forge)
         menu = self.clear_menu()
         self.assertEqual(menu.labels[2], "☐  Remove files from the queue after they're forged")
         menu.close()
         # Ticked here while Settings is open: its tick follows.
-        dialog = forge_settings(self.root, forge, section=SECTION_LIBRARY)
-        part = dialog.parts[SECTION_LIBRARY]
+        dialog = forge_settings(self.root, forge, section=PAGE_SORTING)
+        part = dialog.parts[PAGE_SORTING]
         assert isinstance(part, LibrarySection)
         self.clear_menu().buttons[2].invoke()
         await pump_until(self.root, lambda: bool(part._remove.get()))
@@ -1819,7 +1821,7 @@ class RuleLabelTest(QueueCase):
         return downloads, stored[0]
 
     async def test_a_click_on_the_rule_opens_it_in_settings(self) -> None:
-        from app.forge.ui.settings_pages import SECTION_LIBRARY
+        from app.ui.settings_pages_registry import PAGE_SORTING
 
         downloads, rule = await self.films_rule()
         await self.watched(downloads, "Dune.2021.mkv")
@@ -1832,7 +1834,7 @@ class RuleLabelTest(QueueCase):
         x, y = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
         self.view.list.canvas.event_generate("<Button-1>", x=x, y=y)
         await pump(self.root, 0.05)
-        self.assertEqual(asked, [(SECTION_LIBRARY, f"rule:{rule.id}")])
+        self.assertEqual(asked, [(PAGE_SORTING, f"rule:{rule.id}")])
         dropped = self.tmp / "in"
         make_files(dropped, ["Heat.1995.mkv"])
         await self.add_and_settle(dropped)

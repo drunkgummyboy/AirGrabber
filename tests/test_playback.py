@@ -538,7 +538,7 @@ class ServiceTests(PlexPlayTestCase):
         self.folders = LibraryFolders(series=SERIES)
         outcome = await self.service.play_film(dune)
         self.assertEqual(outcome.problem, PlayProblem.NO_FOLDER)
-        self.assertIn("Movies folder in Settings › Auto-rename", outcome.text)
+        self.assertIn("Movies folder in Settings › Folders", outcome.text)
 
     async def test_plex_away(self) -> None:
         dune = await self.dune()

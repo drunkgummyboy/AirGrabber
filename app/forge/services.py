@@ -8,16 +8,16 @@ the renamer: `ForgeRuntime` (app/forge/runtime.py) does that once whoever shows 
 listening.
 
 The window gets services, never repositories: `history`, `presets`, `matches`, `ignored` (what
-Auto-rename leaves alone, read at the start) and `rules` (the rules for watched folders, read at
+Sorting leaves alone, read at the start) and `rules` (the rules for watched folders, read at
 the start after today's setup was carried over into them once) are thin wrappers over
 `app.forge.db`, so `app/forge/ui` never imports it.
 
-Settings' Save stores both with `rules.save(rules, changes)` (one change for the renamer's
+Each change in Settings stores both with `rules.save(rules, changes)` (one change for the renamer's
 generation check, never waiting for a look; the rules that now watch what a look skipped marked
 fresh first); when
 a settings save changes one of `RENAMER_FIELDS` or the folders the rules watch (`_renamer_view`),
 and after every change of the rules (a mode or a preset too), the renamer is told at once
-(`AutoRenamer.reconfigure`), so Settings' Save needs nothing more. The
+(`AutoRenamer.reconfigure`), so a change in Settings needs nothing more. The
 ignored entries no longer in a folder the rules watch are forgotten at the start (`forget_gone`),
 and AirGrabber's folders (`AirGrabberFolderSync`) mark AirGrabber's rule fresh for a new one.
 
@@ -68,6 +68,7 @@ from app.forge.core.rules import watched_folders
 from app.forge.core.rules_service import RuleService
 from app.forge.core.run_progress import RunProgress
 from app.forge.core.settings import ForgeSettingsService
+from app.forge.core.folders_carry import carry_library_folders
 from app.forge.core.library import carry_move_option
 from app.forge.core.subtitles import ForgeSubtitles, carry_subtitles
 from app.forge.core.undo import UndoService
@@ -205,6 +206,9 @@ class ForgeServices:
         self.tmdb = tmdb
         self.images = images
         self.activity = ActivityFeed()  # the Activity strip's translated lines
+        # Whether this start's one-time carry added a destination to AirGrabber's folder lists
+        # (app/forge/core/folders_carry.py): AirGrabber's start then has the folders checked soon.
+        self.library_folders_added = False
         match_repo = MatchRepo(db)
         # The move records: a rename into a library folder or a rule's destination (a Stays
         # rule's watched folder too) is recorded in its journal step (the executor asks `note`
@@ -219,7 +223,7 @@ class ForgeServices:
         # The rules for watched folders (forge.db v5), loaded in `create`.
         self.rules = RuleService(RuleRepo(db), settings)
         self.matches = MatchService(match_repo)
-        # What Auto-rename leaves alone (the queue's Ignore, Settings › Auto-rename).
+        # What Sorting leaves alone (the queue's Ignore, Settings › Sorting).
         self.ignored = IgnoreService(IgnoredRepo(db), activity=self.activity)
         self.resolver = Resolver(tmdb, match_repo, activity=self.activity)
         self.queue_events = QueueEvents()
@@ -285,7 +289,7 @@ class ForgeServices:
             activity=self.activity,
             progress=self.run_progress,
         )
-        # Settings' Save never lands inside a look's commit (held only a few DB writes long).
+        # A change in Settings never lands inside a look's commit (held only a few DB writes long).
         self.rules.hold_looks_with(self.auto.hold_looks)
         # Where AirGrabber's downloads end up, kept in Forge's settings (B-01; started with the
         # renamer).
@@ -344,6 +348,9 @@ class ForgeServices:
             )
             await carry_subtitles(settings, services.presets, airgrabber_settings)
             await carry_move_option(settings, services.presets)
+            services.library_folders_added = await carry_library_folders(
+                settings, airgrabber_settings
+            )
             await services.rules.load()  # today's setup carried over into rules once
             services._renamer_settings = services._renamer_view()  # with the rules read
             await services.ignored.load()
@@ -424,7 +431,7 @@ class ForgeServices:
             self.airgrabber_folders.start()
 
     def library_folders(self) -> list[Path]:
-        """The Series and Movies folders Settings › Auto-rename names (those set)."""
+        """The Series and Movies folders marked on Settings › Folders (those set)."""
         current = self.settings.current
         return [Path(folder) for folder in (current.series_folder, current.movies_folder) if folder]
 

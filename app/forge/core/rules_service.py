@@ -15,7 +15,7 @@ and AirGrabber's side never see the database package.
   folder or subfolders changed, or one switched back on is fresh (its first look queues the
   files already there as Manual: nothing moves unseen); otherwise it keeps the stored flag.
   `mark_fresh` / `first_look_done` set and clear it (the renamer).
-- `save` (Settings' Save): the settings and the rules as one change (`generation` None
+- `save` (each change in Settings): the settings and the rules as one change (`generation` None
   meanwhile), inside the renamer's `hold_looks` (only ever held for a look's short commits: a
   Save waits milliseconds, never for a listing, TMDB or a move), and first every rule that will watch what a look
   skipped before marked fresh (`rules.uncovered`: a destination or library folder that stopped
@@ -207,7 +207,7 @@ class RuleService:
     # -- changing -----------------------------------------------------------------------------
 
     async def replace_all(self, rules: Sequence[Rule]) -> tuple[Rule, ...]:
-        """Store `rules` as the whole list (Settings' Save), each rule's fresh flag worked out
+        """Store `rules` as the whole list (a change in Settings), each rule's fresh flag worked out
         against the stored one; AirGrabber's rule, when left out, stays (last). Its on / off goes
         to `use_airgrabber_downloads` when it differs from the setting. Returns `current`."""
         async with self._lock, self._changing():
@@ -227,7 +227,7 @@ class RuleService:
     async def save(
         self, rules: Sequence[Rule] | None, changes: Mapping[str, Any]
     ) -> tuple[Rule, ...]:
-        """Settings' Save: every rule that will watch what a look skipped before (`uncovered`: a
+        """A change in Settings: every rule that will watch what a look skipped before (`uncovered`: a
         destination or library folder gone from under its folder, a folder newly watched) is
         marked fresh first, then the settings `changes` are stored, then `rules` as the whole
         list (`replace_all`; None: the rules stay). One change for the renamer (the

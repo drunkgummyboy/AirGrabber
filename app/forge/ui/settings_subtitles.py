@@ -1,14 +1,18 @@
-"""Settings › Subtitles, in MediaForge's group: the languages (tags), Hearing impaired, the optional
-OpenSubtitles account with Sign in and "Create a free account", the optional own API key with
-Check, the downloads left today, and the credit line OpenSubtitles asks for.
+"""Settings › Subtitles: the languages (tags), Hearing impaired, the downloads left today and the
+credit line OpenSubtitles asks for; and, in one "OpenSubtitles" box on Accounts & keys
+(`accounts_page`), the optional account with Sign in and "Create a free account" and the
+optional own API key with Check. One part for both pages.
 
 The settings stay AirGrabber's (`Settings`, the same fields), read and written through
 `services.airgrabber_settings`, so what was set comes along and backups don't change. Like the
-other Forge sections (app/forge/ui/settings_pages.py) its changes wait for Settings' Save:
-`problem()` refuses an account half filled in or no language at all; `save()` first asks
-OpenSubtitles about a new own key. A refused key means nothing of this page is stored, and the
-reason shows. Sign in and Check ask about what is typed without storing it. Everything that talks
-to OpenSubtitles goes through ForgeSubtitles. Without a key in this version: one quiet line.
+other Forge parts (app/forge/ui/settings_pages.py) each change stores itself through the window's
+Committer: a language added or removed, Hearing impaired at once; the account's name and
+password together when the keyboard leaves them (or on Enter), refused when only one is filled
+in; the own key likewise, after OpenSubtitles was asked about it (a refused key isn't stored).
+No language at all is refused too; the refusal shows in its box. Values stored elsewhere (an
+Undo) show unless a field is being edited. Sign in and Check ask about what is typed without
+storing it. Everything that talks to OpenSubtitles goes through ForgeSubtitles. Without a key in
+this version: one quiet line.
 
 AirGrabber ships its own OpenSubtitles API key (a user's own key, when entered, replaces it);
 signing in with a free OpenSubtitles account is optional (20 downloads a day instead of 5).
@@ -22,7 +26,7 @@ import asyncio
 import logging
 import tkinter as tk
 import webbrowser
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -40,21 +44,16 @@ from app.models import SUBTITLE_LANGUAGES, HearingImpaired, Settings
 from app.ui import theme
 from app.ui.dialog_kit import BUTTON_HEIGHT, BUTTON_RADIUS, DETAIL_SIZE, SMALL_SIZE, text_label
 from app.ui.missing_control import popup_menu
+from app.ui.settings_commit import Committer, Refused, TextCommit, commit_fields
 from app.ui.settings_layout import BOX_INNER
 from app.ui.tasks import spawn
 
 if TYPE_CHECKING:
     from app.forge.runtime import ForgeRuntime
-    from app.forge.ui.settings_pages import ForgeSectionPart
+    from app.forge.ui.settings_pages import ForgeSectionPart, PartSlots
     from app.ui.settings_layout import SettingsBox, SettingsPage
 
 log = logging.getLogger(__name__)
-
-# -- its place in Settings (FORGE_SECTIONS in app/forge/ui/settings_pages.py) ------------------
-
-SECTION_SUBTITLES = N_("Subtitles")
-SUBTITLES_ICON = "💬"
-SUBTITLES_NOTE = N_("Found on OpenSubtitles.com and saved next to your videos.")
 
 # -- texts ----------------------------------------------------------------------------------------
 
@@ -62,15 +61,17 @@ SIGNUP_URL = "https://www.opensubtitles.com/en/users/sign_up"
 CREDIT_URL = "https://www.opensubtitles.com"
 
 GETTING_READY = N_("Getting MediaForge ready…")
+# A start that ended without Forge and without a reason (AirGrabber is closing): never "getting
+# ready" for ever.
+FORGE_UNAVAILABLE = N_("MediaForge isn't available.")
 UNAVAILABLE_TEXT = N_("Subtitles aren't available in this version yet")
-SAVE_FAILED = N_("The subtitle settings couldn't be saved. The log has the details.")
 # Required by OpenSubtitles' terms for free API keys, linking to CREDIT_URL.
 CREDIT_TEXT = N_("Subtitles provided by OpenSubtitles.com")
 LANGUAGES_TITLE = N_("Languages")
 LANGUAGES_TEXT = N_("Looks for subtitles in each of these.")
 HEARING_TITLE = N_("Hearing impaired")
 HEARING_TEXT = N_("Subtitles that also describe sounds.")
-ACCOUNT_LABEL = N_("OpenSubtitles account")
+OPENSUBTITLES_TITLE = N_("OpenSubtitles")  # its box on Accounts & keys
 ACCOUNT_HINT = N_("Optional: 20 a day instead of 5.")
 SIGN_UP_TEXT = N_("Create a free account")
 ADD_TEXT = N_("+ Add")
@@ -138,18 +139,16 @@ def account_text(account: SubtitleAccount) -> str:
     return t("✓ Signed in") + (" · " + ", ".join(parts) if parts else "")
 
 
-def subtitle_problem(*, languages: Sequence[str], username: str, password: str) -> str | None:
-    """Why Save can't store the subtitle settings as they are; None when they are fine."""
+def account_problem(*, username: str, password: str) -> str | None:
+    """Why the OpenSubtitles account can't be stored as it is; None when it is fine."""
     if (username.strip() == "") != (password == ""):
         return t("Fill in both the OpenSubtitles user name and password, or neither")
-    if not languages:
-        return t("Choose at least one subtitle language")
     return None
 
 
 def own_key_needs_check(typed: str, checked: str | None) -> bool:
-    """Whether Save has to check the own key first: one is filled in and it isn't the one
-    that was saved or accepted already (`checked`)."""
+    """Whether storing the own key needs a check first: one is filled in and it isn't the one
+    that was stored or accepted already (`checked`)."""
     key = typed.strip()
     return bool(key) and key != (checked or "").strip()
 
@@ -180,6 +179,8 @@ class SettingsSource(Protocol):
     def current(self) -> Settings: ...
 
     async def update(self, **changes: Any) -> Settings: ...
+
+    def subscribe(self, listener: Callable[[Settings], None]) -> Callable[[], None]: ...
 
 
 class _Parts(Protocol):
@@ -219,12 +220,19 @@ def link(master: Any, text: str, url: str, *, size: int = DETAIL_SIZE) -> ctk.CT
 
 class LanguageTags(ctk.CTkFrame):
     """The chosen languages as removable tags ("English ×") and "+ Add" (a menu of the
-    others). `languages` is what Save stores."""
+    others). `on_change(languages)` after each add or remove (Settings stores them)."""
 
-    def __init__(self, master: Any, languages: Sequence[str], look: theme.Look) -> None:
+    def __init__(
+        self,
+        master: Any,
+        languages: Sequence[str],
+        look: theme.Look,
+        on_change: Callable[[tuple[str, ...]], None] | None = None,
+    ) -> None:
         super().__init__(master, fg_color="transparent")
         self._look = look
         self._languages = list(languages)
+        self._on_change = on_change
         self._add: ctk.CTkButton | None = None
         self._paint()
 
@@ -236,11 +244,23 @@ class LanguageTags(ctk.CTkFrame):
         if code in SUBTITLE_LANGUAGES and code not in self._languages:
             self._languages.append(code)
             self._paint()
+            self._changed()
 
     def remove(self, code: str) -> None:
         if code in self._languages:
             self._languages.remove(code)
             self._paint()
+            self._changed()
+
+    def show(self, languages: Sequence[str]) -> None:
+        """Show these (stored elsewhere, or a refused change undone)."""
+        if list(languages) != self._languages and self.winfo_exists():
+            self._languages = list(languages)
+            self._paint()
+
+    def _changed(self) -> None:
+        if self._on_change is not None:
+            self._on_change(self.languages)
 
     def _paint(self) -> None:
         for child in self.winfo_children():
@@ -287,7 +307,7 @@ class LanguageTags(ctk.CTkFrame):
 
 class AccountRow(ctk.CTkFrame):
     """User name, password (masked) and Sign in with its result line. Sign in checks what is
-    typed without saving it; Save stores it."""
+    typed without storing it (Settings stores the two fields as they change)."""
 
     def __init__(
         self,
@@ -390,8 +410,8 @@ class AccountRow(ctk.CTkFrame):
 
 class OwnKeyRow(ctk.CTkFrame):
     """The optional own OpenSubtitles API key: a masked entry, a muted hint, and Check with its
-    result line. Check (and Save, through `verify`) asks OpenSubtitles about the typed key
-    without saving it; refusals show in plain words, never with the key."""
+    result line. Check (and storing it, through `verify`) asks OpenSubtitles about the typed key
+    without storing it; refusals show in plain words, never with the key."""
 
     def __init__(
         self,
@@ -405,7 +425,7 @@ class OwnKeyRow(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self._subtitles = subtitles
         self._task: asyncio.Task[None] | None = None
-        # The saved key counts as checked: Save doesn't ask about it again.
+        # The stored key counts as checked: storing doesn't ask about it again.
         self._checked: str | None = key.strip() or None
         self.entry = ctk.CTkEntry(
             self,
@@ -470,15 +490,17 @@ class OwnKeyRow(ctk.CTkFrame):
     async def _check(self) -> None:
         await self.verify(force=True)
 
-    async def verify(self, *, force: bool = False) -> str | None:
-        """Check the typed key unless it was saved or accepted already (`force`: check anyway).
-        Returns why Save must not store it (OpenSubtitles refused it), else None; a check that
-        couldn't reach OpenSubtitles doesn't stop Save."""
-        key = self.value
-        if not key or not (force or self.needs_check):
+    async def verify(self, key: str | None = None, *, force: bool = False) -> str | None:
+        """Check `key` (None: the typed one) unless it was stored or accepted already (`force`:
+        check anyway). Returns why it must not be stored (OpenSubtitles refused it), else None;
+        a check that couldn't reach OpenSubtitles doesn't stop storing it. The row may be gone
+        (Settings closed while a typed key is stored): the check runs all the same."""
+        key = self.value if key is None else key.strip()
+        if not key or not (force or own_key_needs_check(key, self._checked)):
             return None
-        self.show_result(t(CHECKING_TEXT), theme.TEXT_MUTED)
-        self._button.configure(state="disabled")
+        if self._alive():
+            self.show_result(t(CHECKING_TEXT), theme.TEXT_MUTED)
+            self._button.configure(state="disabled")
         problem: str | None = None
         try:
             await self._subtitles.check_key(key)
@@ -491,10 +513,16 @@ class OwnKeyRow(ctk.CTkFrame):
         else:
             self._checked = key
             text, color = t(KEY_ACCEPTED_TEXT), theme.SUCCESS
-        if self.winfo_exists():
+        if self._alive():
             self._button.configure(state="normal")
             self.show_result(text, color)
         return problem
+
+    def _alive(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:  # the whole application is gone
+            return False
 
     def destroy(self) -> None:
         if self._task is not None:
@@ -506,10 +534,26 @@ class OwnKeyRow(ctk.CTkFrame):
 
 
 class SubtitlesSection:
-    """The Subtitles page's contents; its boxes are made once Forge has started."""
+    """The Subtitles page's contents, and the OpenSubtitles box on `accounts_page` (Settings'
+    Accounts & keys; this page without one); its boxes are made once Forge has started."""
 
-    def __init__(self, page: SettingsPage, forge: _Starter) -> None:
+    def __init__(
+        self,
+        page: SettingsPage,
+        forge: _Starter,
+        *,
+        accounts_page: SettingsPage | None = None,
+        committer: Committer | None = None,
+    ) -> None:
         self._page = page
+        self._accounts_page = accounts_page
+        self._committer = committer if committer is not None else Committer()
+        self._unsubscribe: Callable[[], None] | None = None
+        self.account_field: TextCommit | None = None
+        self.account_box: SettingsBox | None = None
+        self._key_lock = asyncio.Lock()  # one own-key store at a time (M3)
+        self._key_latest: str | None = None  # the own key typed last
+        self.key_field: TextCommit | None = None
         self._forge = forge
         self._look = app_look()
         self._parts: _Parts | None = None
@@ -521,10 +565,16 @@ class SubtitlesSection:
         self.quota_label: ctk.CTkLabel | None = None
         self._hearing_names = {t(name): value for value, name in HEARING_NAMES.items()}
 
-        # Shown until Forge has started (or why it can't).
+        # Shown until Forge has started (or why it can't), here and on Accounts & keys.
         self.waiting = page.box()
         self.waiting_label = self.waiting.text(t(GETTING_READY))
         self.waiting.add(self.waiting_label, gap=0, sticky="w")
+        self._accounts_waiting: SettingsBox | None = None
+        self.accounts_waiting_label: ctk.CTkLabel | None = None
+        if accounts_page is not None:
+            self._accounts_waiting = accounts_page.box()
+            self.accounts_waiting_label = self._accounts_waiting.text(t(GETTING_READY))
+            self._accounts_waiting.add(self.accounts_waiting_label, gap=0, sticky="w")
         tk.Misc.bind(page.frame, "<Destroy>", self._destroyed, "+")
         services = forge.services
         if services is not None:
@@ -543,18 +593,29 @@ class SubtitlesSection:
             return
         if services is None:
             # NOT_READY (guessit missing) or FAILED: say why; nothing here can be changed.
-            self.waiting_label.configure(text=self._forge.reason or t(GETTING_READY))
+            self._say(self._forge.reason or t(FORGE_UNAVAILABLE))
             return
         self._ready(services)
 
+    def _say(self, text: str) -> None:
+        """Why the boxes don't show (in the waiting boxes)."""
+        for label in (self.waiting_label, self.accounts_waiting_label):
+            if label is not None:
+                label.configure(text=text)
+
     def _destroyed(self, event: tk.Event[Any]) -> None:
-        if event.widget is self._page.frame and self._task is not None:
+        if event.widget is not self._page.frame:
+            return
+        if self._task is not None:
             self._task.cancel()
             self._task = None
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
 
     def _ready(self, parts: _Parts) -> None:
         if not parts.subtitles.available:
-            self.waiting_label.configure(text=t(UNAVAILABLE_TEXT))
+            self._say(t(UNAVAILABLE_TEXT))
             return
         self._parts = parts
         page, look = self._page, self._look
@@ -565,7 +626,10 @@ class SubtitlesSection:
         languages = page.box(t(LANGUAGES_TITLE), t(LANGUAGES_TEXT))
         if first_gap is not None:  # the first box sits where the waiting box sat
             languages.frame.grid_configure(pady=first_gap)
-        self.languages = LanguageTags(languages.body, current.subtitle_languages, look)
+        self._languages_box = languages
+        self.languages = LanguageTags(
+            languages.body, current.subtitle_languages, look, on_change=self._languages_changed
+        )
         languages.add(self.languages, sticky="w")
 
         hearing = page.box(t(HEARING_TITLE), t(HEARING_TEXT))
@@ -582,11 +646,36 @@ class SubtitlesSection:
             button_hover_color=look.HOVER,
             text_color=theme.BUTTON_TEXT,
             dynamic_resizing=False,
+            command=lambda _name: self._commit(
+                hearing, subtitles_hearing_impaired=self._hearing_value()
+            ),
         )
         self.hearing.set(t(HEARING_NAMES[current.subtitles_hearing_impaired]))
         hearing.add(self.hearing, sticky="w")
 
-        account = page.box(t(ACCOUNT_LABEL))
+        accounts = self._accounts_page
+        if accounts is None:
+            self._account_box(page, parts, current)
+
+        foot: SettingsBox = page.box(search_title=t(CREDIT_TEXT))
+        self.quota_label = foot.text("")
+        self._quota_row = foot.take_row()
+        foot.add(link(foot.body, t(CREDIT_TEXT), CREDIT_URL, size=SMALL_SIZE), gap=0, sticky="w")
+
+        if accounts is not None and self._accounts_waiting is not None:
+            gap = self._accounts_waiting.frame.grid_info().get("pady")
+            self._accounts_waiting.frame.grid_remove()
+            box = self._account_box(accounts, parts, current)
+            if gap is not None:  # where the waiting box sat
+                box.frame.grid_configure(pady=gap)
+        self._show_quota()
+        self._unsubscribe = parts.airgrabber_settings.subscribe(self._stored_elsewhere)
+
+    def _account_box(self, page: SettingsPage, parts: _Parts, current: Settings) -> SettingsBox:
+        """The OpenSubtitles box: the account (with "Create a free account") and the own key."""
+        look = self._look
+        account = page.box(t(OPENSUBTITLES_TITLE))
+        self.account_box = account
         hint = ctk.CTkFrame(account.body, fg_color="transparent")
         account.add(hint, gap=2, sticky="w")
         text_label(hint, t(ACCOUNT_HINT), size=_TEXT_SIZE, color=theme.TEXT_MUTED).pack(side="left")
@@ -601,22 +690,36 @@ class SubtitlesSection:
             field_width=BOX_INNER,
         )
         account.add(self.account)
-
-        own_key = page.box(t(OWN_KEY_LABEL))
+        account.subheading(t(OWN_KEY_LABEL))
         self.own_key = OwnKeyRow(
-            own_key.body,
+            account.body,
             subtitles=parts.subtitles,
             key=current.opensubtitles_own_key.get_secret_value(),
             look=look,
             field_width=BOX_INNER,
         )
-        own_key.add(self.own_key)
-
-        foot: SettingsBox = page.box()
-        self.quota_label = foot.text("")
-        self._quota_row = foot.take_row()
-        foot.add(link(foot.body, t(CREDIT_TEXT), CREDIT_URL, size=SMALL_SIZE), gap=0, sticky="w")
-        self._show_quota()
+        account.add(self.own_key, gap=6)
+        settings = parts.airgrabber_settings
+        # The name and the password are one change: moving between them stores nothing yet.
+        self.account_field = self._committer.watch(
+            TextCommit(
+                [self.account.username, self.account.password],
+                stored=lambda: [
+                    settings.current.opensubtitles_username,
+                    settings.current.opensubtitles_password.get_secret_value(),
+                ],
+                commit=lambda texts: self._commit_account(account, texts),
+                strip=False,
+            )
+        )
+        self.key_field = self._committer.watch(
+            TextCommit(
+                [self.own_key.entry],
+                stored=lambda: [settings.current.opensubtitles_own_key.get_secret_value()],
+                commit=lambda _texts: self._commit_own_key(account),
+            )
+        )
+        return account
 
     def _show_quota(self) -> None:
         if self.quota_label is None or self._parts is None:
@@ -628,60 +731,110 @@ class SubtitlesSection:
         else:
             self.quota_label.grid_remove()
 
-    # --- Save -------------------------------------------------------------------------------------
+    # --- storing ----------------------------------------------------------------------------------
 
     def _hearing_value(self) -> HearingImpaired:
         assert self.hearing is not None
         return self._hearing_names.get(self.hearing.get(), HearingImpaired.AVOID)
 
-    def changes(self) -> dict[str, Any]:
-        """The fields changed in the form (what Save stores)."""
+    def _commit(
+        self,
+        box: SettingsBox,
+        *,
+        check: Callable[[], Awaitable[None]] | None = None,
+        **fields: Any,
+    ) -> asyncio.Task[bool] | None:
+        """Store `fields` of AirGrabber's settings as one change (`check` first)."""
         parts = self._parts
-        if parts is None or self.languages is None or self.account is None or self.own_key is None:
-            return {}
-        current = parts.airgrabber_settings.current
-        username, password = self.account.values
-        form: dict[str, Any] = {
-            "subtitle_languages": self.languages.languages,
-            "subtitles_hearing_impaired": self._hearing_value(),
-            "opensubtitles_username": username,
-            "opensubtitles_password": password,
-            "opensubtitles_own_key": self.own_key.value,
-        }
-        stored: dict[str, Any] = {
-            "subtitle_languages": current.subtitle_languages,
-            "subtitles_hearing_impaired": current.subtitles_hearing_impaired,
-            "opensubtitles_username": current.opensubtitles_username,
-            "opensubtitles_password": current.opensubtitles_password.get_secret_value(),
-            "opensubtitles_own_key": current.opensubtitles_own_key.get_secret_value(),
-        }
-        return {name: value for name, value in form.items() if value != stored[name]}
-
-    def problem(self) -> str | None:
-        changes = self.changes()
-        if not changes or self.languages is None or self.account is None:
-            return None  # unchanged settings never stop Save
-        username, password = self.account.values
-        return subtitle_problem(
-            languages=self.languages.languages, username=username, password=password
+        if parts is None:
+            return None
+        return spawn(
+            commit_fields(
+                self._committer, parts.airgrabber_settings, box, check=check, **fields
+            ),
+            name="forge-subtitles-commit",
         )
 
-    async def save(self) -> str | None:
-        changes = self.changes()
-        if not changes or self._parts is None or self.own_key is None:
-            return None
-        if self.own_key.needs_check:
-            problem = await self.own_key.verify()  # a new own key: does OpenSubtitles take it?
+    def _languages_changed(self, languages: tuple[str, ...]) -> None:
+        spawn(self._store_languages(languages), name="forge-subtitles-languages")
+
+    async def _store_languages(self, languages: tuple[str, ...]) -> bool:
+        async def check() -> None:
+            if not languages:
+                raise Refused(t("Choose at least one subtitle language"))
+
+        task = self._commit(self._languages_box, check=check, subtitle_languages=languages)
+        stored = await task if task is not None else False
+        if not stored and self._parts is not None and self.languages is not None:
+            self.languages.show(self._parts.airgrabber_settings.current.subtitle_languages)
+        return stored
+
+    def _commit_account(self, box: SettingsBox, texts: list[str]) -> asyncio.Task[bool] | None:
+        username, password = texts[0].strip(), texts[1]
+
+        async def check() -> None:
+            problem = account_problem(username=username, password=password)
             if problem is not None:
-                return f"{t(OWN_KEY_LABEL)}: {problem}"
-        try:
-            await self._parts.airgrabber_settings.update(**changes)
-        except Exception as exc:  # a bad value, or the database couldn't be written
-            log.error("The subtitle settings couldn't be saved (%s)", type(exc).__name__)
-            return t(SAVE_FAILED)
-        return None
+                raise Refused(problem)
+
+        return self._commit(
+            box, check=check, opensubtitles_username=username, opensubtitles_password=password
+        )
+
+    def _commit_own_key(self, box: SettingsBox) -> asyncio.Task[bool] | None:
+        """The own key as typed (read now: the window may be closing), checked, then stored."""
+        own_key = self.own_key
+        if own_key is None or self._parts is None:
+            return None
+        key = own_key.value
+        self._key_latest = key
+        return spawn(self._store_own_key(box, own_key, key), name="forge-own-key")
+
+    async def _store_own_key(self, box: SettingsBox, own_key: OwnKeyRow, key: str) -> bool:
+        """One key at a time; a key typed after this one while its check was out wins (this
+        one is dropped, never stored over it)."""
+        async with self._key_lock:
+            if key != self._key_latest:
+                return False
+
+            async def check() -> None:
+                problem = await own_key.verify(key)  # does OpenSubtitles take it?
+                if problem is not None:
+                    raise Refused(f"{t(OWN_KEY_LABEL)}: {problem}")
+                if key != self._key_latest:  # a newer key was typed during the check: dropped
+                    raise Refused("")  # (nothing to say: the newer one is stored next)
+
+            task = self._commit(box, check=check, opensubtitles_own_key=key)
+            return await task if task is not None else False
+
+    def _stored_elsewhere(self, current: Settings) -> None:
+        """Stored here, elsewhere or by an Undo: each control shows it, unless a field is being
+        edited."""
+        if self.languages is None or not self.languages.winfo_exists():
+            return
+        self.languages.show(current.subtitle_languages)
+        if self.hearing is not None:
+            name = t(HEARING_NAMES[current.subtitles_hearing_impaired])
+            if self.hearing.get() != name:
+                self.hearing.set(name)
+        if self.account_field is not None:
+            self.account_field.show(
+                [current.opensubtitles_username, current.opensubtitles_password.get_secret_value()]
+            )
+        if self.key_field is not None:
+            self.key_field.show([current.opensubtitles_own_key.get_secret_value()])
 
 
-def build_subtitles(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:
-    return SubtitlesSection(page, forge)
+def build_subtitles(
+    slots: PartSlots, forge: ForgeRuntime, committer: Committer
+) -> ForgeSectionPart:
+    """The Subtitles page's part, with the OpenSubtitles box on Accounts & keys."""
+    from app.ui.settings_pages_registry import PAGE_ACCOUNTS, PAGE_SUBTITLES
+
+    return SubtitlesSection(
+        slots[PAGE_SUBTITLES],
+        forge,
+        accounts_page=slots.get(PAGE_ACCOUNTS),
+        committer=committer,
+    )
 

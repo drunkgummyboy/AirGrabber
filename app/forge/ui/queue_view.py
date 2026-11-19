@@ -37,8 +37,8 @@ time limit, `read_facts` replaceable in tests). "Leave it alone ▾" (and "Keep 
 opens a small menu: "Leave this file alone" (its files) and, when they sit in a subfolder of a
 watched folder (its own, else one the rules watch: `services.rules.watched_folders`), "Leave this
 whole folder alone" (the download's own folder right under the watched one,
-`core.ignored.top_folder`); Auto-rename leaves them alone from then on
-(`services.ignored`, listed in Settings › Auto-rename) and their rows leave the queue. Forge
+`core.ignored.top_folder`); Sorting leaves them alone from then on
+(`services.ignored`, listed in Settings › Sorting) and their rows leave the queue. Forge
 renames everything not
 waiting for the owner in one go: dropped files where they are, or in their library folder with
 the band's Move to library folder on (without that folder chosen they are left alone, and say so),
@@ -47,7 +47,7 @@ where their rule sends them with their band's preset, through the automatic rena
 (`services.auto.rename(naming=…)`). A band's subtitle says which: "📦 Moves to …" or "📁 Stays …"
 (a watched download's rule that sorts its files in place: "📁 Sorted in …"). A watched download's
 band names its rule ("Rule: 4K films", `route_of`: app/forge/core/rules.py's `route_for_item`); a
-click on it opens that rule's editor in Settings › Auto-rename (`open_rule`, through the page's
+click on it opens that rule's editor in Settings › Sorting (`open_rule`, through the page's
 `on_settings`). A ready one that waits says why: its rule is Manual (or it was taken as Manual
 once), its rule's preset is gone, its rule was changed since it took the file, or no rule takes it
 any more (then it names no destination) (`_waits`). The bands
@@ -62,7 +62,7 @@ by name, else its default. Choosing a preset for a band remembers it as its kind
 right-click request's preset (`add_paths(paths, preset=)`) names the files it added;
 `select_preset(name)` alone names every band not done that it fits. Forge runs one at a time
 with the renamer (`services.run_lock`, taken through `taking`: while it waits for another run the
-dock says "Waiting for Auto-rename to finish…"); closing the window while a run goes (`request_close`)
+dock says "Waiting for Sorting to finish…"); closing the window while a run goes (`request_close`)
 stops it after its current file. Keys, bound on the main window: Enter = Preview, Ctrl+Enter =
 Forge, Ctrl+Z = undo the last run, Up / Down = the selection; only while the queue shows (nothing
 on AirGrabber's other pages or on History), never while typing in a text field (`shortcut`).
@@ -1830,9 +1830,10 @@ class QueueView(ctk.CTkFrame):
             self.spawn(self._pick_band_match(ids))
 
     def open_rule(self, ids: Sequence[int]) -> None:
-        """A band's rule label: Settings › Auto-rename with that rule's editor open (the page's
-        `on_settings`, at the rule's spot); only the section when the rule was deleted since."""
-        from app.forge.ui.settings_pages import RULE_SPOT, SECTION_LIBRARY
+        """A band's rule label: Settings › Sorting with that rule's editor open (the page's
+        `on_settings`, at the rule's spot); only the page when the rule was deleted since."""
+        from app.forge.ui.settings_pages import RULE_SPOT
+        from app.ui.settings_pages_registry import PAGE_SORTING
 
         queue = self.services.queue
         item = next((i for i in (queue.get(n) for n in ids) if i is not None), None)
@@ -1840,9 +1841,9 @@ class QueueView(ctk.CTkFrame):
         if route is None:
             return
         if route.number and route.rule.id:
-            self.on_settings(SECTION_LIBRARY, RULE_SPOT.format(id=route.rule.id))
+            self.on_settings(PAGE_SORTING, RULE_SPOT.format(id=route.rule.id))
         else:
-            self.on_settings(SECTION_LIBRARY)
+            self.on_settings(PAGE_SORTING)
         log.info("Opened a band's rule in Settings (rule %d)", route.rule.id)
 
     async def open_in_explorer(self, ids: Sequence[int]) -> None:
@@ -1951,13 +1952,13 @@ class QueueView(ctk.CTkFrame):
         return found
 
     async def ignore_files(self, items: Sequence[QueueItem]) -> None:
-        """Auto-rename leaves these files alone; their rows leave the queue."""
+        """Sorting leaves these files alone; their rows leave the queue."""
         for item in items:
             await self.services.ignored.ignore(item.path, folder=False)
         self.services.queue.remove_many([item.id for item in items])
 
     async def ignore_folder(self, folder: Path) -> None:
-        """Auto-rename leaves `folder` and all under it alone; every row under it leaves."""
+        """Sorting leaves `folder` and all under it alone; every row under it leaves."""
         ignored = self.services.ignored
         await ignored.ignore(folder, folder=True)
         snapshot = ignored.snapshot()
@@ -2036,7 +2037,7 @@ class QueueView(ctk.CTkFrame):
             self.services.queue.clear()
 
     def set_remove_after_forge(self, value: bool) -> None:
-        """Clear ▾'s tick: the same setting as Settings › Auto-rename's, saved at once."""
+        """Clear ▾'s tick: the same setting as Settings › Sorting's, saved at once."""
         self.spawn(self.services.settings.update(remove_after_forge=value))
 
     def forget_yesterdays(self) -> None:

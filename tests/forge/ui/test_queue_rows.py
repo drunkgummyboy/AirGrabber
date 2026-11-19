@@ -148,7 +148,7 @@ class QueueRowsTests(ForgeTestCase):
             ted.tips,
             (
                 ("explorer", "Open in Explorer"),
-                ("ignore", "Takes it off the list. Auto-rename won't touch it again."),
+                ("ignore", "Takes it off the list. Sorting won't touch it again."),
             ),
         )
         self.assertEqual(ted.ask, "")  # nothing to ask

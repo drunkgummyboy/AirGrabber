@@ -741,9 +741,12 @@ class TorrentSearchService:
             return status.model_copy(update={"state": state, "count": len(releases)}), releases
         return status.model_copy(update={"state": IndexerState.FAILED, "message": failure}), []
 
-    async def test_prowlarr(self) -> str:
-        """'Prowlarr <version>' when the configured Prowlarr answers; IndexerError otherwise."""
+    async def test_prowlarr(self, url: str | None = None, api_key: str | None = None) -> str:
+        """'Prowlarr <version>' when the configured Prowlarr answers (or the one at `url` with
+        `api_key`: Settings' fields, not stored); IndexerError otherwise."""
         for indexer in self._indexers:
             if isinstance(indexer, ProwlarrIndexer):
+                if url is not None:
+                    indexer = indexer.with_connection(url, api_key or "")
                 return await indexer.test()
         raise IndexerError(t("Prowlarr is not available"))

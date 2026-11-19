@@ -1,4 +1,4 @@
-"""Report a problem (Settings → Updates): AirGrabber's logs and a few facts about this PC in one zip
+"""Report a problem (Settings → Updates & backup): AirGrabber's logs and a few facts about this PC in one zip
 on the desktop, for the user to send to whoever helps them with AirGrabber.
 
 Nothing is sent anywhere: the user sends the file themselves. What goes in is what the log rules

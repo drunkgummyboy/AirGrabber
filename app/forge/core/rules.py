@@ -45,7 +45,7 @@ from app.i18n import N_, t
 if TYPE_CHECKING:  # the queue loads the parser and matcher, which the rule rows don't need
     from app.forge.core.queue import QueueItem
 
-# -- texts (the rule's row in Settings › Auto-rename) --
+# -- texts (the rule's row in Settings › Sorting) --
 
 REFUSE_IN_DESTINATION = N_(
     "✕ Can't save: the folder it watches is inside the folder it moves to, so files would be "
@@ -76,8 +76,8 @@ NEVER_REACHED = N_(
     "or change one of them."
 )
 PRESET_GONE = N_("⚠ Its preset is gone: choose another.")
-NO_SERIES_FOLDER = N_("⚠ Choose your Series folder under Library folders.")
-NO_MOVIES_FOLDER = N_("⚠ Choose your Movies folder under Library folders.")
+NO_SERIES_FOLDER = N_("⚠ Choose your Series folder under Folders.")
+NO_MOVIES_FOLDER = N_("⚠ Choose your Movies folder under Folders.")
 MOVED_INTO = N_(
     "Rule {n} moves files into this folder. MediaForge won't pick them up again here."
 )

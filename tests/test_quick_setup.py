@@ -38,7 +38,9 @@ from app.ui.quick_setup import (
     quick_defaults,
     swatch_image,
 )
-from app.ui.settings_dialog import SECTION_LOOKS, SettingsDialog, quality_name
+from app.ui.settings_dialog import SettingsDialog, quality_name
+from app.ui.settings_pages_registry import PAGE_LOOKS, PAGE_OVERVIEW
+from tests.test_settings_dialog import click, find, settle
 from app.ui.welcome_dialog import finish_changes
 
 
@@ -420,10 +422,11 @@ class SettingsLooksTests(TkTestCase):
         preview = dialog._card_preview
         assert preview is not None
         self.assertEqual(preview.chosen, CardSize.S)
-        dialog._card_size.set("XL")
-        await self.settle()
+        click(find(dialog.page(PAGE_LOOKS), dialog._card_size), "XL")
+        await settle()
         self.assertEqual(preview.chosen, CardSize.XL)
-        self.assertEqual(preview.label_text, "S (now)")
+        self.assertIs(_settings.current.card_size, CardSize.XL)  # stored at once
+        self.assertIsNone(preview.label_text)  # so no "S (now)" outline beside it
 
     async def test_the_preview_shows_a_followed_show(self) -> None:
         show = Show(id=3, name="The Quiet Orchard", poster_url="https://static.tvmaze.com/p.jpg")
@@ -435,7 +438,7 @@ class SettingsLooksTests(TkTestCase):
 
     async def test_quick_setup_from_looks_saves_and_shows_its_choices(self) -> None:
         dialog, settings = self.dialog()
-        self.assertIn("Quick setup", labels(dialog.page(SECTION_LOOKS)))
+        self.assertIn("Quick setup", labels(dialog.page(PAGE_OVERVIEW)))
         dialog._open_quick_setup()
         quick = dialog._quick_dialog
         assert quick is not None
@@ -451,13 +454,14 @@ class SettingsLooksTests(TkTestCase):
             (ThemeMode.LIGHT, QualityProfile.HD, QualityProfile.UHD, CardSize.L),
         )
         self.assertFalse(quick.winfo_exists())
-        # Settings shows them, so its own Save keeps them.
+        # Settings shows them at once.
         self.assertEqual(dialog._theme_mode.get(), "Light")
         self.assertEqual(dialog._quality_tv.get(), quality_name(QualityProfile.HD))
         self.assertEqual(dialog._quality_movie.get(), quality_name(QualityProfile.UHD))
         self.assertEqual(dialog._card_size.get(), "L")
-        await dialog._save()
-        self.assertIs(settings.current.quality_tv, QualityProfile.HD)
+        dialog.close()
+        await settle()
+        self.assertIs(settings.current.quality_tv, QualityProfile.HD)  # closing kept them
 
     async def test_cancel_takes_the_look_back(self) -> None:
         dialog, settings = self.dialog(theme_mode="dark")

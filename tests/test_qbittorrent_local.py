@@ -44,7 +44,8 @@ from app.services.qbittorrent_webui import PortCheck, WebUiLogin, WebUiResult
 from app.services.remote import DiskSpace, RemoteError
 from app.services.remote_downloads import RemoteDownloads
 from app.services.torrent_app import TorrentAppService, qbittorrent_executable
-from app.ui.settings_dialog import SettingsDialog, download_settings
+from app.ui.settings_dialog import SettingsDialog
+from tests.test_settings_dialog import settle
 from app.ui.welcome_dialog import download_changes
 from tests.test_settings_dialog import FakeProwlarr, FakeRepository, FakeShortcut
 
@@ -689,7 +690,7 @@ class SettingsDialogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dialog._local_torrent.winfo_manager(), "")
         self.assertEqual(dialog._torrent.winfo_manager(), "grid")
 
-    async def test_a_setup_while_open_shows_and_save_keeps_it(self) -> None:
+    async def test_a_setup_while_open_shows_and_closing_keeps_it(self) -> None:
         dialog, settings = self.dialog(
             Settings(download_dir=self.folder, download_mode=DownloadMode.APP)
         )
@@ -699,10 +700,10 @@ class SettingsDialogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dialog._mode.get(), "remote")
         self.assertEqual(dialog._remote_form.changes()["remote_url"], "http://127.0.0.1:8081")
         self.assertEqual(dialog._local_line.winfo_manager(), "grid")
-        await dialog._store()  # Save
+        dialog.close()  # nothing in the form undoes it
+        await settle()
         self.assertTrue(set_up_by_airgrabber(settings.current))
         self.assertEqual(settings.current.remote_password.get_secret_value(), "pw-1")
-        self.assertEqual(download_settings(settings.current), dialog._download_shown)
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ TORRENT_CACHE_KEEP = 50  # .torrent files kept in the APP-mode cache folder
 # The messages are raised through t().
 NO_TORRENT_APP = N_(
     "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose "
-    'another option under "Where downloads go" in Settings.'
+    'another option under "Torrent program" in Settings.'
 )
 NO_REMOTE_FALLBACK = N_(
     "No .torrent file is available for this release, and no torrent program on a NAS or "

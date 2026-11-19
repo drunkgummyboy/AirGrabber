@@ -8,7 +8,7 @@
 - `check_lines(groups)`: the rule editor's live check (app/forge/core/rule_check.py's
   CheckGroup) as sentences, the files that fit first ("2 films fit this rule.", "4 episodes
   don't: they're shows. Rule 3 takes them.").
-- `row_look(rule, settings)`: a rule's row in Settings › Auto-rename's list (look A, compact
+- `row_look(rule, settings)`: a rule's row in Settings › Sorting's list (look A, compact
   rows) as words: 🔒 or not, the folder's last name, the filter's chips, the preset(s),
   where the files go, Automatic / Manual, the tooltip (`name_of`) and whether it is greyed (off).
 - `unfit_line(unfit)`: the quiet line under the list for a folder's files no rule takes (the
@@ -32,7 +32,7 @@ if TYPE_CHECKING:  # rule_check / auto load the queue and the renamer; these tex
 
 AIRGRABBERS = N_("AirGrabber's downloads")
 
-# A row's chips and words (Settings › Auto-rename's list, look A).
+# A row's chips and words (Settings › Sorting's list, look A).
 CHIP_TAKES: dict[str, str] = {
     "anything": N_("Anything"),
     "shows": N_("Shows"),

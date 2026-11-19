@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import functools
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -72,6 +73,9 @@ from app.services.torrent_app import (
 from app.services.tvmaze import TVMazeClient
 from app.services.updates import UpdateError, UpdateService
 from app.services.watchlist import WatchlistService
+
+if TYPE_CHECKING:
+    from app.forge.services import ForgeServices
 
 USER_AGENT = f"{APP_NAME}/{__version__} (+https://github.com/drunkgummyboy/AirGrabber)"
 
@@ -255,7 +259,7 @@ class Services:
         self.folder_library = FolderLibraryService(
             settings, db.library_files, db.folders, tmdb, library, plex=self.plex
         )
-        forge.when_ready(lambda started: self.folder_library.attach(started.moves))
+        forge.when_ready(self._forge_ready_for_folders)
         # The Companion app's way in, on the home network; off until turned on in Settings
         # (`run` from the UI). What it may ask besides pairing comes from `routes_factory`.
         grabbed_films = GrabbedFilms(self.download_status)
@@ -422,6 +426,14 @@ class Services:
     def station(self) -> RemoteDownloads:
         """The older name of `remote`; main_window.py still passes it to Settings."""
         return self.remote
+
+    def _forge_ready_for_folders(self, started: ForgeServices) -> None:
+        """Forge started: the folder library hears its moves, and when its one-time carry just
+        added a MediaForge destination to the folder lists, the folders are checked soon
+        (`check_soon` does nothing while they don't count)."""
+        self.folder_library.attach(started.moves)
+        if started.library_folders_added:
+            self.folder_library.check_soon()
 
     async def aclose(self) -> None:
         try:

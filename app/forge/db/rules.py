@@ -1,6 +1,6 @@
 """The rules for watched folders (`rules`, schema v5), in their order (`position`).
 
-The whole list is stored at once (`replace_all`, Settings' Save): rules left out are deleted, new
+The whole list is stored at once (`replace_all`, a change in Settings): rules left out are deleted, new
 ones (id 0) get an id, positions follow the list. At most one row is AirGrabber's rule (the
 partial unique index `rules_airgrabber`). A rule's extras are JSON (only the ticks it changed). Renamed presets are followed in one
 statement (`rename_presets`, swaps included).

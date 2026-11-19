@@ -1,4 +1,4 @@
-"""The interface language: English (the default) or Dutch (Settings → Looks → Language).
+"""The interface language: English (the default) or Dutch (Settings → Pages → Language).
 
 Every text the user sees is written in English in the code and goes through `t()` where it is
 shown: `t("Download")` is "Downloaden" while Dutch is on. The Dutch texts live in

@@ -1,11 +1,13 @@
-"""Settings › Auto-rename (app/forge/ui/settings_pages.py) in the Settings window
-(app/ui/settings_dialog.py): the sections from FORGE_SECTIONS, opening at the section, the status
-box (the renamer's status, live, and the "Watching" switch that pauses all rules), the rules list
+"""Settings › Sorting (app/forge/ui/settings_pages.py) in the Settings window
+(app/ui/settings_dialog.py): its part from FORGE_PARTS, opening at the page, the status
+box (the renamer's status, live, and the "Watch folders" switch that pauses all rules), the rules list
 (look A: each rule's row and notes, ＋ Add a rule, the editor without Delete for AirGrabber's rule
 and a new one, a drag, the files no rule fits, a rule's spot opening its editor), the form
-(library folders, the options), changes kept until Save (D9; Cancel / ✕ change nothing; a rule
-with a refusal stops Save), waiting for Forge to start and saying when it can't, and that nothing
-the Auto-rename page had (it went, the owner's decision) is lost."""
+(When sorting; the library folders are the Folders page's, tests/test_folders_page.py), each change stored when it is made (through
+RuleService's save, as the old Save did; a change that leaves a rule with a refusal is refused in
+its box and nothing is stored; Undo stores what was before), waiting for Forge to start and saying
+when it can't, and that nothing the Auto-rename page had (it went, the owner's decision) is
+lost."""
 
 from __future__ import annotations
 
@@ -31,25 +33,23 @@ from app.forge.models.preset import DEFAULT_PRESETS
 from app.forge.models.rules import Rule, RuleTarget
 from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, ForgeSettings
 from app.forge.ui.rule_rows import RowLook, row_look
-from app.forge.ui.settings_naming import SECTION_NAMING
 from app.forge.ui.settings_pages import (
-    FORGE_GROUP,
-    FORGE_SECTIONS,
+    FORGE_PARTS,
     GETTING_READY,
-    LIBRARY_NOTE,
     LIBRARY_POINTER,
     SAVE_FAILED,
-    SECTION_LIBRARY,
     LibrarySection,
     UnfitWindow,
 )
 from app.i18n import Language
 from app.ui import theme
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_pages_registry import PAGE_FOLDERS, PAGE_NAMING, PAGE_SORTING, PAGES
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.tk import pump, pump_until
 from tests.forge.ui.settings_kit import airgrabber_settings, forge_settings
 from tests.forge.ui.subtitle_kit import FakeSubtitleSource
+from tests.test_settings_dialog import find, settle
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -180,6 +180,12 @@ class FakeIgnored:
         self.stopped.append(path)
         self.set(*(e for e in self.entries if e.path != path))
         return True
+
+    async def ignore(self, path: Path, *, folder: bool) -> IgnoredPath:
+        await asyncio.sleep(0)
+        entry = ignored_entry(str(path), folder=folder)
+        self.set(*self.entries, entry)
+        return entry
 
     def snapshot(self) -> object:
         return self.list
@@ -318,12 +324,12 @@ class LibrarySettingsCase(ForgeAsyncTestCase):
         gc.collect()  # the dialog's Tk variables, on the main thread
 
     def dialog(
-        self, forge: FakeForge, *, section: str | None = SECTION_LIBRARY
+        self, forge: FakeForge, *, section: str | None = PAGE_SORTING
     ) -> SettingsDialog:
         return forge_settings(self.root, forge, section=section)
 
     def section(self, dialog: SettingsDialog) -> LibrarySection:
-        part = dialog.parts[SECTION_LIBRARY]
+        part = dialog.parts[PAGE_SORTING]
         assert isinstance(part, LibrarySection)
         part.ask_folder = self._ask
         part.open_editor = self.editor
@@ -370,84 +376,84 @@ class LibrarySettingsCase(ForgeAsyncTestCase):
 class LibrarySettingsTests(LibrarySettingsCase):
     # --- the sections and this one ---------------------------------------------------------------
 
-    async def test_the_sidebar_lists_forges_sections_and_opens_at_library(self) -> None:
+    async def test_the_sidebar_lists_forges_pages_and_opens_at_sorting(self) -> None:
         dialog, _part, _fake = self.ready()
-        for name in FORGE_SECTIONS:
+        for name in FORGE_PARTS:
             self.assertIn(name, dialog.sections)
-        # The group's label, then an icon and a name per section.
+        # Your files' label, then an icon and a name per page: Folders, then Sorting.
         shown = labels(dialog._sidebar)
-        group = shown.index("MEDIAFORGE")
-        self.assertEqual(shown[group + 2], next(iter(FORGE_SECTIONS)))
-        self.assertEqual(dialog.section, SECTION_LIBRARY)
-        self.assertTrue(dialog._items[SECTION_LIBRARY].selected)
-        texts = labels(dialog.page(SECTION_LIBRARY))
-        self.assertEqual(texts[0], "Auto-rename")
-        self.assertEqual(texts[1], t_en(LIBRARY_NOTE))
-        dialog.show_section(SECTION_NAMING)
-        self.assertEqual(dialog.section, SECTION_NAMING)
-        dialog.show_section(SECTION_LIBRARY)  # an open window asked for the section again
-        self.assertEqual(dialog.section, SECTION_LIBRARY)
-        self.assertEqual(FORGE_GROUP, "MediaForge")
+        group = shown.index("YOUR FILES")
+        self.assertEqual(shown[group + 2 : group + 5], [PAGE_FOLDERS, "⇅", PAGE_SORTING])
+        self.assertEqual(dialog.section, PAGE_SORTING)
+        self.assertTrue(dialog._items[PAGE_SORTING].selected)
+        texts = labels(dialog.page(PAGE_SORTING))
+        self.assertEqual(texts[0], "Sorting")
+        self.assertEqual(texts[1], t_en(PAGES[PAGE_SORTING].note))
+        dialog.show_section(PAGE_NAMING)
+        self.assertEqual(dialog.section, PAGE_NAMING)
+        dialog.show_section(PAGE_SORTING)  # an open window asked for the page again
+        self.assertEqual(dialog.section, PAGE_SORTING)
 
     async def test_shows_the_stored_settings_and_rules(self) -> None:
         dialog, part, _fake = self.ready()
-        texts = labels(dialog.page(SECTION_LIBRARY))
-        for text in ("tv", "AirGrabber's downloads", READY.series_folder, READY.movies_folder):
+        texts = labels(dialog.page(PAGE_SORTING))
+        for text in ("tv", "AirGrabber's downloads"):
             self.assertIn(text, texts)
+        for text in (READY.series_folder, READY.movies_folder):
+            self.assertNotIn(text, texts)  # marked on the Folders page
         self.assertNotIn(t_en(GETTING_READY), texts)
         self.assertEqual(part.watching.get(), 0)  # stored "off"
         self.assertEqual(len(part.rule_rows), 2)
         self.assertEqual(part.rule_drafts, list(self.rules.current))
         self.assertEqual(part.draft()["clean_downloads"], True)
-        self.assertEqual(part.changes(), {})
         self.assertFalse(part.rules_changed)
 
     async def test_nothing_chosen_yet(self) -> None:
-        dialog, part, _fake = self.ready(ForgeSettings())
-        texts = labels(dialog.page(SECTION_LIBRARY))
-        self.assertEqual(texts.count("Not chosen yet"), 2)
+        _dialog, part, _fake = self.ready(ForgeSettings())
         airgrabbers = part.rule_rows[-1]
         self.assertIn("→ your Series folder / your Movies folder", labels(airgrabbers.frame))
         self.assertEqual(
             [str(note.cget("text")) for note in airgrabbers.notes],
             [
-                "⚠ Choose your Series folder under Library folders.",
-                "⚠ Choose your Movies folder under Library folders.",
+                "⚠ Choose your Series folder under Folders.",
+                "⚠ Choose your Movies folder under Folders.",
             ],
         )
 
-    # --- changes wait for Save -------------------------------------------------------------------
+    # --- each change stores itself --------------------------------------------------------------
 
-    async def test_changes_are_stored_on_save_only(self) -> None:
+    async def test_each_change_stores_itself_and_only_itself(self) -> None:
         dialog, part, fake = self.ready()
-        self.chosen = [r"\\nas\video\Films"]
-        part.choose_library("movies")
-        part._needs.set(False)
-        self.assertEqual(fake.updates, [])  # nothing stored yet
-        self.assertEqual(
-            part.changes(), {"movies_folder": r"\\nas\video\Films", "notify_needs": False}
-        )
-        self.assertTrue(await dialog._save_all())
-        # Only what changed; watching stays paused; the rules weren't touched.
-        self.assertEqual(
-            fake.updates, [{"movies_folder": r"\\nas\video\Films", "notify_needs": False}]
-        )
-        self.assertEqual(fake.current.automatic, "off")
-        self.assertEqual(self.rules.saved, [])
-        self.assertEqual(part.changes(), {})  # what was stored is what the form shows now
+        find(dialog.page(PAGE_SORTING), part._needs).toggle()  # a tick: at once
+        await settle()
+        # Through RuleService's save, as the old Save: the settings and the rules in one step.
+        self.assertEqual(self.rules.saves, [(None, {"notify_needs": False})])
+        self.assertEqual(fake.updates, [{"notify_needs": False}])
+        self.assertEqual(fake.current.automatic, "off")  # watching stays paused
+        self.assertEqual(self.rules.saved, [])  # the rules weren't touched
+        bar = dialog.committer.bar
+        assert bar is not None
+        self.assertTrue(bar.shown)
+
+    async def test_a_library_folder_marked_on_folders_shows_in_the_notes(self) -> None:
+        _dialog, part, fake = self.ready(ForgeSettings())
+        notes = [str(n.cget("text")) for n in part.rule_rows[-1].notes]
+        self.assertIn("⚠ Choose your Series folder under Folders.", notes)
+        await fake.update(series_folder=r"F:\Series")  # the Folders page's "Sort into this one"
+        notes = [str(n.cget("text")) for n in part.rule_rows[-1].notes]
+        self.assertNotIn("⚠ Choose your Series folder under Folders.", notes)
+        self.assertEqual(part.draft().get("series_folder"), None)  # not this page's
 
     async def test_remove_after_forge_is_off_until_ticked(self) -> None:
         dialog, part, fake = self.ready()
         self.assertFalse(fake.current.remove_after_forge)
-        part._remove.set(True)
-        self.assertTrue(await dialog._save_all())
+        find(dialog.page(PAGE_SORTING), part._remove).toggle()
+        await settle()
         self.assertEqual(fake.updates, [{"remove_after_forge": True}])
 
-    async def test_cancel_changes_nothing(self) -> None:
-        dialog, part, fake = self.ready()
-        part.toggle_rule(0, False)
-        part.set_watching(True)
-        dialog.destroy()  # Cancel, ✕ and Escape all destroy the dialog
+    async def test_closing_stops_listening(self) -> None:
+        dialog, _part, fake = self.ready()
+        dialog.destroy()  # ✕ and Escape close the dialog
         await pump(self.root, 0.1)
         self.assertEqual(fake.updates, [])
         self.assertEqual(self.rules.saved, [])
@@ -455,51 +461,49 @@ class LibrarySettingsTests(LibrarySettingsCase):
         self.assertEqual(self.rules.listeners, [])
         self.assertEqual(self.renamer.listeners, [])
 
-    async def test_an_unchanged_form_saves_nothing(self) -> None:
-        dialog, _part, fake = self.ready()
-        self.assertTrue(await dialog._save_all())
+    async def test_closing_while_a_change_is_stored_is_harmless(self) -> None:
+        dialog, part, fake = self.ready()
+        task = part.toggle_rule(0, False)
+        dialog.destroy()
+        await task
+        await pump(self.root, 0.05)
+        self.assertEqual(len(self.rules.saved), 1)  # it was stored; nothing of the page touched
+
+    async def test_opening_stores_nothing(self) -> None:
+        _dialog, _part, fake = self.ready()
+        await settle()
         self.assertEqual(fake.updates, [])
         self.assertEqual(self.rules.saved, [])
 
-    async def test_browse_starts_in_the_folder_shown(self) -> None:
-        _dialog, part, _fake = self.ready()
-        self.chosen = ["F:/Series"]
-        part.choose_library("series")
-        self.assertEqual(self.asked, [("Choose the Series library folder", READY.series_folder)])
-        self.assertEqual(part.draft()["series_folder"], r"F:\Series")
-        self.assertEqual(part.folder_labels["series"].cget("text"), r"F:\Series")
-
-    async def test_a_failed_save_says_so_and_keeps_the_dialog(self) -> None:
+    async def test_a_failed_store_says_so_in_its_box(self) -> None:
         dialog, part, fake = self.ready()
-        part._summary.set(False)
         fake.fail = True
         with self.assertLogs("app.forge.ui.settings_pages", "ERROR") as logged:
-            self.assertFalse(await dialog._save_all())
-        self.assertEqual(str(dialog._error.cget("text")), t_en(SAVE_FAILED))
+            find(dialog.page(PAGE_SORTING), part._summary).toggle()
+            await settle()
+        self.assertEqual(part._options_box.refusal, t_en(SAVE_FAILED))
         self.assertEqual(logged.records[0].getMessage().count("disk full"), 0)  # the type only
+        self.assertTrue(part._summary.get())  # the tick shows what is stored again
         self.assertTrue(dialog.winfo_exists())
-        self.assertEqual(str(dialog._save_button.cget("state")), "normal")
 
-    # --- saved elsewhere meanwhile ---------------------------------------------------------------
+    # --- stored elsewhere meanwhile --------------------------------------------------------------
 
-    async def test_a_change_saved_elsewhere_shows_unless_changed_here(self) -> None:
+    async def test_a_change_stored_elsewhere_shows(self) -> None:
         _dialog, part, fake = self.ready()
-        part._clean.set(False)  # changed here
-        await fake.update(automatic="trial", clean_downloads=True, kept_back=["x"])
-        self.assertEqual(part.watching.get(), 1)  # saved elsewhere: it shows
-        self.assertEqual(part.draft()["clean_downloads"], False)  # the form's change stays
-        self.assertEqual(part.changes(), {"clean_downloads": False})
+        await fake.update(automatic="trial", clean_downloads=False, kept_back=["x"])
+        self.assertEqual(part.watching.get(), 1)
+        self.assertEqual(part.draft()["clean_downloads"], False)
+        self.assertEqual(part._clean.get(), False)
 
-    async def test_rules_saved_elsewhere_show_unless_the_list_changed_here(self) -> None:
+    async def test_rules_stored_elsewhere_show(self) -> None:
         _dialog, part, _fake = self.ready()
         imported = [Rule(id=5, folder=r"E:\Imported"), *self.rules.stored[1:]]
         self.rules.set(imported)
         self.assertEqual([r.folder for r in part.rule_drafts], [r"E:\Imported", ""])
         self.assertIn("Imported", labels(part.rules_list))
-        part.toggle_rule(0, False)  # changed here: the next import keeps the form's list
+        await part.toggle_rule(0, False)  # stored at once: the next import shows too
         self.rules.set([Rule(id=6, folder=r"F:\Other"), *self.rules.stored[1:]])
-        self.assertEqual(part.rule_drafts[0].folder, r"E:\Imported")
-        self.assertFalse(part.rule_drafts[0].on)
+        self.assertEqual(part.rule_drafts[0].folder, r"F:\Other")
 
     # --- before Forge has started ----------------------------------------------------------------
 
@@ -512,23 +516,18 @@ class LibrarySettingsTests(LibrarySettingsCase):
         await pump(self.root, 0.05)
         self.assertEqual(forge.starts, 1)  # the page showing asks once
         self.assertFalse(part.ready)
-        self.assertIn("Getting MediaForge ready…", labels(dialog.page(SECTION_LIBRARY)))
-        self.assertNotIn(READY.series_folder, labels(dialog.page(SECTION_LIBRARY)))
-        self.assertTrue(await dialog._save_all())  # nothing of Forge's to store yet
+        self.assertIn("Getting MediaForge ready…", labels(dialog.page(PAGE_SORTING)))
         forge.gate.set_result(None)
         await pump_until(self.root, lambda: part.ready)
-        texts = labels(dialog.page(SECTION_LIBRARY))
-        self.assertNotIn("Getting MediaForge ready…", texts)
-        self.assertIn(READY.series_folder, texts)
+        self.assertNotIn("Getting MediaForge ready…", labels(dialog.page(PAGE_SORTING)))
 
     async def test_not_ready_says_why(self) -> None:
         forge = FakeForge(None, started=False)  # start() gives no services: NOT_READY
         dialog = self.dialog(forge)
         part = self.section(dialog)
-        await pump_until(self.root, lambda: NOT_READY_TEXT in labels(dialog.page(SECTION_LIBRARY)))
+        await pump_until(self.root, lambda: NOT_READY_TEXT in labels(dialog.page(PAGE_SORTING)))
         self.assertFalse(part.ready)
-        self.assertIsNone(part.problem())
-        self.assertTrue(await dialog._save_all())
+        self.assertIsNone(part.refusal_of(None))
 
     async def test_closing_while_waiting_stops_waiting(self) -> None:
         forge = FakeForge(FakeSettings(READY), started=False)
@@ -548,39 +547,40 @@ class LibrarySettingsTests(LibrarySettingsCase):
     async def test_dutch(self) -> None:
         i18n.set_language(Language.NL)
         dialog, part, _fake = self.ready()
-        texts = labels(dialog.page(SECTION_LIBRARY))
-        self.assertEqual(texts[0], "Automatisch hernoemen")
+        texts = labels(dialog.page(PAGE_SORTING))
+        self.assertEqual(texts[0], "Sorteren")
         self.assertIn("Regels", texts)
         self.assertIn("Downloads van AirGrabber", texts)
-        self.assertEqual(part.watching.cget("text"), "Bewaken")
+        self.assertIn("Bij het sorteren", texts)
+        self.assertEqual(part.watching.cget("text"), "Mappen bewaken")
         self.assertEqual(part.add_rule_button.cget("text"), "＋ Regel toevoegen")
-        self.assertIn("MEDIAFORGE", labels(dialog._sidebar))
+        self.assertIn("JE BESTANDEN", labels(dialog._sidebar))
 
     async def test_the_foot_is_hidden_until_used(self) -> None:
         dialog, part, _fake = self.ready()
         self.assertEqual(part.foot.winfo_manager(), "")
         ctk.CTkLabel(part.foot, text="Remove the old MediaForge").pack()
         part.foot.grid()  # F-27 shows it under the boxes
-        self.assertEqual(labels(dialog.page(SECTION_LIBRARY))[-1], "Remove the old MediaForge")
+        self.assertEqual(labels(dialog.page(PAGE_SORTING))[-1], "Remove the old MediaForge")
 
 
 class StatusBoxTests(LibrarySettingsCase):
-    """The first box: the live status and the "Watching" switch."""
+    """The first box: the live status and the "Watch folders" switch."""
 
     async def test_it_comes_first_and_the_rest_follows_in_order(self) -> None:
         dialog, part, _fake = self.ready()
-        texts = labels(dialog.page(SECTION_LIBRARY))
+        texts = labels(dialog.page(PAGE_SORTING))
         order = [
             texts.index(str(part.status_label.cget("text"))),
             texts.index("Rules"),
+            texts.index("When sorting"),
             texts.index("Ignored"),
             texts.index("AirGrabber's downloads", texts.index("Ignored")),  # the box, not the row
-            texts.index("Library folders"),
-            texts.index("Options"),
         ]
         self.assertEqual(order, sorted(order))
+        self.assertNotIn("Library folders", texts)  # gone: the Folders page's lists mark them
         self.assertEqual(part.watching.master, part.status_label.master)
-        self.assertEqual(part.watching.cget("text"), "Watching")
+        self.assertEqual(part.watching.cget("text"), "Watch folders")
 
     async def test_the_status_is_live(self) -> None:
         dialog, part, _fake = self.ready()
@@ -605,23 +605,22 @@ class StatusBoxTests(LibrarySettingsCase):
         dialog = self.dialog(FakeForge(fake, renamer=renamer))
         self.assertEqual(self.section(dialog).status_label.cget("text"), "Can't reach the NAS")
 
-    async def test_the_switch_pauses_and_watches_again_on_save(self) -> None:
-        dialog, part, fake = self.ready()
+    async def test_the_switch_pauses_and_watches_again_at_once(self) -> None:
+        _dialog, part, fake = self.ready()
         part.watching.toggle()  # clicked: from a stored Off, On (each rule's mode decides)
+        await settle()
         self.assertEqual(part.draft()["automatic"], "on")
-        self.assertEqual(fake.updates, [])  # kept until Save
-        self.assertTrue(await dialog._save_all())
         self.assertEqual(fake.updates, [{"automatic": "on"}])
+        self.assertEqual(self.rules.saves, [(None, {"automatic": "on"})])
 
     async def test_a_stored_watching_value_is_kept(self) -> None:
-        _dialog, part, _fake = self.ready(READY.model_copy(update={"automatic": "trial"}))
+        _dialog, part, fake = self.ready(READY.model_copy(update={"automatic": "trial"}))
         self.assertEqual(part.watching.get(), 1)
-        part.set_watching(False)
-        self.assertEqual(part.draft()["automatic"], "off")
+        await part.set_watching(False)
+        self.assertEqual(fake.current.automatic, "off")
         self.assertEqual(part.watching.get(), 0)
-        part.set_watching(True)
-        self.assertEqual(part.draft()["automatic"], "trial")  # as stored: no change
-        self.assertEqual(part.changes(), {})
+        await part.set_watching(True)
+        self.assertEqual(fake.current.automatic, "trial")  # back as it was, not On
 
 
 class RulesListTests(LibrarySettingsCase):
@@ -691,59 +690,55 @@ class RulesListTests(LibrarySettingsCase):
         _dialog, part, _fake = self.ready(rules=[manual, self.three()[1]])
         self.assertEqual(tuple(part.rule_rows[0].labels[-1].cget("text_color")), theme.WARNING)
 
-    async def test_everything_waits_for_save(self) -> None:
-        dialog, part, fake = self.ready(rules=self.three())
-        part.toggle_rule(2, True)
-        part.move_rule(2, 0)
-        part.set_watching(False)
-        self.assertEqual(fake.updates, [])
-        self.assertEqual(self.rules.saved, [])
-        self.assertTrue(part.rules_changed)
+    async def test_each_rule_change_stores_itself(self) -> None:
+        stored = READY.model_copy(update={"automatic": "trial"})
+        _dialog, part, fake = self.ready(stored, rules=self.three())
+        await part.toggle_rule(2, True)
+        self.assertEqual([r.on for r in self.rules.saved[-1]], [True, True, True])
+        await part.move_rule(2, 0)
+        self.assertEqual([r.id for r in self.rules.saved[-1]], [3, 1, 2])
+        await part.set_watching(False)
+        self.assertEqual(fake.updates, [{"automatic": "off"}])
+        self.assertFalse(part.rules_changed)  # what is stored is what the page shows
+        self.assertEqual(part.rule_drafts, list(self.rules.current))
         self.assertEqual([r.id for r in part.rule_drafts], [3, 1, 2])
         self.assertTrue(part.rule_drafts[0].on)
-        dialog.destroy()
-        await pump(self.root, 0.05)
-        self.assertEqual(self.rules.saved, [])
 
-    async def test_save_stores_the_rules_in_order(self) -> None:
-        stored = READY.model_copy(update={"automatic": "trial"})
-        dialog, part, fake = self.ready(stored, rules=self.three())
-        part.move_rule(2, 0)
-        part.set_watching(False)
-        self.assertTrue(await dialog._save_all())
-        self.assertEqual([[r.id for r in rules] for rules in self.rules.saved], [[3, 1, 2]])
-        self.assertEqual(fake.updates, [{"automatic": "off"}])
-        self.assertEqual(fake.current.automatic, "off")
-        self.assertFalse(part.rules_changed)  # what was stored is what the form shows now
-        self.assertEqual(part.rule_drafts, list(self.rules.current))
+    async def test_undo_stores_the_rules_from_before(self) -> None:
+        dialog, part, _fake = self.ready(rules=self.three())
+        await part.move_rule(2, 0)
+        self.assertTrue(await dialog.committer.run_undo())
+        self.assertEqual([r.id for r in self.rules.saves[-1][0] or []], [1, 2, 3])
+        self.assertEqual([r.id for r in part.rule_drafts], [1, 2, 3])
 
     async def test_a_dragged_row_moves(self) -> None:
         _dialog, part, _fake = self.ready(rules=self.three())
         part._drag_start(2, SimpleNamespace())  # type: ignore[arg-type]
         part._drag_motion(SimpleNamespace(y_root=-1000))  # type: ignore[arg-type]
         part._drag_end(SimpleNamespace(y_root=-1000))  # type: ignore[arg-type]  # above the first
+        await settle()
         self.assertEqual([r.id for r in part.rule_drafts], [3, 1, 2])
+        self.assertEqual([r.id for r in self.rules.saved[-1]], [3, 1, 2])
 
-    async def test_a_refused_rule_stops_save(self) -> None:
+    async def test_a_refused_change_is_said_in_the_rules_box_and_stores_nothing(self) -> None:
         inside = Rule(
-            id=1,
+            id=0,
             folder=r"E:\Films\in",
             take="films",
             films=RuleTarget(preset="Movie (Folder)", to="folder", folder=r"E:\Films"),
         )
-        dialog, part, fake = self.ready(rules=[self.three()[1]])
-        part.rule_saved(1, inside)  # as the editor's Save (a new rule, last)
-        part.move_rule(1, 0)
-        self.assertEqual(part.problem(), "Rule 1 can't be saved yet. Its row says why.")
-        note = part.rule_rows[0].notes[0]
-        self.assertTrue(str(note.cget("text")).startswith("✕ Can't save: "))
-        self.assertEqual(tuple(note.cget("text_color")), theme.DANGER)
-        self.assertFalse(await dialog._save_all())
+        _dialog, part, fake = self.ready(rules=[self.three()[1]])
+        self.assertFalse(await part.rule_saved(1, inside))  # as the editor's Save (new, last)
         self.assertEqual(self.rules.saved, [])
         self.assertEqual(fake.updates, [])
-        self.assertEqual(
-            str(dialog._error.cget("text")), "Rule 1 can't be saved yet. Its row says why."
-        )
+        self.assertTrue(part._rules_box.refusal.startswith("Rule 2: ✕ Can't save: "))
+        self.assertEqual(len(part.rule_drafts), 1)  # the list shows what is stored again
+        # The editor's own Save hears it and stays open.
+        refused = part._edited(1, inside, True, inside)
+        assert refused is not None
+        self.assertTrue(refused.startswith("Rule 2: ✕ Can't save: "))
+        await settle()
+        self.assertEqual(self.rules.saved, [])
 
     async def test_airgrabbers_rule_has_no_delete_and_a_lock(self) -> None:
         _dialog, part, _fake = self.ready(rules=self.three())
@@ -760,13 +755,16 @@ class RulesListTests(LibrarySettingsCase):
         self.assertEqual(new["rule"].shows.preset, READY.series_preset)
         self.assertEqual(new["rule"].films.preset, READY.movies_preset)
         self.assertEqual(own["rules"], part.rule_drafts)
-        part.delete_rule(1)  # never AirGrabber's
+        await part.delete_rule(1)  # never AirGrabber's
         self.assertEqual(len(part.rule_drafts), 3)
+        self.assertEqual(self.rules.saved, [])
         own["on_delete"]()
+        await settle()
         self.assertEqual([r.id for r in part.rule_drafts], [2, 3])
-        new["on_save"](Rule(folder=r"F:\New"))
+        self.assertIsNone(new["on_save"](Rule(folder=r"F:\New")))  # taken: the editor closes
+        await settle()
         self.assertEqual(part.rule_drafts[-1].folder, r"F:\New")
-        self.assertEqual(self.rules.saved, [])  # all kept until Settings' Save
+        self.assertEqual(len(self.rules.saved), 2)  # each stored as it was made
 
     async def test_the_editors_check_reads_without_the_ignored(self) -> None:
         ignored = FakeIgnored()
@@ -794,16 +792,19 @@ class RulesListTests(LibrarySettingsCase):
         _dialog, part, _fake = self.ready(stored, rules=[airgrabber])
         buttons = [b for b in part.airgrabber_list.winfo_children() if isinstance(b, ctk.CTkButton)]
         self.assertEqual([b.cget("text") for b in buttons], ["Add a rule for this folder"])
-        part.add_rule_for(r"\\nas\video\tv")
-        added = part.rule_drafts[-1]
+        task = part.add_rule_for(r"\\nas\video\tv")
+        assert task is not None
+        await task
+        added = self.rules.saved[-1][-1]  # stored as a new rule: its first look waits
         self.assertEqual(added.folder, r"\\nas\video\tv")
         self.assertFalse(added.airgrabber)
         self.assertEqual(added.id, 0)
+        self.assertEqual(part.rule_drafts[-1].folder, r"\\nas\video\tv")
         self.assertEqual(
             (added.shows, added.films, added.mode, added.take),
             (airgrabber.shows, airgrabber.films, "auto", "shows"),
         )
-        part.add_rule_for(r"\\NAS\video\tv")  # a rule watches it now: no second one
+        self.assertIsNone(part.add_rule_for(r"\\NAS\video\tv"))  # a rule watches it now
         self.assertEqual(len(part.rule_drafts), 2)
         buttons = [b for b in part.airgrabber_list.winfo_children() if isinstance(b, ctk.CTkButton)]
         self.assertEqual(buttons, [])
@@ -851,7 +852,7 @@ class RulesListTests(LibrarySettingsCase):
         self.assertEqual(self.editor.opened[-1]["rule"], seven)
         part.spot_shown("library-folders")  # not a rule's: nothing opens
         self.assertEqual(len(self.editor.opened), 1)
-        dialog.go_to_spot(SECTION_LIBRARY, "rule:7")  # Settings scrolls there, then opens it
+        dialog.go_to_spot(PAGE_SORTING, "rule:7")  # Settings scrolls there, then opens it
         await pump_until(self.root, lambda: len(self.editor.opened) == 2)
         self.assertEqual(self.editor.opened[-1]["rule"], seven)
 
@@ -905,6 +906,7 @@ class EditorPresetsTests(LibrarySettingsCase):
         gate.set_result(None)
         await pump_until(self.root, lambda: self.editor.opened)
         self.editor.opened[-1]["on_save"](Rule(folder=r"E:\Mine"))
+        await settle()
         self.assertEqual(part.rule_drafts[-1].folder, r"E:\Mine")
 
     async def test_a_failed_read_is_tried_again_and_else_says_so(self) -> None:
@@ -953,8 +955,10 @@ class EditorPlaceTests(LibrarySettingsCase):
         self.rules.set([self.rules.stored[1], self.rules.stored[2], self.rules.stored[0]])  # moved
         self.assertEqual([r.id for r in part.rule_drafts], [2, 3, 1])
         opened["on_save"](two.model_copy(update={"name": "Twee"}))
+        await settle()
         self.assertEqual([r.name for r in part.rule_drafts], ["Twee", "", ""])
         opened["on_delete"]()
+        await settle()
         self.assertEqual([r.id for r in part.rule_drafts], [3, 1])
 
     async def test_a_rule_gone_meanwhile_is_left_alone(self) -> None:
@@ -966,33 +970,38 @@ class EditorPlaceTests(LibrarySettingsCase):
         before = list(part.rule_drafts)
         opened["on_save"](Rule(id=1, folder=r"E:\Back"))
         opened["on_delete"]()
+        await settle()
         self.assertEqual(part.rule_drafts, before)
+        self.assertEqual(self.rules.saved, [])
 
 
 class NothingLostTests(LibrarySettingsCase):
-    """Everything the Auto-rename page offered has its place in Settings."""
+    """Everything the old Auto-rename page offered has its place in Settings."""
 
     def test_the_page_and_the_window_are_gone(self) -> None:
         for name in ("library_page", "window", "taskbar"):
             self.assertIsNone(importlib.util.find_spec(f"app.forge.ui.{name}"), name)
 
-    async def test_what_it_does_is_the_sections_note(self) -> None:
+    async def test_what_it_does_is_the_pages_note(self) -> None:
         dialog, _part, _fake = self.ready()
-        self.assertIn("rename finished downloads by itself", labels(dialog.page(SECTION_LIBRARY))[1])
+        self.assertIn("renamed and moved into your folders", labels(dialog.page(PAGE_SORTING))[1])
 
     async def test_the_folders_and_their_buttons(self) -> None:
         dialog, part, _fake = self.ready()
-        texts = labels(dialog.page(SECTION_LIBRARY))
+        dialog.show_section(PAGE_FOLDERS)  # the library folders, marked in its lists
+        folders = dialog.folders_page
+        assert folders is not None
+        await pump_until(self.root, lambda: folders.destination("series") == READY.series_folder)
+        texts = labels(dialog.page(PAGE_FOLDERS))
         for folder in (READY.series_folder, READY.movies_folder):
             self.assertIn(folder, texts)
         self.assertEqual(part.add_rule_button.cget("text"), "＋ Add a rule")
-        self.assertEqual(sorted(part.browse_buttons), ["movies", "series"])
 
     async def test_new_rules_start_with_namings_presets_and_it_says_so(self) -> None:
-        dialog, _part, _fake = self.ready()
-        self.assertIn(t_en(LIBRARY_POINTER), labels(dialog.page(SECTION_LIBRARY)))
-        dialog.show_section(SECTION_NAMING)
-        naming = dialog.parts[SECTION_NAMING]
+        dialog, part, _fake = self.ready()
+        self.assertIn(t_en(LIBRARY_POINTER), labels(part._rules_box.frame))
+        dialog.show_section(PAGE_NAMING)
+        naming = dialog.parts[PAGE_NAMING]
         await pump_until(self.root, lambda: getattr(naming, "ready", False))
         draft = naming.draft()  # type: ignore[attr-defined]
         self.assertEqual(draft["series_preset"], READY.series_preset)
@@ -1000,8 +1009,8 @@ class NothingLostTests(LibrarySettingsCase):
 
 
 class IgnoredBoxTests(LibrarySettingsCase):
-    """The "Ignored" box under the rules: what Auto-rename leaves alone, each with "Stop
-    ignoring" (stored on Save, D9); "Nothing ignored." without a gap when empty."""
+    """The "Ignored" box under the rules: what Sorting leaves alone, each with "Stop ignoring"
+    (at once; Undo ignores it again); "Nothing ignored." without a gap when empty."""
 
     COURSE = r"D:\Downloads\tv\Python Course"
     CLIP = r"D:\Downloads\tv\Holiday.Clip.mp4"
@@ -1026,28 +1035,30 @@ class IgnoredBoxTests(LibrarySettingsCase):
 
     async def test_the_box_follows_the_rules(self) -> None:
         dialog, _part, _fake = self.ignored_ready(FakeIgnored())
-        texts = labels(dialog.page(SECTION_LIBRARY))
+        texts = labels(dialog.page(PAGE_SORTING))
         rules = texts.index("Rules")
         ignored = texts.index("Ignored")
         self.assertLess(rules, ignored)
         self.assertLess(ignored, texts.index("AirGrabber's downloads", ignored))  # the box
-        self.assertEqual(texts[ignored + 1], "Files and folders Auto-rename leaves alone.")
+        self.assertEqual(texts[ignored + 1], "Files and folders Sorting leaves alone.")
 
-    async def test_lists_entries_and_stop_ignoring_waits_for_save(self) -> None:
+    async def test_lists_entries_and_stop_ignoring_stores_at_once(self) -> None:
         source = FakeIgnored(ignored_entry(self.COURSE, folder=True), ignored_entry(self.CLIP))
         dialog, part, fake = self.ignored_ready(source)
         self.assertEqual(labels(part.ignored_list), ["📁  Python Course", self.CLIP_NAME])
         buttons = [w for w in part.ignored_list.winfo_children() if isinstance(w, ctk.CTkButton)]
         self.assertEqual([b.cget("text") for b in buttons], ["Stop ignoring", "Stop ignoring"])
         buttons[0].invoke()
-        self.assertEqual(labels(part.ignored_list), [self.CLIP_NAME])
-        self.assertEqual(source.stopped, [])  # kept until Save
-        self.assertEqual(part.unignored, [Path(self.COURSE)])
-        self.assertTrue(await dialog._save_all())
+        self.assertEqual(labels(part.ignored_list), [self.CLIP_NAME])  # gone at once
+        await settle()
         self.assertEqual(source.stopped, [Path(self.COURSE)])
         self.assertEqual(fake.updates, [])  # no setting changed
         self.assertEqual(part.unignored, [])
         self.assertEqual(labels(part.ignored_list), [self.CLIP_NAME])
+        self.assertTrue(await dialog.committer.run_undo())  # ignored again
+        self.assertEqual(
+            sorted(labels(part.ignored_list)), sorted(["📁  Python Course", self.CLIP_NAME])
+        )
 
     async def test_the_whole_path_is_the_tooltip(self) -> None:
         source = FakeIgnored(ignored_entry(self.COURSE, folder=True), ignored_entry(self.CLIP))
@@ -1060,14 +1071,16 @@ class IgnoredBoxTests(LibrarySettingsCase):
         ]
         self.assertEqual(ignored_tips, [self.COURSE, self.CLIP])
 
-    async def test_cancel_keeps_them_ignored(self) -> None:
+    async def test_closing_stops_listening(self) -> None:
         source = FakeIgnored(ignored_entry(self.CLIP))
         dialog, part, _fake = self.ignored_ready(source)
-        part.stop_ignoring(Path(self.CLIP))
+        task = part.stop_ignoring(Path(self.CLIP))
         self.assertEqual(labels(part.ignored_list), ["Nothing ignored."])
         dialog.destroy()
+        assert task is not None
+        await task  # stored, nothing of the closed page touched
         await pump(self.root, 0.05)
-        self.assertEqual(source.stopped, [])
+        self.assertEqual(source.stopped, [Path(self.CLIP)])
         self.assertEqual(source.listeners, [])  # it stopped listening
 
     async def test_ignored_meanwhile_shows(self) -> None:
@@ -1079,9 +1092,9 @@ class IgnoredBoxTests(LibrarySettingsCase):
     async def test_dutch(self) -> None:
         i18n.set_language(Language.NL)
         dialog, part, _fake = self.ignored_ready(FakeIgnored(ignored_entry(self.CLIP)))
-        texts = labels(dialog.page(SECTION_LIBRARY))
+        texts = labels(dialog.page(PAGE_SORTING))
         self.assertIn("Genegeerd", texts)
-        self.assertIn("Bestanden en mappen die automatisch hernoemen met rust laat.", texts)
+        self.assertIn("Bestanden en mappen die Sorteren met rust laat.", texts)
         buttons = [w for w in part.ignored_list.winfo_children() if isinstance(w, ctk.CTkButton)]
         self.assertEqual(buttons[0].cget("text"), "Niet meer negeren")
         part.stop_ignoring(Path(self.CLIP))

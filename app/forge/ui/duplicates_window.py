@@ -55,7 +55,7 @@ CHOOSE_TEXT = N_(
 )
 WHERE_TEXT = N_("Where should the extra copies go?")
 NONE_TEXT = N_("No duplicates: every episode and film is in your library once.")
-NO_FOLDERS = N_("Choose your Series and Movies folders in Settings › Auto-rename first.")
+NO_FOLDERS = N_("Choose your Series and Movies folders in Settings › Folders first.")
 KEEP_TEXT = N_("Keeps {name} ({size})")
 EXTRA_TEXT = N_("Moves {name} ({size})")
 MOVE_ONE = N_("Move {n} extra copy aside")

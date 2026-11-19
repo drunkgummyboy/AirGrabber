@@ -73,7 +73,7 @@ def mix(first: str, second: str, amount: float) -> str:
 
 
 def light_colour(state: WatchState) -> Pair:
-    """The renamer's light (the queue's status line, Settings › Auto-rename): green watching, amber
+    """The renamer's light (the queue's status line, Settings › Sorting): green watching, amber
     trial, red unreachable, else muted."""
     return {
         "watching": theme.SUCCESS,

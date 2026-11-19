@@ -298,7 +298,7 @@ class TextTests(ForgeTestCase):
         overlap = forge(folder(SERIES + r"\in"))
         self.assertEqual(
             use_text(airgrabber_uses(overlap, [])[0]),
-            "“Where finished downloads end up” in Settings. Not watched: it's inside a library "
+            "“Finished downloads” in Settings › Folders. Not watched: it's inside a library "
             "folder or a folder a rule moves files to.",
         )
         self.assertEqual(ask_text(AirGrabberDownloads()), "")
@@ -306,20 +306,19 @@ class TextTests(ForgeTestCase):
         self.assertEqual(
             ask_text(other),
             "AirGrabber sends downloads to Transmission on another computer. Add a rule for the "
-            "folder where they show up on this PC (a shared network folder), or fill in “Where "
-            "finished downloads end up” in Settings › Where downloads go.",
+            "folder where they show up on this PC (a shared network folder), or fill in “Finished "
+            "downloads” in Settings › Folders.",
         )
         self.assertEqual(
             ask_text(AirGrabberDownloads(ask="finished")),
             "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
-            "“Where finished downloads end up” in Settings › Where downloads go, or add a rule "
-            "for the folder.",
+            "“Finished downloads” in Settings › Folders, or add a rule for the folder.",
         )
         self.assertEqual(
             ask_text(AirGrabberDownloads(ask="nas_folder")),
             "Download Station keeps AirGrabber's downloads in its own download folder. Add a "
-            "rule for the shared folder where they show up on this PC, or fill in “Where "
-            "finished downloads end up” in Settings › Where downloads go.",
+            "rule for the shared folder where they show up on this PC, or fill in “Finished "
+            "downloads” in Settings › Folders.",
         )
 
     def test_dutch(self) -> None:

@@ -767,7 +767,7 @@ class ProwlarrState(StrEnum):
 
 
 class ProwlarrStatus(DomainModel):
-    """Where AirGrabber stands with Prowlarr (Settings → Advanced)."""
+    """Where AirGrabber stands with Prowlarr (Settings → Quality & sources)."""
 
     state: ProwlarrState
     sites: int | None = Field(default=None, ge=0)  # CONNECTED_LOCAL: its enabled sites, if read

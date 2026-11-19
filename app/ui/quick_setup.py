@@ -11,7 +11,7 @@ Settings has now; a quality or card size Settings has that isn't offered here ("
 left unchosen, and stays unless one is clicked.
 
 `QuickSetupPanel` is the page: the welcome's last step (app/ui/welcome_dialog.py) and the small
-`QuickSetupDialog` from Settings → Looks → Quick setup. The host saves `quick_changes`.
+`QuickSetupDialog` from Settings → Overview → Quick setup. The host saves `quick_changes`.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ LANGUAGE_TITLE = N_("Language")
 RESTART_TEXT = N_("Restart AirGrabber to switch the language")
 ACCENT_RESTART_TEXT = N_("Restart AirGrabber to switch the accent colour")
 BOTH_RESTART_TEXT = N_("Restart AirGrabber to switch the language and the accent colour")
-OPEN_TEXT = N_("Quick setup")  # Settings → Looks: the box and its button
+OPEN_TEXT = N_("Quick setup")  # Settings → Overview: the box and its button
 
 # (value, name, the small line under it) in the order shown.
 LOOKS: tuple[tuple[ThemeMode, str], ...] = (
@@ -479,7 +479,7 @@ class QuickSetupPanel(ctk.CTkFrame):
 
 
 class QuickSetupDialog(ctk.CTkToplevel):
-    """Quick setup on its own, from Settings → Looks (modal over Settings). Save stores the
+    """Quick setup on its own, from Settings → Overview (modal over Settings). Save stores the
     choices and calls `on_saved`; Cancel, Esc and the round ✕ take the look back."""
 
     def __init__(

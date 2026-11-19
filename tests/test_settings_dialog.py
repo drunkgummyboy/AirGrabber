@@ -1,6 +1,11 @@
-"""Settings dialog: plain quality names, the sidebar's sections, which section a validation error
-opens, download-mode rows, the size entries' texts, and the dialog itself (sections, the quality
-page, the TMDB key box) on a real (hidden) Tk root."""
+"""Settings dialog: plain quality names, a validation error's words, download-mode rows, the size
+entries' texts, and the dialog itself (its pages, the quality page, the TMDB key box: each change
+stored as it is made) on a real (hidden) Tk root. The pages' order and where each box went:
+tests/test_settings_registry.py; instant saving and Undo: tests/test_settings_commit.py.
+
+`click`, `find` and `settle` are shared with the other Settings tests: a control clicked as the
+user would (its command runs), a control by its variable, and every change started meanwhile
+stored."""
 
 from __future__ import annotations
 
@@ -33,40 +38,85 @@ from app.ui.settings_dialog import (
     MOVIES_TEXT,
     QUALITY_NAMES,
     QUALITY_NOTE,
-    SECTION_ADVANCED,
-    SECTION_AUTOMATIC,
-    SECTION_BACKUP,
-    SECTION_GROUPS,
-    SECTION_ICONS,
-    SECTION_INFO,
-    SECTION_LOOKS,
-    SECTION_PHONE,
-    SECTION_LIBRARY,
-    SECTION_QUALITY,
-    SECTION_UPDATES,
-    SECTION_WHERE,
-    SECTIONS,
     SERIES_TEXT,
     THEME_NAMES,
     THEME_TEXT,
     THEME_TITLE,
     TMDB_KEY_LABEL,
     TMDB_KEY_TEXT,
+    TMDB_TITLE,
     DownloadRows,
     SettingsDialog,
     _describe,
-    _first_section,
     dialog_height,
-    download_dir_to_save,
     download_rows,
     quality_from_name,
     quality_name,
-    section_for_field,
     sidebar_width,
     size_text,
     theme_from_name,
     theme_name,
 )
+from app.ui.settings_pages_registry import (
+    PAGE_ACCOUNTS,
+    PAGE_LOOKS,
+    PAGE_ORDER,
+    PAGE_OVERVIEW,
+    PAGE_PAGES,
+    PAGE_PHONE,
+    PAGE_PLAYING,
+    PAGE_PLEX,
+    PAGE_QUALITY,
+    PAGE_SORTING,
+    PAGE_NAMING,
+    PAGE_SUBTITLES,
+    PAGE_UPDATES,
+    PAGES,
+)
+from app.ui.tasks import _running
+
+
+def find(widget: Any, variable: Any) -> Any:
+    """The control under `widget` that shows `variable`."""
+    stack = [widget]
+    while stack:
+        found = stack.pop()
+        if getattr(found, "_variable", None) is variable:
+            return found
+        stack.extend(found.winfo_children())
+    raise LookupError("no control shows that variable")
+
+
+def click(widget: Any, value: str | None = None) -> None:
+    """What the user's click does: a choice of a row of choices or a menu (`value`), a tick, a
+    switch, a radio button; its command runs as with a real click."""
+    if isinstance(widget, ctk.CTkSegmentedButton):
+        widget.set(value, from_button_callback=True)
+    elif isinstance(widget, ctk.CTkOptionMenu):
+        widget._dropdown_callback(value)
+    elif isinstance(widget, ctk.CTkRadioButton):
+        widget.invoke()
+    else:
+        widget.toggle()
+
+
+async def settle(timeout: float = 2.0) -> None:
+    """Wait for every change (and what it started) to be stored; a failure is raised. Tasks
+    that wait for something else (a test's gate) are left after `timeout`."""
+    loop = asyncio.get_running_loop()
+    for _ in range(500):
+        pending = [task for task in _running if not task.done() and task.get_loop() is loop]
+        if not pending:
+            return
+        done, _waiting = await asyncio.wait(
+            pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            if not task.cancelled() and task.exception() is not None:
+                raise task.exception()  # type: ignore[misc]
+        if not done:
+            return
+        await asyncio.sleep(0)
 
 
 def validation_error(**fields: object) -> ValidationError:
@@ -145,52 +195,13 @@ class SizeTextTests(unittest.TestCase):
 
 
 class SectionTests(unittest.TestCase):
-    def test_the_sidebar_order(self) -> None:
-        self.assertEqual(
-            [(group, list(names)) for group, names in SECTION_GROUPS],
-            [
-                (
-                    "Downloading",
-                    ["Where downloads go", "Quality", "Automatic", "Library", "Phone connection"],
-                ),
-                ("App", ["Movie & show info", "Looks", "Updates", "Backup", "Advanced"]),
-                # MediaForge's group goes between these two when the dialog is given `forge`.
-            ],
-        )
-        self.assertEqual(SECTIONS[0], SECTION_WHERE)
-        for section in SECTIONS:
-            with self.subTest(section=section):
-                self.assertTrue(SECTION_ICONS[section])
+    def test_every_page_has_an_icon_and_a_note(self) -> None:
+        self.assertEqual(PAGE_ORDER[0], PAGE_OVERVIEW)
+        for page in PAGE_ORDER:
+            with self.subTest(page=page):
+                self.assertTrue(PAGES[page].icon)
+                self.assertTrue(PAGES[page].note)
 
-    def test_every_setting_has_a_section(self) -> None:
-        expected = {
-            "download_mode": SECTION_WHERE,
-            "download_dir": SECTION_WHERE,
-            "remote_url": SECTION_WHERE,
-            "remote_kind": SECTION_WHERE,
-            "quality_tv": SECTION_QUALITY,
-            "quality_movie": SECTION_QUALITY,
-            "size_tv_min_gb": SECTION_QUALITY,
-            "size_movie_max_gb": SECTION_QUALITY,
-            "keep_in_tray": SECTION_AUTOMATIC,
-            "start_with_windows": SECTION_AUTOMATIC,
-            "auto_download_new_shows": SECTION_AUTOMATIC,
-            "auto_download_new_films": SECTION_AUTOMATIC,
-            "subtitles_folder": SECTION_WHERE,
-            "tmdb_api_key": SECTION_INFO,
-            "card_size": SECTION_LOOKS,
-            "first_day": SECTION_LOOKS,
-            "theme_mode": SECTION_LOOKS,
-            "auto_update": SECTION_UPDATES,
-            "prowlarr_url": SECTION_ADVANCED,
-            "excluded_keywords": SECTION_ADVANCED,
-            "preferred_groups": SECTION_ADVANCED,
-            "disabled_indexers": SECTION_ADVANCED,
-        }
-        for name, section in expected.items():
-            with self.subTest(name=name):
-                self.assertIn(name, Settings.model_fields)
-                self.assertEqual(section_for_field(name), section)
 
 
 class DownloadRowsTests(unittest.TestCase):
@@ -213,29 +224,8 @@ class DownloadRowsTests(unittest.TestCase):
         )
 
 
-class DownloadDirTests(unittest.TestCase):
-    STORED = Path(r"D:\Watch")
-
-    def test_folder_mode_saves_the_entry(self) -> None:
-        self.assertEqual(
-            download_dir_to_save(DownloadMode.FOLDER, r"  E:\New  ", self.STORED), r"E:\New"
-        )
-
-    def test_folder_mode_still_validates_an_empty_entry(self) -> None:
-        self.assertEqual(download_dir_to_save(DownloadMode.FOLDER, "  ", self.STORED), "")
-
-    def test_torrent_program_mode_keeps_the_stored_folder(self) -> None:
-        for entry in ("", "   ", r"E:\Typed but hidden"):
-            with self.subTest(entry=entry):
-                kept = download_dir_to_save(DownloadMode.APP, entry, self.STORED)
-                self.assertEqual(kept, self.STORED)
-                # A hidden, emptied entry no longer blocks saving.
-                settings = Settings(download_mode=DownloadMode.APP, download_dir=kept)
-                self.assertEqual(settings.download_dir, self.STORED)
-
-
 class DialogHeightTests(unittest.TestCase):
-    WANTED = 785  # the tallest page, Save/Cancel and padding at full size
+    WANTED = 785  # the tallest page and padding at full size
 
     def test_1080p_at_150_percent(self) -> None:
         self.assertEqual(dialog_height(self.WANTED, 720), 640)
@@ -252,30 +242,6 @@ class DialogHeightTests(unittest.TestCase):
 
 
 class ValidationErrorTests(unittest.TestCase):
-    def test_errors_open_their_section(self) -> None:
-        cases: list[tuple[dict[str, object], str]] = [
-            ({"download_dir": " "}, SECTION_WHERE),
-            ({"download_mode": "cloud"}, SECTION_WHERE),
-            ({"remote_url": "nas.local"}, SECTION_WHERE),  # the NAS / other computer form
-            ({"remote_kind": "utorrent"}, SECTION_WHERE),
-            ({"remote_verify_tls": "maybe"}, SECTION_WHERE),
-            ({"quality_tv": "720"}, SECTION_QUALITY),
-            ({"quality_movie": "720"}, SECTION_QUALITY),
-            ({"size_tv_min_gb": "lots"}, SECTION_QUALITY),
-            ({"size_movie_min_gb": 9, "size_movie_max_gb": 3}, SECTION_QUALITY),
-            ({"first_day": "Someday"}, SECTION_LOOKS),
-            ({"card_size": "xxl"}, SECTION_LOOKS),
-            ({"prowlarr_url": "localhost:9696"}, SECTION_ADVANCED),
-            ({"excluded_keywords": 5}, SECTION_ADVANCED),
-            ({"preferred_groups": 5}, SECTION_ADVANCED),
-            ({"disabled_indexers": 5}, SECTION_ADVANCED),
-            ({"keep_in_tray": "maybe"}, SECTION_AUTOMATIC),
-            ({"auto_update": "maybe"}, SECTION_UPDATES),
-        ]
-        for fields, section in cases:
-            with self.subTest(fields=fields):
-                self.assertEqual(_first_section(validation_error(**fields)), section)
-
     def test_plain_labels(self) -> None:
         self.assertEqual(
             _describe(validation_error(download_dir="")),
@@ -308,14 +274,6 @@ class ValidationErrorTests(unittest.TestCase):
         self.assertTrue(
             _describe(validation_error(tmdb_api_key=5)).startswith(f"{TMDB_KEY_LABEL}: ")
         )
-
-    def test_the_first_error_decides(self) -> None:
-        error = validation_error(prowlarr_url="nas.local", download_dir="")
-        self.assertEqual(len(error.errors()), 2)
-        first = str(error.errors()[0]["loc"][0])
-        expected = SECTION_ADVANCED if first == "prowlarr_url" else SECTION_WHERE
-        self.assertEqual(_first_section(error), expected)
-
 
 # -- the dialog --------------------------------------------------------------------------------
 
@@ -397,23 +355,21 @@ class DialogCase(unittest.IsolatedAsyncioTestCase):
 
 
 class DialogTests(DialogCase):
-    async def test_opens_on_where_downloads_go_and_switches_pages(self) -> None:
+    async def test_opens_on_overview_and_switches_pages(self) -> None:
         dialog, _settings = self.dialog()
-        self.assertEqual(dialog.section, SECTION_WHERE)
-        self.assertTrue(dialog.page(SECTION_WHERE).winfo_manager())
-        # Without their services there are no Backup, Library or Phone connection sections (
-        # without theirs, nor a MediaForge group without Forge).
-        self.assertEqual(
-            list(dialog._items),
-            [s for s in SECTIONS if s not in (SECTION_BACKUP, SECTION_LIBRARY, SECTION_PHONE)],
-        )
-        self.assertNotIn("MEDIAFORGE", labels(dialog._sidebar))
-        dialog._items[SECTION_LOOKS].click()
-        self.assertEqual(dialog.section, SECTION_LOOKS)
-        self.assertTrue(dialog._items[SECTION_LOOKS].selected)
-        self.assertFalse(dialog._items[SECTION_WHERE].selected)
-        self.assertTrue(dialog.page(SECTION_LOOKS).winfo_manager())
-        self.assertFalse(dialog.page(SECTION_WHERE).winfo_manager())
+        self.assertEqual(dialog.section, PAGE_OVERVIEW)
+        self.assertTrue(dialog.page(PAGE_OVERVIEW).winfo_manager())
+        # Without their services there are no Plex & library, Playing or Phone connection
+        # pages, and without Forge no Sorting, Naming or Subtitles.
+        left_out = (PAGE_PLEX, PAGE_PLAYING, PAGE_PHONE, PAGE_SORTING, PAGE_NAMING, PAGE_SUBTITLES)
+        self.assertEqual(list(dialog._items), [p for p in PAGE_ORDER if p not in left_out])
+        self.assertNotIn("WATCHING", labels(dialog._sidebar))  # a group with no page
+        dialog._items[PAGE_LOOKS].click()
+        self.assertEqual(dialog.section, PAGE_LOOKS)
+        self.assertTrue(dialog._items[PAGE_LOOKS].selected)
+        self.assertFalse(dialog._items[PAGE_OVERVIEW].selected)
+        self.assertTrue(dialog.page(PAGE_LOOKS).winfo_manager())
+        self.assertFalse(dialog.page(PAGE_OVERVIEW).winfo_manager())
 
     async def test_every_page_has_a_heading_and_a_muted_line(self) -> None:
         dialog, _settings = self.dialog()
@@ -423,54 +379,59 @@ class DialogTests(DialogCase):
                 self.assertEqual(texts[0], section)
                 self.assertTrue(texts[1])
 
-    async def test_fits_a_1366x768_screen_at_150_percent(self) -> None:
+    async def test_fits_a_1920x1080_screen_at_175_percent(self) -> None:
         dialog, _settings = self.dialog()
         dialog.update_idletasks()
         scaling = ctk.ScalingTracker.get_window_scaling(dialog)
         width = dialog.winfo_reqwidth() / scaling
-        self.assertLessEqual(width, 1366 / 1.5 - 20)  # room for the window's own edges
+        self.assertLessEqual(width, 1920 / 1.75 - 20)  # room for the window's own edges
+        self.assertGreaterEqual(width, 1000)  # the wider window (the owner's wish, 2026-11-19)
         self.assertGreaterEqual(sidebar_width(), 220)
 
     async def test_the_quality_page(self) -> None:
         dialog, settings = self.dialog(
             quality_tv="720p", quality_movie="2160p", size_movie_min_gb=6, size_movie_max_gb=15
         )
-        texts = labels(dialog.page(SECTION_QUALITY))
+        texts = labels(dialog.page(PAGE_QUALITY))
         for text in ("Series", SERIES_TEXT, "Movies", MOVIES_TEXT, QUALITY_NOTE, "between", "GB"):
             self.assertIn(text, texts)
         self.assertEqual(dialog._quality_tv.get(), "HD (720p)")
         self.assertEqual(dialog._quality_movie.get(), "4K (2160p)")
         self.assertEqual((dialog._size_tv_min.get(), dialog._size_tv_max.get()), ("", ""))
         self.assertEqual((dialog._size_movie_min.get(), dialog._size_movie_max.get()), ("6", "15"))
-        dialog._quality_tv.set("Full HD (1080p)")
+        click(find(dialog.page(PAGE_QUALITY), dialog._quality_tv), "Full HD (1080p)")
+        await settle()
+        self.assertIs(settings.current.quality_tv, QualityProfile.FULL_HD)  # at once
         dialog._size_tv_min.set("2,5")
         dialog._size_tv_max.set("4")
+        self.assertIsNone(settings.current.size_tv_min_gb)  # typing stores nothing
+        dialog._size_fields["tv"].commit_now()  # Enter, or the keyboard leaving them
         dialog._size_movie_max.set("")
-        await dialog._save()
+        dialog._size_fields["movie"].commit_now()
+        await settle()
         current = settings.current
-        self.assertIs(current.quality_tv, QualityProfile.FULL_HD)
         self.assertIs(current.quality_movie, QualityProfile.UHD)
         self.assertEqual((current.size_tv_min_gb, current.size_tv_max_gb), (2.5, 4.0))
         self.assertEqual((current.size_movie_min_gb, current.size_movie_max_gb), (6.0, None))
-        self.assertFalse(dialog.winfo_exists())
+        self.assertTrue(dialog.winfo_exists())
 
-    async def test_a_bad_size_opens_the_quality_page(self) -> None:
+    async def test_a_bad_size_is_refused_in_its_box(self) -> None:
         dialog, settings = self.dialog()
         dialog._size_tv_min.set("5")
         dialog._size_tv_max.set("3")
-        await dialog._save()
-        self.assertTrue(dialog.winfo_exists())
-        self.assertEqual(dialog.section, SECTION_QUALITY)
+        dialog._size_fields["tv"].commit_now()
+        await settle()
         self.assertEqual(
-            dialog._error.cget("text"),
+            dialog.box(PAGE_QUALITY, "Series").refusal,
             "Series size: The first number can't be bigger than the second",
         )
         self.assertIsNone(settings.current.size_tv_max_gb)
+        self.assertEqual(dialog._size_tv_max.get(), "3")  # what was typed stays
 
     async def test_the_tmdb_key_box(self) -> None:
         dialog, settings = self.dialog(tmdb_api_key="old")
-        texts = labels(dialog.page(SECTION_INFO))
-        for text in (TMDB_KEY_LABEL, TMDB_KEY_TEXT, KEY_GUIDE_LINK):
+        texts = labels(dialog.page(PAGE_ACCOUNTS))
+        for text in (TMDB_TITLE, TMDB_KEY_TEXT, KEY_GUIDE_LINK):
             self.assertIn(text, texts)
         self.assertEqual(dialog._tmdb_check.cget("text"), "Check")
         self.assertNotIn("Movies key", texts)
@@ -484,7 +445,8 @@ class DialogTests(DialogCase):
         self.assertEqual(dialog._tmdb_result.cget("text_color"), theme.SUCCESS)
         dialog._tmdb_key.set("other")  # an edit forgets the result
         self.assertFalse(dialog._tmdb_result.winfo_manager())
-        await dialog._save()
+        dialog._tmdb_field.commit_now()  # stored unchecked: Check stays optional
+        await settle()
         self.assertEqual(settings.current.tmdb_api_key.get_secret_value(), "other")
 
     async def test_a_refused_or_unreachable_key(self) -> None:
@@ -514,25 +476,26 @@ class DialogTests(DialogCase):
         self.assertEqual(dialog._tmdb_key.get(), "fromguide")
         self.assertEqual(dialog._tmdb_result.cget("text"), "✓ The key works")
 
-    async def test_the_card_size_and_week_on_looks(self) -> None:
+    async def test_the_card_size_on_looks_and_the_week_on_pages(self) -> None:
         dialog, settings = self.dialog()
         self.assertEqual(dialog._card_size.get(), "M")  # the default
-        texts = labels(dialog.page(SECTION_LOOKS))
-        self.assertLess(texts.index("Card size"), texts.index("Week starts on"))
-        dialog._card_size.set("XL")
-        dialog._first_day.set("Sunday")
-        await dialog._save()
+        self.assertIn("Card size", labels(dialog.page(PAGE_LOOKS)))
+        texts = labels(dialog.page(PAGE_PAGES))
+        self.assertLess(texts.index("Calendar"), texts.index("Week starts on"))  # one box
+        click(find(dialog.page(PAGE_LOOKS), dialog._card_size), "XL")
+        click(find(dialog.page(PAGE_PAGES), dialog._first_day), "Sunday")
+        await settle()
         self.assertEqual(settings.current.card_size.value, "xl")
         self.assertEqual(settings.current.first_day.value, "Sunday")
 
     async def test_the_theme_box_comes_first_on_looks(self) -> None:
         dialog, settings = self.dialog()
         self.assertEqual(dialog._theme_mode.get(), "Follow Windows")  # the default
-        texts = labels(dialog.page(SECTION_LOOKS))
+        texts = labels(dialog.page(PAGE_LOOKS))
         self.assertLess(texts.index(THEME_TITLE), texts.index("Card size"))
         self.assertIn(THEME_TEXT, texts)
-        dialog._theme_mode.set("Light")
-        await dialog._save()
+        click(find(dialog.page(PAGE_LOOKS), dialog._theme_mode), "Light")
+        await settle()
         self.assertIs(settings.current.theme_mode, ThemeMode.LIGHT)
 
     async def test_a_stored_theme_shows(self) -> None:
@@ -541,9 +504,9 @@ class DialogTests(DialogCase):
 
     async def test_updates_page_shows_the_version(self) -> None:
         dialog, settings = self.dialog(auto_update=True)
-        self.assertIn("Version 2.0.4", labels(dialog.page(SECTION_UPDATES)))
-        dialog._auto_update.set(False)
-        await dialog._save()
+        self.assertIn("Version 2.0.4", labels(dialog.page(PAGE_UPDATES)))
+        click(find(dialog.page(PAGE_UPDATES), dialog._auto_update))
+        await settle()
         self.assertFalse(settings.current.auto_update)
 
 

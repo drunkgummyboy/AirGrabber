@@ -5,8 +5,8 @@ mockups/forge-as-a-page.html). AirGrabber's main window (`Mode.FORGE`) shows it;
 Top to bottom, under the band's top row:
 1. The main window's tabs row, whose left part is the page's (`tabs_row`; the switch stays at its
    right end). With the queue: + Files, + Folder and Presets (the queue's own `toolbar`) and the
-   status line, the renamer's light and words (`WatchStatus`, a quiet "Auto-rename off" while off;
-   cut to fit; a click opens Settings at Auto-rename, `on_settings`). With History: the heading,
+   status line, the renamer's light and words (`WatchStatus`, a quiet "Sorting off" while off;
+   cut to fit; a click opens Settings at Sorting, `on_settings`). With History: the heading,
    its muted line and the Activity button.
 2. The queue (QueueView: the preset card, the filters with Library ▾, Clear ▾, Preview and
    Forge, the cards) or History (HistoryView) in the same place; 🕘 in the band switches them
@@ -60,7 +60,7 @@ log = logging.getLogger(__name__)
 
 type View = Literal["queue", "history"]
 
-AUTO_OFF = N_("Auto-rename off")  # the status line while renaming on its own is off
+AUTO_OFF = N_("Sorting off")  # the status line while renaming on its own is off
 HISTORY = N_("History")
 ACTIVITY = N_("Activity")
 TRY_AGAIN = N_("Try again")
@@ -329,7 +329,7 @@ class ForgePage(ctk.CTkFrame):
     def set_shown(self, shown: bool) -> None:
         """The main window shows this page, or another one: the tabs row's left part comes or
         goes, Activity closes with the page, and opening it clears yesterday's done bands (also
-        with Auto-rename off) and looks for new downloads."""
+        with Sorting off) and looks for new downloads."""
         opened = shown and not self.shown
         self.shown = shown
         if not shown:
@@ -487,7 +487,7 @@ class ForgePage(ctk.CTkFrame):
     # --- the status line --------------------------------------------------------------------
 
     def set_watch_status(self, status: WatchStatus) -> None:
-        """The renamer's status: the light and the words (a quiet "Auto-rename off" while off,
+        """The renamer's status: the light and the words (a quiet "Sorting off" while off,
         but for a reason worth reading: the old MediaForge's guard)."""
         from app.forge.core.auto import OLD_INSTALL_STATUS
 
@@ -547,14 +547,14 @@ class ForgePage(ctk.CTkFrame):
             button.configure(text=text)
 
     def _folders_clicked(self) -> None:
-        from app.forge.ui.settings_pages import LIBRARY_FOLDERS_SPOT, SECTION_LIBRARY
+        from app.ui.settings_pages_registry import FOLDERS_SPOT, PAGE_FOLDERS
 
-        self.on_settings(SECTION_LIBRARY, LIBRARY_FOLDERS_SPOT)
+        self.on_settings(PAGE_FOLDERS, FOLDERS_SPOT)
 
     def _status_clicked(self) -> None:
-        from app.forge.ui.settings_pages import SECTION_LIBRARY
+        from app.ui.settings_pages_registry import PAGE_SORTING
 
-        self.on_settings(SECTION_LIBRARY)
+        self.on_settings(PAGE_SORTING)
 
     # --- what the host asks -----------------------------------------------------------------
 

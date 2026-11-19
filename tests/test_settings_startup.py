@@ -1,5 +1,5 @@
-"""Settings → Automatic, "In the background": the start-with-Windows box shows the real
-shortcut, and Save adds or removes it only when the box changed (a fake shortcut throughout;
+"""Settings → Windows, "In the background": the start-with-Windows box shows the real
+shortcut; a click adds or removes it, then stores its real state (a fake shortcut throughout;
 the real Startup folder is never touched)."""
 
 from __future__ import annotations
@@ -20,12 +20,13 @@ from app.models import ProwlarrState, ProwlarrStatus, Settings
 from app.services import SettingsService
 from app.services.startup import SHORTCUT_NAME, StartupError
 from app.ui.settings_dialog import (
-    SECTION_AUTOMATIC,
     SettingsDialog,
     StartupResult,
     WindowsStartup,
     apply_start_with_windows,
 )
+from app.ui.settings_pages_registry import PAGE_AUTOMATIC, PAGE_WINDOWS
+from tests.test_settings_dialog import click, find, settle
 
 
 class FakeShortcut:
@@ -153,24 +154,27 @@ class SettingsDialogStartupTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(dialog._start_with_windows.get(), real)
                 dialog.destroy()
 
-    async def test_save_without_a_change_leaves_the_shortcut_and_stores_its_state(self) -> None:
+    async def test_opening_changes_nothing(self) -> None:
         shortcut = FakeShortcut(True)
         dialog, settings = self.dialog(shortcut, stored=False)
-        await dialog._save()
+        await settle()
         self.assertEqual(shortcut.calls, [])
-        self.assertTrue(settings.current.start_with_windows)
-        self.assertFalse(dialog.winfo_exists())
+        self.assertFalse(settings.current.start_with_windows)
+        dialog.close()
+        await settle()
+        self.assertEqual(shortcut.calls, [])
 
-    async def test_save_after_a_change_switches_the_shortcut(self) -> None:
+    async def test_a_click_switches_the_shortcut_and_the_ticks_store_at_once(self) -> None:
         shortcut = FakeShortcut(False)
         dialog, settings = self.dialog(shortcut, stored=False)
-        dialog._start_with_windows.set(True)
-        dialog._keep_in_tray.set(False)
-        dialog._auto_new_shows.set(True)
-        dialog._auto_new_films.set(True)
-        await dialog._save()
+        windows, automatic = dialog.page(PAGE_WINDOWS), dialog.page(PAGE_AUTOMATIC)
+        click(find(windows, dialog._start_with_windows))
+        await settle()
         self.assertEqual(shortcut.calls, [True])
         self.assertTrue(settings.current.start_with_windows)
+        for variable in (dialog._keep_in_tray, dialog._auto_new_shows, dialog._auto_new_films):
+            click(find(windows if variable is dialog._keep_in_tray else automatic, variable))
+        await settle()
         self.assertFalse(settings.current.keep_in_tray)
         self.assertTrue(settings.current.auto_download_new_shows)
         self.assertTrue(settings.current.auto_download_new_films)
@@ -178,27 +182,27 @@ class SettingsDialogStartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_films_switch_shows_the_setting_off_by_default(self) -> None:
         dialog, settings = self.dialog(FakeShortcut(False), stored=False)
         self.assertFalse(dialog._auto_new_films.get())
-        boxes: list[ctk.CTkCheckBox] = []
-        widgets: list[Any] = [dialog.page(SECTION_AUTOMATIC)]
+        boxes: list[ctk.CTkSwitch] = []
+        widgets: list[Any] = [dialog.page(PAGE_AUTOMATIC)]
         while widgets:
             widget = widgets.pop()
-            if isinstance(widget, ctk.CTkCheckBox):
+            if isinstance(widget, ctk.CTkSwitch):
                 boxes.append(widget)
             widgets.extend(widget.winfo_children())
         texts = [box.cget("text") for box in boxes]
         self.assertIn("Download films I add to my watchlist when they're out", texts)
-        await dialog._save()
         self.assertFalse(settings.current.auto_download_new_films)
 
-    async def test_a_failed_change_shows_in_the_error_line(self) -> None:
+    async def test_a_failed_change_is_said_in_its_box_and_the_tick_goes_back(self) -> None:
         shortcut = FakeShortcut(False, fail=True)
         dialog, settings = self.dialog(shortcut, stored=True)
-        dialog._start_with_windows.set(True)
-        await dialog._save()
+        click(find(dialog.page(PAGE_WINDOWS), dialog._start_with_windows))
+        await settle()
         self.assertEqual(shortcut.calls, [True])
-        self.assertTrue(dialog.winfo_exists())  # stays open
+        self.assertTrue(dialog.winfo_exists())
         self.assertEqual(
-            dialog._error.cget("text"), "AirGrabber could not be added to Windows startup."
+            dialog.box(PAGE_WINDOWS, "In the background").refusal,
+            "AirGrabber could not be added to Windows startup.",
         )
         self.assertFalse(dialog._start_with_windows.get())
         self.assertFalse(settings.current.start_with_windows)  # the real state

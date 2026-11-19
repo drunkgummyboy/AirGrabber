@@ -2,7 +2,7 @@
 both looks, Slate is today's look exactly, the design's values, green / amber / red and the text
 kept, the stored setting (an unknown one is Slate), no module keeping a token from import time;
 the swatches in Settings → Looks (with "Applies after a restart") and in Quick setup, and the
-two other Looks boxes (Info window layout, the spotlight switch). Hidden Tk root, fake services."""
+two other boxes (Info window, the spotlight switch). Hidden Tk root, fake services."""
 
 from __future__ import annotations
 
@@ -34,12 +34,12 @@ from app.ui.quick_setup import (
 )
 from app.ui.settings_dialog import (
     INFO_LAYOUT_NAMES,
-    SECTION_LOOKS,
     SPOTLIGHT_SWITCH,
     SettingsDialog,
     accent_needs_restart,
-    section_for_field,
 )
+from app.ui.settings_pages_registry import PAGE_LOOKS, PAGE_PAGES
+from tests.test_settings_dialog import click, find, settle
 from tests.test_quick_setup import FakeProwlarr, FakeRepository, FakeShortcut, TkTestCase, labels
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -380,7 +380,7 @@ class QuickSetupAccentTests(TkTestCase):
 
 
 class SettingsLooksAccentTests(TkTestCase):
-    """Settings → Looks: Accent colour, Info window layout and the spotlight switch."""
+    """Settings → Looks: Accent colour; Pages: Info window and the spotlight switch."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -413,7 +413,7 @@ class SettingsLooksAccentTests(TkTestCase):
         dialog, settings = self.dialog()
         picker = dialog._accent_picker
         assert picker is not None
-        self.assertIn("Accent colour", labels(dialog.page(SECTION_LOOKS)))
+        self.assertIn("Accent colour", labels(dialog.page(PAGE_LOOKS)))
         self.assertTrue(picker.swatches[Accent.SLATE].chosen)
         self.assertFalse(dialog._accent_restart_row.winfo_manager())
         picker.swatches[Accent.TEAL].invoke()
@@ -421,8 +421,9 @@ class SettingsLooksAccentTests(TkTestCase):
         self.assertIn("Applies after a restart", labels(dialog._accent_restart_row))
         self.assertIn("Restart now", button_texts(dialog._accent_restart_row))
         self.assertIs(theme.current_accent(), Accent.SLATE)  # nothing changes before a restart
-        await dialog._restart_now()  # saves first, then restarts
-        self.assertIs(settings.current.accent, Accent.TEAL)
+        await settle()
+        self.assertIs(settings.current.accent, Accent.TEAL)  # stored at once
+        dialog._restart_now()  # only restarts: it is stored already
         self.assertEqual(self.restarted, [Accent.TEAL])
 
     async def test_going_back_to_the_running_colour_hides_the_note(self) -> None:
@@ -433,19 +434,19 @@ class SettingsLooksAccentTests(TkTestCase):
         self.assertTrue(dialog._accent_restart_row.winfo_manager())  # Slate is running
         picker.swatches[Accent.SLATE].invoke()
         self.assertFalse(dialog._accent_restart_row.winfo_manager())
-        await dialog._save()
+        await settle()
         self.assertIs(settings.current.accent, Accent.SLATE)
         self.assertEqual(self.restarted, [])
 
     async def test_info_layout_and_spotlight(self) -> None:
         dialog, settings = self.dialog(info_layout="tabs", spotlight_motion=False)
-        self.assertIn("Info window layout", labels(dialog.page(SECTION_LOOKS)))
+        self.assertIn("Info window", labels(dialog.page(PAGE_PAGES)))
         self.assertEqual(dialog._info_layout.get(), "Tabs")
         self.assertFalse(dialog._spotlight_motion.get())
-        self.assertIn(SPOTLIGHT_SWITCH, switch_texts(dialog.page(SECTION_LOOKS)))
-        dialog._info_layout.set("Side by side")
-        dialog._spotlight_motion.set(True)
-        await dialog._save()
+        self.assertIn(SPOTLIGHT_SWITCH, switch_texts(dialog.page(PAGE_PAGES)))
+        click(find(dialog.page(PAGE_PAGES), dialog._info_layout), "Side by side")
+        click(find(dialog.page(PAGE_PAGES), dialog._spotlight_motion))
+        await settle()
         self.assertIs(settings.current.info_layout, InfoLayout.SIDE)
         self.assertTrue(settings.current.spotlight_motion)
         self.assertEqual(list(INFO_LAYOUT_NAMES), [InfoLayout.SIDE, InfoLayout.TABS])
@@ -455,26 +456,23 @@ class SettingsLooksAccentTests(TkTestCase):
         self.addCleanup(set_language, Language.EN)
         dialog, settings = self.dialog(info_layout="tabs")
         self.assertEqual(dialog._info_layout.get(), "Tabbladen")
-        page = labels(dialog.page(SECTION_LOOKS))
-        self.assertIn("Indeling infovenster", page)
-        self.assertIn("Accentkleur", page)
-        self.assertIn("Spotlight wisselt vanzelf naar de volgende titel", switch_texts(dialog.page(SECTION_LOOKS)))
-        dialog._info_layout.set("Naast elkaar")
-        await dialog._save()
+        page = labels(dialog.page(PAGE_PAGES))
+        self.assertIn("Infovenster", page)
+        self.assertIn("Accentkleur", labels(dialog.page(PAGE_LOOKS)))
+        self.assertIn("Spotlight wisselt vanzelf naar de volgende titel", switch_texts(dialog.page(PAGE_PAGES)))
+        click(find(dialog.page(PAGE_PAGES), dialog._info_layout), "Naast elkaar")
+        await settle()
         self.assertIs(settings.current.info_layout, InfoLayout.SIDE)
 
     async def test_quick_setups_colour_shows_in_settings(self) -> None:
         dialog, settings = self.dialog()
-        await settings.update(accent=Accent.INDIGO)
-        dialog._quick_saved()
+        await settings.update(accent=Accent.INDIGO)  # what Quick setup stores: shown at once
         picker = dialog._accent_picker
         assert picker is not None
         self.assertTrue(picker.swatches[Accent.INDIGO].chosen)
         self.assertTrue(dialog._accent_restart_row.winfo_manager())
 
-    def test_sections_and_restart_rule(self) -> None:
-        for name in ("accent", "info_layout", "spotlight_motion"):
-            self.assertEqual(section_for_field(name), SECTION_LOOKS)
+    def test_restart_rule(self) -> None:
         self.assertTrue(accent_needs_restart(Accent.TEAL, Accent.SLATE))
         self.assertFalse(accent_needs_restart(Accent.SLATE, Accent.SLATE))
 

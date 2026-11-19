@@ -1,7 +1,7 @@
 """The rules for watched folders (forge.db `rules`, schema v5).
 
-Design: docs/forge/2026-11-18-rules-design.md. A rule is one line of Settings › MediaForge ›
-Auto-rename: the folder it watches (or AirGrabber's downloads), whether it looks in subfolders,
+Design: docs/forge/2026-11-18-rules-design.md. A rule is one line of Settings › Sorting's
+Rules: the folder it watches (or AirGrabber's downloads), whether it looks in subfolders,
 what it takes (kind and quality), the preset and extras per kind, where the files go (a library
 folder, another folder, or sorted inside the watched folder: `stays`) and Automatic / Manual.
 The list's order is the rule order: the first rule that fits a file takes it (there is no

@@ -39,7 +39,7 @@ counts as can't be reached, as after an OSError. Its thread can't be stopped and
 its own; until it has, the next looks skip that folder (`_busy`). Each watched folder has its own
 `Watcher` (its `seen` sizes), touched by one thread at a time: looks never overlap (only `_loop`
 runs them, one after the other; each holds `_one_look`), and a folder whose thread still runs is
-skipped. Nothing waits for a look's listing, TMDB or moves (Settings' Save waits at most for one
+skipped. Nothing waits for a look's listing, TMDB or moves (a change in Settings waits at most for one
 of its short commits): a look notes the rules'
 generation (`RulesLike.generation`) before it reads them, lists and checks the folders without a
 lock, and commits what it decided from the rules (its take-in: the Manual-once memory, the fresh
@@ -47,7 +47,7 @@ flags, the queue; then, before its moves, the rule-changed marks) only in short 
 blocks where the generation, the watch list and the destinations are still as read
 (`_still_as_read`); else it commits nothing and the next look comes at once. `_run` checks the
 generation again under `run_lock` before an automatic move, and `first_look_done` clears no
-fresh flag once it moved. `hold_looks` (AirGrabber's folder sync, Settings' Save) takes the same
+fresh flag once it moved. `hold_looks` (AirGrabber's folder sync, a change in Settings) takes the same
 short lock, so neither lands inside a look's commit.
 The owner's runs wait for `run_lock` through `taking`, which tells them when they have to wait
 (their dock or status says WAITING_FOR_AUTO meanwhile).
@@ -139,7 +139,7 @@ log = logging.getLogger(__name__)
 ALREADY_THERE = N_("Already in the library.")
 SAME_NAME = N_("Two downloads would get the same name.")
 # Held when a run has neither the owner's naming choice nor its rule's preset (no fallback).
-PRESET_GONE_HOLD = N_("Its rule's preset is gone: choose another in Settings › Auto-rename.")
+PRESET_GONE_HOLD = N_("Its rule's preset is gone: choose another in Settings › Sorting.")
 # Replace found nothing in the library under a download's name (the band's preset names it
 # otherwise): renamed as usual, one Activity line.
 NOTHING_TO_REPLACE = N_("Nothing in the library to replace for {n} file: renamed as usual.")
@@ -744,7 +744,7 @@ TOOLS_NOT_THERE = N_("No trailer: the trailer tools aren't downloaded yet.")
 SCAN_SECOND_LOOK_S = 3.0  # "look now": a file counts as finished from its second look on
 LOOK_STEP_TIMEOUT_S = 15  # a folder step of a look that takes longer: can't reach that folder
 # What an owner's run shows while it waits for `run_lock` (`taking`).
-WAITING_FOR_AUTO = N_("Waiting for Auto-rename to finish…")
+WAITING_FOR_AUTO = N_("Waiting for Sorting to finish…")
 _IGNORED_STEP = "\0ignored"  # `_busy`'s key for forgetting gone ignored entries (never a path)
 _MEMORY_STEP = "\0memory"  # `_busy`'s key for asking whether remembered downloads are there
 
@@ -1016,7 +1016,7 @@ class AutoRenamer:
         self.blocked_by_old_install = False  # see the module's notes
 
     def watch_status(self, listener: Callable[[WatchStatus], None]) -> Callable[[], None]:
-        """Hear every status too, as `on_status` (Settings › Auto-rename while it is open); the
+        """Hear every status too, as `on_status` (Settings › Sorting while it is open); the
         result stops it."""
         self._status_listeners.append(listener)
         return lambda: self._status_listeners.remove(listener)
@@ -1258,7 +1258,7 @@ class AutoRenamer:
     @asynccontextmanager
     async def hold_looks(self) -> AsyncIterator[None]:
         """No look commits meanwhile (AirGrabber's folders are stored and AirGrabber's rule
-        marked fresh in one step: app/forge/core/airgrabber_folders.py; Settings' Save,
+        marked fresh in one step: app/forge/core/airgrabber_folders.py; a change in Settings,
         `RuleService.save`). A look holds this lock
         only for its two short commits (a few DB writes), never while it lists a folder, waits
         for TMDB or moves; a look that read the rules or the watched folders before the block

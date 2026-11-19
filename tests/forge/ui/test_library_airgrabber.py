@@ -1,4 +1,4 @@
-"""AirGrabber's downloads in Settings › Auto-rename (B-01): AirGrabber's rule's switch is "Use
+"""AirGrabber's downloads in Settings › Sorting (B-01): AirGrabber's rule's switch is "Use
 AirGrabber's downloads" (on for a new setup, off for an imported one, stored on Save only), the box
 lists AirGrabber's folders and why each is (not) watched, or what to choose, and a suggestion's
 "Add a rule for this folder" adds a rule with AirGrabber's rule's routing."""
@@ -15,11 +15,13 @@ import customtkinter as ctk
 from app import i18n
 from app.forge.core.rules import watched_folders
 from app.forge.models.settings import AirGrabberDownloads, AirGrabberFolder, ForgeSettings
-from app.forge.ui.settings_pages import SECTION_LIBRARY, LibrarySection
+from app.forge.ui.settings_pages import LibrarySection
+from app.ui.settings_pages_registry import PAGE_SORTING
 from app.i18n import Language
 from app.ui.settings_dialog import SettingsDialog
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.ui.settings_kit import forge_settings
+from tests.test_settings_dialog import settle
 from tests.forge.ui.test_settings_library import FakeForge, FakeRules, FakeSettings, labels
 
 SERIES = r"\\nas\video\Series"
@@ -79,9 +81,9 @@ class SettingsSectionTests(_TkCase):
         fake = FakeSettings(settings)
         self.rules = FakeRules(fake)
         dialog = forge_settings(
-            self.root, FakeForge(fake, rules=self.rules), section=SECTION_LIBRARY
+            self.root, FakeForge(fake, rules=self.rules), section=PAGE_SORTING
         )
-        part = dialog.parts[SECTION_LIBRARY]
+        part = dialog.parts[PAGE_SORTING]
         assert isinstance(part, LibrarySection)
         return dialog, part, fake
 
@@ -117,8 +119,7 @@ class SettingsSectionTests(_TkCase):
         self.assertEqual(
             labels(part.airgrabber_list)[0],
             "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
-            "“Where finished downloads end up” in Settings › Where downloads go, or add a rule "
-            "for the folder.",
+            "“Finished downloads” in Settings › Folders, or add a rule for the folder.",
         )
 
     async def test_nothing_of_airgrabbers_while_its_rule_is_off(self) -> None:
@@ -133,8 +134,7 @@ class SettingsSectionTests(_TkCase):
         self.assertEqual(part.rule_rows[self.airgrabbers(part)].switch.get(), 1)
         shown = labels(part.airgrabber_list)
         self.assertEqual(shown[:2], [DONE.path, "qBittorrent on this PC saves AirGrabber's downloads here"])
-        self.assertEqual(part.changes(), {})
-        self.assertTrue(await dialog._save_all())
+        await settle()  # opening stores nothing
         self.assertEqual(fake.updates, [])
         self.assertEqual(self.rules.saved, [])
         self.assertIsNone(fake.current.use_airgrabber_downloads)
@@ -143,18 +143,14 @@ class SettingsSectionTests(_TkCase):
         dialog, part, fake = self.ready(with_airgrabber(DONE, imported_from=IMPORTED))
         index = self.airgrabbers(part)
         self.assertEqual(part.rule_rows[index].switch.get(), 0)
-        part.rule_rows[index].switch.toggle()  # clicked
-        self.assertEqual(fake.updates, [])  # kept until Save
-        self.assertTrue(await dialog._save_all())
+        part.rule_rows[index].switch.toggle()  # clicked: stored at once
+        await settle()
         self.assertEqual(fake.updates, [{"use_airgrabber_downloads": True}])
         self.assertEqual(watched_folders(self.rules.current, fake.current), [DONE.path])
 
     async def test_turning_it_off_stores_the_setting(self) -> None:
         dialog, part, fake = self.ready(with_airgrabber(DONE, automatic="on"))
-        part.toggle_rule(self.airgrabbers(part), False)
-        self.assertEqual(part.changes(), {})  # a rule, not one of the section's fields
-        self.assertTrue(part.rules_changed)
-        self.assertTrue(await dialog._save_all())
+        await part.toggle_rule(self.airgrabbers(part), False)  # a rule: RuleService stores it
         self.assertEqual(fake.updates, [{"use_airgrabber_downloads": False}])
         self.assertEqual(fake.current.automatic, "on")  # the master switch is untouched
 
@@ -164,15 +160,14 @@ class SettingsSectionTests(_TkCase):
         buttons = [b for b in part.airgrabber_list.winfo_children() if isinstance(b, ctk.CTkButton)]
         self.assertEqual([b.cget("text") for b in buttons], ["Add a rule for this folder"])
         buttons[0].invoke()
+        await settle()  # stored at once (a new rule: its first look waits)
         self.assertEqual([r.folder for r in part.rule_drafts], [r"E:\Mine", "", SUGGESTED.path])
         airgrabbers = part.rule_drafts[1]
         added = part.rule_drafts[2]
         self.assertEqual(
-            added.model_dump(exclude={"folder", "airgrabber", "id"}),
-            airgrabbers.model_dump(exclude={"folder", "airgrabber", "id"}),
+            added.model_dump(exclude={"folder", "airgrabber", "id", "fresh"}),
+            airgrabbers.model_dump(exclude={"folder", "airgrabber", "id", "fresh"}),
         )  # AirGrabber's rule's routing
-        self.assertEqual(self.rules.saved, [])  # in the form until Save
-        self.assertTrue(await dialog._save_all())
         self.assertEqual([r.folder for r in self.rules.saved[0]], [r"E:\Mine", "", SUGGESTED.path])
 
     async def test_airgrabbers_folders_derived_meanwhile_show(self) -> None:
@@ -182,7 +177,6 @@ class SettingsSectionTests(_TkCase):
         self.assertTrue(labels(part.airgrabber_list)[0].startswith("AirGrabber doesn't know"))
         await fake.update(airgrabber=AirGrabberDownloads(folders=[DONE]))
         self.assertEqual(labels(part.airgrabber_list)[0], DONE.path)
-        self.assertEqual(part.changes(), {})
         self.assertFalse(part.rules_changed)
 
     async def test_without_airgrabbers_folders_the_box_ends_under_its_text(self) -> None:

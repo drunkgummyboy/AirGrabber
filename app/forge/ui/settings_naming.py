@@ -1,31 +1,35 @@
 """Settings › Naming: the old MediaForge's Settings › Naming tab (`ui/settings_view.py`:
 `_build_presets`, the editor, `_update_sample`, `_build_matches`), the names language from its
-TMDB tab and the Series / Movies presets from its Library tab, as a section of MediaForge's
-Settings window (docs/forge/INTEGRATION.md 3.7; registered in `settings_pages.FORGE_SECTIONS`).
+TMDB tab and the Series / Movies presets from its Library tab, as Settings' Naming page
+(registered in `settings_pages.FORGE_PARTS`).
 
 - **Presets**: the list in order; the chosen one is edited in place: its name, type Auto /
-  Movie / TV and extras beside the list; under both, at the box's full width, the format with a
-  live sample on a sample episode and film (a `{code}` the formatter doesn't know is flagged), a
-  table of the codes and what each gives (a click adds it at the format's cursor) and a table of
-  example formats and their results (a click uses it). New adds a preset at the end; Delete
-  removes the chosen one, never the last.
-- **Library presets**: which preset names what is moved into the Series and Movies folders. The
+  Movie / TV and extras (switches) beside the list; under both, at the box's full width, the
+  format with a live sample on a sample episode and film (a `{code}` the formatter doesn't know
+  is flagged), then "? Codes", which unfolds (closed at first) a table of the codes and what each
+  gives (a click adds it at the format's cursor) and a table of example formats and their
+  results (a click uses it). New adds a preset at the end; Delete removes the chosen one, never
+  the last.
+- **For new rules**: which preset names what is moved into the Series and Movies folders. The
   choice follows a preset renamed here; a preset deleted here hands it to the first one of the
-  same type.
+  same type. Its line about each rule keeping its own is a link to Sorting.
 - **Names language**: TMDB's language for titles and episode names (MediaForge's LANGUAGES,
   en-US by default), separate from AirGrabber's own language.
 - **Remembered matches**: how many there are, and "Manage…": the picks made for uncertain matches
   in their own window (app/forge/ui/matches_window.py); forget one, or all.
 
-As the rest of Settings, nothing is stored before Save (D9): `problem()` refuses a preset
-without a name or a name used twice; `save()` stores the presets (merged onto what is stored by
-then, so a preset changed elsewhere meanwhile and untouched here keeps that change), has the
-rules for watched folders follow a renamed preset (`rules.presets_renamed`), then the changed
-settings (and `last_preset`, the Inbox's remembered preset, when its preset was renamed or
-deleted: `last_preset_after`), then forgets the matches. Cancel and ✕ change nothing. After a
-Save that changed the presets, every listener connected with `on_presets_saved` is told (the
-right-click menu refreshes its entries, F-25); while none is connected (the Right-click menu's
-page wasn't visited) settings_menu's `carry_presets` runs.
+As the rest of Settings, each change stores itself (the window's Committer, spec §3): a preset's
+name and format on Enter or when the keyboard leaves the field, its type and extras at once, New
+preset and Delete preset at once; the For new rules menus, the names language and Forget at
+once. A preset without a name or a name used twice is refused (said in the Presets box). The
+presets are stored merged onto what is stored by then (so a preset changed elsewhere meanwhile
+and untouched here keeps that change); then the rules for watched folders follow a renamed
+preset (`rules.presets_renamed`), the For new rules choices follow a renamed or deleted preset,
+and `last_preset` (the Inbox's remembered preset) follows too (`last_preset_after`). After each
+change of the presets every listener connected with `on_presets_saved` is told (the right-click
+menu refreshes its entries, F-25); while none is connected (the Windows page, with the
+right-click menu, wasn't visited) settings_menu's `carry_presets` runs. Undo stores the presets
+from before the same way (a rename back is told as a rename).
 
 The Settings window imports this module with `settings_pages`: at import time it loads only
 Forge's models (the formatter and the Inbox's option texts load when a section is built), so
@@ -34,6 +38,7 @@ Forge's core, forge.db and guessit stay unloaded (INTEGRATION.md 3.6).
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import contextlib
 import functools
@@ -53,25 +58,19 @@ from app.forge.ui.look import app_look
 from app.forge.ui.matches_window import MatchesWindow
 from app.i18n import N_, t, tn
 from app.ui import dialog_kit, theme
-from app.ui.settings_layout import BOX_INNER
+from app.ui.settings_commit import Committer, Refused, command, commit_fields, text_commit
+from app.ui.settings_layout import BOX_INNER, Fold, PageLink
+from app.ui.settings_pages_registry import PAGE_SORTING
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 
 if TYPE_CHECKING:
-    import asyncio
-
     from app.forge.runtime import ForgeRuntime
     from app.forge.ui.settings_pages import SettingsSource
-    from app.forge.ui.settings_pages import ForgeSectionPart
+    from app.forge.ui.settings_pages import ForgeSectionPart, PartSlots
     from app.ui.settings_layout import SettingsBox, SettingsPage
 
 log = logging.getLogger(__name__)
-
-# -- the registry's entry (settings_pages.FORGE_SECTIONS) ---------------------------------------
-
-SECTION_NAMING = N_("Naming")
-NAMING_ICON = "🏷"
-NAMING_NOTE = N_("How MediaForge names shows and movies, and the matches it remembers.")
 
 # -- texts ----------------------------------------------------------------------------------------
 
@@ -89,6 +88,7 @@ TYPE_LABELS: dict[TypeHint, str] = {
     TypeHint.TV: N_("TV"),
 }
 UNKNOWN_CODES = N_("⚠ Not a known code: {codes}")
+CODES_TOGGLE = N_("? Codes")  # unfolds the codes and the examples
 CODES_CAPTION = N_("Codes: click one to add it")
 EXAMPLES_CAPTION = N_("Examples: click one to use it")
 CODE_HEADER = N_("Code")
@@ -135,10 +135,9 @@ NAME_NEEDED = N_("Give every preset a name.")
 NAME_MISSING = N_("Give this preset a name.")
 NAME_TWICE = N_("Two presets are called “{name}”. Give each its own name.")
 NAME_TAKEN = N_("Another preset is called that already.")
-LIBRARY_TITLE = N_("Library presets")
-LIBRARY_TEXT = N_(
-    "The presets a new rule starts with. Each rule keeps its own: change it under Auto-rename."
-)
+LIBRARY_TITLE = N_("For new rules")
+LIBRARY_TEXT = N_("The presets a new rule starts with.")
+LIBRARY_LINK = N_("Each rule keeps its own: change it under Sorting.")
 LANGUAGE_TITLE = N_("Names language")
 LANGUAGE_TEXT = N_(
     "The language of titles and episode names from TMDB. AirGrabber's own language doesn't "
@@ -244,7 +243,7 @@ _FORMAT_FONT_SIZE = 14  # the format field
 
 
 class PresetsChange(NamedTuple):
-    """What a Save changed of the presets."""
+    """What a change stored of the presets."""
 
     names: tuple[str, ...]  # the presets now, in order
     renamed: Mapping[str, str]  # old name → new name
@@ -256,9 +255,9 @@ _listeners: list[PresetsListener] = []
 
 
 def on_presets_saved(listener: PresetsListener) -> Callable[[], None]:
-    """Have `listener` awaited after every Settings Save that stored changed presets (the
+    """Have `listener` awaited after every stored change of the presets in Settings (the
     right-click menu refreshes its entries, F-25). Returns the function that disconnects it.
-    A listener that fails is logged; the Save stands."""
+    A listener that fails is logged; the change stands."""
     _listeners.append(listener)
 
     def disconnect() -> None:
@@ -467,6 +466,8 @@ class _MatchSource(Protocol):
     async def list(self) -> builtins.list[RememberedMatch]: ...
 
     async def forget(self, match: RememberedMatch) -> None: ...
+
+    async def remember(self, match: RememberedMatch) -> None: ...
 
 
 class _RuleSource(Protocol):
@@ -683,29 +684,32 @@ class FormatTable(ctk.CTkFrame):
 
 
 class NamingSection:
-    """The Naming page's contents. Changes stay in the form until Save (`problem` / `save`); a
-    setting saved elsewhere meanwhile shows here unless the same setting was changed here."""
+    """The Naming page's contents. Each change stores itself; a setting stored elsewhere
+    meanwhile (or by an Undo) shows here unless a change of it is being stored."""
 
-    def __init__(self, page: SettingsPage, forge: _Starter) -> None:
+    def __init__(
+        self, page: SettingsPage, forge: _Starter, *, committer: Committer | None = None
+    ) -> None:
         # Not at import time (see the top): the Inbox's option texts, the dialog's shared texts.
         from app.forge.ui.queue_parts import OPTION_LABELS
         from app.forge.ui.settings_pages import GETTING_READY
 
         self._page = page
         self._forge = forge
+        self._committer = committer if committer is not None else Committer()
+        self._changing = asyncio.Lock()  # one change of the presets at a time
         self._look = look = app_look()
         self._parts: _Parts | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._task: asyncio.Task[None] | None = None
-        self._baseline: dict[str, Any] = {}  # what the form showed of the stored settings
-        self._stored: list[Preset] = []  # the presets as loaded (or last saved)
+        self._baseline: dict[str, Any] = {}  # the settings as stored (as last heard)
+        self._stored: list[Preset] = []  # the presets as loaded (or last stored here)
         self._drafts: list[PresetDraft] = []
         self._editing: PresetDraft | None = None
         self._choice: dict[str, PresetDraft | str] = {name: "" for name in FIELDS[:2]}
         self._language = "en-US"
         self._language_codes: dict[str, str] = {}  # the menu's names → their codes
         self._matches: list[RememberedMatch] = []
-        self._forgotten: set[_MatchKey] = set()
         self._filling = False  # the editor is being filled: its fields' traces change nothing
         self._list_font = theme.font(_TEXT_SIZE, bold=True)  # measures the list's names
         frame = page.frame
@@ -717,6 +721,7 @@ class NamingSection:
 
         # The presets: the list, and the editor of the one chosen in it.
         presets = page.box(t(PRESETS_TITLE), t(PRESETS_TEXT))
+        self._presets_box = presets
         area = presets.frame_row()
         area.grid_columnconfigure(1, weight=1)
         side = ctk.CTkFrame(area, fg_color="transparent")
@@ -731,7 +736,7 @@ class NamingSection:
         self.preset_list.grid(row=0, column=0, sticky="ew")
         self.preset_list.grid_columnconfigure(0, weight=1)
         self.preset_buttons: list[ctk.CTkButton] = []
-        self.new_button = self._button(side, t(NEW_PRESET), self.new_preset, width=_LIST_WIDTH)
+        self.new_button = self._button(side, t(NEW_PRESET), command(self.new_preset), width=_LIST_WIDTH)
         self.new_button.grid(row=1, column=0, sticky="ew", pady=(_ROW_GAP + 2, 0))
 
         self.editor = ctk.CTkFrame(area, fg_color="transparent", width=_EDITOR_WIDTH)
@@ -741,6 +746,10 @@ class NamingSection:
         self._caption(t(NAME_CAPTION), first=True)
         self._name = tk.StringVar(master=frame)
         self.name_entry = self._entry(self._name)
+        # Stored on Enter or leaving the field; the list and the sample follow each key.
+        self.name_field = self._committer.watch(
+            text_commit(self.name_entry, stored=self._stored_name, commit=self._commit_typed)
+        )
         self._place(self.name_entry, gap=4)
         self.name_problem = self._note(theme.WARNING)
         self._name_problem_row = self._place(self.name_problem, gap=4, sticky="w")
@@ -766,10 +775,10 @@ class NamingSection:
         checks = ctk.CTkFrame(self.editor, fg_color="transparent")
         self._place(checks, gap=2, sticky="w")
         self._options: dict[str, tk.BooleanVar] = {}
-        self.option_boxes: dict[str, ctk.CTkCheckBox] = {}
+        self.option_boxes: dict[str, ctk.CTkSwitch] = {}
         for index, (key, label) in enumerate(OPTION_LABELS.items()):
             variable = tk.BooleanVar(master=frame, value=False)
-            box = self._checkbox(checks, t(label), variable, self._options_clicked)
+            box = self._switch(checks, t(label), variable, self._options_clicked)
             if index == 0:  # moving is first and on its own line: the others fit in two columns
                 box.grid(row=0, column=0, columnspan=2, sticky="w", pady=(2, 0))
             else:
@@ -777,7 +786,7 @@ class NamingSection:
                 box.grid(row=row_no + 1, column=column, sticky="w", padx=(0, 12), pady=(2, 0))
             self._options[key] = variable
             self.option_boxes[key] = box
-        self.delete_button = self._button(self.editor, t(DELETE_PRESET), self.delete_preset)
+        self.delete_button = self._button(self.editor, t(DELETE_PRESET), command(self.delete_preset))
         self.delete_button.configure(width=140)
         self._place(self.delete_button, gap=_CAPTION_GAP + 2, sticky="w")
 
@@ -795,24 +804,34 @@ class NamingSection:
             self.format_area,
             ctk.CTkFont(family=_MONO_FAMILY, size=_FORMAT_FONT_SIZE),
         )
+        self.format_field = self._committer.watch(
+            text_commit(self.format_entry, stored=self._stored_format, commit=self._commit_typed)
+        )
         self._place(self.format_entry, gap=4)
         self.format_sample = self._note(theme.TEXT, self.format_area)
         self._place(self.format_sample, gap=6, sticky="w")
         self.unknown_label = self._note(theme.WARNING, self.format_area)
         self._unknown_row = self._place(self.unknown_label, gap=4, sticky="w")
-        self.codes_caption = self._note(theme.TEXT_MUTED, self.format_area)
+        # The codes and the examples, folded behind "? Codes" (closed at first).
+        self.codes_area = ctk.CTkFrame(self.format_area, fg_color="transparent")
+        self.codes_area.grid_columnconfigure(0, weight=1)
+        self.codes_fold = Fold(self.format_area, self.codes_area, text=t(CODES_TOGGLE))
+        self._place(self.codes_fold.button, gap=4, sticky="w")
+        self._place(self.codes_area, gap=0)
+        self.codes_fold.set_open(False)
+        self.codes_caption = self._note(theme.TEXT_MUTED, self.codes_area)
         self.codes_caption.configure(text=t(CODES_CAPTION))
-        self._place(self.codes_caption, gap=_CAPTION_GAP, sticky="w")
+        self.codes_caption.grid(row=0, column=0, sticky="w", pady=(_CAPTION_GAP, 0))
         self.code_table = self._table((t(CODE_HEADER), t(GIVES_HEADER)), _CODE_COLUMN)
-        self._place(self.code_table, gap=4)
+        self.code_table.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         for code in FORMAT_CODES:
             example = code_example(code.inserts)
             self.code_table.add(code.shown, example, code.inserts, self.insert_code)
-        self.examples_caption = self._note(theme.TEXT_MUTED, self.format_area)
+        self.examples_caption = self._note(theme.TEXT_MUTED, self.codes_area)
         self.examples_caption.configure(text=t(EXAMPLES_CAPTION))
-        self._place(self.examples_caption, gap=_CAPTION_GAP, sticky="w")
+        self.examples_caption.grid(row=2, column=0, sticky="w", pady=(_CAPTION_GAP, 0))
         self.example_table = self._table((t(FORMAT_CAPTION), t(RESULT_HEADER)), _EXAMPLE_COLUMN)
-        self._place(self.example_table, gap=4)
+        self.example_table.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         for example, sample in (
             *((fmt, SAMPLE_MOVIE) for fmt in MOVIE_EXAMPLES),
             *((fmt, SAMPLE_EPISODE) for fmt in SHOW_EXAMPLES),
@@ -830,6 +849,9 @@ class NamingSection:
 
         # Which preset names what goes into the library folders.
         library = page.box(t(LIBRARY_TITLE), t(LIBRARY_TEXT))
+        self._library_box = library
+        self.sorting_link = PageLink(library.body, t(LIBRARY_LINK), PAGE_SORTING)
+        library.add(self.sorting_link, gap=2, sticky="w")
         rows = library.frame_row()
         self.choice_menus: dict[str, ctk.CTkOptionMenu] = {}
         for row_no, (name, label) in enumerate(
@@ -844,17 +866,19 @@ class NamingSection:
                 font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
                 text_color=theme.TEXT,
             ).grid(row=row_no, column=0, sticky="w", pady=pady)
-            menu = self._option_menu(rows, functools.partial(self._choose, name))
+            menu = self._option_menu(rows, command(functools.partial(self._choose, name)))
             menu.grid(row=row_no, column=1, sticky="w", padx=(8, 0), pady=pady)
             self.choice_menus[name] = menu
 
         # The names language.
         language = page.box(t(LANGUAGE_TITLE), t(LANGUAGE_TEXT))
-        self.language_menu = self._option_menu(language.body, self._language_chosen)
+        self._language_box = language
+        self.language_menu = self._option_menu(language.body, command(self._language_chosen))
         language.add(self.language_menu, sticky="w")
 
         # Remembered matches.
         matches = page.box(t(MATCHES_TITLE), t(MATCHES_TEXT))
+        self._matches_box = matches
         self.match_summary = ctk.CTkLabel(
             matches.body,
             text="",
@@ -882,23 +906,19 @@ class NamingSection:
         button.configure(text_color=theme.BUTTON_TEXT)
         return button
 
-    def _checkbox(
+    def _switch(
         self, master: Any, text: str, variable: tk.BooleanVar, command: Callable[[], None]
-    ) -> ctk.CTkCheckBox:
-        return ctk.CTkCheckBox(
+    ) -> ctk.CTkSwitch:
+        """An extra's on/off (spec §6: every on/off in Settings is a switch)."""
+        return ctk.CTkSwitch(
             master,
             text=text,
             variable=variable,
             command=command,
-            width=0,
             height=30,
-            checkbox_width=20,
-            checkbox_height=20,
-            corner_radius=5,
             font=theme.font(_TEXT_SIZE),
-            fg_color=self._look.ACCENT,
-            hover_color=self._look.ACCENT_HOVER,
-            border_color=self._look.EDGE,
+            progress_color=self._look.ACCENT,
+            text_color=theme.TEXT,
         )
 
     def _entry(
@@ -944,7 +964,7 @@ class NamingSection:
 
     def _table(self, headers: tuple[str, str], column: int) -> FormatTable:
         return FormatTable(
-            self.format_area, self._look, headers, column, self._code_font, self._cell_font
+            self.codes_area, self._look, headers, column, self._code_font, self._cell_font
         )
 
     def _caption(
@@ -993,9 +1013,9 @@ class NamingSection:
             return
         if parts is None:
             # NOT_READY (guessit missing) or FAILED: say why; nothing here can be changed.
-            from app.forge.ui.settings_pages import GETTING_READY
+            from app.forge.ui.settings_pages import UNAVAILABLE
 
-            self.waiting_label.configure(text=self._forge.reason or t(GETTING_READY))
+            self.waiting_label.configure(text=self._forge.reason or t(UNAVAILABLE))
             return
         try:
             presets = await parts.presets.list()
@@ -1067,24 +1087,28 @@ class NamingSection:
         return choice if isinstance(choice, str) else choice.preset.name
 
     def draft(self) -> dict[str, Any]:
-        """What the form holds of this section's settings, field by field."""
+        """What the page shows of this section's settings, field by field."""
         return {
             "series_preset": self._choice_name("series_preset"),
             "movies_preset": self._choice_name("movies_preset"),
             "tmdb_language": self._language,
         }
 
-    def changes(self) -> dict[str, Any]:
-        """The settings changed in the form (what Save stores of ForgeSettings)."""
+    def _choice_changes(self) -> dict[str, Any]:
+        """The For new rules choices that followed a renamed or deleted preset (stored with the
+        presets)."""
         if self._parts is None:
             return {}
+        draft = self.draft()
         return {
-            name: value for name, value in self.draft().items() if value != self._baseline[name]
+            name: draft[name]
+            for name in FIELDS[:2]
+            if draft[name] != self._baseline[name] and draft[name]
         }
 
     def _saved_elsewhere(self, updated: ForgeSettings) -> None:
-        """Settings stored meanwhile (or by this form's Save): show each one the form hasn't
-        changed; a field changed here keeps the form's value."""
+        """Settings stored (here, elsewhere or by an Undo): each shows, unless a change of it is
+        being stored."""
         if not self.waiting_label.winfo_exists():
             return
         draft = self.draft()
@@ -1096,8 +1120,19 @@ class NamingSection:
         self._fill_choices()
         self._fill_language()
 
-    def _choose(self, name: str, label: str) -> None:
+    def _choose(self, name: str, label: str) -> asyncio.Task[bool] | None:
+        """A For new rules menu: that preset, stored at once."""
         self._choice[name] = self._named(label) or label
+        return self._commit_settings(self._library_box, **{name: label})
+
+    def _commit_settings(self, box: SettingsBox, **fields: Any) -> asyncio.Task[bool] | None:
+        parts = self._parts
+        if parts is None:
+            return None
+        return spawn(
+            commit_fields(self._committer, parts.settings, box, **fields),
+            name="forge-naming-setting",
+        )
 
     def _fill_choices(self) -> None:
         names = [draft.preset.name for draft in self._drafts if draft.preset.name]
@@ -1113,24 +1148,28 @@ class NamingSection:
         self.language_menu.configure(values=list(self._language_codes))
         self.language_menu.set(language_name(self._language))
 
-    def _language_chosen(self, label: str) -> None:
+    def _language_chosen(self, label: str) -> asyncio.Task[bool] | None:
+        """The names language menu: stored at once."""
         self._language = self._language_codes.get(label, self._language)
+        return self._commit_settings(self._language_box, tmdb_language=self._language)
 
-    def choose_language(self, code: str) -> None:
+    def choose_language(self, code: str) -> asyncio.Task[bool] | None:
         """Choose a names language by its code (as picking it in the menu)."""
-        self._language_chosen(language_name(code))
+        task = self._language_chosen(language_name(code))
         self.language_menu.set(language_name(self._language))
+        return task
 
-    def choose_preset_for(self, name: str, preset: str) -> None:
+    def choose_preset_for(self, name: str, preset: str) -> asyncio.Task[bool] | None:
         """Choose the preset for "series_preset" / "movies_preset" (as picking it in the menu)."""
-        self._choose(name, preset)
+        task = self._choose(name, preset)
         self.choice_menus[name].set(self._choice_name(name))
+        return task
 
     # --- the presets ------------------------------------------------------------------------------
 
     @property
     def presets(self) -> list[Preset]:
-        """The presets as the form holds them, in order."""
+        """The presets as the page shows them, in order."""
         return [draft.preset for draft in self._drafts]
 
     @property
@@ -1142,6 +1181,24 @@ class NamingSection:
         return [(draft.origin, draft.preset) for draft in self._drafts] != [
             (preset.name, preset) for preset in self._stored
         ]
+
+    def _stored_of(self, draft: PresetDraft | None) -> Preset | None:
+        if draft is None or draft.origin is None:
+            return None
+        return next((preset for preset in self._stored if preset.name == draft.origin), None)
+
+    def _stored_name(self) -> str:
+        """The edited preset's name as stored (what the name field compares with)."""
+        stored = self._stored_of(self._editing)
+        return stored.name if stored is not None else ""
+
+    def _stored_format(self) -> str:
+        stored = self._stored_of(self._editing)
+        return stored.format if stored is not None else ""
+
+    def _commit_typed(self, _text: str) -> None:
+        """The name or the format field left or Enter: the presets as they show are stored."""
+        self.commit_presets()
 
     def _refresh_presets(self) -> None:
         self._fill_preset_list()
@@ -1239,7 +1296,10 @@ class NamingSection:
             self._editing.preset = self._editing.preset.model_copy(update=update)
 
     def select_preset(self, draft: PresetDraft) -> None:
-        """Show `draft` in the editor."""
+        """Show `draft` in the editor (what was typed for the one before is stored first)."""
+        if draft is not self._editing and self._parts is not None:
+            self.name_field.commit_now()
+            self.format_field.commit_now()
         self._editing = draft
         self._fill_preset_list()
         self._fill_editor()
@@ -1276,8 +1336,8 @@ class NamingSection:
         entry.focus_set()
 
     def use_example(self, fmt: str) -> None:
-        """Make `fmt` the format, with the cursor at its end and the keyboard in the field. As
-        with typing, nothing is stored before Save."""
+        """Make `fmt` the format (stored at once), with the cursor at its end and the keyboard in
+        the field."""
         if self._editing is None:
             return
         self._format.set(fmt)
@@ -1285,6 +1345,7 @@ class NamingSection:
         entry.select_clear()
         entry.icursor("end")
         entry.focus_set()
+        self.commit_presets()
 
     def _type_clicked(self, label: str) -> None:
         if self._filling:
@@ -1293,6 +1354,7 @@ class NamingSection:
         if chosen is not None:
             self._edit(type=chosen)
             self._refresh_editor()
+            self.commit_presets()
 
     def set_type(self, type_hint: TypeHint) -> None:
         """Choose the edited preset's type (as clicking it)."""
@@ -1308,25 +1370,29 @@ class NamingSection:
         if self._filling:
             return
         self._edit(options=PresetOptions(**{k: bool(v.get()) for k, v in self._options.items()}))
+        self.commit_presets()
 
-    def new_preset(self) -> None:
-        """Add a preset at the end ("New preset", Auto, `{ny}`) and edit it."""
+    def new_preset(self) -> asyncio.Task[bool] | None:
+        """Add a preset at the end ("New preset", Auto, `{ny}`), stored at once, and edit it
+        (its name chosen, to be typed over)."""
         if self._parts is None:
-            return
+            return None
         name = new_preset_name(draft.preset.name for draft in self._drafts)
         draft = PresetDraft(None, Preset(name=name, type=TypeHint.AUTO, format=DEFAULT_FORMAT))
         self._drafts.append(draft)
         self.select_preset(draft)
         self._fill_choices()
+        task = self.commit_presets()
         self.name_entry.focus_set()
         self.name_entry.select_range(0, "end")
+        return task
 
-    def delete_preset(self) -> None:
-        """Delete the edited preset; the last one can't go. A Series / Movies choice it held
-        goes to the first preset of that type."""
+    def delete_preset(self) -> asyncio.Task[bool] | None:
+        """Delete the edited preset, stored at once; the last one can't go. A Series / Movies
+        choice it held goes to the first preset of that type."""
         draft = self._editing
         if draft is None or len(self._drafts) <= 1:
-            return
+            return None
         index = self._drafts.index(draft)
         self._drafts.pop(index)
         for name, wanted in _CHOICE_TYPES.items():
@@ -1334,13 +1400,14 @@ class NamingSection:
                 self._choice[name] = fallback_preset(self._drafts, wanted) or ""
         self._editing = self._drafts[min(index, len(self._drafts) - 1)]
         self._refresh_presets()
+        return self.commit_presets()
 
     # --- remembered matches ----------------------------------------------------------------------
 
     @property
     def matches(self) -> list[RememberedMatch]:
-        """The remembered matches the form shows (the forgotten ones left out)."""
-        return [match for match in self._matches if _match_key(match) not in self._forgotten]
+        """The remembered matches."""
+        return list(self._matches)
 
     def _fill_matches(self) -> None:
         """The box's summary, and the window's list while it shows."""
@@ -1348,9 +1415,6 @@ class NamingSection:
         words = (
             tn("{n} match remembered", "{n} matches remembered", len(shown)) if shown else t("None yet")
         )
-        going = len(self._matches) - len(shown)
-        if going:
-            words += " · " + t("{n} to forget when you save", n=going)
         self.match_summary.configure(text=words)
         self.manage_button.configure(state="normal" if shown else "disabled")
         window = self.matches_window
@@ -1370,79 +1434,166 @@ class NamingSection:
             forget_text=t(FORGET),
             clear_text=t(CLEAR_ALL),
             text_of=match_text,
-            on_forget=self.forget_match,
-            on_clear=self.clear_matches,
+            on_forget=command(self.forget_match),
+            on_clear=command(self.clear_matches),
         )
         self.matches_window.show(self.matches)
 
-    def forget_match(self, match: RememberedMatch) -> None:
-        """Forget one remembered match (on Save)."""
-        self._forgotten.add(_match_key(match))
-        self._fill_matches()
+    def forget_match(self, match: RememberedMatch) -> asyncio.Task[bool] | None:
+        """Forget one remembered match, at once (Undo remembers it again)."""
+        return self._forget([match])
 
-    def clear_matches(self) -> None:
-        """Forget every remembered match shown (on Save)."""
-        self._forgotten.update(_match_key(match) for match in self._matches)
-        self._fill_matches()
+    def clear_matches(self) -> asyncio.Task[bool] | None:
+        """Forget every remembered match, at once (Undo remembers them again)."""
+        return self._forget(list(self._matches))
 
-    # --- Save -------------------------------------------------------------------------------------
-
-    def problem(self) -> str | None:
-        """Changed presets need a name each, no name twice. Unchanged presets never stop Save
-        (AirGrabber's own settings can still be saved)."""
-        if self._parts is None or not self.presets_changed():
-            return None
-        return preset_problem([draft.preset.name for draft in self._drafts])
-
-    async def save(self) -> str | None:
+    def _forget(self, matches: builtins.list[RememberedMatch]) -> asyncio.Task[bool] | None:
         parts = self._parts
-        if parts is None:
+        if parts is None or not matches:
             return None
-        from app.forge.ui.settings_pages import SAVE_FAILED
+        return spawn(self._forget_now(parts, matches), name="forge-naming-forget")
 
-        try:
-            saved = await self._save_presets(parts)
-            change = None if saved is None else saved[0]
-            rules: _RuleSource | None = getattr(parts, "rules", None)  # a stand-in may have none
-            if change is not None and change.renamed and rules is not None:
-                await rules.presets_renamed(change.renamed)  # the rules follow a renamed preset
-            changes = self.changes()
-            if saved is not None:  # the queue's remembered presets follow a rename or delete
-                current = parts.settings.current
-                for key in ("last_preset", "last_show_preset", "last_film_preset"):
-                    last = getattr(current, key)
-                    after = last_preset_after(last, saved[0], saved[1], self._stored)
-                    if after != last:
-                        changes[key] = after
-            if changes:
-                await parts.settings.update(**changes)
-            await self._save_forgotten(parts)
-        except Exception as exc:  # a bad value, or forge.db couldn't be written
-            # The type only: a message could hold a preset's or a folder's name.
-            log.error("MediaForge's naming settings couldn't be saved (%s)", type(exc).__name__)
-            return t(SAVE_FAILED)
-        if change is not None:
-            await _tell(change, parts)
-        return None
+    async def _forget_now(self, parts: _Parts, matches: builtins.list[RememberedMatch]) -> bool:
+        keys = {_match_key(match) for match in matches}
 
-    async def _save_presets(self, parts: _Parts) -> tuple[PresetsChange, list[Preset]] | None:
-        """Store the changed presets: what changed, and the presets as the form had loaded
-        them (or None: nothing changed)."""
+        async def apply() -> bool:
+            try:
+                for match in matches:
+                    await parts.matches.forget(match)
+            except Exception as exc:  # forge.db
+                log.error("A remembered match couldn't be forgotten (%s)", type(exc).__name__)
+                raise Refused(_save_failed()) from exc
+            self._matches = [m for m in self._matches if _match_key(m) not in keys]
+            self._show_matches()
+            return True
+
+        async def undo() -> bool:
+            try:
+                for match in matches:
+                    await parts.matches.remember(match)
+            except Exception as exc:  # forge.db
+                log.error("A match couldn't be remembered again (%s)", type(exc).__name__)
+                raise Refused(_save_failed()) from exc
+            back = {_match_key(m) for m in self._matches}
+            self._matches += [m for m in matches if _match_key(m) not in back]
+            self._show_matches()
+            return True
+
+        return await self._committer.commit(apply, undo, box=self._matches_box)
+
+    def _show_matches(self) -> None:
+        if self.match_summary.winfo_exists():
+            self._fill_matches()
+
+    # --- storing the presets ----------------------------------------------------------------------
+
+    def commit_presets(self) -> asyncio.Task[bool] | None:
+        """Store the presets as the page shows them (a change of one of them), after any change
+        still being stored."""
+        if self._parts is None:
+            return None
+        return spawn(self._commit_presets(self._parts), name="forge-naming-presets")
+
+    async def _commit_presets(self, parts: _Parts) -> bool:
+        async with self._changing:  # also when the window just closed: it is still stored
+            before = list(self._stored)
+            done: builtins.list[tuple[PresetsChange, dict[str, Any]]] = []
+
+            async def apply() -> bool:
+                stored = await self._store_presets(parts)
+                if stored is None:
+                    return False
+                done.append(stored)
+                return True
+
+            async def undo() -> bool:
+                async with self._changing:
+                    return await self._restore_presets(parts, before, done)
+
+            return await self._committer.commit(apply, undo, box=self._presets_box)
+
+    async def _store_presets(self, parts: _Parts) -> tuple[PresetsChange, dict[str, Any]] | None:
+        """Store the presets as shown, merged onto what is stored now; the rules, the For new
+        rules choices and the Inbox's remembered presets follow a rename or a delete; then the
+        listeners hear it. Returns what changed and the settings it changed as they were before;
+        None: nothing changed. Refused: a name missing or used twice, or forge.db couldn't be
+        written."""
         if not self.presets_changed():
             return None
-        stored = await parts.presets.list()
-        before = self._stored
-        merged = merged_presets(stored, before, self._drafts)
-        if merged != stored:
-            await parts.presets.replace_all(merged)
-        change = presets_change([preset.name for preset in merged], before, self._drafts)
-        self._rebase(merged)
-        return change, before
+        problem = preset_problem([draft.preset.name for draft in self._drafts])
+        if problem is not None:
+            raise Refused(problem)
+        try:
+            stored = await parts.presets.list()
+            before = self._stored
+            merged = merged_presets(stored, before, self._drafts)
+            if merged != stored:
+                await parts.presets.replace_all(merged)
+            change = presets_change([preset.name for preset in merged], before, self._drafts)
+            rules: _RuleSource | None = getattr(parts, "rules", None)  # a stand-in may have none
+            if change.renamed and rules is not None:
+                await rules.presets_renamed(change.renamed)  # the rules follow a renamed preset
+            changes = self._choice_changes()
+            current = parts.settings.current
+            for key in ("last_preset", "last_show_preset", "last_film_preset"):
+                last = getattr(current, key)
+                after = last_preset_after(last, change, before, merged)
+                if after != last:
+                    changes[key] = after
+            was = {key: getattr(current, key) for key in changes}
+            self._rebase(merged)
+            if changes:
+                await parts.settings.update(**changes)
+        except Exception as exc:  # forge.db couldn't be written
+            # The type only: a message could hold a preset's or a folder's name.
+            log.error("MediaForge's naming settings couldn't be saved (%s)", type(exc).__name__)
+            raise Refused(_save_failed()) from exc
+        await _tell(change, parts)
+        return change, was
 
-    def _rebase(self, stored: Sequence[Preset]) -> None:
-        """Take `stored` as what is stored; the form shows it, keeping its drafts (the editor's
-        and the Series / Movies choices) where their names are stored."""
-        by_name = {draft.preset.name: draft for draft in self._drafts}
+    async def _restore_presets(
+        self,
+        parts: _Parts,
+        before: Sequence[Preset],
+        done: Sequence[tuple[PresetsChange, dict[str, Any]]],
+    ) -> bool:
+        """Undo: the presets as they were stored before (`before`), the rules renamed back, the
+        settings the change moved (For new rules, the remembered presets) as they were; the
+        listeners hear it as a rename back (and a new preset's removal)."""
+        if not done:
+            return False
+        change, was = done[-1]
+        back = {new: old for old, new in change.renamed.items()}
+        names_before = {preset.name for preset in before}
+        added = tuple(n for n in change.names if n not in names_before and n not in back)
+        try:
+            await parts.presets.replace_all(list(before))
+            rules: _RuleSource | None = getattr(parts, "rules", None)
+            if back and rules is not None:
+                await rules.presets_renamed(back)
+            self._rebase(before, renamed=back, refill=True)
+            if was:
+                await parts.settings.update(**was)
+        except Exception as exc:  # forge.db couldn't be written
+            log.error("MediaForge's presets couldn't be put back (%s)", type(exc).__name__)
+            raise Refused(_save_failed()) from exc
+        await _tell(PresetsChange(tuple(p.name for p in before), back, added), parts)
+        return True
+
+    def _rebase(
+        self,
+        stored: Sequence[Preset],
+        *,
+        renamed: Mapping[str, str] | None = None,
+        refill: bool = False,
+    ) -> None:
+        """Take `stored` as what is stored; the page shows it, keeping its drafts (the editor's
+        and the Series / Movies choices) where their names are stored (`renamed`: a draft's
+        name → its stored one, an Undo's). `refill`: the editor shows the stored preset again
+        (an Undo); else what it holds stays as typed."""
+        renamed = renamed or {}
+        by_name = {renamed.get(d.preset.name, d.preset.name): d for d in self._drafts}
+        editing = self._editing
         drafts: list[PresetDraft] = []
         for preset in stored:
             draft = by_name.pop(preset.name, None) or PresetDraft(preset.name, preset)
@@ -1455,18 +1606,26 @@ class NamingSection:
         for name in self._choice:
             if not isinstance(self._choice[name], str) and self._choice[name] not in drafts:
                 self._choice[name] = self._choice_name(name)
-        if self.waiting_label.winfo_exists():
+        if not self.waiting_label.winfo_exists():
+            return
+        if refill or self._editing is not editing:
             self._refresh_presets()
-
-    async def _save_forgotten(self, parts: _Parts) -> None:
-        for match in [m for m in self._matches if _match_key(m) in self._forgotten]:
-            await parts.matches.forget(match)
-            self._matches.remove(match)
-        self._forgotten.clear()
-        if self.match_summary.winfo_exists():
-            self._fill_matches()
+        else:
+            self._fill_preset_list()
+            self._refresh_editor()
+            self._fill_choices()
 
 
-def build_naming(page: SettingsPage, forge: ForgeRuntime) -> ForgeSectionPart:
-    """The Naming section's builder (settings_pages.FORGE_SECTIONS)."""
-    return NamingSection(page, forge)
+def _save_failed() -> str:
+    from app.forge.ui.settings_pages import SAVE_FAILED  # it imports this module
+
+    return t(SAVE_FAILED)
+
+
+def build_naming(
+    slots: PartSlots, forge: ForgeRuntime, committer: Committer
+) -> ForgeSectionPart:
+    """The Naming page's builder (settings_pages.FORGE_PARTS)."""
+    from app.ui.settings_pages_registry import PAGE_NAMING
+
+    return NamingSection(slots[PAGE_NAMING], forge, committer=committer)

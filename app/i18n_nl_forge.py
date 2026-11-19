@@ -41,8 +41,8 @@ NL: dict[str, str] = {
     "Yes, forge it": "Ja, forgen",
     "Leave it alone ▾": "Met rust laten ▾",
     "Keep the one I have ▾": "Houd die ik heb ▾",
-    "Takes it off the list. Auto-rename won't touch it again.":
-        "Haalt het van de lijst. Automatisch hernoemen komt er niet meer aan.",
+    "Takes it off the list. Sorting won't touch it again.":
+        "Haalt het van de lijst. Sorteren komt er niet meer aan.",
     "Use this one instead": "Gebruik deze in de plaats",
     "MediaForge's guess changed meanwhile: have another look.":
         "Wat MediaForge dacht, is intussen veranderd: kijk nog eens.",
@@ -73,10 +73,6 @@ NL: dict[str, str] = {
     "📁 Stays here, in {folder}": "📁 Blijft hier, in {folder}",
     "📁 Stayed in its folder": "📁 Bleef in zijn map",
     "📁 Stayed here, in {folder}": "📁 Bleef hier, in {folder}",
-    "⚠ Choose your Series folder in Settings › Auto-rename":
-        "⚠ Kies je map Series in Instellingen › Automatisch hernoemen",
-    "⚠ Choose your Movies folder in Settings › Auto-rename":
-        "⚠ Kies je map Films in Instellingen › Automatisch hernoemen",
     "📁 Sorted in {folder}": "📁 Wordt gesorteerd in {folder}",
     "📁 Was sorted in {folder}": "📁 Gesorteerd in {folder}",
     "Rule: {name}": "Regel: {name}",
@@ -93,16 +89,8 @@ NL: dict[str, str] = {
         "nieuwe naam, op de plek waar ze staan.",
     "Downloads MediaForge finds always move to your library folder.":
         "Downloads die MediaForge vindt, gaan altijd naar je bibliotheekmap.",
-    "{n} file wasn't forged: choose its library folder in Settings › Auto-rename.":
-        "{n} bestand is niet geforged: kies de bibliotheekmap in Instellingen › Automatisch "
-        "hernoemen.",
-    "{n} files weren't forged: choose their library folder in Settings › Auto-rename.":
-        "{n} bestanden zijn niet geforged: kies de bibliotheekmap in Instellingen › Automatisch "
-        "hernoemen.",
     "These files move to your library folder. Nothing changes until you click Rename.":
         "Deze bestanden gaan naar je bibliotheekmap. Er verandert niets tot je op Hernoemen klikt.",
-    "Choose a library folder in Settings › Auto-rename first.":
-        "Kies eerst een bibliotheekmap in Instellingen › Automatisch hernoemen.",
     "{n} left alone: choose a library folder first": "{n} met rust gelaten: kies eerst een bibliotheekmap",
     "several folders": "meerdere mappen",
     "Waiting for you": "Wacht op jou",
@@ -209,9 +197,6 @@ NL: dict[str, str] = {
     "Nothing in the library to replace for {n} files: renamed as usual.":
         "Niets in de bibliotheek te vervangen voor {n} bestanden: gewoon hernoemd.",
     "Two downloads would get the same name.": "Twee downloads zouden dezelfde naam krijgen.",
-    "Its rule's preset is gone: choose another in Settings › Auto-rename.":
-        "De voorinstelling van de regel is weg: kies een andere in Instellingen › Automatisch "
-        "hernoemen.",
     "It isn't in a watched folder any more.": "Het staat niet meer in een bewaakte map.",
     "No rule takes this file.": "Geen regel neemt dit bestand.",
     "TMDB isn't sure which one it is.": "TMDB weet niet zeker welke het is.",
@@ -247,7 +232,7 @@ NL: dict[str, str] = {
     "Set up watching in Settings": "Stel bewaken in bij Instellingen",
     "Can't reach {folder}": "Kan {folder} niet bereiken",
     "Can't reach {folder}.": "Kan {folder} niet bereiken.",
-    "Waiting for Auto-rename to finish…": "Wachten tot Automatisch hernoemen klaar is…",
+    "Waiting for Sorting to finish…": "Wachten tot Sorteren klaar is…",
     "Manual: watching {n} folder": "Handmatig: bewaakt {n} map",
     "Manual: watching {n} folders": "Handmatig: bewaakt {n} mappen",
     "Watching {n} folder": "Bewaakt {n} map",
@@ -314,12 +299,10 @@ NL: dict[str, str] = {
     "This puts back {n} items.": "Dit zet {n} onderdelen terug.",
     # app/forge/ui/activity_panel.py
     "Activity": "Activiteit",
-    # Off / On (the player's subtitles, the folder library's switch) and Manual (the rules)
+    # Off (the player's subtitles) and Manual (the rules)
     "Off": "Uit",
     "Manual": "Handmatig",
-    "On": "Aan",
-    # app/forge/ui/settings_pages.py: Auto-rename's first box and its rules
-    "Watching": "Bewaken",
+    # app/forge/ui/settings_pages.py: Sorting's first box and its rules
     "Rules": "Regels",
     "Checked from the top down. The first rule that fits a file takes it.":
         "Van boven naar beneden nagelopen. De eerste regel waar een bestand onder valt, neemt het.",
@@ -332,18 +315,7 @@ NL: dict[str, str] = {
     "Show them": "Laat ze zien",
     "Files no rule fits": "Bestanden waar geen regel bij past",
     "Add a rule for this folder": "Regel voor deze map toevoegen",
-    "MediaForge can rename finished downloads by itself and move them into your Series and "
-    "Movies folders.":
-        "MediaForge kan klaar gedownloade bestanden zelf hernoemen en naar je mappen voor series "
-        "en films verplaatsen.",
-    "Library folders": "Bibliotheekmappen",
-    "Rules that move to “Your Series folder” or “Your Movies folder” use these, and so do files "
-    "you add yourself whose preset has Move to library folder on.":
-        "Regels die naar “Je map Series” of “Je map Films” verplaatsen gebruiken deze, en "
-        "bestanden die je zelf toevoegt ook als hun voorinstelling Naar bibliotheekmap "
-        "verplaatsen aan heeft.",
     "None yet": "Nog geen",
-    "Not chosen yet": "Nog niet gekozen",
     # app/forge/ui/confirm_window.py
     "Change match…": "Andere kiezen…",
     "MediaForge · Confirm rename": "MediaForge · Hernoemen bevestigen",
@@ -368,21 +340,14 @@ NL: dict[str, str] = {
     "{n} left as they are, such as: {reason}": "{n} ongemoeid gelaten, bijvoorbeeld: {reason}",
     # app/forge/ui/settings_pages.py
     "MediaForge": "MediaForge",
-    "New rules start with the presets chosen under Naming › Library presets.":
-        "Nieuwe regels beginnen met de voorinstellingen die bij Naamgeving › Voorinstellingen "
-        "voor de bibliotheek gekozen zijn.",
     "Getting MediaForge ready…": "MediaForge klaarmaken…",
+    "MediaForge isn't available.": "MediaForge is niet beschikbaar.",
     "MediaForge's settings couldn't be saved. The log has the details.":
         "De instellingen van MediaForge konden niet worden opgeslagen. Het logboek heeft de details.",
     "Remove": "Weghalen",
-    "Choose the Series library folder": "Kies de bibliotheekmap voor series",
-    "Choose the Movies library folder": "Kies de bibliotheekmap voor films",
     "Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)":
         "Downloads opruimen na het verplaatsen (samples, .nfo, .txt, .url, lege mappen)",
     "Tell me when files need me": "Laat het me weten als bestanden mij nodig hebben",
-    "Remove files from the queue after they're forged (Undo stays in History)": (
-        "Na het forgen uit de wachtrij halen (Ongedaan maken staat in Geschiedenis)"
-    ),
     "A summary in the evening": "Een overzicht 's avonds",
     "AirGrabber's downloads": "Downloads van AirGrabber",
     "The folders where AirGrabber's downloads end up, as AirGrabber's settings say. AirGrabber's "
@@ -392,8 +357,7 @@ NL: dict[str, str] = {
         "bewaakt als je er een regel voor toevoegt.",
     "Add": "Toevoegen",
     # app/forge/ui/page.py, app/forge/ui/host.py
-    "Auto-rename": "Automatisch hernoemen",  # Downloading's "Automatic" is "Automatisch"
-    "Auto-rename off": "Automatisch uit",
+    "Sorting off": "Sorteren uit",
     "MediaForge isn't ready yet: one of its parts couldn't be installed.":
         "MediaForge is nog niet klaar: een van de onderdelen kon niet worden geïnstalleerd.",
     "Getting ready…": "Klaarmaken…",
@@ -522,10 +486,6 @@ NL: dict[str, str] = {
     # app/forge/context_menu.py
     "Forge: {preset}": "Forge: {preset}",
     # app/forge/ui/settings_menu.py
-    "Right-click menu": "Rechtsklikmenu",
-    "Start MediaForge from Explorer: right-click files or folders.":
-        "Start MediaForge vanuit Verkenner: klik met rechts op bestanden of mappen.",
-    "In the right-click menu": "In het rechtsklikmenu",
     "Adds a MediaForge submenu to Explorer's right-click menu for files and folders (on "
     "Windows 11 it's under \"Show more options\"). No administrator rights needed.":
         "Voegt een MediaForge-submenu toe aan het rechtsklikmenu van Verkenner, voor bestanden "
@@ -559,19 +519,17 @@ NL: dict[str, str] = {
         "details.",
     "✓ MediaForge is in the right-click menu.": "✓ MediaForge staat in het rechtsklikmenu.",
     "MediaForge isn't in the right-click menu.": "MediaForge staat niet in het rechtsklikmenu.",
-    "The menu points to an old location of Python. Save puts it right.":
-        "Het menu wijst naar een oude plek van Python. Opslaan zet het goed.",
-    "The menu starts another copy of AirGrabber. Tick the box and Save to point it at "
-    "this one.":
-        "Het menu start een andere kopie van AirGrabber. Vink het vakje aan en sla op om het "
-        "naar deze te laten wijzen.",
-    "The menu starts the old MediaForge. Tick the box and Save to point it at AirGrabber.":
-        "Het menu start de oude MediaForge. Vink het vakje aan en sla op om het naar "
-        "AirGrabber te laten wijzen.",
+    "The menu points to an old location of Python. Untick the box and tick it again to put "
+    "it right.":
+        "Het menu wijst naar een oude plek van Python. Vink het vakje uit en weer aan om het "
+        "goed te zetten.",
+    "The menu starts another copy of AirGrabber. Tick the box to point it at this one.":
+        "Het menu start een andere kopie van AirGrabber. Vink het vakje aan om het naar deze "
+        "te laten wijzen.",
+    "The menu starts the old MediaForge. Tick the box to point it at AirGrabber.":
+        "Het menu start de oude MediaForge. Vink het vakje aan om het naar AirGrabber te "
+        "laten wijzen.",
     # app/forge/ui/settings_naming.py
-    "Naming": "Naamgeving",
-    "How MediaForge names shows and movies, and the matches it remembers.":
-        "Hoe MediaForge series en films noemt, en de keuzes die het onthoudt.",
     "Presets": "Voorinstellingen",
     "A preset is a media type, a naming format and extras.":
         "Een voorinstelling is een soort media, een naamopmaak en extra's.",
@@ -595,10 +553,6 @@ NL: dict[str, str] = {
     "Two presets are called “{name}”. Give each its own name.":
         "Twee voorinstellingen heten “{name}”. Geef ze elk een eigen naam.",
     "Another preset is called that already.": "Een andere voorinstelling heet al zo.",
-    "Library presets": "Voorinstellingen voor de bibliotheek",
-    "The presets a new rule starts with. Each rule keeps its own: change it under Auto-rename.":
-        "De voorinstellingen waarmee een nieuwe regel begint. Elke regel houdt zijn eigen: "
-        "verander die bij Automatisch hernoemen.",
     "Names language": "Taal van de namen",
     "The language of titles and episode names from TMDB. AirGrabber's own language doesn't "
     "change it.":
@@ -617,9 +571,6 @@ NL: dict[str, str] = {
     "Manage…": "Beheren…",
     "{n} match remembered": "{n} keuze onthouden",
     "{n} matches remembered": "{n} keuzes onthouden",
-    "{n} to forget when you save": "{n} te vergeten bij Opslaan",
-    "Nothing is forgotten until you click Save in Settings.":
-        "Er wordt niets vergeten tot je in Instellingen op Opslaan klikt.",
     "{title} → {label} · show": "{title} → {label} · serie",
     "{title} → {label} · movie": "{title} → {label} · film",
     # app/forge/core/auto.py (F-26: the old MediaForge still installed)
@@ -704,30 +655,12 @@ NL: dict[str, str] = {
         "Het verwijderprogramma van de oude MediaForge kon niet starten. Je kunt MediaForge "
         "verwijderen onder Geïnstalleerde apps in de Instellingen van Windows.",
     # app/forge/core/airgrabber_folders.py
-    "“Where finished downloads end up” in Settings":
-        "“Waar voltooide downloads terechtkomen” in Instellingen",
+    "“Finished downloads” in Settings › Folders":
+        "“Voltooide downloads” in Instellingen › Mappen",
     "qBittorrent on this PC saves AirGrabber's downloads here":
         "qBittorrent op deze pc bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's downloads here": "{program} bewaart de downloads van AirGrabber hier",
     "{program} saves AirGrabber's films here": "{program} bewaart de films van AirGrabber hier",
-    "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
-    "“Where finished downloads end up” in Settings › Where downloads go, or add a rule for "
-    "the folder.":
-        "AirGrabber weet niet waar zijn voltooide downloads op deze pc terechtkomen. Vul “Waar "
-        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan, of "
-        "voeg een regel voor de map toe.",
-    "AirGrabber sends downloads to {program} on another computer. Add a rule for the folder "
-    "where they show up on this PC (a shared network folder), or fill in “Where finished "
-    "downloads end up” in Settings › Where downloads go.":
-        "AirGrabber stuurt downloads naar {program} op een andere computer. Voeg een regel toe "
-        "voor de map waar ze op deze pc verschijnen (een gedeelde netwerkmap), of vul “Waar "
-        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan.",
-    "Download Station keeps AirGrabber's downloads in its own download folder. Add a rule for "
-    "the shared folder where they show up on this PC, or fill in “Where finished downloads "
-    "end up” in Settings › Where downloads go.":
-        "Download Station bewaart de downloads van AirGrabber in zijn eigen downloadmap. Voeg "
-        "een regel toe voor de gedeelde map waar ze op deze pc verschijnen, of vul “Waar "
-        "voltooide downloads terechtkomen” in bij Instellingen › Waar downloads naartoe gaan.",
     "Suggested: {reason}": "Voorstel: {reason}",
     "This PC can reach it.": "Deze pc kan erbij.",
     "This PC can't reach it right now.": "Deze pc kan er nu niet bij.",
@@ -747,8 +680,6 @@ NL: dict[str, str] = {
     "Left alone: {name}. MediaForge won't pick it up again.":
         "Met rust gelaten: {name}. MediaForge pakt het niet meer op.",
     "Ignored": "Genegeerd",
-    "Files and folders Auto-rename leaves alone.":
-        "Bestanden en mappen die automatisch hernoemen met rust laat.",
     "Nothing ignored.": "Niets genegeerd.",
     "Stop ignoring": "Niet meer negeren",
     # A preset per band (app/forge/ui/queue_view.py)
@@ -781,10 +712,6 @@ NL: dict[str, str] = {
     "{n} subtitles": "{n} ondertitels",
     "Gets a subtitle per chosen language right after the rename, named to match":
         "Haalt na het hernoemen per gekozen taal een ondertitel op, met de bijpassende naam",
-    "Found on OpenSubtitles.com and saved next to your videos.":
-        "Gevonden op OpenSubtitles.com en opgeslagen naast je video's.",
-    "The subtitle settings couldn't be saved. The log has the details.":
-        "De ondertitelinstellingen konden niet worden opgeslagen. Het logboek heeft de details.",
     "Looks for subtitles in each of these.": "Zoekt ondertitels in elk van deze talen.",
     "Subtitles that also describe sounds.": "Ondertitels die ook geluiden beschrijven.",
     "Optional: 20 a day instead of 5.": "Optioneel: 20 per dag in plaats van 5.",
@@ -800,7 +727,6 @@ NL: dict[str, str] = {
     "Subtitles aren't available in this version yet":
         "Ondertitels zijn nog niet beschikbaar in deze versie",
     "Subtitles provided by OpenSubtitles.com": "Ondertitels aangeleverd door OpenSubtitles.com",
-    "OpenSubtitles account": "OpenSubtitles-account",
     "Create a free account": "Maak een gratis account aan",
     "+ Add": "+ Toevoegen",
     "Sign in": "Aanmelden",
@@ -824,7 +750,6 @@ NL: dict[str, str] = {
     "Fill in your OpenSubtitles user name and password":
         "Vul je OpenSubtitles-gebruikersnaam en wachtwoord in",
     "Signing in…": "Aanmelden…",
-    "Options": "Opties",
     "Get {language} subtitles": "Ondertitels ophalen: {language}",
     "Get all my languages": "Al mijn talen ophalen",
     "Looking for subtitles…": "Ondertitels zoeken…",
@@ -882,8 +807,6 @@ NL: dict[str, str] = {
         "Kies een map buiten je mappen Series en Films.",
     "No duplicates: every episode and film is in your library once.":
         "Geen dubbele bestanden: elke aflevering en film staat er één keer in.",
-    "Choose your Series and Movies folders in Settings › Auto-rename first.":
-        "Kies eerst je map voor series en films in Instellingen › Automatisch hernoemen.",
     "Keeps {name} ({size})": "Houdt {name} ({size})",
     "Moves {name} ({size})": "Verplaatst {name} ({size})",
     "Move {n} extra copy aside": "{n} extra exemplaar wegzetten",
@@ -927,14 +850,15 @@ NL: dict[str, str] = {
         "⚠ Deze regel krijgt nooit een bestand: regel {n} hierboven neemt dezelfde bestanden "
         "eerst. Sleep hem hoger, of verander een van beide.",
     "⚠ Its preset is gone: choose another.": "⚠ De voorinstelling is weg: kies een andere.",
-    "⚠ Choose your Series folder under Library folders.":
-        "⚠ Kies je map Series onder Bibliotheekmappen.",
-    "⚠ Choose your Movies folder under Library folders.":
-        "⚠ Kies je map Films onder Bibliotheekmappen.",
+    "⚠ Choose your Series folder under Folders.":
+        "⚠ Kies je map Series onder Mappen.",
+    "⚠ Choose your Movies folder under Folders.":
+        "⚠ Kies je map Films onder Mappen.",
     "Rule {n} moves files into this folder. MediaForge won't pick them up again here.":
         "Regel {n} verplaatst bestanden naar deze map. MediaForge pakt ze hier niet opnieuw op.",
     "Rule {n} can't be saved yet. Its row says why.":
         "Regel {n} kan nog niet worden opgeslagen. Zijn rij zegt waarom.",
+    "Rule {n}: {why}": "Regel {n}: {why}",
     # app/forge/ui/rule_rows.py
     "Everything from {folder}": "Alles uit {folder}",
     "Shows from {folder}": "Series uit {folder}",
@@ -1030,4 +954,39 @@ NL: dict[str, str] = {
     "Can't reach this folder right now": "Kan deze map nu niet bereiken",
     "No downloads in this folder right now.": "Nu geen downloads in deze map.",
     "Delete rule": "Regel verwijderen",
+    # Settings, reorganized (2026-11-19)
+    "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in “Finished downloads” in Settings › Folders, or add a rule for the folder.":
+        "AirGrabber weet niet waar zijn voltooide downloads op deze pc terechtkomen. Vul “Voltooide downloads” in bij Instellingen › Mappen, of voeg een regel voor de map toe.",
+    "AirGrabber sends downloads to {program} on another computer. Add a rule for the folder where they show up on this PC (a shared network folder), or fill in “Finished downloads” in Settings › Folders.":
+        "AirGrabber stuurt downloads naar {program} op een andere computer. Voeg een regel toe voor de map waar ze op deze pc verschijnen (een gedeelde netwerkmap), of vul “Voltooide downloads” in bij Instellingen › Mappen.",
+    "Download Station keeps AirGrabber's downloads in its own download folder. Add a rule for the shared folder where they show up on this PC, or fill in “Finished downloads” in Settings › Folders.":
+        "Download Station bewaart de downloads van AirGrabber in zijn eigen downloadmap. Voeg een regel toe voor de gedeelde map waar ze op deze pc verschijnen, of vul “Voltooide downloads” in bij Instellingen › Mappen.",
+    "Its rule's preset is gone: choose another in Settings › Sorting.":
+        "De voorinstelling van de regel is weg: kies een andere in Instellingen › Sorteren.",
+    "Choose a library folder in Settings › Folders first.":
+        "Kies eerst een bibliotheekmap in Instellingen › Mappen.",
+    "Choose your Series and Movies folders in Settings › Folders first.":
+        "Kies eerst je map voor series en films in Instellingen › Mappen.",
+    "{n} file wasn't forged: choose its library folder in Settings › Folders.":
+        "{n} bestand is niet geforged: kies de bibliotheekmap in Instellingen › Mappen.",
+    "{n} files weren't forged: choose their library folder in Settings › Folders.":
+        "{n} bestanden zijn niet geforged: kies de bibliotheekmap in Instellingen › Mappen.",
+    "⚠ Choose your Series folder in Settings › Folders":
+        "⚠ Kies je map Series in Instellingen › Mappen",
+    "⚠ Choose your Movies folder in Settings › Folders":
+        "⚠ Kies je map Films in Instellingen › Mappen",
+    "Explorer's right-click menu": "Rechtsklikmenu van Verkenner",
+    "For new rules": "Voor nieuwe regels",
+    "The presets a new rule starts with.": "De voorinstellingen waarmee een nieuwe regel begint.",
+    "Each rule keeps its own: change it under Sorting.":
+        "Elke regel houdt zijn eigen: verander die bij Sorteren.",
+    "? Codes": "? Codes",
+    "Watch folders": "Mappen bewaken",
+    "New rules start with the presets chosen under Naming › For new rules.":
+        "Nieuwe regels beginnen met de voorinstellingen die bij Naamgeving › Voor nieuwe regels gekozen zijn.",
+    "When sorting": "Bij het sorteren",
+    "Take sorted files off the list (Undo stays in History)":
+        "Gesorteerde bestanden van de lijst halen (Ongedaan maken staat in Geschiedenis)",
+    "Files and folders Sorting leaves alone.": "Bestanden en mappen die Sorteren met rust laat.",
+    "OpenSubtitles": "OpenSubtitles",
 }

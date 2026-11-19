@@ -1,4 +1,4 @@
-"""The backup file (Settings → Backup, app/services/backup.py): the people, their followed
+"""The backup file (Settings → Updates & backup, app/services/backup.py): the people, their followed
 shows and film watchlists, the download history and the settings in one JSON file (UTF-8), to
 keep or to load on another PC.
 

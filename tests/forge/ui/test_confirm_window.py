@@ -320,9 +320,7 @@ class ActionTests(ConfirmCase):
         async with self.services.run_lock:  # the renamer's run
             task = asyncio.create_task(win.rename())
             await asyncio.sleep(0.2)
-            self.assertEqual(
-                win.result_label.cget("text"), "Wachten tot Automatisch hernoemen klaar is…"
-            )
+            self.assertEqual(win.result_label.cget("text"), "Wachten tot Sorteren klaar is…")
             self.assertTrue(win.result_label.winfo_manager())
         await task
         self.assertIn("1 hernoemd", win.result_label.cget("text"))

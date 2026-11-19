@@ -24,9 +24,9 @@ from app.ui.settings_dialog import (
     REPORT_FAILED,
     REPORT_IN_FOLDER,
     REPORT_ON_DESKTOP,
-    SECTION_UPDATES,
     SettingsDialog,
 )
+from app.ui.settings_pages_registry import PAGE_UPDATES
 from tests.test_settings_dialog import DialogCase, FakeProwlarr, FakeRepository, FakeShortcut
 
 NOW = datetime(2026, 11, 16, 19, 30, 5)
@@ -112,10 +112,10 @@ class ReportBoxTests(DialogCase):
             prowlarr=FakeProwlarr(),  # type: ignore[arg-type]
             startup_shortcut=FakeShortcut(),
             problem_reports=reports,
-            section=SECTION_UPDATES,
+            section=PAGE_UPDATES,
         )
         self.addCleanup(self._close, dialog)
-        dialog.page(SECTION_UPDATES)
+        dialog.page(PAGE_UPDATES)
         return dialog
 
     async def settle(self, dialog: SettingsDialog) -> None:

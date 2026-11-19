@@ -11,7 +11,8 @@ import customtkinter as ctk
 from app.models import UpdateInfo
 from app.ui.confirm_dialog import ConfirmDialog
 from app.ui.main_window import MainWindow
-from app.ui.settings_dialog import SECTION_UPDATES, SettingsDialog
+from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_pages_registry import PAGE_UPDATES
 from tests.test_backup_dialog import DialogTestCase, FakeProwlarr, FakeShortcut
 
 
@@ -34,13 +35,13 @@ class GoBackSettingsTests(DialogTestCase):
 
     async def test_no_button_without_an_older_version(self) -> None:
         dialog = self.dialog(None)
-        dialog.page(SECTION_UPDATES)
+        dialog.page(PAGE_UPDATES)
         self.assertIsNone(dialog.go_back_button)
 
     async def test_the_button_asks_first_then_goes_back(self) -> None:
         go_back = mock.Mock()
         dialog = self.dialog("2.0.0", on_go_back=go_back)
-        dialog.page(SECTION_UPDATES)
+        dialog.page(PAGE_UPDATES)
         button = dialog.go_back_button
         assert button is not None
         self.assertEqual(button.cget("text"), "Go back to version 2.0.0")
@@ -53,7 +54,7 @@ class GoBackSettingsTests(DialogTestCase):
 
     async def test_a_version_gone_back_from_is_explained(self) -> None:
         dialog = self.dialog(None)
-        dialog.page(SECTION_UPDATES)
+        dialog.page(PAGE_UPDATES)
         info = UpdateInfo(
             current="2.0.0", latest="2.1.0", available=False, installable=True, skipped=True
         )

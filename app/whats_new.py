@@ -20,8 +20,9 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
-    "3.20.0": (
-        N_("A film's download must now start with its title, so “The Beast” no longer fetches “Heart of the Beast”."),
+    "3.22.0": (
+        N_("MediaForge's settings now sit beside the matching AirGrabber ones; there's no separate group any more."),
+        N_("AirGrabber always opens full size, and the Settings window is wider."),
     ),
     "3.19.0": (
         N_("Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films."),
@@ -302,15 +303,15 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.20.0": (
+    "3.22.0": (
         Feature(
-            N_("Rules for your download folders"),
+            N_("A tidier Settings window"),
             N_(
-                "Settings → Auto-rename: give each folder its own rule (what it takes, how it's "
-                "named, where it goes), Automatic or Manual. A new or changed rule first shows "
-                "you what's already there."
+                "Settings is grouped by what you want to do and opens on an overview of how "
+                "everything is set up. Your folders are on one page, and every change saves at "
+                "once, with Undo."
             ),
-            "rules.png",
+            "settings.png",
         ),
     ),
 }

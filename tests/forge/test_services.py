@@ -546,6 +546,25 @@ class ForgeRuntimeTest(ForgeAsyncTestCase):
         runtime.when_ready(late.append)  # already started: called at once
         self.assertEqual(late, [services])
 
+    async def test_a_start_end_is_heard_ready_or_not_and_can_be_forgotten(self) -> None:
+        # Settings' Overview hears the start end, also when Forge stays off, and forgets it
+        # when its window closes (review M2 / M3).
+        runtime = self.runtime(parser_ready=False)
+        heard: list[str] = []
+        forgotten: list[str] = []
+        runtime.when_start_ends(lambda: heard.append(runtime.state.value))
+        forget = runtime.when_start_ends(lambda: forgotten.append("called"))
+        forget()
+        with self.assertLogs("app.forge.runtime", logging.WARNING):
+            self.assertIsNone(await runtime.start())
+        self.assertEqual(heard, ["not_ready"])
+        self.assertEqual(forgotten, [])
+        ready = self.runtime()
+        seen: list[bool] = []
+        ready.when_start_ends(lambda: seen.append(ready.services is not None))
+        self.assertIsNotNone(await ready.start())
+        self.assertEqual(seen, [True])
+
     async def test_a_failing_callback_does_not_stop_the_start(self) -> None:
         runtime = self.runtime()
 

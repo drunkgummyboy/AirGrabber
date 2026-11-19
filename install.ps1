@@ -809,9 +809,9 @@ function Install-QBittorrentIfNeeded([string]$Python) {
     if ($code -eq 0) {
         Write-Host '    qBittorrent is installed and ready: downloads start without a pop-up.'
     } elseif ($code -eq 3) {
-        Write-Host '    qBittorrent is installed. Close qBittorrent, then set it up in AirGrabber (Settings, Where downloads go).' -ForegroundColor Yellow
+        Write-Host '    qBittorrent is installed. Close qBittorrent, then set it up in AirGrabber (Settings, Torrent program).' -ForegroundColor Yellow
     } else {
-        Write-Host '    qBittorrent is installed. Set it up in AirGrabber (Settings, Where downloads go).' -ForegroundColor Yellow
+        Write-Host '    qBittorrent is installed. Set it up in AirGrabber (Settings, Torrent program).' -ForegroundColor Yellow
     }
 }
 

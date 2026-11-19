@@ -66,7 +66,7 @@ _WIDE_BUTTON_WIDTH = 210  # "Toevoegen aan wat ik heb"
 SAVE_HEADING = N_("Save a backup")
 SAVE_INTRO = N_(
     "Your followed shows, film watchlist, download history and settings go into one file. "
-    "Load it on another PC in Settings → Backup."
+    "Load it on another PC in Settings → Updates & backup."
 )
 SECRETS_CHECK = N_("Include keys and passwords")
 SECRETS_NOTE = N_("Anyone with the file can then use them. Keep it somewhere safe.")
@@ -95,7 +95,8 @@ LOADED_HEADING = N_("Backup loaded")
 SETTINGS_REPLACED = N_("Your settings are now the backup's.")
 KEPT_LOCAL = N_("Your downloads keep using qBittorrent on this PC.")
 KEPT_THIS_PC = N_(
-    "Where downloads go stays as it was on this PC: the backup's qBittorrent was on the other PC."
+    "The torrent program stays as it was on this PC: the backup's qBittorrent was on the other "
+    "PC."
 )
 CHECK_FOLDERS = N_("Check your folders in Settings: they may be different on this PC.")
 NO_SECRETS = N_("Keys and passwords weren't in the backup. Fill in any you need in Settings.")

@@ -30,7 +30,7 @@ from app.forge.core.run_progress import AUTO, PAGE
 from app.forge.runtime import ForgeState
 from app.forge.ui import file_drops
 from app.forge.ui.page import ForgePage
-from app.forge.ui.settings_pages import SECTION_LIBRARY
+from app.ui.settings_pages_registry import PAGE_OVERVIEW, PAGE_SORTING
 from app.i18n import Language, current_language, set_language
 from app.models import CardSize, Settings
 from app.services import Services
@@ -147,6 +147,13 @@ class SwitchTests(MainWindowCase):
     async def test_a_plain_start_opens_full_size(self) -> None:
         self.window.update()
         self.assertEqual(self.window.state(), "zoomed")  # the owner's wish, 2026-11-15
+
+    async def test_full_size_again_once_ctk_has_shown_it(self) -> None:
+        window = self.window
+        window.update()
+        window.state("normal")  # what CTk's first showing leaves (its deiconify drops the zoom)
+        window._full_size_once_shown()
+        self.assertEqual(window.state(), "zoomed")
 
     async def test_three_parts_lead_to_their_pages(self) -> None:
         window = self.window
@@ -736,8 +743,8 @@ class SettingsTests(MainWindowCase):
         dialog.attributes("-alpha", 0.0)
         self.assertIs(dialog.master, window)
         self.assertEqual(str(dialog.transient()), str(window))
-        self.assertEqual(dialog.section, SECTION_LIBRARY)
-        dialog.cancel()
+        self.assertEqual(dialog.section, PAGE_SORTING)
+        dialog.close()
 
     async def test_gear_opens_it_at_its_usual_page_on_this_page_too(self) -> None:
         window = self.window
@@ -747,21 +754,19 @@ class SettingsTests(MainWindowCase):
         assert dialog is not None
         dialog.attributes("-alpha", 0.0)
         self.assertIs(dialog.master, window)
-        self.assertNotEqual(dialog.section, SECTION_LIBRARY)
-        dialog.cancel()
+        self.assertEqual(dialog.section, PAGE_OVERVIEW)
+        dialog.close()
 
     async def test_the_sidebars_order(self) -> None:
         window = self.window
-        window._open_settings(SECTION_LIBRARY)
+        window._open_settings(PAGE_SORTING)
         dialog = window._settings_dialog
         assert dialog is not None
         dialog.attributes("-alpha", 0.0)
         sections = dialog.sections
-        first = sections.index("Auto-rename")
-        self.assertEqual(
-            sections[first : first + 4], ["Auto-rename", "Naming", "Subtitles", "Right-click menu"]
-        )
-        dialog.cancel()
+        first = sections.index("Folders")
+        self.assertEqual(sections[first : first + 4], ["Folders", "Sorting", "Naming", "Subtitles"])
+        dialog.close()
 
     async def test_closing_the_window_cancels_settings_first(self) -> None:
         window = self.window

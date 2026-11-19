@@ -1,5 +1,5 @@
-"""Settings → Library: the "Plex" box (mockups/plex.html, states 1 and 3; mockups/folder-library.html
-for its first line and its place) over PlexService (app/services/plex.py).
+"""Settings → Plex & library: the "Plex" box (mockups/plex.html, states 1 and 3;
+mockups/folder-library.html for its first line) over PlexService (app/services/plex.py).
 
 Not connected: what Plex does for AirGrabber in one line ("Have a Plex server? Connect it and Plex
 is your library.", or, while your own folders are on, that Plex would be a shelf beside them)
@@ -10,14 +10,17 @@ the last list from 2 h ago is used", "Plex asks to connect again" with the Conne
 again), what was found ("812 episodes of 24 of your series · 146 films · checked 3 min ago"),
 the server menu while the account has several, a tick box per show and film library, "↻ Check
 now" and "Disconnect" (after a confirm it forgets the token, the server and what was read).
-Given the settings, a third box of its own (`play_box`, under the Plex and the folders boxes:
-Settings orders them) holds "Play in: AirGrabber's player / VLC" (`Settings.play_in`,
-docs/player/2026-11-13-pc-player-design.md), saved at once, and the tick for Explorer's "Open
-with" (`Settings.open_with_player`, app/services/open_with.py,
-docs/player/2026-11-14-open-with-design.md), saved and applied at once; with Plex or without.
+Given the settings, two boxes on Settings → Playing (`play_page`): `play_box` holds "Play in:
+AirGrabber's player / VLC" (`Settings.play_in`, docs/player/2026-11-13-pc-player-design.md),
+and `explorer_box` the switch for Explorer's "Open with" (`Settings.open_with_player`,
+app/services/open_with.py, docs/player/2026-11-14-open-with-design.md), applied with it; with
+Plex or without. Both are changes as the rest of Settings' (the window's `committer`: stored at
+once, "✓ Saved · Undo", a refusal in their box; Undo applies "Open with" back too). `PlexAccountBox` is Accounts & keys' line about
+Plex, with the way to Plex & library. `FoldersLine` is Plex & library's line about the user's own
+folders while they count, with the way to Folders (where they are set).
 
-Everything acts at once (like Backup's buttons), not on Save: Plex's settings are its own. The
-box follows the service (`PlexService.subscribe`), and the folder library's (`folders`: its
+Plex's own actions (Connect, Check now, a library's tick, the server, Disconnect) act at once
+through PlexService, as Backup's buttons do, without Undo. The box follows the service (`PlexService.subscribe`), and the folder library's (`folders`: its
 first line), and stops when it goes.
 """
 
@@ -36,9 +39,12 @@ from app.models import PlayIn
 from app.models.plex import PlexCounts, PlexLibrary, PlexProblem, PlexServer, PlexStatus
 from app.ui import theme
 from app.ui.confirm_dialog import ConfirmDialog
+from app.services.library_source import library_source
 from app.ui.dialog_kit import BUTTON_HEIGHT, BUTTON_RADIUS, DETAIL_SIZE, secondary_button
+from app.ui.folder_library_settings import FILM_MORE, FILM_ONE, SERIES_MORE, SERIES_ONE, counted
 from app.ui.missing_control import mark_dot
 from app.ui.plex_connect import PlexConnectWindow
+from app.ui.settings_commit import Committer, commit_fields
 from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
 from app.ui.tasks import spawn
 from app.services import open_with
@@ -80,6 +86,13 @@ PLAY_IN_TEXT = N_("Play in")
 PLAYER_TEXT = N_("AirGrabber's player")
 VLC_TEXT = N_("VLC")
 OPEN_WITH_TEXT = N_("Offer AirGrabber's player in Explorer's \"Open with\" for any video")
+EXPLORER_TITLE = N_("Explorer")  # the Open with tick's box
+NOT_CONNECTED_TEXT = N_("Not connected")
+PLEX_PAGE_LINK = N_("Plex & library →")
+FOLDERS_TITLE = N_("Your own folders")
+FOLDERS_BESIDE_PLEX = N_("{films} · {series} from your own folders count beside Plex.")
+FOLDERS_ALONE = N_("{films} · {series} from your own folders count as your library.")
+FOLDERS_PAGE_LINK = N_("Set under Folders →")
 # Settings.play_in's choices, in the control's order (shown through t()).
 PLAY_IN_NAMES = {PlayIn.AIRGRABBER: PLAYER_TEXT, PlayIn.VLC: VLC_TEXT}
 CONFIRM_TITLE = N_("Disconnect from Plex?")
@@ -175,13 +188,18 @@ class PlexBox:
         clock: Callable[[], datetime] = _now,
         apply_open_with: Callable[[bool], Awaitable[None]] | None = None,
         folders: FolderSwitch | None = None,
+        play_page: SettingsPage | None = None,
+        committer: Committer | None = None,
     ) -> None:
         """`apply_open_with`: writes or removes Explorer's "Open with" registration
         (None: app/services/open_with.py's `apply`). `folders`: the folder library, whose
-        being on changes the first line while Plex isn't connected."""
+        being on changes the first line while Plex isn't connected. `play_page`: where the
+        "Play in" and "Explorer" boxes go (Settings → Playing; `page` without it).
+        `committer`: the window's, which stores those two (one of its own without it)."""
         self._plex = plex
         self._folders = folders
         self._settings = settings
+        self._committer = committer if committer is not None else Committer()
         self._apply_open_with = apply_open_with
         self._clock = clock
         self._tasks: set[asyncio.Task[None]] = set()
@@ -189,9 +207,8 @@ class PlexBox:
         self.status: PlexStatus | None = None
         self.connect_window: PlexConnectWindow | None = None
         self.confirm: ConfirmDialog | None = None
-        self.box: SettingsBox = page.box(None, None)
-        # Settings' search finds it as "Plex · Library" (its heading is drawn here, not the box's).
-        page.boxes[-1] = (t(TITLE_TEXT), self.box.frame)
+        # Settings' search finds it as "Plex · Plex & library" (its heading is drawn here).
+        self.box: SettingsBox = page.box(None, None, search_title=t(TITLE_TEXT))
         header = ctk.CTkFrame(self.box.body, fg_color="transparent")
         self.box.add(header, gap=0, sticky="w")
         ctk.CTkLabel(
@@ -209,35 +226,33 @@ class PlexBox:
         ).pack(side="left")
         self.content = ctk.CTkFrame(self.box.body, fg_color="transparent")
         self.box.add(self.content, gap=6)
-        # "Play in" and "Open with" in a box of their own, under the Plex and folders boxes.
+        # "Play in", and "Open with" in its own box (Settings → Playing).
         self.play_box: SettingsBox | None = None
+        self.explorer_box: SettingsBox | None = None
         self.player_line: ctk.CTkFrame | None = None
         self.play_in_control: ctk.CTkSegmentedButton | None = None
         self._play_in = ctk.StringVar(master=self.content)
-        self.open_with_box: ctk.CTkCheckBox | None = None
+        self.open_with_box: ctk.CTkSwitch | None = None
         self._open_with = ctk.BooleanVar(master=self.content)
         if settings is not None:
-            play_box = self.play_box = page.box(None, None)
-            page.boxes[-1] = (t(PLAY_IN_TEXT), play_box.frame)
+            playing = play_page if play_page is not None else page
+            play_box = self.play_box = playing.box(None, None, search_title=t(PLAY_IN_TEXT))
             self.player_line = self._player_line(play_box)
             play_box.add(self.player_line, gap=0, sticky="w")
             self._play_in.set(t(PLAY_IN_NAMES[settings.current.play_in]))
             self._open_with.set(settings.current.open_with_player)
-            self.open_with_box = ctk.CTkCheckBox(
-                play_box.body,
+            explorer = self.explorer_box = playing.box(t(EXPLORER_TITLE))
+            self.open_with_box = ctk.CTkSwitch(
+                explorer.body,
                 text=t(OPEN_WITH_TEXT),
                 variable=self._open_with,
-                height=BUTTON_HEIGHT - 8,
-                checkbox_width=22,
-                checkbox_height=22,
-                corner_radius=6,
+                height=BUTTON_HEIGHT,
                 font=theme.font(DETAIL_SIZE),
-                fg_color=theme.ACCENT,
-                hover_color=theme.ACCENT_HOVER,
-                border_color=theme.EDGE,
+                progress_color=theme.ACCENT,
+                text_color=theme.TEXT,
                 command=lambda: self.set_open_with(self._open_with.get()),
             )
-            play_box.add(self.open_with_box, gap=12, sticky="w")
+            explorer.add(self.open_with_box, gap=10, sticky="w")
         # Filled by `show`.
         self.connect_button: ctk.CTkButton | None = None
         self.check_button: ctk.CTkButton | None = None
@@ -250,10 +265,18 @@ class PlexBox:
         if folders is not None:
             self._unsubscribe.append(folders.subscribe(self.refresh))
         # Tk's own bind: CTkFrame.bind would bind its canvas.
+        if settings is not None:  # "Play in" and "Open with" stored elsewhere, or undone
+            self._unsubscribe.append(settings.subscribe(lambda _settings: self._show_stored()))
         tk.Misc.bind(self.content, "<Destroy>", self._on_destroy, add="+")
         self.refresh()
 
     # -- following the service -------------------------------------------------------------------
+
+    def _show_stored(self) -> None:
+        if _exists(self.content) and self._settings is not None:
+            self._show_player_line()
+            if self._open_with.get() != self._settings.current.open_with_player:
+                self._open_with.set(self._settings.current.open_with_player)
 
     def refresh(self) -> None:
         """Read the service's status again and show it (the newest call wins)."""
@@ -490,25 +513,44 @@ class PlexBox:
     def set_library(self, key: str, on: bool) -> None:
         spawn(self._plex.set_library(key, on), name="plex-library")
 
-    def choose_play_in(self, name: str) -> None:
-        """Save the "Play in" choice at once (`name` as the control shows it)."""
+    def choose_play_in(self, name: str) -> asyncio.Task[bool] | None:
+        """Store the "Play in" choice at once (`name` as the control shows it): one change."""
         settings = self._settings
         chosen = next((key for key, text in PLAY_IN_NAMES.items() if t(text) == name), None)
-        if settings is None or chosen is None or chosen is settings.current.play_in:
-            return
-        spawn(settings.update(play_in=chosen), name="plex-play-in")
+        box = self.play_box
+        if settings is None or box is None or chosen is None or chosen is settings.current.play_in:
+            return None
+        return spawn(
+            commit_fields(self._committer, settings, box, play_in=chosen), name="plex-play-in"
+        )
 
-    def set_open_with(self, on: bool) -> None:
-        """Save the "Open with" tick and write or remove the registration at once."""
+    def set_open_with(self, on: bool) -> asyncio.Task[bool] | None:
+        """Store the "Open with" switch and write or remove the registration at once: one
+        change; Undo stores and applies it back."""
         settings = self._settings
-        if settings is None:
-            return
+        box = self.explorer_box
+        if settings is None or box is None:
+            return None
+        apply_open_with = self._apply_open_with or open_with.apply
+        before = settings.current.open_with_player
 
-        async def save() -> None:
-            await settings.update(open_with_player=on)
-            await (self._apply_open_with or open_with.apply)(on)
+        def setting(wanted: bool) -> Callable[[], Awaitable[bool]]:
+            async def store() -> bool:
+                if settings.current.open_with_player == wanted:
+                    return False
+                await settings.update(open_with_player=wanted)
+                await apply_open_with(wanted)
+                return True
 
-        self._run(save(), "plex-open-with")
+            return store
+
+        async def change() -> bool:
+            stored = await self._committer.commit(setting(on), setting(before), box=box)
+            if _exists(self.content):
+                self._open_with.set(settings.current.open_with_player)
+            return stored
+
+        return spawn(change(), name="plex-open-with")
 
     def ask_disconnect(self) -> None:
         dialog = self.confirm
@@ -529,6 +571,151 @@ class PlexBox:
 
     def disconnect(self) -> None:
         spawn(self._plex.disconnect(), name="plex-disconnect")
+
+
+class PlexAccountBox:
+    """Settings → Accounts & keys' "Plex" box: whether AirGrabber is connected to Plex
+    ("Connected to Alex-NAS", the problem in amber, or "Not connected"), and a link to Plex &
+    library (`on_open`), where Plex is connected and checked. It follows the service."""
+
+    def __init__(
+        self,
+        page: SettingsPage,
+        plex: PlexService,
+        *,
+        on_open: Callable[[], None],
+        clock: Callable[[], datetime] = _now,
+    ) -> None:
+        self._plex = plex
+        self._clock = clock
+        self._on_open = on_open
+        self._task: asyncio.Task[None] | None = None
+        self.box: SettingsBox = page.box(t(TITLE_TEXT))
+        row = self.box.frame_row(gap=6)
+        self.status_label = ctk.CTkLabel(
+            row,
+            text="",
+            font=theme.font(TEXT_SIZE),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+        )
+        self.status_label.pack(side="left")
+        self.link = ctk.CTkLabel(
+            row,
+            text=t(PLEX_PAGE_LINK),
+            font=theme.font(TEXT_SIZE, underline=True),
+            text_color=theme.LINK,
+            cursor="hand2",
+        )
+        self.link.pack(side="left", padx=(12, 0))
+        self.link.bind("<Button-1>", lambda _event: self.open())
+        self._unsubscribe = plex.subscribe(self.refresh)
+        tk.Misc.bind(self.status_label, "<Destroy>", self._on_destroy, add="+")
+        self.refresh()
+
+    def open(self) -> None:
+        """The link: Plex & library."""
+        self._on_open()
+
+    def refresh(self) -> None:
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+        self._task = spawn(self._load(), name="PlexAccountBox.load")
+
+    async def loaded(self) -> None:
+        """Wait for the pending refresh (tests)."""
+        if self._task is not None:
+            await asyncio.wait({self._task})
+
+    async def _load(self) -> None:
+        status = await self._plex.status()
+        if not _exists(self.status_label):
+            return
+        if status.connected:
+            text, colour = status_text(status, self._clock())
+        else:
+            text, colour = t(NOT_CONNECTED_TEXT), theme.TEXT_MUTED
+        self.status_label.configure(text=text, text_color=colour)
+
+    def _on_destroy(self, event: Any) -> None:
+        if event.widget is not self.status_label:
+            return
+        self._unsubscribe()
+        if self._task is not None:
+            self._task.cancel()
+
+
+class FoldersLine:
+    """Settings → Plex & library's line about the user's own folders, shown only while they
+    count ("37 films · 6 series from your own folders count beside Plex."), with a link to the
+    Folders page (`on_open`), where they are set. It follows the folder library."""
+
+    def __init__(
+        self,
+        page: SettingsPage,
+        folders: FolderSwitch,
+        settings: SettingsService,
+        *,
+        on_open: Callable[[], None],
+    ) -> None:
+        self._folders = folders
+        self._settings = settings
+        self._on_open = on_open
+        self.box: SettingsBox = page.box(t(FOLDERS_TITLE))
+        row = self.box.frame_row(gap=6)
+        self.label = ctk.CTkLabel(
+            row,
+            text="",
+            font=theme.font(TEXT_SIZE),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=BOX_INNER - 200,
+        )
+        self.label.pack(side="left")
+        self.link = ctk.CTkLabel(
+            row,
+            text=t(FOLDERS_PAGE_LINK),
+            font=theme.font(TEXT_SIZE, underline=True),
+            text_color=theme.LINK,
+            cursor="hand2",
+        )
+        self.link.pack(side="left", padx=(12, 0))
+        self.link.bind("<Button-1>", lambda _event: self.open())
+        self._unsubscribe = folders.subscribe(self.show)
+        tk.Misc.bind(self.label, "<Destroy>", self._on_destroy, add="+")
+        self.show()
+
+    @property
+    def shown(self) -> bool:
+        return bool(self.box.frame.winfo_manager())
+
+    def open(self) -> None:
+        """The link: the Folders page."""
+        self._on_open()
+
+    def show(self) -> None:
+        """Shown with the counts while the folders count; out of sight otherwise."""
+        if not _exists(self.label):
+            return
+        status = self._folders.status
+        if not status.on:
+            self.box.frame.grid_remove()
+            return
+        beside_plex = library_source(self._settings.current) == "plex"
+        text = FOLDERS_BESIDE_PLEX if beside_plex else FOLDERS_ALONE
+        self.label.configure(
+            text=t(
+                text,
+                films=counted(FILM_ONE, FILM_MORE, status.films),
+                series=counted(SERIES_ONE, SERIES_MORE, status.shows),
+            )
+        )
+        self.box.frame.grid()
+
+    def _on_destroy(self, event: Any) -> None:
+        if event.widget is self.label:
+            self._unsubscribe()
 
 
 def _regrab(event: Any, dialog: tk.Misc, owner: tk.Misc) -> None:

@@ -3,13 +3,18 @@ password, destination folder (in Settings also the films folder), certificate ch
 connection" with its result line. Shared by Settings → "Where downloads go" (under its choice, or
 in folder mode under the magnet note) and the first-run welcome.
 
-The form only edits; its host stores `changes()` (Settings' Save, the welcome's Next) and hands
-it `run_test`, which saves first and then tests, as the other test buttons do.
+In the welcome the form only edits: the welcome stores `changes()` on Next, and its `run_test`
+saves first and then tests. Settings stores each field as it changes (`on_change` with that
+field's setting, `stored` the settings as stored: a text field on Enter or when the keyboard
+leaves it, app/ui/settings_commit.py's TextCommit; the program menu and the certificate tick at
+once), shows values stored elsewhere unless they are being edited (`show_stored`), and its
+`run_test` tests what the form holds without storing it (`testing_text` says so).
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import tkinter as tk
 from collections.abc import Awaitable, Callable
 from typing import Any, NamedTuple
@@ -31,6 +36,7 @@ from app.ui.dialog_kit import (
     primary_button,
     text_label,
 )
+from app.ui.settings_commit import TextCommit, text_commit
 from app.ui.tasks import spawn
 
 # The program menu, in its order.
@@ -64,6 +70,7 @@ FIELD_LABELS: dict[str, str] = {
     "remote_verify_tls": N_("Verify the certificate (https)"),
 }
 TESTING_TEXT = N_("Saving and testing…")
+TEST_ONLY_TEXT = N_("Testing…")  # Settings: the form's fields are stored as they change
 TEST_BUTTON_WIDTH = 160
 # Settings' folder mode: what happens to a release without a .torrent file (`folder_note`).
 MAGNET_NOTE = N_("Some releases have no .torrent file, only a magnet link.")
@@ -81,8 +88,8 @@ _FIELD_ROWS = (
     N_("Destination folder (optional)"),
 )
 
-# Saves the form, then tests the connection: e.g. "qBittorrent v5.0.2". Raises RemoteError, or
-# ValidationError when the form doesn't validate.
+# Tests the connection (the welcome's saves the form first): e.g. "qBittorrent v5.0.2". Raises
+# RemoteError, or ValidationError when the form doesn't validate.
 TestRun = Callable[[], Awaitable[str]]
 
 
@@ -163,13 +170,44 @@ class ResultLook(NamedTuple):
     color: theme.Color
 
 
-def result_look(description: str | None = None, error: str | None = None) -> ResultLook:
-    """The result line: running (neither given), passed (`description`) or failed (`error`)."""
+def result_look(
+    description: str | None = None, error: str | None = None, *, running: str = TESTING_TEXT
+) -> ResultLook:
+    """The result line: running (neither given; `running` its words), passed (`description`)
+    or failed (`error`)."""
     if error is not None:
         return ResultLook(f"✗ {error}", theme.DANGER)
     if description is not None:
         return ResultLook(f"✓ {description}", theme.SUCCESS)
-    return ResultLook(t(TESTING_TEXT), theme.TEXT_MUTED)
+    return ResultLook(t(running), theme.TEXT_MUTED)
+
+
+def _remote_url(settings: Settings) -> str:
+    return settings.remote_url
+
+
+def _remote_username(settings: Settings) -> str:
+    return settings.remote_username
+
+
+def _remote_password(settings: Settings) -> str:
+    return settings.remote_password.get_secret_value()
+
+
+def _remote_destination(settings: Settings) -> str:
+    return settings.remote_destination
+
+
+def _movie_remote_destination(settings: Settings) -> str:
+    return settings.movie_remote_destination
+
+
+def _read_stored(read: Callable[[Settings], str], stored: Callable[[], Settings]) -> str:
+    return read(stored())
+
+
+def _change_one(on_change: Callable[[dict[str, Any]], object], name: str, text: str) -> object:
+    return on_change({name: text})  # the store's task, when the host gives one
 
 
 def _alive(widget: tk.Misc) -> bool:
@@ -194,10 +232,16 @@ class RemoteProgramForm(ctk.CTkFrame):
         field_width: int,
         describe: Callable[[ValidationError], str] = describe_error,
         films: bool = False,
+        stored: Callable[[], Settings] | None = None,
+        on_change: Callable[[dict[str, Any]], object] | None = None,
+        testing_text: str = TESTING_TEXT,
     ) -> None:
         super().__init__(master, fg_color="transparent")
         self._run_test = run_test
         self._describe = describe
+        self._on_change = on_change
+        self._testing_text = testing_text
+        self._texts: list[tuple[TextCommit, Callable[[Settings], str]]] = []
         self._test_task: asyncio.Task[None] | None = None
         scaling = ctk.ScalingTracker.get_widget_scaling(self)
         # Plain Tk grid options are not DPI-scaled by CTk.
@@ -258,10 +302,13 @@ class RemoteProgramForm(ctk.CTkFrame):
             fg_color=theme.ACCENT,
             hover_color=theme.ACCENT_HOVER,
             border_color=theme.EDGE,
+            command=self._verify_clicked,
         )
         if settings.remote_verify_tls:
             self._verify.select()
         self._verify.grid(row=row, column=1, sticky="w", pady=self._pady(row))
+        if stored is not None and on_change is not None:
+            self._watch(stored, on_change)
 
         self._test_button = primary_button(
             self, t("Test connection"), self._start_test, width=TEST_BUTTON_WIDTH
@@ -269,6 +316,52 @@ class RemoteProgramForm(ctk.CTkFrame):
         self._test_button.grid(row=row + 1, column=1, sticky="w", pady=self._pady(row + 1))
         self._result = text_label(self, "", size=SMALL_SIZE, wraplength=field_width)
         self._result.grid(row=row + 2, column=1, sticky="w", pady=(6, 0))
+
+    def _watch(
+        self, stored: Callable[[], Settings], on_change: Callable[[dict[str, Any]], object]
+    ) -> None:
+        """Each text field stores its own setting (Settings)."""
+        fields: list[tuple[ctk.CTkEntry | None, str, Callable[[Settings], str], bool]] = [
+            (self._address, "remote_url", _remote_url, True),
+            (self._username, "remote_username", _remote_username, True),
+            (self._password, "remote_password", _remote_password, False),
+            (self._destination, "remote_destination", _remote_destination, True),
+            (self._films, "movie_remote_destination", _movie_remote_destination, True),
+        ]
+        for entry, name, read, strip in fields:
+            if entry is None:
+                continue
+            field = text_commit(
+                entry,
+                stored=functools.partial(_read_stored, read, stored),
+                commit=functools.partial(_change_one, on_change, name),
+                strip=strip,
+            )
+            self._texts.append((field, read))
+
+    @property
+    def text_fields(self) -> list[TextCommit]:
+        """Its text fields' commits (Settings only)."""
+        return [field for field, _read in self._texts]
+
+    def show_stored(self, settings: Settings) -> None:
+        """Show values stored elsewhere (qBittorrent's setup, an Undo): the program and the
+        tick, and each text field unless it is being edited."""
+        name = program_name(settings.remote_kind)
+        if self._program.get() != name:
+            self._program.set(name)
+            self._show_hints(name)
+        if bool(self._verify.get()) != settings.remote_verify_tls:
+            if settings.remote_verify_tls:
+                self._verify.select()
+            else:
+                self._verify.deselect()
+        for field, read in self._texts:
+            field.show([read(settings)])
+
+    def _verify_clicked(self) -> None:
+        if self._on_change is not None:
+            self._on_change({"remote_verify_tls": bool(self._verify.get())})
 
     # -- values --------------------------------------------------------------------------------
 
@@ -309,7 +402,7 @@ class RemoteProgramForm(ctk.CTkFrame):
         setup pointed AirGrabber at its Web UI)."""
         name = program_name(settings.remote_kind)
         self._program.set(name)
-        self._program_changed(name)
+        self._show_hints(name)
         entries = [
             (self._address, settings.remote_url),
             (self._username, settings.remote_username),
@@ -333,7 +426,7 @@ class RemoteProgramForm(ctk.CTkFrame):
     def _start_test(self) -> None:
         if self._test_task is not None and not self._test_task.done():
             return
-        self.show_result(result_look())
+        self.show_result(result_look(running=self._testing_text))
         self._test_button.configure(state="disabled")
         self._test_task = spawn(self._test(), name="remote-program-test")
 
@@ -353,6 +446,11 @@ class RemoteProgramForm(ctk.CTkFrame):
     # -- widgets -------------------------------------------------------------------------------
 
     def _program_changed(self, name: str) -> None:
+        self._show_hints(name)
+        if self._on_change is not None:
+            self._on_change({"remote_kind": kind_from_name(name)})
+
+    def _show_hints(self, name: str) -> None:
         kind = kind_from_name(name)
         self._address.configure(placeholder_text=ADDRESS_HINTS[kind])
         self._destination.configure(placeholder_text=t(DESTINATION_HINTS[kind]))

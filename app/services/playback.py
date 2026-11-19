@@ -86,19 +86,19 @@ Player = Literal["vlc", "default"]
 FINDING_TEXT = N_("▶ Finding {name}…")
 PLAYING_VLC_TEXT = N_("▶ Playing {name} in VLC.")
 PLAYING_DEFAULT_TEXT = N_("▶ Playing {name} in your video player.")
-NOT_CONNECTED_TEXT = N_("Connect Plex in Settings → Library first.")
+NOT_CONNECTED_TEXT = N_("Connect Plex in Settings → Plex & library first.")
 PLEX_AWAY_TEXT = N_("Plex didn't answer, so try ▶ Play again in a moment.")
 NO_FILE_TEXT = N_("Plex doesn't say which file {name} is.")
 FORGE_OFF_TEXT = N_(
     "MediaForge is off, so AirGrabber doesn't know your Series and Movies folders."
 )
-NO_SERIES_TEXT = N_("Choose your Series folder in Settings › Auto-rename, so ▶ Play can find {name}.")
-NO_MOVIES_TEXT = N_("Choose your Movies folder in Settings › Auto-rename, so ▶ Play can find {name}.")
+NO_SERIES_TEXT = N_("Choose your Series folder in Settings › Folders, so ▶ Play can find {name}.")
+NO_MOVIES_TEXT = N_("Choose your Movies folder in Settings › Folders, so ▶ Play can find {name}.")
 NOT_IN_SERIES_TEXT = N_(
-    "{name} isn't in your Series folder from this PC: check the Series folder in Settings › Auto-rename."
+    "{name} isn't in your Series folder from this PC: check the Series folder in Settings › Folders."
 )
 NOT_IN_MOVIES_TEXT = N_(
-    "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Auto-rename."
+    "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Folders."
 )
 NO_PLAYER_TEXT = N_("AirGrabber couldn't start a video player for {name}.")
 

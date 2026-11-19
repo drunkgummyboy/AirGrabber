@@ -1,9 +1,11 @@
 """The layout of the Settings window (app/ui/settings_dialog.py).
 
-A sidebar of sections (a small group label above each part of the list; `fill_sidebar`,
-`SidebarItem`; it scrolls on a screen too short for all of them), a 1-pixel line, and one scrolling page per section (`SettingsPage`: a heading,
-its muted line, then boxes, `SettingsBox`, one below the other); `build_layout` makes that
-skeleton in a window, `fit_window` sizes the window (pages scroll on a short screen).
+A sidebar of pages (a small group label above each part of the list; `fill_sidebar`,
+`SidebarItem`; it scrolls on a screen too short for all of them), a 1-pixel line, and one
+scrolling page each (`SettingsPage`: a heading, its muted line, then boxes, `SettingsBox`, one
+below the other; a `PageSlot` keeps a place among them for boxes made later, MediaForge's);
+`build_layout` makes that skeleton in a window, `fit_window` sizes the window (pages scroll on a
+short screen).
 
 It paints with AirGrabber's tokens, read when a widget is made, never copied at import
 (theme.apply_accent sets them once at startup).
@@ -13,12 +15,12 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
 import customtkinter as ctk
 
-from app.i18n import t
+from app.i18n import N_, t
 from app.ui import theme
 from app.ui.borderless import CLOSE_GAP, CLOSE_ROOM
 from app.ui.dialog_kit import DETAIL_SIZE, SMALL_SIZE, FitScroll, text_label
@@ -31,9 +33,10 @@ SIDEBAR_PAD = 12
 ITEM_HEIGHT = 36
 ICON_WIDTH = 30
 ITEM_PAD = (8, 4, 10)  # left of the icon, between icon and name, right of the name
-# The page column's content: the boxes' outer width. With the sidebar a dialog stays about
-# 880 wide, so it fits a 1366 x 768 screen at 150 % (910 wide).
-PAGE_WIDTH = 580
+# The page column's content: the boxes' outer width. With the sidebar a dialog is about 1060
+# wide (the owner's wish for a wider window, 2026-11-19), so it fits a 1920 x 1080 screen at
+# 175 % (1097 wide); it was 580 (880, for 1366 x 768 at 150 %).
+PAGE_WIDTH = 760
 PAGE_PAD_LEFT = 22
 PAGE_PAD_RIGHT = 8  # the scrollbar has its own inset
 # The page (and the sidebar, level with it) starts under the close button (no title bar,
@@ -51,6 +54,7 @@ FIRST_BOX_GAP = 18  # under a page's muted line
 TEXT_SIZE = SMALL_SIZE + 1  # a box's explanation
 BOX_INNER = PAGE_WIDTH - 2 * (BOX_PAD_X + 1)  # inside a box's border and padding
 CONTROL_GAP = 12  # between a box's explanation and its controls
+REFUSAL_ROW = 999  # a box's refusal line: under everything in it (Tk allows rows < 10000)
 
 
 def dialog_height(wanted: int, screen_height: int, *, reserve: int = SCREEN_RESERVE) -> int:
@@ -64,7 +68,8 @@ def dialog_height(wanted: int, screen_height: int, *, reserve: int = SCREEN_RESE
 
 class SettingsBox:
     """A rounded block of related settings: a bold name, a short muted explanation, then the
-    controls (`add`, one below the other)."""
+    controls (`add`, one below the other); at its foot, in red, why its last change wasn't
+    stored (`refuse`, app/ui/settings_commit.py)."""
 
     def __init__(
         self,
@@ -84,7 +89,11 @@ class SettingsBox:
         self.body.grid_columnconfigure(0, weight=1)
         self._next_row = 0
         self._labels: list[tuple[ctk.CTkLabel, theme.Color]] = []  # greyed by `set_enabled`
+        self._refusal: ctk.CTkLabel | None = None  # why a change wasn't stored (`refuse`)
+        self._refusals: dict[Hashable, str] = {}  # per control (its source), oldest first
         self.heading: ctk.CTkLabel | None = None  # its bold name, when it has one
+        self.title = title or ""
+        self.search_title = self.title  # what Settings' search names it by (`SettingsPage.box`)
         if title is not None:
             heading = self.heading = ctk.CTkLabel(
                 self.body,
@@ -105,6 +114,33 @@ class SettingsBox:
         the caller)."""
         for label, color in self._labels:
             label.configure(text_color=color if enabled else theme.TEXT_FAINT)
+
+    @property
+    def refusal(self) -> str:
+        """Why the box's changes weren't stored ("" when they were), one line per control."""
+        label = self._refusal
+        return str(label.cget("text")) if label is not None and label.winfo_manager() else ""
+
+    def refuse(self, text: str | None, *, source: Hashable = None) -> None:
+        """Say in red, at the box's foot, why a change of `source` (its control: the fields it
+        stores) wasn't stored; None takes that one away. Another control's refusal stays: its
+        text is still refused."""
+        if text:
+            self._refusals.pop(source, None)
+            self._refusals[source] = text  # the newest last
+        else:
+            self._refusals.pop(source, None)
+        shown = "\n".join(self._refusals.values())
+        if not shown:
+            if self._refusal is not None:
+                self._refusal.grid_remove()
+            return
+        if self._refusal is None:
+            self._refusal = text_label(
+                self.body, "", size=TEXT_SIZE, color=theme.DANGER, wraplength=BOX_INNER
+            )
+        self._refusal.configure(text=shown)
+        self._refusal.grid(row=REFUSAL_ROW, column=0, sticky="w", pady=(CONTROL_GAP - 4, 0))
 
     def text(self, text: str, *, indent: int = 0) -> ctk.CTkLabel:
         """A muted explanation line in this box (not placed yet)."""
@@ -134,10 +170,23 @@ class SettingsBox:
         self._next_row += 1
         return row
 
+    def subheading(self, text: str, *, gap: int = CONTROL_GAP + 4) -> ctk.CTkLabel:
+        """A small bold name inside the box, above a group of its controls (placed)."""
+        label = ctk.CTkLabel(
+            self.body,
+            text=text,
+            font=theme.font(DETAIL_SIZE, bold=True),
+            text_color=theme.TEXT,
+            anchor="w",
+        )
+        self.add(label, gap=gap, sticky="w")
+        self._labels.append((label, theme.TEXT))
+        return label
+
 
 class SettingsPage:
-    """One section's page: a heading, its muted line, then boxes (`box`) and other blocks
-    (`add`), one below the other."""
+    """One page: a heading, its muted line, then boxes (`box`) and other blocks (`add`), one
+    below the other; `slot()` keeps a place for blocks made later."""
 
     def __init__(self, master: Any, title: str, note: str) -> None:
         self.frame = ctk.CTkFrame(master, fg_color="transparent")
@@ -152,29 +201,157 @@ class SettingsPage:
         text_label(
             self.frame, note, size=DETAIL_SIZE, color=theme.TEXT_MUTED, wraplength=PAGE_WIDTH
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._first_row = 2
+        self._first_gap = FIRST_BOX_GAP  # above the first block
         self._next_row = 2
         self.boxes: list[tuple[str, Any]] = []  # (shown title, frame): Settings' search
+        self.settings_boxes: list[SettingsBox] = []  # the same boxes (`find_box`)
 
-    def box(self, title: str | None = None, text: str | None = None) -> SettingsBox:
+    def box(
+        self,
+        title: str | None = None,
+        text: str | None = None,
+        *,
+        search_title: str | None = None,
+    ) -> SettingsBox:
+        """A box on the page. `search_title`: what Settings' search names a box without a bold
+        name by (its first control's text, translated); a box with neither isn't one to find
+        (a "Getting MediaForge ready…" box)."""
         box = SettingsBox(self.frame, title, text)
+        box.search_title = title or search_title or ""
         self.add(box.frame)
-        self.boxes.append((title or "", box.frame))
+        self.boxes.append((box.search_title, box.frame))
+        self.settings_boxes.append(box)
         return box
+
+    def find_box(self, title: str) -> SettingsBox | None:
+        """The box with this (shown, or search) title on the page."""
+        return next(
+            (box for box in self.settings_boxes if title in (box.title, box.search_title)), None
+        )
 
     def add(self, widget: Any, *, gap: int | None = None) -> None:
         if gap is None:
-            gap = FIRST_BOX_GAP if self._next_row == 2 else BOX_GAP
+            gap = self._first_gap if self._next_row == self._first_row else BOX_GAP
         widget.grid(row=self._next_row, column=0, sticky="ew", pady=(gap, 0))
         self._next_row += 1
 
-    def order(self, frames: Sequence[Any]) -> None:
-        """Put these placed blocks in this order, on the rows they take now (each row keeps its
-        gap): Settings → Library's boxes swap places when the library's source changes."""
-        rows = sorted(int(frame.grid_info()["row"]) for frame in frames)
-        gaps = {row: FIRST_BOX_GAP if row == 2 else BOX_GAP for row in rows}
-        for frame, row in zip(frames, rows, strict=True):
-            if int(frame.grid_info()["row"]) != row:
-                frame.grid_configure(row=row, pady=(gaps[row], 0))
+    def slot(self) -> PageSlot:
+        """A place on this page, after what is on it now, for blocks made later (a MediaForge
+        part, at the page's first visit): they come between the blocks around it."""
+        row = self._next_row
+        self._next_row += 1
+        return PageSlot(self, row, self._first_gap if row == self._first_row else BOX_GAP)
+
+
+class PageSlot(SettingsPage):
+    """A place on a page (`SettingsPage.slot`), used as a page of its own: its boxes and blocks
+    go one below the other there, and Settings' search finds them on the page. It shows only
+    once something is put in it (an empty frame would keep its default size)."""
+
+    def __init__(self, page: SettingsPage, row: int, gap: int) -> None:
+        self.frame = ctk.CTkFrame(page.frame, fg_color="transparent")
+        self.frame.grid_columnconfigure(0, weight=1)
+        self._row = row
+        self._first_row = 0
+        self._first_gap = gap
+        self._next_row = 0
+        self.boxes = page.boxes  # the page's own lists
+        self.settings_boxes = page.settings_boxes
+
+    def add(self, widget: Any, *, gap: int | None = None) -> None:
+        if not self.frame.winfo_manager():
+            self.frame.grid(row=self._row, column=0, sticky="ew")
+        super().add(widget, gap=gap)
+
+
+# -- folds and links -------------------------------------------------------------------------------
+
+SHOW_TEXT = N_("▸ Show")
+HIDE_TEXT = N_("▾ Hide")
+
+
+class Fold:
+    """Something a box shows only once asked (closed at first): a toggle (`button`, placed by
+    the caller: "▸ Show" / "▾ Hide", or its own `text` such as "? Codes") and the `body` it
+    shows and hides. The body is placed by the caller first (its grid kept while hidden)."""
+
+    def __init__(self, master: Any, body: Any, *, text: str | None = None) -> None:
+        self.body = body
+        self._text = text
+        self.opened = False
+        self.button = ctk.CTkButton(
+            master,
+            text="",
+            width=0,
+            height=26,
+            corner_radius=6,
+            font=theme.font(TEXT_SIZE, bold=True),
+            fg_color="transparent",
+            hover_color=theme.CHIP,
+            text_color=theme.LINK,
+            command=self.toggle,
+        )
+        self._show()
+
+    def toggle(self) -> None:
+        self.set_open(not self.opened)
+
+    def set_open(self, opened: bool) -> None:
+        self.opened = opened
+        self._show()
+
+    def _show(self) -> None:
+        if self.opened:
+            self.body.grid()
+        else:
+            self.body.grid_remove()
+        text = self._text or t(HIDE_TEXT if self.opened else SHOW_TEXT)
+        self.button.configure(text=text)
+
+
+def open_page(widget: tk.Misc, page: str) -> None:
+    """Show `page` (a page key of app/ui/settings_pages_registry.py) in the Settings window
+    `widget` is in; nothing outside one."""
+    try:
+        window = widget.winfo_toplevel()
+    except tk.TclError:
+        return
+    show: Callable[[str], None] | None = getattr(window, "show_section", None)
+    if show is not None:
+        show(page)
+
+
+class PageLink(ctk.CTkLabel):
+    """A pointer inside Settings ("⚠ Choose your Series folder under Folders.") as a link: a
+    click shows `page`, where it is fixed (spec §6). Placed by the caller."""
+
+    def __init__(
+        self,
+        master: Any,
+        text: str,
+        page: str,
+        *,
+        color: theme.Color | None = None,
+        size: int = TEXT_SIZE,
+        wraplength: int = BOX_INNER,
+    ) -> None:
+        """`color`: the text's (the link colour without it; a warning's amber)."""
+        super().__init__(
+            master,
+            text=text,
+            font=theme.font(size, underline=True),
+            text_color=color if color is not None else theme.LINK,
+            cursor="hand2",
+            anchor="w",
+            justify="left",
+            wraplength=wraplength,
+        )
+        self.page = page
+        self.bind("<Button-1>", lambda _event: self.click(), add="+")
+
+    def click(self) -> None:
+        open_page(self, self.page)
 
 
 # -- the sidebar -----------------------------------------------------------------------------------
@@ -258,8 +435,8 @@ class SidebarItem(ctk.CTkFrame):
 
 
 def sidebar_width(sections: Iterable[str]) -> int:
-    """The sidebar's width (logical): room for the longest section name (untranslated, shown
-    through t()) in bold (the selected one), so the pages don't shift when another section is
+    """The sidebar's width (logical): room for the longest page name (untranslated, shown
+    through t()) in bold (the selected one), so the pages don't shift when another page is
     chosen."""
     bold = theme.font(DETAIL_SIZE, bold=True)
     widest = max((int(bold.measure(t(section))) for section in sections), default=0)
@@ -269,24 +446,26 @@ def sidebar_width(sections: Iterable[str]) -> int:
 
 def fill_sidebar(
     sidebar: Any,
-    groups: Sequence[tuple[str, Sequence[str]]],
+    groups: Sequence[tuple[str | None, Sequence[str]]],
     icons: Mapping[str, str],
     on_click: Callable[[str], None],
 ) -> dict[str, SidebarItem]:
-    """A group label (upper case) above each group's sections, in order; groups without a
-    section are left out. Names are untranslated (shown through t())."""
+    """A group label (upper case) above each group's pages, in order (a group of None has
+    none: Overview, at the top); groups without a page are left out. Names are untranslated
+    (shown through t())."""
     items: dict[str, SidebarItem] = {}
     first = True
     for group, sections in groups:
         if not sections:
             continue
-        ctk.CTkLabel(
-            sidebar,
-            text=t(group).upper(),
-            font=theme.font(12, bold=True),
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-        ).pack(fill="x", padx=(10, 0), pady=(0 if first else 14, 4))
+        if group is not None:
+            ctk.CTkLabel(
+                sidebar,
+                text=t(group).upper(),
+                font=theme.font(12, bold=True),
+                text_color=theme.TEXT_MUTED,
+                anchor="w",
+            ).pack(fill="x", padx=(10, 0), pady=(0 if first else 14, 4))
         first = False
         for section in sections:
             item = SidebarItem(sidebar, section, icons[section], on_click)

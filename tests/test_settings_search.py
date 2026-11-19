@@ -8,7 +8,7 @@ from typing import Any
 
 import customtkinter as ctk
 
-from app.ui.settings_dialog import SECTION_ADVANCED, SECTION_LOOKS
+from app.ui.settings_pages_registry import PAGE_LOOKS, PAGE_QUALITY
 from app.ui.settings_search import Match, Place, places, result_text, search
 from tests.test_settings_dialog import DialogCase
 
@@ -56,17 +56,17 @@ class SettingsWindowSearchTests(DialogCase):
         box.entry.insert(0, "skip releases")
         box.refresh()
         self.assertTrue(box.matches)
-        self.assertEqual(box.matches[0].section, SECTION_ADVANCED)
+        self.assertEqual(box.matches[0].section, PAGE_QUALITY)
         box._pick_first()
         await asyncio.sleep(0.05)
-        self.assertEqual(dialog.section, SECTION_ADVANCED)
+        self.assertEqual(dialog.section, PAGE_QUALITY)
 
     async def test_a_page_title_is_found_too_and_escape_clears(self) -> None:
         dialog, _settings = self.dialog()
         box: Any = dialog.search_box
         box.entry.insert(0, "looks")
         box.refresh()
-        self.assertIn(SECTION_LOOKS, [m.section for m in box.matches])
+        self.assertIn(PAGE_LOOKS, [m.section for m in box.matches])
         box._clear()
         self.assertEqual(box.matches, [])
         self.assertEqual(box.entry.get(), "")

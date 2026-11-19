@@ -108,7 +108,7 @@ EMPTY_TITLE = N_("No downloads yet")
 EMPTY_TEXT = N_("Episodes and films you download show up here for 30 days.")
 PROGRESS_HINT = N_(
     "Progress shows when AirGrabber can reach your torrent program — set it up in "
-    "Settings → Where downloads go"
+    "Settings → Torrent program"
 )
 CHECKING_TEXT = N_("Checking the torrent program…")
 CLEAR_TEXT = N_("✓ Clear finished")
@@ -153,7 +153,7 @@ BLOCK_TEXT = N_("🚫 Wrong or fake? Block {group}…")
 BLOCK_TITLE = N_("Block {group}?")
 BLOCK_QUESTION = N_(
     "AirGrabber never shows or picks releases from {group} again. You can undo this in "
-    "Settings → Advanced."
+    "Settings → Quality & sources."
 )
 BLOCK_BUTTON = N_("Block")
 CLEAR_TITLE = N_("Clear finished downloads?")
@@ -166,7 +166,7 @@ CLEAR_MORE = N_(
     "where they are."
 )
 CLEAR_BUTTON = N_("Clear {n}")
-NO_FOLDER_TIP = N_("Choose where finished downloads end up first (Settings → Where downloads go)")
+NO_FOLDER_TIP = N_("Choose where finished downloads end up first (Settings → Folders)")
 NOT_FOUND_TIP = N_("Not found in the folder where finished downloads end up")
 UNREACHABLE_TIP = N_("The folder where finished downloads end up can't be reached")
 NO_SHOW_TIP = N_("AirGrabber doesn't know this show any more")

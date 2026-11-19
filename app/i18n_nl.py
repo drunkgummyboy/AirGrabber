@@ -123,26 +123,12 @@ NL: dict[str, str] = {
         "{shows} gevolgde series · {episodes} afleveringen bewaard · {synced}",
     "Syncing library… {done}/{total}": "Bibliotheek bijwerken… {done}/{total}",
     # app/ui/settings_dialog.py
-    "Where downloads go": "Waar downloads naartoe gaan",
     "Quality": "Kwaliteit",
     "Automatic": "Automatisch",
-    "Movie & show info": "Film- en serie-info",
     "Looks": "Uiterlijk",
-    "Updates": "Updates",
-    "Advanced": "Geavanceerd",
     "Downloading": "Downloaden",
     "App": "App",
     "What happens when you click Download.": "Wat er gebeurt als je op Downloaden klikt.",
-    "Which release AirGrabber picks when you click Download, and for automatic downloads.":
-        "Welke release AirGrabber kiest als je op Downloaden klikt, en bij automatische downloads.",
-    "What AirGrabber does on its own, without you clicking anything.":
-        "Wat AirGrabber zelf doet, zonder dat je ergens op klikt.",
-    "The Movies and Discover pages get their lists, posters and release dates from TMDB, a free film database.":
-        "De pagina's Films en Ontdekken halen hun lijsten, posters en releasedata bij TMDB, een gratis filmdatabank.",
-    "How AirGrabber's pages look.": "Hoe de pagina's van AirGrabber eruitzien.",
-    "Getting new versions of AirGrabber.": "Nieuwe versies van AirGrabber krijgen.",
-    "Where AirGrabber searches, and which releases it skips. Most people never need to change these.":
-        "Waar AirGrabber zoekt en welke releases het overslaat. De meeste mensen hoeven hier nooit iets aan te veranderen.",
     "Open in my torrent program on this PC": "Openen in mijn torrentprogramma op deze pc",
     "Each download opens in your torrent program by itself. Best for most people.":
         "Elke download opent vanzelf in je torrentprogramma. Het beste voor de meeste mensen.",
@@ -164,18 +150,13 @@ NL: dict[str, str] = {
     "Keep running in the tray when I close the window":
         "Blijf actief in het systeemvak als ik het venster sluit",
     "Start AirGrabber when Windows starts": "AirGrabber starten als Windows opstart",
-    "New shows": "Nieuwe series",
-    "You can still change this for each show.": "Je kunt dit nog per serie aanpassen.",
     "Download new episodes for shows I start following":
         "Nieuwe afleveringen downloaden van series die ik ga volgen",
-    "New films on your watchlist": "Nieuwe films op je kijklijst",
-    "You can still change this for each film.": "Je kunt dit nog per film aanpassen.",
     "Download films I add to my watchlist when they're out":
         "Films die ik op mijn kijklijst zet downloaden zodra ze uit zijn",
     "TMDB key": "TMDB-sleutel",
     "A free code from themoviedb.org that lets AirGrabber ask TMDB for this information. Without it, the Movies and Discover pages stay empty. Your shows and the Calendar work without it.":
         "Een gratis code van themoviedb.org waarmee AirGrabber deze informatie aan TMDB kan vragen. Zonder sleutel blijven de pagina's Films en Ontdekken leeg. Je series en de Kalender werken ook zonder.",
-    "Where this information comes from": "Waar deze informatie vandaan komt",
     "Show and film information and pictures come from TVmaze and TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.":
         "Informatie en afbeeldingen van series en films komen van TVmaze en TMDB. Dit product gebruikt de TMDB API, maar wordt niet door TMDB ondersteund of gecertificeerd.",
     "How do I get a free key?": "Hoe krijg ik een gratis sleutel?",
@@ -185,7 +166,6 @@ NL: dict[str, str] = {
     "Weeks": "Weken",
     "Rolling week": "Doorlopende week",
     "Week starts on": "Week begint op",
-    "The first day of each week on the Calendar.": "De eerste dag van elke week in de Kalender.",
     "Theme": "Thema",
     "Light or dark. Follow Windows uses the same look as your other Windows apps.":
         "Licht of donker. Zoals Windows gebruikt hetzelfde uiterlijk als je andere Windows-apps.",
@@ -198,7 +178,7 @@ NL: dict[str, str] = {
     "The colour of buttons, chosen items and links.":
         "De kleur van knoppen, gekozen onderdelen en links.",
     "Applies after a restart": "Geldt na een herstart",
-    "Info window layout": "Indeling infovenster",
+    "Info window": "Infovenster",
     "Where a film's or series' info window shows its releases.":
         "Waar het infovenster van een film of serie de releases toont.",
     "Side by side": "Naast elkaar",
@@ -208,19 +188,15 @@ NL: dict[str, str] = {
         "Spotlight wisselt vanzelf naar de volgende titel",
     "Look, download quality, card size and language, each with one click.":
         "Uiterlijk, downloadkwaliteit, kaartgrootte en taal, elk met één klik.",
-    "Automatic updates": "Automatische updates",
     "New versions download in the background and are installed when AirGrabber closes.":
         "Nieuwe versies worden op de achtergrond gedownload en geïnstalleerd als AirGrabber sluit.",
     "Install updates automatically": "Updates automatisch installeren",
-    "Check whether a newer version is out.": "Kijk of er een nieuwere versie is.",
-    "Built-in sites": "Ingebouwde sites",
     "Websites AirGrabber searches by itself.": "Websites waarop AirGrabber zelf zoekt.",
     "Skip releases with these words": "Releases met deze woorden overslaan",
     "Separate with commas, for example: cam, telesync":
         "Scheid met komma's, bijvoorbeeld: cam, telesync",
     "Prefer releases from": "Liefst releases van",
-    "Release group names, separated with commas":
-        "Namen van releasegroepen, gescheiden door komma's",
+    "Release groups whose releases come first.": "Releasegroepen waarvan de releases voorrang krijgen.",
     "Full HD (1080p)": "Full HD (1080p)",
     "HD (720p)": "HD (720p)",
     "4K (2160p)": "4K (2160p)",
@@ -269,6 +245,7 @@ NL: dict[str, str] = {
     "API key": "API-sleutel",
     "Test connection": "Verbinding testen",
     "Saving and testing…": "Opslaan en testen…",
+    "Testing…": "Testen…",
     "Checking GitHub…": "GitHub nakijken…",
     "✓ You have the latest version.": "✓ Je hebt de nieuwste versie.",
     "{version} is on GitHub. This development copy is not updated in place.":
@@ -276,11 +253,9 @@ NL: dict[str, str] = {
     "Version {version} is available. AirGrabber restarts to finish.":
         "Versie {version} is beschikbaar. AirGrabber herstart om af te ronden.",
     "Update to {version}": "Bijwerken naar {version}",
-    "Where finished downloads end up": "Waar voltooide downloads terechtkomen",
+    "Finished downloads": "Voltooide downloads",
     "Your torrent program's download folder. MediaForge watches it, and the Downloads page looks there for free space and your files.":
         "De downloadmap van je torrentprogramma. MediaForge houdt hem in de gaten, en de pagina Downloads kijkt er voor vrije ruimte en je bestanden.",
-    "Choose where finished downloads end up first (Settings → Where downloads go)":
-        "Kies eerst waar voltooide downloads terechtkomen (Instellingen → Waar downloads naartoe gaan)",
     "User name": "Gebruikersnaam",
     "Password": "Wachtwoord",
     # app/ui/remote_program_form.py
@@ -956,8 +931,6 @@ NL: dict[str, str] = {
     "No downloads yet": "Nog geen downloads",
     "Episodes and films you download show up here for 30 days.":
         "Afleveringen en films die je downloadt, staan hier 30 dagen.",
-    "Progress shows when AirGrabber can reach your torrent program — set it up in Settings → Where downloads go":
-        "De voortgang verschijnt als AirGrabber je torrentprogramma kan bereiken — stel het in bij Instellingen → Waar downloads naartoe gaan",
     "Checking the torrent program…": "Even kijken bij het torrentprogramma…",
     "Downloading {percent} %": "Downloaden {percent} %",
     "under a minute left": "nog minder dan een minuut",
@@ -1039,10 +1012,6 @@ NL: dict[str, str] = {
     "a group that worked for you before": "een groep die eerder goed werkte",
     "🚫 Wrong or fake? Block {group}…": "🚫 Fout of nep? {group} blokkeren…",
     "Block {group}?": "{group} blokkeren?",
-    "AirGrabber never shows or picks releases from {group} again. You can undo this in "
-    "Settings → Advanced.":
-        "AirGrabber toont of kiest nooit meer releases van {group}. Je kunt dit terugdraaien in "
-        "Instellingen → Geavanceerd.",
     "Block": "Blokkeren",
     "Never use releases from": "Nooit releases gebruiken van",
     "Swap a stuck download after": "Vervang een vastgelopen download na",
@@ -1065,8 +1034,6 @@ NL: dict[str, str] = {
     "Couldn't load more of {title} right now.": "Meer van {title} kon nu niet geladen worden.",
     "Continue watching": "Verder kijken",
     "Nothing from Plex yet": "Nog niets uit Plex",
-    "AirGrabber reads Plex every half hour; Settings → Library → Check now reads it at once.":
-        "AirGrabber leest Plex elk half uur; Instellingen → Bibliotheek → Nu controleren leest het meteen.",
     "Nothing here with this search or filter.": "Niets gevonden met deze zoekopdracht of dit filter.",
     "Not followed": "Niet gevolgd",
     "With gaps": "Met gaten",
@@ -1109,15 +1076,12 @@ NL: dict[str, str] = {
     "{n} on their way": "{n} onderweg",
     "{title} stopped moving: AirGrabber is fetching another release":
         "{title} schoot niet meer op: AirGrabber haalt een andere release",
-    "Release group names, separated with commas. \"Wrong or fake?\" in a download's ⋯ menu adds "
-    "one.":
-        "Namen van releasegroepen, gescheiden door komma's. \"Fout of nep?\" in het ⋯-menu van "
+    "Release groups never shown or used. \"Wrong or fake?\" in a download's ⋯ menu adds one.":
+        "Releasegroepen die nooit getoond of gebruikt worden. \"Fout of nep?\" in het ⋯-menu van "
         "een download voegt er een toe.",
     "Learned from the downloads you kept: {groups}": "Geleerd uit de downloads die je hield: {groups}",
     "a pack with this episode": "een bundel met deze aflevering",
     # app/services/downloads.py
-    "No torrent program is set up on this PC. Install one, such as qBittorrent, or choose another option under \"Where downloads go\" in Settings.":
-        "Er is geen torrentprogramma ingesteld op deze pc. Installeer er een, zoals qBittorrent, of kies een andere optie onder \"Waar downloads naartoe gaan\" in Instellingen.",
     "No .torrent file is available for this release, and no torrent program on a NAS or another computer is set up in Settings to send its magnet link to.":
         "Er is geen .torrent-bestand voor deze release, en er is in Instellingen geen torrentprogramma op een NAS of andere computer ingesteld om de magnetlink naartoe te sturen.",
     "No .torrent file or magnet link is available for this release.":
@@ -1392,14 +1356,72 @@ NL: dict[str, str] = {
         "Kon de back-up daar niet opslaan. Kies een andere map.",
     # app/ui/plex_settings.py, app/ui/plex_connect.py and Settings' Plex page
     "Plex": "Plex",
-    "What you already have, from Plex or from your own folders, isn't missing and isn't downloaded again.":
-        "Wat je al hebt, uit Plex of uit je eigen mappen, ontbreekt niet en wordt niet opnieuw gedownload.",
     "Have a Plex server? Connect it and Plex is your library.":
         "Heb je een Plex-server? Koppel hem en Plex is je bibliotheek.",
     "Connect Plex and it becomes a shelf beside your folders.":
         "Verbind Plex en het wordt een plank naast je mappen.",
     "Connect to Plex…": "Verbinden met Plex…",
     "With and without a library": "Met en zonder bibliotheek",
+    "What does a library add?": "Wat voegt een bibliotheek toe?",
+    # app/ui/folders_page.py
+    "not counted": "niet meegeteld",
+    "Sorted files go here, but it isn't in the list: what's in it isn't counted. \"+ Add a folder\" lists it.":
+        "Gesorteerde bestanden gaan hierheen, maar de map staat niet in de lijst: wat erin staat telt "
+        "niet mee. \"+ Map toevoegen\" zet hem erbij.",
+    "Library folders": "Bibliotheekmappen",
+    "Where sorted files go": "Waar gesorteerde bestanden heen gaan",
+    # app/ui/settings_chips.py
+    "A name, or a few separated with commas": "Een naam, of een paar gescheiden door komma's",
+    # app/ui/settings_overview.py
+    "{program} on this PC, ready": "{program} op deze pc, klaar",
+    "{program} on this PC": "{program} op deze pc",
+    "On this PC: no torrent program found yet": "Op deze pc: nog geen torrentprogramma gevonden",
+    "On this PC: the torrent program needs you": "Op deze pc: het torrentprogramma heeft je nodig",
+    "A NAS or another computer, not set up yet": "Een NAS of andere computer, nog niet ingesteld",
+    ".torrent files to a folder": ".torrent-bestanden naar een map",
+    "{quality} · {sources}": "{quality} · {sources}",
+    "Series {series}, movies {movies} · {sources}": "Series {series}, films {movies} · {sources}",
+    "{sites} + Prowlarr": "{sites} + Prowlarr",
+    "No site to search": "Geen site om te doorzoeken",
+    "On for new shows and films · waits {hours}": "Aan voor nieuwe series en films · wacht {hours}",
+    "On for new shows · waits {hours}": "Aan voor nieuwe series · wacht {hours}",
+    "On for new films · waits {hours}": "Aan voor nieuwe films · wacht {hours}",
+    "Off for new shows and films": "Uit voor nieuwe series en films",
+    "Your Series and Movies folders aren't chosen yet": "Je mappen Series en Films zijn nog niet gekozen",
+    "Your Series folder isn't chosen yet": "Je map Series is nog niet gekozen",
+    "Your Movies folder isn't chosen yet": "Je map Films is nog niet gekozen",
+    "{films} · {series}": "{films} · {series}",
+    "{n} series folder": "{n} seriesmap",
+    "{n} series folders": "{n} seriesmappen",
+    "{n} film folder": "{n} filmmap",
+    "{n} film folders": "{n} filmmappen",
+    "No folders chosen yet": "Nog geen mappen gekozen",
+    "Watching · {rules}": "Bewaakt · {rules}",
+    "Paused · {rules}": "Gepauzeerd · {rules}",
+    "{n} rule on": "{n} regel aan",
+    "{n} rules on": "{n} regels aan",
+    "No language chosen": "Geen taal gekozen",
+    "{plex} · your folders too": "{plex} · en je eigen mappen",
+    "Your own folders: {films} · {series}": "Je eigen mappen: {films} · {series}",
+    "No library yet: connect Plex or count your folders": "Nog geen bibliotheek: verbind Plex of tel je mappen",
+    "TMDB key set": "TMDB-sleutel ingevuld",
+    "No TMDB key yet": "Nog geen TMDB-sleutel",
+    "OpenSubtitles account: {name}": "OpenSubtitles-account: {name}",
+    "OpenSubtitles without an account": "OpenSubtitles zonder account",
+    "Version {version} · updates by themselves": "Versie {version} · werkt zichzelf bij",
+    "Version {version} · updates when you choose": "Versie {version} · bijwerken wanneer jij wilt",
+    "On this PC: looking for the torrent program…": "Op deze pc: torrentprogramma zoeken…",
+    "qBittorrent on this PC still asks about each download":
+        "qBittorrent op deze pc vraagt nog bij elke download iets",
+    "On this PC: close qBittorrent to finish setting it up":
+        "Op deze pc: sluit qBittorrent om het instellen af te maken",
+    "Watching, but no rule is on": "Bewaakt, maar er staat geen regel aan",
+    "In the tray": "In het systeemvak",
+    "Closes fully": "Sluit helemaal af",
+    "starts with Windows": "start met Windows",
+    "doesn't start with Windows": "start niet met Windows",
+    "▸ Show": "▸ Tonen",
+    "▾ Hide": "▾ Verbergen",
     "Without a library": "Zonder bibliotheek",
     "With Plex or your folders": "Met Plex of je mappen",
     "Phone app (needs a library)": "Telefoon-app (bibliotheek nodig)",
@@ -1459,8 +1481,6 @@ NL: dict[str, str] = {
         "Plex reageerde niet. Controleer de internetverbinding en probeer het opnieuw.",
     # app/ui/backup_dialog.py
     "Save a backup": "Back-up opslaan",
-    "Your followed shows, film watchlist, download history and settings go into one file. Load it on another PC in Settings → Backup.":
-        "Je gevolgde series, je kijklijst, je downloadgeschiedenis en je instellingen komen in één bestand. Laad het op een andere pc via Instellingen → Back-up.",
     "Include keys and passwords": "Sleutels en wachtwoorden meenemen",
     "Anyone with the file can then use them. Keep it somewhere safe.":
         "Iedereen met het bestand kan ze dan gebruiken. Bewaar het op een veilige plek.",
@@ -1486,8 +1506,6 @@ NL: dict[str, str] = {
     "Your settings are now the backup's.": "Je instellingen zijn nu die van de back-up.",
     "Your downloads keep using qBittorrent on this PC.":
         "Je downloads blijven naar qBittorrent op deze pc gaan.",
-    "Where downloads go stays as it was on this PC: the backup's qBittorrent was on the other PC.":
-        "Waar downloads naartoe gaan, blijft zoals het op deze pc was: de qBittorrent uit de back-up stond op de andere pc.",
     "Check your folders in Settings: they may be different on this PC.":
         "Kijk je mappen na in Instellingen: die kunnen op deze pc anders zijn.",
     "Keys and passwords weren't in the backup. Fill in any you need in Settings.":
@@ -1512,8 +1530,6 @@ NL: dict[str, str] = {
     "{n} downloads added to the history.": "{n} downloads toegevoegd aan de geschiedenis.",
     # app/ui/settings_dialog.py (Backup)
     "Backup": "Back-up",
-    "Keep a copy of your shows, watchlist and settings, or move them to another PC.":
-        "Bewaar een kopie van je series, kijklijst en instellingen, of zet ze over naar een andere pc.",
     "One file with your followed shows, film watchlist, download history and settings. Load it on this PC or another one: you see what's in it before anything changes.":
         "Eén bestand met je gevolgde series, je kijklijst, je downloadgeschiedenis en je instellingen. Laad het op deze pc of een andere: je ziet eerst wat erin zit, voor er iets verandert.",
     "Save a backup…": "Back-up opslaan…",
@@ -1554,10 +1570,13 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
-    "Rules for your download folders": "Regels voor je downloadmappen",
-    "Settings → Auto-rename: give each folder its own rule (what it takes, how it's named, where it goes), Automatic or Manual. A new or changed rule first shows you what's already there.":
-        "Instellingen → Automatisch hernoemen: geef elke map een eigen regel (wat hij neemt, hoe het heet, waar het heen gaat), Automatisch of Handmatig. Een nieuwe of gewijzigde regel laat je eerst zien wat er al staat.",
-    "A film's download must now start with its title, so “The Beast” no longer fetches “Heart of the Beast”.": "De download van een film moet nu met zijn titel beginnen, dus “The Beast” haalt geen “Heart of the Beast” meer.",
+    "A tidier Settings window": "Een overzichtelijker Instellingen-venster",
+    "Settings is grouped by what you want to do and opens on an overview of how everything is set up. Your folders are on one page, and every change saves at once, with Undo.":
+        "Instellingen is ingedeeld naar wat je wilt doen en opent met een overzicht van hoe alles is ingesteld. Je mappen staan op één pagina, en elke wijziging wordt meteen bewaard, met Ongedaan maken.",
+    "MediaForge's settings now sit beside the matching AirGrabber ones; there's no separate group any more.":
+        "De instellingen van MediaForge staan nu naast de bijbehorende van AirGrabber; er is geen aparte groep meer.",
+    "AirGrabber always opens full size, and the Settings window is wider.":
+        "AirGrabber opent altijd op volle grootte, en het Instellingen-venster is breder.",
     "Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films.": "Bibliotheek: rustiger kop, kaarten met alleen de poster: ✓ bij series die je volgt, + om te volgen, ⬆ bij lage kwaliteit",
     "Films stay on your watchlist after they're downloaded, with the day it happened; they're never downloaded twice.": "Films blijven na het downloaden op je kijklijst, met de dag erbij; ze worden nooit twee keer gedownload.",
     "Settings → Automatic: films you add to your watchlist only download by themselves when you tick it (off at first).": "Instellingen → Automatisch: films op je kijklijst downloaden alleen vanzelf als je dat aanvinkt (eerst uit).",
@@ -1915,10 +1934,6 @@ NL: dict[str, str] = {
     "Windows may ask if AirGrabber may use your network. Choose Allow.":
         "Windows vraagt misschien of AirGrabber je netwerk mag gebruiken. Kies Toestaan.",
     "Library manager": "Bibliotheekbeheerder",
-    "Connect Plex or choose your own folders in Settings → Library first to use the phone app.":
-        "Koppel eerst Plex of kies je eigen mappen in Instellingen → Bibliotheek om de telefoon-app te gebruiken.",
-    "AirGrabber has no library yet, so connect Plex or choose your folders in AirGrabber's Settings → Library.":
-        "AirGrabber heeft nog geen bibliotheek, dus koppel Plex of kies je mappen in Instellingen → Bibliotheek van AirGrabber.",
     "AirGrabber's library is Plex now, so pull down to refresh.":
         "De bibliotheek van AirGrabber is nu Plex, dus trek omlaag om te vernieuwen.",
     "That isn't in your folders any more, so refresh the list.":
@@ -2087,20 +2102,11 @@ NL: dict[str, str] = {
     "▶ Finding {name}…": "▶ {name} zoeken…",
     "▶ Playing {name} in VLC.": "▶ {name} speelt af in VLC.",
     "▶ Playing {name} in your video player.": "▶ {name} speelt af in je videospeler.",
-    "Connect Plex in Settings → Library first.": "Koppel eerst Plex via Instellingen → Bibliotheek.",
     "Plex didn't answer, so try ▶ Play again in a moment.":
         "Plex antwoordde niet, dus probeer ▶ Afspelen zo nog eens.",
     "Plex doesn't say which file {name} is.": "Plex zegt niet welk bestand {name} is.",
     "MediaForge is off, so AirGrabber doesn't know your Series and Movies folders.":
         "MediaForge staat uit, dus AirGrabber weet niet waar je mappen Series en Films zijn.",
-    "Choose your Series folder in Settings › Auto-rename, so ▶ Play can find {name}.":
-        "Kies je map Series in Instellingen › Automatisch hernoemen, zodat ▶ Afspelen {name} kan vinden.",
-    "Choose your Movies folder in Settings › Auto-rename, so ▶ Play can find {name}.":
-        "Kies je map Films in Instellingen › Automatisch hernoemen, zodat ▶ Afspelen {name} kan vinden.",
-    "{name} isn't in your Series folder from this PC: check the Series folder in Settings › Auto-rename.":
-        "{name} staat vanaf deze pc niet in je map Series: controleer de map Series in Instellingen › Automatisch hernoemen.",
-    "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Auto-rename.":
-        "{name} staat vanaf deze pc niet in je map Films: controleer de map Films in Instellingen › Automatisch hernoemen.",
     "AirGrabber can't find {name} in your folders right now.":
         "AirGrabber kan {name} nu niet vinden in je mappen.",
     "AirGrabber couldn't start a video player for {name}.":
@@ -2162,31 +2168,38 @@ NL: dict[str, str] = {
     "Finding subtitles isn't available in this version.":
         "Ondertitels vinden kan nog niet in deze versie.",
     "The subtitles couldn't be fetched.": "De ondertitels konden niet worden opgehaald.",
-    # app/ui/folder_library_settings.py (Settings → Library: your own folders)
+    # app/ui/folders_page.py, app/ui/folder_library_settings.py and Plex & library's line
+    # (Settings → Folders, set once; your own folders)
+    "Sort into this one": "Hierin sorteren",
+    "sorted series go here": "gesorteerde series komen hier",
+    "sorted films go here": "gesorteerde films komen hier",
+    "No Series folder yet: sorted series stay where they were downloaded.":
+        "Nog geen seriemap: gesorteerde series blijven staan waar ze gedownload zijn.",
+    "No Movies folder yet: sorted films stay where they were downloaded.":
+        "Nog geen filmmap: gesorteerde films blijven staan waar ze gedownload zijn.",
+    "Where sorted files go shows once MediaForge is ready.":
+        "Waar gesorteerde bestanden heen gaan, zie je zodra MediaForge klaar is.",
+    "Count what's in them": "Tellen wat erin staat",
+    "Count these folders as “had”": "Deze mappen tellen als “heb je al”",
+    "Count these folders as “had”, beside Plex": "Deze mappen tellen als “heb je al”, naast Plex",
+    "{films} · {series} from your own folders count beside Plex.":
+        "{films} · {series} uit je eigen mappen tellen mee naast Plex.",
+    "{films} · {series} from your own folders count as your library.":
+        "{films} · {series} uit je eigen mappen tellen als je bibliotheek.",
+    "Set under Folders →": "Instellen bij Mappen →",
     "Your own folders": "Je eigen mappen",
     "No Plex? AirGrabber can read the folders that hold your films and series instead.":
         "Geen Plex? AirGrabber kan dan de mappen lezen waar je films en series in staan.",
-    "Film folders": "Filmmappen",
-    "Series folders": "Seriemappen",
     "+ Add a folder": "+ Map toevoegen",
     "Leave this folder out": "Deze map weglaten",
-    "Filled in from MediaForge's folders. Change them if your films and series are somewhere else.":
-        "Ingevuld vanuit de mappen van MediaForge. Pas ze aan als je films en series ergens anders staan.",
-    "Use these folders": "Deze mappen gebruiken",
     "Reading your folders…": "Je mappen worden gelezen…",
     "None of these folders could be reached, so the change wasn't saved: the folders below are the ones still in use.":
         "Geen van deze mappen was bereikbaar, dus de wijziging is niet bewaard: hieronder staan de mappen die nog worden gebruikt.",
     "None of these folders could be reached, so nothing was switched on. Check that they're there, then try again.":
         "Geen van deze mappen was bereikbaar, dus er is niets aangezet. Kijk of ze er zijn en probeer het dan opnieuw.",
     "Checking your folders…": "Je mappen worden gecontroleerd…",
-    "Stop using folders": "Mappen niet meer gebruiken",
-    "Stop using your folders?": "Je mappen niet meer gebruiken?",
-    "The marks and the Library page go until you switch them on again. No file is touched.":
-        "De markeringen en de bibliotheekpagina verdwijnen tot je ze weer aanzet. Er wordt geen bestand aangeraakt.",
     "A second shelf beside Plex: what's in these folders shows under Downloaded and counts as had.":
         "Een tweede plank naast Plex: wat in deze mappen staat, komt onder Gedownload en telt als iets wat je al hebt.",
-    "The Downloaded shelf and the marks from these folders go until you switch them on again; Plex's stay. No file is touched.":
-        "De plank Gedownload en de markeringen uit deze mappen verdwijnen tot je ze weer aanzet; die van Plex blijven. Er wordt geen bestand aangeraakt.",
     "{films} · {series} · {episodes} · checked {when}":
         "{films} · {series} · {episodes} · gecontroleerd {when}",
     "{n} series": "{n} series",
@@ -2204,8 +2217,6 @@ NL: dict[str, str] = {
         "Deze mappen antwoordden, maar ze lezen duurt langer dan normaal, dus de wijziging is nog niet bewaard. AirGrabber leest verder: probeer het over een minuutje opnieuw.",
     # app/ui/views/library_view.py and app/services/plex_library.py with your own folders
     "Nothing from your folders yet": "Nog niets uit je mappen",
-    "AirGrabber reads your folders every 6 hours; Settings → Library → Check now reads them at once.":
-        "AirGrabber leest je mappen elke 6 uur; Instellingen → Bibliotheek → Nu controleren leest ze meteen.",
     "Couldn't recognise ({n})": "Niet herkend ({n})",
     "These files' names don't say which film or episode they are.":
         "Uit de namen van deze bestanden blijkt niet welke film of aflevering het is.",
@@ -2216,4 +2227,79 @@ NL: dict[str, str] = {
     "…and {n} more files": "…en nog {n} bestanden",
     "From your folders": "Uit je mappen",
     "From your folders · checked {time}": "Uit je mappen · gecontroleerd om {time}",
+    # Settings, reorganized (2026-11-19): its pages and the texts pointing at them
+    "Watching": "Kijken",
+    "Naming": "Naamgeving",
+    "Found on OpenSubtitles.com and saved next to your videos.":
+        "Gevonden op OpenSubtitles.com en opgeslagen naast je video's.",
+    'No torrent program is set up on this PC. Install one, such as qBittorrent, or choose another option under "Torrent program" in Settings.':
+        'Er is geen torrentprogramma ingesteld op deze pc. Installeer er een, zoals qBittorrent, of kies een andere optie onder "Torrentprogramma" in Instellingen.',
+    "Connect Plex in Settings → Plex & library or choose your own folders in Settings → Folders first to use the phone app.":
+        "Koppel eerst Plex in Instellingen → Plex en bibliotheek of kies je eigen mappen in Instellingen → Mappen om de telefoon-app te gebruiken.",
+    "AirGrabber has no library yet, so connect Plex or choose your folders in AirGrabber's Settings → Plex & library or Settings → Folders.":
+        "AirGrabber heeft nog geen bibliotheek, dus koppel Plex of kies je mappen in AirGrabber bij Instellingen → Plex en bibliotheek of Instellingen → Mappen.",
+    "Connect Plex in Settings → Plex & library first.":
+        "Koppel eerst Plex via Instellingen → Plex en bibliotheek.",
+    "Choose your Series folder in Settings › Folders, so ▶ Play can find {name}.":
+        "Kies je map Series in Instellingen › Mappen, zodat ▶ Afspelen {name} kan vinden.",
+    "Choose your Movies folder in Settings › Folders, so ▶ Play can find {name}.":
+        "Kies je map Films in Instellingen › Mappen, zodat ▶ Afspelen {name} kan vinden.",
+    "{name} isn't in your Series folder from this PC: check the Series folder in Settings › Folders.":
+        "{name} staat vanaf deze pc niet in je map Series: controleer de map Series in Instellingen › Mappen.",
+    "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Folders.":
+        "{name} staat vanaf deze pc niet in je map Films: controleer de map Films in Instellingen › Mappen.",
+    "Your followed shows, film watchlist, download history and settings go into one file. Load it on another PC in Settings → Updates & backup.":
+        "Je gevolgde series, je kijklijst, je downloadgeschiedenis en je instellingen komen in één bestand. Laad het op een andere pc via Instellingen → Updates en back-up.",
+    "The torrent program stays as it was on this PC: the backup's qBittorrent was on the other PC.":
+        "Het torrentprogramma blijft zoals het op deze pc was: de qBittorrent uit de back-up stond op de andere pc.",
+    "Explorer": "Verkenner",
+    "Plex & library →": "Plex en bibliotheek →",
+    "For new shows and films": "Voor nieuwe series en films",
+    "You can still change this for each show and each film.":
+        "Je kunt dit nog per serie en per film aanpassen.",
+    "TMDB": "TMDB",
+    "Sites": "Sites",
+    "Overview": "Overzicht",
+    "Torrent program": "Torrentprogramma",
+    "Quality & sources": "Kwaliteit en bronnen",
+    "Folders": "Mappen",
+    "Sorting": "Sorteren",
+    "Plex & library": "Plex en bibliotheek",
+    "Playing": "Afspelen",
+    "Accounts & keys": "Accounts en sleutels",
+    "Pages": "Pagina's",
+    "Windows": "Windows",
+    "Updates & backup": "Updates en back-up",
+    "Your files": "Je bestanden",
+    "How AirGrabber is set up. Click a card to change it.":
+        "Hoe AirGrabber is ingesteld. Klik op een kaart om iets te veranderen.",
+    "Which releases AirGrabber looks for, where, and which it skips.":
+        "Welke releases AirGrabber zoekt, waar, en welke het overslaat.",
+    "What AirGrabber downloads on its own.": "Wat AirGrabber zelf downloadt.",
+    "Set once: AirGrabber counts what's in them, and sorted files go into them.":
+        "Eén keer instellen: AirGrabber telt wat erin staat, en gesorteerde bestanden gaan erin.",
+    "Finished downloads renamed and moved into your folders by themselves.":
+        "Voltooide downloads, vanzelf hernoemd en naar je mappen verplaatst.",
+    "How files and folders are named, and what comes along.":
+        "Hoe bestanden en mappen heten, en wat er meekomt.",
+    "What you already have isn't shown as missing and isn't downloaded again.":
+        "Wat je al hebt, staat niet als ontbrekend en wordt niet opnieuw gedownload.",
+    "What plays when you click ▶ Play.": "Welke speler opent als je op ▶ Afspelen klikt.",
+    "The services AirGrabber talks to. Keys and passwords stay on this PC.":
+        "De diensten waar AirGrabber mee praat. Sleutels en wachtwoorden blijven op deze pc.",
+    "How AirGrabber looks.": "Hoe AirGrabber eruitziet.",
+    "Language and how the pages are laid out.": "De taal, en hoe de pagina's zijn ingedeeld.",
+    "How AirGrabber fits into Windows.": "Hoe AirGrabber in Windows past.",
+    "New versions, going back, and keeping your things safe.":
+        "Nieuwe versies, teruggaan, en je spullen veilig bewaren.",
+    "Progress shows when AirGrabber can reach your torrent program — set it up in Settings → Torrent program":
+        "De voortgang verschijnt als AirGrabber je torrentprogramma kan bereiken — stel het in bij Instellingen → Torrentprogramma",
+    "AirGrabber never shows or picks releases from {group} again. You can undo this in Settings → Quality & sources.":
+        "AirGrabber toont of kiest nooit meer releases van {group}. Je kunt dit terugdraaien in Instellingen → Kwaliteit en bronnen.",
+    "Choose where finished downloads end up first (Settings → Folders)":
+        "Kies eerst waar voltooide downloads terechtkomen (Instellingen → Mappen)",
+    "AirGrabber reads Plex every half hour; Settings → Plex & library → Check now reads it at once.":
+        "AirGrabber leest Plex elk half uur; Instellingen → Plex en bibliotheek → Nu controleren leest het meteen.",
+    "AirGrabber reads your folders every 6 hours; Settings → Folders → Check now reads them at once.":
+        "AirGrabber leest je mappen elke 6 uur; Instellingen → Mappen → Nu controleren leest ze meteen.",
 }

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import math
 import tkinter as tk
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -269,6 +270,9 @@ class TorrentAppStatus(ctk.CTkFrame):
         self._reinstall_offered = reinstall
         self._reinstall_clean: bool | None = None  # the last reinstall's choice, for Try again
         self._status = TorrentStatus.LOOKING
+        self._name = ""  # the program found ("" before one is)
+        # Hears every status shown (Settings' Overview card follows it).
+        self.on_status: Callable[[], None] | None = None
         self._find_task: asyncio.Task[None] | None = None
         self._install_task: asyncio.Task[None] | None = None
         self._setup_task: asyncio.Task[None] | None = None
@@ -320,6 +324,11 @@ class TorrentAppStatus(ctk.CTkFrame):
     @property
     def status(self) -> TorrentStatus:
         return self._status
+
+    @property
+    def name(self) -> str:
+        """The torrent program the last look found ("" before one is)."""
+        return self._name
 
     @property
     def install_problem(self) -> QBittorrentInstallResult | None:
@@ -486,6 +495,8 @@ class TorrentAppStatus(ctk.CTkFrame):
 
     def show(self, status: TorrentStatus, name: str = "") -> None:
         self._status = status
+        if name:
+            self._name = name
         look = torrent_look(status, name, self._install_problem)
         self._label.configure(text=look.text, text_color=look.color)
         if look.install_button:
@@ -522,6 +533,8 @@ class TorrentAppStatus(ctk.CTkFrame):
             self.reinstall_button.pack(anchor="w", pady=(10, 0))
         else:
             self.reinstall_button.pack_forget()
+        if self.on_status is not None:
+            self.on_status()
 
     def destroy(self) -> None:
         for task in (self._find_task, self._setup_task, self._look_task):

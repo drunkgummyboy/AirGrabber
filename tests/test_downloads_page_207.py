@@ -115,7 +115,7 @@ class MenuTests(unittest.TestCase):
 
     def test_greyed_with_the_reason(self) -> None:
         for problem, tip in (
-            ("no_folder", "Choose where finished downloads end up first (Settings → Where downloads go)"),
+            ("no_folder", "Choose where finished downloads end up first (Settings → Folders)"),
             ("not_found", "Not found in the folder where finished downloads end up"),
             ("unreachable", "The folder where finished downloads end up can't be reached"),
         ):

@@ -49,6 +49,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - GC guard (D6, adopted 2026-11-08 after F-28's soaks had said no): `app/ui/gc_guard.py`, started in `main._run`: automatic GC off,
   the Tk thread collects on a timer. A collection on aiosqlite's thread had freed a Tk font there and hung that thread
   for good in `Font.__del__` (every search and grab froze). Never turn automatic GC back on; keep Tk images made and dropped on the loop.
+- Settings (`app/ui/settings_dialog.py`, pages in `app/ui/settings_pages_registry.py`, opens on Overview's cards,
+  `app/ui/settings_overview.py`, which never start Forge): every change stores itself (`app/ui/settings_commit.py`).
 - UI code starts coroutines only via `app.ui.tasks.spawn` / `async_command` (they log + report failures).
   Nothing may spawn before the loop runs (see `MainWindow.async_mainloop`).
 - Layers: `app/ui` → `app/services` → repositories (`app/database.py`) and API clients.
@@ -64,7 +66,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   inside `app/forge/core/parser.py`'s functions; no tkinterdnd2, no aiohttp. Tests in `tests/forge/`
   (`tests/forge/base.py`). Its Dutch is the second catalog, `app/i18n_nl_forge.py`. yt-dlp / ffmpeg go
   to `AppPaths.forge / "tools"`, never under `app/`. Explorer drops (`app/forge/ui/file_drops.py`, attached to
-  the main window at its start) are ctypes on the Tk thread behind a seam (tests: fakes).
+  the main window at its start) are ctypes on the Tk thread behind a seam (tests: fakes). Its Series / Movies
+  folders are marked in Settings → Folders' lists (carried once, `folders_carry.py`).
 - The bridges between AirGrabber and Forge (phase 2): no SQL across `airgrabber.db` and `forge.db`.
   Forge's move records (`ForgeMoveService`, `app/forge/core/moves.py`) reach AirGrabber only through
   `app/services/download_status.py` (where a grab was moved, matched by a film's TMDB id or the
@@ -90,8 +93,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   no background checks; the disk is the only memory (no table in `forge.db`); a fetched subtitle is
   journaled in its video's run, so Undo takes it along. The settings stay in AirGrabber's `Settings`
   (same fields, through `airgrabber_settings`); `subtitles_enabled` / `_mode` / `_for` are read only by
-  the one-time `carry_subtitles`. `subtitles_folder` is Where downloads go's "Where finished downloads
-  end up" (Forge's watching, free space, "Open the folder"). `subtitle_files` / `subtitle_grabs` stay in
+  the one-time `carry_subtitles`. `subtitles_folder` is the Folders page's "Finished downloads"
+  (Forge's watching, free space, "Open the folder"). `subtitle_files` / `subtitle_grabs` stay in
   `airgrabber.db`, unread and unwritten.
 - The old MediaForge's project folder (`…\scripts\MediaForge`) is read-only reference, like `airgrabber.py`.
   Its install and data (`%APPDATA%\MediaForge`) are only read by `app/forge/migration.py` (a snapshot)
@@ -160,8 +163,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   had is what is in Plex (`plex_episodes` / `plex_movies`, replaced per Plex check) or in the user's
   own folders (`folder_episodes` / `folder_movies`, replaced per folder check), or what left the
   folders less than `GONE_GRACE_DAYS` (3) ago (`folder_gone`: moved by hand, Plex hasn't scanned it
-  yet); `_IN_LIBRARY` in `app/database.py`. Neither source's check, Plex's Disconnect nor "Stop using
-  folders" touches the other's rows. Without a library (`has_library`, `app/services/library_source.py`:
+  yet); `_IN_LIBRARY` in `app/database.py`. Neither source's check, Plex's Disconnect nor "Count what's
+  in them" off touches the other's rows. Without a library (`has_library`, `app/services/library_source.py`:
   no token and the folders off) the UI shows no have / missing cues at all, not even for AirGrabber's
   own grabs (owner's decision, 3.1.0): no ✓, "missing", counts or manual marks (`have_episodes` is
   kept, never read). The words say where (`app/ui/library_words.py`): what Plex has "✓ In Plex";
@@ -171,12 +174,13 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   deleted there). Connecting or
   disconnecting reloads the pages (`on_change`). Tests use `tests/fixtures/plex/` and MockTransport
   (`tests/plex_link.py` for settings with a token); never plex.tv or a real server.
-- The user's own folders (`app/services/folder_library/`, docs/folder-library/): off until "Use these
-  folders" (`folder_library_on`; `folders_on` = on with a folder set), then counted beside Plex or
-  without it. Read-only (never a file moved, renamed or deleted); each folder read in a thread under
-  its time limit (`scan.py`), so a NAS asleep never holds the window and keeps its last result; logs
-  give counts and kinds only, never a path, file name, title or TMDB id. Its rows: `library_files`
-  and the `folder_*` tables (`db.folders`, FolderRepository, v13), never `plex_*`. The Library page's
+- The user's own folders (`app/services/folder_library/`, docs/folder-library/): off until "Count what's
+  in them" (`folder_library_on`; `folders_on` = on with a folder set), then counted beside Plex or
+  without it; their lists are Settings → Folders' one list per kind (`app/ui/folders_page.py`).
+  Read-only (never a file moved, renamed or deleted); each folder read in a thread under its time
+  limit (`scan.py`), so a NAS asleep never holds the window and keeps its last result; logs give
+  counts and kinds only, never a path, file name, title or TMDB id. Its rows: `library_files` and the
+  `folder_*` tables (`db.folders`, FolderRepository, v13), never `plex_*`. The Library page's
   two shelves, Plex and Downloaded (`Shelf`), are never merged; a show's or film's window has both
   together, each video played from where it is (`is_folder_video`): the folder copy where both have
   one, Plex's copy when the folder's isn't there. Tests: temporary folders and fakes, never a real
@@ -185,7 +189,7 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   `docs/companion/`): for now only on a PC whose data folder holds the file `phone-connection.enabled` (`ENABLED_MARKER`,
   owner's decision): without it no Settings page, `PhoneService.run` ends at once and nothing listens, even with
   `phone_connection_on` true, and no text tells others about it (no What's new line either). The hidden switch: seven
-  quick clicks on Settings → Updates' "Version …" write or delete that file (`switch_here`, counts from the next start;
+  quick clicks on Settings → Updates & backup's "Version …" write or delete that file (`switch_here`, counts from the next start;
   no cue on screen); switched on, it shows the Companion app's download code (`app/ui/phone_app.py`, `PHONE_APP_URL`: the
   APK as the `phone-app` GitHub release's file, replaced per Companion version, uploaded only with the owner's OK).
   Opening it up is one line:

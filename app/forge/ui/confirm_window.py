@@ -12,7 +12,7 @@ hundreds of files stay quick. Never `transient` and never grabbing: it must show
 while AirGrabber's window is in the tray (then it opens on the screen under the mouse pointer),
 and several can be open at once (one per preset). The window has its own Queue, apart from the
 Inbox's; a rename takes Forge's run lock, so it never runs alongside another run (while it waits
-for one, the status line says "Waiting for Auto-rename to finish…").
+for one, the status line says "Waiting for Sorting to finish…").
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ log = logging.getLogger(__name__)
 
 STAYS_HINT = N_("Nothing changes until you click Rename.")
 MOVES_HINT = N_("These files move to your library folder. Nothing changes until you click Rename.")
-NO_FOLDER = N_("Choose a library folder in Settings › Auto-rename first.")
+NO_FOLDER = N_("Choose a library folder in Settings › Folders first.")
 
 ICON_FILE = Path(__file__).resolve().parents[2] / "assets" / "forge" / "MediaForge.ico"
 WIDTH, HEIGHT = 860, 600  # CTk units

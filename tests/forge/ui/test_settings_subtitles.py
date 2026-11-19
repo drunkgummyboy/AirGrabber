@@ -1,6 +1,7 @@
 """Settings › Subtitles in MediaForge's group (app/forge/ui/settings_subtitles.py): its boxes in
-order, what Save stores, a refused key storing nothing, the texts and rows; and what left AirGrabber:
-no Subtitles section, no CC, no periodic run, the folder's box on Where downloads go."""
+order, what each change stores (at once; the account's two fields together; the own key after
+OpenSubtitles took it), a refusal said in its box and storing nothing, the texts and rows; and what
+left AirGrabber: no Subtitles section, no CC, no periodic run, the folder's box on Folders."""
 
 from __future__ import annotations
 
@@ -25,32 +26,36 @@ from app.forge.models.subtitles import (
     Unreachable,
 )
 from app.forge.ui.look import app_look
-from app.forge.ui.settings_pages import FORGE_SECTIONS, SECTION_LIBRARY
-from app.forge.ui.settings_naming import SECTION_NAMING
+from app.forge.ui.settings_pages import FORGE_PARTS
 from app.forge.ui.settings_subtitles import (
     CREDIT_TEXT,
-    SECTION_SUBTITLES,
-    SUBTITLES_ICON,
     AccountRow,
     LanguageTags,
     OwnKeyRow,
     SubtitlesSection,
     account_text,
     addable_languages,
+    account_problem,
     own_key_needs_check,
     quota_line,
-    subtitle_problem,
 )
 from app.models import HearingImpaired, Settings
 from app.services import Services, SettingsService
 from app.ui import main_window as main_window_module
 from app.ui.main_window import settings_affect_pages
-from app.ui.settings_dialog import SECTION_GROUPS, SECTION_WHERE, SECTIONS, section_for_field
+from app.ui.settings_pages_registry import (
+    GROUPS,
+    PAGE_ACCOUNTS,
+    PAGE_FOLDERS,
+    PAGE_NAMING,
+    PAGE_SUBTITLES,
+    PAGES,
+)
 from app.ui.settings_layout import SettingsPage
 from tests.forge.tk import pump, pump_until
 from tests.forge.ui.settings_kit import forge_settings
 from tests.forge.ui.subtitle_kit import FakeSubtitleSource
-from tests.test_settings_dialog import FakeRepository
+from tests.test_settings_dialog import FakeRepository, settle
 
 ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
@@ -78,15 +83,11 @@ class TextTests(unittest.TestCase):
         )
         self.assertEqual(account_text(SubtitleAccount()), "✓ Signed in")
 
-    def test_what_save_needs(self) -> None:
-        fine = {"languages": ("en",), "username": "", "password": ""}
-        self.assertIsNone(subtitle_problem(**fine))  # type: ignore[arg-type]
-        self.assertIn(
-            "both",
-            subtitle_problem(languages=("en",), username="alex", password="") or "",
-        )
-        self.assertIn("both", subtitle_problem(languages=("en",), username="", password="x") or "")
-        self.assertIn("language", subtitle_problem(languages=(), username="", password="") or "")
+    def test_what_the_account_needs(self) -> None:
+        self.assertIsNone(account_problem(username="", password=""))
+        self.assertIsNone(account_problem(username="alex", password="pw"))
+        self.assertIn("both", account_problem(username="alex", password="") or "")
+        self.assertIn("both", account_problem(username="", password="x") or "")
 
     def test_addable_languages(self) -> None:
         self.assertNotIn("en", addable_languages(("en",)))
@@ -100,13 +101,13 @@ class TextTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_after_naming_with_its_icon(self) -> None:
-        names = list(FORGE_SECTIONS)
-        self.assertEqual(names.index(SECTION_SUBTITLES), names.index(SECTION_NAMING) + 1)
-        self.assertEqual(FORGE_SECTIONS[SECTION_SUBTITLES].icon, SUBTITLES_ICON)
-        self.assertEqual(SUBTITLES_ICON, "💬")
-        self.assertNotEqual(names[0], SECTION_SUBTITLES)
-        self.assertEqual(names[0], SECTION_LIBRARY)
+    def test_after_naming_with_its_icon_and_its_box_on_accounts(self) -> None:
+        files = next(pages for group, pages in GROUPS if group == "Your files")
+        self.assertEqual(files.index(PAGE_SUBTITLES), files.index(PAGE_NAMING) + 1)
+        self.assertEqual(PAGES[PAGE_SUBTITLES].icon, "💬")
+        self.assertIsNotNone(FORGE_PARTS[PAGE_SUBTITLES].build)
+        # The OpenSubtitles box on Accounts & keys is the Subtitles part's.
+        self.assertEqual(FORGE_PARTS[PAGE_ACCOUNTS].owner, PAGE_SUBTITLES)
 
 
 class SaveKeepsThePagesTests(unittest.TestCase):
@@ -198,7 +199,7 @@ class SectionTests(TkCase):
         order = [
             "Languages",
             "Hearing impaired",
-            "OpenSubtitles account",
+            "OpenSubtitles",
             "Create a free account",
             "Own API key",
             "18 subtitle downloads left today",
@@ -206,7 +207,7 @@ class SectionTests(TkCase):
         ]
         positions = [texts.index(text) for text in order]
         self.assertEqual(positions, sorted(positions))
-        for gone in ("When", "For", "Get subtitles", "Where finished downloads end up"):
+        for gone in ("When", "For", "Get subtitles", "Finished downloads"):
             self.assertNotIn(gone, texts)
         switches = [
             w for w in self.page.frame.winfo_children() if isinstance(w, ctk.CTkSwitch)
@@ -228,7 +229,6 @@ class SectionTests(TkCase):
         self.assertEqual(part.hearing.get(), "Prefer")
         self.assertEqual(part.account.values, ("alex", "pw"))
         self.assertEqual(part.own_key.value, "KEY")
-        self.assertEqual(part.changes(), {})
 
     async def test_without_a_key_one_quiet_line(self) -> None:
         self.source.available = False
@@ -238,8 +238,7 @@ class SectionTests(TkCase):
             str(part.waiting_label.cget("text")), "Subtitles aren't available in this version yet"
         )
         self.assertNotIn("Languages", _labels(self.page.frame))
-        self.assertIsNone(part.problem())
-        self.assertIsNone(await part.save())
+        self.assertIsNone(part._commit(part.waiting, subtitle_languages=("nl",)))  # nothing to
 
     async def test_it_waits_for_forge(self) -> None:
         part = self.section(started=False)
@@ -252,111 +251,115 @@ class SectionTests(TkCase):
         part = SubtitlesSection(page, FakeStarter(None, started=False))
         await pump(self.root, 0.05)
         self.assertEqual(str(part.waiting_label.cget("text")), "MediaForge isn't ready yet")
-        self.assertIsNone(part.problem())
-        self.assertIsNone(await part.save())
+        self.assertFalse(part.ready)
 
 
-class SaveTests(TkCase):
-    async def test_only_what_changed_is_stored(self) -> None:
+class StoreTests(TkCase):
+    async def test_each_change_stores_itself(self) -> None:
         part = self.section()
         assert part.languages and part.hearing
-        self.assertIsNone(await part.save())
-        part.languages.add("nl")
-        part.hearing.set("Either")
-        self.assertEqual(
-            part.changes(),
-            {
-                "subtitle_languages": ("en", "nl"),
-                "subtitles_hearing_impaired": HearingImpaired.EITHER,
-            },
-        )
-        self.assertIsNone(part.problem())
-        self.assertIsNone(await part.save())
+        part.languages.add("nl")  # "+ Add"'s menu
+        await settle()
+        self.assertEqual(self.stored.current.subtitle_languages, ("en", "nl"))
+        part.hearing._dropdown_callback("Either")  # picked in the menu
+        await settle()
         current = self.stored.current
-        self.assertEqual(current.subtitle_languages, ("en", "nl"))
         self.assertEqual(current.subtitles_hearing_impaired, HearingImpaired.EITHER)
-        self.assertEqual(part.changes(), {})
+
+    async def test_undo_and_a_change_stored_elsewhere_show(self) -> None:
+        part = self.section()
+        assert part.languages and part.hearing and part.account
+        part.languages.add("nl")
+        await settle()
+        self.assertTrue(await part._committer.run_undo())
+        self.assertEqual(self.stored.current.subtitle_languages, ("en",))
+        self.assertEqual(part.languages.languages, ("en",))
+        await self.stored.update(
+            subtitles_hearing_impaired=HearingImpaired.PREFER, opensubtitles_username="sam"
+        )
+        self.assertEqual(part.hearing.get(), "Prefer")
+        self.assertEqual(part.account.values[0], "sam")
 
     async def test_the_old_fields_are_not_touched(self) -> None:
         part = self.section(self.settings(subtitles_enabled=True, subtitles_folder="D:/x"))
         assert part.languages
         part.languages.add("nl")
-        await part.save()
+        await settle()
         self.assertTrue(self.stored.current.subtitles_enabled)
         self.assertEqual(self.stored.current.subtitles_folder, "D:/x")
 
     async def test_the_account_is_stored_with_both_filled_in(self) -> None:
         part = self.section()
-        assert part.account
+        assert part.account and part.account_field and part.account_box
         part.account.username.insert(0, "alex")
-        self.assertIn("both", part.problem() or "")
+        part.account_field.left(part.account.password)  # on to the password: nothing yet
+        await settle()
+        self.assertEqual(part.account_box.refusal, "")
+        part.account_field.left(self.root)  # out of both: one change, half filled in
+        await settle()
+        self.assertIn("both", part.account_box.refusal)
+        self.assertEqual(self.stored.current.opensubtitles_username, "")
         part.account.password.insert(0, "S3cret")
-        self.assertIsNone(part.problem())
-        await part.save()
+        part.account_field.commit_now()
+        await settle()
         self.assertEqual(self.stored.current.opensubtitles_username, "alex")
         self.assertEqual(self.stored.current.opensubtitles_password.get_secret_value(), "S3cret")
-        self.assertEqual(self.source.sign_ins, [])  # Save doesn't sign in
+        self.assertEqual(part.account_box.refusal, "")
+        self.assertEqual(self.source.sign_ins, [])  # storing doesn't sign in
 
     async def test_no_language_is_refused(self) -> None:
         part = self.section()
         assert part.languages
         part.languages.remove("en")
-        self.assertEqual(part.problem(), "Choose at least one subtitle language")
-
-    async def test_unchanged_settings_never_stop_save(self) -> None:
-        part = self.section(self.settings(opensubtitles_username="alex"))
-        self.assertIsNone(part.problem())
+        await settle()
+        self.assertEqual(part._languages_box.refusal, "Choose at least one subtitle language")
+        self.assertEqual(self.stored.current.subtitle_languages, ("en",))
+        self.assertEqual(part.languages.languages, ("en",))  # the tag is back
 
     async def test_a_new_own_key_is_checked_and_stored(self) -> None:
         part = self.section()
-        assert part.own_key
+        assert part.own_key and part.key_field
         part.own_key.entry.insert(0, "NEWKEY")
-        self.assertIsNone(await part.save())
+        part.key_field.commit_now()  # Enter, or leaving the field
+        await settle()
         self.assertEqual(self.source.checked, ["NEWKEY"])
         self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "NEWKEY")
 
     async def test_a_refused_key_stores_nothing_and_says_why(self) -> None:
         self.source.key_error = KeyRejected("OpenSubtitles refused your own API key")
         part = self.section()
-        assert part.own_key and part.languages
-        part.languages.add("nl")
+        assert part.own_key and part.key_field and part.account_box
         part.own_key.entry.insert(0, "BADKEY")
-        problem = await part.save()
+        part.key_field.commit_now()
+        await settle()
+        problem = part.account_box.refusal
         self.assertEqual(problem, "Own API key: OpenSubtitles refused your own API key")
-        self.assertNotIn("BADKEY", problem or "")
-        current = self.stored.current
-        self.assertEqual(current.opensubtitles_own_key.get_secret_value(), "")
-        self.assertEqual(current.subtitle_languages, ("en",))  # nothing of the page
+        self.assertNotIn("BADKEY", problem)
+        self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "")
         self.assertIn("refused", part.own_key.result_text)
+        self.assertEqual(part.own_key.value, "BADKEY")  # kept as typed
 
-    async def test_an_unreachable_check_still_saves(self) -> None:
+    async def test_an_unreachable_check_still_stores(self) -> None:
         self.source.key_error = Unreachable("no answer")
         part = self.section()
-        assert part.own_key
+        assert part.own_key and part.key_field
         part.own_key.entry.insert(0, "NEWKEY")
-        self.assertIsNone(await part.save())
+        part.key_field.commit_now()
+        await settle()
         self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "NEWKEY")
         self.assertIn("saved anyway", part.own_key.result_text)
 
-    async def test_a_saved_or_empty_key_is_not_checked_again(self) -> None:
+    async def test_a_stored_or_empty_key_is_not_checked_again(self) -> None:
         part = self.section(self.settings(opensubtitles_own_key="OLD"))
-        assert part.languages and part.own_key
-        part.languages.add("nl")
-        await part.save()
+        assert part.own_key and part.key_field
+        part.key_field.commit_now()  # unchanged: nothing
+        await settle()
         self.assertEqual(self.source.checked, [])
         part.own_key.entry.delete(0, "end")
-        await part.save()
+        part.key_field.commit_now()
+        await settle()
         self.assertEqual(self.source.checked, [])
         self.assertEqual(self.stored.current.opensubtitles_own_key.get_secret_value(), "")
-
-    async def test_a_store_that_fails(self) -> None:
-        part = self.section()
-        assert part.languages
-        part.languages.add("nl")
-        with mock.patch.object(self.stored, "update", side_effect=OSError("disk full")):
-            problem = await part.save()
-        self.assertIn("couldn't be saved", problem or "")
-        self.assertNotIn("disk full", problem or "")
 
 
 class RowTests(TkCase):
@@ -431,13 +434,9 @@ class RowTests(TkCase):
 class AirGrabberTests(TkCase):
     """What left AirGrabber, and the folder's new place."""
 
-    async def test_no_subtitles_section_under_downloading(self) -> None:
-        self.assertNotIn("Subtitles", SECTIONS)
-        downloading = next(names for group, names in SECTION_GROUPS if group == "Downloading")
-        self.assertEqual(downloading, ("Where downloads go", "Quality", "Automatic", "Library", "Phone connection"))
-
-    def test_the_fields_section(self) -> None:
-        self.assertEqual(section_for_field("subtitles_folder"), SECTION_WHERE)
+    async def test_no_subtitles_page_under_downloading(self) -> None:
+        downloading = next(pages for group, pages in GROUPS if group == "Downloading")
+        self.assertEqual(downloading, ("Torrent program", "Quality & sources", "Automatic"))
 
     def test_no_subtitle_service(self) -> None:
         self.assertNotIn("subtitles", Services.__slots__)
@@ -469,19 +468,20 @@ class AirGrabberTests(TkCase):
                 if isinstance(node, ast.ImportFrom) and node.module in gone:
                     self.fail(f"{path} imports {node.module}")
 
-    async def test_the_folder_box_on_where_downloads_go(self) -> None:
+    async def test_the_folder_box_on_folders(self) -> None:
         settings = self.settings(subtitles_folder="D:/finished")
         window = forge_settings(self.root, None, settings=settings)
         self.addCleanup(window.destroy)
         window.attributes("-alpha", 0.0)
         await pump(self.root, 0.05)
-        texts = _labels(window.page(SECTION_WHERE))
-        self.assertIn("Where finished downloads end up", texts)
+        texts = _labels(window.page(PAGE_FOLDERS))
+        self.assertIn("Finished downloads", texts)
         hint = next(text for text in texts if text.startswith("Your torrent program's"))
         self.assertNotIn("subtitle", hint.casefold())
         self.assertEqual(window._finished_folder.get(), "D:/finished")
         window._finished_folder.set("D:/other")
-        await window._store()
+        window._finished_field.commit_now()  # Enter, or leaving the field
+        await settle()
         self.assertEqual(settings.current.subtitles_folder, "D:/other")
 
     async def test_choose(self) -> None:
@@ -494,6 +494,8 @@ class AirGrabberTests(TkCase):
         ):
             window._choose_finished_folder()
         self.assertEqual(window._finished_folder.get(), str(Path("D:/chosen")))
+        await settle()
+        self.assertEqual(settings.current.subtitles_folder, str(Path("D:/chosen")))  # at once
 
     async def test_the_group_has_the_page(self) -> None:
         parts = SimpleNamespace(
@@ -501,13 +503,23 @@ class AirGrabberTests(TkCase):
             airgrabber_settings=self.settings(),
         )
         forge = FakeStarter(parts)  # type: ignore[arg-type]
-        window = forge_settings(self.root, forge, section=SECTION_SUBTITLES)
+        window = forge_settings(self.root, forge, section=PAGE_SUBTITLES)
         self.addCleanup(window.destroy)
         window.attributes("-alpha", 0.0)
-        self.assertEqual(window.section, SECTION_SUBTITLES)
-        self.assertIsInstance(window.parts[SECTION_SUBTITLES], SubtitlesSection)
+        self.assertEqual(window.section, PAGE_SUBTITLES)
+        self.assertIsInstance(window.parts[PAGE_SUBTITLES], SubtitlesSection)
         names = window.sections
-        self.assertEqual(names.index(SECTION_SUBTITLES), names.index(SECTION_NAMING) + 1)
+        self.assertEqual(names.index(PAGE_SUBTITLES), names.index(PAGE_NAMING) + 1)
+        # Its OpenSubtitles box is on Accounts & keys, the same part.
+        self.assertIs(window.parts[PAGE_ACCOUNTS], window.parts[PAGE_SUBTITLES])
+        part = window.parts[PAGE_SUBTITLES]
+        assert isinstance(part, SubtitlesSection)
+        await pump_until(self.root, lambda: part.ready)
+        accounts = _labels(window.page(PAGE_ACCOUNTS))
+        for text in ("OpenSubtitles", "Create a free account", "Own API key"):
+            self.assertIn(text, accounts)
+            self.assertNotIn(text, _labels(window.page(PAGE_SUBTITLES)))
+        self.assertIn("Languages", _labels(window.page(PAGE_SUBTITLES)))
 
 
 if __name__ == "__main__":

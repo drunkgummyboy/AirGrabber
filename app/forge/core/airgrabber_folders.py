@@ -4,7 +4,7 @@ AirGrabber's `download_dir` / `movie_download_dir` hold **.torrent files** (FOLD
 videos: they are never watched. The folders on this PC where finished videos land, as far as
 AirGrabber's settings say:
 
-- `subtitles_folder` ("Where finished downloads end up", a UNC path allowed), in every mode;
+- `subtitles_folder` (Settings › Folders' "Finished downloads", a UNC path allowed), in every mode;
 - the qBittorrent on this PC that AirGrabber set up (`qbittorrent_local.set_up_by_airgrabber`):
   its save folder (`QBittorrentState.save_path`);
 - a torrent program on this PC: the download folders AirGrabber gives it
@@ -20,7 +20,7 @@ without a .torrent file go there). `derived_folders` is pure; `AirGrabberFolderS
 (`SettingsService.subscribe`). With the rules for watched folders (app/forge/core/rules.py),
 AirGrabber's rule watches the folders `airgrabber_uses` marks watched (its switch is "Use
 AirGrabber's downloads"): nesting between rules is allowed, so only suggestions and folders
-overlapping a library folder or inside a rule's destination are left out. Settings › Auto-rename
+overlapping a library folder or inside a rule's destination are left out. Settings › Sorting
 shows each with why (`use_text`), and offers a suggestion "Add a rule for this folder".
 
 Nothing moves from a folder that starts being watched behind the owner's back: when AirGrabber's
@@ -64,10 +64,10 @@ log = logging.getLogger(__name__)
 
 REACH_TIMEOUT_S = 5.0  # a suggested NAS folder that doesn't answer in this long counts as away
 
-# -- texts (shown by Settings › Auto-rename) --
+# -- texts (shown by Settings › Sorting) --
 
 REASONS: dict[AirGrabberWhy, str] = {
-    "finished": N_("“Where finished downloads end up” in Settings"),
+    "finished": N_("“Finished downloads” in Settings › Folders"),
     "qbittorrent": N_("qBittorrent on this PC saves AirGrabber's downloads here"),
     "shows": N_("{program} saves AirGrabber's downloads here"),
     "films": N_("{program} saves AirGrabber's films here"),
@@ -76,18 +76,17 @@ ASKS: dict[AirGrabberAsk, str] = {
     "": "",
     "finished": N_(
         "AirGrabber doesn't know where its finished downloads end up on this PC. Fill in "
-        "“Where finished downloads end up” in Settings › Where downloads go, or add a rule for "
-        "the folder."
+        "“Finished downloads” in Settings › Folders, or add a rule for the folder."
     ),
     "other_computer": N_(
         "AirGrabber sends downloads to {program} on another computer. Add a rule for the folder "
-        "where they show up on this PC (a shared network folder), or fill in “Where finished "
-        "downloads end up” in Settings › Where downloads go."
+        "where they show up on this PC (a shared network folder), or fill in “Finished "
+        "downloads” in Settings › Folders."
     ),
     "nas_folder": N_(
         "Download Station keeps AirGrabber's downloads in its own download folder. Add a rule for "
-        "the shared folder where they show up on this PC, or fill in “Where finished downloads "
-        "end up” in Settings › Where downloads go."
+        "the shared folder where they show up on this PC, or fill in “Finished downloads” in "
+        "Settings › Folders."
     ),
 }
 SUGGESTED = N_("Suggested: {reason}")

@@ -118,7 +118,7 @@ class PhoneBox:
         # Stays for as long as this window is open: that's when Windows asks.
         self._first_time = not phone.ever_started
 
-        self.box: SettingsBox = page.box()
+        self.box: SettingsBox = page.box(search_title=t(SWITCH_TEXT))
         body = self.box.body
         self.needs_library = self.box.text(t(NEEDS_LIBRARY_TEXT))
         self.box.add(self.needs_library, gap=0, sticky="w")

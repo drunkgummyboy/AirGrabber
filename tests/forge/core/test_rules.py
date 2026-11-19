@@ -263,7 +263,7 @@ class CheckTests(ForgeTestCase):
             SETTINGS.model_copy(update={"series_folder": ""}),
             presets=NAMES,
         )
-        self.assertEqual(series, [RuleNote("warn", "⚠ Choose your Series folder under Library folders.")])
+        self.assertEqual(series, [RuleNote("warn", "⚠ Choose your Series folder under Folders.")])
 
     def test_unreachable_folders_warn(self) -> None:
         away = {os.path.normcase(MOVIES)}

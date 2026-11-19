@@ -1,4 +1,4 @@
-"""Settings → Advanced: the Prowlarr panel's status lines, the built-in sites + "Use Prowlarr"
+"""Settings → Quality & sources' Sites box: the Prowlarr panel's status lines, the built-in sites + "Use Prowlarr"
 boxes as stored in disabled_indexers, and the panel inside the dialog with a fake Prowlarr
 service (no network, never winget)."""
 
@@ -30,6 +30,8 @@ from app.ui.prowlarr_panel import (
     site_count,
 )
 from app.ui.settings_dialog import SettingsDialog, disabled_indexers
+from app.ui.settings_pages_registry import PAGE_QUALITY
+from tests.test_settings_dialog import click, find, settle
 
 BASE = "http://127.0.0.1:9696"
 KEY = "0123456789abcdef0123456789abcdef"
@@ -271,16 +273,19 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
         panel._toggle._label.event_generate("<Button-1>")
         self.assertFalse(panel.expanded)
 
-    async def test_save_stores_the_boxes(self) -> None:
+    async def test_each_tick_stores_the_sites(self) -> None:
         answer = status(ProwlarrState.NOT_INSTALLED)
         dialog, settings = await self.dialog(
             FakeProwlarr(answer), disabled_indexers=("yts", "oldsite")
         )
         self.assertFalse(dialog._sources["yts"].get())
         self.assertTrue(dialog._use_prowlarr.get())
-        dialog._sources["eztv"].set(False)
-        dialog._use_prowlarr.set(False)
-        await dialog._save()
+        page = dialog.page(PAGE_QUALITY)
+        click(find(page, dialog._sources["eztv"]))
+        await settle()
+        self.assertEqual(settings.current.disabled_indexers, ("eztv", "yts", "oldsite"))
+        click(find(page, dialog._use_prowlarr))
+        await settle()
         self.assertEqual(
             settings.current.disabled_indexers, ("eztv", "yts", "prowlarr", "oldsite")
         )
@@ -290,8 +295,8 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
         dialog, settings = await self.dialog(FakeProwlarr(answer), disabled_indexers=("prowlarr",))
         self.assertFalse(dialog._use_prowlarr.get())
         self.assertTrue(all(var.get() for var in dialog._sources.values()))
-        dialog._use_prowlarr.set(True)
-        await dialog._save()
+        click(find(dialog.page(PAGE_QUALITY), dialog._use_prowlarr))
+        await settle()
         self.assertEqual(settings.current.disabled_indexers, ())
 
     async def test_install_connects_and_save_keeps_the_new_connection(self) -> None:
@@ -314,7 +319,8 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
             panel._label.cget("text"), "✓ Connected to Prowlarr on this PC · 5 sites"
         )
         self.assertEqual((dialog._prowlarr_url.get(), dialog._prowlarr_key.get()), (BASE, KEY))
-        await dialog._save()
+        dialog.close()  # nothing typed over them: closing stores nothing else
+        await settle()
         current = settings.current
         self.assertEqual(
             (current.prowlarr_url, current.prowlarr_api_key.get_secret_value()), (BASE, KEY)
@@ -346,13 +352,26 @@ class ProwlarrPanelDialogTests(unittest.IsolatedAsyncioTestCase):
         await task
         self.assertEqual(dialog._prowlarr_url.get(), "http://nas.local:9696")
 
-    async def test_a_prowlarr_field_error_unfolds_the_fields(self) -> None:
-        dialog, _settings = await self.dialog(FakeProwlarr(status(ProwlarrState.NOT_INSTALLED)))
+    async def test_a_bad_url_is_refused_in_the_sites_box(self) -> None:
+        dialog, settings = await self.dialog(FakeProwlarr(status(ProwlarrState.NOT_INSTALLED)))
+        dialog._prowlarr_panel.set_expanded(True)
         dialog._prowlarr_url.insert(0, "localhost:9696")
-        await dialog._save()
-        self.assertTrue(dialog.winfo_exists())
-        self.assertTrue(dialog._error.cget("text").startswith("Prowlarr URL: "))
-        self.assertTrue(dialog._prowlarr_panel.expanded)
+        dialog._prowlarr_url_field.commit_now()  # Enter, or leaving the field
+        await settle()
+        self.assertTrue(dialog.box(PAGE_QUALITY, "Sites").refusal.startswith("Prowlarr URL: "))
+        self.assertEqual(settings.current.prowlarr_url, "")
+        self.assertEqual(dialog._prowlarr_url.get(), "localhost:9696")  # kept as typed
+
+    async def test_test_connection_tries_the_fields_without_storing_them(self) -> None:
+        dialog, settings = await self.dialog(FakeProwlarr(status(ProwlarrState.NOT_INSTALLED)))
+        dialog._search.test_prowlarr = mock.AsyncMock(return_value="Prowlarr 1.2")  # type: ignore[method-assign]
+        dialog._prowlarr_url.insert(0, "http://nas.local:9696")
+        dialog._prowlarr_key.set("abc")
+        dialog._prowlarr_button.invoke()
+        await settle()
+        dialog._search.test_prowlarr.assert_awaited_once_with("http://nas.local:9696", "abc")
+        self.assertEqual(dialog._prowlarr_result.cget("text"), "✓ Prowlarr 1.2")
+        self.assertEqual(settings.current.prowlarr_url, "")  # a test stores nothing
 
 
 if __name__ == "__main__":

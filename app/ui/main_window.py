@@ -106,6 +106,7 @@ from app.ui.play_control import STATUS_MS as _PLAY_STATUS_MS
 from app.ui.play_control import Play
 from app.ui.search import SearchResultsWindow, SearchSuggestions, remember_search
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_pages_registry import PAGE_UPDATES
 from app.ui.show_details import ShowWindows
 from app.ui.phone_contents import PhoneContentsWindow
 from app.ui.send_to_phone import NO_PHONE_TEXT, SendToPhoneDialog, episodes_reader
@@ -649,13 +650,22 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._tray_today = ""
         self._tray_downloads = ""
         self.protocol("WM_DELETE_WINDOW", self._close_window)
-        if start_hidden or self._started_for_forge or self._started_for_play:
+        self._full_size_at_start = not (
+            start_hidden or self._started_for_forge or self._started_for_play
+        )
+        if not self._full_size_at_start:
             # main.py --tray: only the tray icon shows; a start for Forge: what its request shows;
             # a start for a file to play: only the player.
             self.withdraw()
         else:
             # Always full-size (the owner's wish, 2026-11-15); `_place`'s size is what Windows'
-            # Restore button gives. Not yet mapped: Tk keeps it for the first showing.
+            # Restore button gives. CTk's first showing drops this; `_start` asks again.
+            self.state("zoomed")
+
+    def _full_size_once_shown(self) -> None:
+        """CTk's first showing (the deiconify in async_mainloop) drops the zoom asked for in
+        __init__, so the window came up at `_place`'s size: full-size again, now that it shows."""
+        if self._full_size_at_start and self.state() == "normal":
             self.state("zoomed")
 
     def async_mainloop(self, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -1133,6 +1143,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- navigation --------------------------------------------------------------------------
 
     def _start(self) -> None:
+        self._full_size_once_shown()
         tk.Misc.bind(self, "<ButtonPress-1>", self._clicked_in_main, "+")
         self._show_library_part()
         self._go_home()
@@ -1333,13 +1344,13 @@ class MainWindow(AsyncCTk, ctk.CTk):
             self.quit_app()
 
     def _close_window(self) -> None:
-        """The window's ✕: Settings open over it goes first (= Cancel), or it would hide with it
+        """The window's ✕: Settings open over it closes first (as its ✕), or it would hide with it
         and keep the grab, leaving MediaForge's confirm windows dead; then into the tray or quit.
         On every page alike: a run on MediaForge's page goes on in the tray, and quitting waits
         for it (`quit_app`)."""
         dialog, self._settings_dialog = self._settings_dialog, None
         if dialog is not None:
-            dialog.cancel()
+            dialog.close()
         self.tray.close_window()
 
     def quit_app(self) -> None:
@@ -1890,8 +1901,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._show_library_summary(), name="library-summary")
 
     def _open_settings(self, section: str | None = None, spot: str | None = None) -> None:
-        """The one Settings, over this window (at `section`'s page when given, scrolled to
-        `spot` on it); a dialog that is open already is raised, and shows that page."""
+        """The one Settings, over this window (at `section`'s page when given, a page key of
+        app/ui/settings_pages_registry.py, scrolled to `spot` on it; on Overview when not); a
+        dialog that is open already is raised, and shows that page."""
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
             if section is not None:
                 self._settings_dialog.show_section(section)
@@ -2031,7 +2043,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
             await self._stage_update(info)
         else:
             self._show_update_badge(
-                t("⬆ Update to v{version}", version=info.latest), t(UPDATE_TIP), self._open_settings
+                t("⬆ Update to v{version}", version=info.latest), t(UPDATE_TIP), self._open_updates
             )
 
     async def _stage_update(self, info: UpdateInfo) -> None:
@@ -2042,8 +2054,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             log.warning("Downloading the update failed: %s", exc)
             if self.winfo_exists():  # Settings can still install it
                 self._show_update_badge(
-                t("⬆ Update to v{version}", version=info.latest), t(UPDATE_TIP), self._open_settings
-            )
+                    t("⬆ Update to v{version}", version=info.latest),
+                    t(UPDATE_TIP),
+                    self._open_updates,
+                )
             return
         if not self.winfo_exists() or self._update_task is not None:
             return  # closing, or Settings' "Update to …" is installing it right now
@@ -2052,6 +2066,10 @@ class MainWindow(AsyncCTk, ctk.CTk):
             t("AirGrabber {version} is ready. It installs when you close AirGrabber.", version=version),
             clear_after_ms=_UPDATE_STATUS_MS,
         )
+
+    def _open_updates(self) -> None:
+        """The "⬆ Update to v…" badge: Settings on Updates & backup, where "Update to …" is."""
+        self._open_settings(PAGE_UPDATES)
 
     def _show_update_badge(self, text: str, tip: str, on_click: Callable[[], None]) -> None:
         self._version_label.configure(
@@ -2098,12 +2116,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
         self._whats_new_binding = tk.Misc.bind(self, "<Map>", on_map, add="+")
 
+    def _close_settings(self) -> None:
+        """Close an open Settings as its ✕ does (what a text field holds unstored is stored
+        first), before an update or going back restarts AirGrabber."""
+        dialog, self._settings_dialog = self._settings_dialog, None
+        if dialog is not None and dialog.winfo_exists():
+            dialog.close()
+
     def _start_update(self) -> None:
         if self._update_task is not None and not self._update_task.done():
             return
-        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
-            self._settings_dialog.destroy()
-        self._settings_dialog = None
+        self._close_settings()
         self._update_task = spawn(self._run_update(), name="update")
 
     async def _run_update(self) -> None:
@@ -2120,9 +2143,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         """Settings' "Go back to version …", confirmed."""
         if self._update_task is not None and not self._update_task.done():
             return
-        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
-            self._settings_dialog.destroy()
-        self._settings_dialog = None
+        self._close_settings()
         self._update_task = spawn(self._run_going_back(), name="go-back")
 
     async def _run_going_back(self) -> None:

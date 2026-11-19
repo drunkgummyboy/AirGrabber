@@ -756,6 +756,65 @@ def draw_rules() -> Image.Image:
     return layer.image
 
 
+def draw_settings() -> Image.Image:
+    """The new Settings window: the sliders icon at the left, then the window with its sidebar
+    in groups (the first row lit) and the overview's cards, each with a dot (green, amber or
+    grey) and two lines, and the "saved, undo" pill at the bottom."""
+    layer = _background()
+    layer.paint(glow(STEEL, (0.1, 0.5), 0.28, 0.3))
+    layer.paint(glow(STEEL, (0.6, 0.42), 0.5, 0.3))
+    layer.paint(glow("#2FA572", (0.72, 0.85), 0.25, 0.18))
+
+    # The sliders: three rails, each with its knob somewhere else.
+    for y, knob in ((88, 58), (120, 92), (152, 68)):
+        layer.paint(solid(ON_ACCENT, 0.8), Mask().line(((34, y), (110, y)), 4, round_ends=True).done())
+        layer.paint(solid(STEEL), Mask().add(circle(knob, y, 10)).done())
+        layer.paint(solid(WINDOW), Mask().add(circle(knob, y, 5.5)).done())
+
+    # The window.
+    layer.rect(142, 16, 552, 208, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(142, 16, 552, 208, 14, 1.5))
+
+    # The sidebar: the first row lit, then three groups (a heading and its rows).
+    layer.rect(154, 28, 112, 20, 10, "#5f84a8")
+    layer.paint(solid(WHITE), Mask().add(circle(167, 38, 4)).done())
+    layer.rect(177, 35, 56, 6, 3, WHITE)
+    for top, widths in ((58, (62, 48, 70)), (122, (54, 66, 44)), (186, (58, 40))):
+        layer.rect(158, top, 36, 4, 2, MUTED)
+        for index, width in enumerate(widths):
+            y = top + 11 + index * 16
+            layer.paint(solid(MUTED, 0.85), Mask().add(circle(167, y + 3, 3.5)).done())
+            layer.rect(177, y, width, 6, 3, ON_ACCENT)
+    layer.rect(278, 28, 1.5, 184, 0.75, "#2a2f35")
+
+    # The page: a heading, its note, and the cards.
+    layer.rect(294, 30, 96, 9, 4.5, ON_ACCENT)
+    layer.rect(294, 46, 168, 5, 2.5, MUTED)
+    dots = ("#2FA572", "#2FA572", "#E0A23A", "#2FA572", "#6a737d", "#2FA572")
+    for index, dot in enumerate(dots):
+        x = 294 + (index % 3) * 130
+        y = 62 + (index // 3) * 62
+        layer.rect(x, y, 120, 52, 9, "#20262d")
+        layer.paint(solid("#3a3f45"), border_mask(x, y, 120, 52, 9, 1))
+        layer.paint(solid(dot), Mask().add(circle(x + 15, y + 16, 5)).done())
+        layer.rect(x + 27, y + 13, (58, 70, 50, 64, 46, 60)[index], 7, 3.5, WHITE)
+        layer.rect(x + 12, y + 30, 92, 5, 2.5, MUTED)
+        layer.rect(x + 12, y + 39, (64, 80, 72, 56, 76, 68)[index], 5, 2.5, MUTED)
+
+    # Saved, with Undo beside it.
+    layer.rect(452, 190, 176, 24, 12, "#26303b")
+    layer.paint(solid("#5f7d9b"), border_mask(452, 190, 176, 24, 12, 1))
+    layer.paint(solid("#2FA572"), Mask().add(circle(467, 202, 7)).done())
+    layer.paint(
+        solid(WHITE),
+        Mask().line(((463.5, 202), (466.2, 204.8), (470.8, 199.2)), 1.8, round_ends=True).done(),
+    )
+    layer.rect(481, 199, 64, 6, 3, WHITE)
+    layer.paint(solid(MUTED), Mask().add(circle(556, 202, 1.8)).done())
+    layer.rect(566, 199, 46, 6, 3, STEEL)
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -773,7 +832,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "rules.png": draw_rules,
+    "settings.png": draw_settings,
 }
 
 

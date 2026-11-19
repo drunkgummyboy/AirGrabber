@@ -1,6 +1,8 @@
-"""Settings → Library, under its boxes: what AirGrabber does without a library and with one (Plex,
-or your own folders: docs/folder-library/), one line per thing, a ✓ or a dash in each of the two
-columns (the owner's wish, 2026-11-08; both sources since the folder library).
+"""Settings → Plex & library, under its boxes: "What does a library add?", what AirGrabber does
+without a library and with one (Plex, or your own folders: docs/folder-library/), one line per
+thing, a ✓ or a dash in each of the two columns (the owner's wish, 2026-11-08; both sources since
+the folder library). The table is folded, closed at first ("▸ Show" beside the box's name; spec
+§2).
 
 Only what really needs a library is a dash on the left: what you have and miss (the ✓ and
 "missing" cues, the calendar's "✓ Downloaded"), skipping what's already in the library, the
@@ -18,9 +20,11 @@ import customtkinter as ctk
 
 from app.i18n import N_, t
 from app.ui import theme
-from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, SettingsBox, SettingsPage
+from app.ui.settings_layout import BOX_INNER, TEXT_SIZE, Fold, SettingsBox, SettingsPage
+from app.ui.settings_search import add_words
 
-TITLE_TEXT = N_("With and without a library")
+TITLE_TEXT = N_("What does a library add?")
+OLD_TITLE = N_("With and without a library")  # what search still finds it by
 WITHOUT_TEXT = N_("Without a library")
 WITH_TEXT = N_("With Plex or your folders")
 PHONE_HEADING = N_("Phone app (needs a library)")
@@ -67,8 +71,11 @@ class PlexCompareBox:
 
     def __init__(self, page: SettingsPage, *, phone: bool) -> None:
         self.box: SettingsBox = page.box(t(TITLE_TEXT))
+        add_words(self.box.frame, OLD_TITLE)
         self.table = ctk.CTkFrame(self.box.body, fg_color="transparent")
         self.box.add(self.table, gap=10)
+        self.fold = Fold(self.box.body, self.table)
+        self.fold.button.grid(row=0, column=0, sticky="e")  # beside the box's name
         self.table.grid_columnconfigure(0, weight=1)
         for column in (1, 2):
             self.table.grid_columnconfigure(column, minsize=MARK_WIDTH)

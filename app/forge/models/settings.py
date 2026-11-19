@@ -94,6 +94,10 @@ class ForgeSettings(BaseModel):
     # Series (Folder) and Movie (Folder) got the Move to library folder extra once
     # (app/forge/core/library.py's `carry_move_option`): never again after that.
     move_carried: bool = False
+    # The Series / Movies folders were added to AirGrabber's folder lists once, so Settings'
+    # Folders page shows them in its one list per kind (app/forge/core/folders_carry.py's
+    # `carry_library_folders`): never again after that.
+    folders_carried: bool = False
     # The one-time carry-over of watch_folders / presets / automatic into forge.db's rules ran
     # (app/forge/core/rules_service.py's `carry_rules`): from then on the rules say what is
     # watched and how, and those fields are no longer read for watching.

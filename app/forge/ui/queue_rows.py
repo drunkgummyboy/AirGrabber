@@ -116,7 +116,7 @@ YES_FORGE = N_("Yes, forge it")
 IGNORE_ACTION = "ignore"  # a menu: Auto-rename leaves the file (or its folder) alone
 LEAVE_ALONE = N_("Leave it alone ▾")
 KEEP_MINE = N_("Keep the one I have ▾")
-LEAVE_TIP = N_("Takes it off the list. Auto-rename won't touch it again.")
+LEAVE_TIP = N_("Takes it off the list. Sorting won't touch it again.")
 # A band held as already in the library: the download takes the library copy's place, which
 # moves aside (QueueView.replace_band).
 REPLACE_ACTION = "replace"
@@ -133,8 +133,8 @@ STAYS = N_("📁 Stays in its folder")
 STAYS_IN = N_("📁 Stays here, in {folder}")
 STAYED = N_("📁 Stayed in its folder")
 STAYED_IN = N_("📁 Stayed here, in {folder}")
-NO_SERIES_FOLDER = N_("⚠ Choose your Series folder in Settings › Auto-rename")
-NO_MOVIES_FOLDER = N_("⚠ Choose your Movies folder in Settings › Auto-rename")
+NO_SERIES_FOLDER = N_("⚠ Choose your Series folder in Settings › Folders")
+NO_MOVIES_FOLDER = N_("⚠ Choose your Movies folder in Settings › Folders")
 SORTED_IN = N_("📁 Sorted in {folder}")  # a rule that sorts its files inside its watched folder
 SORTED_DONE = N_("📁 Was sorted in {folder}")
 

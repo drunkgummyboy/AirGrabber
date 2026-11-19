@@ -87,6 +87,11 @@ class ProwlarrIndexer(BaseIndexer):
 
         return await self._first_hit(text_queries(request)[:_MAX_QUERIES], search_query)
 
+    def with_connection(self, url: str, api_key: str) -> ProwlarrIndexer:
+        """The same indexer for another URL and key (Settings' Test connection tries what its
+        fields hold without storing it)."""
+        return ProwlarrIndexer(self._http, url=lambda: url, api_key=lambda: api_key)
+
     async def test(self) -> str:
         """'Prowlarr <version>' when the configured URL and key work; IndexerError otherwise."""
         base, headers = self._connection()

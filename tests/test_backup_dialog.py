@@ -1,7 +1,7 @@
 """Backup & move in the UI (app/ui/backup_dialog.py): the summary and result texts, the save
 dialog (keys and passwords off by default, the file dialog, a failure), the load dialog (what
 the file holds, Replace / Add to what I have, a file that can't be loaded, the restart note),
-Settings → Backup and the welcome's "Moving from another PC?" link, on a hidden Tk root with a
+Settings → Updates & backup and the welcome's "Moving from another PC?" link, on a hidden Tk root with a
 stand-in BackupService. The file dialogs are never opened."""
 
 from __future__ import annotations
@@ -54,9 +54,9 @@ from app.ui.settings_dialog import (
     BACKUP_TEXT,
     LOAD_BACKUP_BUTTON,
     SAVE_BACKUP_BUTTON,
-    SECTION_BACKUP,
     SettingsDialog,
 )
+from app.ui.settings_pages_registry import PAGE_UPDATES
 from app.ui.welcome_dialog import MOVING_LINK, WelcomeDialog
 from tests.people import FakePeople
 
@@ -131,7 +131,7 @@ class TextTests(unittest.TestCase):
         there = result_lines(result(kept=KeptDownloads.THIS_PC))
         self.assertEqual(
             there[-1],
-            "Where downloads go stays as it was on this PC: the backup's qBittorrent was on the "
+            "The torrent program stays as it was on this PC: the backup's qBittorrent was on the "
             "other PC.",
         )
         self.assertNotIn(here[-1], result_lines(result()))
@@ -413,12 +413,12 @@ class SettingsSectionTests(DialogTestCase):
         self.keep(dialog)
         return dialog
 
-    async def test_the_backup_section(self) -> None:
+    async def test_the_backup_box_on_updates_and_backup(self) -> None:
         dialog = self.dialog(FakeBackup())
-        items = list(dialog._items)
-        self.assertEqual(items[items.index(SECTION_BACKUP) + 1], "Advanced")
-        page = dialog.page(SECTION_BACKUP)
-        self.assertEqual(texts(page)[0], "Backup")
+        self.assertEqual(dialog.sections[-1], PAGE_UPDATES)
+        page = dialog.page(PAGE_UPDATES)
+        self.assertEqual(texts(page)[0], "Updates & backup")
+        self.assertIn("Backup", texts(page))
         self.assertIn(BACKUP_TEXT, texts(page))
         self.assertEqual(
             {SAVE_BACKUP_BUTTON, LOAD_BACKUP_BUTTON} & set(buttons(page)),
@@ -427,7 +427,7 @@ class SettingsSectionTests(DialogTestCase):
 
     async def test_save_opens_the_save_dialog(self) -> None:
         dialog = self.dialog(FakeBackup())
-        buttons(dialog.page(SECTION_BACKUP))[SAVE_BACKUP_BUTTON].invoke()
+        buttons(dialog.page(PAGE_UPDATES))[SAVE_BACKUP_BUTTON].invoke()
         self.assertIsInstance(dialog._backup_dialog, SaveBackupDialog)
 
     async def test_a_replacing_load_closes_settings(self) -> None:
@@ -436,7 +436,7 @@ class SettingsSectionTests(DialogTestCase):
         with mock.patch.object(
             backup_dialog, "ask_open_path", return_value=self.folder / "b.airgrabber"
         ):
-            buttons(dialog.page(SECTION_BACKUP))[LOAD_BACKUP_BUTTON].invoke()
+            buttons(dialog.page(PAGE_UPDATES))[LOAD_BACKUP_BUTTON].invoke()
         loading = dialog._backup_dialog
         assert isinstance(loading, LoadBackupDialog)
         await self.settle()

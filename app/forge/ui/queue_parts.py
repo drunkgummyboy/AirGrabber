@@ -68,10 +68,10 @@ MOVE_TIP = N_(
 
 MOVE_ALWAYS_TIP = N_("Downloads MediaForge finds always move to your library folder.")
 
-NO_LIBRARY_FOLDER = N_("{n} file wasn't forged: choose its library folder in Settings › Auto-rename.")
+NO_LIBRARY_FOLDER = N_("{n} file wasn't forged: choose its library folder in Settings › Folders.")
 
 NO_LIBRARY_FOLDERS = N_(
-    "{n} files weren't forged: choose their library folder in Settings › Auto-rename."
+    "{n} files weren't forged: choose their library folder in Settings › Folders."
 )
 
 NAME_GROUP = N_("Name")

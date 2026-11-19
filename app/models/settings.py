@@ -242,7 +242,7 @@ class SubtitlesFor(StrEnum):
 
 
 class CalendarLayout(StrEnum):
-    """Settings → Looks → Calendar view."""
+    """Settings → Pages → Calendar."""
 
     WEEKS = "weeks"  # the grid of whole weeks (1-5 of them)
     ROLLING = "rolling"  # one row with today in the middle (`library.rolling_range`)
@@ -257,7 +257,7 @@ class InfoLayout(StrEnum):
 
 
 class PlayIn(StrEnum):
-    """Settings → Plex → Play in: what Play opens a film or episode from Plex in
+    """Settings → Playing → Play in: what Play opens a film or episode from Plex in
     (docs/player/2026-11-13-pc-player-design.md)."""
 
     AIRGRABBER = "airgrabber"  # AirGrabber's own player (app/media_player.py)
@@ -504,7 +504,7 @@ class Settings(BaseModel):
     # The last searches, newest first (the search box lists them while it is empty): this PC's.
     recent_searches: tuple[str, ...] = ()
     preferred_groups: KeywordList = ()
-    # Never shown or picked ("Wrong or fake?" on the Downloads page adds one; Settings › Advanced).
+    # Never shown or picked ("Wrong or fake?" on the Downloads page adds one; Settings › Quality & sources).
     blocked_groups: KeywordList = ()
     # The groups whose grabs the user kept (app/services/release_groups.py), ranked after the
     # preferred ones; learned again from the download history at every start and grab.
@@ -590,14 +590,14 @@ class Settings(BaseModel):
     plex_server_uri: str = ""  # the server's connection that answered last
     plex_sections_off: tuple[str, ...] = ()  # the libraries (section keys) switched off
     # The folder library (docs/folder-library/; app/services/library_source.py): without Plex,
-    # the user's own film and series folders as the library, only once switched on ("Use these
-    # folders"; an update never does). With a Plex token these are not read. This PC's own,
+    # the user's own film and series folders as the library, only once switched on ("Count what's
+    # in them" on Settings → Folders; an update never does). With a Plex token these are not read. This PC's own,
     # never in a backup (app/services/backup.py).
     folder_library_on: bool = False
     film_folders: tuple[str, ...] = ()
     series_folders: tuple[str, ...] = ()
     # The PC player (docs/player/2026-11-13-pc-player-design.md): what Play opens in (Settings →
-    # Plex), and the always-this-language rules its menus set. `always_audio`: a language code
+    # Playing), and the always-this-language rules its menus set. `always_audio`: a language code
     # ("nl"), "" = no rule; `always_subtitles`: "" = no rule, "off" = subtitles off, else a code.
     play_in: Annotated[PlayIn, _known(PlayIn, PlayIn.AIRGRABBER)] = PlayIn.AIRGRABBER
     always_audio: str = ""

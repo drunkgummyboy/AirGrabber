@@ -4,7 +4,7 @@ A qBittorrent UI theme made for AirGrabber (https://github.com/drunkgummyboy/Air
 slate-blue accent and edges, rounded buttons and tabs, and its green / amber / red for the
 torrents' states. AirGrabber copies this folder to `%LOCALAPPDATA%\AirGrabber\qbittorrent-theme`
 and points qBittorrent at its `config.json` while setting qBittorrent up (only while qBittorrent is
-closed, and never over a theme of your own). Settings → Where downloads go → "AirGrabber look in
+closed, and never over a theme of your own). Settings → Torrent program → "AirGrabber look in
 qBittorrent" turns it off again; so does qBittorrent's Options → Behavior → "Use custom UI theme".
 
 - `config.json`: qBittorrent's colours. `colors` is the light set, `colors.dark` the dark one; the

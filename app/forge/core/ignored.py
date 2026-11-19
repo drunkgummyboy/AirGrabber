@@ -1,10 +1,10 @@
-"""Ignored files and folders: what Auto-rename leaves alone (the owner's "Leave it alone ▾" or
-"Keep the one I have ▾" in the queue, listed in MediaForge Settings › Auto-rename).
+"""Ignored files and folders: what Sorting leaves alone (the owner's "Leave it alone ▾" or
+"Keep the one I have ▾" in the queue, listed in Settings › Sorting).
 
 IgnoreService wraps `app.forge.db.ignored.IgnoredRepo` (`app/forge/ui` never sees the database
 package) and keeps what is ignored in memory as an `IgnoreList`: a frozen snapshot the renamer
 hands to `watch.candidates` in a worker thread. Ignoring only applies to watching and
-Auto-rename; a file added by hand is never refused.
+Sorting; a file added by hand is never refused.
 
 `forget_gone`: what is no longer in a watched folder comes off the list by itself, at Forge's start
 and at every look of the renamer: moved or deleted (only when that folder can be reached: a NAS
@@ -129,7 +129,7 @@ class IgnoreService:
         return entry
 
     async def stop_ignoring(self, path: Path) -> bool:
-        """Auto-rename may pick `path` up again. Returns whether it was ignored."""
+        """Sorting may pick `path` up again. Returns whether it was ignored."""
         removed = await self._repository.remove(path)
         self._set(tuple(e for e in self._entries if ignore_key(e.path) != ignore_key(path)))
         if removed:

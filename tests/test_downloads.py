@@ -742,7 +742,7 @@ class AppModeTests(DownloadTestCase):
             await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
         self.assertEqual(str(caught.exception), NO_TORRENT_APP)
         self.assertNotIsInstance(caught.exception, ReleaseError)
-        self.assertIn('under "Where downloads go" in Settings.', NO_TORRENT_APP)
+        self.assertIn('under "Torrent program" in Settings.', NO_TORRENT_APP)
         self.assertEqual(sum(self.web.requests.values()), 0)
         self.assertEqual(self.opened, [])
         self.assertEqual(await self.history(), [])

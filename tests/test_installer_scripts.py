@@ -794,11 +794,11 @@ class InstallerQBittorrentTests(unittest.TestCase):
         self.assertEqual(
             running["host"][-1],
             "    qBittorrent is installed. Close qBittorrent, then set it up in AirGrabber (Settings, "
-            "Where downloads go).",
+            "Torrent program).",
         )
         self.assertEqual(
             self.results["setup_failed"]["host"][-1],
-            "    qBittorrent is installed. Set it up in AirGrabber (Settings, Where downloads go).",
+            "    qBittorrent is installed. Set it up in AirGrabber (Settings, Torrent program).",
         )
 
     def test_a_failed_install_carries_on(self) -> None:

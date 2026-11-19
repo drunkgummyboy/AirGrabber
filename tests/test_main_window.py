@@ -29,7 +29,7 @@ from app.models import (
 )
 from app.single_instance import ForgeRequest
 from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
-from app.ui.settings_dialog import SECTION_LOOKS
+from app.ui.settings_pages_registry import PAGE_LOOKS
 from app.i18n import t
 from app.update_guard import WentBack
 from app.ui.main_window import (
@@ -865,8 +865,8 @@ class ForgeWiringTests(unittest.TestCase):
             focus_force=lambda: shown.append("focus"),
         )
         window: Any = SimpleNamespace(_settings_dialog=dialog)
-        MainWindow._open_settings(window, SECTION_LOOKS)
-        self.assertEqual(shown, [SECTION_LOOKS, "lift", "focus"])
+        MainWindow._open_settings(window, PAGE_LOOKS)
+        self.assertEqual(shown, [PAGE_LOOKS, "lift", "focus"])
         shown.clear()
         MainWindow._open_settings(window)  # the band's ⚙: the page it is on
         self.assertEqual(shown, ["lift", "focus"])

@@ -72,11 +72,11 @@ class RouteTest(ForgeTestCase):
             )
         self.assertEqual(
             _destination("ready", MediaKind.EPISODE, True, False, ""),
-            ("⚠ Choose your Series folder in Settings › Auto-rename", "warn"),
+            ("⚠ Choose your Series folder in Settings › Folders", "warn"),
         )
         self.assertEqual(
             _destination("ready", MediaKind.MOVIE, True, False, ""),
-            ("⚠ Choose your Movies folder in Settings › Auto-rename", "warn"),
+            ("⚠ Choose your Movies folder in Settings › Folders", "warn"),
         )
 
 
@@ -150,7 +150,7 @@ class MoveInTheQueueTest(QueueCase):
         band = self.band("Heat")
         self.assertEqual(
             (band.dest, band.dest_look),
-            ("⚠ Choose your Movies folder in Settings › Auto-rename", "warn"),
+            ("⚠ Choose your Movies folder in Settings › Folders", "warn"),
         )
         opened: list[str] = []
         self.view.on_choose_folders = lambda: opened.append("folders")

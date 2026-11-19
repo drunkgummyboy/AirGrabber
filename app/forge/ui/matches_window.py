@@ -1,6 +1,6 @@
 """Settings › Naming's "Manage…": the remembered matches in a small window of their own, modal over
-Settings. It only shows and asks: what is forgotten stays the form's (settings_naming's NamingPart)
-and happens on Settings' Save, as everything else there, so Cancel still takes it all back.
+Settings. It only shows and asks: Forget and Clear all are Naming's (settings_naming's
+NamingSection), stored at once like every change in Settings (its Undo bar can take it back).
 
 No title bar (app/ui/borderless.py), never `transient` (see app/forge/ui/widgets/dialogs.py); it
 hands the grab back to Settings when it closes, as app/forge/ui/import_step.py does."""
@@ -42,7 +42,6 @@ BUTTONS_GAP = 16  # above the buttons
 ROOM_AROUND_LIST = 220  # the heading, the note and the buttons, when the list gets its height
 LIST_MAX = 420  # the list's height, at most; a longer one scrolls
 
-SAVE_NOTE = N_("Nothing is forgotten until you click Save in Settings.")
 DONE = N_("Done")
 NONE_YET = N_("None yet")
 
@@ -83,7 +82,7 @@ class MatchesWindow(ctk.CTkToplevel):
         heading = heading_row(body, title, right_room=clearance(PAD_X))
         heading.pack(fill="x", pady=(0, LINE_GAP))
         text_label(
-            body, f"{text} {t(SAVE_NOTE)}", size=TEXT_SIZE, color=theme.TEXT_MUTED, wraplength=WIDTH
+            body, text, size=TEXT_SIZE, color=theme.TEXT_MUTED, wraplength=WIDTH
         ).pack(anchor="w", fill="x", pady=(0, BUTTONS_GAP))
 
         self.scroll = FitScroll(body, follow=True)
