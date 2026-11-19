@@ -159,8 +159,9 @@ def build_queries(
 # --- relevance --------------------------------------------------------------------------------
 
 
-def _normalize(text: str) -> str:
-    """Accent-folded, case-folded, apostrophe-free text with single spaces between words."""
+def normalize_text(text: str) -> str:
+    """Accent-folded, case-folded, apostrophe-free text with single spaces between words. Also
+    the phone's actor page's (app/services/phone/person.py): its name match and self filter."""
     folded = unicodedata.normalize("NFKD", text.casefold())
     folded = "".join(char for char in folded if not unicodedata.combining(char))
     return _SEPARATORS.sub(" ", _APOSTROPHES.sub("", folded)).strip()
@@ -229,7 +230,7 @@ class _Matcher:
     years: frozenset[str]  # MOVIE: the accepted release years; empty when the year is unknown
 
     def matches(self, title: str) -> bool:
-        text = _normalize(title)
+        text = normalize_text(title)
         if self.required and not any(pattern.search(text) for pattern in self.required):
             return False
         if any(pattern.search(text) for pattern in self.forbidden):
@@ -251,7 +252,7 @@ class _Matcher:
             previous = rest
             rest = _LEADING_SITE.sub("", _LEADING_TAG.sub("", rest))
         first = next(
-            (word for word in _words(_normalize(rest)) if word not in _STOPWORDS), None
+            (word for word in _words(normalize_text(rest)) if word not in _STOPWORDS), None
         )
         if first is None:
             return True
@@ -297,7 +298,7 @@ def _episode_marker(season: int, episode: int) -> re.Pattern[str]:
 @functools.lru_cache(maxsize=64)
 def _matcher(request: SearchRequest) -> _Matcher:
     title_words = tuple(
-        word for word in _words(_normalize(request.title)) if word not in _STOPWORDS
+        word for word in _words(normalize_text(request.title)) if word not in _STOPWORDS
     )
     required: list[re.Pattern[str]] = []
     forbidden: list[re.Pattern[str]] = []
@@ -367,7 +368,7 @@ def _excluded_phrases(keywords: tuple[str, ...]) -> tuple[str, ...]:
     """The normalized phrases the excluded keywords stand for, source-tag families expanded."""
     phrases: dict[str, None] = {}
     for keyword in keywords:
-        phrase = _normalize(keyword)
+        phrase = normalize_text(keyword)
         if phrase:
             phrases.update(dict.fromkeys(_SOURCE_TAG_ALIASES.get(phrase, (phrase,))))
     return tuple(phrases)
@@ -378,7 +379,7 @@ def passes_settings(release: TorrentRelease, settings: Settings) -> bool:
     "telecine" and "screener" also cover their scene tags such as CAMRip or HDTS. ALWAYS_SKIPPED
     counts as if it were on the list. Also False for a release of a blocked group
     (`blocked_groups`, ignoring case)."""
-    text = f" {_normalize(release.title)} "
+    text = f" {normalize_text(release.title)} "
     for phrase in _excluded_phrases((*settings.excluded_keywords, *ALWAYS_SKIPPED)):
         if f" {phrase} " in text:
             return False
@@ -464,7 +465,7 @@ def merge(releases: Iterable[TorrentRelease]) -> list[TorrentRelease]:
         key: tuple[object, ...] = (
             ("hash", release.info_hash)
             if release.info_hash
-            else ("title", _normalize(release.title), release.size_bytes)
+            else ("title", normalize_text(release.title), release.size_bytes)
         )
         groups.setdefault(key, []).append(release)
     return [_combine(group) for group in groups.values()]

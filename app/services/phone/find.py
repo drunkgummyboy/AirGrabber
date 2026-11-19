@@ -24,6 +24,9 @@ beats `on_list` (the phone's person's watchlist) beats `new`. Series: `in_librar
 `following` (the phone's person follows it, as Discover tells: its TVMaze match or its name) beats
 `new`. Episode: `in_library` beats `downloading` (in the download history, itself or its season's
 pack) beats `new`. Without a library nothing is had (and the phone connection answers 409 anyway).
+A `downloading` film or episode also says how far it is (`progress`, progress.py); the others
+carry no `progress`. The actor page (person.py) lists its credits as these results (`items_of`),
+so they are found too.
 
 What's had of a series counts whether AirGrabber's shows cache knows the show or not (Plex's and
 the folders' episode rows hold only shows it knows): Plex's show by its TMDB, TheTVDB or IMDb id
@@ -41,7 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Generic, Literal, TypeGuard, TypeVar
@@ -60,10 +63,12 @@ from app.database import LibraryFileRepository
 from app.models.folder_library import LibraryFile
 from app.models.plex import PlexFilms, PlexTitle
 from app.services.discovery import DiscoveryService, NoTVMazeMatch
+from app.services.download_status import DownloadStatusService
 from app.services.downloads import DownloadService
 from app.services.library import LibraryService
 from app.services.library_source import folders_on
 from app.services.phone.coming_up import person_gone, safe_poster
+from app.services.phone.progress import progress_now
 from app.services.phone.server import Handler, Reply, Request, bad_request, error_reply
 from app.services.phone.suggestions import (
     Suggestions,
@@ -132,14 +137,44 @@ def search_again() -> Reply:
     )
 
 
+TMDBTrouble = Literal["no_key", "key_refused", "out_of_reach"]
+
+
+def no_key_message() -> str:
+    return t("Searching needs a TMDB key: add one in AirGrabber's Settings.")
+
+
+def key_refused_message() -> str:
+    return t("TMDB refused the key in AirGrabber's Settings, so check it there.")
+
+
+def couldnt_search() -> Reply:
+    """TMDB out of reach: a plain 502."""
+    message = t("AirGrabber couldn't search just now, so try again in a moment.")
+    return error_reply(502, "failed", message)
+
+
+def tmdb_trouble(failures: Sequence[BaseException], *, route: str) -> TMDBTrouble:
+    """Why TMDB couldn't be asked (at least one of `failures`): no key, a refused key, or out
+    of reach (logged by its kind under `route`, "Phone find"). Anything but a TMDBError is
+    raised again."""
+    for failure in failures:
+        if not isinstance(failure, TMDBError):
+            raise failure
+    if any(isinstance(failure, TMDBNotConfigured) for failure in failures):
+        return "no_key"
+    if any(isinstance(failure, TMDBAuthError) for failure in failures):
+        return "key_refused"
+    log.info("%s: TMDB couldn't be asked: %s", route, type(failures[0]).__name__)
+    return "out_of_reach"
+
+
 def _no_key() -> Reply:
-    message = t("Searching needs a TMDB key: add one in AirGrabber's Settings.")
-    return Reply(200, {"results": [], "message": message})
+    return Reply(200, {"results": [], "message": no_key_message()})
 
 
 def _key_refused() -> Reply:
-    message = t("TMDB refused the key in AirGrabber's Settings, so check it there.")
-    return Reply(200, {"results": [], "message": message})
+    return Reply(200, {"results": [], "message": key_refused_message()})
 
 
 def _same_show(title: PlexTitle, tmdb_id: int, tvdb_id: int | None, imdb_id: str | None) -> bool:
@@ -211,11 +246,14 @@ class PhoneFind:
         settings: SettingsService,
         plex: PlexService,
         files: LibraryFileRepository,
+        status: DownloadStatusService,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
     ) -> None:
         """`plex`, `files`: what Plex and the folders have of a series the shows cache doesn't
-        know. `now`: an aware instant, whose time zone decides which day "today" is; for tests."""
+        know. `status`: the Downloads page, only its `latest` read (`progress`). `now`: an aware
+        instant, whose time zone decides which day "today" is; for tests."""
         self._settings = settings
+        self._status = status
         self._plex = plex
         self._files = files
         self._library = library
@@ -256,21 +294,30 @@ class PhoneFind:
         if isinstance(films, BaseException) or isinstance(shows, BaseException):
             return _not_searched(films, shows)
         films, shows = films[:FIND_LIMIT], shows[:FIND_LIMIT]
-        for movie in films:
-            self._films.keep(movie.id, movie)
-        for show in shows:
-            self._shows.keep(show.id, show)
-        results = [*await self._film_items(films, person), *await self._series_items(shows, person)]
+        film_items, series_items = await self.items_of(films, shows, person)
+        results = [*film_items, *series_items]
         log.info("Phone find: %d films and %d series found", len(films), len(shows))
         if not results:
             message = t("Nothing was found by that name, so try other words.")
             return Reply(200, {"results": [], "message": message})
         return Reply(200, {"results": results})
 
-    async def _film_items(self, films: list[Movie], person: int) -> list[dict[str, Any]]:
+    async def items_of(
+        self, films: Sequence[Movie], shows: Sequence[DiscoverShow], person: int
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """These films' and series' result items, in their order, as `person` sees them; each
+        is remembered as found from here on (the actor page's credits too)."""
+        for movie in films:
+            self._films.keep(movie.id, movie)
+        for show in shows:
+            self._shows.keep(show.id, show)
+        return await self._film_items(films, person), await self._series_items(shows, person)
+
+    async def _film_items(self, films: Sequence[Movie], person: int) -> list[dict[str, Any]]:
         if not films:
             return []
         now = self._now()
+        progress = progress_now(self._status)
         details = await details_of(self._discovery.movie_details, [movie.id for movie in films])
         plex = await self._library.plex_films()
         listed = {entry.movie_id for entry in await self._watchlist.by_release_of(person)}
@@ -278,18 +325,19 @@ class PhoneFind:
         for movie in films:
             found = _found_film(movie, details.get(movie.id), now)
             state = await self._film_state(found, plex, listed)
-            items.append(
-                _item(
-                    "movie",
-                    movie.id,
-                    movie.title,
-                    movie.year,
-                    movie.poster_url(_POSTER_SIZE),
-                    movie.overview,
-                    state,
-                    found.out,
-                )
+            item = _item(
+                "movie",
+                movie.id,
+                movie.title,
+                movie.year,
+                movie.poster_url(_POSTER_SIZE),
+                movie.overview,
+                state,
+                found.out,
             )
+            if state == "downloading":
+                item["progress"] = progress.film(movie.id)
+            items.append(item)
         return items
 
     async def _film_state(
@@ -303,7 +351,9 @@ class PhoneFind:
             return "downloading"
         return "on_list" if movie_id in listed else "new"
 
-    async def _series_items(self, shows: list[DiscoverShow], person: int) -> list[dict[str, Any]]:
+    async def _series_items(
+        self, shows: Sequence[DiscoverShow], person: int
+    ) -> list[dict[str, Any]]:
         if not shows:
             return []
         today = self._now().date()
@@ -462,26 +512,26 @@ class PhoneFind:
             return details
         had = await self._had(tmdb_id, details)
         now = self._now()
+        progress = progress_now(self._status)
         seasons: dict[int, list[dict[str, Any]]] = {}
-        for episode in sorted(
-            (one for one in details.episodes if one.number is not None),
-            key=lambda one: (one.season, one.number or 0),
-        ):
+        numbered = [(one, one.number) for one in details.episodes if one.number is not None]
+        for episode, number in sorted(numbered, key=lambda pair: (pair[0].season, pair[1])):
             state: EpisodeState
-            if (episode.season, episode.number) in had:
+            if (episode.season, number) in had:
                 state = "in_library"
             elif details.is_downloaded(episode):
                 state = "downloading"
             else:
                 state = "new"
-            seasons.setdefault(episode.season, []).append(
-                {
-                    "number": episode.number,
-                    "name": episode.name,
-                    "out": episode.has_aired(now),
-                    "state": state,
-                }
-            )
+            item: dict[str, Any] = {
+                "number": number,
+                "name": episode.name,
+                "out": episode.has_aired(now),
+                "state": state,
+            }
+            if state == "downloading":
+                item["progress"] = progress.episode(details.show.id, episode.season, number)
+            seasons.setdefault(episode.season, []).append(item)
         log.info("Phone find: a series' episodes, %d seasons", len(seasons))
         return Reply(
             200,
@@ -532,15 +582,12 @@ class PhoneFind:
 
 
 def _not_searched(*results: object) -> Reply:
-    """The answer when TMDB couldn't be asked: no key, or out of reach."""
+    """Find's answer when TMDB couldn't be asked: no key, a refused key (an empty list that
+    says so), or out of reach."""
     failures = [result for result in results if isinstance(result, BaseException)]
-    for failure in failures:
-        if not isinstance(failure, TMDBError):
-            raise failure
-    if any(isinstance(failure, TMDBNotConfigured) for failure in failures):
+    trouble = tmdb_trouble(failures, route="Phone find")
+    if trouble == "no_key":
         return _no_key()
-    if any(isinstance(failure, TMDBAuthError) for failure in failures):
+    if trouble == "key_refused":
         return _key_refused()
-    log.info("Phone find: TMDB couldn't be asked: %s", type(failures[0]).__name__)
-    message = t("AirGrabber couldn't search just now, so try again in a moment.")
-    return error_reply(502, "failed", message)
+    return couldnt_search()

@@ -39,6 +39,7 @@ from app.models import (
     TVDetails,
     Video,
 )
+from app.models.person import Person, PersonMatch
 from app.models.plex import PlexFilms, PlexShows
 from app.services.library import LibraryService
 from app.services.release_dates import ReleaseDates
@@ -939,6 +940,15 @@ class DiscoveryService:
     async def search_shows(self, query: str, *, limit: int = 12) -> list[DiscoverShow]:
         """TMDB's shows matching `query`, best match first. TMDB errors propagate."""
         return await self._tmdb.search_tv(query, limit=limit)
+
+    async def search_people(self, name: str) -> list[PersonMatch]:
+        """TMDB's people matching `name`, best match first. TMDB errors propagate."""
+        return await self._tmdb.search_people(name)
+
+    async def person(self, person_id: int) -> Person:
+        """TMDB's person with their cast parts (`TMDBClient.person`); not cached. TMDB errors
+        propagate (TMDBNotFound: no such person)."""
+        return await self._tmdb.person(person_id)
 
     async def check_tmdb_key(self, key: str) -> bool:
         """Whether TMDB accepts `key` (not yet saved). Raises TMDBError when TMDB can't be

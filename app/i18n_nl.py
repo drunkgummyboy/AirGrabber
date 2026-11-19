@@ -2046,6 +2046,7 @@ NL: dict[str, str] = {
         "AirGrabber kon nu niet zoeken, dus probeer het zo nog eens.",
     "You already follow {title}.": "Je volgt {title} al.",
     "You follow {title} now.": "Je volgt {title} nu.",
+    "AirGrabber couldn't find {name} on TMDB.": "AirGrabber kon {name} niet vinden op TMDB.",
     "The Forge is still starting, so try again in a moment.":
         "De Forge start nog op, dus probeer het zo opnieuw.",
     "Already sorted, or AirGrabber restarted.":

@@ -77,6 +77,8 @@ ErrorCode = Literal[
     "no_longer_there",
     "no_results",
     "failed",
+    "no_tmdb_key",  # the actor page: no TMDB key in Settings (person.py)
+    "tmdb_key_refused",  # the actor page: TMDB refuses the key in Settings
 ]
 
 

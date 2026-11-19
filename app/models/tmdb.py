@@ -22,6 +22,7 @@ from app.models.domain import (
     TVDetails,
     Video,
 )
+from app.models.person import Person, PersonCredit, PersonMatch
 from app.models.types import ImdbId, OptionalDate
 
 
@@ -461,6 +462,79 @@ class TMDBSeason(_Wire):
     season_number: int
     poster_path: str | None = None
     episodes: tuple[TMDBSeasonEpisode, ...] = ()
+
+
+def _loose_date(value: object) -> object:
+    """A person's date as TMDB writes it ("1963-12-18"); one it can't mean ("", "1963-00-00")
+    is unknown rather than a broken answer."""
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    return value
+
+
+_PersonDate = Annotated[date | None, BeforeValidator(_loose_date)]
+
+
+class TMDBPersonResult(_Wire):
+    """A person in /search/person's results."""
+
+    id: int
+    name: str
+
+    def to_match(self) -> PersonMatch:
+        return PersonMatch(id=self.id, name=self.name)
+
+
+class TMDBPerson(_Wire):
+    """/person/{id} (its combined_credits are read part by part: `to_person_credit`)."""
+
+    id: int
+    name: str = ""
+    biography: str | None = None
+    birthday: _PersonDate = None
+    deathday: _PersonDate = None
+    place_of_birth: str | None = None
+    known_for_department: str | None = None
+    profile_path: str | None = None
+
+    def to_person(self, credits: Sequence[PersonCredit]) -> Person:
+        return Person(
+            id=self.id,
+            name=self.name,
+            biography=(self.biography or "").strip(),
+            birthday=self.birthday,
+            deathday=self.deathday,
+            place_of_birth=(self.place_of_birth or "").strip() or None,
+            known_for=(self.known_for_department or "").strip() or None,
+            profile_path=self.profile_path or None,
+            credits=tuple(credits),
+        )
+
+
+class _TMDBCreditHead(_Wire):
+    media_type: str = ""
+    character: str | None = None
+    adult: bool | None = None
+
+
+def to_person_credit(raw: object) -> PersonCredit | None:
+    """A cast part of /person/{id}'s combined_credits: a film ("movie") or a series ("tv"),
+    as TMDB's lists describe them; None for anything else, and for a title TMDB flags adult
+    (left out as the searches leave them out, `include_adult=false`)."""
+    head = _TMDBCreditHead.model_validate(raw)
+    if head.adult:
+        return None
+    title: Movie | DiscoverShow
+    if head.media_type == "movie":
+        title = TMDBMovieItem.model_validate(raw).to_movie()
+    elif head.media_type == "tv":
+        title = TMDBTVItem.model_validate(raw).to_discover_show()
+    else:
+        return None
+    return PersonCredit(title=title, character=(head.character or "").strip())
 
 
 def _earliest(releases: Sequence[TMDBReleaseDate], release_type: ReleaseType) -> date | None:

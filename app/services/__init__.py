@@ -36,6 +36,7 @@ from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.find import PhoneFind
 from app.services.phone.forge import PhoneForge
 from app.services.phone.library import PhoneLibrary, reachable_copy
+from app.services.phone.person import PhonePerson
 from app.services.phone.play_links import PlayLinks
 from app.services.phone.sends import PhoneSends
 from app.services.phone.server import Route
@@ -272,6 +273,7 @@ class Services:
             settings=settings,
             plex=self.plex,
             files=db.library_files,
+            status=self.download_status,  # its `latest` only: a download's `progress`
         )
         # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
         # ffmpeg (app/services/phone/copies.py); the phone asks, or Send to phone does. A folder
@@ -326,6 +328,8 @@ class Services:
             ).routes(),
             **suggestions.routes(),
             **find.routes(),
+            # The actor page: a person's films and series, listed (and found) as find's results.
+            **PhonePerson(find, discovery, self.profiles).routes(),
             **shortlist.routes(),
             **self.phone_sends.routes(),
             **self.phone_forge.routes(),

@@ -33,10 +33,10 @@ from app.models import (
 )
 from app.services.search import (
     _SOURCE_TAG_FAMILIES,
-    _normalize,
     is_learned,
     is_preferred,
     is_relevant,
+    normalize_text,
     passes_settings,
 )
 
@@ -113,7 +113,7 @@ def pack_episodes(release: TorrentRelease, request: SearchRequest) -> int | None
     """How many episodes a season pack holds: what its title says ("S02E01-E08"), else the
     season's aired ones (`request.episode_count`); None when it isn't known, or it holds more
     than one season (its size says nothing against one season's)."""
-    title = _normalize(release.title)
+    title = normalize_text(release.title)
     if _SEASONS_SPAN.search(title):
         return None
     span = _EPISODE_SPAN.search(title)
@@ -129,8 +129,8 @@ def is_likely_fake(release: TorrentRelease, request: SearchRequest) -> bool:
     "Password"), or a known size too small for the resolution (EPISODE_MIN_MIB for TV,
     MOVIE_MIN_MIB for films; the *_HEVC tables for x265/HEVC/H.265 titles; a season pack:
     PACK_FLOOR_SHARE of that for all its episodes). An unknown size (0) never counts as too small."""
-    words = set(_normalize(release.title).split())
-    if (words & FAKE_WORDS) - set(_normalize(request.title).split()):
+    words = set(normalize_text(release.title).split())
+    if (words & FAKE_WORDS) - set(normalize_text(request.title).split()):
         return True
     if not release.size_bytes:
         return False
@@ -151,14 +151,14 @@ def is_pre_release(release: TorrentRelease, request: SearchRequest) -> bool:
     """A cam, telesync, telecine or screener copy: a PRE_RELEASE_TAGS word or phrase in the
     normalized title ("HDTS", "DVDScr", "CAM-Rip"; not "Scream"), unless the show or film's own
     title has it (a film called "Cam")."""
-    text = f" {_normalize(release.title)} "
-    title = f" {_normalize(request.title)} "
+    text = f" {normalize_text(release.title)} "
+    title = f" {normalize_text(request.title)} "
     return any(f" {tag} " in text and f" {tag} " not in title for tag in PRE_RELEASE_TAGS)
 
 
 def is_multi_episode(release: TorrentRelease) -> bool:
     """Whether the title holds more than one episode in a row ("S02E01-E08"): a pack."""
-    return _MULTI_EPISODE.search(_normalize(release.title)) is not None
+    return _MULTI_EPISODE.search(normalize_text(release.title)) is not None
 
 
 def quality_rank(release: TorrentRelease, profile: QualityProfile) -> int:
@@ -238,8 +238,8 @@ def size_rank(
 def is_dual_audio(release: TorrentRelease, request: SearchRequest) -> bool:
     """A "DUAL" release: two audio tracks, and the one that plays first may be a dub (the owner
     got Russian ones). Unless the show or film's own title has the word."""
-    words = set(_normalize(release.title).split())
-    return "dual" in words and "dual" not in _normalize(request.title).split()
+    words = set(normalize_text(release.title).split())
+    return "dual" in words and "dual" not in normalize_text(request.title).split()
 
 
 def group_rank(release: TorrentRelease, settings: Settings) -> int:

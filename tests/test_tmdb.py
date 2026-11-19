@@ -1216,5 +1216,103 @@ class CollectionTests(TMDBTestCase):
             await self.client(server).collection_of(1)
 
 
+class PersonTests(TMDBTestCase):
+    """search_people and person: the phone's actor page."""
+
+    async def test_a_person_with_their_parts_in_one_request(self) -> None:
+        server = FakeTMDB(ok(load("extras_person.json")))
+        with self.assertLogs(LOGGER, "WARNING") as logs:  # the part without a title
+            person = await self.client(server).person(7001)
+        [request] = server.requests
+        self.assert_request(request, "/person/7001", {"append_to_response": "combined_credits"})
+        self.assertEqual(
+            (person.id, person.name, person.biography, person.birthday, person.deathday,
+             person.place_of_birth, person.known_for, person.photo_url("w342")),
+            (7001, "Renée Marlowe", "Renée Marlowe is a made-up actor.", date(1971, 4, 2), None,
+             "Ghent, Belgium", "Acting", "https://image.tmdb.org/t/p/w342/renee.jpg"),
+        )
+        parts = [
+            (type(part.title).__name__, part.title.id, part.character, part.popularity)
+            for part in person.credits
+        ]
+        self.assertEqual(
+            parts,
+            [
+                ("Movie", 8801, "Dr. Ilse Varga", 12.25),
+                ("DiscoverShow", 9901, "Nell Quinn", 40.5),
+                ("DiscoverShow", 9902, "Self - Guest", 90.0),
+                ("Movie", 8802, "Herself", 2.0),
+                ("DiscoverShow", 9903, "", 5.5),  # no character: ""; the crew isn't a part
+            ],
+        )
+        orbit, harbour = person.credits[0].title, person.credits[1].title
+        assert isinstance(orbit, Movie) and isinstance(harbour, DiscoverShow)
+        self.assertEqual((orbit.title, orbit.year, orbit.overview), ("The Quiet Orbit", 2019,
+                                                                      "A made-up film."))
+        self.assertEqual((harbour.name, harbour.year, harbour.genre_ids), ("Harbour Lights", 2021,
+                                                                            (80, 18)))
+        text = "\n".join(logs.output)
+        self.assertIn("/person/{id}", text)
+        self.assertNotIn("7001", text)
+        self.assertNotIn("A part in a film", text)
+
+    async def test_what_tmdb_leaves_out_or_cant_mean(self) -> None:
+        raw = {
+            "id": 5,
+            "name": "Someone",
+            "biography": None,
+            "birthday": "1963-00-00",
+            "deathday": "",
+            "place_of_birth": "",
+            "known_for_department": None,
+            "profile_path": None,
+            "combined_credits": {
+                "cast": [
+                    {"media_type": "person", "id": 1},
+                    "broken",
+                    # Left out as the searches leave them out (include_adult=false).
+                    {"media_type": "movie", "id": 2, "title": "Flagged", "adult": True},
+                    {"media_type": "tv", "id": 3, "name": "Flagged too", "adult": True},
+                ]
+            },
+        }
+        with self.assertLogs(LOGGER, "WARNING"):  # "broken", by its place
+            person = await self.client(FakeTMDB(ok(raw))).person(5)
+        self.assertEqual(
+            (person.biography, person.birthday, person.deathday, person.place_of_birth,
+             person.known_for, person.photo_url(), person.credits),
+            ("", None, None, None, None, None, ()),
+        )
+        bare = await self.client(FakeTMDB(ok({"id": 6, "name": "Bare"}))).person(6)
+        self.assertEqual(bare.credits, ())
+
+    async def test_no_such_person_or_a_broken_answer(self) -> None:
+        server = FakeTMDB(httpx.Response(404, json={"success": False, "status_code": 34}))
+        with self.assertRaises(TMDBNotFound):
+            await self.client(server).person(7)
+        with self.assertRaises(TMDBError):
+            await self.client(FakeTMDB(ok({"id": "x"}))).person(1)
+
+    async def test_searching_people(self) -> None:
+        server = FakeTMDB(ok(load("extras_search_person.json")))
+        client = self.client(server)
+        with self.assertLogs(LOGGER, "WARNING"):  # the broken one
+            found = await client.search_people("  Renée  ")
+        [request] = server.requests
+        self.assert_request(request, "/search/person", {"query": "Renée", "include_adult": "false"})
+        self.assertEqual([(one.id, one.name) for one in found],
+                         [(7002, "Rene Marlow"), (7001, "Renée Marlowe")])
+        self.assertEqual(await client.search_people("   "), [])
+        self.assertEqual(len(server.requests), 1)
+
+    async def test_the_key_never_reaches_the_log(self) -> None:
+        server = FakeTMDB(httpx.Response(503))
+        with self.assertLogs(LOGGER, "WARNING") as logs, self.assertRaises(TMDBError):
+            await self.client(server).person(7001)
+        text = "\n".join(logs.output)
+        self.assertNotIn(V3_KEY, text)
+        self.assertNotIn("7001", text)
+
+
 if __name__ == "__main__":
     unittest.main()

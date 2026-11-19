@@ -6,7 +6,8 @@ answers recorded from TMDB's API.
 The `extras_*.json` files (the info window: a film's and a show's details in Dutch, their
 videos, their cast, and `/find` by IMDb id) were **built by hand from TMDB's API reference**
 (https://developer.themoviedb.org/reference: "Movie Details", "Movie Videos", "Movie Credits",
-"TV Series Details", "TV Series Aggregate Credits", "Find By ID"), not recorded. Every film,
+"TV Series Details", "TV Series Aggregate Credits", "Find By ID", "Person Details", "Person
+Combined Credits", "Search Person"), not recorded. Every film,
 show, person and video key in them is made up; the image paths are only there to have a path.
 
 - `extras_movie_info_nl.json`: `/movie/4242?language=nl-NL` (Dutch overview and genre names)
@@ -19,6 +20,11 @@ show, person and video key in them is made up; the image paths are only there to
 - `extras_tv_aggregate_credits.json`: `/tv/7171/aggregate_credits`: an actor with two parts
   (the one with the most episodes counts) and one without any
 - `extras_find_tv.json`: `/find/tt9900071?external_source=imdb_id`
+- `extras_person.json`: `/person/7001?append_to_response=combined_credits` (the phone's actor
+  page): a film part, a series part, a talk show as "Self - Guest", a film as "Herself", a film
+  part without a title, a series part without a character, and one crew entry
+- `extras_search_person.json`: `/search/person`: a near name first, a broken entry, then the
+  name asked for with its accent
 
 `see_more_trending_page2.json` (the Movies page's See more) was **built by hand** in the shape of
 `movie_trending.json`: `/trending/movie/week?page=2`, `total_pages` 500, the 6th film of the

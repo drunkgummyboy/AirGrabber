@@ -201,7 +201,8 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;
   a tap fetches by the row's id only, never by its text. `/v1/find` (`find.py`) searches TMDB by name; only what it found
   this run (TMDB ids, a film with `found: true`, a single episode as `found_episode`) can be fetched or followed, and its log never gets the text, a
-  title or a TMDB id. No library, no phone app (owner, 2026-11-08; Plex or the
+  title or a TMDB id; `/v1/person` (`person.py`) lists an actor's credits as find's results (found too, logged as counts only),
+  and `downloading` items' `progress` reads only `DownloadStatusService.latest` (`progress.py`). No library, no phone app (owner, 2026-11-08; Plex or the
   user's own folders, `library_source`): without one the page is one line and no code is made, and every route but
   `/v1/pair` / `/v1/hello` answers 409 (`_needs_library`). A Companion that knows the folder library says so on every
   request (`X-Companion-Can: folder-library`, `knows_folders`); one that doesn't sees `no_plex` unless Plex is connected

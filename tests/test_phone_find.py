@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import httpx
@@ -29,6 +29,7 @@ from app.models import (
 from app.models.folder_library import LibraryFile
 from app.models.plex import PlexEpisode, PlexTitle
 from app.services.discovery import DiscoveryService
+from app.services.download_status import DownloadStatusService
 from app.services.downloads import GrabError
 from app.services.phone.find import FIND_LIMIT, FOUND_KEEP, PhoneFind
 from app.services.phone.server import Reply, Request
@@ -111,6 +112,7 @@ class FindCase(SuggestionsCase):
             settings=self.settings,
             plex=self.plex,
             files=self.db.library_files,
+            status=cast(DownloadStatusService, self.status),
             now=lambda: NOW,
         )
 

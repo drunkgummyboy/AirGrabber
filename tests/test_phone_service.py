@@ -209,6 +209,7 @@ class PairingTests(ServiceCase):
                 "folders": False,  # the folders aren't on: no Downloaded shelf
                 "phone_copies": False,  # no copy maker here
                 "find": True,  # this PC can search (`/v1/find`)
+                "person": True,  # and has the actor page (`/v1/person`) and `progress`
             },
         )
         self.assertTrue(body["token"])

@@ -42,6 +42,8 @@ from app.models.tmdb import (
     TMDBMovieDetails,
     TMDBMovieInfo,
     TMDBMovieItem,
+    TMDBPerson,
+    TMDBPersonResult,
     TMDBSeason,
     TMDBTitle,
     TMDBTitleIds,
@@ -49,7 +51,9 @@ from app.models.tmdb import (
     TMDBTVInfo,
     TMDBTVItem,
     TMDBVideos,
+    to_person_credit,
 )
+from app.models.person import Person, PersonMatch
 
 log = logging.getLogger(__name__)
 
@@ -207,6 +211,29 @@ class TMDBClient:
             return []
         params = {"query": query, "include_adult": "false"}
         return (await self._list("/search/tv", params, _discover_show))[:limit]
+
+    async def search_people(self, name: str) -> list[PersonMatch]:
+        """People matching `name`, TMDB's best match first (one page; none for no text)."""
+        name = name.strip()
+        if not name:
+            return []
+        params = {"query": name, "include_adult": "false"}
+        return await self._list("/search/person", params, _person_match)
+
+    async def person(self, person_id: int) -> Person:
+        """A person (/person/{id}) in the client's language with their combined_credits' cast
+        parts appended, in one request. A malformed part is left out (as in a list); a part
+        that is neither a film nor a series too. TMDBNotFound when TMDB has no such person."""
+        path = f"/person/{person_id}"
+        payload = await self._get_json(path, {"append_to_response": "combined_credits"})
+        person = _parse_one(path, payload, TMDBPerson.model_validate)
+        combined = payload.get("combined_credits") if isinstance(payload, dict) else None
+        parts = (
+            _parse_results(path, combined, to_person_credit, key="cast")
+            if isinstance(combined, dict) and isinstance(combined.get("cast"), list)
+            else []
+        )
+        return person.to_person([part for part in parts if part is not None])
 
     async def movie_details(self, movie_id: int) -> MovieDetails:
         """IMDb id, runtime, and the client region's certification and release dates."""
@@ -625,6 +652,10 @@ def _movie(raw: object) -> Movie:
 
 def _discover_show(raw: object) -> DiscoverShow:
     return TMDBTVItem.model_validate(raw).to_discover_show()
+
+
+def _person_match(raw: object) -> PersonMatch:
+    return TMDBPersonResult.model_validate(raw).to_match()
 
 
 def _movie_details(raw: object, region: str) -> MovieDetails:

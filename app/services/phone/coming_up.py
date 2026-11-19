@@ -25,6 +25,9 @@ seen them. A film not seen on any list shows on every phone.
 - `can_download`: the rest. A grab known only from the download history gets no mark here either
   (the owner's decision for 3.1.0): a tap says it was downloaded already.
 
+A `downloading` item also says how far it is (`progress`, app/services/phone/progress.py: 0 to
+100, null when the Downloads page doesn't know); the others carry no `progress`.
+
 Nothing here logs. A `poster_url` that could hold a secret isn't sent.
 """
 
@@ -53,6 +56,7 @@ from app.services.download_queue import DownloadQueue, target_key
 from app.services.download_status import DownloadStatusService
 from app.services.downloads import DownloadService
 from app.services.library import LibraryService
+from app.services.phone.progress import Progress, on_its_way, progress_now
 from app.services.phone.server import Handler, Reply, Request, bad_request, error_reply
 from app.services.profiles import ProfileService
 from app.services.quick_download import QuickDownloadService
@@ -65,14 +69,6 @@ JUST_GRABBED_S = 60.0  # by then the Downloads page has looked again (AFTER_GRAB
 ItemState = Literal["not_out", "can_download", "downloading", "downloaded"]
 _TargetKey = tuple[MediaType, int, int | None, int | None]
 
-_ON_ITS_WAY = frozenset(
-    {
-        DownloadState.DOWNLOADING,
-        DownloadState.WAITING,
-        DownloadState.PENDING,
-        DownloadState.STOPPED,
-    }
-)
 _YEAR_AT_THE_END = re.compile(r"^(.+) \((\d{4})\)$")
 
 
@@ -109,7 +105,7 @@ def _page_states(entries: Iterable[DownloadEntry]) -> dict[_TargetKey, ItemState
     for entry in entries:
         grab = entry.record
         key = (grab.media_type, grab.media_id, grab.season, grab.episode)
-        if entry.state in _ON_ITS_WAY and entry.moved_to is None:
+        if on_its_way(entry):
             states[key] = "downloading"
         elif entry.state is DownloadState.READY or entry.moved_to is not None:
             states.setdefault(key, "downloaded")
@@ -247,6 +243,7 @@ class ComingUp:
         in_plex = await self._library.plex_between(start, end)
         on_its_way = await self._library.downloaded_between(start, end, today=now.date())
         page = self._page()
+        progress = progress_now(self._status)
         items = []
         for entry in entries:
             episode = entry.episode
@@ -261,24 +258,26 @@ class ComingUp:
             pack = GrabTarget(
                 media_type=MediaType.TV, media_id=entry.show.id, season=episode.season
             )
-            items.append(
-                {
-                    "kind": "episode",
-                    "id": entry.show.id,
-                    "season": episode.season,
-                    "episode": episode.number,
-                    "title": entry.show.name,
-                    "code": episode.code,
-                    "date": episode.air_date.isoformat() if episode.air_date else None,
-                    "poster_url": safe_poster(entry.show.poster_url),
-                    "state": self._state(
-                        (target, pack),
-                        out=episode.has_aired(now),
-                        have=episode.id in in_plex or episode.id in on_its_way,
-                        page=page,
-                    ),
-                }
+            state = self._state(
+                (target, pack),
+                out=episode.has_aired(now),
+                have=episode.id in in_plex or episode.id in on_its_way,
+                page=page,
             )
+            item: dict[str, Any] = {
+                "kind": "episode",
+                "id": entry.show.id,
+                "season": episode.season,
+                "episode": episode.number,
+                "title": entry.show.name,
+                "code": episode.code,
+                "date": episode.air_date.isoformat() if episode.air_date else None,
+                "poster_url": safe_poster(entry.show.poster_url),
+                "state": state,
+            }
+            if state == "downloading":
+                item["progress"] = progress.episode(entry.show.id, episode.season, episode.number)
+            items.append(item)
         return items
 
     async def _films(
@@ -290,6 +289,7 @@ class ComingUp:
         self._grabbed_films.remember(lists)
         plex = await self._library.plex_films()
         page = self._page()
+        progress = progress_now(self._status)
         rows = self._grabbed_films.rows()
         items = []
         for entry in lists.get(person, ()):
@@ -307,11 +307,13 @@ class ComingUp:
             # its way, as a grab off the list is shown; else it was fetched and has left.
             fetched = entry.downloaded and state != "downloading"
             if not (fetched_long_ago or fetched) or entry.movie.id in rows:
-                items.append(_film_item(entry.movie, day, state))
+                items.append(_film_item(entry.movie, day, state, progress))
         on_the_list = {entry.movie.id for entry in lists.get(person, ())}
         for movie_id in self._films_grabbed_lately(rows):
             if movie_id not in on_the_list and self._grabbed_films.concerns(movie_id, person):
-                items.append(self._grabbed_item(movie_id, rows.get(movie_id), plex, page))
+                items.append(
+                    self._grabbed_item(movie_id, rows.get(movie_id), plex, page, progress)
+                )
         return items
 
     def _films_grabbed_lately(self, rows: Mapping[int, DownloadEntry]) -> list[int]:
@@ -331,6 +333,7 @@ class ComingUp:
         row: DownloadEntry | None,
         plex: PlexFilms,
         page: dict[_TargetKey, ItemState],
+        progress: Progress,
     ) -> dict[str, Any]:
         seen = self._grabbed_films.seen(movie_id)
         movie = self._grabbed_films.movie(movie_id)
@@ -344,7 +347,7 @@ class ComingUp:
             have=plex.has(movie_id, (seen.imdb_id if seen is not None else None) or movie.imdb_id),
             page=page,
         )
-        return _film_item(movie, day, state)
+        return _film_item(movie, day, state, progress)
 
     def _page(self) -> dict[_TargetKey, ItemState]:
         overview = self._status.latest
@@ -385,8 +388,10 @@ class ComingUp:
         return True
 
 
-def _film_item(movie: Movie, day: date | None, state: ItemState) -> dict[str, Any]:
-    return {
+def _film_item(
+    movie: Movie, day: date | None, state: ItemState, progress: Progress
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
         "kind": "movie",
         "id": movie.id,
         "season": None,
@@ -397,6 +402,9 @@ def _film_item(movie: Movie, day: date | None, state: ItemState) -> dict[str, An
         "poster_url": safe_poster(movie.poster_url()),
         "state": state,
     }
+    if state == "downloading":
+        item["progress"] = progress.film(movie.id)
+    return item
 
 
 def _window(query: dict[str, str], today: date) -> tuple[date, date] | None:
