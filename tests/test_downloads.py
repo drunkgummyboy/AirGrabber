@@ -772,6 +772,29 @@ class AppModeTests(DownloadTestCase):
         self.assertEqual(record.season, 1)
         self.assertEqual(self.notifications, 1)
 
+    async def test_a_torrent_file_is_named_after_the_program_for_torrent_files(self) -> None:
+        # Magnet links go to Deluge here, .torrent files to qBittorrent: the file's grab names
+        # qBittorrent, in the history and in a failure.
+        self.app = TorrentApp(name="Deluge", torrent_files="qBittorrent")
+        self.serve(ITORRENTS, CACHED)
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual((await self.history())[0].saved_path, "qBittorrent")
+
+        def refuse(target: str) -> None:
+            raise OSError(2, "No application is associated")
+
+        self.service._opener = refuse
+        with self.assertRaises(GrabError) as caught:
+            await self.service.grab(release(title="Other.Show.S01E01.1080p"), EPISODE)
+        self.assertIn("qBittorrent", str(caught.exception))
+        self.assertNotIn("Deluge", str(caught.exception))
+
+    async def test_a_magnet_is_named_after_the_program_for_magnet_links(self) -> None:
+        self.app = TorrentApp(name="Deluge", torrent_files="qBittorrent")
+        magnet = f"magnet:?xt=urn:btih:{HASH}&dn=Original"
+        await self.service.grab(release(info_hash=None, magnet_uri=magnet), EPISODE)
+        self.assertEqual((await self.history())[0].saved_path, "Deluge")
+
     async def test_open_failure_is_a_grab_error_without_the_magnet(self) -> None:
         def refuse(target: str) -> None:
             raise OSError(2, "No application is associated")

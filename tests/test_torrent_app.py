@@ -89,6 +89,32 @@ class DetectionTests(unittest.TestCase):
         )
         self.assertEqual(find_torrent_app(registry, exists_only(exe)), TorrentApp(name="Tixati"))
 
+    def test_torrent_files_opening_in_another_program_are_named(self) -> None:
+        deluge = r"C:\Program Files\Deluge\deluge.exe"
+        registry = FakeRegistry(
+            {
+                ("HKCR", r"magnet\shell\open\command", ""): f'"{deluge}" "%1"',
+                ("HKCU", TORRENT_CHOICE, "ProgId"): "qBittorrent.File.Torrent",
+                ("HKCR", r"qBittorrent.File.Torrent\shell\open\command", ""): QBIT_COMMAND,
+            }
+        )
+        self.assertEqual(
+            find_torrent_app(registry, exists_only(deluge, QBIT_EXE)),
+            TorrentApp(name="Deluge", torrent_files="qBittorrent"),
+        )
+
+    def test_one_program_for_both_has_no_second_name(self) -> None:
+        registry = FakeRegistry(
+            {
+                ("HKCR", r"magnet\shell\open\command", ""): QBIT_COMMAND,
+                ("HKCR", ".torrent", ""): "qBittorrent.File.Torrent",
+                ("HKCR", r"qBittorrent.File.Torrent\shell\open\command", ""): QBIT_COMMAND,
+            }
+        )
+        app = find_torrent_app(registry, exists_only(QBIT_EXE))
+        self.assertEqual(app, TorrentApp(name="qBittorrent"))
+        self.assertIsNone(app.torrent_files if app else "missing")
+
     def test_missing_exe_is_not_reported(self) -> None:
         registry = FakeRegistry(
             {

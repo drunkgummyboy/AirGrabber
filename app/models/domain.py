@@ -672,6 +672,9 @@ class TorrentApp(DomainModel):
     """The torrent program Windows opens magnet links / .torrent files with."""
 
     name: str  # friendly name, e.g. "qBittorrent"
+    # The program .torrent files open in, when Windows has another one for them than for magnet
+    # links (`name`); None when it's the same one.
+    torrent_files: str | None = None
 
 
 class QBittorrentState(DomainModel):

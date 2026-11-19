@@ -286,11 +286,13 @@ class DownloadService:
             # Where the file really is: the Microsoft Store's Python writes AppData into its own
             # private copy, which the torrent program can't see under the usual name.
             path = Path(await asyncio.to_thread(os.path.realpath, path))
-            await self._open(str(path), app)
+            # A .torrent opens in the program Windows has for .torrent files.
+            files_app = app if app.torrent_files is None else TorrentApp(name=app.torrent_files)
+            await self._open(str(path), files_app)
             await self._prune_cache()
-            log.info("Grabbed %r: opened %s in %s", release.title, path.name, app.name)
+            log.info("Grabbed %r: opened %s in %s", release.title, path.name, files_app.name)
             result = GrabResult(outcome=GrabOutcome.OPENED, path=str(path), message=message)
-            return result, app.name, info_hash
+            return result, files_app.name, info_hash
         if magnet is None and info_hash:
             magnet = build_magnet(info_hash, release.title)
         if magnet is None:

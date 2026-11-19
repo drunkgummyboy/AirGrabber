@@ -164,7 +164,8 @@ _UNQUOTED_EXE = re.compile(r"^\s*(.+?\.exe)(?=\s|$)", re.IGNORECASE)
 def find_torrent_app(
     read: RegistryReader | None = None, exists: ExistsCheck = os.path.isfile
 ) -> TorrentApp | None:
-    """The program registered for magnet links (else for .torrent files), when its exe exists.
+    """The program registered for magnet links (else for .torrent files), when its exe exists,
+    with the one .torrent files open in when that is another (`TorrentApp.torrent_files`).
 
     Blocking (registry + file system): call it through `asyncio.to_thread` from the loop.
     """
@@ -172,10 +173,19 @@ def find_torrent_app(
         if sys.platform != "win32":
             return None
         read = _read_registry
-    for command in _candidate_commands(read):
+    name = _first_program(_magnet_commands(read) + _torrent_commands(read), exists)
+    if name is None:
+        return None
+    files = _first_program(_torrent_commands(read), exists)
+    return TorrentApp(name=name, torrent_files=files if files not in (None, name) else None)
+
+
+def _first_program(commands: list[str], exists: ExistsCheck) -> str | None:
+    """The friendly name of the first of `commands` whose program is there."""
+    for command in commands:
         exe = command_executable(command)
         if exe and exists(exe):
-            return TorrentApp(name=friendly_name(exe))
+            return friendly_name(exe)
     return None
 
 
@@ -197,11 +207,22 @@ def qbittorrent_executable(
 
 def _candidate_commands(read: RegistryReader) -> list[str]:
     """Open commands, the user's own choices first (magnet links before .torrent files)."""
+    return _magnet_commands(read) + _torrent_commands(read)
+
+
+def _magnet_commands(read: RegistryReader) -> list[str]:
+    """Magnet links' open commands, the user's own choice first."""
     commands: list[str | None] = []
     if prog_id := read("HKCU", _MAGNET_USER_CHOICE, "ProgId"):
         commands.append(read("HKCR", rf"{prog_id}\{_OPEN_COMMAND}", ""))
     commands.append(read("HKCU", rf"Software\Classes\magnet\{_OPEN_COMMAND}", ""))
     commands.append(read("HKCR", rf"magnet\{_OPEN_COMMAND}", ""))
+    return [command for command in commands if command]
+
+
+def _torrent_commands(read: RegistryReader) -> list[str]:
+    """.torrent files' open commands, the user's own choice first."""
+    commands: list[str | None] = []
     if prog_id := read("HKCU", _TORRENT_USER_CHOICE, "ProgId"):
         commands.append(read("HKCR", rf"{prog_id}\{_OPEN_COMMAND}", ""))
     if prog_id := read("HKCR", ".torrent", ""):
