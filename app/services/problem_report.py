@@ -19,6 +19,8 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from app.config import store_python
+
 log = logging.getLogger(__name__)
 
 LOG_FILES = (
@@ -51,11 +53,14 @@ def desktop_folder() -> Path | None:
     return fallback if fallback.is_dir() else None
 
 
-def about_text(version: str, now: datetime) -> str:
+def about_text(version: str, now: datetime, *, store: bool | None = None) -> str:
+    """`store`: whether this is the Microsoft Store's Python (`store_python()` when not given)."""
+    if store is None:
+        store = store_python()
     return (
         f"AirGrabber {version}\n"
         f"Windows: {platform.platform()}\n"
-        f"Python: {platform.python_version()}\n"
+        f"Python: {platform.python_version()}{' (Microsoft Store)' if store else ''}\n"
         f"Made: {now.isoformat(timespec='seconds')}\n"
     )
 

@@ -33,6 +33,9 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   skipped. So a migration must leave nothing an older version's start can't survive, beyond `user_version`
   (a newer `user_version` is what makes the database go back too, the newer file kept beside it).
 - `install.ps1` must run in Windows PowerShell 5.1 under `irm | iex`: no `&&`/ternaries/`??`, and no `exit`.
+- The Microsoft Store's Python (`app.config.store_python`) writes AppData into a private copy other programs
+  can't see: a data-folder file handed to another program goes as its `os.path.realpath`. install.ps1 skips that
+  Python and brings its library over once (`Copy-StoreData`).
 - One asyncio loop drives Tk (async-tkinter-loop). No threads, executors or UI queues for I/O:
   await httpx/aiosqlite directly, then update widgets. CPU-heavy Pillow work goes through `asyncio.to_thread`.
 - The one exception: the tray icon (`app/ui/tray.py`, pystray) runs its own Win32 message loop on a daemon

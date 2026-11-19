@@ -14,6 +14,10 @@ packages, adds Start menu and desktop shortcuts, registers it under Windows' "In
 (current user; uninstaller: app\uninstall.ps1) and starts it. Running it again reinstalls the latest
 version. Your library and settings live in %LOCALAPPDATA%\AirGrabber and are never touched.
 
+The Microsoft Store's Python is skipped: it writes AppData into a private copy of its own, so
+qBittorrent couldn't find the downloads AirGrabber handed it. A library it kept there is brought
+over once, when %LOCALAPPDATA%\AirGrabber has none yet.
+
 MediaForge (the file renamer inside AirGrabber) gets a Start menu shortcut of its own (a
 MediaForge.lnk of another program, like the old MediaForge, is left alone), and a new install
 turns on its Explorer right-click menu for files and folders.
@@ -164,13 +168,16 @@ function Initialize-Winget {
 
 function Test-Python([string]$Exe, [switch]$Tested) {
     # The real interpreter path when $Exe is Python 3.13+ with tkinter (with -Tested: exactly
-    # 3.13, the version AirGrabber is tested on), else $null.
+    # 3.13, the version AirGrabber is tested on), else $null. Never the Microsoft Store's Python
+    # (it lives under WindowsApps): its AppData writes are private to it, so other programs (like
+    # qBittorrent opening a download's .torrent) can't find them.
     if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $null }
     # In Windows PowerShell 5.1, stderr from a redirected native command is a terminating error
     # under 'Stop'; a Python without tkinter must just be skipped.
     $ErrorActionPreference = 'Continue'
     $wanted = 'sys.version_info[:2] == (3, 13)'
     if (-not $Tested) { $wanted = 'sys.version_info >= (3, 13)' }
+    $wanted += ' and ''windowsapps'' not in sys.prefix.lower()'
     # The path travels as hex of its UTF-8 bytes: Python and Windows PowerShell 5.1 use different
     # code pages for a pipe, which garbled user folders like "Juergen" spelt with an umlaut.
     $probe = "import sys, tkinter; print(sys.executable.encode('utf-8').hex()) if $wanted else sys.exit(1)"
@@ -242,6 +249,29 @@ function Install-Python {
     $python = Find-Python
     if (-not $python) { throw 'Python was installed, but cannot be found yet. Please run the install command again.' }
     return $python
+}
+
+function Copy-StoreData([string]$Local) {
+    # The Microsoft Store's Python kept AirGrabber's data in its private copy of AppData
+    # (Packages\PythonSoftwareFoundation.Python.*\LocalCache\Local\AirGrabber); the normal Python
+    # reads the real folder. Bring the newest such library over, only while the real folder has
+    # none. $true when it did.
+    $real = Join-Path $Local 'AirGrabber'
+    if (Test-Path -LiteralPath (Join-Path $real 'airgrabber.db')) { return $false }
+    $packages = Join-Path $Local 'Packages'
+    if (-not (Test-Path -LiteralPath $packages)) { return $false }
+    $found = @(
+        Get-ChildItem -LiteralPath $packages -Directory -Filter 'PythonSoftwareFoundation.Python.*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'LocalCache\Local\AirGrabber' } |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_ 'airgrabber.db') } |
+            Sort-Object { (Get-Item -LiteralPath (Join-Path $_ 'airgrabber.db')).LastWriteTime } -Descending
+    )
+    if ($found.Count -eq 0) { return $false }
+    $null = New-Item -ItemType Directory -Force -Path $real
+    foreach ($item in @(Get-ChildItem -LiteralPath $found[0] -Force)) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $real $item.Name) -Recurse -Force
+    }
+    return $true
 }
 
 function Install-App {
@@ -885,6 +915,13 @@ function Install-AirGrabber {
     Write-Step 'Checking for Python'
     $python = Find-Python
     if ($python) { Write-Host '    Python is already installed.' } else { $python = Install-Python }
+    try {
+        if (Copy-StoreData $env:LOCALAPPDATA) {
+            Write-Host '    Brought your library and settings over from the Microsoft Store Python.'
+        }
+    } catch {
+        Write-Host '    Your library from the Microsoft Store Python could not be brought over.' -ForegroundColor Yellow
+    }
 
     # A new install (no AirGrabber in the folder yet) also gets MediaForge's right-click menu (D8).
     $newInstall = -not (Test-Path -LiteralPath (Join-Path $InstallDir 'main.py'))

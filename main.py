@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 # Stdlib-only imports up here: the third-party packages may not be installed until ensure_requirements().
 from app import __version__
 from app.bootstrap import ensure_requirements
-from app.config import AppPaths, configure_logging
+from app.config import AppPaths, configure_logging, store_python
 from app.i18n import set_language, t
 from app.identity import set_process_app_id
 from app.single_instance import ForgeRequest, InstanceLock, hand_over, show_running
@@ -153,6 +153,11 @@ def main() -> int:
         # Not the app either: no lock (AirGrabber may be running) and no window.
         return _forge_menu(paths, options.forge_menu)
     log.info("=== AirGrabber starting (data: %s) ===", paths.root)
+    if store_python():
+        log.warning(
+            "Running on the Microsoft Store's Python: its AppData writes are private to it. "
+            "Running the install command again moves AirGrabber to the normal Python."
+        )
     # Its own name and icon on notifications and its own taskbar group (app/identity.py), not
     # Python's: before any window (the package check's included) or the tray icon exists.
     set_process_app_id()

@@ -1210,3 +1210,58 @@ class InstallerPythonTests(unittest.TestCase):
             )
             output = _powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_PYTHON": str(python)})
             self.assertEqual(output.strip().splitlines()[-1:], ["SAME"])
+
+    def test_test_python_skips_the_microsoft_stores_python(self) -> None:
+        # Its AppData writes are private to it: qBittorrent couldn't find the downloads AirGrabber
+        # handed it. It is known by where it lives (WindowsApps), here a venv's prefix there.
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / "WindowsApps" / "PythonSoftwareFoundation.Python.3.13_x64"
+            subprocess.run(
+                [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                check=True,
+                creationflags=NO_WINDOW,
+            )
+            python = venv / "Scripts" / "python.exe"
+            script = _load_installer(["Test-Python"]) + (
+                "$tested = Test-Python $env:AG_PYTHON -Tested\n"
+                "$any = Test-Python $env:AG_PYTHON\n"
+                "if ($tested -or $any) { 'FOUND' } else { 'SKIPPED' }\n"
+            )
+            output = _powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_PYTHON": str(python)})
+            self.assertEqual(output.strip().splitlines()[-1:], ["SKIPPED"])
+
+    def test_the_store_pythons_library_is_brought_over_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp)
+            older = (
+                local / "Packages" / "PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0"
+                / "LocalCache" / "Local" / "AirGrabber"
+            )
+            newer = (
+                local / "Packages" / "PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0"
+                / "LocalCache" / "Local" / "AirGrabber"
+            )
+            for folder, text in ((older, b"old"), (newer, b"new")):
+                (folder / "forge").mkdir(parents=True)
+                (folder / "airgrabber.db").write_bytes(text)
+                (folder / "forge" / "forge.db").write_bytes(text)
+            os.utime(older / "airgrabber.db", (1_700_000_000, 1_700_000_000))
+            (local / "AirGrabber" / "logs").mkdir(parents=True)  # a log, but no library yet
+            script = _load_installer(["Copy-StoreData"]) + (
+                "$first = Copy-StoreData $env:AG_LOCAL\n"
+                "$second = Copy-StoreData $env:AG_LOCAL\n"
+                "\"$first $second\"\n"
+            )
+            output = _powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_LOCAL": str(local)})
+            self.assertEqual(output.strip().splitlines()[-1:], ["True False"])
+            real = local / "AirGrabber"
+            self.assertEqual((real / "airgrabber.db").read_bytes(), b"new")
+            self.assertEqual((real / "forge" / "forge.db").read_bytes(), b"new")
+            self.assertTrue((real / "logs").is_dir())
+
+    def test_nothing_to_bring_over_without_the_store_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = _load_installer(["Copy-StoreData"]) + "Copy-StoreData $env:AG_LOCAL\n"
+            output = _powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_LOCAL": tmp})
+            self.assertEqual(output.strip().splitlines()[-1:], ["False"])
+            self.assertFalse((Path(tmp) / "AirGrabber").exists())

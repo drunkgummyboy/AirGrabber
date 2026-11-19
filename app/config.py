@@ -66,6 +66,14 @@ class AppPaths:
         return self
 
 
+def store_python(prefix: str | None = None) -> bool:
+    """Whether this is the Microsoft Store's Python (it lives under WindowsApps). It writes AppData
+    into a private copy of its own that other programs can't see under the usual name, so
+    AirGrabber's data folder and what it writes for qBittorrent stay hidden from them. install.ps1
+    skips it and installs the normal Python."""
+    return "\\windowsapps\\" in (sys.prefix if prefix is None else prefix).lower()
+
+
 def configure_logging(paths: AppPaths, level: int = logging.INFO) -> None:
     formatter = logging.Formatter("%(asctime)s %(levelname)-7s [%(name)s] %(message)s")
     handlers: list[logging.Handler] = [

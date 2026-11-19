@@ -691,12 +691,27 @@ class AppModeTests(DownloadTestCase):
         self.assertIs(result.outcome, GrabOutcome.OPENED)
         self.assertEqual(result.message, "Opened in your torrent program")
         expected = self.cache / "Some.Show.S01E02.1080p.WEB.h264-GRP.torrent"
-        self.assertEqual(result.path, str(expected))
+        self.assertEqual(result.path, os.path.realpath(expected))
         self.assertEqual(expected.read_bytes(), TORRENT)
-        self.assertEqual(self.opened, [str(expected)])
+        self.assertEqual(self.opened, [os.path.realpath(expected)])
         self.assertEqual(self.cache_files(), [expected.name])
         self.assertEqual(self.watch_files(), [])  # the watch folder is not used
         self.assertEqual(self.remote_calls(), 0)
+
+    async def test_the_file_is_handed_over_where_it_really_is(self) -> None:
+        # The Microsoft Store's Python writes AppData into a private copy: the torrent program
+        # gets that copy's real path, not the name Python sees it under.
+        self.serve(DIRECT_URL, TORRENT)
+        private = os.path.join("C:\Store", "LocalCache", "Some.torrent")
+        real = os.path.realpath
+
+        def realpath(path: Any, **options: Any) -> str:
+            return private if str(path).endswith(".torrent") else real(path, **options)
+
+        with mock.patch.object(os.path, "realpath", realpath):
+            result = await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
+        self.assertEqual(self.opened, [private])
+        self.assertEqual(result.path, private)
 
     async def test_itorrents_copy_is_opened(self) -> None:
         self.serve(ITORRENTS, CACHED)

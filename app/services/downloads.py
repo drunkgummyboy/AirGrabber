@@ -283,6 +283,9 @@ class DownloadService:
         message = t("Opened in your torrent program")
         if content is not None:
             path = await self._save_to_cache(content, release.title)
+            # Where the file really is: the Microsoft Store's Python writes AppData into its own
+            # private copy, which the torrent program can't see under the usual name.
+            path = Path(await asyncio.to_thread(os.path.realpath, path))
             await self._open(str(path), app)
             await self._prune_cache()
             log.info("Grabbed %r: opened %s in %s", release.title, path.name, app.name)

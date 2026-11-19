@@ -12,10 +12,12 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
+from app.config import store_python
 from app.models import Settings
 from app.services.problem_report import (
     ABOUT_FILE,
     ProblemReports,
+    about_text,
     make_report,
     report_name,
 )
@@ -74,6 +76,19 @@ class MakeReportTests(Folders):
 
     def test_names_differ_by_the_second(self) -> None:
         self.assertNotEqual(report_name(NOW), report_name(NOW.replace(second=6)))
+
+    def test_the_about_file_says_when_python_is_the_microsoft_stores(self) -> None:
+        self.assertIn("Python: ", about_text("3.22.1", NOW, store=True))
+        self.assertIn(" (Microsoft Store)\n", about_text("3.22.1", NOW, store=True))
+        self.assertNotIn("Microsoft Store", about_text("3.22.1", NOW, store=False))
+
+    def test_the_microsoft_stores_python_is_known_by_its_folder(self) -> None:
+        store = (
+            r"C:\Program Files\WindowsApps"
+            r"\PythonSoftwareFoundation.Python.3.13_3.13.2800.0_x64__qbz5n2kfra8p0"
+        )
+        self.assertTrue(store_python(store))
+        self.assertFalse(store_python(r"C:\Users\Alex\AppData\Local\Programs\Python\Python313"))
 
 
 class ServiceTests(Folders, unittest.IsolatedAsyncioTestCase):
