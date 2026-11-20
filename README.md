@@ -38,6 +38,13 @@ later, and search your whole history.
 **Search and send.** Search several torrent indexers at once, or your own Prowlarr, and
 send a result to qBittorrent, Transmission or Synology Download Station with one click.
 
+**Watch straight away.** AirGrabber's own player plays what's in Plex or your folders: it carries on
+where you stopped, offers to skip the intro and starts the next episode.
+
+**On your phone too.** The free Companion app for Android brings your library to your phone: browse and
+watch, search for something new to download, and copy films onto the phone for later. Switch it on in
+⚙ Settings → Phone connection. It only works on your home network.
+
 **Fits what you already use.** Connect Plex to see what you have and what's missing. Everyone at home can
 have their own list. Light and dark look, English and Dutch.
 
