@@ -1578,6 +1578,12 @@ NL: dict[str, str] = {
     "A tidier Settings window": "Een overzichtelijker Instellingen-venster",
     "Settings is grouped by what you want to do and opens on an overview of how everything is set up. Your folders are on one page, and every change saves at once, with Undo.":
         "Instellingen is ingedeeld naar wat je wilt doen en opent met een overzicht van hoe alles is ingesteld. Je mappen staan op één pagina, en elke wijziging wordt meteen bewaard, met Ongedaan maken.",
+    "Player: point at the timeline and a small picture shows what happens at that moment.":
+        "Speler: wijs de tijdlijn aan en een klein plaatje laat zien wat er op dat moment gebeurt.",
+    "Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment.":
+        "Speler: pauzeren of afspelen, met een klik, de spatiebalk of de knop, toont even een teken in het midden.",
+    "Player: a jump back or ahead shows the time in the middle, and the volume keys or mouse wheel show the level.":
+        "Speler: terug- of vooruitspringen toont de tijd in het midden; de volumetoetsen of het muiswiel tonen het niveau.",
     "MediaForge's settings now sit beside the matching AirGrabber ones; there's no separate group any more.":
         "De instellingen van MediaForge staan nu naast de bijbehorende van AirGrabber; er is geen aparte groep meer.",
     "AirGrabber always opens full size, and the Settings window is wider.":

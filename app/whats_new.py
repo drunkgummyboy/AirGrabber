@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.23.0": (
+        N_("Player: point at the timeline and a small picture shows what happens at that moment."),
+        N_("Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment."),
+        N_("Player: a jump back or ahead shows the time in the middle, and the volume keys or mouse wheel show the level."),
+    ),
     "3.22.0": (
         N_("MediaForge's settings now sit beside the matching AirGrabber ones; there's no separate group any more."),
         N_("AirGrabber always opens full size, and the Settings window is wider."),

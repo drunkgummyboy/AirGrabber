@@ -803,6 +803,125 @@ class SyncSpeedEpisodeTests(PlayerTestCase):
         self.pump(self.called("set_audio_delay", 0), "the menu's back to 0")
 
 
+class FlashTests(PlayerTestCase):
+    """The sign in the middle for play / pause, a jump and the sound."""
+
+    def test_pause_and_play_show_their_sign_then_it_goes(self) -> None:
+        from app.media_player_window import PAUSE_GLYPH, PLAY_GLYPH
+
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=60_000)
+        window.press("space")
+        self.assertEqual(window.flashed, PAUSE_GLYPH)
+        self.assertEqual(window.flash_card.winfo_manager(), "place")
+        self.pump(lambda: window.flashed == "", "the sign gone")
+        window.press("space")
+        self.assertEqual(window.flashed, PLAY_GLYPH)
+
+    def test_a_jump_shows_where_it_went(self) -> None:
+        from app.media_player_window import BACK_GLYPH, FORWARD_GLYPH
+
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=60_000)
+        window.press("Right")
+        self.assertEqual(window.flashed, FORWARD_GLYPH)
+        self.assertEqual(window.flash_text.cget("text"), "1:30")
+        window.press("Left")
+        self.assertEqual(window.flashed, BACK_GLYPH)
+        self.assertEqual(window.flash_text.cget("text"), "1:20")
+
+    def test_the_sound_shows_its_level_but_not_from_the_slider(self) -> None:
+        from app.media_player_window import MUTED_GLYPH, VOLUME_GLYPH
+
+        window = self.start()
+        self.playing(window, at=1_000)
+        window.set_volume(50, flash=False)
+        self.assertEqual(window.flashed, "")
+        window.press("Up")
+        self.assertEqual(window.flashed, VOLUME_GLYPH)
+        self.assertEqual(window.flash_text.cget("text"), "55%")
+        window.press("m")
+        self.assertEqual(window.flashed, MUTED_GLYPH)
+        self.assertFalse(window.flash_text.winfo_manager())  # no level while muted
+
+    def test_not_over_the_resume_prompt(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.stdin.feed(play(start_ms=600_000, ask_resume=True))
+        self.pump(lambda: window._prompt, "the prompt")
+        window.press("Up")
+        self.assertEqual(window.flashed, "")
+
+
+class FakePreview:
+    """The seek bar's pictures: a grey picture per wish, the wishes kept."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, int, int]] = []
+
+    def picture(self, path: str, ms: int, width: int) -> Any:
+        from PIL import Image
+
+        self.asked.append((path, ms, width))
+        return Image.new("RGB", (width, width * 9 // 16), (90, 90, 90))
+
+    def release(self) -> None:
+        pass
+
+
+class PreviewTests(PlayerTestCase):
+    def hover(self, window: Any, fraction: float) -> None:
+        self.root.update()
+        bar = window.seek_bar
+        window._seek_hover(SimpleNamespace(widget=bar, x=round(bar.winfo_width() * fraction)))
+
+    def test_hovering_the_seek_bar_shows_the_picture_above_the_time(self) -> None:
+        preview = FakePreview()
+        window = self.start(preview=preview)
+        self.engine.duration = 7_200_000
+        self.playing(window, at=1_000)
+        self.pump(lambda: window._duration == 7_200_000, "the length")
+        self.hover(window, 0.5)
+        tip = window._time_tip
+        self.pump(lambda: bool(str(tip.cget("image"))), "the picture")
+        self.assertEqual(str(tip.cget("compound")), "top")
+        path, place, width = preview.asked[0]
+        self.assertEqual(path, play().file)
+        self.assertEqual(place % 24_000, 12_000)  # the middle of its place
+        self.assertEqual(width, window._px(240))
+        # The same place again: kept, not asked for again.
+        self.hover(window, 0.5)
+        self.root.update()
+        self.assertEqual(len(preview.asked), 1)
+
+    def test_the_mini_players_bar_has_no_picture(self) -> None:
+        preview = FakePreview()
+        window = self.start(preview=preview)
+        self.engine.duration = 3_600_000
+        self.playing(window, at=1_000)
+        self.pump(lambda: window._duration == 3_600_000, "the length")
+        window._on_key(SimpleNamespace(keysym="h", state=0x4))
+        self.root.update()
+        bar = window.mini_seek_bar
+        window._seek_hover(SimpleNamespace(widget=bar, x=10))
+        self.root.update()
+        self.assertEqual(preview.asked, [])
+        self.assertEqual(str(window._time_tip.cget("image")), "")
+
+    def test_a_new_video_forgets_the_pictures(self) -> None:
+        preview = FakePreview()
+        window = self.start(preview=preview)
+        self.engine.duration = 3_600_000
+        self.playing(window, at=1_000)
+        self.pump(lambda: window._duration == 3_600_000, "the length")
+        self.hover(window, 0.25)
+        self.pump(lambda: len(window._pictures) == 1, "a picture kept")
+        self.playing(window, play(file="C:\\Videos\\Other.mkv"), at=1_000)
+        self.assertEqual(window._pictures, {})
+
+
 class FakeDrops:
     """Explorer drops' seam: the windows accepting them, and a drop handed over at will."""
 
@@ -1798,22 +1917,27 @@ class OptionTests(unittest.TestCase):
         import ast
         import sys
 
+        from app import media_preview
+
+        for module in (media_player, media_preview):  # the preview's imports Pillow inside
+            tree = ast.parse(Path(module.__file__ or "").read_text(encoding="utf-8"))
+            names: set[str] = set()
+            for node in tree.body:
+                if isinstance(node, ast.Import):
+                    names.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    names.add(node.module.split(".")[0])
+            names -= {"app", "__future__"}
+            self.assertEqual(names - set(sys.stdlib_module_names), set(), module.__name__)
         tree = ast.parse(Path(media_player.__file__).read_text(encoding="utf-8"))
-        names: set[str] = set()
-        for node in tree.body:
-            if isinstance(node, ast.Import):
-                names.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                names.add(node.module.split(".")[0])
-        names -= {"app", "__future__"}
-        self.assertEqual(names - set(sys.stdlib_module_names), set())
         app_modules = {
             node.module
             for node in tree.body
             if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("app")
         }
         self.assertLessEqual(
-            app_modules, {"app.i18n", "app.media_protocol", "app.media_player_logic"}
+            app_modules,
+            {"app.i18n", "app.media_protocol", "app.media_player_logic", "app.media_preview"},
         )
 
 

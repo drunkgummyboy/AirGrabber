@@ -43,6 +43,7 @@ from typing import Any, Protocol, TypeAlias
 
 from app.i18n import N_, number
 from app.media_player_logic import Track, fill_aspect
+from app.media_preview import PreviewFrame
 from app.media_protocol import Message, decode
 
 EXIT_CLOSED = 0  # shown, then closed
@@ -394,6 +395,12 @@ class VlcEngine:
         self._player.video_set_mouse_input(False)
         self._player.video_set_key_input(False)
 
+    def preview(self) -> Any:
+        """The seek bar's pictures (app/media_preview.py's VlcPreview) from this instance."""
+        from app.media_preview import VlcPreview
+
+        return VlcPreview(self._vlc, self._instance)
+
     def release(self) -> None:
         self._player.stop()
         self._player.release()
@@ -468,7 +475,7 @@ class Dropped:
     paths: tuple[str, ...]
 
 
-Event: TypeAlias = Incoming | InputEnded | Tick | TrackLists | VideoEnded | Dropped
+Event: TypeAlias = Incoming | InputEnded | Tick | TrackLists | VideoEnded | Dropped | PreviewFrame
 
 
 def read_input(stdin: Any, events: queue.Queue[Event]) -> None:
@@ -710,10 +717,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             work_area=work_area_under_pointer,
             on_screen=on_screen,
             drops=windows_native(),
+            preview=_preview_of(engine),
         )
     except Exception:
         return EXIT_FAILED
     return code
+
+
+def _preview_of(engine: VlcEngine) -> Any:
+    """The seek bar's pictures, or None when libVLC can't make a second player."""
+    try:
+        return engine.preview()
+    except Exception:
+        return None
 
 
 def load_settings(path: Path) -> dict[str, Any]:

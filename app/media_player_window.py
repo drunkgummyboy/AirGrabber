@@ -18,7 +18,8 @@ and keys to us (`VlcEngine.attach`), so the pointer moving over the picture and 
 reach `video`.
 
 What shows (the spec's "The window"): the top band (title line, stay on top in window mode,
-full screen, ✕), the bottom band (the seek bar with elapsed / remaining time, a time under the
+full screen, ✕), the bottom band (the seek bar with elapsed / remaining time, a time (and the picture there,
+app/media_preview.py) under the
 pointer, play / pause, back 10 s / forward 30 s, mute and volume, the Audio and Subtitles
 menus with Find subtitles… and Always pick: …), shown on any movement or key and hidden after
 IDLE_S without, AWAY_S once the pointer left the player (`controls_shown`: not while paused
@@ -70,7 +71,15 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import customtkinter as ctk
+from PIL import ImageTk
 
+from app.media_preview import (
+    PreviewFrame,
+    PreviewSeam,
+    PreviewWorker,
+    place_of,
+    without_key,
+)
 from app.media_player import (
     EXIT_CLOSED,
     Dropped,
@@ -146,12 +155,16 @@ REFRESH_MS = 250  # how often the controls' fading and the notice are checked
 REPORT_S = 10.0  # a Position this often while playing (and on every pause and seek)
 NOTICE_S = 5.0  # a notice shows this long
 QUICK_NOTICE_S = 1.5  # a sync, speed or Fit / Fill change's notice: this long
+FLASH_MS = 700  # play / pause, a jump or the sound: its sign in the middle this long
 FILL_MS = 150  # Fill: the crop made again this long after the window's last resize
 LOOKING_S = 60.0  # "Looking for subtitles…" until the app answers, at most this long
 VOLUME_STEP = 5
 END_ROOM_MS = 1_000  # a jump forward stops this far before the end
 MIN_WIDTH, MIN_HEIGHT = 480, 270
 SHAPE_MS = 300  # the mini player's shape put back this long after its last resize
+PREVIEW_WIDTH = 240  # the seek bar's picture, CTk units
+PICTURES_KEPT = 300  # one video's pictures kept (app/media_preview.py's STEPS)
+KEY_RGB = (1, 2, 3)  # KEY_COLOUR as numbers: never a pixel of a picture on the overlay
 DRAG_START_PX = 4  # a press on the mini player's picture moved this far: a drag
 CLICK_WAIT_MS = 250  # a click on the picture: play / pause once no second click (full screen) came
 
@@ -368,11 +381,21 @@ class PlayerWindow(ctk.CTkToplevel):
         now: Callable[[], float] = time.monotonic,
         button_down: Callable[[], bool] = _left_button_down,
         drops: DropSeam | None = None,
+        preview: PreviewSeam | None = None,
     ) -> None:
         super().__init__(master, fg_color=look.background)
         self._drops = drops
+        # The seek bar's pictures (app/media_preview.py): per place of this video, made on Tk's
+        # thread from the previews' thread's Pillow images; `_asked`: the place last asked for.
+        self._previews = (
+            PreviewWorker(preview, lambda frame: self.events.put(frame)) if preview else None
+        )
+        self._pictures: dict[int, ImageTk.PhotoImage | None] = {}
+        self._asked: int | None = None
+        self._hover_place: int | None = None
         self._drop_ids: list[int] = []
         self._click_from: tuple[int, int] | None = None
+        self._flashed = ""
         self.look = look
         self.events: queue.Queue[Event] = queue.Queue()
         self.worker = EngineWorker(engine, self.events)
@@ -739,7 +762,7 @@ class PlayerWindow(ctk.CTkToplevel):
             progress_color=look.foreground,
             button_color=look.foreground,
             button_hover_color=look.foreground,
-            command=lambda value: self.set_volume(round(float(value))),
+            command=lambda value: self.set_volume(round(float(value)), flash=False),
         )
         self.volume_slider.set(self._volume)
         self.volume_slider.pack(side="left", padx=(2, 0))
@@ -860,6 +883,19 @@ class PlayerWindow(ctk.CTkToplevel):
         self.start_over_button.configure(width=260, height=46)
         self.start_over_button.pack(fill="x", padx=20, pady=(0, 20))
 
+        # The sign in the middle for play / pause, a jump and the sound (`flash`, owner 2026-11-20).
+        flash = self.flash_card = ctk.CTkFrame(overlay, fg_color=look.surface, corner_radius=18)
+        self.flash_glyph = ctk.CTkLabel(
+            flash,
+            text="",
+            font=ctk.CTkFont(family=_icon_family(self), size=40),
+            text_color=look.foreground,
+            width=72,
+        )
+        self.flash_glyph.pack(padx=24, pady=18)
+        self.flash_text = ctk.CTkLabel(
+            flash, text="", font=theme.font(16), text_color=look.foreground
+        )
         self.notice_label = ctk.CTkLabel(
             overlay,
             text="",
@@ -1067,6 +1103,8 @@ class PlayerWindow(ctk.CTkToplevel):
             self._on_tracks(event)
         elif isinstance(event, VideoEnded):
             self._on_ended(event.generation)
+        elif isinstance(event, PreviewFrame):
+            self._on_preview(event)
         elif isinstance(event, Dropped):
             self._on_drop(event.paths)
 
@@ -1126,6 +1164,8 @@ class PlayerWindow(ctk.CTkToplevel):
         self._report_stopped()
         self._play = message
         self._generation += 1
+        self._pictures.clear()  # Tk's thread: the old video's pictures go here
+        self._asked = self._hover_place = None
         self._position = message.start_ms  # also what a Stopped says before it starts
         self._duration = 0
         self._started = False
@@ -1316,6 +1356,7 @@ class PlayerWindow(ctk.CTkToplevel):
         if self._paused and self._cut is not None:
             self._reopen()
             self._report()
+            self.flash(PLAY_GLYPH)
             return
         if self._paused:
             self._pending = self.worker.submit(lambda engine: engine.play())
@@ -1333,9 +1374,13 @@ class PlayerWindow(ctk.CTkToplevel):
         self._report()
         self._update_play_button()
         self.activity()
+        self.flash(PAUSE_GLYPH if self._paused else PLAY_GLYPH)
 
     def jump(self, ms: int) -> None:
+        if not self._started or self._ended:
+            return
         self._seek(self._position + ms)
+        self.flash(BACK_GLYPH if ms < 0 else FORWARD_GLYPH, clock(self._position))
 
     def seek_to_fraction(self, fraction: float) -> None:
         if self._duration > 0:
@@ -1366,12 +1411,15 @@ class PlayerWindow(ctk.CTkToplevel):
         self._update_markers()
         self.activity()
 
-    def set_volume(self, level: int) -> None:
+    def set_volume(self, level: int, *, flash: bool = True) -> None:
+        """0–100; its sign in the middle unless from the slider (`flash`), which shows it."""
         self._volume = max(0, min(100, level))
         volume = self._volume
         self.worker.submit(lambda engine: engine.volume(volume))
         self.volume_slider.set(volume)
         self.activity()
+        if flash:
+            self.flash(MUTED_GLYPH if self._muted else VOLUME_GLYPH, f"{volume}%")
 
     def toggle_mute(self) -> None:
         self._muted = not self._muted
@@ -1380,6 +1428,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self.mute_button.configure(text=MUTED_GLYPH if muted else VOLUME_GLYPH)
         self._mute_tip.set_text(self.look.text("unmute_tip" if muted else "mute_tip"))
         self.activity()
+        self.flash(MUTED_GLYPH if muted else VOLUME_GLYPH, "" if muted else f"{self._volume}%")
 
     def _update_play_button(self) -> None:
         playing = self._started and not self._paused
@@ -2130,6 +2179,38 @@ class PlayerWindow(ctk.CTkToplevel):
         else:
             self.prompt_card.place_forget()
 
+    def flash(self, glyph: str, text: str = "") -> None:
+        """A sign in the middle of the picture for FLASH_MS: what play / pause, a jump or the sound
+        just did (`text` under it: the time, the volume). Not over the resume prompt."""
+        if self._closed or self._prompt:
+            return
+        self.flash_glyph.configure(text=glyph)
+        self.flash_text.configure(text=text)
+        if text:
+            self.flash_glyph.pack_configure(pady=(18, 0))
+            self.flash_text.pack(padx=24, pady=(2, 14))
+        else:
+            self.flash_text.pack_forget()
+            self.flash_glyph.pack_configure(pady=18)
+        self.flash_card.place(relx=0.5, rely=0.5, anchor="center")
+        self.flash_card.lift()
+        self._flashed = glyph
+        self._unschedule("flash")
+        self._schedule("flash", FLASH_MS, self._end_flash)
+
+    def _end_flash(self) -> None:
+        self._jobs.pop("flash", None)
+        self._flashed = ""
+        try:
+            self.flash_card.place_forget()
+        except tk.TclError:
+            pass
+
+    @property
+    def flashed(self) -> str:
+        """The sign in the middle now ("" none; tests)."""
+        return self._flashed
+
     def show_notice(self, text: str, *, seconds: float = NOTICE_S) -> None:
         self._notice = text
         self._notice_until = self._now() + seconds
@@ -2212,10 +2293,52 @@ class PlayerWindow(ctk.CTkToplevel):
         ms = round(self._fraction_at(bar, int(event.x)) * self._duration)
         tip = self._time_tip
         tip.configure(text=clock(ms))
-        x = bar.winfo_rootx() - self.overlay.winfo_rootx() + int(event.x)
-        y = bar.winfo_rooty() - self.overlay.winfo_rooty() - self._px(6)
+        if bar is self.seek_bar and not self._mini:
+            self._preview_at(ms)
+        else:
+            tip.configure(image="")
+        overlay = self.overlay
+        x = bar.winfo_rootx() - overlay.winfo_rootx() + int(event.x)
+        y = bar.winfo_rooty() - overlay.winfo_rooty() - self._px(6)
+        tip.update_idletasks()
+        half = tip.winfo_reqwidth() // 2
+        x = max(half, min(x, overlay.winfo_width() - half))  # the picture kept inside the window
         tip.place(x=x, y=y, anchor="s")
         tip.lift()
+
+    def _preview_at(self, ms: int) -> None:
+        """The picture of the place under the pointer in the time tip: kept, or asked for (the
+        tip keeps the picture before until it comes)."""
+        play, previews = self._play, self._previews
+        if play is None or previews is None or not self._started:
+            return
+        place = place_of(ms, self._duration)
+        self._hover_place = place
+        if place in self._pictures:
+            self._show_picture(self._pictures[place])
+        elif place != self._asked:
+            self._asked = place
+            previews.want(self._generation, play.file, place, self._px(PREVIEW_WIDTH))
+
+    def _on_preview(self, frame: PreviewFrame) -> None:
+        if frame.generation != self._generation:
+            return  # an earlier video's
+        picture: ImageTk.PhotoImage | None = None
+        if frame.image is not None:
+            picture = ImageTk.PhotoImage(without_key(frame.image, KEY_RGB), master=self)
+        self._pictures[frame.place_ms] = picture
+        while len(self._pictures) > PICTURES_KEPT:  # the oldest go, on Tk's thread
+            del self._pictures[next(iter(self._pictures))]
+        if self._asked == frame.place_ms:
+            self._asked = None
+        if frame.place_ms == self._hover_place and self._time_tip.winfo_ismapped():
+            self._show_picture(picture)
+
+    def _show_picture(self, picture: ImageTk.PhotoImage | None) -> None:
+        if picture is None:
+            self._time_tip.configure(image="")
+        else:
+            self._time_tip.configure(image=picture, compound="top")
 
     # -- closing -------------------------------------------------------------------------------
 
@@ -2234,6 +2357,8 @@ class PlayerWindow(ctk.CTkToplevel):
         self._closed = True
         self._close_menu()
         self._let_go_of_drops()
+        if self._previews is not None:
+            self._previews.stop()
         for job in self._jobs.values():
             try:
                 self.after_cancel(job)
@@ -2281,6 +2406,8 @@ class PlayerWindow(ctk.CTkToplevel):
                     pass
             self._jobs.clear()
             self.worker.stop()
+            if self._previews is not None:
+                self._previews.stop()
 
     def _on_overlay_destroy(self, event: Any) -> None:
         """The controls' window gone without `close` (closed on its own): the player closes
@@ -2328,6 +2455,7 @@ def start_player(
     now: Callable[[], float] = time.monotonic,
     button_down: Callable[[], bool] = _left_button_down,
     drops: DropSeam | None = None,
+    preview: PreviewSeam | None = None,
 ) -> PlayerWindow:
     """The window, its engine thread and its stdin reader running; Ready said."""
     window = PlayerWindow(
@@ -2342,6 +2470,7 @@ def start_player(
         now=now,
         button_down=button_down,
         drops=drops,
+        preview=preview,
     )
     worker, events = window.worker, window.events
     engine.on_end(lambda: events.put(VideoEnded(worker.generation)))
@@ -2349,6 +2478,8 @@ def start_player(
     worker.submit(lambda engine: engine.attach(video_id))
     worker.submit(lambda engine: engine.volume(volume))
     worker.start()
+    if window._previews is not None:
+        window._previews.start()
     send(encode(Ready()))
     threading.Thread(
         target=read_input, args=(stdin, events), name="media-stdin", daemon=True
@@ -2368,6 +2499,7 @@ def run_player(
     on_screen: Callable[[Rect], bool] = lambda _rect: True,
     pointer: Callable[[], tuple[int, int]] | None = None,
     drops: DropSeam | None = None,
+    preview: PreviewSeam | None = None,
 ) -> int:
     """The player until its window closes; the exit code. libVLC gets RELEASE_WAIT_S to let
     go; one stuck on a stalled share is left behind (the process ends anyway)."""
@@ -2382,6 +2514,7 @@ def run_player(
         on_screen=on_screen,
         pointer=pointer,
         drops=drops,
+        preview=preview,
     )
     worker = window.worker
     window.wait_window()
