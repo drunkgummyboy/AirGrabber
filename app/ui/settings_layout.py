@@ -47,6 +47,9 @@ SCROLLBAR_ROOM = 24  # the pages' scrollbar beside them (about 23), with a littl
 # and its scrollbar.
 PAGE_SIDES = 1 + PAGE_PAD_LEFT + PAGE_PAD_RIGHT + SCROLLBAR_ROOM
 SCREEN_EDGES = 20  # left free across the screen: the window's own edges
+# Slack under the sum of the parts: what Tk / CTk round on other screens and fonts (GitHub's
+# 100 % runner came out 1 unit wider than the parts add up to).
+FIT_SLACK = 12
 # The page (and the sidebar, level with it) starts under the close button (no title bar,
 # app/ui/borderless.py): what scrolls never passes under it.
 PAGE_TOP = CLOSE_ROOM + CLOSE_GAP
@@ -90,7 +93,7 @@ def fitting_page_width(screen_width: float, sidebar: int) -> int:
     """The widest page (logical) with which a window with a `sidebar` wide sidebar fits a screen
     `screen_width` wide (logical) less its edges: WIDE_PAGE_WIDTH where there is room, never
     narrower than NARROW_PAGE_WIDTH."""
-    room = math.floor(screen_width) - SCREEN_EDGES - sidebar - PAGE_SIDES
+    room = math.floor(screen_width) - SCREEN_EDGES - FIT_SLACK - sidebar - PAGE_SIDES
     return max(NARROW_PAGE_WIDTH, min(WIDE_PAGE_WIDTH, room))
 
 
