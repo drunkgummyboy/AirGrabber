@@ -80,13 +80,21 @@ def _json_line(output: str) -> Any:
     raise AssertionError(f"no JSON line in: {output}")
 
 
+def _clean_environment() -> dict[str, str]:
+    """This process's environment without PSModulePath, so Windows PowerShell builds its own, as on a
+    user's PC. Started from PowerShell 7 (GitHub's test step), it would inherit 7's module folders,
+    and Expand-Archive would load 7.7's Microsoft.PowerShell.Archive, which calls a .NET overload
+    Windows PowerShell lacks ("Cannot find an overload for ExtractToDirectory ... 3")."""
+    return {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+
+
 def _powershell(script: str, env: dict[str, str]) -> str:
     result = subprocess.run(
         [powershell_exe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-Command", script],
         capture_output=True,
         text=True,
-        env={**os.environ, **env},
+        env={**_clean_environment(), **env},
         timeout=120,
         creationflags=NO_WINDOW,
     )  # fmt: skip
