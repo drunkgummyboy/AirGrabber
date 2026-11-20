@@ -52,6 +52,7 @@ from app.ui.settings_dialog import SettingsDialog
 from tests.forge.ui.settings_kit import forge_settings
 from app.i18n import Language
 from app.ui.widgets import install_window_release
+from app.ui.settings_layout import NARROW_PAGE_WIDTH
 from tests.forge.base import ForgeAsyncTestCase, ForgeTestCase
 from tests.forge.ui.subtitle_kit import FakeSubtitleSource
 from tests.forge.tk import pump, pump_until
@@ -442,7 +443,11 @@ class NamingSettingsTests(ForgeAsyncTestCase):
             self.assertEqual(sample_lines(fmt, TypeHint.AUTO)[1], [], fmt)
 
     async def test_a_cell_too_long_is_cut_and_its_tip_shows_it_whole(self) -> None:
-        dialog, part, _forge = await self.ready()
+        # At the narrowest page (a 1366 x 768 screen at 150 %): the longest example doesn't fit.
+        with mock.patch(
+            "app.ui.settings_dialog.fitting_page_width", return_value=NARROW_PAGE_WIDTH
+        ):
+            dialog, part, _forge = await self.ready()
         self.select(part, "Series (Flat)")
         part.codes_fold.set_open(True)  # "? Codes": the tables show
         dialog.update()

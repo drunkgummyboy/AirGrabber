@@ -1,10 +1,11 @@
 """The phone connection as a whole (`services.phone`): on or off, pairing, and being found.
 
-For now it exists only on a PC whose data folder holds the file ENABLED_MARKER: without it there
-is no Settings page, `run` returns at once and nothing starts, whatever the settings say. Setting
-OPEN_TO_EVERYONE to True opens it up. The hidden switch (the owner, 2026-11-10): seven quick clicks on
-"Version …" in Settings → Updates & backup write or delete that file (`switch_here`); it counts from the next
-start, and the paired phones stay in the settings either way.
+Every copy has it since 3.23.0 (OPEN_TO_EVERYONE, the owner, 2026-11-20). Before, it existed only on a
+PC whose data folder held the file ENABLED_MARKER: without it there was no Settings page, `run` returned
+at once and nothing started, whatever the settings said. Setting OPEN_TO_EVERYONE back to False brings
+that back, with the hidden switch (the owner, 2026-11-10): seven quick clicks on "Version …" in
+Settings → Updates & backup write or delete that file (`switch_here`); it counts from the next start,
+and the paired phones stay in the settings either way. While it is open the clicks do nothing.
 
 Off (the default) it does nothing: no port, no certificate. On, it runs the HTTPS server
 (app/services/phone/server.py) and a small UDP finder, which tells a phone that knows this PC's id
@@ -79,7 +80,7 @@ from app.services.settings import SettingsService
 
 log = logging.getLogger(__name__)
 
-OPEN_TO_EVERYONE = False  # True: every copy has the phone connection, marker or not
+OPEN_TO_EVERYONE = True  # every copy has the phone connection, marker or not (False: only with the marker)
 ENABLED_MARKER = "phone-connection.enabled"  # a file directly in the data folder (AppPaths.root)
 
 API_VERSION = 1

@@ -24,10 +24,9 @@ NOTES: dict[str, tuple[str, ...]] = {
         N_("Player: point at the timeline and a small picture shows what happens at that moment."),
         N_("Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment."),
         N_("Player: a jump back or ahead shows the time in the middle, and the volume keys or mouse wheel show the level."),
-    ),
-    "3.22.0": (
-        N_("MediaForge's settings now sit beside the matching AirGrabber ones; there's no separate group any more."),
-        N_("AirGrabber always opens full size, and the Settings window is wider."),
+        N_("Settings and MediaForge's rule window open wider, and you can drag their edges to make them bigger."),
+        N_("MediaForge's rules list shows the name you gave each rule; point at it to see what it takes and from where."),
+        N_("A MediaForge rule may now watch a folder inside the folder it moves files to."),
     ),
     "3.19.0": (
         N_("Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films."),
@@ -308,15 +307,15 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.22.0": (
+    "3.23.0": (
         Feature(
-            N_("A tidier Settings window"),
+            N_("AirGrabber on your phone"),
             N_(
-                "Settings is grouped by what you want to do and opens on an overview of how "
-                "everything is set up. Your folders are on one page, and every change saves at "
-                "once, with Undo."
+                "The Companion app for Android brings your library to your phone: browse it and "
+                "watch there, search for something new to download, and copy films onto the "
+                "phone for later. Switch it on in Settings → Phone connection."
             ),
-            "settings.png",
+            "phone.png",
         ),
     ),
 }

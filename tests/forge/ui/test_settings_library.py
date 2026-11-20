@@ -657,8 +657,8 @@ class RulesListTests(LibrarySettingsCase):
         self.assertEqual(
             row_look(rules[0], self.S),
             RowLook(
-                False, "Downloads", ("Films", "4K"), "Movie (Folder)", r"\\NAS\Movies 4K",
-                "Automatic", "4K films", False,
+                False, "4K films", ("Films", "4K"), "Movie (Folder)", r"\\NAS\Movies 4K",
+                "Automatic", "4K films from Downloads", False,
             ),
         )
         self.assertEqual(
@@ -674,7 +674,7 @@ class RulesListTests(LibrarySettingsCase):
         self.assertEqual(second.grip.cget("text"), "🔒")
         self.assertEqual(
             [str(label.cget("text")) for label in first.labels],
-            ["Downloads", "Films", "4K", "Movie (Folder)", r"→ \\NAS\Movies 4K", "Automatic"],
+            ["4K films", "Films", "4K", "Movie (Folder)", r"→ \\NAS\Movies 4K", "Automatic"],
         )
         self.assertEqual(tuple(first.labels[-1].cget("text_color")), theme.SUCCESS)
         self.assertEqual(first.switch.get(), 1)
@@ -721,9 +721,9 @@ class RulesListTests(LibrarySettingsCase):
         self.assertEqual([r.id for r in self.rules.saved[-1]], [3, 1, 2])
 
     async def test_a_refused_change_is_said_in_the_rules_box_and_stores_nothing(self) -> None:
-        inside = Rule(
+        inside = Rule(  # it would move its films to the folder it watches
             id=0,
-            folder=r"E:\Films\in",
+            folder=r"E:\Films",
             take="films",
             films=RuleTarget(preset="Movie (Folder)", to="folder", folder=r"E:\Films"),
         )

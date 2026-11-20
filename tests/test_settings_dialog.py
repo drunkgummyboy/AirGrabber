@@ -58,6 +58,8 @@ from app.ui.settings_dialog import (
     theme_name,
 )
 from app.ui.settings_layout import NARROW_PAGE_WIDTH, WIDE_PAGE_WIDTH, page_width
+from app.ui.settings_overview import line_wrap
+from tests.forge.tk import pump
 from app.ui.settings_pages_registry import (
     PAGE_ACCOUNTS,
     PAGE_LOOKS,
@@ -405,8 +407,50 @@ class DialogTests(DialogCase):
         width = self.width(dialog)
         self.assertLessEqual(width, 1920 / 1.75 - 20)  # room for the window's own edges
         self.assertGreaterEqual(width, 1000)  # the wider window (the owner's wish, 2026-11-19)
-        self.assertEqual(page_width(), WIDE_PAGE_WIDTH)
         self.assertGreaterEqual(sidebar_width(), 220)
+
+    async def test_opens_wider_on_a_1920x1080_screen_at_150_percent(self) -> None:
+        # Wider still where there is room (the owner's wish, 2026-11-20).
+        dialog = self.on_a_screen(1920 / 1.5)  # 1280
+        width = self.width(dialog)
+        self.assertEqual(page_width(), WIDE_PAGE_WIDTH)
+        self.assertLessEqual(width, 1920 / 1.5 - 20)
+        self.assertGreaterEqual(width, 1150)
+
+    async def drag_to(self, dialog: SettingsDialog, width: int, height: int) -> None:
+        """The window dragged to `width` x `height` (logical), its texts followed."""
+        dialog.geometry(f"{width}x{height}")
+        dialog.update()
+        await pump(self.root, 0.15)
+
+    async def test_can_be_made_wider_and_taller_but_not_narrower(self) -> None:
+        dialog = self.on_a_screen(1366 / 1.5)
+        scaling = float(ctk.ScalingTracker.get_window_scaling(dialog))
+        self.assertEqual(dialog.resizable(), (True, True))
+        dialog.deiconify()  # shown, so that its size is the one it has
+        dialog.update()
+        first = round(dialog.winfo_width() / scaling)
+        min_width, min_height = dialog.wm_minsize()
+        self.assertAlmostEqual(min_width / scaling, first, delta=1)
+        self.assertLessEqual(min_height / scaling, 420)
+
+        note = next(
+            child for child in descendants(dialog.page(PAGE_QUALITY))
+            if isinstance(child, ctk.CTkLabel) and child.cget("text") == QUALITY_NOTE
+        )
+        built = page_width()
+        await self.drag_to(dialog, first + 200, 700)
+        self.assertEqual(int(note.cget("wraplength")), built + 200)  # its text follows
+        self.assertEqual(page_width(), built)  # what a later page is built from stays
+        # Overview's cards side by side: each gets half.
+        dialog.show_section(PAGE_OVERVIEW)
+        assert dialog.overview is not None
+        card = next(iter(dialog.overview.views.values()))
+        lines = [w for w in descendants(card) if isinstance(w, ctk.CTkLabel)]
+        wraps = [int(w.cget("wraplength")) for w in lines if int(w.cget("wraplength") or 0)]
+        self.assertIn(line_wrap() + 100, wraps)
+        await self.drag_to(dialog, first, 700)
+        self.assertEqual(int(note.cget("wraplength")), built)  # back to where it was
 
     async def test_fits_a_1366x768_screen_at_150_percent(self) -> None:
         # Its pages narrow (not below the old width): the whole window fits the screen.

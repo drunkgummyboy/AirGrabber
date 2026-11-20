@@ -399,6 +399,8 @@ def line_wrap() -> int:
 class CardView(ctk.CTkFrame):
     """One card: the dot and its page's name, its line under them; a click opens the page."""
 
+    reflow_share = 0.5  # two side by side: each gets half of a wider window (app/ui/reflow.py)
+
     def __init__(self, master: Any, card: Card, on_open: Callable[[str], None]) -> None:
         self._edge: theme.Color = theme.WARNING if card.state == "warn" else theme.PANEL_EDGE
         super().__init__(

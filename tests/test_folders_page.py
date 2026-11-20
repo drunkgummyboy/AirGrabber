@@ -602,12 +602,14 @@ class WithMediaForgeTests(FoldersPageCase):
         heard.clear()
         await fake.update(series_folder=OLD_SERIES)  # stored elsewhere (an import): heard
         self.assertTrue(heard)
-        # A destination around a watched folder would make its rule refused.
-        problem = destinations.problem({"series": "D:\\"})
+        # A destination that is a watched folder would make its rule refused (one around it is
+        # fine: a look never goes up).
+        self.assertIsNone(destinations.problem({"series": "D:\\"}))
+        problem = destinations.problem({"series": "D:\\Downloads"})
         assert problem is not None
         self.assertTrue(problem.startswith("Rule 1: ✕ Can't save"))
         with self.assertRaises(Refused):
-            await destinations.store({"series": "D:\\"})
+            await destinations.store({"series": "D:\\Downloads"})
         self.assertEqual(fake.current.series_folder, OLD_SERIES)  # nothing stored
         destinations.close()
 

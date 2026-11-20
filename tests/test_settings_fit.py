@@ -4,7 +4,7 @@ in English and in Dutch, no widget on any page reaches past what holds it, and n
 or a switch's, tick's or radio button's) gets less room than it asks for, so none is cut off at
 its right edge. Every page is walked with MediaForge's parts built and ready, Plex connected and
 every fold opened, once as the settings start and once with the remote program's form shown and
-the folder library on. A wrapping label is tried with a long text too: whatever it will say must
+the folder library on, then once more with the window dragged wider by hand. A wrapping label is tried with a long text too: whatever it will say must
 wrap inside its room. Fakes throughout (tests/test_settings_registry.py's window)."""
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from tests.test_settings_registry import RegistryCase
 
 LONG_PATH = r"\\nas\video\A folder with a long name\and another one inside it\Season 01"
 LONG = "A note that goes on for a while, as a path or a reason can, " * 6
+DRAGGED = 300  # how much wider the window is dragged (logical)
 
 
 def descendants(widget: tk.Misc) -> list[tk.Misc]:
@@ -149,8 +150,9 @@ class PagesFitTests(RegistryCase):
         return ""
 
     async def walk_both_widths(self) -> None:
-        # One window per width, walked in both states (building it is what takes the time).
-        for screen, width in ((700, NARROW_PAGE_WIDTH), (1920 / 1.75, WIDE_PAGE_WIDTH)):
+        # One window per width, walked in both states (building it is what takes the time),
+        # then dragged wider by hand (its texts follow: app/ui/reflow.py).
+        for screen, width in ((700, NARROW_PAGE_WIDTH), (1920 / 1.5, WIDE_PAGE_WIDTH)):
             dialog = self.open(screen)
             self.assertEqual(page_width(), width)
             await self.every_page_shown(dialog)
@@ -158,6 +160,17 @@ class PagesFitTests(RegistryCase):
                 self.assertEqual(await self.cut_off(dialog), [])
             await self.to_the_other_state()
             with self.subTest(width=width, state="remote, folders on"):
+                self.assertEqual(await self.cut_off(dialog), [])
+            scaling = ctk.ScalingTracker.get_window_scaling(dialog)
+            wide = round(dialog.winfo_width() / scaling) + DRAGGED
+            dialog.geometry(f"{wide}x{round(dialog.winfo_height() / scaling)}")
+            dialog.update()
+            await pump(self.root, 0.15)
+            notes = [w for w in descendants(dialog.page(dialog.sections[-1])) if _wraps_at(w, width)]
+            self.assertTrue(notes)  # the page's muted line, a box's explanation …
+            followed = [int(w.cget("wraplength")) for w in notes]
+            self.assertEqual(followed, [width + DRAGGED] * len(notes))  # … follow
+            with self.subTest(width=width, state="dragged wider"):
                 self.assertEqual(await self.cut_off(dialog), [])
             dialog.destroy()
 
@@ -172,6 +185,11 @@ class PagesFitTests(RegistryCase):
 # What says a text whose room must not be cut: a label, and a switch's, tick's or radio
 # button's text beside its mark.
 _TEXTS = (ctk.CTkLabel, ctk.CTkSwitch, ctk.CTkCheckBox, ctk.CTkRadioButton)
+
+
+def _wraps_at(widget: tk.Misc, width: int) -> bool:
+    """A label that wrapped at the whole page `width` when it was made."""
+    return isinstance(widget, ctk.CTkLabel) and getattr(widget, "_reflow_base", None) == width
 
 
 def _text(widget: tk.Misc) -> str:

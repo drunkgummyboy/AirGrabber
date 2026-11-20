@@ -1575,19 +1575,21 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
-    "A tidier Settings window": "Een overzichtelijker Instellingen-venster",
-    "Settings is grouped by what you want to do and opens on an overview of how everything is set up. Your folders are on one page, and every change saves at once, with Undo.":
-        "Instellingen is ingedeeld naar wat je wilt doen en opent met een overzicht van hoe alles is ingesteld. Je mappen staan op één pagina, en elke wijziging wordt meteen bewaard, met Ongedaan maken.",
+    "AirGrabber on your phone": "AirGrabber op je telefoon",
+    "The Companion app for Android brings your library to your phone: browse it and watch there, search for something new to download, and copy films onto the phone for later. Switch it on in Settings → Phone connection.":
+        "De Companion-app voor Android zet je bibliotheek op je telefoon: blader erdoor en kijk erop, zoek iets nieuws om te downloaden en zet films op je telefoon voor later. Zet het aan bij Instellingen → Telefoonverbinding.",
     "Player: point at the timeline and a small picture shows what happens at that moment.":
         "Speler: wijs de tijdlijn aan en een klein plaatje laat zien wat er op dat moment gebeurt.",
     "Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment.":
         "Speler: pauzeren of afspelen, met een klik, de spatiebalk of de knop, toont even een teken in het midden.",
     "Player: a jump back or ahead shows the time in the middle, and the volume keys or mouse wheel show the level.":
         "Speler: terug- of vooruitspringen toont de tijd in het midden; de volumetoetsen of het muiswiel tonen het niveau.",
-    "MediaForge's settings now sit beside the matching AirGrabber ones; there's no separate group any more.":
-        "De instellingen van MediaForge staan nu naast de bijbehorende van AirGrabber; er is geen aparte groep meer.",
-    "AirGrabber always opens full size, and the Settings window is wider.":
-        "AirGrabber opent altijd op volle grootte, en het Instellingen-venster is breder.",
+    "Settings and MediaForge's rule window open wider, and you can drag their edges to make them bigger.":
+        "Instellingen en het regelvenster van MediaForge openen breder, en je kunt ze groter maken door aan de randen te slepen.",
+    "MediaForge's rules list shows the name you gave each rule; point at it to see what it takes and from where.":
+        "De regellijst van MediaForge toont de naam die je elke regel gaf; wijs hem aan om te zien wat hij neemt en waarvandaan.",
+    "A MediaForge rule may now watch a folder inside the folder it moves files to.":
+        "Een MediaForge-regel mag nu een map in de gaten houden die in de map ligt waar hij bestanden naartoe verplaatst.",
     "Library: a calmer top, and cards are just the poster: ✓ for shows you follow, + to follow, ⬆ for low-quality films.": "Bibliotheek: rustiger kop, kaarten met alleen de poster: ✓ bij series die je volgt, + om te volgen, ⬆ bij lage kwaliteit",
     "Films stay on your watchlist after they're downloaded, with the day it happened; they're never downloaded twice.": "Films blijven na het downloaden op je kijklijst, met de dag erbij; ze worden nooit twee keer gedownload.",
     "Settings → Automatic: films you add to your watchlist only download by themselves when you tick it (off at first).": "Instellingen → Automatisch: films op je kijklijst downloaden alleen vanzelf als je dat aanvinkt (eerst uit).",

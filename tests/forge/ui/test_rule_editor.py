@@ -18,7 +18,7 @@ from app.forge.models.media import MediaKind, ParsedMedia
 from app.forge.models.preset import DEFAULT_PRESETS
 from app.forge.models.rules import Rule, RuleTarget
 from app.forge.models.settings import ForgeSettings
-from app.forge.ui.rule_editor import LOOKING, NO_DOWNLOADS, UNREACHABLE, RuleEditor
+from app.forge.ui.rule_editor import LOOKING, NO_DOWNLOADS, UNREACHABLE, WIDTH, RuleEditor
 from app.i18n import Language, t
 from tests.forge.base import ForgeAsyncTestCase
 from tests.forge.tk import pump, pump_until
@@ -289,6 +289,34 @@ class BuildTests(EditorCase):
 class LiveCheckTests(EditorCase):
     def film(self, name: str) -> tuple[Path, ParsedMedia]:
         return Path(D) / name, ParsedMedia(source_name=name, kind=MOVIE, title="A Film")
+
+    async def test_it_can_be_made_wider_and_its_texts_follow(self) -> None:
+        # Wider than it was (the owner's wish, 2026-11-20), and dragged wider still.
+        self.files = None
+        editor = self.editor(Rule(folder=D))
+        await pump_until(self.root, lambda: self.lines(editor) == [t(UNREACHABLE)])
+        self.assertEqual(editor.resizable(), (True, True))
+        editor.deiconify()
+        editor.update()
+        scale = float(ctk.ScalingTracker.get_widget_scaling(editor))
+        first = round(editor.winfo_width() / scale)
+        self.assertGreaterEqual(first, WIDTH)
+        self.assertAlmostEqual(editor.wm_minsize()[0] / scale, first, delta=1)
+        line = editor.check_lines[0]
+        notes_wrap, line_wrap = (int(w.cget("wraplength")) for w in (editor.notes_label, line))
+        editor.geometry(f"{first + 150}x{round(editor.winfo_height() / scale)}")
+        editor.update()
+        await pump(self.root, 0.15)
+        self.assertEqual(int(editor.notes_label.cget("wraplength")), notes_wrap + 150)
+        self.assertEqual(int(line.cget("wraplength")), line_wrap + 150)
+        # The check's lines drawn again: as wide as the window is now.
+        editor.refresh_check()
+        await pump_until(
+            self.root,
+            lambda: bool(editor.check_lines)
+            and editor.check_lines[0] is not line
+            and int(editor.check_lines[0].cget("wraplength")) == line_wrap + 150,
+        )
 
     async def test_the_live_check_says_when_it_cant_reach(self) -> None:
         self.files = None

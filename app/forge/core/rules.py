@@ -48,16 +48,16 @@ if TYPE_CHECKING:  # the queue loads the parser and matcher, which the rule rows
 # -- texts (the rule's row in Settings › Sorting) --
 
 REFUSE_IN_DESTINATION = N_(
-    "✕ Can't save: the folder it watches is inside the folder it moves to, so files would be "
-    "found again and again."
+    "✕ Can't save: it moves files to the folder it watches, so they would be found again and "
+    "again."
 )
 REFUSE_HOLDS_DESTINATION = N_(
     "✕ Can't save: the folder it moves to is inside the folder it watches, so files would be "
     "found again and again."
 )
 REFUSE_IN_LIBRARY = N_(
-    "✕ Can't save: the folder it watches is inside a library folder, so files would be found "
-    "again and again."
+    "✕ Can't save: the folder it watches is a library folder, so files would be found again "
+    "and again."
 )
 REFUSE_NO_FOLDER = N_("✕ Can't save: choose the folder this rule watches.")
 REFUSE_NO_DESTINATION = N_("✕ Can't save: choose the folder to move them to.")
@@ -177,10 +177,12 @@ def _refusals(rule: Rule, settings: ForgeSettings) -> list[str]:
         found.append(REFUSE_NO_DESTINATION)
     if not rule.folder:
         return found
+    # A folder inside one it moves to is fine: a look never goes up to the folder above
+    # (the owner's ruling, 2026-11-20). The same folder would find its own files again.
     watched = Path(rule.folder)
-    if any(inside(watched, library) for library in library_folders(settings)):
+    if any(_key(watched) == _key(library) for library in library_folders(settings)):
         found.append(REFUSE_IN_LIBRARY)
-    if any(inside(watched, Path(folder)) for _kind, folder in _own_destinations(rule)):
+    if any(_key(watched) == _key(folder) for _kind, folder in _own_destinations(rule)):
         found.append(REFUSE_IN_DESTINATION)
     goes_to = [Path(f) for f in (_destination(rule, k, settings) for k in rule.kinds()) if f]
     if any(inside(dest, watched) and not inside(watched, dest) for dest in goes_to):
@@ -297,8 +299,7 @@ def uncovered(
             continue
         watched = Path(folder)
         if (rule.id, _key(folder)) not in seen or any(
-            inside(watched, dest)  # its whole folder was skipped
-            or (inside(dest, watched) and (rule.subfolders or _key(dest) == _key(watched)))
+            inside(dest, watched) and (rule.subfolders or _key(dest) == _key(watched))
             for dest in gone
         ):
             found.setdefault(rule.id)
@@ -404,17 +405,12 @@ def _unreachable_destinations(
 
 
 def _moves_into(other: Rule, watched: Sequence[str], settings: ForgeSettings) -> bool:
-    """Whether `other` moves files where a rule watching `watched` would find them, or where a
-    look skips them: one of its own folder destinations is in a watched folder, or a watched
-    folder is in one of its destinations (its own folders and the library folders it moves to).
-    A Stays rule moves nothing (its watched folder is its destination, kept by the memory)."""
+    """Whether `other` moves files where a rule watching `watched` would find them (where a
+    look skips them): one of its own folder destinations is in a watched folder. A folder that
+    holds a watched one is no matter: a look never goes up (the owner's ruling, 2026-11-20). A
+    Stays rule moves nothing (its watched folder is its destination, kept by the memory)."""
     own = [Path(dest) for _kind, dest in _own_destinations(other)]
-    goes_to = [Path(f) for f in (_destination(other, k, settings) for k in other.kinds()) if f]
-    return any(
-        any(inside(dest, Path(folder)) for dest in own)
-        or any(inside(Path(folder), dest) for dest in goes_to)
-        for folder in watched
-    )
+    return any(any(inside(dest, Path(folder)) for dest in own) for folder in watched)
 
 
 def rule_notes(
@@ -427,8 +423,8 @@ def rule_notes(
     """Each rule's notes, in the rule order: refusals (any rule), then for an on rule the
     warnings (its watched folder or a destination the last look couldn't reach (`unreachable`:
     normcased folders), never reached because of a rule above, its preset gone, its library
-    folder not chosen) and the info (another rule that runs moves files into its folder, or its
-    folder lies in what another rule moves to: a look skips destinations, `_moves_into`)."""
+    folder not chosen) and the info (another rule that runs moves files into its folder: a look
+    skips destinations inside the folder it lists, `_moves_into`)."""
     away = {_key(folder) for folder in unreachable}
     dests = destinations(rules, settings)
     refused = [_refusals(rule, settings) for rule in rules]

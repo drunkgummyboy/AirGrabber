@@ -182,12 +182,13 @@ class RowLook(NamedTuple):
     """A rule's row in the list, as words (translated)."""
 
     locked: bool  # AirGrabber's rule: 🔒 instead of the grip, no Delete
-    folder: str  # the watched folder's last name; AirGrabber's: "AirGrabber's downloads"
+    folder: str  # its bold name: the rule's own name, else its watched folder's last name
+    # (AirGrabber's: "AirGrabber's downloads")
     chips: tuple[str, ...]  # what it takes, the quality (none for any), "Top folder only"
     preset: str  # the taken kinds' preset names, " / " between them
     destination: str  # drawn after "→ "
     mode: str  # "Automatic" / "Manual"
-    tip: str  # the row's tooltip: `name_of`
+    tip: str  # the row's tooltip: `made_name` (what it takes from which folder)
     dim: bool  # off: greyed
 
 
@@ -202,6 +203,14 @@ def _goes_to(rule: Rule, kind: MediaKind, settings: ForgeSettings) -> str:
         return target.folder
     folder = settings.series_folder if kind is MediaKind.EPISODE else settings.movies_folder
     return folder or t(NO_LIBRARY[kind])
+
+
+def _row_name(rule: Rule) -> str:
+    """The row's bold name: the name the rule was given, else its watched folder's last name
+    (the made name, with the folder in it, is the row's tooltip)."""
+    if rule.airgrabber:
+        return t(AIRGRABBERS)
+    return rule.name.strip() or last_name(rule.folder)
 
 
 def row_look(rule: Rule, settings: ForgeSettings) -> RowLook:
@@ -220,12 +229,12 @@ def row_look(rule: Rule, settings: ForgeSettings) -> RowLook:
         destination = " / ".join(_distinct([_goes_to(rule, kind, settings) for kind in kinds]))
     return RowLook(
         locked=rule.airgrabber,
-        folder=t(AIRGRABBERS) if rule.airgrabber else last_name(rule.folder),
+        folder=_row_name(rule),
         chips=tuple(chips),
         preset=preset,
         destination=destination,
         mode=t(AUTOMATIC if rule.mode == "auto" else MANUAL),
-        tip=name_of(rule),
+        tip=made_name(rule),
         dim=not rule.on,
     )
 

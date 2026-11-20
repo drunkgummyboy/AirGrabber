@@ -88,7 +88,8 @@ def explain(
     # A destination's files are never taken (a look doesn't walk there): not counted either.
     shown = [*rules[:index], rule, *rules[index + 1 :]]
     dests = destinations(shown, settings)
-    files = [(f, p) for f, p in files if not any(inside(f, dest) for dest in dests)]
+    within = [dest for dest in dests if inside(dest, folder)]  # a look never goes up
+    files = [(f, p) for f, p in files if not any(inside(f, dest) for dest in within)]
     others = [entry for entry in watch_list(rules, settings) if entry.number != number]
     own = WatchedRule(rule, number, folder)
     above = [entry for entry in others if entry.number < number]

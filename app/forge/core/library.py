@@ -1,7 +1,7 @@
 """The library folders, and folder tests.
 
-What a watched folder may not be (inside a library folder, inside the folder its rule moves to)
-is the rules' (app/forge/core/rules.py: refusals on the rule's row); a rule whose library folder
+What a watched folder may not be (a library folder, the folder its rule moves to; inside one is
+fine: a look never goes up) is the rules' (app/forge/core/rules.py: refusals on the rule's row); a rule whose library folder
 isn't chosen holds only its own files (`route_problem`).
 
 Paths are compared the way Windows does (case-insensitive, `\\\\server\\share` included) and by

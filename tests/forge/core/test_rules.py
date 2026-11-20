@@ -155,13 +155,18 @@ class CheckTests(ForgeTestCase):
 
     def test_refusals(self) -> None:
         moves_to = RuleTarget(preset="Movie (Folder)", to="folder", folder=r"D:\Movies")
+        same_as_destination = Rule(folder=r"D:\Movies", take="films", films=moves_to)
+        self.assertEqual(self.refusals(same_as_destination), [REFUSE_IN_DESTINATION])
+        # Inside the folder it moves to is fine: a look never goes up (the owner, 2026-11-20).
         inside_destination = Rule(folder=r"D:\Movies\New", take="films", films=moves_to)
-        self.assertEqual(self.refusals(inside_destination), [REFUSE_IN_DESTINATION])
+        self.assertEqual(self.refusals(inside_destination), [])
         sorted_ = RuleTarget(preset="Movie (Folder)", to="folder", folder=D + r"\Sorted")
         holding = Rule(folder=D, take="films", films=sorted_)
         self.assertEqual(self.refusals(holding), [REFUSE_HOLDS_DESTINATION])
+        a_library = Rule(folder=SERIES, stays=True)
+        self.assertEqual(self.refusals(a_library), [REFUSE_IN_LIBRARY])
         in_library = Rule(folder=SERIES + r"\Incoming", stays=True)
-        self.assertEqual(self.refusals(in_library), [REFUSE_IN_LIBRARY])
+        self.assertEqual(self.refusals(in_library), [])
         self.assertEqual(self.refusals(Rule(folder="")), [REFUSE_NO_FOLDER])
         no_destination = Rule(folder=D, films=RuleTarget(preset="Movie (Folder)", to="folder"))
         self.assertEqual(self.refusals(no_destination), [REFUSE_NO_DESTINATION])
@@ -325,13 +330,16 @@ class CheckTests(ForgeTestCase):
     def test_watching_inside_what_another_rule_moves_to_is_said(self) -> None:
         moved_into = RuleNote("info", i18n.t(MOVED_INTO, n=2))
         to_e = RuleTarget(preset="Movie (Folder)", to="folder", folder=E)
-        for watched in (E + r"\New", E, E.lower() + "\\"):
+        for watched in (E, E.lower() + "\\"):
             rules = [Rule(folder=watched), Rule(folder=D, take="films", films=to_e)]
             self.assertEqual(rule_notes(rules, SETTINGS, presets=NAMES)[0], [moved_into], watched)
-        # A library folder another rule moves to (the watching rule is refused there anyway).
+        # Watching inside what another rule moves to: nothing to say, a look never goes up (the
+        # owner's ruling, 2026-11-20); a library folder's too.
+        inside = [Rule(folder=E + r"\New"), Rule(folder=D, take="films", films=to_e)]
+        self.assertEqual(rule_notes(inside, SETTINGS, presets=NAMES)[0], [])
         in_series = [Rule(folder=SERIES + r"\in"), Rule(folder=D, take="shows")]
-        self.assertEqual(rule_notes(in_series, SETTINGS, presets=NAMES)[0][-1], moved_into)
-        self.assertEqual(rule_notes(in_series[:1], SETTINGS, presets=NAMES)[0][-1].level, "refuse")
+        self.assertEqual(rule_notes(in_series, SETTINGS, presets=NAMES)[0], [])
+        self.assertEqual(rule_notes(in_series[:1], SETTINGS, presets=NAMES)[0], [])
         # A Stays rule moves nothing, whatever its targets still say; an off rule neither.
         stays = Rule(folder=D, stays=True, films=to_e)
         self.assertEqual(rule_notes([Rule(folder=E), stays], SETTINGS, presets=NAMES), [[], []])
@@ -340,23 +348,24 @@ class CheckTests(ForgeTestCase):
 
     def test_note_order(self) -> None:
         rule = Rule(
-            folder=SERIES + r"\in",
+            folder=SERIES,
             take="films",
             films=RuleTarget(preset="Gone", to="folder"),
         )
-        mover = Rule(folder=D, take="shows")  # moves its shows into the Series folder
+        into = RuleTarget(preset="Movie (Folder)", to="folder", folder=SERIES + r"\Films")
+        mover = Rule(folder=D, take="films", films=into)  # moves its films into the rule's folder
         notes = rule_notes(
             [rule, mover],
             SETTINGS,
             presets=NAMES,
-            unreachable={os.path.normcase(SERIES + r"\in")},
+            unreachable={os.path.normcase(SERIES)},
         )[0]
         self.assertEqual(
             notes,
             [
                 RuleNote("refuse", i18n.t(REFUSE_NO_DESTINATION)),
                 RuleNote("refuse", i18n.t(REFUSE_IN_LIBRARY)),
-                RuleNote("warn", i18n.t(UNREACHABLE_FOLDER, folder=SERIES + r"\in")),
+                RuleNote("warn", i18n.t(UNREACHABLE_FOLDER, folder=SERIES)),
                 RuleNote("warn", i18n.t(PRESET_GONE)),
                 RuleNote("info", i18n.t(MOVED_INTO, n=2)),
             ],
@@ -409,10 +418,10 @@ class CheckTests(ForgeTestCase):
         self.assertEqual(uncovered(rules, SETTINGS, [watching, off, flat], SETTINGS), [1])
         elsewhere = sorter.model_copy(update={"films": to_4k(MOVIES_4K)})
         self.assertEqual(uncovered(rules, SETTINGS, [watching, elsewhere, flat], SETTINGS), [1])
-        # A watched folder inside a destination (idle: a look skips it) is exposed whole.
+        # A watched folder inside a destination was looked in all along: nothing new to see.
         incoming = Rule(id=5, folder=D + r"\Incoming", take="films")
         to_d = Rule(id=6, folder=E, take="films", films=to_4k(D))
-        self.assertEqual(uncovered([incoming, to_d], SETTINGS, [incoming], SETTINGS), [5])
+        self.assertEqual(uncovered([incoming, to_d], SETTINGS, [incoming], SETTINGS), [])
         # Still inside another destination: nothing is exposed.
         wider = sorter.model_copy(update={"films": to_4k(r"D:\Downloads")})
         deeper = [watching.model_copy(update={"folder": r"D:\Other"}), wider]

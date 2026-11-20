@@ -189,14 +189,13 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   one, Plex's copy when the folder's isn't there. Tests: temporary folders and fakes, never a real
   NAS, Plex or TMDB.
 - The phone connection (`app/services/phone/`, page `app/ui/phone_settings.py`, for the Companion app; design in
-  `docs/companion/`): for now only on a PC whose data folder holds the file `phone-connection.enabled` (`ENABLED_MARKER`,
-  owner's decision): without it no Settings page, `PhoneService.run` ends at once and nothing listens, even with
-  `phone_connection_on` true, and no text tells others about it (no What's new line either). The hidden switch: seven
-  quick clicks on Settings → Updates & backup's "Version …" write or delete that file (`switch_here`, counts from the next start;
-  no cue on screen); switched on, it shows the Companion app's download code (`app/ui/phone_app.py`, `PHONE_APP_URL`: the
-  APK as the `phone-app` GitHub release's file, replaced per Companion version, uploaded only with the owner's OK).
-  Opening it up is one line:
-  `OPEN_TO_EVERYONE` in `app/services/phone/service.py`. Home addresses and paired phones only; only a token's hash is
+  `docs/companion/`): open to everyone since 3.23.0 (`OPEN_TO_EVERYONE` in `app/services/phone/service.py`, owner's
+  decision 2026-11-20): every copy has its Settings page, but nothing listens until `phone_connection_on` (off at first).
+  Before, it was only on a PC whose data folder held `phone-connection.enabled` (`ENABLED_MARKER`); setting the constant
+  back to False brings that back, with the hidden switch (seven quick clicks on Settings → Updates & backup's
+  "Version …" write or delete that file, `switch_here`; while open, the clicks aren't bound: `can_switch`). The Companion
+  app's download code (`app/ui/phone_app.py`, `PHONE_APP_URL`: the APK as the `phone-app` GitHub release's file,
+  replaced per Companion version, uploaded only with the owner's OK). Home addresses and paired phones only; only a token's hash is
   kept; the Plex token only in `/v1/pair`'s and `/v1/hello`'s answers; release links never leave the PC; the log gets no
   token, code, address or exception text. `cryptography` and `segno` are optional (below `# optional`), imported only
   inside `certificate.py`'s and `code_picture`'s functions; without them the page says so.

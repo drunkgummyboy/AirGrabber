@@ -143,8 +143,8 @@ class RowLookTests(_Case):
         self.assertEqual(
             row_look(rule, self.S),
             RowLook(
-                False, "Downloads", ("Films", "4K"), "Movie (Folder)", r"\\NAS\Movies 4K",
-                "Automatic", "4K films", False,
+                False, "4K films", ("Films", "4K"), "Movie (Folder)", r"\\NAS\Movies 4K",
+                "Automatic", "4K films from Downloads", False,
             ),
         )
 
@@ -165,6 +165,7 @@ class RowLookTests(_Case):
             Rule(folder=r"D:\Courses", subfolders=False, stays=True, quality="not_4k", on=False),
             self.S,
         )
+        self.assertEqual(look.folder, "Courses")  # no name of its own: its folder's
         self.assertEqual(look.chips, ("Anything", "Not 4K", "Top folder only"))
         self.assertEqual(look.destination, "sorted in this folder")
         self.assertEqual(look.tip, "Everything not in 4K from Courses")

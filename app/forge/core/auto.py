@@ -929,13 +929,20 @@ def _listing(
     root: Path, ignored: Ignored | None, skip: Collection[str], dests: Sequence[Path]
 ) -> tuple[list[Path], list[Path]]:
     """`root`'s candidates (the destinations in it not walked) and those of them the finished
-    check is for: neither in `skip` nor in a destination (blocking: a worker thread)."""
-    files = candidates(root, ignored, [dest for dest in dests if inside(dest, root)])
+    check is for: neither in `skip` nor in a destination in it (a destination holding `root`
+    is no matter: a look never goes up) (blocking: a worker thread)."""
+    within = _within(root, dests)
+    files = candidates(root, ignored, within)
     return files, [
         file
         for file in files
-        if _key(file) not in skip and not any(inside(file, dest) for dest in dests)
+        if _key(file) not in skip and not any(inside(file, dest) for dest in within)
     ]
+
+
+def _within(root: Path | None, dests: Sequence[Path]) -> list[Path]:
+    """The destinations inside `root` (none without one): what a look of it skips."""
+    return [] if root is None else [dest for dest in dests if inside(dest, root)]
 
 
 def _existing(keys: Sequence[str]) -> set[str]:
@@ -1329,7 +1336,7 @@ class AutoRenamer:
             for file, root in listed
             if _key(file) not in outputs
             and _key(file) not in self._sorted
-            and not any(inside(file, dest) for dest in dests)
+            and not any(inside(file, dest) for dest in _within(root, dests))
         ]
         fresh = [(f, r) for f, r in open_ if _key(f) in finished and _key(f) not in known]
         taken = await self._offer(fresh, watch, present_keys, lost_keys)
@@ -1423,7 +1430,10 @@ class AutoRenamer:
             _key(i.path)
             for i in queue.items
             if i.watched is not None
-            and (_under(_key(i.watched), lost_keys) or any(inside(i.path, d) for d in dests))
+            and (
+                _under(_key(i.watched), lost_keys)
+                or any(inside(i.path, d) for d in _within(i.watched, dests))
+            )
         }
         queue.forget_watched(present)
         midnight = datetime.fromtimestamp(self._now()).replace(

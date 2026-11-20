@@ -28,6 +28,7 @@ hands the grab back to Settings when it closes, as app/forge/ui/matches_window.p
 from __future__ import annotations
 
 import asyncio
+import math
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
@@ -70,9 +71,10 @@ from app.ui.dialog_kit import (
     primary_button,
     secondary_button,
 )
+from app.ui.reflow import follow_width
 from app.ui.tasks import spawn
 
-WIDTH = 620
+WIDTH = 760  # as it opens (wider by hand: its texts follow, app/ui/reflow.py)
 PAD_X = 25
 PAD_Y = 20
 CAPTION_WIDTH = 150
@@ -86,6 +88,8 @@ MENU_WIDTH = 260
 RADIO_SIZE = 18
 ROOM_AROUND = 160  # the heading and the buttons, when the questions get their height
 CHECK_DELAY_MS = 300  # the live check waits this long after a change
+MIN_HEIGHT = 360  # dragged shorter: at least this tall (logical; the questions scroll)
+REFLOW_WAIT_MS = 60  # after the last size change, the texts follow
 
 EDIT_TITLE = N_("Edit rule")
 NEW_TITLE = N_("New rule")
@@ -218,8 +222,10 @@ class RuleEditor(ctk.CTkToplevel):
         title = t(EDIT_TITLE) if index < len(rules) else t(NEW_TITLE)
         self.title(title)
         set_window_icon(self)
-        self.resizable(False, False)
+        self.resizable(True, True)  # wider and taller by hand; never narrower than it opens
         self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self._built_width = 0  # logical, as it opened; its texts follow beyond it
+        self._reflow_job: str | None = None
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
@@ -281,7 +287,27 @@ class RuleEditor(ctk.CTkToplevel):
         self.bind("<Escape>", lambda _event: self.cancel())
         make_borderless(self, drag_widgets=(self, body, heading), on_close=self.cancel, look=look)
         place_over(self, master)
+        self.update_idletasks()
+        self._built_width = math.ceil(self.winfo_reqwidth() / scale)
+        self.minsize(self._built_width, MIN_HEIGHT)
+        self.bind("<Configure>", self._on_configure, add="+")
         activate_later(self)
+
+    def _on_configure(self, event: tk.Event[Any]) -> None:
+        """The window's size changed (dragged by an edge): its texts follow once it rests."""
+        if event.widget is not self or self._closed:
+            return
+        if self._reflow_job is not None:
+            self.after_cancel(self._reflow_job)
+        self._reflow_job = self.after(REFLOW_WAIT_MS, self.reflow)
+
+    def reflow(self) -> None:
+        """Its wrapping texts get the room the window has beyond its first width."""
+        self._reflow_job = None
+        if not self._built_width or self._closed or not self.winfo_exists():
+            return
+        scale = float(ctk.ScalingTracker.get_widget_scaling(self)) or 1.0
+        follow_width(self, round(self.winfo_width() / scale) - self._built_width)
 
     # --- building ------------------------------------------------------------------------------
 
@@ -889,6 +915,7 @@ class RuleEditor(ctk.CTkToplevel):
                 row += 1
         if self.check_lines:
             self.check_lines[-1].grid_configure(pady=(0, 10))  # inside the box's border
+        self.reflow()  # the new lines: as wide as the window is now
         self.scroll.refit()
 
     # --- closing -------------------------------------------------------------------------------
@@ -926,6 +953,12 @@ class RuleEditor(ctk.CTkToplevel):
     def destroy(self) -> None:
         self._stop_check()
         self._closed = True
+        if self._reflow_job is not None:
+            try:
+                self.after_cancel(self._reflow_job)
+            except tk.TclError:
+                pass
+            self._reflow_job = None
         super().destroy()
 
     def _close(self) -> None:

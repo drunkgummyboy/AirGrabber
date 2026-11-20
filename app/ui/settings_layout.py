@@ -5,7 +5,7 @@ A sidebar of pages (a small group label above each part of the list; `fill_sideb
 scrolling page each (`SettingsPage`: a heading, its muted line, then boxes, `SettingsBox`, one
 below the other; a `PageSlot` keeps a place among them for boxes made later, MediaForge's);
 `build_layout` makes that skeleton in a window, `fit_window` sizes the window (pages scroll on a
-short screen).
+short screen; it can be dragged wider and taller, its texts following: app/ui/reflow.py).
 
 It paints with AirGrabber's tokens, read when a widget is made, never copied at import
 (theme.apply_accent sets them once at startup).
@@ -33,12 +33,14 @@ SIDEBAR_PAD = 12
 ITEM_HEIGHT = 36
 ICON_WIDTH = 30
 ITEM_PAD = (8, 4, 10)  # left of the icon, between icon and name, right of the name
-# The page column's content: the boxes' outer width (`page_width()`). WIDE_PAGE_WIDTH where the
-# screen has room: with the sidebar a dialog is then about 1035 wide (the owner's wish for a
-# wider window, 2026-11-19), which fits a 1920 x 1080 screen at 175 % (1097 wide). On a narrower
-# screen the page narrows to fit (`fitting_page_width`), down to NARROW_PAGE_WIDTH, the old width
-# (a dialog about 855 wide: 1366 x 768 at 150 % is 910).
-WIDE_PAGE_WIDTH = 760
+# The page column's content: the boxes' outer width (`page_width()`) as the window opens.
+# WIDE_PAGE_WIDTH where the screen has room: with the sidebar a dialog is then about 1175 wide
+# (the owner's wish for a wider window, 2026-11-19, and wider still, 2026-11-20), which fits a
+# 1920 x 1080 screen at 150 % (1280 wide). On a narrower screen the page narrows to fit
+# (`fitting_page_width`), down to NARROW_PAGE_WIDTH, the old width (a dialog about 855 wide:
+# 1366 x 768 at 150 % is 910). The window can then be dragged wider (and taller): its texts
+# follow (app/ui/reflow.py), never narrower than it opened.
+WIDE_PAGE_WIDTH = 900
 NARROW_PAGE_WIDTH = 580
 PAGE_PAD_LEFT = 22
 PAGE_PAD_RIGHT = 8  # the scrollbar has its own inset
@@ -55,6 +57,7 @@ FIT_SLACK = 12
 PAGE_TOP = CLOSE_ROOM + CLOSE_GAP
 PAGE_BOTTOM = 20  # under a page's last box
 MAX_PAGE_HEIGHT = 680  # a taller page scrolls; the dialog stays about as tall as it was
+MIN_HEIGHT = 420  # the window dragged shorter: at least this tall (logical)
 SCREEN_RESERVE = 80  # left free for the taskbar and the title bar
 HEADING_SIZE = 20
 BOX_RADIUS = 12  # as the Prowlarr panel's
@@ -615,14 +618,18 @@ def page_height(content: int, scaling: float) -> int:
     return min(math.ceil(content / scaling) + PAGE_BOTTOM, MAX_PAGE_HEIGHT)
 
 
-def fit_window(window: Any, scroll: ScrollableFrame, height: int) -> None:
-    """Give the pages `height` (logical) and fix the window at the size its content wants; on
-    a short screen at the screen's height instead, the pages scrolling."""
+def fit_window(window: Any, scroll: ScrollableFrame, height: int) -> int:
+    """Give the pages `height` (logical) and size the window as its content wants; on a short
+    screen at the screen's height instead, the pages scrolling. It can be made wider and taller
+    by hand, never narrower than this (nor shorter than MIN_HEIGHT). Returns its width
+    (logical)."""
     scaling = ctk.ScalingTracker.get_window_scaling(window)
     scroll.configure(height=height)
     window.update_idletasks()
-    width = math.ceil(window.winfo_reqwidth() / scaling)
+    width = int(math.ceil(window.winfo_reqwidth() / scaling))
     wanted = math.ceil(window.winfo_reqheight() / scaling)
     _screen_width, screen_height = window.wm_maxsize()  # physical pixels
     fitted = dialog_height(wanted, int(screen_height / scaling))
     window.geometry(f"{width}x{fitted}")  # CTk scales the size (not the position)
+    window.minsize(width, min(fitted, MIN_HEIGHT))  # CTk scales these too
+    return width

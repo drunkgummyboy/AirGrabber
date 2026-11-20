@@ -822,18 +822,18 @@ NL: dict[str, str] = {
     "{name}: says {promised}p, but the picture is {height}p":
         "{name}: zegt {promised}p, maar het beeld is {height}p",
     # app/forge/core/rules.py
-    "✕ Can't save: the folder it watches is inside the folder it moves to, so files would be "
-    "found again and again.":
-        "✕ Kan niet opslaan: de map die hij bewaakt ligt in de map waar hij naartoe verplaatst, "
-        "dus bestanden worden steeds opnieuw gevonden.",
+    "✕ Can't save: it moves files to the folder it watches, so they would be found again and "
+    "again.":
+        "✕ Kan niet opslaan: hij verplaatst bestanden naar de map die hij bewaakt, dus ze worden "
+        "steeds opnieuw gevonden.",
     "✕ Can't save: the folder it moves to is inside the folder it watches, so files would be "
     "found again and again.":
         "✕ Kan niet opslaan: de map waar hij naartoe verplaatst ligt in de map die hij bewaakt, "
         "dus bestanden worden steeds opnieuw gevonden.",
-    "✕ Can't save: the folder it watches is inside a library folder, so files would be found "
-    "again and again.":
-        "✕ Kan niet opslaan: de map die hij bewaakt ligt in een bibliotheekmap, dus bestanden "
-        "worden steeds opnieuw gevonden.",
+    "✕ Can't save: the folder it watches is a library folder, so files would be found again "
+    "and again.":
+        "✕ Kan niet opslaan: de map die hij bewaakt is een bibliotheekmap, dus bestanden worden "
+        "steeds opnieuw gevonden.",
     "✕ Can't save: choose the folder this rule watches.":
         "✕ Kan niet opslaan: kies de map die deze regel bewaakt.",
     "✕ Can't save: choose the folder to move them to.":

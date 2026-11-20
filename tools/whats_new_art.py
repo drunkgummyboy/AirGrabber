@@ -815,6 +815,78 @@ def draw_settings() -> Image.Image:
     return layer.image
 
 
+_POSTERS = (
+    ("#e06a5a", "#5a1a20"),
+    ("#4ac0d8", "#13315a"),
+    ("#e0b44a", "#5a3a12"),
+    ("#b07ad8", "#3a1a5a"),
+    ("#5ad08a", "#13402a"),
+    ("#6a8ad8", "#1a2a5a"),
+)
+
+
+def _tinted_poster(layer: Layer, box: Box, index: int, radius: float = 4) -> None:
+    colour, dark = _POSTERS[index % len(_POSTERS)]
+    layer.rect(*box, radius, down(box, ((0, colour, 1), (1, dark, 1))))
+
+
+def draw_phone() -> Image.Image:
+    """The phone connection: AirGrabber's window at the left with a grid of posters, a dotted
+    link with a signal's arcs over its middle, and a phone at the right showing the same
+    library: a big poster with a play button, then a row of small posters and two lines."""
+    layer = _background()
+    layer.paint(glow(STEEL, (0.3, 0.5), 0.42, 0.32))
+    layer.paint(glow("#2FA572", (0.79, 0.5), 0.24, 0.22))
+
+    # The window: a top band and two rows of posters.
+    layer.rect(60, 34, 300, 172, 14, WINDOW)
+    layer.paint(solid("#5f7d9b"), border_mask(60, 34, 300, 172, 14, 1.5))
+    layer.rect(76, 48, 64, 8, 4, ON_ACCENT)
+    layer.rect(150, 49, 40, 6, 3, MUTED)
+    for dot_x in (330, 342):
+        layer.paint(solid(MUTED, 0.8), Mask().add(circle(dot_x, 52, 3)).done())
+    for row in range(2):
+        for column in range(5):
+            _tinted_poster(layer, (76 + column * 55, 68 + row * 66, 46, 58), row * 5 + column)
+
+    # The link: dots from the window to the phone, and a signal's arcs over the middle.
+    for step in range(7):
+        x = 376 + step * 14
+        layer.paint(solid(ON_ACCENT, 0.4 + 0.08 * step), Mask().add(circle(x, 120, 2.6)).done())
+    arcs = Mask()
+    for radius in (10, 18, 26):
+        points = [
+            (418 + radius * math.cos(math.radians(a)), 104 + radius * math.sin(math.radians(a)))
+            for a in range(-135, -44, 5)
+        ]
+        arcs.line(points, 3, round_ends=True)
+    arcs.add(circle(418, 104, 3.5))
+    layer.paint(solid(STEEL), arcs.done())
+
+    # The phone: its body, the screen, a big poster with play, small posters, two lines.
+    layer.rect(484, 14, 112, 212, 20, "#0f1216")
+    layer.paint(solid("#5f7d9b"), border_mask(484, 14, 112, 212, 20, 1.5))
+    screen: Box = (492, 22, 96, 196)
+    layer.rect(*screen, 14, WINDOW)
+    layer.rect(526, 28, 28, 5, 2.5, "#2a2f35")
+    big: Box = (500, 40, 80, 92)
+    hero = Layer()
+    hero.rect(*big, 0, down(big, ((0, "#e58a5f", 1), (0.6, "#7a5a86", 1), (1, "#2c3d5c", 1))))
+    hero.paint(
+        solid("#2a2748"),
+        Mask().add(((500, 112), (530, 96), (556, 110), (580, 98), (580, 132), (500, 132))).done(),
+    )
+    layer.over(hero, clip=rect_mask(*big, 8))
+    layer.paint(solid(WHITE, 0.95), Mask().add(circle(540, 84, 13)).done())
+    layer.paint(solid(WINDOW), Mask().add(((535, 77), (547, 84), (535, 91))).done())
+    layer.rect(500, 140, 56, 7, 3.5, WHITE)
+    layer.rect(500, 152, 40, 5, 2.5, MUTED)
+    for column in range(3):
+        _tinted_poster(layer, (500 + column * 28, 166, 24, 34), column + 1, 3)
+    layer.rect(524, 209, 32, 3, 1.5, "#5f6a75")
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -832,7 +904,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "settings.png": draw_settings,
+    "phone.png": draw_phone,
 }
 
 

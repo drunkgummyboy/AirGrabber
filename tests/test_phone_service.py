@@ -691,7 +691,13 @@ class OnOffTests(ServiceCase):
 
 
 class ForTheOwnerOnlyTests(ServiceCase):
-    """Without the marker in the data folder the connection doesn't exist; see OPEN_TO_EVERYONE."""
+    """With OPEN_TO_EVERYONE off (as before 3.23.0), the connection exists only with the marker."""
+
+    async def asyncSetUp(self) -> None:
+        closed = mock.patch("app.services.phone.service.OPEN_TO_EVERYONE", False)
+        closed.start()
+        self.addCleanup(closed.stop)
+        await super().asyncSetUp()
 
     def without_the_marker(self) -> PhoneService:
         (self.root / ENABLED_MARKER).unlink()
@@ -1025,6 +1031,18 @@ class PageTests(PageCase):
         self.assertIn(PAGE_PHONE, dialog.sections)
         self.assertIn(FIREWALL_TEXT, texts(dialog.page(PAGE_PHONE)))
 
+    async def test_open_to_everyone_without_the_marker_the_page_is_there(self) -> None:
+        from app.services.phone import service as phone_service
+        from app.ui.settings_pages_registry import PAGE_PHONE
+
+        self.assertTrue(phone_service.OPEN_TO_EVERYONE)  # since 3.23.0
+        (self.root / ENABLED_MARKER).unlink()
+        service = self.make_service()
+        self.assertFalse(service.can_switch)  # the hidden switch has nothing to switch
+        dialog = self.settings_window(service)
+        self.assertIn(PAGE_PHONE, dialog.sections)
+
+    @mock.patch("app.services.phone.service.OPEN_TO_EVERYONE", False)
     async def test_without_the_marker_the_settings_window_has_no_page(self) -> None:
         from app.ui.settings_pages_registry import PAGE_PHONE
 

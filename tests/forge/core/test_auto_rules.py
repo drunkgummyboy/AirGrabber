@@ -720,9 +720,10 @@ class DestinationGoneTest(RulesTestCase):
         await self.service.save(None, {"notify_needs": False})  # nothing exposed: no mark
         assert not self.fresh(saved[0].id)
 
-    async def test_a_watched_folder_inside_a_gone_destination_waits_once(self) -> None:
-        # Rule 1 watches Downloads\Incoming while rule 2 moves films to Downloads: idle (a look
-        # skips a destination's files). Rule 2 deleted: its whole folder is exposed at once.
+    async def test_a_watched_folder_inside_a_destination_is_looked_in(self) -> None:
+        # Rule 1 watches Downloads\Incoming while rule 2 moves films to Downloads: a look never
+        # goes up, so Incoming is looked in all along (the owner's ruling, 2026-11-20). Rule 2
+        # deleted: nothing new to see there, nothing waits as Manual for it.
         incoming = self.dl / "Incoming"
         to_dl = RuleTarget(preset="Movie (Folder)", to="folder", folder=str(self.dl))
         saved = await self.service.replace_all(
@@ -736,14 +737,12 @@ class DestinationGoneTest(RulesTestCase):
         clock = Clock()
         auto = self.renamer(clock)
         await self.two_looks(auto, clock)
-        assert mine.exists() and self.queue.items == []
+        # Found and, Automatic and sure, moved to the Movies folder (rule 1's).
+        assert not mine.exists()
+        assert [f.name for f in self.folders.movies.rglob("*.mkv")] == ["Heat (1995).mkv"]
         watching, _gone, ag = self.service.current
         await self.service.save([watching, ag], {})
-        assert self.fresh(watching.id)
-        clock.now += 300
-        await self.two_looks(auto, clock)
-        assert mine.exists() and self.item(mine).manual
-        assert list(self.folders.movies.rglob("*.mkv")) == []
+        assert not self.fresh(watching.id)
 
 
 class SaveDuringCommitTest(RulesTestCase):

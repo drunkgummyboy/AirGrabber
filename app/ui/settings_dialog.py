@@ -163,6 +163,7 @@ from app.ui.settings_layout import dialog_height as dialog_height
 from app.ui.settings_layout import sidebar_width as _sidebar_width
 from app.ui.settings_overview import SORTING_UNAVAILABLE, Card, OverviewCards, overview_cards
 from app.ui.settings_search import Match, Place, SettingsSearch, places
+from app.ui.reflow import follow_width
 from app.ui.tasks import spawn
 from app.ui.tmdb_key_guide import KeyCheck, TmdbKeyDialog, key_check_message
 from app.ui.torrent_app_status import INSTALL_BUTTON_WIDTH, TorrentAppStatus, TorrentStatus
@@ -342,6 +343,7 @@ _BOX_GAP = BOX_GAP
 _TEXT_SIZE = TEXT_SIZE
 _INDENT = 30  # under a radio button's text
 _TEST_BUTTON_WIDTH = 160
+_REFLOW_WAIT_MS = 60  # after the last size change, the texts follow
 _UPDATE_BUTTON_WIDTH = 180
 _GO_BACK_BUTTON_WIDTH = 240
 _CHECK_BUTTON_WIDTH = 110
@@ -752,8 +754,10 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.title(t("Settings"))
         set_window_icon(self)
-        self.resizable(False, False)
+        self.resizable(True, True)  # wider and taller by hand; never narrower than it opens
         self.transient(master)
+        self._built_width = 0  # logical, as it opened (`_fit_size`); its texts follow beyond it
+        self._reflow_job: str | None = None
 
         self._mode = ctk.StringVar(value=current.download_mode.value)
         self._quality_tv = ctk.StringVar(value=quality_name(current.quality_tv))
@@ -890,6 +894,7 @@ class SettingsDialog(ctk.CTkToplevel):
             self, drag_widgets=(self, body, self._sidebar), on_close=self.close
         )
         self._fit_size()
+        self.bind("<Configure>", self._on_configure, add="+")
         # The program's status redraws the Overview from here on: not for the one `_fit_size`
         # shows only to measure the page.
         self._torrent.on_status = self.draw_overview
@@ -997,6 +1002,7 @@ class SettingsDialog(ctk.CTkToplevel):
             self.refresh_overview()  # what other pages changed meanwhile
         self._section = section
         self._grid_page(section)
+        self.reflow()  # a page built at its first visit, or cards drawn again
         self._scroll._parent_canvas.yview_moveto(0)  # each page starts at its top
         for name, item in self._items.items():
             item.set_selected(name == section)
@@ -2468,7 +2474,25 @@ class SettingsDialog(ctk.CTkToplevel):
         self._show_section(self._section)
         scaling = ctk.ScalingTracker.get_window_scaling(self)
         height = MAX_PAGE_HEIGHT if self._forge_parts else page_height(content, scaling)
-        fit_window(self, self._scroll, height)
+        self._built_width = fit_window(self, self._scroll, height)
+
+    def _on_configure(self, event: tk.Event[Any]) -> None:
+        """The window's size changed (dragged by an edge): its texts follow once it rests."""
+        if event.widget is not self or not self._built_width:
+            return
+        if self._reflow_job is not None:
+            self.after_cancel(self._reflow_job)
+        self._reflow_job = self.after(_REFLOW_WAIT_MS, self.reflow)
+
+    def reflow(self) -> None:
+        """Every page's wrapping texts get the room the window has beyond its first width
+        (app/ui/reflow.py)."""
+        self._reflow_job = None
+        if not self._built_width or not self.winfo_exists():
+            return
+        scaling = ctk.ScalingTracker.get_window_scaling(self)
+        extra = round(self.winfo_width() / scaling) - self._built_width
+        follow_width(self._scroll, extra)
 
     # -- storing ---------------------------------------------------------------------------------
 
@@ -2722,6 +2746,13 @@ class SettingsDialog(ctk.CTkToplevel):
         self._traces.append((variable, variable.trace_add("write", callback)))
 
     def destroy(self) -> None:
+        job = getattr(self, "_reflow_job", None)
+        if job is not None:
+            self._reflow_job = None
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
         stop_listening = getattr(self, "_stop_listening", None)
         if stop_listening is not None:
             stop_listening()
