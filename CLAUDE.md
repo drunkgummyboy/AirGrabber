@@ -221,7 +221,10 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   inside `certificate.py`'s and `code_picture`'s functions; without them the page says so.
   Roles: each phone's own Library manager tick in Settings decides its role (the first phone pairs as one; `manager` in
   `/v1/pair` and `/v1/hello`; missing means manager, so a phone from before keeps its tabs). Settings also renames a phone
-  and sets its person (`change_phone`). Send to phone (`sends.py`, `PUT /v1/on-phone`, design `docs/companion/2026-11-08-send-to-phone-design.md`):
+  and sets its person (`change_phone`). `/v1/settings` (`settings.py`, owner's OK 2026-11-21, contract
+  `docs/companion/2026-11-21-phone-settings-contract.md`): a few shared `Settings` fields through `SettingsService.update`
+  (manager phones only, all or nothing, the pause capped like the tray's by `auto_pause.longest_pause`) and the phone's
+  own name (any phone) / person (managers) through `change_phone`; logs field names only. Send to phone (`sends.py`, `PUT /v1/on-phone`, design `docs/companion/2026-11-08-send-to-phone-design.md`):
   orders and each phone's last report in `Settings.phone_orders` / `phone_contents`, this PC's own, titles never logged; the Forge routes refuse others with 403 `not_manager`. `GET /v1/suggestions` is
   what the phone may fetch, without what is had (Plex's or the folders'); its genres are always in English with compound names split
   (`_TWO_GENRES`), since the phone joins them to Plex's by name. `/v1/shortlist` is tonight's shared list, this PC's own;

@@ -74,6 +74,7 @@ from app.services.qbittorrent_local import set_up_by_airgrabber
 from app.services.startup import StartupError
 from app.models.backup import BackupLoadResult
 from app.models.settings import AUTO_WAIT_CHOICES, STUCK_CHOICES, TextSize
+from app.models.settings import QUALITY_NAMES as QUALITY_NAMES  # the menu's names, in order
 from app.services.backup import BackupService
 from app.services.folder_library.service import FolderLibraryService
 from app.services.phone.service import PhoneService
@@ -371,16 +372,6 @@ def _panel_field_width() -> int:
 _BUILT_IN_SITES = [
     (cls.name, cls.label) for cls in (ApibayIndexer, EztvIndexer, BitsearchIndexer, YtsIndexer)
 ]
-
-# Plain names for the quality profiles, in menu order. The stored values stay QualityProfile's.
-QUALITY_NAMES: dict[QualityProfile, str] = {
-    QualityProfile.FULL_HD: N_("Full HD (1080p)"),
-    QualityProfile.HD: N_("HD (720p)"),
-    QualityProfile.UHD: N_("4K (2160p)"),
-    QualityProfile.HEVC: N_("Smaller files (1080p x265)"),
-    QualityProfile.ANY: N_("Any quality"),
-}
-
 
 def quality_name(profile: QualityProfile) -> str:
     return t(QUALITY_NAMES[profile])

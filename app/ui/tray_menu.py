@@ -4,13 +4,15 @@ episodes, the downloads in progress, and the automatic downloads' pause."""
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.i18n import N_, t
 from app.models import CalendarEntry, DownloadsOverview
+# The pause's lengths live with the services (a phone's pause is capped to them too).
+from app.services.auto_pause import PAUSE_HOURS as PAUSE_HOURS
+from app.services.auto_pause import pause_until as pause_until
 
 TODAY_MAX = 3  # names in the line; the rest is "+2 more"
-PAUSE_HOURS = 3
 
 NOTHING_TODAY = N_("Nothing airs today")
 PAUSE_MENU = N_("Pause automatic downloads")
@@ -42,14 +44,6 @@ def downloads_line(overview: DownloadsOverview | None) -> str:
         share = round(100 * sum(known) / len(known))
         return t("Downloading {n} · {percent}%", n=len(busy), percent=share)
     return t("Downloading {n}", n=len(busy))
-
-
-def pause_until(now: datetime, hours: int | None) -> datetime:
-    """When a pause ends: after `hours`, or (None) at the start of tomorrow, local time."""
-    if hours is not None:
-        return now + timedelta(hours=hours)
-    local = now.astimezone()
-    return (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def resume_text(until: datetime) -> str:

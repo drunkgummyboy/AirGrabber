@@ -326,6 +326,12 @@ def _not_manager() -> Reply:
     )
 
 
+def not_manager() -> Reply:
+    """For a handler that lets every phone in but keeps some of what it does to a library
+    manager's phone (`manager_only` keeps a whole route)."""
+    return _not_manager()
+
+
 def manager_only(handler: Handler) -> Handler:
     """`handler`, for a library manager's phone only: any other gets a `not_manager` reply."""
 

@@ -224,6 +224,7 @@ class PairingTests(ServiceCase):
                 "find": True,  # this PC can search (`/v1/find`)
                 "person": True,  # and has the actor page (`/v1/person`) and `progress`
                 "title": True,  # and the title page (`/v1/title`)
+                "settings": True,  # and the phone's Settings screen (`/v1/settings`)
                 "cast_sound": False,  # no Cast sound streams here
                 # Where the phone checks for, and fetches, a newer Companion.
                 "app_update": {

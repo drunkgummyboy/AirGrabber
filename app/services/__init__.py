@@ -46,6 +46,7 @@ from app.services.phone.play_links import PlayLinks
 from app.services.phone.sends import PhoneSends
 from app.services.phone.server import Route
 from app.services.phone.service import PhoneService
+from app.services.phone.settings import PhoneSettings
 from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
 from app.services.local_files import PLACES_FILE, LocalPlaces
@@ -383,6 +384,11 @@ class Services:
             # A Public network or a firewall rule blocking "Python": the page's hint.
             network_check=check_network,
         )
+        # The phone's Settings screen (/v1/settings): a few shared settings, through the store
+        # the Settings window uses, and the phone's own name and person, as Settings changes
+        # them (`change_phone`; added now the service is there: its routes are read at a start).
+        phone_settings = PhoneSettings(settings, self.profiles, self.phone.change_phone)
+        phone_routes.update(phone_settings.routes())
 
     @classmethod
     async def create(cls, paths: AppPaths) -> Services:

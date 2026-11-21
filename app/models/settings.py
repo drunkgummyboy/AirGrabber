@@ -36,6 +36,18 @@ class QualityProfile(StrEnum):
     HEVC = "x265"
 
 
+# Plain names for the quality profiles, in the Settings window's menu order (shown through t();
+# the phone's Settings gets them in English, app/services/phone/settings.py). The stored values
+# stay QualityProfile's.
+QUALITY_NAMES: dict[QualityProfile, str] = {
+    QualityProfile.FULL_HD: N_("Full HD (1080p)"),
+    QualityProfile.HD: N_("HD (720p)"),
+    QualityProfile.UHD: N_("4K (2160p)"),
+    QualityProfile.HEVC: N_("Smaller files (1080p x265)"),
+    QualityProfile.ANY: N_("Any quality"),
+}
+
+
 class DownloadMode(StrEnum):
     APP = "app"  # open the .torrent / magnet in the torrent program on this PC
     REMOTE = "remote"  # send the .torrent / magnet to the torrent program on a NAS or another PC

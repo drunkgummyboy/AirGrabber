@@ -709,6 +709,7 @@ class PhoneService:
             "find": True,  # `/v1/find` (find.py); an older PC has no such key
             "person": True,  # `/v1/person` (person.py), and `progress` on what's downloading
             "title": True,  # `/v1/title` (title.py): any TMDB title's page
+            "settings": True,  # `/v1/settings` (settings.py): the phone's Settings screen
             # `/v1/cast-stream` (cast_stream.py): MediaForge's ffmpeg is there to convert sound
             "cast_sound": self._cast is not None and self._cast.available,
             # Where the phone checks for and fetches a newer Companion (companion_app.py).

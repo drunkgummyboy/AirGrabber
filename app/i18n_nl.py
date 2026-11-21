@@ -2085,6 +2085,17 @@ NL: dict[str, str] = {
         "Geen downloads gevonden voor {label}, dus probeer het later opnieuw.",
     "That download isn't available any more, so look for downloads again.":
         "Die download is niet meer beschikbaar, dus zoek opnieuw naar downloads.",
+    # app/services/phone/settings.py
+    "AirGrabber doesn't offer that quality, so choose another one.":
+        "AirGrabber biedt die kwaliteit niet aan, dus kies een andere.",
+    "Choose at least one subtitle language that AirGrabber offers.":
+        "Kies minstens één ondertiteltaal die AirGrabber aanbiedt.",
+    "AirGrabber couldn't read that pause time, so try again or update the Companion app.":
+        "AirGrabber kon die pauzetijd niet lezen, dus probeer het opnieuw of werk de Companion-app bij.",
+    "That person isn't in AirGrabber any more, so choose someone else.":
+        "Die persoon staat niet meer in AirGrabber, dus kies iemand anders.",
+    "AirGrabber couldn't use that setting, so try another one.":
+        "AirGrabber kon die instelling niet gebruiken, dus probeer een andere.",
     # app/services/phone/find.py
     "That search isn't there any more, so search again.":
         "Die zoekopdracht is er niet meer, dus zoek opnieuw.",
