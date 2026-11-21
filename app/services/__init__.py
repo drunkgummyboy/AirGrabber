@@ -29,6 +29,7 @@ from app.services.folder_library.playing import FolderPlaying
 from app.services.folder_library.service import FolderLibraryService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.phone.cast_stream import CastStreams
 from app.services.phone.collection import FilmSeries
 from app.services.phone.coming_up import ComingUp, GrabbedFilms
 from app.services.phone.copies import FOLDER as COPIES_FOLDER
@@ -38,6 +39,7 @@ from app.services.phone.find import PhoneFind
 from app.services.phone.forge import PhoneForge
 from app.services.phone.library import PhoneLibrary, reachable_copy
 from app.services.phone.person import PhonePerson
+from app.services.phone.title import PhoneTitle
 from app.services.phone.play_links import PlayLinks
 from app.services.phone.sends import PhoneSends
 from app.services.phone.server import Route
@@ -297,9 +299,18 @@ class Services:
         # The folder library for a Companion that knows it, whenever the folders are on (without
         # Plex its library, beside Plex its Downloaded section): the films and shows, a title's
         # details and a show's episodes, with the phone's own person's places.
+        # Cast sound streams for Cast TVs (app/services/phone/cast_stream.py): the picture copied,
+        # the sound made AAC by MediaForge's ffmpeg, from the file as ▶ Play finds it on this PC
+        # (a folder video's as the copies' own file); served by the play link server under /c/.
+        cast = CastStreams(
+            self.plex,
+            self.playback,
+            paths.forge / "tools" / "ffmpeg" / "bin",
+            own_file=functools.partial(_own_file, self.folder_playing),
+        )
         # Play links (plain http) to a folder video for the phone's player and TVs: one set,
         # made by the library's route, served by the server the phone connection runs.
-        play_links = PlayLinks()
+        play_links = PlayLinks(cast=cast)
         phone_library = PhoneLibrary(
             settings,
             self.folder_playing,
@@ -337,13 +348,15 @@ class Services:
             **find.routes(),
             # The actor page: a person's films and series, listed (and found) as find's results.
             **PhonePerson(find, discovery, self.profiles).routes(),
+            # The title page: any TMDB film's or series' details, as find's result (and found).
+            **PhoneTitle(find, discovery, tmdb, self.profiles).routes(),
             **shortlist.routes(),
             **self.phone_sends.routes(),
             **self.phone_forge.routes(),
             **FilmSeries(discovery.film_series).routes(),
             **phone_library.routes(),
         }
-        phone_routes = {**phone_routes, **copies.routes()}
+        phone_routes = {**phone_routes, **copies.routes(), **cast.routes()}
         self.phone = PhoneService(
             settings,
             paths,
@@ -352,6 +365,7 @@ class Services:
             sends=self.phone_sends,
             copies=copies,
             play_links=play_links,
+            cast=cast,
         )
 
     @classmethod

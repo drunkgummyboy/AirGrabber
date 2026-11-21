@@ -10,9 +10,6 @@ TMDB tab and the Series / Movies presets from its Library tab, as Settings' Nami
   gives (a click adds it at the format's cursor) and a table of example formats and their
   results (a click uses it). New adds a preset at the end; Delete removes the chosen one, never
   the last.
-- **For new rules**: which preset names what is moved into the Series and Movies folders. The
-  choice follows a preset renamed here; a preset deleted here hands it to the first one of the
-  same type. Its line about each rule keeping its own is a link to Sorting.
 - **Names language**: TMDB's language for titles and episode names (MediaForge's LANGUAGES,
   en-US by default), separate from AirGrabber's own language.
 - **Remembered matches**: how many there are, and "Manage…": the picks made for uncertain matches
@@ -20,11 +17,12 @@ TMDB tab and the Series / Movies presets from its Library tab, as Settings' Nami
 
 As the rest of Settings, each change stores itself (the window's Committer, spec §3): a preset's
 name and format on Enter or when the keyboard leaves the field, its type and extras at once, New
-preset and Delete preset at once; the For new rules menus, the names language and Forget at
-once. A preset without a name or a name used twice is refused (said in the Presets box). The
+preset and Delete preset at once; the names language and Forget at once. A preset without a name or a name used twice is refused (said in the Presets box). The
 presets are stored merged onto what is stored by then (so a preset changed elsewhere meanwhile
 and untouched here keeps that change); then the rules for watched folders follow a renamed
-preset (`rules.presets_renamed`), the For new rules choices follow a renamed or deleted preset,
+preset (`rules.presets_renamed`), the stored Series / Movies presets (`series_preset` / `movies_preset`, no longer shown since
+2026-11-21: a new rule starts with the built-ins, each rule keeps its own; the queue's last
+fallback for a hand-added file) follow a renamed or deleted preset,
 and `last_preset` (the Inbox's remembered preset) follows too (`last_preset_after`). After each
 change of the presets every listener connected with `on_presets_saved` is told (the right-click
 menu refreshes its entries, F-25); while none is connected (the Windows page, with the
@@ -59,8 +57,7 @@ from app.forge.ui.matches_window import MatchesWindow
 from app.i18n import N_, t, tn
 from app.ui import dialog_kit, theme
 from app.ui.settings_commit import Committer, Refused, command, commit_fields, text_commit
-from app.ui.settings_layout import Fold, PageLink, box_inner, wrap_toggle
-from app.ui.settings_pages_registry import PAGE_SORTING
+from app.ui.settings_layout import Fold, box_inner, wrap_toggle
 from app.ui.tasks import spawn
 from app.ui.tooltip import add_tooltip
 
@@ -135,9 +132,6 @@ NAME_NEEDED = N_("Give every preset a name.")
 NAME_MISSING = N_("Give this preset a name.")
 NAME_TWICE = N_("Two presets are called “{name}”. Give each its own name.")
 NAME_TAKEN = N_("Another preset is called that already.")
-LIBRARY_TITLE = N_("For new rules")
-LIBRARY_TEXT = N_("The presets a new rule starts with.")
-LIBRARY_LINK = N_("Each rule keeps its own: change it under Sorting.")
 LANGUAGE_TITLE = N_("Names language")
 LANGUAGE_TEXT = N_(
     "The language of titles and episode names from TMDB. AirGrabber's own language doesn't "
@@ -218,7 +212,6 @@ _ITEM_HEIGHT = 32
 _COLUMN_GAP = 18  # between the list and the editor
 _ROW_GAP = 8
 _CAPTION_GAP = 12  # above an editor field's caption
-_LABEL_WIDTH = 90  # "Series" / "Movies"
 _MENU_WIDTH = 260
 _BUTTON_WIDTH = 110
 _TEXT_SIZE = dialog_kit.SMALL_SIZE + 1  # as the dialog's boxes' explanations
@@ -871,29 +864,6 @@ class NamingSection:
             (self._format, self._format.trace_add("write", self._format_typed)),
         ]
 
-        # Which preset names what goes into the library folders.
-        library = page.box(t(LIBRARY_TITLE), t(LIBRARY_TEXT))
-        self._library_box = library
-        self.sorting_link = PageLink(library.body, t(LIBRARY_LINK), PAGE_SORTING)
-        library.add(self.sorting_link, gap=2, sticky="w")
-        rows = library.frame_row()
-        self.choice_menus: dict[str, ctk.CTkOptionMenu] = {}
-        for row_no, (name, label) in enumerate(
-            (("series_preset", t("Series")), ("movies_preset", t("Movies")))
-        ):
-            pady = (0 if row_no == 0 else _ROW_GAP, 0)
-            ctk.CTkLabel(
-                rows,
-                text=label,
-                width=_LABEL_WIDTH,
-                anchor="w",
-                font=theme.font(dialog_kit.DETAIL_SIZE, bold=True),
-                text_color=theme.TEXT,
-            ).grid(row=row_no, column=0, sticky="w", pady=pady)
-            menu = self._option_menu(rows, command(functools.partial(self._choose, name)))
-            menu.grid(row=row_no, column=1, sticky="w", padx=(8, 0), pady=pady)
-            self.choice_menus[name] = menu
-
         # The names language.
         language = page.box(t(LANGUAGE_TITLE), t(LANGUAGE_TEXT))
         self._language_box = language
@@ -915,7 +885,7 @@ class NamingSection:
         matches.add(self.manage_button, gap=_ROW_GAP + 2, sticky="w")
         self.matches_window: MatchesWindow | None = None
 
-        self._content: list[SettingsBox] = [presets, library, language, matches]
+        self._content: list[SettingsBox] = [presets, language, matches]
         for box in self._content:
             box.frame.grid_remove()
         tk.Misc.bind(frame, "<Destroy>", self._destroyed, "+")
@@ -1122,7 +1092,7 @@ class NamingSection:
         }
 
     def _choice_changes(self) -> dict[str, Any]:
-        """The For new rules choices that followed a renamed or deleted preset (stored with the
+        """The stored Series / Movies presets that followed a renamed or deleted preset (stored with the
         presets)."""
         if self._parts is None:
             return {}
@@ -1144,13 +1114,7 @@ class NamingSection:
             if draft[name] == self._baseline[name] and value != draft[name]:
                 self._show(name, value)
             self._baseline[name] = value
-        self._fill_choices()
         self._fill_language()
-
-    def _choose(self, name: str, label: str) -> asyncio.Task[bool] | None:
-        """A For new rules menu: that preset, stored at once."""
-        self._choice[name] = self._named(label) or label
-        return self._commit_settings(self._library_box, **{name: label})
 
     def _commit_settings(self, box: SettingsBox, **fields: Any) -> asyncio.Task[bool] | None:
         parts = self._parts
@@ -1160,12 +1124,6 @@ class NamingSection:
             commit_fields(self._committer, parts.settings, box, **fields),
             name="forge-naming-setting",
         )
-
-    def _fill_choices(self) -> None:
-        names = [draft.preset.name for draft in self._drafts if draft.preset.name]
-        for name, menu in self.choice_menus.items():
-            menu.configure(values=names or [""])
-            menu.set(self._choice_name(name))
 
     def _fill_language(self) -> None:
         codes = list(LANGUAGES)
@@ -1184,12 +1142,6 @@ class NamingSection:
         """Choose a names language by its code (as picking it in the menu)."""
         task = self._language_chosen(language_name(code))
         self.language_menu.set(language_name(self._language))
-        return task
-
-    def choose_preset_for(self, name: str, preset: str) -> asyncio.Task[bool] | None:
-        """Choose the preset for "series_preset" / "movies_preset" (as picking it in the menu)."""
-        task = self._choose(name, preset)
-        self.choice_menus[name].set(self._choice_name(name))
         return task
 
     # --- the presets ------------------------------------------------------------------------------
@@ -1231,7 +1183,6 @@ class NamingSection:
     def _refresh_presets(self) -> None:
         self._fill_preset_list()
         self._fill_editor()
-        self._fill_choices()
 
     def _fill_preset_list(self) -> None:
         for child in self.preset_list.winfo_children():
@@ -1338,7 +1289,6 @@ class NamingSection:
         self._edit(name=self._name.get().strip())
         index = self._drafts.index(self._editing)
         self.preset_buttons[index].configure(text=self._fitted(self._editing.preset.name or "…"))
-        self._fill_choices()  # a Series / Movies choice follows its preset's new name
         self._refresh_editor()
 
     def _format_typed(self, *_args: object) -> None:
@@ -1409,7 +1359,6 @@ class NamingSection:
         draft = PresetDraft(None, Preset(name=name, type=TypeHint.AUTO, format=DEFAULT_FORMAT))
         self._drafts.append(draft)
         self.select_preset(draft)
-        self._fill_choices()
         task = self.commit_presets()
         self.name_entry.focus_set()
         self.name_entry.select_range(0, "end")
@@ -1594,7 +1543,7 @@ class NamingSection:
         done: Sequence[tuple[PresetsChange, dict[str, Any]]],
     ) -> bool:
         """Undo: the presets as they were stored before (`before`), the rules renamed back, the
-        settings the change moved (For new rules, the remembered presets, the right-click
+        settings the change moved (the stored Series / Movies presets, the remembered presets, the right-click
         menu's choice) as they were; the listeners hear it as a rename back (and a new
         preset's removal)."""
         if not done:
@@ -1665,7 +1614,6 @@ class NamingSection:
         else:
             self._fill_preset_list()
             self._refresh_editor()
-            self._fill_choices()
 
 
 def _save_failed() -> str:

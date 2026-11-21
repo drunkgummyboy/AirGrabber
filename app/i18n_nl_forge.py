@@ -976,14 +976,8 @@ NL: dict[str, str] = {
     "⚠ Choose your Movies folder in Settings › Folders":
         "⚠ Kies je map Films in Instellingen › Mappen",
     "Explorer's right-click menu": "Rechtsklikmenu van Verkenner",
-    "For new rules": "Voor nieuwe regels",
-    "The presets a new rule starts with.": "De voorinstellingen waarmee een nieuwe regel begint.",
-    "Each rule keeps its own: change it under Sorting.":
-        "Elke regel houdt zijn eigen: verander die bij Sorteren.",
     "? Codes": "? Codes",
     "Watch folders": "Mappen bewaken",
-    "New rules start with the presets chosen under Naming › For new rules.":
-        "Nieuwe regels beginnen met de voorinstellingen die bij Naamgeving › Voor nieuwe regels gekozen zijn.",
     "When sorting": "Bij het sorteren",
     "Take sorted files off the list (Undo stays in History)":
         "Gesorteerde bestanden van de lijst halen (Ongedaan maken staat in Geschiedenis)",

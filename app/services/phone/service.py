@@ -56,6 +56,7 @@ from app import __version__
 from app.config import AppPaths
 from app.i18n import N_, t
 from app.models import PairedPhone, Profile
+from app.services.phone.cast_stream import CastStreams
 from app.services.phone.certificate import ensure_certificate
 from app.services.phone.copies import PhoneCopies
 from app.services.phone.devices import DeviceStore, PairingCode
@@ -215,6 +216,7 @@ class PhoneService:
         copies: PhoneCopies | None = None,
         play_links: PlayLinks | None = None,
         play_port: int = PLAY_PORT,
+        cast: CastStreams | None = None,
     ) -> None:
         """`routes_factory`: the routes of everything else the phone may ask (read at each
         start). `play_links`: the play link server, run with the connection (the routes make
@@ -232,6 +234,8 @@ class PhoneService:
         self.copies = copies
         self._play_links = play_links
         self._play_port = play_port
+        # Cast sound streams (cast_stream.py, served by the play link server): said in hello.
+        self._cast = cast
         # Read once: the page and the service agree until the next start.
         self.available = OPEN_TO_EVERYONE or (paths.root / ENABLED_MARKER).is_file()
         # The hidden switch has something to switch while it isn't open to everyone.
@@ -580,6 +584,9 @@ class PhoneService:
             "phone_copies": self.copies is not None and self.copies.available,
             "find": True,  # `/v1/find` (find.py); an older PC has no such key
             "person": True,  # `/v1/person` (person.py), and `progress` on what's downloading
+            "title": True,  # `/v1/title` (title.py): any TMDB title's page
+            # `/v1/cast-stream` (cast_stream.py): MediaForge's ffmpeg is there to convert sound
+            "cast_sound": self._cast is not None and self._cast.available,
         }
 
     def _plex_details(self) -> dict[str, str] | None:

@@ -236,6 +236,7 @@ class TMDBMovieInfo(_Wire):
 
     id: int
     overview: str | None = None
+    tagline: str | None = None
     genres: list[TMDBGenre] = Field(default_factory=list)
     backdrop_path: str | None = None
     poster_path: str | None = None
@@ -249,6 +250,7 @@ class TMDBMovieInfo(_Wire):
         return TitleInfo(
             id=self.id,
             overview=(self.overview or "").strip(),
+            tagline=(self.tagline or "").strip(),
             genres=_genre_names(self.genres),
             backdrop_path=self.backdrop_path or None,
             poster_path=self.poster_path or None,
@@ -265,6 +267,7 @@ class TMDBTVInfo(_Wire):
 
     id: int
     overview: str | None = None
+    tagline: str | None = None
     genres: list[TMDBGenre] = Field(default_factory=list)
     backdrop_path: str | None = None
     poster_path: str | None = None
@@ -278,6 +281,7 @@ class TMDBTVInfo(_Wire):
         return TitleInfo(
             id=self.id,
             overview=(self.overview or "").strip(),
+            tagline=(self.tagline or "").strip(),
             genres=_genre_names(self.genres),
             backdrop_path=self.backdrop_path or None,
             poster_path=self.poster_path or None,
@@ -326,6 +330,7 @@ class TMDBVideos(_Wire):
 class TMDBCastCredit(_Wire):
     """A cast entry of /movie/{id}/credits."""
 
+    id: int | None = None  # the person's
     name: str = ""
     character: str | None = None
     profile_path: str | None = None
@@ -338,6 +343,7 @@ class TMDBCastCredit(_Wire):
             name=name,
             character=(self.character or "").strip(),
             profile_path=self.profile_path or None,
+            id=self.id or None,
         )
 
 
@@ -358,6 +364,7 @@ class TMDBRole(_Wire):
 class TMDBAggregateCast(_Wire):
     """A cast entry of /tv/{id}/aggregate_credits: one actor with every part they played."""
 
+    id: int | None = None  # the person's
     name: str = ""
     profile_path: str | None = None
     roles: list[TMDBRole] = Field(default_factory=list)
@@ -373,6 +380,7 @@ class TMDBAggregateCast(_Wire):
             name=name,
             character=(main.character or "").strip() if main is not None else "",
             profile_path=self.profile_path or None,
+            id=self.id or None,
         )
 
 

@@ -277,9 +277,11 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         texts = labels(dialog.page(PAGE_NAMING))
         self.assertEqual(texts[0], "Naming")
         self.assertTrue(texts[1])
-        for title in ("Presets", "For new rules", "Names language", "Remembered matches"):
+        for title in ("Presets", "Names language", "Remembered matches"):
             self.assertIn(title, texts)
-        self.assertNotIn("Library presets", texts)
+        # Each rule keeps its own presets: no "For new rules" any more (the owner, 2026-11-21).
+        for gone in ("Library presets", "For new rules"):
+            self.assertNotIn(gone, texts)
 
     async def test_shows_the_presets_in_order_and_the_first_one_edited(self) -> None:
         _dialog, part, _forge = await self.ready()
@@ -303,8 +305,6 @@ class NamingSettingsTests(ForgeAsyncTestCase):
     async def test_shows_the_stored_settings(self) -> None:
         stored = ForgeSettings(series_preset="Series (Flat)", tmdb_language="nl-NL")
         _dialog, part, _forge = await self.ready(stored)
-        self.assertEqual(part.choice_menus["series_preset"].get(), "Series (Flat)")
-        self.assertEqual(part.choice_menus["movies_preset"].get(), "Movie (Folder)")
         self.assertEqual(part.language_menu.get(), "Dutch")
         self.assertFalse(part.presets_changed())
 
@@ -688,12 +688,11 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         await self.typed(part)
         self.assertEqual(len(rules.renamed), 1)
 
-    async def test_the_library_choice_follows_a_renamed_preset(self) -> None:
+    async def test_the_stored_series_preset_follows_a_renamed_preset(self) -> None:
+        # No longer shown, still the queue's last fallback for a hand-added file.
         _dialog, part, forge = await self.ready()
         self.select(part, "Series (Folder)")
         part._name.set("Shows")
-        self.assertEqual(part.choice_menus["series_preset"].get(), "Shows")
-        self.assertIn("Shows", part.choice_menus["series_preset"].cget("values"))
         await self.typed(part)
         self.assertEqual(self.settings(forge).updates, [{"series_preset": "Shows"}])
         self.assertEqual(self.stored(forge).names[3], "Shows")
@@ -704,7 +703,6 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         part.delete_button.invoke()
         assert part.editing is not None
         self.assertEqual(part.editing.preset.name, "Movie (Flat)")  # the next one
-        self.assertEqual(part.choice_menus["movies_preset"].get(), "Movie (Flat)")
         await settle()  # at once
         self.assertNotIn("Movie (Folder)", self.stored(forge).names)
         self.assertEqual(self.settings(forge).updates, [{"movies_preset": "Movie (Flat)"}])
@@ -869,15 +867,10 @@ class NamingSettingsTests(ForgeAsyncTestCase):
         await settle()
         self.assertEqual(self.settings(forge).updates, [])
 
-    async def test_a_choice_for_new_rules_is_stored_and_one_made_elsewhere_shows(self) -> None:
+    async def test_a_language_chosen_elsewhere_shows(self) -> None:
         _dialog, part, forge = await self.ready()
-        task = part.choose_preset_for("movies_preset", "Movie (Flat)")
-        assert task is not None
-        await task
-        self.assertEqual(self.settings(forge).updates, [{"movies_preset": "Movie (Flat)"}])
         await self.settings(forge).update(tmdb_language="fr-FR", movies_preset="Auto")
         self.assertEqual(part.language_menu.get(), "French")
-        self.assertEqual(part.choice_menus["movies_preset"].get(), "Auto")
 
     # --- remembered matches -----------------------------------------------------------------------
 

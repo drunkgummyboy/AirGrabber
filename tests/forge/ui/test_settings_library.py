@@ -36,7 +36,6 @@ from app.forge.ui.rule_rows import RowLook, row_look
 from app.forge.ui.settings_pages import (
     FORGE_PARTS,
     GETTING_READY,
-    LIBRARY_POINTER,
     SAVE_FAILED,
     LibrarySection,
     UnfitWindow,
@@ -997,15 +996,14 @@ class NothingLostTests(LibrarySettingsCase):
             self.assertIn(folder, texts)
         self.assertEqual(part.add_rule_button.cget("text"), "＋ Add a rule")
 
-    async def test_new_rules_start_with_namings_presets_and_it_says_so(self) -> None:
-        dialog, part, _fake = self.ready()
-        self.assertIn(t_en(LIBRARY_POINTER), labels(part._rules_box.frame))
-        dialog.show_section(PAGE_NAMING)
-        naming = dialog.parts[PAGE_NAMING]
-        await pump_until(self.root, lambda: getattr(naming, "ready", False))
-        draft = naming.draft()  # type: ignore[attr-defined]
-        self.assertEqual(draft["series_preset"], READY.series_preset)
-        self.assertEqual(draft["movies_preset"], READY.movies_preset)
+    async def test_new_rules_start_with_the_built_in_presets(self) -> None:
+        # Each rule keeps its own; whatever was once chosen under Naming › For new rules no
+        # longer counts (the owner, 2026-11-21), and nothing points there.
+        _dialog, part, fake = self.ready()
+        await fake.update(series_preset="Series (Flat)", movies_preset="Movie (Flat)")
+        new = part._new_rule()
+        self.assertEqual((new.shows.preset, new.films.preset), ("Series (Folder)", "Movie (Folder)"))
+        self.assertFalse(any("For new rules" in text for text in labels(part._rules_box.frame)))
 
 
 class IgnoredBoxTests(LibrarySettingsCase):

@@ -105,7 +105,6 @@ OLD_BOXES: tuple[tuple[str, str, str], ...] = (
     ("Options", PAGE_SORTING, "When sorting"),
     # MediaForge › Naming
     ("Presets", PAGE_NAMING, "Presets"),
-    ("Library presets", PAGE_NAMING, "For new rules"),
     ("Names language", PAGE_NAMING, "Names language"),
     ("Remembered matches", PAGE_NAMING, "Remembered matches"),
     # MediaForge › Subtitles

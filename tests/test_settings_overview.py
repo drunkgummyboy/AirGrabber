@@ -610,13 +610,6 @@ class WholeWindowTests(RegistryCase):
         self.assertIn("⚠ Choose your Series folder under Folders.", [str(n.cget("text")) for n in links])
         links[0].click()
         self.assertEqual(dialog.section, PAGE_FOLDERS)
-        dialog.show_section(PAGE_SORTING)
-        part.naming_link.click()  # "…under Naming › For new rules."
-        self.assertEqual(dialog.section, PAGE_NAMING)
-        naming: Any = dialog.parts[PAGE_NAMING]
-        await pump_until(self.root, lambda: bool(naming.ready))
-        naming.sorting_link.click()  # "…change it under Sorting."
-        self.assertEqual(dialog.section, PAGE_SORTING)
 
     async def test_mediaforges_on_offs_are_switches(self) -> None:
         dialog, _forge = self.open()

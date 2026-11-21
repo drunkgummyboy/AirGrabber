@@ -260,6 +260,7 @@ class TitleInfo(DomainModel):
 
     id: int  # TMDB id
     overview: str = ""  # "" when TMDB has none in that language
+    tagline: str = ""  # "" when TMDB has none in that language
     genres: tuple[str, ...] = ()  # TMDB's names, in that language
     backdrop_path: str | None = None
     poster_path: str | None = None
@@ -299,6 +300,7 @@ class CastMember(DomainModel):
     name: str
     character: str = ""  # the part they play ("" when TMDB names none)
     profile_path: str | None = None  # their photo
+    id: int | None = None  # TMDB's person id (None when unknown)
 
     def photo_url(self, size: str = "w185") -> str | None:
         return f"{TMDB_IMAGE_BASE}{size}{self.profile_path}" if self.profile_path else None

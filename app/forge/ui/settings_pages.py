@@ -49,7 +49,7 @@ mockups/forge-rules.html):
 
 What points elsewhere is a link to the page that fixes it (spec §6, `PageLink`): a rule's
 "⚠ Choose your Series folder under Folders." and what AirGrabber's downloads ask to fill in lead
-to Folders, "…under Naming › For new rules" to Naming. `overview_facts` is what Settings'
+to Folders. `overview_facts` is what Settings'
 Overview shows of MediaForge while it runs (it never starts it, nor reads anything).
 
 Each change stores itself (`_change`, one at a time): a rule's switch, a drag, the editor's Save
@@ -81,7 +81,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 import customtkinter as ctk
 
-from app.forge.models.rules import Rule, RuleTarget
+from app.forge.models.rules import Rule
 from app.forge.models.settings import ForgeSettings
 from app.forge.ui.look import app_look, light_colour
 from app.forge.ui import settings_menu as _menu
@@ -168,7 +168,6 @@ CLOSE = N_("Close")
 RULE_REFUSED = N_("Rule {n}: {why}")  # a change refused: that rule's row's reason
 RULE_SPOT_PREFIX = "rule:"
 RULE_SPOT = RULE_SPOT_PREFIX + "{id}"  # a stored rule's row (`spots`; `spot_shown` opens its editor)
-LIBRARY_POINTER = N_("New rules start with the presets chosen under Naming › For new rules.")
 OPTIONS_TITLE = N_("When sorting")
 CLEAN_TEXT = N_("Clean up downloads after moving (samples, .nfo, .txt, .url, empty folders)")
 NEEDS_TEXT = N_("Tell me when files need me")
@@ -538,8 +537,6 @@ class LibrarySection:
         )
         self.show_them.pack(side="left", padx=(6, 0))
         unfit_row.grid_remove()
-        self.naming_link = PageLink(rules.body, t(LIBRARY_POINTER), PAGE_NAMING)
-        rules.add(self.naming_link, gap=_ROW_GAP, sticky="w")
 
         # When sorting.
         options = page.box(t(OPTIONS_TITLE))
@@ -1347,17 +1344,14 @@ class LibrarySection:
         self._edit(index, rule, deletable=not rule.airgrabber)
 
     def add_rule(self) -> None:
-        """＋ Add a rule: the editor for a new rule (last), with the Library presets."""
+        """＋ Add a rule: the editor for a new rule (last), with the built-in Series (Folder) /
+        Movie (Folder) presets (the owner, 2026-11-21: each rule keeps its own)."""
         if self._settings is None:
             return
         self._edit(len(self.rule_drafts), self._new_rule(), deletable=False)
 
     def _new_rule(self) -> Rule:
-        settings = self._draft_settings()
-        return Rule(
-            shows=RuleTarget(preset=settings.series_preset),
-            films=RuleTarget(preset=settings.movies_preset),
-        )
+        return Rule()  # Series (Folder) / Movie (Folder): app/forge/models/rules.py
 
     def rule_saved(self, index: int, rule: Rule) -> asyncio.Task[bool]:
         """The editor's Save: the rule at `index` (a new one last), stored."""
@@ -1831,7 +1825,6 @@ FORGE_PARTS: dict[str, ForgePart] = {
         build_naming,
         (
             _naming.PRESETS_TITLE,
-            _naming.LIBRARY_TITLE,
             _naming.LANGUAGE_TITLE,
             _naming.MATCHES_TITLE,
             N_("Trailer"),

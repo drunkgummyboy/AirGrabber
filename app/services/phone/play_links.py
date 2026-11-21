@@ -10,7 +10,9 @@ phone connection, answers it:
 - `/p/<token>/video.<ext>`: the video, `Range: bytes=N-M` / `bytes=N-` giving 206 with exactly
   those bytes (TVs ask that way), past the end 416;
 - `/p/<token>/sub/<i>.vtt`: the link's subtitle `i`, an SRT as WebVTT on the way, a VTT as it
-  is (any other file isn't served).
+  is (any other file isn't served);
+- `/c/<token>/stream.mp4[?t=<seconds>]`: a Cast sound stream (cast_stream.py, its own tokens):
+  handed to `CastStreams.answer`, whose stream writes the rest of the connection itself.
 
 `GET` and `HEAD` only, one request per connection, home addresses only (`is_home_address`). Every
 answer carries `Access-Control-Allow-Origin: *` (Cast's subtitles) and DLNA's headers. A token is
@@ -32,12 +34,12 @@ import mimetypes
 import re
 import secrets
 import stat
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.client import responses
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import unquote
 
 from app.services.folder_library.scan import READ_TIMEOUT_S
@@ -56,6 +58,9 @@ from app.services.phone.server import (
     range_span,
     send_file,
 )
+
+if TYPE_CHECKING:
+    from app.services.phone.cast_stream import CastStreams
 
 log = logging.getLogger(__name__)
 
@@ -89,10 +94,15 @@ class _Link:
     expires: datetime
 
 
+# What answers a connection itself once its request is read (a Cast sound stream).
+Stream = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
+
+
 class _Answer(NamedTuple):
     head: bytes
     body: bytes = b""
     file: FileReply | None = None  # sent after the head, in pieces
+    stream: Stream | None = None  # run after the head (and writes its own)
 
 
 def play_url_host(local_address: str) -> str | None:
@@ -152,6 +162,11 @@ def _plain(status: int, *extra: tuple[str, str]) -> _Answer:
     return _Answer(head.encode())
 
 
+def plain_head(status: int, *extra: tuple[str, str]) -> bytes:
+    """The head of an answer without a body, with the headers every answer here carries."""
+    return _plain(status, *extra).head
+
+
 def _data(content_type: str, data: bytes, *, with_body: bool) -> _Answer:
     head = (
         "HTTP/1.1 200 OK\r\n"
@@ -164,8 +179,12 @@ def _data(content_type: str, data: bytes, *, with_body: bool) -> _Answer:
 
 
 class PlayLinks:
-    def __init__(self, *, now: Callable[[], datetime] = _utc_now) -> None:
+    def __init__(
+        self, *, now: Callable[[], datetime] = _utc_now, cast: CastStreams | None = None
+    ) -> None:
+        """`cast`: the Cast sound streams served under `/c/` (none: those are 404)."""
         self._now = now
+        self._cast = cast
         self._links: dict[str, _Link] = {}
         self._server: asyncio.Server | None = None
         self._connections: set[asyncio.Task[None]] = set()
@@ -198,6 +217,8 @@ class PlayLinks:
         """Stop listening, drop every open connection and forget every link."""
         server, self._server = self._server, None
         self._links = {}
+        if self._cast is not None:
+            self._cast.forget()  # its ffmpegs end with the connections below
         if server is None:
             return
         server.close()
@@ -238,6 +259,8 @@ class PlayLinks:
                     await writer.drain()
                 if answer.file is not None:
                     await send_file(writer, answer.file, send_timeout=PAUSE_S)
+                if answer.stream is not None:
+                    await answer.stream(reader, writer)
         except OSError:  # a timeout is one too
             log.debug("A play link connection ended early")
         except Exception as exc:
@@ -260,7 +283,13 @@ class PlayLinks:
         if method not in ("GET", "HEAD"):
             return _plain(405, ("Allow", "GET, HEAD"))
         with_body = method == "GET"
-        parts = target.partition("?")[0].split("/")
+        path, _, query = target.partition("?")
+        parts = path.split("/")
+        if len(parts) == 4 and parts[1] == "c" and self._cast is not None:
+            head, stream = self._cast.answer(
+                parts[2], unquote(parts[3]), query, with_body=with_body
+            )
+            return _Answer(head, stream=stream)
         if len(parts) not in (4, 5) or parts[:2] != ["", "p"]:
             return _plain(404)
         link = self._link(parts[2])

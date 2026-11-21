@@ -77,35 +77,36 @@ MOVIE_SHELVES = ("just_dropped", "trending", "upcoming")
 PAGINGS_KEPT = 4
 # TVMaze search hits checked for a name + year match when no external id resolves.
 TRACK_SEARCH_LIMIT = 5
-CAST_LIMIT = 8  # the info window's cast row
+CAST_LIMIT = 15  # the info window's cast (side: 3, then "+N more") and the phone's title page
 ENGLISH = "en-US"  # TMDB's language for what the app's own language has no text for
 
 _IGNORED_WORDS = frozenset({"the", "and", "&"})
 
 
 def _optional(
-    result: list[CastMember] | BaseException, kind: MediaType, item_id: int, what: str
+    result: list[CastMember] | BaseException, kind: MediaType, what: str
 ) -> list[CastMember]:
     """A gathered extra, or none when it failed with a TMDBError that concerns only it
-    (logged); a missing or rejected key, cancellation and bugs propagate."""
+    (logged by its kind only: the error's text names the title's path, with its TMDB id, which
+    a phone's title page mustn't leave in the log); a missing or rejected key, cancellation and
+    bugs propagate."""
     if not isinstance(result, BaseException):
         return result
     if _is_fatal(result):
         raise result
-    log.info("TMDB %s %d: no %s: %s", kind.value, item_id, what, result)
+    log.info("TMDB %s: no %s: %s", kind.value, what, type(result).__name__)
     return []
 
 
-async def _optional_call(
-    call: Awaitable[T], kind: MediaType, item_id: int, what: str
-) -> T | None:
-    """`call`'s result, or None when it fails with a TMDBError that concerns only it."""
+async def _optional_call(call: Awaitable[T], kind: MediaType, what: str) -> T | None:
+    """`call`'s result, or None when it fails with a TMDBError that concerns only it (logged
+    as `_optional`)."""
     try:
         return await call
     except TMDBError as exc:
         if _is_fatal(exc):
             raise
-        log.info("TMDB %s %d: no %s: %s", kind.value, item_id, what, exc)
+        log.info("TMDB %s: no %s: %s", kind.value, what, type(exc).__name__)
         return None
 
 
@@ -873,7 +874,7 @@ class DiscoveryService:
             # None in the preferred languages: one more call, the film's own language too.
             videos = await _optional_call(
                 self._tmdb.videos(MediaType.MOVIE, movie_id, languages=(*preferred, own)),
-                MediaType.MOVIE, movie_id, "videos",
+                MediaType.MOVIE, "videos",
             )
             trailer = pick_trailer(videos or (), preferred)
         extras = TitleExtras(info=info, trailer=trailer, cast=page.cast[:CAST_LIMIT])
@@ -886,7 +887,7 @@ class DiscoveryService:
         if info.overview or language == ENGLISH:
             return info
         english = await _optional_call(
-            self._info(kind, item_id, ENGLISH), kind, item_id, "English overview"
+            self._info(kind, item_id, ENGLISH), kind, "English overview"
         )
         if english is not None and english.overview:
             return info.model_copy(update={"overview": english.overview})
@@ -904,12 +905,12 @@ class DiscoveryService:
         )
         if isinstance(info_result, BaseException):
             raise info_result
-        cast = _optional(cast_result, kind, item_id, "cast")
+        cast = _optional(cast_result, kind, "cast")
         info = await self._english_overview(kind, item_id, info_result, language)
         preferred = trailer_languages()
         asked = [code for code in dict.fromkeys((*preferred, info.original_language or "")) if code]
         videos = await _optional_call(
-            self._tmdb.videos(kind, item_id, languages=asked), kind, item_id, "videos"
+            self._tmdb.videos(kind, item_id, languages=asked), kind, "videos"
         )
         return TitleExtras(
             info=info,

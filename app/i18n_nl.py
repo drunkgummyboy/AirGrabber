@@ -1982,6 +1982,11 @@ NL: dict[str, str] = {
     "That part of the copy doesn't exist.": "Dat deel van de kopie bestaat niet.",
     "AirGrabber has no phone-sized copy of that film, so ask for it again.":
         "AirGrabber heeft geen telefoonkopie van die film, vraag er dus opnieuw om.",
+    # app/services/phone/cast_stream.py
+    "This PC doesn't have MediaForge's video tools yet, so add trailers to a MediaForge preset once to get them.":
+        "Deze pc heeft de videohulpmiddelen van MediaForge nog niet, voeg dus één keer trailers toe aan een voorinstelling van MediaForge om ze te krijgen.",
+    "AirGrabber can't reach this video's file from this PC right now, so try again in a moment.":
+        "AirGrabber kan het bestand van deze video nu niet bereiken vanaf deze pc, probeer het dus zo nog eens.",
     "Cancel all": "Alles annuleren",
     "Remove all": "Alles verwijderen",
     "{n} copying": "{n} wordt gekopieerd",
@@ -2075,6 +2080,8 @@ NL: dict[str, str] = {
     "You already follow {title}.": "Je volgt {title} al.",
     "You follow {title} now.": "Je volgt {title} nu.",
     "AirGrabber couldn't find {name} on TMDB.": "AirGrabber kon {name} niet vinden op TMDB.",
+    "AirGrabber couldn't find that title on TMDB.":
+        "AirGrabber kon die titel niet vinden op TMDB.",
     "The Forge is still starting, so try again in a moment.":
         "De Forge start nog op, dus probeer het zo opnieuw.",
     "Already sorted, or AirGrabber restarted.":

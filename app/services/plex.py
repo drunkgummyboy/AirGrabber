@@ -1362,6 +1362,44 @@ class PlexService:
             log.info("Play: film has %d parts (%s), the first plays", len(media.parts), key)
         return _video(item, item.rating_key or key, part.file or "", markers_known=True)
 
+    async def cast_video(
+        self, key: str, part_key: str | None = None
+    ) -> tuple[LibraryKind, PlexVideo] | None:
+        """A film's or an episode's file for a Cast sound stream (app/services/phone/
+        cast_stream.py): ("movie" | "show", its video). The version whose part is `part_key`
+        when this title has one (the phone's choice, its file), else ▶ Play's (`film_video`'s
+        `best_version`: the tallest, then the biggest, its first part). None without Plex or a
+        known server, when the server doesn't have it, it's no film or episode, or it names no
+        file. Raises PlexError (PlexUnreachable when it didn't answer)."""
+        uri = self._settings.current.plex_server_uri
+        if not _ITEM_KEY.fullmatch(key):
+            raise PlexError("A title's key that doesn't read")
+        if not self.connected or not uri:
+            return None
+        item = await self._on_screen(
+            "title",
+            lambda at, token: self._client.metadata(at, token, key, timeout=SCREEN_TIMEOUT),
+        )
+        if item is None or item.type not in ("movie", "episode"):
+            return None
+        kind: LibraryKind = "movie" if item.type == "movie" else "show"
+        chosen = next(
+            (
+                one
+                for media in item.media
+                for one in media.parts
+                if part_key and one.key == part_key and one.file
+            ),
+            None,
+        )
+        if chosen is None:
+            best = best_version(item, lambda part: bool(part.file))
+            if best is None:
+                return None
+            chosen = best[1]
+        video = _video(item, item.rating_key or key, chosen.file or "", episode=kind == "show")
+        return kind, video
+
     async def show_videos(self, show: PlexTitle) -> list[PlexVideo]:
         """A show's episodes with their files, by season and number (the specials, season 0,
         last), from the server the last check reached; none without Plex or a known server.

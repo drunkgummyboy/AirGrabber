@@ -594,6 +594,14 @@ class DetailsParsingTests(TMDBTestCase):
         self.assertEqual(details.imdb_id, "tt14976292")
         self.assertEqual(details.tvdb_id, 402033)
 
+    async def test_the_info_reads_the_recorded_taglines(self) -> None:
+        film = await self.client(FakeTMDB(ok(load("movie_details.json")))).movie_info(969681)
+        self.assertEqual(film.tagline, "A brand new day starts now.")
+        show = await self.client(FakeTMDB(ok(load("tv_details.json")))).tv_info(123542)
+        self.assertEqual(show.tagline, "Past or future, just let them be.")
+        bare = await self.client(FakeTMDB(ok({"id": 7, "tagline": None}))).movie_info(7)
+        self.assertEqual(bare.tagline, "")
+
     async def test_tv_details_without_external_ids(self) -> None:
         details = await self.client(FakeTMDB(ok({"id": 7}))).tv_details(7)
         self.assertEqual((details.imdb_id, details.tvdb_id, details.status), (None, None, None))

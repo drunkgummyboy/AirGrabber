@@ -235,6 +235,41 @@ class ClientTests(ExtrasTestCase):
         self.assertIsNone(cast[2].photo_url())
         self.assertEqual(cast[4].character, "")
 
+    async def test_cast_members_carry_tmdbs_person_id(self) -> None:
+        films = await self.tmdb.cast(MediaType.MOVIE, MOVIE)
+        self.assertEqual([member.id for member in films[:3]], [7000001, 7000002, 7000003])
+        shows = await self.tmdb.cast(MediaType.TV, TV)
+        self.assertEqual([member.id for member in shows], [7200001, 7200002, 7200003])
+
+    async def test_a_cast_member_without_an_id_has_none(self) -> None:
+        credits = {"cast": [{"name": "No Id"}, {"name": "Zero", "id": 0}, {"name": "Id", "id": 5}]}
+        self.server.payloads[(f"/3/movie/{MOVIE}/credits", None)] = credits
+        cast = await self.tmdb.cast(MediaType.MOVIE, MOVIE)
+        self.assertEqual([(member.name, member.id) for member in cast],
+                         [("No Id", None), ("Zero", None), ("Id", 5)])
+        aggregate = {"cast": [{"name": "No Id", "roles": []}, {"name": "Id", "id": 6}]}
+        self.server.payloads[(f"/3/tv/{TV}/aggregate_credits", None)] = aggregate
+        cast = await self.tmdb.cast(MediaType.TV, TV)
+        self.assertEqual([(member.name, member.id) for member in cast],
+                         [("No Id", None), ("Id", 6)])
+
+    async def test_the_tagline_is_read_and_empty_without_one(self) -> None:
+        for path, call in (
+            (f"/3/movie/{MOVIE}", self.tmdb.movie_info),
+            (f"/3/tv/{TV}", self.tmdb.tv_info),
+        ):
+            with self.subTest(path=path):
+                info = await call(MOVIE if "movie" in path else TV, language="nl-NL")
+                self.assertEqual(info.tagline, "")  # the fixtures have "" in Dutch
+                payload = dict(self.server.payloads[(path, "nl-NL")])
+                payload["tagline"] = "  Every light lies.  "
+                self.server.payloads[(path, "nl-NL")] = payload
+                info = await call(MOVIE if "movie" in path else TV, language="nl-NL")
+                self.assertEqual(info.tagline, "Every light lies.")
+                del payload["tagline"]
+                info = await call(MOVIE if "movie" in path else TV, language="nl-NL")
+                self.assertEqual(info.tagline, "")
+
     async def test_show_cast_takes_the_part_played_most(self) -> None:
         cast = await self.tmdb.cast(MediaType.TV, TV)
         self.assertEqual(self.server.requests[0].url.path, f"/3/tv/{TV}/aggregate_credits")
@@ -266,6 +301,16 @@ class ClientTests(ExtrasTestCase):
 
 
 class MovieExtrasTests(ExtrasTestCase):
+    async def test_the_first_fifteen_actors_are_kept(self) -> None:
+        self.assertEqual(CAST_LIMIT, 15)  # the info window unfolds them; the phone's title page
+        many = {"cast": [{"id": n, "name": f"Actor {n}"} for n in range(1, 21)]}
+        self.server.payloads[(f"/3/movie/{MOVIE}/credits", None)] = many
+        self.server.payloads[(f"/3/tv/{TV}/aggregate_credits", None)] = many
+        film = await self.service.movie_extras(MOVIE)
+        show = await self.service.tv_extras(TV)
+        for extras in (film, show):
+            self.assertEqual([member.id for member in extras.cast], list(range(1, 16)))
+
     async def test_english(self) -> None:
         self.use(Language.EN)
         extras = await self.service.movie_extras(MOVIE)
@@ -275,7 +320,7 @@ class MovieExtrasTests(ExtrasTestCase):
         self.assertIsNotNone(extras.trailer)
         assert extras.trailer is not None
         self.assertEqual(extras.trailer.key, "officialEn3")
-        self.assertEqual(len(extras.cast), CAST_LIMIT)
+        self.assertEqual(len(extras.cast), 10)  # all of them: fewer than CAST_LIMIT
         self.assertEqual(extras.cast[0].name, "Maren Holloway")
         [request] = self.server.requests
         self.assertEqual(request.url.params["include_video_language"], "en,null")

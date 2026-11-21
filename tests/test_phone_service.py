@@ -210,6 +210,8 @@ class PairingTests(ServiceCase):
                 "phone_copies": False,  # no copy maker here
                 "find": True,  # this PC can search (`/v1/find`)
                 "person": True,  # and has the actor page (`/v1/person`) and `progress`
+                "title": True,  # and the title page (`/v1/title`)
+                "cast_sound": False,  # no Cast sound streams here
             },
         )
         self.assertTrue(body["token"])

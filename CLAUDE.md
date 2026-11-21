@@ -227,5 +227,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   a folder video's key (`movie:<tmdb>`, `episode:<tmdb>:<s>:<e>`; `_PHONE_KEY`), the copies a Plex ratingKey or `movie:<tmdb>` only (`_film_key`), logged only as its kind (`_logged`); `hello`'s `phone_copies` says whether the card works. Send to phone's Phone-sized tick (4K films) starts one from
   the PC at once (`phone_sized` in the order; cancelling drops it; `resume_copies` after a restart). The file goes out as a `FileReply` (server.py, Range).
   ffmpeg runs as a subprocess of the loop (no threads); its output holds paths: never logged. Tests fake Plex and ffmpeg.
+  Cast sound streams (`cast_stream.py`, owner's OK 2026-11-21; docs/companion/2026-11-21-cast-sound-stream.md): for a Cast TV
+  that can't play Dolby / DTS / TrueHD, `POST /v1/cast-stream` finds the file on this PC (never through Plex's stream) and
+  makes a `/c/<token>/stream.mp4` link on the play link server (same port, home addresses only, PLAY_LINK_HOURS, in memory
+  only); each GET runs MediaForge's ffmpeg (picture copied, sound to AAC, fragmented MP4 from `?t=`), at most MAX_STREAMS
+  at once, killed and reaped when the TV goes away, a newer request comes or the server stops. `hello`'s `cast_sound` says
+  whether this PC can. The link, token, address, path, title and ffmpeg's own words are never logged; a Plex ratingKey may be.
 
 See `filemap.md` for where things live.
