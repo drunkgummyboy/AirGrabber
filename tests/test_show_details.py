@@ -7,12 +7,14 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from typing import cast
 
 from app.models import Episode, Show, ShowDetails
+from app.models.plex import PlexVideo
 from app.services.library import LibraryService
 from app.services.tvmaze import TVMazeClient
 from app.ui.show_details import (
     collapsed_summary,
     date_text,
     default_season,
+    episode_video,
     episode_row_state,
     mark_color,
     mark_slot_width,
@@ -20,6 +22,7 @@ from app.ui.show_details import (
     meta_line,
     new_text,
     next_line,
+    playable_by_number,
     row_mark,
     season_episodes,
     season_marks,
@@ -266,6 +269,23 @@ class TwoShelvesMarkTests(DatabaseTestCase):
         await settings.update(plex_token="")
         await self.db.plex.clear()
         self.assertEqual(await marks(), ["missing", "plex", "missing"])
+
+
+class PlayableTests(unittest.TestCase):
+    """A row's ▶: the episode this PC can play, matched by season and number."""
+
+    def test_matched_by_season_and_number(self) -> None:
+        def video(key: str, season: int | None, number: int | None) -> PlexVideo:
+            return PlexVideo(key=key, file=f"/tv/{key}.mkv", season=season, episode=number)
+
+        playable = playable_by_number(
+            [video("a", 3, 1), video("b", 3, 1), video("c", 2, 1), video("d", None, 4)]
+        )
+        self.assertEqual(sorted(playable), [(2, 1), (3, 1)])  # without a season: left out
+        found = episode_video(playable, episode(1, 3, 1))
+        self.assertEqual(found.key if found else None, "a")  # the first of each
+        self.assertIsNone(episode_video(playable, episode(2, 3, 2)))
+        self.assertIsNone(episode_video(playable, episode(3, 3, None)))  # a special: no number
 
 
 class SummaryTests(unittest.TestCase):

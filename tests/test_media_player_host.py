@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
-from unittest import mock
+from unittest import TestCase, mock
 
 from app.media_protocol import (
     AlwaysPick,
@@ -1350,3 +1350,17 @@ class SplitShowHostTests(HostTestCase):
         self.assertEqual(process.plays()[-1].previous_label, "S02E01")
         await self.tell(process, WantPrevious())
         self.assertEqual([p.file for p in process.plays()], [plex_e01, str(e02), plex_e01])
+
+
+class LineTests(TestCase):
+    """The player's title line."""
+
+    def test_an_episode_without_a_name_takes_the_lists(self) -> None:
+        from app.ui.media_player import _line
+
+        card = PlexVideo(key="episode:202411:2:5", file="x.mkv", season=2, episode=5)
+        listed = card.model_copy(update={"title": "The Ring"})
+        self.assertEqual(_line(ARK, card), "S02E05")
+        self.assertEqual(_line(ARK, card, [listed]), "S02E05 · The Ring")
+        self.assertEqual(_line(ARK, listed), "S02E05 · The Ring")
+        self.assertEqual(_line(DUNE, DUNE_VIDEO), "2024")

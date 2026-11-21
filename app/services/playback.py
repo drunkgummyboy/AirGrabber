@@ -10,7 +10,13 @@ Forge's types only under TYPE_CHECKING). Those folders are often network shares.
 
 1. Plex says which file a title is (PlexService.film_video / show_videos): the server's path,
    such as /volume1/video/Movies/Dune (2021)/Dune (2021).mkv.
-2. `local_candidates` turns it into the paths Windows may see under each folder: the library
+2. Plex's own name first when it is a Windows path that is there. Then the file through the
+   path pairs learned (`path_pairs`, worked out at each lookup, nothing stored): a folder this
+   PC knows (Settings → Folders' and MediaForge's, of both kinds) whose ending is a library
+   folder's ending (PlexService.locations, kept from the last check) teaches the leading parts
+   that differ, /volume1 ↔ \\\\nas, so a library no folder is set for is found on the same
+   share (/volume1/Multimedia/Movies/… → \\\\nas\\Multimedia\\Movies\\…). Then
+   `local_candidates` turns it into the paths Windows may see under each folder: the library
    folder (one of PlexService.locations) that holds the file gives the part below it, joined onto
    the folder; then the part below the folder's own ending in the file's path (`plex_folder`'s idea
    the other way round); then the file's last TAIL_PARTS names under that folder. Each folder is
@@ -221,10 +227,15 @@ def forge_folders(runtime: ForgeRuntime) -> FolderLookup:
 # -- the pure part ---------------------------------------------------------------------------------
 
 
+def _windows_server(path: str) -> bool:
+    """The server writes `path` the Windows way ("D:\\Media\\…", "\\\\host\\share\\…")."""
+    return "\\" in path or (len(path) > 1 and path[1] == ":")
+
+
 def _server_names(path: str) -> list[str]:
     """A path's names as the Plex server writes it: POSIX ("/volume1/video/TV/…") or Windows
     ("D:\\Media\\TV\\…", its drive the first name)."""
-    if "\\" in path or (len(path) > 1 and path[1] == ":"):
+    if _windows_server(path):
         windows = PureWindowsPath(path)
         rest = [name for name in windows.parts[1:] if name]
         return [windows.drive, *rest] if windows.drive else rest
@@ -284,6 +295,108 @@ def local_candidates(server_file: str, locations: Iterable[str], folder: str) ->
         if path not in found:
             found.append(path)
     return found
+
+
+def _folded(names: Iterable[str]) -> tuple[str, ...]:
+    return tuple(name.casefold() for name in names)
+
+
+@dataclass(frozen=True, slots=True)
+class PathPair:
+    """Where the Plex server's files are from this PC, learned from a folder this PC knows and
+    the library folder (a Location) it is: a server path whose names start with `server` (a
+    Windows server's when `windows`, its drive the first name) is this PC's `root` ("C:\\",
+    "\\\\nas\\") + `names` + the rest. `shared`: how many names their endings had in common."""
+
+    windows: bool
+    server: tuple[str, ...]
+    root: str
+    names: tuple[str, ...]
+    shared: int
+
+    @property
+    def key(self) -> tuple[bool, tuple[str, ...], str, tuple[str, ...]]:
+        """The pair as Windows compares it (case-insensitive)."""
+        return self.windows, _folded(self.server), self.root.casefold(), _folded(self.names)
+
+    @property
+    def same_place(self) -> bool:
+        """The PC sees the server's path as it is (Plex on this PC): nothing to map."""
+        pc = self.root + "\\".join(self.names)
+        return self.windows and "\\".join(self.server).casefold() == pc.rstrip("\\").casefold()
+
+    def mapped(self, server_file: str) -> str | None:
+        """`server_file` as this PC sees it through this pair; None when it isn't below the
+        pair's server part (or would climb out of it)."""
+        if _windows_server(server_file) != self.windows:
+            return None
+        names = _server_names(server_file)
+        size = len(self.server)
+        if len(names) <= size or _folded(names[:size]) != _folded(self.server):
+            return None
+        rest = names[size:]
+        if not _safe(rest):
+            return None
+        return self.root + "\\".join([*self.names, *rest])
+
+
+def _pc_parts(folder: str) -> tuple[str, list[str]] | None:
+    """A Windows folder's root ("C:\\", "\\\\nas\\": a share's name is then the first name) and
+    names; None for one that isn't a full path."""
+    path = PureWindowsPath(folder.strip())
+    if not path.drive or not path.root:
+        return None
+    if not path.drive.startswith("\\\\"):
+        return path.drive + "\\", [name for name in path.parts[1:] if name]
+    host, _, share = path.drive[2:].partition("\\")
+    if not host or not share or "\\" in share or host in ("?", "."):
+        return None
+    return f"\\\\{host}\\", [share, *(name for name in path.parts[1:] if name)]
+
+
+def path_pairs(folders: Iterable[str], locations: Iterable[str]) -> list[PathPair]:
+    """The server → PC prefixes the folders this PC knows teach: a folder whose ending (≥ 1
+    whole name, compared as Windows does) is a library folder's ending gives the leading parts
+    that differ (/volume1/Multimedia/Downloaded and To See/movies ↔ \\\\nas\\Multimedia\\
+    Downloaded and To See\\movies: /volume1 ↔ \\\\nas\\). A match counts only as the longest of
+    its folder's and of its library folder's (so `movies` alone doesn't pair that folder with
+    another library's /volume1/Multimedia/Movies). Most specific first, each pair once; a
+    library folder no known folder matches teaches nothing."""
+    known = [found for one in dict.fromkeys(f.strip() for f in folders) if (found := _pc_parts(one))]
+    places = list(dict.fromkeys(place for place in locations if place.strip()))
+    matches: list[tuple[int, int, PathPair]] = []
+    for mine_at, (root, names) in enumerate(known):
+        mine = [name.casefold() for name in names]
+        for theirs_at, location in enumerate(places):
+            server = _server_names(location)
+            theirs = [name.casefold() for name in server]
+            shared = 0
+            while shared < min(len(mine), len(theirs)) and mine[-1 - shared] == theirs[-1 - shared]:
+                shared += 1
+            if shared:
+                pair = PathPair(
+                    windows=_windows_server(location),
+                    server=tuple(server[: len(server) - shared]),
+                    root=root,
+                    names=tuple(names[: len(names) - shared]),
+                    shared=shared,
+                )
+                matches.append((mine_at, theirs_at, pair))
+    best_mine: dict[int, int] = {}
+    best_theirs: dict[int, int] = {}
+    for mine_at, theirs_at, pair in matches:
+        best_mine[mine_at] = max(best_mine.get(mine_at, 0), pair.shared)
+        best_theirs[theirs_at] = max(best_theirs.get(theirs_at, 0), pair.shared)
+    kept: dict[tuple[bool, tuple[str, ...], str, tuple[str, ...]], PathPair] = {}
+    for mine_at, theirs_at, pair in matches:
+        if pair.shared < best_mine[mine_at] or pair.shared < best_theirs[theirs_at]:
+            continue
+        if pair.same_place:
+            continue
+        other = kept.get(pair.key)
+        if other is None or other.shared < pair.shared:
+            kept[pair.key] = pair
+    return sorted(kept.values(), key=lambda pair: (-len(pair.server), -pair.shared))
 
 
 def next_episode(videos: Sequence[PlexVideo]) -> PlexVideo | None:
@@ -488,6 +601,8 @@ def merged_episodes(
             other = plex_spots.get((video.season, video.episode))
             if other is not None and other.watched and not video.watched:
                 video = video.model_copy(update={"watched": True})
+            if other is not None and other.title and not video.title:  # Plex's episode name
+                video = video.model_copy(update={"title": other.title})
         found.append(video)
     for video in plex:
         spot = (video.season, video.episode)
@@ -517,6 +632,41 @@ def plex_copies(plex: Sequence[PlexVideo], folders: Sequence[PlexVideo]) -> dict
     }
 
 
+SeasonNames = Callable[[int, int], Awaitable[Mapping[int, str]]]
+"""A show's (TMDB id) season's episode names by number (`TMDBEpisodeNames`)."""
+
+NAMES_TIMEOUT_S = 5.0  # a season's names from TMDB by then, else the episodes go without
+
+
+class TMDBEpisodeNames:
+    """TMDB's episode names, per show and season, kept for the run: the folder copies' names
+    (a file carries none) for the player's title line and the episode list. `fetch`:
+    TMDBClient.tv_season. Nothing on failure (no key, no answer): an empty season, asked again
+    next time."""
+
+    def __init__(self, fetch: Callable[[int, int], Awaitable[object]]) -> None:
+        self._fetch = fetch
+        self._kept: dict[tuple[int, int], Mapping[int, str]] = {}
+
+    async def __call__(self, tv_id: int, season: int) -> Mapping[int, str]:
+        kept = self._kept.get((tv_id, season))
+        if kept is not None:
+            return kept
+        try:
+            found = await asyncio.wait_for(self._fetch(tv_id, season), NAMES_TIMEOUT_S)
+        except Exception as exc:  # TMDBError, a timeout: the episodes go without names
+            log.info("Play: TMDB's episode names didn't come (%s)", type(exc).__name__)
+            return {}
+        episodes = getattr(found, "episodes", ()) or ()
+        names = {
+            int(episode.episode_number): str(episode.name)
+            for episode in episodes
+            if getattr(episode, "name", "")
+        }
+        self._kept[(tv_id, season)] = names
+        return names
+
+
 class PlaybackService:
     """`services.playback`: which library title an info window shows, and ▶ Play."""
 
@@ -529,6 +679,7 @@ class PlaybackService:
         person: Callable[[], int] | None = None,
         show_tmdb_id: Callable[[Show], Awaitable[int | None]] | None = None,
         own_folders: OwnFolders | None = None,
+        episode_names: SeasonNames | None = None,
         launch: Launcher = launch_video,
         exists: Callable[[str], bool] = os.path.isfile,
         timeout_s: float = FIND_TIMEOUT_S,
@@ -540,7 +691,8 @@ class PlaybackService:
         (DiscoveryService.show_tmdb_id), asked when neither of its titles names one: the
         person's marks in the folders are joined by it. `own_folders`: Settings → Folders'
         folders of a kind (`settings_folders`), where a Plex file is looked for before
-        MediaForge's. `launch` / `exists`: the seams tests replace (never a real player);
+        MediaForge's. `episode_names`: a season's names (`TMDBEpisodeNames`) for the folder
+        copies Plex doesn't name. `launch` / `exists`: the seams tests replace (never a real player);
         `clock`: how old a kept episode list is. `timeout_s`: how long all of one video's
         folders together may take to answer."""
         self._plex = plex
@@ -549,6 +701,7 @@ class PlaybackService:
         self._person = person or (lambda: FIRST_PROFILE_ID)
         self._show_tmdb_id = show_tmdb_id
         self._own_folders: OwnFolders = own_folders or (lambda _kind: ())
+        self._episode_names = episode_names
         self._launch = launch
         self._exists = exists
         self._timeout_s = timeout_s
@@ -559,6 +712,7 @@ class PlaybackService:
         self._plex_episodes_of: dict[str, PlexVideo] = {}
         self._plex_films_of: dict[str, PlexTitle] = {}
         self._film_tmdb_ids: dict[str, int] = {}  # a Plex film's TMDB id by its key (`film`)
+        self._pairs_logged: int | None = None  # the path pairs' count last logged
 
     @property
     def available(self) -> bool:
@@ -643,7 +797,7 @@ class PlaybackService:
                 )
                 return kept or folder_videos
         marked = await self._marked_episodes(both.main.tmdb_id) if plex_videos else set()
-        videos = merged_episodes(plex_videos, folder_videos, marked)
+        videos = await self._named(both, merged_episodes(plex_videos, folder_videos, marked))
         self._plex_episodes_of.update(plex_copies(plex_videos, folder_videos))
         if plex_videos and folder_videos:
             log.info(
@@ -652,6 +806,33 @@ class PlaybackService:
             )
         self._kept[self._kept_key(both)] = (self._clock(), list(videos))
         return videos
+
+    async def _named(self, titles: ShowTitles, videos: list[PlexVideo]) -> list[PlexVideo]:
+        """The episodes without a name (folder copies Plex doesn't have) named from TMDB, one
+        request per season (kept for the run); without an answer they stay as they are."""
+        names_of = self._episode_names
+        tv_id = (titles.folders.tmdb_id if titles.folders is not None else None) or (
+            titles.main.tmdb_id
+        )
+        if names_of is None or tv_id is None:
+            return videos
+        seasons = sorted({
+            video.season
+            for video in videos
+            if not video.title and video.season is not None and video.episode is not None
+        })
+        if not seasons:
+            return videos
+        found = await asyncio.gather(*(names_of(tv_id, season) for season in seasons))
+        names = dict(zip(seasons, found, strict=True))
+        named = []
+        for video in videos:
+            if not video.title and video.season is not None and video.episode is not None:
+                name = names.get(video.season, {}).get(video.episode, "")
+                if name:
+                    video = video.model_copy(update={"title": name})
+            named.append(video)
+        return named
 
     def _kept_key(self, titles: ShowTitles) -> str:
         """A kept list is the person's own (their places and marks are in it)."""
@@ -791,9 +972,10 @@ class PlaybackService:
         self, name: str, kind: LibraryKind, video: PlexVideo
     ) -> Located | PlayOutcome:
         """A Plex video's file from this PC: Plex's own file name when it is a Windows path
-        (Plex on this PC), then each of the user's own folders of the kind (Settings →
-        Folders), then MediaForge's Series / Movies folder; all looked at together within the
-        time limit (`_first_found`)."""
+        (Plex on this PC), then the file through each path pair learned (`path_pairs`: the
+        folders this PC knows, of both kinds, against the libraries' folders), then each of the
+        user's own folders of the kind (Settings → Folders), then MediaForge's Series / Movies
+        folder; all looked at together within the time limit (`_first_found`)."""
         if not self._plex.connected:
             return PlayOutcome(name, kind, problem=PlayProblem.NOT_CONNECTED)
         own = [folder for folder in self._own_folders(kind) if folder.strip()]
@@ -802,21 +984,39 @@ class PlaybackService:
         folders = list(own)
         if forge_folder and forge_folder.casefold() not in {one.casefold() for one in own}:
             folders.append(forge_folder)
-        groups: list[list[str]] = [[video.file]] if windows_file(video.file) else []
-        if folders:
+        known = [
+            *self._own_folders("show"),
+            *self._own_folders("movie"),
+            *((forge.series, forge.movies) if forge is not None else ()),
+        ]
+        known = [folder for folder in known if folder.strip()]
+        groups: list[tuple[str, list[str]]] = []
+        if windows_file(video.file):
+            groups.append(("Plex's own path", [video.file]))
+        pairs: list[PathPair] = []
+        if folders or known:
             locations = await self._locations()
-            groups += [local_candidates(video.file, locations, folder) for folder in folders]
-        found, timed_out = await self._first_found(groups)
+            pairs = self._pairs(known, locations)
+            mapped = [path for pair in pairs if (path := pair.mapped(video.file))]
+            groups += [("a path pair", [path]) for path in dict.fromkeys(mapped)]
+            groups += [
+                ("a folder", local_candidates(video.file, locations, folder)) for folder in folders
+            ]
+        groups = [(where, places) for where, places in groups if places]
+        found, timed_out = await self._first_found([places for _where, places in groups])
         if found is not None:
             group, index = found
             log.info(
-                "Play: %s %s found (folder %d of %d, place %d)",
-                kind, logged_key(video.key), group + 1, len(groups), index + 1,
+                "Play: %s %s found (look %d of %d: %s, place %d)",
+                kind, logged_key(video.key), group + 1, len(groups), groups[group][0], index + 1,
             )
-            return Located(name, kind, groups[group][index])
+            return Located(name, kind, groups[group][1][index])
         log.info(
-            "Play: %s %s not found from this PC (%d folder(s), %d places tried%s)",
-            kind, logged_key(video.key), len(groups), sum(len(one) for one in groups),
+            "Play: %s %s not found from this PC (%d folder(s), %d of %d path pair(s) fit, "
+            "%d places tried%s)",
+            kind, logged_key(video.key), len(folders),
+            sum(1 for where, _places in groups if where == "a path pair"), len(pairs),
+            sum(len(places) for _where, places in groups),
             ", one didn't answer in time" if timed_out else "",
         )
         if timed_out:
@@ -826,6 +1026,19 @@ class PlaybackService:
         if not own and not forge_folder:
             return PlayOutcome(name, kind, problem=PlayProblem.NO_FOLDER)
         return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND)
+
+    def _pairs(self, known: Sequence[str], locations: Sequence[str]) -> list[PathPair]:
+        """`path_pairs` of these folders and library folders (worked out at each lookup: cheap,
+        and never stale after a change of folders or a Plex check); their count logged when it
+        changes."""
+        pairs = path_pairs(known, locations) if known and locations else []
+        if len(pairs) != self._pairs_logged:
+            self._pairs_logged = len(pairs)
+            log.info(
+                "Play: learned %d path pair(s) from %d folder(s) and %d library folder(s)",
+                len(pairs), len(known), len(locations),
+            )
+        return pairs
 
     async def _locations(self) -> list[str]:
         """The Plex libraries' folders as the server sees them; none when they don't read (the

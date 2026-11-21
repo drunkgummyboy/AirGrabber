@@ -3,10 +3,16 @@ in Plex plays in AirGrabber's own player (`MediaPlayerHost`, app/ui/media_player
 app), which finds its file through MediaForge's Series / Movies folders (app/services/playback.py)
 and falls back to VLC itself.
 
-`play_button` is the buttons row's outlined "▶ Play" (tip "Play it on this PC"); `Play` hands a play to
-the player and says "▶ Finding …" on the status bar; how it went the player says there itself.
+`play_button` is the buttons row's outlined "▶ Play" (tip "Play it on this PC", or the show
+window's "Play S04E08 on this PC"); `episode_play_button` an episode row's compact outlined ▶ (the
+show window's rows, same tip). `Play` hands a play to the player and says "▶ Finding …" on the
+status bar; how it went the player says there itself.
 A film plays at once (its video read from Plex first, `PlaybackService.film_video`: a problem
-there is said instead; one look at a time per window); a show first opens the EpisodePicker:
+there is said instead; one look at a time per window). In a show's window each playable
+episode's row plays it (`Play.episode`, with the show's whole list for the player's next one)
+and the header's ▶ Play the next unwatched one at once (`Play.next_up`: the window's list, or,
+while it has none, read first; Plex not answering is said on the status bar). The Library
+page's show cards open the EpisodePicker (`Play.pick`):
 borderless in AirGrabber's dialog look, its seasons as chips and the season's episodes as rows
 ("E03 · Title", a muted ✓ on a watched one, a thin progress line under one Plex has a place in:
 `0 < view_offset_ms < 90 %` of its length, a small muted "Downloaded" on one that plays from the
@@ -77,10 +83,12 @@ log = logging.getLogger(__name__)
 
 PLAY_TEXT = N_("▶ Play")
 PLAY_TIP = N_("Play it on this PC")
+PLAY_NEXT_TIP = N_("Play {code} on this PC")  # a show window's ▶ Play: the next unwatched one
 PICK_TEXT = N_("Choose an episode to play.")
 DOWNLOADED_CUE = N_("Downloaded")  # a picker row whose episode plays from the user's own folders
 WATCHED_MARK = "✓"
 PLAY_WIDTH = 100
+EPISODE_PLAY_WIDTH = 36  # an episode row's ▶
 STATUS_MS = 8000  # how long the status bar keeps what Play said
 WIDTH = 460  # the picker's list (CTk units)
 LIST_HEIGHT = 340
@@ -106,9 +114,16 @@ class PlayerHost(Protocol):
 
 
 def play_button(
-    master: Any, command: Callable[[], None], *, height: int, font_size: int = 15, radius: int = 8
+    master: Any,
+    command: Callable[[], None],
+    *,
+    height: int,
+    font_size: int = 15,
+    radius: int = 8,
+    tip: str | None = None,
 ) -> ctk.CTkButton:
-    """The buttons row's outlined "▶ Play", as tall as the row's other buttons."""
+    """The buttons row's outlined "▶ Play", as tall as the row's other buttons; `tip` (else
+    "Play it on this PC")."""
     button = ctk.CTkButton(
         master,
         text=t(PLAY_TEXT),
@@ -124,8 +139,43 @@ def play_button(
         border_color=theme.EDGE,
         command=command,
     )
+    add_tooltip(button, tip if tip is not None else t(PLAY_TIP))
+    return button
+
+
+def episode_play_button(
+    master: Any, command: Callable[[], None], *, height: int, font_size: int, radius: int
+) -> ctk.CTkButton:
+    """An episode row's compact outlined ▶ (the show window), as tall as the row's buttons."""
+    button = ctk.CTkButton(
+        master,
+        text="▶",
+        width=EPISODE_PLAY_WIDTH,
+        height=height,
+        corner_radius=radius,
+        font=theme.font(font_size, bold=True),
+        fg_color="transparent",
+        hover_color=theme.HOVER,
+        text_color=theme.BUTTON_TEXT,
+        border_width=1,
+        border_color=theme.EDGE,
+        command=command,
+    )
     add_tooltip(button, t(PLAY_TIP))
     return button
+
+
+def episode_code(video: PlexVideo) -> str:
+    """"S04E08" ("S04" without a number, "" without a season)."""
+    return episode_name("", video)
+
+
+def next_tip(episodes: Sequence[PlexVideo] | None) -> str:
+    """A show window's ▶ Play tip: "Play S04E08 on this PC" for the next unwatched one, "Play it
+    on this PC" while the list isn't known."""
+    video = next_episode(episodes) if episodes else None
+    code = episode_code(video) if video is not None else ""
+    return t(PLAY_NEXT_TIP, code=code) if code else t(PLAY_TIP)
 
 
 def episode_line(video: PlexVideo) -> str:
@@ -157,7 +207,7 @@ class Play:
 
     @property
     def busy(self) -> bool:
-        """A film's video is still being read from Plex."""
+        """A film's video (or a show's episodes, `next_up`) is still being read."""
         return self._task is not None and not self._task.done()
 
     def film(self, title: PlexTitle) -> None:
@@ -215,9 +265,42 @@ class Play:
         self._report(t(FINDING_TEXT, name=episode_name(title.title, video)), None)
         self._player.play(title, video, episodes=episodes)
 
+    def next_up(
+        self, titles: ShowTitles | PlexTitle, episodes: Sequence[PlexVideo] | None = None
+    ) -> None:
+        """A show window's ▶ Play: the next unwatched episode (`next_episode`) at once, with the
+        whole list. Without `episodes` (not read yet, or Plex didn't answer) they are read
+        first: Plex not answering, or no episode, is said on the status bar. A second click
+        while that is read does nothing."""
+        both = titles if isinstance(titles, ShowTitles) else ShowTitles.of(titles)
+        title = both.main
+        video = next_episode(episodes) if episodes else None
+        if episodes and video is not None:
+            self.episode(title, video, episodes)
+            return
+        if self.busy:
+            return
+        self._report(t(FINDING_TEXT, name=title.title), None)
+        self._task = spawn(self._next_up(both), name="play")
+
+    async def _next_up(self, both: ShowTitles) -> None:
+        title = both.main
+        try:
+            episodes = await self._playback.episodes(both)
+        except PlexError as exc:
+            log.info("Play: the show's episodes didn't read (%s)", type(exc).__name__)
+            away = PlayOutcome(title.title, "show", problem=PlayProblem.PLEX_AWAY)
+            self._report(away.text, STATUS_MS)
+            return
+        video = next_episode(episodes)
+        if video is None:
+            self._report(t(NO_EPISODES_TEXT), STATUS_MS)
+            return
+        self.episode(title, video, episodes)
+
     def pick(self, master: Any, titles: ShowTitles | PlexTitle) -> EpisodePicker:
-        """A show: the episode picker (one per window; an open one is raised), its episodes
-        from Plex and the folders together (`titles`, the show's window's)."""
+        """A show: the episode picker (the Library page's show cards; one per page, an open
+        one is raised), its episodes from Plex and the folders together (`titles`)."""
         picker = self.picker
         if picker is not None and picker.winfo_exists():
             picker.lift()

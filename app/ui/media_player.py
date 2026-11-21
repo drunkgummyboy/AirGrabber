@@ -661,7 +661,7 @@ class MediaPlayerHost:
         message = Play(
             file=found.path,
             title=title.title,
-            line=_line(title, video),
+            line=_line(title, video, episodes),
             start_ms=max(0, video.view_offset_ms),
             ask_resume=video.view_offset_ms > 0 and not from_next and ask,
             intro=intro,
@@ -1201,10 +1201,14 @@ class MediaPlayerHost:
             log.exception("The player's status line failed")
 
 
-def _line(title: PlexTitle, video: PlexVideo) -> str:
-    """The player's title line: "S02E03 · Title" for an episode, the year for a film."""
+def _line(title: PlexTitle, video: PlexVideo, episodes: Sequence[PlexVideo] = ()) -> str:
+    """The player's title line: "S02E03 · Title" for an episode (its name from the show's list
+    when the video has none: a Continue watching card's folder copy), the year for a film."""
     if title.kind == "show":
-        return " · ".join(part for part in (episode_code(video), video.title) if part)
+        name = video.title or next(
+            (one.title for one in episodes if one.key == video.key and one.title), ""
+        )
+        return " · ".join(part for part in (episode_code(video), name) if part)
     return str(title.year) if title.year else ""
 
 

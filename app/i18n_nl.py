@@ -1590,6 +1590,14 @@ NL: dict[str, str] = {
         "Nieuwe installaties gebruiken je eigen map Downloads, ook als je die verplaatst hebt.",
     "A sleeping NAS now says it didn't answer in time, instead of that the file isn't there.":
         "Een slapende NAS meldt nu dat hij niet op tijd antwoordde, in plaats van dat het bestand er niet is.",
+    "▶ Play and casting to a TV find Plex's films and episodes on your NAS by themselves, even without a folder set.":
+        "▶ Afspelen en casten naar een tv vinden de films en afleveringen van Plex zelf op je NAS, ook zonder ingestelde map.",
+    "A show's window has a ▶ on each episode, and its ▶ Play starts the next unwatched episode straight away.":
+        "Het venster van een serie heeft een ▶ bij elke aflevering, en ▶ Afspelen start meteen de volgende niet-bekeken aflevering.",
+    "Player: a double click in the mini player goes full screen, and leaving full screen goes back to the mini player.":
+        "Speler: dubbelklikken in de minispeler gaat naar volledig scherm, en na volledig scherm ga je terug naar de minispeler.",
+    "Episodes that are only in your folders now show their names.":
+        "Afleveringen die alleen in je mappen staan, tonen nu hun naam.",
     "Player: point at the timeline and a small picture shows what happens at that moment.":
         "Speler: wijs de tijdlijn aan en een klein plaatje laat zien wat er op dat moment gebeurt.",
     "Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment.":
@@ -2167,6 +2175,7 @@ NL: dict[str, str] = {
         "De map antwoordde niet op tijd. Probeer het opnieuw.",
     "▶ Play": "▶ Afspelen",
     "Play it on this PC": "Afspelen op deze pc",
+    "Play {code} on this PC": "{code} afspelen op deze pc",
     "Choose an episode to play.": "Kies een aflevering om af te spelen.",
     "Downloaded": "Gedownload",
     # app/media_player.py (AirGrabber's own video player: the app passes these on its command line)

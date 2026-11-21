@@ -51,7 +51,12 @@ from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
 from app.services.local_files import PLACES_FILE, LocalPlaces
 from app.services.problem_report import ProblemReports
-from app.services.playback import PlaybackService, forge_folders, settings_folders
+from app.services.playback import (
+    PlaybackService,
+    TMDBEpisodeNames,
+    forge_folders,
+    settings_folders,
+)
 from app.services.plex import PlexClient, PlexService
 from app.services.plex_library import PlexLibraryService, library_posters
 from app.services.plex_scans import PlexScansAfterMoves
@@ -251,6 +256,7 @@ class Services:
             person=lambda: self.profiles.current_id,
             show_tmdb_id=discovery.show_tmdb_id,  # a show's folder marks when no title names it
             own_folders=settings_folders(lambda: settings.current),
+            episode_names=TMDBEpisodeNames(tmdb.tv_season),  # folder copies' episode names
         )
         # Where videos opened from Explorer's "Open with" were left (app/services/local_files.py).
         self.local_places = LocalPlaces(paths.root / PLACES_FILE)

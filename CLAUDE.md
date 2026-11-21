@@ -171,8 +171,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   `app/services/backup.py`; all `plex_*` settings are this PC's). A Plex Home or shared server's own token (plex.tv's
   `accessToken`, `plex_server_token`; `server_token()`) is the same secret: plex.tv calls take the account's token, the
   server's calls its own when it has one; it is in `MACHINE_SECRETS` too. Connections are tried in `connection_order`,
-  each local connection's plain `http://address:port` last (routers that block `*.plex.direct`). ▶ Play finds a Plex
-  file as Plex names it (a Windows path), then in Settings → Folders' folders (read-only existence checks, whatever the
+  each local connection's plain `http://address:port` last (routers that block `*.plex.direct`). ▶ Play / the cast stream find a Plex
+  file as Plex names it (a Windows path), then through the path pairs `playback.path_pairs` learns (a known folder,
+  Settings → Folders' or MediaForge's of either kind, whose ending is a library Location's: the leading parts that
+  differ, e.g. /volume1 ↔ \\nas\; worked out per lookup, never stored; logs give counts only), then in Settings →
+  Folders' folders (read-only existence checks, whatever the
   switch), then in MediaForge's folder; each folder in its own thread within FIND_TIMEOUT_S; a folder that doesn't
   answer is TIMED_OUT, never "not in your folder". Plex requests never follow redirects,
   their URLs are never logged, nor `str(httpx_exc)`. Logs give ids and counts only. What counts as

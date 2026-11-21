@@ -1486,17 +1486,39 @@ class MiniTests(PlayerTestCase):
         self.assertFalse(window.full_screen)
         self.assertTrue(window.mini)
 
-    def test_f_in_mini_goes_full_screen_and_back_to_the_window(self) -> None:
+    def test_f_in_mini_goes_full_screen_and_back_to_the_mini_player(self) -> None:
         window = self.start()
         normal = self.place(window)
         self.ctrl_h(window)
+        mini = self.place(window)
         window.press("f")
         self.root.update()
         self.assertTrue(window.full_screen)
         self.assertFalse(window.mini)
         window.press("Escape")
+        self.root.update()
         self.assertFalse(window.full_screen)
+        self.assertTrue(window.mini)  # the way it was watched before
+        self.assertNear(self.place(window), mini)
+        self.ctrl_h(window)  # and the window after it where it was
         self.assertNear(self.place(window), normal)
+
+    def test_full_screen_from_the_window_goes_back_to_the_window(self) -> None:
+        window = self.start()
+        normal = self.place(window)
+        window.press("f")
+        window.press("Escape")
+        self.root.update()
+        self.assertFalse(window.mini)
+        self.assertNear(self.place(window), normal)
+
+    def test_ctrl_h_in_full_screen_from_mini_stays_mini(self) -> None:
+        window = self.start()
+        self.ctrl_h(window)
+        window.press("f")
+        self.ctrl_h(window)
+        self.assertFalse(window.full_screen)
+        self.assertTrue(window.mini)
 
     def test_mini_place_is_remembered_apart(self) -> None:
         window = self.start()
@@ -1663,12 +1685,16 @@ class MiniTests(PlayerTestCase):
         window._on_wheel(SimpleNamespace(delta=-240))
         self.assertEqual(window.volume, 50)
 
-    def test_double_click_in_mini_goes_back(self) -> None:
+    def test_double_click_in_mini_goes_full_screen_and_back(self) -> None:
         window = self.start()
         self.ctrl_h(window)
         window._on_double(None)
+        self.assertTrue(window.full_screen)
         self.assertFalse(window.mini)
+        window._on_double(None)
+        self.root.update()
         self.assertFalse(window.full_screen)
+        self.assertTrue(window.mini)
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows' owned windows")

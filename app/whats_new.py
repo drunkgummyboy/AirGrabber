@@ -20,6 +20,12 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.27.0": (
+        N_("▶ Play and casting to a TV find Plex's films and episodes on your NAS by themselves, even without a folder set."),
+        N_("A show's window has a ▶ on each episode, and its ▶ Play starts the next unwatched episode straight away."),
+        N_("Player: a double click in the mini player goes full screen, and leaving full screen goes back to the mini player."),
+        N_("Episodes that are only in your folders now show their names."),
+    ),
     "3.25.0": (
         N_("MediaForge's video tools now come with AirGrabber: trailers work without switching anything on first."),
         N_("▶ Play also finds films in your library folders, and when Plex runs on this PC."),

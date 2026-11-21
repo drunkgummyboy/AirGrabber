@@ -9,6 +9,13 @@ folders alone part 1's ✓ "In your library". "☰ Choose…" shows that episode
 in this window: in place of the episodes under a "← Episodes" bar ("S03E05 · The Crossing"),
 or in the Releases tab ("Releases · S03E05"), by the layout (Settings' `info_layout`).
 
+While the show is in Plex or the user's own folders (`PlaybackService.show`) each episode this
+PC can play (`PlaybackService.episodes`, both sources' together, matched by season and number;
+a list read a moment ago shown at once, then Plex's answer) has a compact ▶ left of "⬇ Auto"
+that plays it in the app's player with the whole list (app/ui/play_control.py); a season's other
+rows keep its room while one of them has it. The header's "▶ Play" plays the next unwatched one
+at once ("Play S04E08 on this PC"), hidden when nothing is playable; no episode picker here.
+
 Not modal; one window per show (`ShowWindows` raises the open one, and every "☰ Choose…" of an
 episode opens its show's window on that episode's releases). It works for any TVMaze
 show, tracked or not: `LibraryService.show_details` reads a tracked show from the library and
@@ -52,7 +59,10 @@ from app.models import (
     ShowDetails,
     TitleExtras,
 )
+from app.models.plex import PlexVideo
 from app.services.discovery import NoTVMazeMatch
+from app.services.playback import next_episode
+from app.services.plex import PlexError
 from app.services.tmdb import TMDBError, TMDBNotConfigured
 from app.services.tvmaze import TVMazeError
 from app.ui import dialog_kit, library_words, theme
@@ -92,11 +102,19 @@ from app.ui.missing_control import (
     missing_text,
     progress_texts,
 )
-from app.ui.play_control import Play, play_button
+from app.ui.play_control import (
+    EPISODE_PLAY_WIDTH,
+    Play,
+    episode_play_button,
+    next_tip,
+    play_button,
+)
 from app.ui.poster_card import FOLLOWING_TEXT, TRACK_TEXT
 from app.ui.release_panel import IndexerTarget, PanelServices, ReleasePanel, TvTarget
 from app.ui.row_actions import NOTHING_SHORT, NOTHING_TEXT, RowLook
 from app.ui.row_actions import FONT_SIZE as ACTIONS_FONT_SIZE
+from app.ui.row_actions import HEIGHT as ACTIONS_HEIGHT
+from app.ui.row_actions import RADIUS as ACTIONS_RADIUS
 from app.ui.row_actions import RowActions, button_width
 from app.ui.row_actions import slot_width as actions_slot_width
 from app.ui.tasks import spawn
@@ -160,6 +178,7 @@ MARK_HEIGHT = 26
 ROW_RADIUS = 8
 STRIPE = 3  # a missing episode's amber line along its row's left edge
 ROWS_PER_BATCH = 12  # rows built before Tk gets to draw and handle input again
+PLAY_GAP = 4  # between a row's ▶ and its download controls
 
 # Shown through t().
 SEASON_TRAILER = N_("Season {n} trailer")
@@ -517,6 +536,26 @@ def date_text(episode: Episode, now: datetime) -> str:
     return short_date(day) if day is not None else t(UNKNOWN_DATE_TEXT)
 
 
+def playable_by_number(videos: Iterable[PlexVideo]) -> dict[tuple[int, int], PlexVideo]:
+    """The show's playable episodes (`PlaybackService.episodes`: Plex's and the folders'
+    together) by season and episode number, the first of each; one without both numbers
+    left out."""
+    playable: dict[tuple[int, int], PlexVideo] = {}
+    for video in videos:
+        if video.season is not None and video.episode is not None:
+            playable.setdefault((video.season, video.episode), video)
+    return playable
+
+
+def episode_video(
+    playable: dict[tuple[int, int], PlexVideo], episode: Episode
+) -> PlexVideo | None:
+    """The video this PC plays `episode` from (matched by season and number), else None."""
+    if episode.number is None:
+        return None
+    return playable.get((episode.season, episode.number))
+
+
 _exists = exists
 
 
@@ -525,7 +564,8 @@ _exists = exists
 
 class _EpisodeRow(ctk.CTkFrame):
     """"S02E01  Title  17 Jan" with its state on the right: ⬇ Auto + ☰ Choose… (app/ui/
-    row_actions.py), or when it airs ("airs in 7 days"). With Plex, in a tracked show's latest
+    row_actions.py), or when it airs ("airs in 7 days"); left of that a ▶ when this PC can play
+    the episode (`set_play`). With Plex, in a tracked show's latest
     season, a quiet mark left of that, no box: amber "● Missing" (and a thin amber line along
     the row's left edge), blue "● New · aired today" or a grey ✓ ("In Plex")."""
 
@@ -541,10 +581,16 @@ class _EpisodeRow(ctk.CTkFrame):
         marks_shown: bool = False,
         slot_width: int = SLOT_WIDTH,
         mark_width: int = MARK_WIDTH,
+        on_play: Callable[[PlexVideo], None] | None = None,
     ) -> None:
+        """`on_play`: what the row's ▶ does with its episode's video (`set_play`)."""
         super().__init__(
             master, fg_color=theme.SURFACE, corner_radius=ROW_RADIUS, height=EPISODE_ROW_HEIGHT
         )
+        self._on_play = on_play
+        self._play_slot: ctk.CTkFrame | None = None  # the ▶'s room, kept while the season has one
+        self.play_button: ctk.CTkButton | None = None
+        self.play_video: PlexVideo | None = None
         self._holder_width = 0  # physical px, from the title holder's last <Configure>
         self._fit_job: str | None = None
         self.grid_propagate(False)
@@ -598,8 +644,44 @@ class _EpisodeRow(ctk.CTkFrame):
             self, fg_color="transparent", width=slot_width, height=CONTROL_HEIGHT
         )
         self._slot.pack_propagate(False)
-        self._slot.grid(row=0, column=4, padx=(0, 10))
+        self._slot.grid(row=0, column=5, padx=(0, 10))
         self.set_state(entry, state, now, mark=mark, marks_shown=marks_shown)
+
+    def set_play(self, video: PlexVideo | None, *, room: bool) -> None:
+        """The ▶ left of the download controls for `video` (this PC can play the episode; a
+        click plays it), in a slot kept while `room` (a row of the season has one) so the
+        season's rows stay aligned; nothing changes when it already shows."""
+        self.play_video = video if room else None
+        if not room or self._on_play is None:
+            if self._play_slot is not None:
+                self._play_slot.destroy()
+                self._play_slot = None
+                self.play_button = None
+            return
+        if self._play_slot is None:
+            self._play_slot = ctk.CTkFrame(
+                self, fg_color="transparent", width=EPISODE_PLAY_WIDTH, height=CONTROL_HEIGHT
+            )
+            self._play_slot.pack_propagate(False)
+            self._play_slot.grid(row=0, column=4, padx=(0, PLAY_GAP))
+        if video is None:
+            if self.play_button is not None:
+                self.play_button.destroy()
+                self.play_button = None
+            return
+        if self.play_button is None:
+            self.play_button = episode_play_button(
+                self._play_slot,
+                self._play_pressed,
+                height=ACTIONS_HEIGHT,
+                font_size=ACTIONS_FONT_SIZE,
+                radius=ACTIONS_RADIUS,
+            )
+            self.play_button.pack(side="right")
+
+    def _play_pressed(self) -> None:
+        if self._on_play is not None and self.play_video is not None:
+            self._on_play(self.play_video)
 
     def set_state(
         self,
@@ -891,9 +973,9 @@ class ShowDetailsWindow(TitleInfoWindow):
         `send`: "Send to phone" among the actions (opened from the Library page while a phone
         is connected; `set_send` adds it later).
         `playback` + `player`: "▶ Play" while the show is in Plex or in the user's own folders
-        (its titles in both found by `PlaybackService.show`); a click opens the episode picker
-        (app/ui/play_control.py) with the episodes of both, each played from where it is in the
-        app's player.
+        (its titles in both found by `PlaybackService.show`): the next unwatched episode at
+        once, and a ▶ on each playable episode's row (app/ui/play_control.py), the episodes of
+        both, each played from where it is in the app's player.
         `discovery`: the TMDB extras (backdrop, trailer, cast); without it the window shows only
         what TVMaze knows. `releases`: what the releases panel
         works with (without it "☰ Choose…" shows nothing here); `on_fix_match`: the panel's
@@ -936,7 +1018,9 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._rows_task: asyncio.Task[None] | None = None
         self._season_trailer_task: asyncio.Task[None] | None = None
         self._tracking = False
-        self._buttons_look: tuple[bool, bool, bool, str | None, str | None, bool] | None = None
+        self._buttons_look: (
+            tuple[bool, bool, bool, str | None, tuple[str, str] | None, bool] | None
+        ) = None
         self._send = send
         self.send_button: ctk.CTkButton | None = None
         self._playback = playback
@@ -944,6 +1028,9 @@ class ShowDetailsWindow(TitleInfoWindow):
             Play(playback, player, status) if playback is not None and player is not None else None
         )
         self._titles: ShowTitles | None = None  # in Plex and / or the folders: ▶ Play's
+        # The episodes this PC can play (`PlaybackService.episodes`; None: not known), by number.
+        self._videos: list[PlexVideo] | None = None
+        self._playable: dict[tuple[int, int], PlexVideo] = {}
         self._plex_task: asyncio.Task[None] | None = None
         self.play_button: ctk.CTkButton | None = None
         self._auto_var = ctk.BooleanVar(value=False)
@@ -1074,10 +1161,14 @@ class ShowDetailsWindow(TitleInfoWindow):
 
     def _paint_buttons(self, details: ShowDetails) -> None:
         """+ Track, or ✓ Following with the "Auto" switch (new episodes download by themselves;
-        the hover tip says so); ▶ Play while the show is in Plex or the folders; "Send to
+        the hover tip says so); ▶ Play while the show is in Plex or the folders and has an
+        episode to play (or its list isn't known yet), tipped with the next one; "Send to
         phone" when opened from the Library page while a phone is connected; then IMDb."""
         imdb_url = details.show.imdb_url
-        play_key = self._titles.key if self._titles is not None else None
+        play_key: tuple[str, str] | None = None
+        videos = self._videos
+        if self._titles is not None and (videos is None or next_episode(videos) is not None):
+            play_key = (self._titles.key, next_tip(videos))
         sendable = self._send is not None
         look = (
             details.tracked, details.auto_download, self._tracking, imdb_url, play_key, sendable
@@ -1124,7 +1215,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             items.append(track)
         if play_key is not None:
             self.play_button = play_button(
-                self._buttons, self.play, height=dialog_kit.BUTTON_HEIGHT
+                self._buttons, self.play, height=dialog_kit.BUTTON_HEIGHT, tip=play_key[1]
             )
             items.append(self.play_button)
         if self._send is not None:
@@ -1143,9 +1234,15 @@ class ShowDetailsWindow(TitleInfoWindow):
         self._buttons.set_items(items, destroy_old=True)
 
     def play(self) -> None:
-        """"▶ Play": the episode picker, then the chosen episode in the app's player."""
+        """"▶ Play": the next unwatched episode in the app's player, at once (`Play.next_up`)."""
         if self._play is not None and self._titles is not None:
-            self._play.pick(self, self._titles)
+            self._play.next_up(self._titles, self._videos)
+
+    def play_episode(self, video: PlexVideo) -> None:
+        """A row's ▶: that episode in the app's player, with the show's whole list (the
+        player's next episode)."""
+        if self._play is not None and self._titles is not None and self._videos:
+            self._play.episode(self._titles.main, video, self._videos)
 
     def _send_pressed(self) -> None:
         if self._send is not None:
@@ -1165,12 +1262,51 @@ class ShowDetailsWindow(TitleInfoWindow):
             self._plex_task = spawn(self._load_plex(self._playback), name="ShowDetailsWindow.plex")
 
     async def _load_plex(self, playback: PlaybackService) -> None:
+        """The show's titles in Plex and the folders, then the episodes this PC can play (the
+        rows' ▶): a list read a moment ago at once (`kept_episodes`), then Plex's answer; when
+        Plex doesn't answer what shows stays (none at first: no ▶ in the rows)."""
         titles = await playback.show(self._show) if playback.available else None
         if not self.winfo_exists():
             return
+        same = titles is not None and self._titles is not None and titles.key == self._titles.key
         self._titles = titles
+        if titles is None:
+            self._set_videos(None)
+            return
+        kept = playback.kept_episodes(titles)
+        if kept is not None:
+            self._set_videos(kept)
+        else:  # the same titles keep their list meanwhile; others have none yet
+            self._set_videos(self._videos if same else None)
+        try:
+            videos = await playback.episodes(titles)
+        except PlexError as exc:
+            log.info("Show window: the episodes didn't read (%s)", type(exc).__name__)
+            return
+        if self.winfo_exists():
+            self._set_videos(videos)
+
+    def _set_videos(self, videos: list[PlexVideo] | None) -> None:
+        """The episodes this PC can play: the header's ▶ Play and the rows' ▶ follow them."""
+        self._videos = videos
+        self._playable = playable_by_number(videos or ())
         if self._details is not None:
             self._paint_buttons(self._details)
+        self._paint_play()
+
+    def _paint_play(self) -> None:
+        """The shown rows' ▶, in place (room kept while one of the season's rows has one)."""
+        room = self._play_room(self._row_episodes)
+        for episode in self._row_episodes:
+            row = self._rows.get(episode.id)
+            if row is not None and row.winfo_exists():
+                row.set_play(episode_video(self._playable, episode), room=room)
+
+    def _play_room(self, episodes: Iterable[Episode]) -> bool:
+        """Whether a season's rows keep the ▶'s room: one of them can be played here."""
+        if self._play is None or self._titles is None:
+            return False
+        return any(episode_video(self._playable, episode) is not None for episode in episodes)
 
     async def _load(self) -> None:
         try:
@@ -1303,6 +1439,7 @@ class ShowDetailsWindow(TitleInfoWindow):
                         mark=row_mark(details, episode),
                         marks_shown=shown,
                     )
+            self._paint_play()
             return
         self._cancel_rows()
         for child in self._episode_list.winfo_children():
@@ -1322,6 +1459,7 @@ class ShowDetailsWindow(TitleInfoWindow):
             details = self._details
             assert details is not None
             shown = self._marks_shown()
+            room = self._play_room(episodes)  # the episodes playable now (they may arrive later)
             for episode in episodes[start : start + ROWS_PER_BATCH]:
                 row = _EpisodeRow(
                     self._episode_list,
@@ -1333,7 +1471,9 @@ class ShowDetailsWindow(TitleInfoWindow):
                     marks_shown=shown,
                     slot_width=self._slot_width,
                     mark_width=self._mark_width,
+                    on_play=self.play_episode,
                 )
+                row.set_play(episode_video(self._playable, episode), room=room)
                 row.pack(fill="x", pady=3)
                 self._rows[episode.id] = row
 

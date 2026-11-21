@@ -396,6 +396,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self._drop_ids: list[int] = []
         self._click_from: tuple[int, int] | None = None
         self._flashed = ""
+        self._full_from_mini = False  # full screen entered from the mini player: back to it
         self.look = look
         self.events: queue.Queue[Event] = queue.Queue()
         self.worker = EngineWorker(engine, self.events)
@@ -979,13 +980,11 @@ class PlayerWindow(ctk.CTkToplevel):
             self._schedule("shape", SHAPE_MS, self.reshape)
 
     def _on_double(self, _event: Any) -> None:
-        """A double click on the picture: the mini player back to the window; else full screen."""
+        """A double click on the picture: full screen, from the window or the mini player; in
+        full screen, back to whichever it came from (`toggle_full_screen`)."""
         self._unschedule("click")  # its first click doesn't play / pause
         self._click_from = None
-        if self._mini:
-            self.toggle_mini()
-        else:
-            self.toggle_full_screen()
+        self.toggle_full_screen()
 
     def _on_video_press(self, event: Any) -> None:
         where = (int(event.x_root), int(event.y_root))
@@ -1881,9 +1880,14 @@ class PlayerWindow(ctk.CTkToplevel):
     # -- the window ------------------------------------------------------------------------------
 
     def toggle_full_screen(self) -> None:
+        """Full screen and back to the way it was watched before: the window, or the mini
+        player where it was (owner, 2026-11-21)."""
         self._close_menu()
-        if self._mini and not self._full_screen:
-            self.toggle_mini()  # full screen from the mini player: back to the window after it
+        entering = not self._full_screen
+        if entering:
+            self._full_from_mini = self._mini
+            if self._mini:
+                self.toggle_mini()  # the window's place first: what full screen leaves to
         if not self._full_screen:
             self._window_geometry = self.geometry()
         self._full_screen = not self._full_screen
@@ -1904,6 +1908,10 @@ class PlayerWindow(ctk.CTkToplevel):
             self.on_top_button.pack_forget()
         else:
             self.on_top_button.pack(side="right", padx=(0, 4), before=self.mini_button)
+        if not entering and self._full_from_mini:
+            self._full_from_mini = False
+            self.toggle_mini()  # back to the mini player it came from
+            return
         self._follow_later()
         self.activity()
 
@@ -1928,6 +1936,7 @@ class PlayerWindow(ctk.CTkToplevel):
         left (`_mini_geometry`); the window comes back where it was."""
         self._close_menu()
         if self._full_screen:
+            self._full_from_mini = False  # the mini player follows anyway: not twice
             self.toggle_full_screen()
         if not self._mini:
             self._normal_geometry = self.geometry()
